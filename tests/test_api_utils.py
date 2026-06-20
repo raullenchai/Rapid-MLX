@@ -8,6 +8,8 @@ from vllm_mlx/api/utils.py. No MLX dependency.
 
 import json
 
+import pytest
+
 from vllm_mlx.api.models import ContentPart, ImageUrl, Message
 from vllm_mlx.api.utils import (
     MLLM_PATTERNS,
@@ -574,18 +576,28 @@ class TestExtractMultimodalContent:
         processed, images, videos = extract_multimodal_content(messages)
         assert images == ["data:image/png;base64,abc"]
 
-    def test_multimodal_with_string_image_url(self):
-        messages = [
+    def test_multimodal_with_string_image_url_rejected(self):
+        """F-065: the bare-string ``image_url`` shorthand was
+        previously accepted at the Message layer and silently
+        dropped by the multimodal preprocessor. Per the new
+        OpenAI-spec contract the wire form must be the object
+        shape ``{"url": "..."}``; constructing a Message with
+        the bare-string form now raises ``ValidationError``
+        upfront so the silent-drop hazard is closed."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as ei:
             Message(
                 role="user",
                 content=[
                     {"type": "text", "text": "Look"},
-                    {"type": "image_url", "image_url": "https://example.com/img.png"},
+                    {
+                        "type": "image_url",
+                        "image_url": "https://example.com/img.png",
+                    },
                 ],
             )
-        ]
-        processed, images, videos = extract_multimodal_content(messages)
-        assert images == ["https://example.com/img.png"]
+        assert "image_url must be an object" in str(ei.value)
 
     def test_multimodal_with_video(self):
         messages = [
@@ -616,18 +628,23 @@ class TestExtractMultimodalContent:
         processed, images, videos = extract_multimodal_content(messages)
         assert videos == ["https://example.com/v.mp4"]
 
-    def test_multimodal_with_string_video_url(self):
-        messages = [
+    def test_multimodal_with_string_video_url_rejected(self):
+        """F-065 mirror surface: bare-string ``video_url`` was
+        also previously accepted and silently dropped. Now → 422."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as ei:
             Message(
                 role="user",
                 content=[
                     {"type": "text", "text": "Look"},
-                    {"type": "video_url", "video_url": "https://example.com/v.mp4"},
+                    {
+                        "type": "video_url",
+                        "video_url": "https://example.com/v.mp4",
+                    },
                 ],
             )
-        ]
-        processed, images, videos = extract_multimodal_content(messages)
-        assert videos == ["https://example.com/v.mp4"]
+        assert "video_url must be an object" in str(ei.value)
 
     def test_multiple_images(self):
         messages = [
