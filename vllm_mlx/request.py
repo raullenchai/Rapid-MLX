@@ -94,6 +94,18 @@ class SamplingParams:
     # correct (don't publish wrong numbers), but without ``ignore_eos``
     # there's no way to satisfy it on models that early-stop.
     ignore_eos: bool = False
+    # H-11: per-request PRNG seed. When set, the scheduler builds a
+    # fresh per-request sampler closure that maintains its own
+    # ``mx.random.key(seed)`` state and splits it per step, so two
+    # requests with the same ``(seed, temperature, top_p, prompt)`` pair
+    # produce the same token stream. ``None`` (default) preserves the
+    # pre-fix behaviour — the global ``mx.random.state`` advances
+    # naturally and the per-request sampler caches by sampling-param
+    # tuple (no per-call key threading). Range matches the OpenAI wire
+    # surface declared on ``ChatCompletionRequest.seed`` /
+    # ``CompletionRequest.seed``; out-of-range values are rejected at
+    # the API layer with a 422 before they reach SamplingParams.
+    seed: int | None = None
 
     def __post_init__(self):
         if self.stop is None:

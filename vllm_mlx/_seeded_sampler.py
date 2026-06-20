@@ -1,0 +1,193 @@
+"""Per-request seeded sampler for the OpenAI ``seed`` parameter (H-11).
+
+mlx-lm's stock sampler chain (``mlx_lm.sample_utils.make_sampler``) reads
+PRNG state from the process-global ``mx.random.state``: every step
+``apply_top_p`` / ``apply_top_k`` / ``apply_min_p`` /
+``categorical_sampling`` thread state in/out via ``@partial(mx.compile,
+inputs=mx.random.state, outputs=mx.random.state)``. The fused fast path
+in ``vllm_mlx/_sampler_fast_path.py`` likewise calls
+``mx.random.categorical`` with no ``key=`` argument — same global-state
+dependency. Neither carries a per-request seed, so the OpenAI ``seed``
+parameter on ``/v1/chat/completions`` was parsed, validated, and silently
+dropped — Tomek r3's H-11 repro (five calls with ``{temperature: 0.7,
+seed: 42}`` → five different outputs).
+
+This module ships a sampler factory that **threads a per-request PRNG
+key explicitly** via ``mx.random.categorical(..., key=...)``. State lives
+inside the closure as a single-element list holding the current
+``mx.random.key``; each call ``mx.random.split`` consumes one half for
+the active step and stows the other for the next. Two consequences flow
+from this design:
+
+* **Concurrency safety.** Every seeded request carries its own key
+  state; there is no read/write of ``mx.random.state``. Interleaved
+  calls from different requests in the same multi-row batch (scheduler
+  per-row dispatch in ``scheduler.py::_mtp_step``) can't corrupt each
+  other's sequences. Verified by an isolated micro-test before the
+  scheduler integration landed — two seeded samplers run interleaved
+  produce the same sequences they produce in isolation.
+
+* **No cache eligibility.** The scheduler's sampler cache
+  (``Scheduler._get_request_sampler``) interns samplers by
+  ``(temp, top_p, min_p, top_k)`` so identity-equality on
+  ``GenerationBatch.samplers`` can detect homogeneous batches and engage
+  the dense-sampler fast path (``_install_dense_sampler_fastpath``).
+  Seeded samplers MUST NOT be interned — they carry mutable closure
+  state and two requests sharing the same closure would observe each
+  other's keys. The caller side (``Scheduler._get_request_sampler``)
+  routes ``sampling_params.seed`` requests around the cache.
+
+Math: matches mlx-lm's ``make_sampler`` semantically (top-p first on
+unscaled probs, then top-k, then min-p mask, then temperature scaling,
+then ``mx.random.categorical``). Bit-level outputs do not match mlx-lm's
+chain for the same ``mx.random.seed`` because we sample with an
+explicit key instead of through ``categorical_sampling``'s
+``@mx.compile`` boundary — but reproducibility is **within-engine** as
+the OpenAI spec promises ("we cannot guarantee determinism across model
+versions or backends"). Two calls to rapid-mlx with the same
+``(seed, temperature, top_p, top_k, min_p, prompt)`` produce the same
+token stream; that's the contract H-11 makes good on.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Callable
+
+import mlx.core as mx
+
+
+def make_seeded_sampler(
+    *,
+    seed: int,
+    temperature: float,
+    top_p: float = 0.0,
+    min_p: float = 0.0,
+    top_k: int = 0,
+) -> Callable[[mx.array], mx.array]:
+    """Build a per-request sampler that threads an explicit PRNG key.
+
+    Args:
+        seed: PRNG seed. Used once at construction to derive the initial
+            ``mx.random.key``; subsequent calls consume / refresh the key
+            via ``mx.random.split``.
+        temperature: Sampling temperature. ``temperature == 0.0`` returns
+            a greedy sampler (argmax) — seed is irrelevant for argmax,
+            so callers SHOULD route greedy requests around this factory
+            and use ``mx.argmax`` directly. We still accept ``0.0`` here
+            so the scheduler doesn't need a separate branch.
+        top_p: Nucleus cutoff in ``[0, 1]``. ``0.0`` (default) disables.
+        min_p: Min-p cutoff in ``[0, 1]``. ``0.0`` (default) disables.
+        top_k: Top-k cutoff. ``0`` (default) disables.
+
+    Returns:
+        ``sampler(logprobs) -> token_ids`` matching the shape contract
+        the scheduler's per-row dispatch expects: ``logprobs`` is
+        ``[..., vocab]`` (already log-softmaxed), output drops the
+        vocab axis.
+
+    Reproducibility contract: two distinct callable instances built with
+    the same ``(seed, temperature, top_p, min_p, top_k)`` and fed the
+    same ``logprobs`` sequence produce the same token sequence. State
+    is local to each closure; concurrent use of two callables (different
+    seeds or same seed) does not cross-contaminate.
+    """
+    if temperature == 0.0:
+        # Greedy short-circuit — argmax is deterministic, no PRNG needed.
+        # Seeded requests with ``temperature=0`` still get a valid (just
+        # trivially deterministic) sampler so callers don't have to branch.
+        def greedy(logprobs: mx.array) -> mx.array:
+            return mx.argmax(logprobs, axis=-1)
+
+        return greedy
+
+    if temperature <= 0.0:
+        raise ValueError("seeded sampler requires temperature >= 0")
+
+    temp_inv = 1.0 / float(temperature)
+    use_top_p = 0.0 < top_p < 1.0
+    use_top_k = top_k > 0
+    use_min_p = min_p > 0.0
+    top_p_threshold = 1.0 - float(top_p)
+    min_p_val = float(min_p)
+    top_k_val = int(top_k)
+
+    # Per-request key state lives in a one-element list so the closure
+    # can rebind it (Python doesn't expose ``nonlocal`` on assignment
+    # without an enclosing function-local binding; the list sidesteps
+    # that without adding ``nonlocal`` boilerplate).
+    state = [mx.random.key(int(seed))]
+
+    def sampler(logprobs: mx.array) -> mx.array:
+        # Promote bfloat16/float16 to float32 — same rationale as the
+        # fused fast path: half precision rounds the top-p cutoff away
+        # on production logits and ``mx.cumsum`` over bfloat16 is
+        # unsupported in MLX 0.21.
+        work = (
+            logprobs.astype(mx.float32)
+            if logprobs.dtype != mx.float32
+            else logprobs
+        )
+        vocab = work.shape[-1]
+
+        # Build the kept-token mask in VOCAB order so we can sample
+        # in vocab space and return the token id directly. This is
+        # different from the fused fast path (which samples in sorted
+        # space to fuse the scatter); the seeded path optimises for
+        # clarity + math parity with mlx-lm, not for tok/s — seeded
+        # requests are an eval / snapshot use case where 1-3 ms / token
+        # is acceptable.
+        mask = mx.ones(work.shape, dtype=mx.bool_)
+
+        if use_top_p:
+            # Top-p: sort probs ascending, find cumulative-from-low
+            # cutoff, OR-back the top-1 (argmax) to guarantee at least
+            # one sampleable token (mirrors mlx-lm's invariant and
+            # the fast path's ``top_one_mask`` belt). Re-scatter the
+            # sorted mask back into vocab order.
+            probs = mx.exp(work)
+            sorted_indices = mx.argsort(probs, axis=-1)
+            sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
+            cumulative = mx.cumsum(sorted_probs, axis=-1)
+            sorted_mask = cumulative > top_p_threshold
+            # Guarantee top-1 (last position under ascending sort)
+            top_one = mx.arange(vocab) == (vocab - 1)
+            sorted_mask = sorted_mask | top_one
+            # Scatter back to vocab order
+            vocab_mask = mx.zeros(work.shape, dtype=mx.bool_)
+            vocab_mask = mx.put_along_axis(
+                vocab_mask, sorted_indices, sorted_mask, axis=-1
+            )
+            mask = mask & vocab_mask
+
+        if use_top_k:
+            # Top-k: keep the ``top_k`` largest logits. Use argsort
+            # descending then mark positions <= top_k. Mirrors the
+            # fast path's intersection semantics — kept-set size is
+            # exactly ``top_k``.
+            sorted_desc = mx.argsort(-work, axis=-1)
+            top_k_positions = sorted_desc[..., :top_k_val]
+            vocab_mask_k = mx.zeros(work.shape, dtype=mx.bool_)
+            ones = mx.ones(top_k_positions.shape, dtype=mx.bool_)
+            vocab_mask_k = mx.put_along_axis(
+                vocab_mask_k, top_k_positions, ones, axis=-1
+            )
+            mask = mask & vocab_mask_k
+
+        if use_min_p:
+            # Min-p: keep tokens whose prob >= min_p * max_prob.
+            # Mirrors mlx-lm's ``apply_min_p`` formula.
+            probs_for_min = mx.exp(work)
+            max_prob = mx.max(probs_for_min, axis=-1, keepdims=True)
+            min_p_mask = probs_for_min >= (min_p_val * max_prob)
+            mask = mask & min_p_mask
+
+        # Apply mask + temperature scaling. Use ``-inf`` for masked
+        # positions so categorical never picks them.
+        masked = mx.where(mask, work * temp_inv, -mx.inf)
+
+        # Pull a fresh subkey for this step.
+        cur_key, next_key = mx.random.split(state[0])
+        state[0] = next_key
+        return mx.random.categorical(masked, key=cur_key)
+
+    return sampler

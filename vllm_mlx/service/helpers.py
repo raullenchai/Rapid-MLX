@@ -1044,6 +1044,21 @@ def _resolve_frequency_penalty(request_value: float | None) -> float | None:
     return float(value) if value is not None else None
 
 
+def _resolve_seed(request_value: int | None) -> int | None:
+    """Resolve per-request seed (H-11).
+
+    Unlike the other extended sampling params, seed has no CLI / alias /
+    generation_config cascade — it is purely a runtime knob the client
+    flips per request when they want deterministic output. Returning
+    ``None`` signals "do not forward" so the scheduler keeps the
+    fast-path interned sampler (cached by ``(temp, top_p, min_p,
+    top_k)``) instead of building a fresh per-request sampler closure
+    on every call. That matters: the seeded sampler MUST be uncached
+    because it carries mutable per-call key state.
+    """
+    return request_value
+
+
 def _extract_thinking_from_request(request) -> bool | None:
     """Read enable_thinking from a request without consulting global config.
 
@@ -1192,6 +1207,13 @@ def build_extended_sampling_kwargs(request) -> dict:
         ("repetition_penalty", _resolve_repetition_penalty),
         ("presence_penalty", _resolve_presence_penalty),
         ("frequency_penalty", _resolve_frequency_penalty),
+        # H-11: seed flows through the same cascade-resolver pattern so
+        # all four routes (chat, completions, responses, anthropic) pick
+        # it up automatically without each having to opt in. ``seed=0``
+        # is a legitimate request value (PRNG seeds are routinely zero in
+        # eval harnesses), so the ``value is not None`` gate below must
+        # NOT collapse it.
+        ("seed", _resolve_seed),
     ):
         value = resolver(getattr(request, name, None))
         if value is not None:

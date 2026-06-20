@@ -1065,6 +1065,13 @@ class BatchedEngine(BaseEngine):
                 "repetition_penalty",
                 "presence_penalty",
                 "frequency_penalty",
+                # H-11: forward the per-request seed onto SamplingParams
+                # so the scheduler can build a fresh seeded sampler. Without
+                # this, the seed field on the request model is parsed,
+                # validated, and silently dropped — Tomek r3's reproduced
+                # failure mode (five calls with seed=42 → five different
+                # outputs).
+                "seed",
             )
             if k in kwargs
         }
@@ -1221,6 +1228,13 @@ class BatchedEngine(BaseEngine):
                 "repetition_penalty",
                 "presence_penalty",
                 "frequency_penalty",
+                # H-11: forward the per-request seed onto SamplingParams
+                # so the scheduler can build a fresh seeded sampler. Without
+                # this, the seed field on the request model is parsed,
+                # validated, and silently dropped — Tomek r3's reproduced
+                # failure mode (five calls with seed=42 → five different
+                # outputs).
+                "seed",
             )
             if k in kwargs
         }

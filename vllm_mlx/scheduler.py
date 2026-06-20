@@ -38,6 +38,7 @@ from ._sampler_fast_path import (  # noqa: E402
     is_fused_top_p_eligible,
     make_fused_top_p_temp_sampler,
 )
+from ._seeded_sampler import make_seeded_sampler  # noqa: E402
 from .memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig  # noqa: E402
 from .paged_cache import PagedCacheManager
 from .pflash import PFlashConfig, compress_request_tokens
@@ -2004,6 +2005,49 @@ class Scheduler:
         homogeneous-looking batches would silently share an incorrect
         sampler.
         """
+        # H-11: per-request seed requests bypass the shared sampler cache
+        # because the seeded sampler carries mutable per-call PRNG state.
+        # Two requests with the same ``seed`` MUST still each get their
+        # own closure — otherwise the second request would resume from
+        # wherever the first left off (so its first token would be the
+        # first request's second token). The mlx-lm fast-path interning
+        # (identity-equality on ``GenerationBatch.samplers``) is also
+        # incorrect for seeded requests because the dense-batch fast
+        # path replaces the per-row dispatch with a single shared
+        # sampler call — which would lose the seed isolation. Seeded
+        # requests therefore route through ``_mtp_step``'s explicit
+        # per-row loop and skip the dense sampler fast path naturally
+        # (the identity-equality check fails when each row has its own
+        # closure).
+        #
+        # ``getattr`` defaults to ``None`` so legacy callers (community
+        # bench harness, embedded test stubs) that construct
+        # ``SamplingParams`` look-alikes via attribute set without the
+        # H-11 ``seed`` field still route through the unchanged cache
+        # path — no behaviour change for the pre-H-11 surface.
+        _seed = getattr(sampling_params, "seed", None)
+        if _seed is not None:
+            # Log once per process so operators can confirm the H-11
+            # plumbing is engaged on a deployment without spamming the
+            # request log on every seeded request. Mirrors the
+            # ``_fused_top_p_logged`` belt below.
+            if not getattr(self, "_seeded_sampler_logged", False):
+                logger.info(
+                    "[seeded_sampler] H-11 engaged — per-request seeds "
+                    "are honoured (first request: seed=%d temp=%.3f "
+                    "top_p=%.3f)",
+                    _seed,
+                    sampling_params.temperature,
+                    sampling_params.top_p,
+                )
+                self._seeded_sampler_logged = True
+            return make_seeded_sampler(
+                seed=_seed,
+                temperature=sampling_params.temperature,
+                top_p=sampling_params.top_p,
+                min_p=sampling_params.min_p,
+                top_k=sampling_params.top_k,
+            )
         # Codex round-2 BLOCKER #3 fix: read the env-var BEFORE the cache
         # lookup so that flipping ``RAPID_MLX_DISABLE_FUSED_SAMPLER`` in a
         # long-lived process can disable the fast path on the next request

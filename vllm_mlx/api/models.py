@@ -308,6 +308,34 @@ def _validate_logit_bias_finite(
     return v
 
 
+def _validate_seed(v) -> int | None:
+    """Reject bool / non-integer / out-of-range values on ``seed`` (H-11).
+
+    Pydantic v2 silently coerces ``bool`` to ``int`` (``True`` → 1) on
+    an ``int | None`` field, but seeds are conceptually opaque integers
+    and ``seed=True`` is almost always a serialization mistake — same
+    family as the ``n: true`` footgun ``_reject_non_one_n`` already
+    closes. ``mx.random.key`` accepts a non-negative integer that fits
+    in ``uint32`` (the JAX-style PRNG key is built from a 32-bit seed),
+    so we clamp to ``[0, 2^32-1]`` and reject anything outside that
+    range with a clean 422.
+
+    Returns ``None`` unchanged so the field's optional contract is
+    preserved (no value → no per-request seed → process-global
+    behaviour, matching the OpenAI spec where omitted ``seed`` means
+    "no determinism guarantee").
+    """
+    if v is None:
+        return None
+    if isinstance(v, bool):
+        raise ValueError("seed must be an integer (not bool)")
+    if not isinstance(v, int):
+        raise ValueError("seed must be an integer")
+    if v < 0 or v > 0xFFFFFFFF:
+        raise ValueError("seed must be in the range [0, 2**32 - 1]")
+    return v
+
+
 # Fields that must reject NaN / ±inf BEFORE pydantic coerces them onto a
 # typed ``float | None`` slot. Pydantic v2's default ``ValidationError``
 # embeds ``input_value`` in the error dict; when the bad value is
@@ -1085,6 +1113,18 @@ class ChatCompletionRequest(BaseModel):
     # the contract: omitted (``None``) or ``1`` is the only legal
     # surface; anything else (negative, zero, or > 1) → 422.
     n: int | None = None
+    # H-11: OpenAI ``seed`` — per-request PRNG seed. When set, the
+    # scheduler builds a fresh per-request sampler closure that maintains
+    # its own ``mx.random.key(seed)`` state and splits it per step, so
+    # two calls with the same ``(seed, temperature, top_p, prompt)`` pair
+    # produce the same token stream. Without this field declaration
+    # Pydantic silently dropped the OpenAI ``seed`` parameter and the
+    # wire-claim was false (Tomek r3 — five calls with ``seed=42``
+    # produced five different outputs). Range matches the OpenAI spec
+    # (any int) but we clamp to ``uint32`` because that's what
+    # ``mx.random.key`` accepts; the ``_validate_seed`` field_validator
+    # below rejects out-of-range values with a clean 422.
+    seed: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
 
     # F-011: NaN/inf scrub on the raw dict, BEFORE Pydantic coerces a
     # bad value onto the typed float slot. Needed because (a) Field
@@ -1221,6 +1261,15 @@ class ChatCompletionRequest(BaseModel):
             "{'type': 'function', 'function': {'name': '<X>'}} "
             f"(got {type(v).__name__})."
         )
+
+    # H-11: ``mode="before"`` so Python's ``bool`` (an ``int`` subclass)
+    # is caught BEFORE Pydantic v2 coerces ``True`` → 1. Same family as
+    # ``_validate_n``: a seed of ``True`` is a serialization mistake, not
+    # a legitimate request for seed=1.
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _validate_seed_field(cls, v) -> int | None:
+        return _validate_seed(v)
 
     # Belt-and-braces: catches non-finite values that bypass the
     # raw-dict path (e.g. ``ChatCompletionRequest(temperature=nan)``
@@ -1555,6 +1604,10 @@ class CompletionRequest(BaseModel):
     suffix: str | None = None
     # Request timeout in seconds (None = use server default)
     timeout: float | None = None
+    # H-11: OpenAI ``seed`` — mirror of ChatCompletionRequest.seed. See
+    # the matching declaration on the chat schema for the full rationale
+    # block and the plumbing path through SamplingParams → scheduler.
+    seed: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
 
     # F-011: NaN/inf scrub + finite belt-and-braces, exactly mirroring
     # ChatCompletionRequest. See the rationale block at the top of
@@ -1594,6 +1647,12 @@ class CompletionRequest(BaseModel):
         # this, ``n: true`` would silently coerce to ``n=1`` and the
         # codex round-2 BLOCKING gap stays open.
         return _reject_non_one_n(v)
+
+    # H-11: mirror of ChatCompletionRequest._validate_seed_field.
+    @field_validator("seed", mode="before")
+    @classmethod
+    def _validate_seed_field(cls, v) -> int | None:
+        return _validate_seed(v)
 
     @model_validator(mode="before")
     @classmethod
