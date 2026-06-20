@@ -766,6 +766,115 @@ class TestModelsRoutes:
         finally:
             self._restore(orig)
 
+    # ----- F-067: modality reporting for VL models -----
+
+    def test_vl_alias_reports_image_modality(self):
+        """F-067 regression: aliases that resolve to a Vision-Language
+        checkpoint MUST advertise ``modality="image"`` on the wire so
+        downstream OpenAI-SDK clients know to send PNG/JPEG/etc. image
+        content shapes. Before the fix, all VL aliases (qwen3-vl-2b-4bit,
+        gemma-3n-*, qwen3-vl-4b-4bit) reported ``"text"`` because the
+        ``AliasProfile.modality`` field is an engine-routing
+        discriminator (``text`` = AR lane, ``text-diffusion`` = diffusion
+        lane) — the multimodal path is layered on top of the AR lane
+        via ``MLLMBatchGenerator`` and so keeps ``modality="text"``
+        internally. The route layer now derives the reported value from
+        ``is_mllm_model`` so VL aliases surface ``image`` to clients
+        without disturbing engine routing.
+        """
+        for vl_alias in (
+            "qwen3-vl-2b-4bit",
+            "qwen3-vl-4b-4bit",
+            "gemma-3n-e2b-4bit",
+            "gemma-3n-e4b-4bit",
+        ):
+            orig = self._set_config(
+                model_registry=None,
+                model_name=vl_alias,
+                model_alias=None,
+                api_key=None,
+            )
+            try:
+                client = TestClient(self._make_app())
+                r = client.get(f"/v1/models/{vl_alias}")
+                assert r.status_code == 200, f"VL alias {vl_alias!r} should resolve"
+                body = r.json()
+                assert body["modality"] == "image", (
+                    f"F-067 regression: VL alias {vl_alias!r} reports "
+                    f"modality={body['modality']!r} (expected 'image')"
+                )
+            finally:
+                self._restore(orig)
+
+    def test_vl_alias_reports_image_modality_on_list_endpoint(self):
+        """F-067 regression on the LIST endpoint (the surface clients
+        actually consume on catalog pre-fetch). The per-id retrieval
+        test above pins the same field at the singleton endpoint;
+        this counterpart pins it on ``GET /v1/models`` so a future
+        refactor that fixes one path without the other is caught.
+        """
+        orig = self._set_config(
+            model_registry=None,
+            model_name="qwen3-vl-2b-4bit",
+            model_alias=None,
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models")
+            assert r.status_code == 200
+            entries = r.json()["data"]
+            vl_entry = next((e for e in entries if e["id"] == "qwen3-vl-2b-4bit"), None)
+            assert vl_entry is not None, (
+                "qwen3-vl-2b-4bit must appear in the list endpoint"
+            )
+            assert vl_entry["modality"] == "image", (
+                f"F-067 list-endpoint regression: VL alias reports "
+                f"modality={vl_entry['modality']!r} (expected 'image')"
+            )
+        finally:
+            self._restore(orig)
+
+    def test_text_alias_still_reports_text_modality(self):
+        """Counterpart to F-067: a plain text LLM alias MUST keep
+        ``modality="text"`` so the detector doesn't over-trigger and
+        mislabel non-VL models as multimodal.
+        """
+        orig = self._set_config(
+            model_registry=None,
+            model_name="mlx-community/Qwen3.5-4B-MLX-4bit",
+            model_alias="qwen3.5-4b-4bit",
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models/qwen3.5-4b-4bit")
+            assert r.status_code == 200
+            assert r.json()["modality"] == "text"
+        finally:
+            self._restore(orig)
+
+    def test_diffusion_alias_keeps_text_diffusion_modality(self):
+        """Counterpart to F-067: the text-diffusion routing
+        discriminator on diffusion-gemma-* must pass through unchanged
+        — the multimodal detector only kicks in when the profile
+        modality is the default ``text``, not for already-non-text
+        lanes that have their own dispatch.
+        """
+        orig = self._set_config(
+            model_registry=None,
+            model_name="diffusion-gemma-26b-4bit",
+            model_alias=None,
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models/diffusion-gemma-26b-4bit")
+            assert r.status_code == 200
+            assert r.json()["modality"] == "text-diffusion"
+        finally:
+            self._restore(orig)
+
 
 # ---------------------------------------------------------------------------
 # MCP routes
