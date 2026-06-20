@@ -66,6 +66,41 @@ class ContentPart(BaseModel):
     video_url: VideoUrl | dict | str | None = None
     audio_url: AudioUrl | dict | str | None = None
 
+    @model_validator(mode="after")
+    def _validate_media_url_types(self) -> "ContentPart":
+        """Reject non-string ``url`` inside multimodal-content dicts (F-066).
+
+        The Union ``ImageUrl | dict | str | None`` falls back to ``dict``
+        when ``url`` is not a string (Pydantic can't coerce e.g. ``int``
+        into the strict-typed ``ImageUrl.url: str`` slot), so the
+        malformed payload used to slip past the schema layer and crash
+        deep inside ``process_image_input`` with
+        ``'int' object has no attribute 'startswith'`` — Python type-
+        error text leaked verbatim in the HTTP 400 body.
+
+        Catching it at the schema layer means the client sees a clean
+        ``image_url.url must be a string`` (mirrors the message pydantic
+        itself would produce if the union allowed only ``ImageUrl |
+        str``) — and the same check applies to the sister
+        ``video_url`` / ``audio_url`` slots whose URL parsers share the
+        same ``startswith`` hazard.
+        """
+        for field, label in (
+            ("image_url", "image_url.url"),
+            ("video_url", "video_url.url"),
+            ("audio_url", "audio_url.url"),
+        ):
+            value = getattr(self, field, None)
+            # Only the dict-fallback branch can carry a non-string ``url``
+            # — the Pydantic-typed ``ImageUrl`` / ``VideoUrl`` / ``AudioUrl``
+            # variants reject it at parse time, and the plain-``str``
+            # variant is trivially well-typed.
+            if isinstance(value, dict) and "url" in value:
+                url = value["url"]
+                if url is not None and not isinstance(url, str):
+                    raise ValueError(f"{label} must be a string")
+        return self
+
 
 # =============================================================================
 # Messages
@@ -89,6 +124,43 @@ class Message(BaseModel):
     tool_calls: list[dict] | None = None
     # For tool response messages (role="tool")
     tool_call_id: str | None = None
+
+    @model_validator(mode="after")
+    def _validate_media_url_types(self) -> "Message":
+        """Reject non-string ``url`` inside multimodal-content payloads
+        (F-066).
+
+        The ``content`` union is ``list[ContentPart] | list[dict]`` —
+        Pydantic falls back to ``list[dict]`` when ContentPart-level
+        validation raises (e.g. ``image_url.url=123`` makes the inner
+        ``ImageUrl`` model reject, the ``dict`` arm accepts the raw
+        shape, and ``list[ContentPart]`` then fails the whole list so
+        Pydantic picks ``list[dict]``). The malformed payload used to
+        slip past the schema layer and crash deep inside
+        ``process_image_input`` with ``'int' object has no attribute
+        'startswith'`` — raw Python type-error text leaked verbatim in
+        the HTTP 400 body. Run the same check at the parent Message so
+        the dict-fallback path is also covered (the inner ContentPart
+        validator handles the ``list[ContentPart]`` arm — kept there so
+        direct ``ContentPart(...)`` construction in tests is also
+        protected).
+        """
+        if not isinstance(self.content, list):
+            return self
+        for item in self.content:
+            if not isinstance(item, dict):
+                continue
+            for field, label in (
+                ("image_url", "image_url.url"),
+                ("video_url", "video_url.url"),
+                ("audio_url", "audio_url.url"),
+            ):
+                value = item.get(field)
+                if isinstance(value, dict) and "url" in value:
+                    url = value["url"]
+                    if url is not None and not isinstance(url, str):
+                        raise ValueError(f"{label} must be a string")
+        return self
 
 
 # =============================================================================

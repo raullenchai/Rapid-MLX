@@ -681,6 +681,93 @@ def _rescue_silent_drop_from_reasoning(
     return reasoning_text
 
 
+# OpenAI-spec closed enum for ``response_format.type``. Any value outside
+# this set used to be silently accepted (defaulted to "text" by
+# ``build_json_system_prompt``) so a client typo like ``"xml"`` or an
+# empty string returned HTTP 200 with no structure enforcement — the
+# client received plain prose instead of the JSON they asked for and had
+# no signal anything was wrong (F-013 silent-accept arm). The validator
+# below pins the enum + the ``json_schema``-requires-schema invariant so
+# malformed requests get a clean 400 BEFORE
+# ``build_json_system_prompt`` is reached (which used to leak the raw
+# Python ``AttributeError: 'NoneType' object has no attribute 'get'`` in
+# the 400 body — F-013 raw-leak arm).
+_VALID_RESPONSE_FORMAT_TYPES = ("text", "json_object", "json_schema")
+
+
+def _validate_response_format(response_format) -> None:
+    """Raise a clean HTTP 400 for malformed ``response_format`` payloads.
+
+    Pins three invariants the previous ``try/except`` in routes/chat.py
+    failed to enforce:
+
+    1. ``response_format.type`` must be one of ``text``,
+       ``json_object``, ``json_schema``. Any other value (``"xml"``,
+       ``""``, etc.) used to slip through to ``build_json_system_prompt``
+       which fell back to ``"text"`` semantics — client received no
+       structure enforcement and a misleading 200. Now → 400.
+    2. ``type:"json_schema"`` requires a non-empty ``json_schema``
+       field. Previously the missing field raised
+       ``AttributeError: 'NoneType' object has no attribute 'get'``
+       deep inside ``build_json_system_prompt`` which surfaced
+       verbatim in the 400 body (F-013 raw-leak arm). Now → clean
+       400 message naming the missing field.
+    3. Empty ``response_format={}`` used to fall through with no
+       ``type`` so ``rf_dict.get("type", "text")`` produced silent
+       "text" semantics — fine in isolation but indistinguishable from
+       a client bug that meant to send a real format. Now → clean
+       400 requiring ``type``.
+
+    Accepts either a Pydantic ``ResponseFormat`` instance or a raw
+    ``dict`` (the request field is declared as
+    ``ResponseFormat | dict | None`` so both shapes reach the route).
+    """
+    if response_format is None:
+        return
+
+    # Normalize to the shape we actually validate against.
+    if isinstance(response_format, dict):
+        rf_type = response_format.get("type")
+        # ``{}`` — no ``type`` key at all. Pydantic-typed path has a
+        # default of "text" so this branch is only the raw-dict shape.
+        if "type" not in response_format:
+            raise HTTPException(
+                status_code=400,
+                detail="response_format.type is required",
+            )
+        json_schema_field = response_format.get("json_schema")
+    else:
+        rf_type = getattr(response_format, "type", None)
+        json_schema_field = getattr(response_format, "json_schema", None)
+
+    if rf_type not in _VALID_RESPONSE_FORMAT_TYPES:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "response_format.type must be 'text', 'json_object', "
+                "or 'json_schema'"
+            ),
+        )
+
+    if rf_type == "json_schema":
+        # Treat None AND empty dict the same — both fail the "non-empty
+        # json_schema spec" contract. The raw-leak path was specifically
+        # ``json_schema=None`` (omitted entirely); the silent-200 path
+        # was ``json_schema={}`` (present but empty so
+        # ``json_schema_spec.get("schema", {})`` returned ``{}`` and
+        # ``extract_json_schema_for_guided`` then bailed out at the
+        # ``if not schema: return None`` guard — request proceeded with
+        # no constraint).
+        if not json_schema_field:
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    "response_format.type='json_schema' requires "
+                    "non-empty 'json_schema' field"
+                ),
+            )
+
+
 def _is_structured_output_requested(response_format) -> bool:
     """Codex round-2 BLOCKING on #676: shared predicate for "client
     asked for structured output" — used by BOTH the non-streaming

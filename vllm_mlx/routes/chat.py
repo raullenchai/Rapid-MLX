@@ -65,6 +65,7 @@ from ..service.helpers import (
     _scan_messages_for_lone_surrogates,
     _tool_use_required_named_suffix,
     _validate_model_name,
+    _validate_response_format,
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
@@ -539,6 +540,18 @@ async def _create_chat_completion_impl(
             status_code=400,
             detail="logit_bias is not supported on this server",
         )
+
+    # Validate ``response_format`` shape BEFORE
+    # ``build_json_system_prompt`` is reached (F-013). Two bugs the gate
+    # closes: (a) ``type:"json_schema"`` with no ``json_schema`` field
+    # used to leak ``AttributeError: 'NoneType' object has no attribute
+    # 'get'`` in the 400 body via the broad ``except Exception`` at
+    # the call site; (b) unknown ``type`` values (``"xml"``,
+    # ``""``, ``{}``, ``type:"json_schema"`` with empty
+    # ``json_schema:{}``) were silently accepted as HTTP 200 with no
+    # structure enforcement — client received unconstrained prose
+    # without any signal.
+    _validate_response_format(request.response_format)
 
     # --- Detailed request logging ---
     n_msgs = len(request.messages)

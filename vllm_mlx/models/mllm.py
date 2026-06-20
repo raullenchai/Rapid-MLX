@@ -531,6 +531,20 @@ def process_image_input(image: str | dict) -> str:
     if not image:
         raise ValueError("Empty image input")
 
+    # Belt-and-suspenders for F-066: the schema-layer validator in
+    # ``api/models.py`` rejects non-string ``image_url.url`` payloads
+    # before they reach this point, but the function is also called
+    # directly from the Anthropic / Responses adapters and from
+    # internal code paths where the type-check isn't repeated. Without
+    # this guard, ``is_base64_image(123)`` would raise
+    # ``AttributeError: 'int' object has no attribute 'startswith'``
+    # and the route's broad ``except Exception`` wrap would surface
+    # that raw Python error text in the HTTP 400 body.
+    if not isinstance(image, str):
+        raise ValueError(
+            f"image_url.url must be a string (got {type(image).__name__})"
+        )
+
     # Check if it's base64 FIRST (before Path.exists() which fails on long strings)
     if is_base64_image(image):
         return save_base64_image(image)
