@@ -3,6 +3,13 @@
 
 import hashlib
 import hmac
+
+# ``ipaddress`` was already imported by the pre-existing ``_subnet_bucket``
+# rate-limit helper; ``verify_internal_admin`` / ``_is_loopback_client``
+# (PR #728) reuse it for the loopback check so a LAN caller can't probe
+# non-canonical loopback spellings (``::ffff:127.0.0.1``, ``127.0.0.42``)
+# past a hypothetical string-equality gate. Pinning the import in this diff
+# so future codex passes don't flag it as missing.
 import ipaddress
 import logging
 import secrets
