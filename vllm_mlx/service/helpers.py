@@ -222,6 +222,30 @@ def _finalize_content_and_reasoning(
             return cleaned_text, _truncate_reasoning_only(
                 engine_reasoning_text, reasoning_max_tokens
             )
+        # F-041 (2026-06-19): the ``cleaned_text``-gated check above misses
+        # the case where the OutputRouter consumed the structural
+        # ``<think>`` token before it ever reached ``cleaned_text`` — the
+        # router emits ``content=None`` AND sets ``text=""`` (engine
+        # ``_route_tokens_for_channels`` lines 1588-1589), so the engine-
+        # routed branch falls through to ``_apply_reasoning_cap`` with
+        # ``cleaned_text=""``. With ``reasoning_max_tokens`` set, the cap
+        # then prepends the over-cap reasoning suffix back into
+        # ``cleaned_text`` (the empty-content fallback), shipping the
+        # truncated-thought trace into ``content``. Mirror the
+        # cleaned-text-gated truncated_think plug: when the engine routed
+        # reasoning AND ``raw_text`` shows an unclosed ``<think>`` (model
+        # was still mid-thought at ``finish_reason=length``), use the
+        # reasoning-only cap so the over-cap suffix is dropped rather
+        # than leaking into the user-visible answer channel.
+        if (
+            raw_text
+            and "<think>" in raw_text
+            and "</think>" not in raw_text
+            and not (cleaned_text and cleaned_text.strip())
+        ):
+            return cleaned_text or "", _truncate_reasoning_only(
+                engine_reasoning_text, reasoning_max_tokens
+            )
         return _apply_reasoning_cap(
             cleaned_text, engine_reasoning_text, reasoning_max_tokens
         )
@@ -363,6 +387,24 @@ def _finalize_content_and_reasoning(
         # MUST survive (codex R2 BLOCKING).
         if enable_thinking is True and first_parse_was_case4:
             cleaned_text = ""
+            # F-041 (2026-06-19): same rationale as the codex r3 P2 plug
+            # below for ``first_parse_was_truncated_think`` — when the
+            # chat template pre-injected ``<think>`` and the model was
+            # truncated mid-thought emitting NO tags at all, the
+            # accumulated text IS the thought trace. Letting it fall
+            # through to ``_apply_reasoning_cap`` would prepend the
+            # over-cap reasoning suffix back into the (now-blank)
+            # ``cleaned_text`` and ship the leaked thought trace as
+            # ``content``. Live VibeThinker repro at
+            # ``reasoning_max_tokens=30`` (max_tokens=200, finish=length):
+            # the Case-4 fallback routed the no-tag output to reasoning,
+            # the cap truncated to 120 chars, and the remaining
+            # ~500 chars of thought trace surfaced verbatim as
+            # ``content`` — the leak shape F-041 was filed against.
+            # Use the reasoning-only cap so the overflow is dropped.
+            return cleaned_text, _truncate_reasoning_only(
+                reasoning_text, reasoning_max_tokens
+            )
         # Truncated-``<think>`` plug (2026-06-17). Mirrors the #575
         # Case-4 plug above but fires on the explicit-start-no-end
         # signal independent of ``enable_thinking`` — see the
@@ -433,6 +475,26 @@ def _apply_reasoning_cap(
     of truth for "how many tokens does this text approximate" so the
     OpenAI usage block, the streaming SSE deltas, and this non-stream
     finalize all agree on a single token count.
+
+    F-041 (2026-06-19): the overflow-into-``cleaned_text`` reroute is
+    only meaningful when ``cleaned_text`` is empty — i.e. the parser
+    found no closed ``</think>`` so the model never produced a real
+    answer (we'd be silently dropping the whole response otherwise).
+    When the parser DID separate a real answer (closed
+    ``<think>…</think>answer`` split — the VibeThinker / Qwen3 /
+    DeepSeek-R1 family's typical wire shape), prepending the
+    over-cap reasoning bytes pollutes the user-visible answer with
+    the truncated thought trace. The vibethinker repro at
+    ``reasoning_max_tokens=30`` shipped the entire post-cap reasoning
+    suffix + the model's training-time system prompt into ``content``
+    BEFORE the actual answer ``"The capital of Japan is **Tokyo**."``
+    — exactly the leak shape PR #722 closed for the multi-block
+    ``<think>`` case. The user opting into a small reasoning cap
+    explicitly asked us to drop the reasoning past the cap; they did
+    not ask us to reclassify those bytes as content. Drop the
+    overflow in that case; preserve the prepend-into-content fallback
+    when ``cleaned_text`` is empty so we don't silently drop the whole
+    response when the model never emitted a closed ``</think>``.
     """
     if (
         reasoning_max_tokens is None
@@ -445,6 +507,14 @@ def _apply_reasoning_cap(
         return cleaned_text, reasoning_text
     overflow = reasoning_text[max_chars:]
     truncated = reasoning_text[:max_chars]
+    # F-041 plug: when ``cleaned_text`` already carries a real answer
+    # (parser routed the post-``</think>`` final content into it),
+    # the model gave us its visible answer — the user-requested cap
+    # is the contract, not a "best-effort don't-drop-bytes" hint, so
+    # drop the over-cap reasoning suffix rather than letting it bleed
+    # into the answer channel.
+    if cleaned_text and cleaned_text.strip():
+        return cleaned_text, truncated
     # Codex round-11 BLOCKING: prepend overflow rather than appending
     # it. In the source ordering, the overflow bytes were emitted by
     # the model BEFORE any post-``</think>`` final content. Appending

@@ -1053,7 +1053,28 @@ class TestFinalizeContentAndReasoningCap:
         assert cleaned == "hello"
         assert reasoning == "abc"
 
-    def test_cap_truncates_and_overflows_to_content(self):
+    def test_cap_truncates_and_drops_overflow_when_content_present(self):
+        """F-041 (2026-06-19): when ``cleaned_text`` already carries the
+        model's real answer (parser routed the post-``</think>`` final
+        content into it), the over-cap reasoning suffix MUST NOT be
+        prepended back into content — the user opted into the
+        ``reasoning_max_tokens`` cap as a hard contract, not as a
+        "drop reasoning then keep emitting it as content" hint.
+
+        The vibethinker live repro at ``reasoning_max_tokens=30``
+        (max_tokens=1500, finish=stop) shipped ~500 chars of post-cap
+        reasoning + the model's training-time system prompt as
+        ``content`` BEFORE the actual answer
+        ``"The capital of Japan is **Tokyo**."`` — exactly because
+        the previous codex round-11 BLOCKING design prepended overflow
+        regardless of whether the parser found a real answer.
+
+        Drop the overflow when the model gave us a real answer; the
+        empty-content fallback path
+        (``test_cap_truncates_and_overflows_to_content_empty_fallback``)
+        preserves the don't-silently-drop-bytes semantic for the case
+        where the model truncated mid-thought.
+        """
         cleaned, reasoning = _finalize_content_and_reasoning(
             raw_text="",
             cleaned_text="final answer",
@@ -1062,16 +1083,30 @@ class TestFinalizeContentAndReasoningCap:
             engine_reasoning_text="x" * 40,  # ≈ 10 tokens
             reasoning_max_tokens=2,  # cap ≈ 8 chars
         )
-        # First 8 chars stay as reasoning, the rest is PREPENDED to
-        # cleaned. Codex round-11 BLOCKING: the overflow bytes were
-        # emitted by the model BEFORE any post-``</think>`` final
-        # content, so appending them after ``cleaned_text`` would
-        # reorder time-ordered emission. Prepend preserves the source
-        # order AND matches the streaming pipeline (overflow emitted
-        # on the cap-crossing chunk, BEFORE any subsequent content
-        # delta).
         assert reasoning == "x" * 8
-        assert cleaned == "x" * 32 + "final answer"
+        # F-041: real answer preserved verbatim, over-cap reasoning
+        # suffix dropped — content stays clean.
+        assert cleaned == "final answer"
+
+    def test_cap_truncates_and_overflows_to_content_empty_fallback(self):
+        """F-041 (2026-06-19): when ``cleaned_text`` is empty (model
+        truncated mid-thought, never emitted a closed ``</think>`` or
+        a real answer), the over-cap reasoning overflow STILL surfaces
+        as content — the empty-content fallback so we don't silently
+        drop the whole response. Mirrors the streaming path semantic
+        for the no-real-answer case."""
+        cleaned, reasoning = _finalize_content_and_reasoning(
+            raw_text="",
+            cleaned_text="",
+            tool_calls=[],
+            reasoning_parser=None,
+            engine_reasoning_text="x" * 40,  # ≈ 10 tokens
+            reasoning_max_tokens=2,  # cap ≈ 8 chars
+        )
+        assert reasoning == "x" * 8
+        # Empty-content fallback: overflow surfaces as content so the
+        # client isn't left with a completely empty response.
+        assert cleaned == "x" * 32
 
     def test_cap_below_text_is_noop(self):
         # text fits comfortably under cap → no truncation

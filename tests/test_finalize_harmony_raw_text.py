@@ -846,3 +846,186 @@ def test_qwen3_engine_routed_truncated_think_no_duplicate():
     assert not cleaned, (
         f"qwen3 engine-routed truncated <think> trace leaked: {cleaned!r}"
     )
+
+
+# ---------------------------------------------------------------------------
+# F-041 (2026-06-19): ``reasoning_max_tokens`` truncation must NOT leak the
+# overflow reasoning into ``content``.
+#
+# Bug class is the same as PR #722 (multi-block <think> sweep) but the leak
+# surface is the ``_apply_reasoning_cap`` overflow-into-cleaned_text
+# fallback, NOT the parser's tag-handling. Live vibethinker-3b-8bit repro:
+#
+#   reasoning_max_tokens=30, max_tokens=300, prompt="What is the capital of
+#   Japan?" → reasoning_content cut mid-word at 120 chars (30 * 4); content
+#   started with the REMAINDER of the reasoning trace ("answer succinctly,
+#   perhaps include some context. However, the instruction says: \"You are
+#   an intelligent assistant designed to write code...\"...") followed at
+#   the END by the actual answer "The capital of Japan is **Tokyo**." —
+#   the model's training-time system prompt + the truncated thought trace
+#   surfaced in the user-visible content channel BEFORE the real answer.
+#
+# The fix gates ``_apply_reasoning_cap`` on whether the parser produced a
+# real answer (closed ``<think>…</think>answer`` shape): when content is
+# non-empty the over-cap reasoning suffix is dropped; when content is
+# empty (model truncated mid-thought) the legacy don't-drop-bytes fallback
+# still routes overflow to content. Three plug sites cover the
+# representative paths VibeThinker / Qwen3 / DeepSeek-R1 / phi-4-mini-
+# reasoning hit in production:
+#
+#   1. ``_apply_reasoning_cap`` itself: drop overflow when cleaned_text is
+#      non-empty (covers the closed-``</think>`` + real-answer shape that
+#      the live repro hit).
+#   2. Engine-routed branch (gemma4 / harmony OutputRouter with structural
+#      ``<think>`` token stripping): use ``_truncate_reasoning_only`` when
+#      raw_text shows unclosed ``<think>`` regardless of cleaned_text gate.
+#   3. Parser-routed Case-4 fallback (``enable_thinking=True`` + no-tag
+#      output): use ``_truncate_reasoning_only`` instead of the legacy
+#      ``_apply_reasoning_cap`` fall-through (the Case-4 plug above blanks
+#      cleaned_text, which used to route the over-cap reasoning back in).
+# ---------------------------------------------------------------------------
+
+
+def test_f041_vibethinker_cap_with_closed_think_and_real_answer():
+    """F-041 live repro shape: model emitted ``<think>R</think>answer``
+    with a long reasoning trace; ``reasoning_max_tokens=30`` (120 chars)
+    truncates the trace; the over-cap suffix MUST NOT prepend into
+    ``content``. The parser produced ``content="The capital of Japan
+    is **Tokyo**."`` from the closed-think split — that real answer is
+    the user-visible payload, and the legacy
+    ``_apply_reasoning_cap`` prepend-overflow path would corrupt it
+    with ~500 chars of truncated thought trace."""
+    raw = (
+        "<think>Okay, the user is asking, what is the capital of Japan? "
+        + ("This is a knowledge question. " * 30)
+        + "</think>The capital of Japan is **Tokyo**."
+    )
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+        reasoning_max_tokens=30,  # 30 * 4 = 120 chars
+    )
+    # Reasoning capped at exactly 120 chars.
+    assert reasoning is not None
+    assert len(reasoning) == 120
+    # Real answer survives verbatim — no truncated thought trace
+    # prepended.
+    assert cleaned == "The capital of Japan is **Tokyo**."
+    # Defensive: the post-cap reasoning suffix MUST NOT appear in content.
+    assert "knowledge question" not in (cleaned or "")
+    assert "<think>" not in (cleaned or "")
+    assert "</think>" not in (cleaned or "")
+
+
+def test_f041_vibethinker_cap_case4_no_tags_truncated_thought():
+    """F-041 + #575 plug interaction: when chat template pre-injected
+    ``<think>`` (``enable_thinking=True``) and the model truncated
+    mid-thought emitting NO tags at all, the Case-4 fallback routes
+    the whole output to reasoning and blanks ``cleaned_text``. The cap
+    then USED TO fall through to ``_apply_reasoning_cap`` and prepend
+    the over-cap reasoning back into the blanked cleaned_text, shipping
+    the leaked thought trace as ``content``. The F-041 plug routes this
+    case through ``_truncate_reasoning_only`` so the overflow drops."""
+    # Long no-tag reasoning trace (chat-template pre-injected <think>,
+    # model continues the thought without emitting any structural tag).
+    raw = "Okay, the user is asking, what is the capital of Japan? " + (
+        "Let me think about this. " * 100
+    )
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=True,  # critical — triggers Case-4 fallback
+        reasoning_max_tokens=30,  # 120 chars
+    )
+    # Reasoning kept at the cap.
+    assert reasoning is not None
+    assert len(reasoning) == 120
+    # Content blanked — the over-cap reasoning suffix is dropped, not
+    # prepended back. Mirrors the streaming Case-3 contract: truncated
+    # mid-thought emits no visible content.
+    assert cleaned == ""
+    # Defensive: no fragment of the post-cap thought trace appears.
+    assert "Let me think" not in (cleaned or "")
+
+
+def test_f041_vibethinker_cap_engine_routed_truncated_no_content():
+    """F-041 engine-routed truncated-thought variant: OutputRouter
+    consumed the structural ``<think>`` token before reaching the
+    helper, so ``cleaned_text=""`` and ``engine_reasoning_text`` carries
+    the trace. The ``cleaned_text``-gated truncated_think plug above
+    misses this shape (cleaned_text is empty so the ``"<think>" in
+    cleaned_text`` check is False). The F-041 plug catches it by
+    checking ``raw_text`` for the unclosed ``<think>`` signal."""
+    # Model emitted unclosed <think> + long trace; engine OutputRouter
+    # consumed <think> token and routed the rest to reasoning_text;
+    # cleaned_text (from clean_output_text + router override) is "".
+    long_trace = "Let me think step by step about this. " * 100
+    raw = "<think>" + long_trace
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text="",  # router consumed <think>, no content channel
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text=long_trace,
+        enable_thinking=None,
+        reasoning_max_tokens=10,  # 40 chars
+    )
+    assert reasoning is not None
+    assert len(reasoning) == 40
+    # Content empty — overflow dropped, not prepended.
+    assert cleaned == ""
+    assert "step by step" not in (cleaned or "")
+
+
+def test_f041_cap_below_cleaned_text_unchanged():
+    """F-041 negative control: when ``reasoning_text`` fits under the
+    cap, neither path fires and ``cleaned_text`` passes through verbatim
+    (no spurious drop). Pins that the F-041 plug only triggers on the
+    overflow path."""
+    raw = "<think>short</think>answer"
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+        reasoning_max_tokens=100,  # 400 chars — way above "short" (5)
+    )
+    assert reasoning == "short"
+    assert cleaned == "answer"
+
+
+def test_f041_qwen3_cap_with_closed_think_and_real_answer():
+    """F-041 portability: the Qwen3 parser (used by
+    ``qwen3-4b-thinking-2507-4bit`` and the wider Qwen3 thinking family)
+    must also drop overflow when a real answer is present. The fix
+    lives in ``_apply_reasoning_cap`` — parser-agnostic by design —
+    but pinning Qwen3 explicitly so a future parser-specific override
+    can't silently regress."""
+    raw = (
+        "<think>Okay let me think about this question carefully. "
+        + ("Step by step analysis here. " * 30)
+        + "</think>The answer is **42**."
+    )
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=raw,
+        cleaned_text=raw,
+        tool_calls=[],
+        reasoning_parser=Qwen3ReasoningParser(),
+        engine_reasoning_text="",
+        enable_thinking=None,
+        reasoning_max_tokens=30,
+    )
+    assert reasoning is not None
+    assert len(reasoning) == 120
+    # Real answer survives.
+    assert cleaned == "The answer is **42**."
+    assert "Step by step" not in (cleaned or "")
