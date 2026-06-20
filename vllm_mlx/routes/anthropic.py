@@ -52,6 +52,7 @@ from ..service.helpers import (
     _resolve_temperature,
     _resolve_top_p,
     _validate_model_name,
+    _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
     enforce_context_length_for_messages,
@@ -309,6 +310,18 @@ async def create_anthropic_message(
         cleaned_text, tool_calls = _parse_tool_calls_with_parser(
             output.text, openai_request, structured_tool_calls=engine_tool_calls
         )
+
+        # F-220: enforce the same tool_call JSON-schema validation
+        # ``routes/chat.py:1651`` runs on the OpenAI ``/v1/chat/completions``
+        # route. The Anthropic adapter has already translated
+        # ``input_schema`` into the OpenAI ``function.parameters`` shape
+        # (see ``api/anthropic_adapter._convert_tool``), so we can reuse
+        # the same validator unchanged. Without this, an enum/type/range
+        # violation that returns HTTP 400 on chat-completions silently
+        # propagated through ``/v1/messages`` as a 200 ``tool_use`` block
+        # carrying schema-violating arguments.
+        if tool_calls and openai_request.tools:
+            _validate_tool_call_params(tool_calls, openai_request.tools)
 
         # Extract reasoning content via the same orchestration the OpenAI route
         # uses (chat.py). Skipping this is what #413 fixed — the Anthropic surface
@@ -1394,6 +1407,34 @@ async def _stream_anthropic_messages(
         openai_request,
         structured_tool_calls=accumulated_structured_tool_calls or None,
     )
+
+    # F-220: enforce JSON-schema validation on the model's emitted
+    # tool_call arguments. On the streaming branch, headers are already
+    # sent so a mid-stream ``HTTPException`` cannot be returned as a 400
+    # response. Instead, surface the validation error as an Anthropic
+    # SSE ``error`` event (``invalid_request_error``) and drop the
+    # offending tool_use blocks so the client can recover. Matches the
+    # non-stream branch's 400 contract in spirit while staying within
+    # the Anthropic streaming protocol.
+    tool_validation_error: str | None = None
+    if tool_calls and openai_request.tools:
+        try:
+            _validate_tool_call_params(tool_calls, openai_request.tools)
+        except HTTPException as exc:
+            tool_validation_error = (
+                exc.detail if isinstance(exc.detail, str) else str(exc.detail)
+            )
+            tool_calls = []
+
+    if tool_validation_error:
+        error_event = {
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "message": tool_validation_error,
+            },
+        }
+        yield f"event: error\ndata: {json.dumps(error_event)}\n\n"
 
     if tool_calls:
         for i, tc in enumerate(tool_calls):
