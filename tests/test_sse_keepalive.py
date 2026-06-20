@@ -155,6 +155,7 @@ def test_disconnect_guard_keepalive_can_be_disabled():
 
     async def _run():
         out = []
+
         # ``keepalive_seconds=0`` disables the heartbeat regardless
         # of how long the upstream stalls.
         async def _consume():

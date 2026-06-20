@@ -21,7 +21,6 @@ to a clean 408 with an OpenAI-shaped JSON envelope.
 
 from __future__ import annotations
 
-import asyncio
 import json
 
 import pytest
@@ -69,19 +68,39 @@ def test_default_serverconfig_carries_body_receive_timeout():
     assert get_config().body_receive_timeout_seconds == 15.0
 
 
-def test_resolve_body_receive_timeout_caps_at_zero():
-    """A negative value or non-numeric setting must collapse to 0
-    (gate disabled) rather than crashing the request. We mirror the
-    same defensive pattern :func:`_resolve_limit` uses for
-    ``max_request_bytes``."""
+def test_resolve_body_receive_timeout_clamps_and_falls_back():
+    """Pin the two defensive branches in
+    :func:`_resolve_body_receive_timeout`. Codex r1 NIT on PR #732
+    spotted that the previous docstring conflated two distinct paths:
+
+    * negative numeric → ``max(0.0, …)`` clamps it to 0 (gate
+      disabled). This is the legitimate operator escape hatch — set
+      ``body_receive_timeout_seconds = -1`` in a fixture to disable.
+    * non-numeric / coercion failure → falls back to the documented
+      15 s default (NOT 0). Silently disabling the gate on a typo
+      would mask the real cause — the resolver mirrors the
+      :func:`_resolve_limit` "sane default beats unlimited" choice.
+    """
     from vllm_mlx.config.server_config import get_config
     from vllm_mlx.middleware.body_size import _resolve_body_receive_timeout
 
+    # Negative numeric: clamp to 0 (gate disabled).
     get_config().body_receive_timeout_seconds = -7.0
     assert _resolve_body_receive_timeout() == 0.0
 
+    # Positive numeric: pass through unchanged.
     get_config().body_receive_timeout_seconds = 25.0
     assert _resolve_body_receive_timeout() == 25.0
+
+    # Non-numeric (str — what an unmonkey-patched buggy fixture might
+    # inject): coerce-fail falls back to the documented 15 s default,
+    # NOT silently disables the gate. We coerce-through ``object()``
+    # to make sure the test fails clearly if a future refactor
+    # changes the defensive branch to ``except (ValueError, TypeError):
+    # return 0`` — a silent-disable regression would skip the gate
+    # under a fixture typo, exactly the F-072 surface this test pins.
+    get_config().body_receive_timeout_seconds = "not-a-number"  # type: ignore[assignment]
+    assert _resolve_body_receive_timeout() == 15.0
 
 
 def test_normal_post_under_timeout_passes_through():
@@ -281,7 +300,9 @@ def test_timeout_does_not_truncate_long_running_response():
 
     asyncio.run(middleware(scope, receive, send))
     # We MUST see the inner app's 200 + "done", not a synthesised 408.
-    assert any(m.get("status") == 200 for m in sent if m["type"] == "http.response.start")
+    assert any(
+        m.get("status") == 200 for m in sent if m["type"] == "http.response.start"
+    )
     bodies = b"".join(
         m.get("body", b"") for m in sent if m["type"] == "http.response.body"
     )
@@ -292,21 +313,31 @@ def test_timeout_only_guards_listed_path_prefixes():
     """The middleware scopes its receive wrapper to ``/v1/*`` /
     ``/internal/*`` / ``/anthropic/*``. A health-check POST to
     ``/healthz`` (outside the guarded prefixes) MUST flow through
-    even when the body would otherwise sit on receive — no slow-DoS
-    gate, no overhead."""
+    even when the body sits on receive() longer than the configured
+    timeout — no slow-DoS gate, no overhead.
+
+    Codex r1 BLOCKING on PR #732 — the original version of this
+    test had ``receive()`` return immediately, so the test would
+    have passed even if a regression dragged ``/healthz`` into the
+    timeout-guarded path. Fixed by stalling receive() *past* the
+    configured timeout: a wrongly guarded /healthz would now 408 and
+    fail the assertions below."""
     import asyncio
 
     from vllm_mlx.config.server_config import get_config
     from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
-    get_config().body_receive_timeout_seconds = 0.05
+    receive_timeout = 0.05
+    receive_stall = receive_timeout * 6  # comfortably past the gate
+    get_config().body_receive_timeout_seconds = receive_timeout
 
     handler_called = {"value": False}
 
     async def _inner_app(scope, receive, send):
-        # Stall briefly on receive — if the gate were active it
-        # would 408 us. Since /healthz is unguarded, the stall is
-        # harmless and the handler runs to completion.
+        # Stall longer than the configured timeout. If the middleware
+        # were wrapping ``receive`` for this path, the stall would
+        # trip ``asyncio.wait_for`` and synthesise a 408 here — the
+        # handler would never run.
         await receive()
         handler_called["value"] = True
         await send(
@@ -321,9 +352,13 @@ def test_timeout_only_guards_listed_path_prefixes():
     middleware = RequestBodyLimitMiddleware(_inner_app)
 
     async def receive():
-        # Even if we slept past the timeout, the unguarded path
-        # short-circuits BEFORE the bounded_receive wrapper is
-        # installed, so this never gets called with a wait_for.
+        # Stall ``receive_stall`` seconds — longer than the gate's
+        # ``receive_timeout``. The unguarded path short-circuits BEFORE
+        # ``bounded_receive`` wraps us, so this sleep is harmless.
+        # A regression that wrongly guarded ``/healthz`` would see
+        # this stall fire the slow-DoS gate and 408 the request, and
+        # the assertions below would catch it.
+        await asyncio.sleep(receive_stall)
         return {"type": "http.request", "body": b"{}", "more_body": False}
 
     sent = []
@@ -338,8 +373,16 @@ def test_timeout_only_guards_listed_path_prefixes():
         "headers": [],
     }
     asyncio.run(middleware(scope, receive, send))
+    # Inner handler reached — the gate did NOT bounce /healthz.
     assert handler_called["value"] is True
-    assert any(m.get("status") == 200 for m in sent if m["type"] == "http.response.start")
+    # ONLY the inner handler's 200 was sent — no 408 from a
+    # regressively guarded path.
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    assert len(starts) == 1
+    assert starts[0]["status"] == 200
+    # And NOT a 408 — a regression that guards /healthz would emit
+    # the slow-body timeout response instead.
+    assert not any(m.get("status") == 408 for m in sent)
 
 
 def test_timeout_path_does_not_double_send_when_body_size_also_trips():
