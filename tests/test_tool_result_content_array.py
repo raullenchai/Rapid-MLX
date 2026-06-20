@@ -50,7 +50,6 @@ from vllm_mlx.utils.chat_template import (
     apply_chat_template,
 )
 
-
 # ---------------------------------------------------------------------------
 # Unit-level: the normalizer is the single source of truth
 # ---------------------------------------------------------------------------
@@ -58,9 +57,12 @@ from vllm_mlx.utils.chat_template import (
 
 def test_text_only_array_detected_via_dict_parts() -> None:
     assert _is_text_only_content_array([{"type": "text", "text": "X"}]) is True
-    assert _is_text_only_content_array(
-        [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
-    ) is True
+    assert (
+        _is_text_only_content_array(
+            [{"type": "text", "text": "a"}, {"type": "text", "text": "b"}]
+        )
+        is True
+    )
 
 
 def test_text_only_array_detected_via_pydantic_parts() -> None:
@@ -91,7 +93,11 @@ def test_join_text_parts_concatenates_verbatim() -> None:
 
 
 def test_normalize_flattens_tool_text_array_to_string() -> None:
-    msg = {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "4"}]}
+    msg = {
+        "role": "tool",
+        "tool_call_id": "c1",
+        "content": [{"type": "text", "text": "4"}],
+    }
     out = _normalize_text_only_content_arrays([msg])
     assert out[0]["content"] == "4"
     # original is untouched (no aliasing)
@@ -99,7 +105,10 @@ def test_normalize_flattens_tool_text_array_to_string() -> None:
 
 
 def test_normalize_flattens_user_text_array_to_string() -> None:
-    msg = {"role": "user", "content": [{"type": "text", "text": "hi "}, {"type": "text", "text": "there"}]}
+    msg = {
+        "role": "user",
+        "content": [{"type": "text", "text": "hi "}, {"type": "text", "text": "there"}],
+    }
     out = _normalize_text_only_content_arrays([msg])
     assert out[0]["content"] == "hi there"
 
@@ -152,7 +161,11 @@ def test_extract_multimodal_flattens_tool_array_to_string_native() -> None:
             role="assistant",
             content="",
             tool_calls=[
-                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
             ],
         ),
         Message(
@@ -230,10 +243,18 @@ def test_apply_chat_template_normalizes_tool_array_to_string() -> None:
             "role": "assistant",
             "content": "",
             "tool_calls": [
-                {"id": "c1", "type": "function", "function": {"name": "f", "arguments": "{}"}}
+                {
+                    "id": "c1",
+                    "type": "function",
+                    "function": {"name": "f", "arguments": "{}"},
+                }
             ],
         },
-        {"role": "tool", "tool_call_id": "c1", "content": [{"type": "text", "text": "FOUR"}]},
+        {
+            "role": "tool",
+            "tool_call_id": "c1",
+            "content": [{"type": "text", "text": "FOUR"}],
+        },
     ]
     prompt = apply_chat_template(tok, msgs, model_name="test")
     assert tok.seen is not None
@@ -365,9 +386,7 @@ def test_route_rejects_non_text_part_on_tool() -> None:
                 {
                     "role": "tool",
                     "tool_call_id": "c1",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": "u.png"}}
-                    ],
+                    "content": [{"type": "image_url", "image_url": {"url": "u.png"}}],
                 },
             ],
             "tools": [_TOOL],
