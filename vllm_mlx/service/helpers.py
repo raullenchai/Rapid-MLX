@@ -1095,6 +1095,62 @@ def _resolve_enable_thinking(request) -> bool | None:
     return _extract_thinking_from_request(request)
 
 
+# L-05: the set of reasoning parsers that actually honor
+# ``chat_template_kwargs.enable_thinking``. Only ``qwen3`` consults the
+# flag as a strict on/off switch (its chat template skips the ``<think>``
+# pre-injection when ``False``, and the parser's Case-4 fallback only
+# fires under ``True``). All other registered parsers either:
+#
+#   * accept the flag for signature parity but ``del enable_thinking``
+#     immediately (gemma4, gpt_oss, harmony, minimax, glm4), or
+#   * only consult ``enable_thinking=True`` for Case-4 routing and
+#     ignore ``False`` entirely (deepseek_r1, vibethinker, think_parser).
+#
+# When a client explicitly sets ``chat_template_kwargs.enable_thinking``
+# on a server running a non-honoring parser, we surface the silent-drop
+# via the ``X-RapidMLX-Warning`` response header rather than the previous
+# zero-signal behavior. See L-05 in 0.8TODO.md for the dogfooding repro
+# (Theo on phi-4-mini-reasoning → deepseek_r1 parser).
+_THINKING_FLAG_HONORING_PARSERS: frozenset[str] = frozenset({"qwen3"})
+
+
+def enable_thinking_warning_header(
+    request, parser_name: str | None
+) -> dict[str, str]:
+    """Build the response-header dict that surfaces a silent
+    ``enable_thinking`` drop. Empty dict means "no warning needed".
+
+    Conditions to fire (all must hold):
+      1. The client EXPLICITLY set ``chat_template_kwargs.enable_thinking``
+         (the OpenAI-extension key — the top-level ``enable_thinking``
+         field is the rapid-mlx extension and is already auth-traceable
+         via per-request docs, so we skip it to keep the surface narrow).
+      2. The active reasoning parser is not in
+         ``_THINKING_FLAG_HONORING_PARSERS``.
+
+    The CLI ``--no-thinking`` mode does NOT silence the warning: an
+    operator who pinned thinking off server-side is still receiving
+    a request from a client that thinks the flag is doing something,
+    and the client-facing signal is what L-05 is about.
+
+    Returns a single-entry dict ``{"X-RapidMLX-Warning": "..."}`` so
+    callers can ``**spread`` it into ``Response(headers=...)`` /
+    ``StreamingResponse(headers=...)`` without conditional wiring.
+    """
+    if not parser_name:
+        return {}
+    if parser_name in _THINKING_FLAG_HONORING_PARSERS:
+        return {}
+    ctk = getattr(request, "chat_template_kwargs", None)
+    if not isinstance(ctk, dict) or "enable_thinking" not in ctk:
+        return {}
+    return {
+        "X-RapidMLX-Warning": (
+            f"enable_thinking ignored for parser={parser_name}"
+        )
+    }
+
+
 def _effective_enable_thinking(
     resolved: bool | None, model_name: str | None
 ) -> bool | None:
