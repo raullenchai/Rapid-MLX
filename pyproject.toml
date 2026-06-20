@@ -133,6 +133,14 @@ dev = [
     # parser to catch format regressions. NOT used at runtime — the route
     # hand-rolls the exposition format to avoid a runtime dep.
     "prometheus_client>=0.16.0",
+    # Test-only: parse pyproject.toml in the L-07 vision-extra lock-in
+    # tests (tests/test_vision_extra_install.py). ``tomllib`` is stdlib
+    # on Python ≥3.11; the environment marker pins ``tomli`` only on
+    # Python 3.10 so the L-07 suite always runs against the documented
+    # supported floor (codex round-2 BLOCKING — without this, CI on
+    # 3.10 would module-skip the entire lock-in suite and let a future
+    # refactor silently drop the ``[vision]`` extra).
+    'tomli>=2.0.1; python_version < "3.11"',
 ]
 vllm = [
     "vllm>=0.4.0",

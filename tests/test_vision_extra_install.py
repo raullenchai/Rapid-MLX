@@ -220,12 +220,13 @@ def test_all_extra_includes_mlx_vlm() -> None:
 
 
 # ──────────────────────────────────────────────────────────────────────
-# Tooling sanity — pyproject pins ``requires-python = ">=3.10"`` and the
-# module-level import block now falls back to ``tomli`` on 3.10
-# (codex round-1 BLOCKING). This test pins that contract: a 3.10
-# contributor with tomli installed runs the L-07 suite; a 3.10
-# contributor without it sees a clean module-level skip (not the
-# pre-fix ``ModuleNotFoundError`` that masked the lock-in tests).
+# Tooling sanity — pyproject pins ``requires-python = ">=3.10"``. To
+# keep the L-07 lock-in suite running on every supported interpreter
+# (codex round-2 BLOCKING: a 3.10 CI worker without tomli would have
+# module-skipped the entire suite), the [dev] extra declares
+# ``tomli>=2.0.1; python_version < "3.11"``. This test pins both
+# halves of that contract: the requires-python floor AND the matching
+# tomli dev-dep declaration.
 # ──────────────────────────────────────────────────────────────────────
 
 
@@ -248,4 +249,35 @@ def test_pyproject_requires_python_floor_matches_tomllib_fallback() -> None:
     assert sys.version_info >= (3, 10), (
         f"Test runtime {sys.version_info[:2]} is below the project's "
         f"3.10 floor — the tomli fallback can't help here."
+    )
+
+
+def test_dev_extra_pins_tomli_for_python_310() -> None:
+    """Codex round-2 BLOCKING: without ``tomli`` in the [dev] extra
+    for Python <3.11, a 3.10 CI worker without the package would have
+    module-skipped this whole L-07 suite — letting a future refactor
+    silently drop the ``[vision]`` extra without any test ever firing.
+
+    Pin that ``tomli`` is declared with the ``python_version < "3.11"``
+    marker (PEP 508) so the dep only resolves on 3.10 where it's
+    actually needed. On 3.11+ the stdlib ``tomllib`` is used; the
+    marker keeps the install lean.
+    """
+    py = _load_pyproject()
+    dev_specs = _extra_specs(py, "dev")
+    # PEP 508 marker form: spec is something like
+    # ``tomli>=2.0.1; python_version < "3.11"``. The dep name + marker
+    # check is what we care about; the exact version is the dev's choice.
+    matching = [
+        spec
+        for spec in dev_specs
+        if "tomli" in spec.lower()
+        and ";" in spec
+        and "python_version" in spec
+        and "3.11" in spec
+    ]
+    assert matching, (
+        f"`[dev]` extra must declare tomli with a `python_version < "
+        f'"3.11"` marker so 3.10 CI workers can actually run the '
+        f"L-07 lock-in suite. Got dev specs: {dev_specs!r}"
     )
