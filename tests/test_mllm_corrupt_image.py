@@ -135,7 +135,9 @@ def test_preprocess_wraps_pil_oserror_as_failed_to_process_image(monkeypatch):
     assert "broken data stream" in str(exc_info.value)
 
 
-def test_preprocess_wraps_pil_unidentified_image_as_failed_to_process_image(monkeypatch):
+def test_preprocess_wraps_pil_unidentified_image_as_failed_to_process_image(
+    monkeypatch,
+):
     """``PIL.UnidentifiedImageError`` shares the same canonical mapping —
     we don't want HTTP 500 for non-PNG bytes claiming to be PNGs.
     """
@@ -157,7 +159,9 @@ def test_preprocess_wraps_pil_unidentified_image_as_failed_to_process_image(monk
     assert "cannot identify image file" in str(exc_info.value)
 
 
-def test_preprocess_normalizes_failed_to_load_image_to_failed_to_process_image(monkeypatch):
+def test_preprocess_normalizes_failed_to_load_image_to_failed_to_process_image(
+    monkeypatch,
+):
     """mlx_vlm's own wrapper raises ``ValueError("Failed to load image
     from <path>: …")``. That wrapping reached the scheduler before the
     fix but missed the ``"Failed to process image"`` substring matcher,
@@ -221,9 +225,7 @@ def test_preprocess_propagates_internal_bugs_unchanged(monkeypatch):
     """
     _bypass_process_image(monkeypatch)
 
-    sentinel = AttributeError(
-        "'NoneType' object has no attribute 'image_token_index'"
-    )
+    sentinel = AttributeError("'NoneType' object has no attribute 'image_token_index'")
 
     def _raise_attribute_error(*args, **kwargs):
         raise sentinel
