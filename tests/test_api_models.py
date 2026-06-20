@@ -200,6 +200,50 @@ class TestToolCalling:
         assert td.type == "function"
         assert td.function["name"] == "get_weather"
 
+    @pytest.mark.parametrize(
+        "bad_name",
+        [
+            "",  # F-035: empty string - hermes parser leaks <tool_call> to content
+            "a" * 65,  # F-146: >64 chars - exceeds OpenAI spec cap
+            "a" * 10000,  # F-146: 10k-char fuzz - context-window waster
+            "weather_\U0001f324",  # F-146: emoji - non-ASCII
+            "$(whoami)",  # F-146: shell metachars
+            "foo\nbar",  # F-146: control char (newline)
+            "foo bar",  # F-146: space
+            "foo.bar",  # F-146: dot
+            "foo/bar",  # F-146: slash
+        ],
+    )
+    def test_tool_definition_rejects_malformed_name(self, bad_name):
+        """F-035 / F-146: ``function.name`` must match the OpenAI spec
+        regex ``^[a-zA-Z0-9_-]{1,64}$``. Pre-fix the schema accepted
+        anything (typed as ``dict``), and empty / emoji / 10k-char /
+        shell-metachar names all 200'd - on hermes-parser models the
+        empty-name case leaked literal ``<tool_call>{"name":"",...}</tool_call>``
+        into ``content`` because the tool-call detector keyed off a
+        non-empty name. A single regex constraint at the schema layer
+        covers the whole class.
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            ToolDefinition(function={"name": bad_name, "parameters": {"type": "object"}})
+        assert "function.name" in str(excinfo.value)
+
+    def test_tool_definition_rejects_missing_name(self):
+        """F-035 / F-146: ``function`` dict missing the ``name`` key is
+        also malformed - the OpenAI spec mandates ``name`` as required.
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            ToolDefinition(function={"description": "no name", "parameters": {}})
+        assert "function.name" in str(excinfo.value)
+
+    def test_tool_definition_accepts_full_64_char_name(self):
+        """Boundary check - exactly 64 chars is the OpenAI spec maximum
+        and must pass cleanly. Guards against off-by-one regressions in
+        the regex bound."""
+        name = "a" * 64
+        td = ToolDefinition(function={"name": name, "parameters": {"type": "object"}})
+        assert td.function["name"] == name
+
 
 class TestResponseFormat:
     """Tests for structured output models."""

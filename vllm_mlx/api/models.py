@@ -10,6 +10,7 @@ These models define the request and response schemas for:
 """
 
 import math
+import re
 import time
 import uuid
 from typing import Literal
@@ -326,11 +327,49 @@ class ToolCall(BaseModel):
     function: FunctionCall
 
 
+# F-035 / F-146: OpenAI function-name spec — non-empty, ≤64 chars,
+# ASCII alphanumerics + ``_`` + ``-``. Same regex Anthropic and OpenAI
+# publish in their tool-definition schemas. Defined at module scope so
+# the request-level validator below and any future direct
+# ``ToolDefinition`` consumers share one source of truth. A single
+# constraint covers the whole space the F-035 / F-146 fuzz exposed
+# (empty / emoji / 10000-char / shell-metachar names all rejected).
+_FUNCTION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
+
+
 class ToolDefinition(BaseModel):
     """Definition of a tool that can be called by the model."""
 
     type: str = "function"
     function: dict
+
+    # F-035 / F-146: reject malformed ``function.name`` at the schema
+    # layer. Pre-fix:
+    #   * ``name=""`` (F-035) - request 200'd; on hermes-parser models
+    #     the model emitted ``<tool_call>{"name":"",...}</tool_call>``
+    #     literally into ``content`` because the tool-call detector
+    #     keyed off a non-empty name field.
+    #   * ``name`` containing shell metacharacters / newlines (F-146)
+    #     - silently passed to the chat template; downstream parsers
+    #     either dropped the call or routed garbage into the tool-name
+    #     slot.
+    #   * ``name`` ≥10 KB (F-146) - accepted; ballooned the prompt and
+    #     wasted the context window.
+    # ``function`` is typed ``dict`` (legacy shape; the field accepts
+    # arbitrary OpenAI extensions) so the Pydantic v2 ``pattern=`` lever
+    # on ``Field`` isn't directly available - validate manually here.
+    @model_validator(mode="after")
+    def _validate_function_name(self) -> "ToolDefinition":
+        name = self.function.get("name") if isinstance(self.function, dict) else None
+        if name is None or not isinstance(name, str) or not _FUNCTION_NAME_PATTERN.match(
+            name
+        ):
+            raise ValueError(
+                "function.name must be a non-empty string of 1-64 characters "
+                "matching ^[a-zA-Z0-9_-]{1,64}$ (per OpenAI spec); got "
+                f"{name!r}."
+            )
+        return self
 
 
 # =============================================================================
