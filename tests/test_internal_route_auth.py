@@ -526,7 +526,15 @@ def test_cache_import_501_envelope_does_not_leak_operator_path(
     r = client.post("/v1/cache/import", json={"source": str(tmp_path)})
     assert r.status_code == 501, r.text
     body = r.json()
-    # No path leak.
+    # Codex r3 #2: the resolved source path is the most direct leak the
+    # 501 stub could surface — assert the literal ``str(tmp_path)`` is
+    # absent before falling back to the substring sweep. Without this
+    # check, a body echoing the validated source under e.g. ``/tmp/...``
+    # would slip past the "/Users/" / ".cache" / "cache_exports" denylist.
+    assert str(tmp_path) not in r.text, (
+        f"resolved source path {str(tmp_path)!r} leaked into 501 body: {r.text!r}"
+    )
+    # Defense-in-depth: also sweep the well-known operator-path fragments.
     for needle in ("/Users/", ".cache", "cache_exports"):
         assert needle not in r.text, f"{needle!r} leaked into 501 body: {r.text!r}"
     # No manifest contents leaked (model_id is a recognizable canary).
