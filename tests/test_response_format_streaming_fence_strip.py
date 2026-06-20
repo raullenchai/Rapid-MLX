@@ -277,6 +277,36 @@ class TestJsonObjectFenceStripping:
         assert joined == '{"answer": 42}'
         assert "Let me think" not in joined
 
+    def test_preamble_with_non_json_fenced_example_then_json_fence(self):
+        """Codex r7 BLOCKING: a preamble that contains a NON-JSON
+        fenced code block (e.g. ``` ```python\\nx=1\\n``` ``) before
+        the actual ``` ```json\\n{...}\\n``` `` answer must NOT
+        anchor the scan on the python fence and lose the real JSON.
+
+        ``_find_json_fence_opener`` picks the LAST fence whose
+        payload begins with a JSON delimiter — language-tagged
+        blocks for python/bash/etc. don't match because their
+        payloads start with code, not ``{``/``[``."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        # Feed everything as a single chunk so the scan phase has
+        # the complete preamble + fences visible.
+        joined = _stream_chunks(
+            pp,
+            [
+                "Here is the python example:\n"
+                "```python\n"
+                "x = 1\n"
+                "```\n"
+                "And here is the JSON answer:\n"
+                "```json\n"
+                '{"answer": 42}\n'
+                "```",
+            ],
+        )
+        assert joined == '{"answer": 42}'
+
     def test_nested_json_root_close_only_at_outermost(self):
         """Inner ``}``/``]`` must NOT trigger truncation — only the
         closing markdown fence ``` ``` `` does. JSON values with nested

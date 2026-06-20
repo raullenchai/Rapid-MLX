@@ -51,6 +51,49 @@ def _find_json_start(text: str) -> int:
     return -1
 
 
+def _find_json_fence_opener(text: str) -> int:
+    """Return the index of the OPENING JSON fence in ``text``, or -1.
+
+    Used by the H-07 scan phase to anchor the JSON-start search past
+    any preamble fences. The OPENING JSON fence is the last
+    triple-backtick whose payload starts (after an optional ``json``
+    language tag and whitespace) with ``{`` or ``[`` — i.e., the
+    fence whose body is actual JSON.
+
+    Codex r7 BLOCKING: a preamble may include NON-JSON fenced
+    examples (``\\n```python\\nx=1\\n``` ``) before the actual JSON
+    fence; the earlier ``buf.find("```")`` anchored on the python
+    fence and skipped the real ``` ```json `` opener. Scanning for
+    a fence whose payload begins with a JSON delimiter eliminates
+    that ambiguity — language-tagged code blocks (python, bash,
+    etc.) and string-content fences don't match.
+
+    Returns the index of the first backtick of the chosen fence,
+    or -1 if no JSON-bearing fence is found. Multiple matches: the
+    LAST one wins (preferring the most recent fence — the model is
+    most likely to wrap the FINAL answer).
+    """
+    best = -1
+    i = 0
+    n = len(text)
+    while i < n:
+        pos = text.find("```", i)
+        if pos < 0:
+            break
+        # Skip past the fence + optional ``json`` tag + whitespace.
+        cur = pos + 3
+        if text[cur : cur + 4].lower() == "json":
+            cur += 4
+        while cur < n and text[cur] in " \t\r\n":
+            cur += 1
+        # If the next non-whitespace char is a JSON delimiter, this
+        # fence opens a JSON block — eligible as the opener.
+        if cur < n and text[cur] in "{[":
+            best = pos
+        i = pos + 3
+    return best
+
+
 def _json_fence_suffix_hold_len(text: str) -> int:
     """Return how many trailing bytes of ``text`` MIGHT start a ``` fence.
 
@@ -490,12 +533,20 @@ class StreamingPostProcessor:
             # scan-phase anchor — that's the closing fence (the
             # ``_guard_closing_fence`` walker handles it later).
             json_start = _find_json_start(buf)
-            fence_pos = buf.find("```")
+            fence_pos = _find_json_fence_opener(buf)
             if fence_pos >= 0 and (json_start < 0 or fence_pos < json_start):
                 # Opening fence in preamble. Re-anchor the JSON
                 # search to after the fence + optional ``json`` tag
                 # + whitespace, so an illustrative example JSON
                 # before the fence does NOT win.
+                #
+                # Codex r7 BLOCKING: ``_find_json_fence_opener`` looks
+                # for the LAST ``` ```json `` (case-insensitive) before
+                # the first JSON delimiter, then falls back to a bare
+                # ``` ``` ``. This handles preambles that include
+                # NON-JSON fenced examples (``\\n```python\\n...\\n``` ``)
+                # before the real JSON fence — those earlier fences
+                # don't anchor the search.
                 search_from = fence_pos + 3
                 if buf[search_from : search_from + 4].lower() == "json":
                     search_from += 4
