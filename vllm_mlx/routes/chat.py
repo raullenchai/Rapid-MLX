@@ -43,6 +43,7 @@ from ..config import get_config
 from ..engine import GenerationOutput
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
+    SSE_RESPONSE_HEADERS,
     _TOOL_USE_REQUIRED_SUFFIX,
     _TOOL_USE_SYSTEM_SUFFIX,
     _build_usage,
@@ -911,6 +912,7 @@ async def _create_chat_completion_impl(
                             raw_request,
                         ),
                         media_type="text/event-stream",
+                        headers=SSE_RESPONSE_HEADERS,
                     )
                 else:
                     result = await _wait_with_disconnect(
@@ -1130,6 +1132,7 @@ async def _create_chat_completion_impl(
                     engine=engine,
                 ),
                 media_type="text/event-stream",
+                headers=SSE_RESPONSE_HEADERS,
             )
         return StreamingResponse(
             _disconnect_guard(
@@ -1138,6 +1141,7 @@ async def _create_chat_completion_impl(
                 engine=engine,
             ),
             media_type="text/event-stream",
+            headers=SSE_RESPONSE_HEADERS,
         )
 
     # Non-streaming response with timing and timeout

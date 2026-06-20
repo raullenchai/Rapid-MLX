@@ -214,6 +214,21 @@ _auth_warning_logged: bool = False
 # request, so a test fixture mutating the config takes effect immediately.
 _max_request_bytes: int = 8 * 1024 * 1024
 
+# SSE keepalive interval (F-070 DoS / proxy idle-timeout defense). 0
+# disables. Resolved from ``RAPID_MLX_SSE_KEEPALIVE_SECONDS`` and
+# pushed into ``ServerConfig.sse_keepalive_seconds`` via
+# ``_sync_config``. ``_disconnect_guard`` reads it at start of each
+# stream — see ``vllm_mlx/service/helpers.py``.
+_sse_keepalive_seconds: float = 20.0
+
+# Body-receive idle timeout (F-072 slow-DoS defense). 0 disables.
+# Resolved from ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` and pushed
+# into ``ServerConfig.body_receive_timeout_seconds`` via
+# ``_sync_config``. The ``RequestBodyLimitMiddleware`` wraps each
+# ``receive()`` in ``asyncio.wait_for`` until the body is fully on the
+# wire, emits HTTP 408 on timeout.
+_body_receive_timeout_seconds: float = 15.0
+
 # Reasoning parser (for models like Qwen3, DeepSeek-R1, MiniMax)
 _reasoning_parser = None  # ReasoningParser instance when enabled
 _reasoning_parser_name: str | None = None  # Parser name (e.g., "minimax")
@@ -951,6 +966,8 @@ def _sync_config() -> None:
     cfg.embedding_model_locked = _embedding_model_locked
     cfg.api_key = _api_key
     cfg.max_request_bytes = _max_request_bytes
+    cfg.sse_keepalive_seconds = _sse_keepalive_seconds
+    cfg.body_receive_timeout_seconds = _body_receive_timeout_seconds
     cfg.cloud_router = _cloud_router
     cfg.gc_control = _gc_control
     cfg.no_thinking = _no_thinking

@@ -895,6 +895,41 @@ def serve_command(args):
                     _env_name,
                     _env,
                 )
+
+    # SSE keepalive interval (F-070). Env-only (no CLI flag yet — keep
+    # the surface small until operators ask for it). 0 disables. The
+    # value lands on ``server._sse_keepalive_seconds`` so ``_sync_config``
+    # propagates it into the live ``ServerConfig`` after ``load_model``;
+    # writing the config singleton directly here would be clobbered by
+    # the subsequent ``_sync_config`` (mirrors the ``_max_request_bytes``
+    # pattern just above).
+    _sse_env = os.environ.get("RAPID_MLX_SSE_KEEPALIVE_SECONDS", "").strip()
+    if _sse_env:
+        try:
+            server._sse_keepalive_seconds = max(0.0, float(_sse_env))
+        except ValueError:
+            logger.warning(
+                "RAPID_MLX_SSE_KEEPALIVE_SECONDS=%r is not a number; "
+                "falling back to the 20 s default",
+                _sse_env,
+            )
+            server._sse_keepalive_seconds = 20.0
+
+    # Body-receive idle timeout (F-072 slow-DoS gate). Env-only. 0 disables.
+    # Same ``_sync_config``-then-route-handler ordering rationale as the
+    # SSE keepalive above.
+    _brt_env = os.environ.get("RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS", "").strip()
+    if _brt_env:
+        try:
+            server._body_receive_timeout_seconds = max(0.0, float(_brt_env))
+        except ValueError:
+            logger.warning(
+                "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS=%r is not a number; "
+                "falling back to the 15 s default",
+                _brt_env,
+            )
+            server._body_receive_timeout_seconds = 15.0
+
     # Configure CORS
     cors_origins = args.cors_origins if args.cors_origins else ["*"]
     server.configure_cors(cors_origins)

@@ -20,6 +20,7 @@ from ..api.models import (
 from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
+    SSE_RESPONSE_HEADERS,
     _check_admission_or_503,
     _disconnect_guard,
     _release_admission_unless_committed,
@@ -98,6 +99,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     engine=engine,
                 ),
                 media_type="text/event-stream",
+                headers=SSE_RESPONSE_HEADERS,
             )
 
         # Non-streaming response with timing and timeout

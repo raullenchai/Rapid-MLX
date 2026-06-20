@@ -116,6 +116,43 @@ class ServerConfig:
     # ``RAPID_MLX_MAX_REQUEST_BYTES``; ``0`` disables the cap.
     max_request_bytes: int = 8 * 1024 * 1024
 
+    # --- SSE keepalive (DoS / proxy idle-timeout defense, F-070) ---
+    # Interval (seconds) at which ``_disconnect_guard`` emits an SSE
+    # comment line (``: keepalive\n\n``) when the upstream generator
+    # is silent. Prefill on long prompts (e.g. 64k-token Qwen) can
+    # produce >60 s of pure TCP silence between the HTTP headers and
+    # the first content delta — that silently kills EventSource clients
+    # (browser ~45 s), nginx (``proxy_read_timeout 60``), Cloudflare
+    # (100 s), and most reverse proxies. Emitting a comment line at a
+    # fixed cadence keeps the connection alive without polluting the
+    # parsed event stream (SSE comments start with ``:`` and are
+    # ignored by every conforming consumer).
+    #
+    # Default 20 s sits comfortably below the tightest common idle
+    # timeout (30 s — some SaaS gateways) while staying invisible to
+    # short generations. Set to 0 via ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0``
+    # to disable the heartbeat entirely (escape hatch for operators
+    # whose upstream proxies are configured with generous timeouts).
+    sse_keepalive_seconds: float = 20.0
+
+    # --- Body-receive idle timeout (slow-DoS defense, F-072) ---
+    # Maximum allowed idle time (seconds) between consecutive
+    # ``http.request`` ASGI messages for a body-carrying request. When
+    # exceeded, ``RequestBodyLimitMiddleware`` emits HTTP 408 and tears
+    # down the connection. Defends against the slowloris-class attack
+    # documented in F-072: send POST headers advertising
+    # ``Content-Length: 1000000`` but then hold the socket open
+    # forever without sending body bytes — pre-fix, the worker stayed
+    # pinned indefinitely (≥30 s observed). With a fleet of such
+    # sockets an attacker can starve the worker pool.
+    #
+    # Default 15 s is generous enough for honest slow clients on
+    # mobile / satellite links (a 1 MB body at 64 kbps takes ~130 s
+    # but ships ≥1 KB chunks every ~125 ms, well under the per-chunk
+    # deadline) while bouncing connections that ship nothing. Set to 0
+    # via ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS=0`` to disable.
+    body_receive_timeout_seconds: float = 15.0
+
     # --- Cloud routing ---
     cloud_router: Any = None
 

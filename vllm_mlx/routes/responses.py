@@ -46,6 +46,7 @@ from ..config import get_config
 from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
+    SSE_RESPONSE_HEADERS,
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
@@ -196,10 +197,11 @@ async def create_response(request: Request):
                     engine=engine,
                 ),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
+                # ``SSE_RESPONSE_HEADERS`` (Cache-Control no-cache/no-transform +
+                # X-Accel-Buffering: no) wraps the legacy ``Connection: keep-alive``
+                # already on this route. F-073 anti-buffering parity with the
+                # chat / completions / anthropic streaming responses.
+                headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
             )
 
         return await _non_stream(engine, openai_request, responses_request, request)

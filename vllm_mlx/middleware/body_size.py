@@ -41,6 +41,7 @@ operators whose internal deployments have other DoS controls).
 
 from __future__ import annotations
 
+import asyncio
 import json as _json
 import logging
 from typing import Any
@@ -68,6 +69,32 @@ class _BodyTooLargeError(Exception):
     def __init__(self, streamed_bytes: int) -> None:
         super().__init__(f"streamed {streamed_bytes} bytes over body cap")
         self.streamed_bytes = streamed_bytes
+
+
+class _BodyReceiveTimeoutError(Exception):
+    """Sentinel raised from ``bounded_receive`` when no ``http.request``
+    ASGI message lands within :attr:`ServerConfig.body_receive_timeout_seconds`.
+
+    Defends against the F-072 slow-DoS pattern: an attacker opens a
+    TCP connection, sends only POST headers advertising
+    ``Content-Length: 1000000`` and then holds the socket open with
+    zero body bytes. Pre-fix, the FastAPI handler — sitting in
+    ``await request.body()`` — waits indefinitely (>30 s observed) and
+    a fleet of such sockets pins the worker pool.
+
+    The wait-for boundary makes the slow client visible inside the
+    middleware: we surface the timeout as this sentinel, catch it at
+    the same boundary that handles ``_BodyTooLargeError``, and emit
+    HTTP 408 (Request Timeout) per RFC 9110 §15.5.9.
+    """
+
+    def __init__(self, streamed_bytes: int, timeout: float) -> None:
+        super().__init__(
+            f"no body bytes received for {timeout:.1f}s "
+            f"(streamed_so_far={streamed_bytes})"
+        )
+        self.streamed_bytes = streamed_bytes
+        self.timeout = timeout
 
 
 # Path prefixes the cap applies to. We deliberately scope to ``/v1/``
@@ -111,6 +138,21 @@ def _resolve_limit() -> int:
     return max(0, cap)
 
 
+def _resolve_body_receive_timeout() -> float:
+    """Look up the body-receive idle timeout from ``ServerConfig``.
+
+    Same per-request lookup pattern as :func:`_resolve_limit` so tests
+    can monkey-patch the singleton without rebuilding the FastAPI app.
+    A non-positive value disables the slow-client gate; the default
+    (15 s) is set on the ``ServerConfig`` dataclass.
+    """
+    try:
+        timeout = float(get_config().body_receive_timeout_seconds)
+    except Exception:
+        timeout = 15.0
+    return max(0.0, timeout)
+
+
 class RequestBodyLimitMiddleware:
     """ASGI middleware enforcing :attr:`ServerConfig.max_request_bytes`."""
 
@@ -126,12 +168,16 @@ class RequestBodyLimitMiddleware:
             return await self.app(scope, receive, send)
 
         limit = _resolve_limit()
-        if limit == 0:
-            # Cap explicitly disabled by operator. Skip the wrapper to
+        receive_timeout = _resolve_body_receive_timeout()
+        if limit == 0 and receive_timeout <= 0:
+            # Both DoS gates disabled by operator. Skip the wrapper to
             # avoid per-message overhead.
             return await self.app(scope, receive, send)
 
-        # Fast path: honest Content-Length.
+        # Fast path: honest Content-Length over cap (only when cap
+        # active). The receive-timeout slow-DoS gate stays on a
+        # separate axis from the body-size cap — operators can disable
+        # one without the other.
         advertised: int | None = None
         for raw_name, raw_value in scope.get("headers", ()):
             if raw_name.lower() == b"content-length":
@@ -141,7 +187,7 @@ class RequestBodyLimitMiddleware:
                     advertised = None
                 break
 
-        if advertised is not None and advertised > limit:
+        if limit > 0 and advertised is not None and advertised > limit:
             await _send_413(
                 send,
                 advertised=advertised,
@@ -181,14 +227,52 @@ class RequestBodyLimitMiddleware:
         #   * both set     → response already complete; nothing to do
         downstream_started_response = {"value": False}
         downstream_completed_response = {"value": False}
+        # Body-receive idle gate (F-072): once the final ``http.request``
+        # frame lands (``more_body=False``), the body is on the wire and
+        # the per-message timeout no longer applies — the downstream
+        # handler may legitimately stall in the engine for minutes.
+        body_complete = {"value": False}
+        # F-072: once a receive-timeout fires, FastAPI typically catches
+        # the raised :class:`_BodyReceiveTimeoutError` inside its body
+        # parser and synthesizes a generic 400 "error parsing body"
+        # response. That's NOT the slow-DoS signal operators want — a
+        # bounce that looks like client error masks the real cause and
+        # the timing analysis falls apart. ``guarded_send`` consults
+        # this flag and rewrites the downstream's response to a clean
+        # 408 ``request_timeout`` when the cause was actually our
+        # slow-body gate.
+        timeout_tripped = {"value": False, "streamed": 0, "timeout": 0.0}
 
         async def bounded_receive():
-            msg = await receive()
+            # Per-message idle timeout — F-072 slow-DoS gate. We bound
+            # the time spent awaiting each ASGI message until the body
+            # is fully on the wire; afterwards downstream messages
+            # (``http.disconnect`` from client close) come through
+            # unwrapped so legitimate long-running responses aren't
+            # truncated by the slow-DoS timer.
+            if receive_timeout > 0 and not body_complete["value"]:
+                try:
+                    msg = await asyncio.wait_for(receive(), timeout=receive_timeout)
+                except asyncio.TimeoutError as _:
+                    timeout_tripped["value"] = True
+                    timeout_tripped["streamed"] = total["bytes"]
+                    timeout_tripped["timeout"] = receive_timeout
+                    raise _BodyReceiveTimeoutError(
+                        total["bytes"], receive_timeout
+                    ) from None
+            else:
+                msg = await receive()
             if msg.get("type") == "http.request":
                 body_len = len(msg.get("body", b"") or b"")
                 total["bytes"] += body_len
-                if total["bytes"] > limit:
+                # Cap is enforced ONLY when active. The receive-timeout
+                # gate is independent so an operator who disables the
+                # body-size cap (``--max-request-bytes 0``) still gets
+                # slow-DoS protection.
+                if limit > 0 and total["bytes"] > limit:
                     raise _BodyTooLargeError(total["bytes"])
+                if not msg.get("more_body", False):
+                    body_complete["value"] = True
             return msg
 
         async def guarded_send(msg):
@@ -196,6 +280,46 @@ class RequestBodyLimitMiddleware:
             # the boundary catch below can decide between "emit 413",
             # "close the stream", or "do nothing" without guessing.
             mtype = msg.get("type")
+            # F-072: rewrite the downstream's response to a 408 when
+            # the upstream cause was our slow-body timeout. Without
+            # this, FastAPI surfaces the raised
+            # :class:`_BodyReceiveTimeoutError` as a generic 400
+            # "error parsing the body", which is indistinguishable
+            # from a legitimate JSON parse error and hides the DoS
+            # signal in logs.
+            if timeout_tripped["value"] and not downstream_completed_response["value"]:
+                if mtype == "http.response.start":
+                    downstream_started_response["value"] = True
+                    body = _format_408_body(
+                        timeout=timeout_tripped["timeout"],
+                        streamed=timeout_tripped["streamed"],
+                    )
+                    msg = {
+                        "type": "http.response.start",
+                        "status": 408,
+                        "headers": [
+                            (b"content-type", b"application/json"),
+                            (b"content-length", str(len(body)).encode("ascii")),
+                            (b"connection", b"close"),
+                        ],
+                    }
+                    await send(msg)
+                    # Immediately flush the replacement body; the
+                    # downstream's subsequent ``http.response.body``
+                    # frames are suppressed below.
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": body,
+                            "more_body": False,
+                        }
+                    )
+                    downstream_completed_response["value"] = True
+                    return
+                if mtype == "http.response.body":
+                    # Suppress the downstream's body frames — our 408
+                    # has already shipped its own terminal body.
+                    return
             if mtype == "http.response.start":
                 downstream_started_response["value"] = True
             elif mtype == "http.response.body" and not msg.get("more_body", False):
@@ -204,6 +328,47 @@ class RequestBodyLimitMiddleware:
 
         try:
             await self.app(scope, bounded_receive, guarded_send)
+        except _BodyReceiveTimeoutError as exc:
+            # F-072: slow body. If the downstream already started
+            # responding (unlikely on a slow-body attack since the
+            # FastAPI handler is blocked on ``request.body()``) we close
+            # the stream cleanly; otherwise emit a fresh 408.
+            if downstream_completed_response["value"]:
+                logger.debug(
+                    "body-receive timeout tripped after downstream completed "
+                    "response (streamed=%d, timeout=%.1fs)",
+                    exc.streamed_bytes,
+                    exc.timeout,
+                )
+                return
+            if downstream_started_response["value"]:
+                logger.warning(
+                    "body-receive timeout (%.1fs) tripped after downstream "
+                    "began writing response; %d bytes streamed — "
+                    "closing response body stream",
+                    exc.timeout,
+                    exc.streamed_bytes,
+                )
+                try:
+                    await send(
+                        {
+                            "type": "http.response.body",
+                            "body": b"",
+                            "more_body": False,
+                        }
+                    )
+                except Exception:
+                    logger.debug(
+                        "terminal body frame send failed after receive timeout",
+                        exc_info=True,
+                    )
+                return
+            await _send_408(
+                send,
+                timeout=exc.timeout,
+                streamed=exc.streamed_bytes,
+            )
+            return
         except _BodyTooLargeError as exc:
             if downstream_completed_response["value"]:
                 # Response is fully on the wire — somehow the cap tripped
@@ -271,6 +436,67 @@ def _format_message(
         f"exceeds the {limit}-byte server cap "
         "(set via --max-request-bytes / RAPID_MLX_MAX_REQUEST_BYTES)"
     )
+
+
+def _format_408_body(*, timeout: float, streamed: int) -> bytes:
+    """Encode the OpenAI-shaped 408 JSON body once.
+
+    Shared between the boundary-emit path (response not yet started)
+    and the ``guarded_send`` rewrite path (FastAPI's body parser
+    already wrote a 400 start frame — we swap it for our 408 with
+    this same body). Centralising the shape keeps clients parsing
+    rapid-mlx errors against one envelope per DoS gate.
+    """
+    message = (
+        f"Request timed out: no body bytes received for {timeout:.1f}s "
+        f"(streamed={streamed} bytes; set via "
+        "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS)"
+    )
+    return _json.dumps(
+        {
+            "error": {
+                "message": message,
+                "type": "invalid_request_error",
+                "code": "request_timeout",
+                "param": None,
+            }
+        }
+    ).encode("utf-8")
+
+
+async def _send_408(
+    send,
+    *,
+    timeout: float,
+    streamed: int,
+) -> None:
+    """Emit an OpenAI-shaped 408 (Request Timeout) JSON response.
+
+    F-072 slow-DoS gate: when no body bytes arrive within
+    ``ServerConfig.body_receive_timeout_seconds``, this is the terminal
+    response the client sees. Shape mirrors :func:`_send_413` so
+    callers parsing rapid-mlx errors get a consistent envelope across
+    DoS gates.
+    """
+    body = _format_408_body(timeout=timeout, streamed=streamed)
+    try:
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 408,
+                "headers": [
+                    (b"content-type", b"application/json"),
+                    (b"content-length", str(len(body)).encode("ascii")),
+                    # Per RFC 9110 §15.5.9, an origin server SHOULD send
+                    # ``Connection: close`` on a 408 since the client
+                    # may have lost the connection state.
+                    (b"connection", b"close"),
+                ],
+            }
+        )
+        await send({"type": "http.response.body", "body": body, "more_body": False})
+    except Exception:
+        logger.debug("body-receive 408 send failed (client already disconnected)")
 
 
 async def _send_413(

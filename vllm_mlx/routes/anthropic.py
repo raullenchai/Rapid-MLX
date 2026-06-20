@@ -37,6 +37,7 @@ from ..config import get_config
 from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
 from ..service.helpers import (
+    SSE_RESPONSE_HEADERS,
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
@@ -220,10 +221,11 @@ async def create_anthropic_message(
                     engine=engine,
                 ),
                 media_type="text/event-stream",
-                headers={
-                    "Cache-Control": "no-cache",
-                    "Connection": "keep-alive",
-                },
+                # ``SSE_RESPONSE_HEADERS`` (Cache-Control no-cache/no-transform +
+                # X-Accel-Buffering: no) keeps anti-buffering parity with the
+                # other SSE routes; ``Connection: keep-alive`` is preserved for
+                # the Anthropic SDK clients that historically checked for it.
+                headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
             )
 
         # Non-streaming: run inference through existing engine
