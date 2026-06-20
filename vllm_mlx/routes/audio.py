@@ -3,6 +3,7 @@
 
 import logging
 import os
+import re
 import tempfile
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
@@ -43,6 +44,59 @@ STT_MODEL_ALIASES: dict[str, str] = {
     "parakeet-v3": "mlx-community/parakeet-tdt-0.6b-v3",
 }
 
+# F-210: model strings must canonicalize to either a bare alias name
+# (matches an entry in ``STT_MODEL_ALIASES``) or a single-slash
+# HuggingFace-style ``<org>/<repo>`` id. Anything else — multi-slash
+# paths (``foo/bar/baz``), all-slash strings (``////``), control
+# characters, leading/trailing slashes, etc. — bypasses the alias lookup
+# and trips a downstream codec-open failure that surfaces as a generic
+# 500 ``transcription_failed``. Reject these BEFORE attempting decode so
+# the canonical 404 ``model_not_found_error`` fires instead.
+#
+# Allowed characters mirror HuggingFace's repo-id conventions
+# (alphanumeric, underscore, dot, hyphen). ``+`` is intentionally NOT
+# allowed — HF repo ids are restricted to ``[A-Za-z0-9._-]`` (see
+# huggingface_hub.utils.validate_repo_id).
+#
+# Codex r3 BLOCKING: the *total* repo_id length cap is 96 chars (not
+# per-component). The per-component bound stays at 96 too because the
+# total bound already implies it. Anchor the regex with the 96-char
+# overall cap (enforced as a separate ``len(model) <= 96`` check below
+# so the regex itself stays cheap to read).
+_STT_MODEL_NAME_RE = re.compile(r"^[A-Za-z0-9_.\-]+(?:/[A-Za-z0-9_.\-]+)?$")
+_HF_REPO_ID_MAX_LEN = 96
+
+
+def _is_valid_repo_component(comp: str) -> bool:
+    """Codex r2 / r3 BLOCKING follow-up: mirror HF's structural rules.
+
+    A bare regex character-class check accepts strings that HF itself
+    rejects (e.g. ``.hidden``, ``repo..name``, components starting/
+    ending with ``.`` or ``-``, or ``.git`` suffix). Those still
+    crash inside ``STTEngine.load`` as a 500 because the HF resolver
+    fails the same way for them. Enforce the structural rules HF
+    documents (``huggingface_hub.utils.validate_repo_id``).
+
+    Codex r3 BLOCKING: ``.ipynb`` is NOT a HF-rejected suffix, only
+    ``.git`` is. Removed the over-eager ``.ipynb`` check.
+    """
+    if not comp:
+        return False
+    if comp.startswith((".", "-")) or comp.endswith((".", "-")):
+        return False
+    # ``..`` is a parent-directory traversal sentinel; HF rejects it
+    # to keep repo ids resolvable as filesystem paths.
+    if ".." in comp:
+        return False
+    # ``--`` is rejected by HF's repo-id validator as well.
+    if "--" in comp:
+        return False
+    # Only ``.git`` is explicitly reserved by HF (codex r3 — ``.ipynb``
+    # was an over-rejection on my part).
+    if comp.endswith(".git"):
+        return False
+    return True
+
 
 def _resolve_stt_model(model: str) -> str:
     """Resolve an OpenAI-style STT model alias to the MLX repo path.
@@ -71,6 +125,44 @@ def _resolve_stt_model(model: str) -> str:
         )
     if model in STT_MODEL_ALIASES:
         return STT_MODEL_ALIASES[model]
+
+    # F-210: path-shaped / malformed model ids (``foo/bar/baz``,
+    # ``////``, leading/trailing slashes, control chars) used to slip
+    # past the simple ``"/" in model`` heuristic, then crash inside
+    # ``STTEngine.load`` as a generic 500 ``transcription_failed``.
+    # Canonicalize these to the same 404 ``model_not_found_error`` the
+    # bogus-alias path returns (F-167 / PR #735) by enforcing the
+    # repo-id regex BEFORE attempting any codec open.
+    #
+    # codex r2: char-class alone isn't enough — HF also rejects
+    # ``..``/``--``/``.hidden``/``trailing-dot.``/``repo.git`` shapes.
+    # Apply the regex (cheap fast-path), then the 96-char total cap
+    # (codex r3 BLOCKING — was per-component, HF's actual rule is
+    # ``len(repo_id) <= 96``), then per-component structural rules.
+    _regex_ok = bool(_STT_MODEL_NAME_RE.fullmatch(model))
+    _length_ok = len(model) <= _HF_REPO_ID_MAX_LEN
+    _components_ok = (
+        _regex_ok
+        and _length_ok
+        and all(_is_valid_repo_component(c) for c in model.split("/"))
+    )
+    if not _components_ok:
+        available = ", ".join(sorted(STT_MODEL_ALIASES.keys()))
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "message": (
+                        f"The model `{model}` does not exist. "
+                        f"Available STT aliases: {available}"
+                    ),
+                    "type": "model_not_found_error",
+                    "code": "model_not_found",
+                    "param": "model",
+                }
+            },
+        )
+
     if "/" in model:
         # Looks like a HuggingFace repo id — let STTEngine attempt to
         # load it. ImportError / model-load errors still surface, but
