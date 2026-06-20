@@ -263,7 +263,11 @@ def stub_heavy_serve_deps(monkeypatch):
     # has already booted a ``TestClient`` against ``vllm_mlx.server.app``
     # — order-dependent flake. Stub it to a no-op for these tests; the
     # CORS plumbing has its own dedicated tests.
-    monkeypatch.setattr(server_mod, "configure_cors", lambda origins: None)
+    # ``configure_cors_from_env`` now always calls ``configure_cors`` with
+    # keyword args (methods=, headers=, max_age=, allow_credentials=) once
+    # the default-wildcard friendly UX landed — accept arbitrary kwargs so
+    # the stub keeps matching the real signature.
+    monkeypatch.setattr(server_mod, "configure_cors", lambda *a, **kw: None)
     # Some serve_command branches touch the rate-limiter wiring.
     from vllm_mlx.middleware import auth as auth_mod
 

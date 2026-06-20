@@ -340,17 +340,28 @@ def test_malformed_max_age_falls_back_to_default(
     assert r.headers.get("access-control-max-age") == "3600"
 
 
-def test_empty_csv_value_treated_as_unset(
-    fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+def test_empty_csv_origin_value_fails_closed_with_warning(
+    fresh_app: FastAPI,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
 ) -> None:
-    """``RAPID_MLX_CORS_ALLOW_ORIGINS=" , ,, "`` (whitespace + empty
-    fragments) parses to an empty list and falls back to the default
-    wildcard ``*``. Defends against the easy-to-miss config bug where a
-    deploy script expands an empty array variable — instead of silent
-    no-CORS, the operator gets the friendly default and an INFO log."""
+    """Codex round-2 BLOCKING (#758): distinguish ``env unset`` (friendly
+    default wildcard) from ``env set but parsed empty`` (likely operator
+    templating bug). The present-but-empty case is fail-closed (no CORS
+    middleware → preflight 405) plus a WARNING — silent fail-open would
+    hide a deployment bug behind a permissive default."""
     monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", " , ,, ")
-    origins = _server_mod().configure_cors_from_env(cli_origins=None)
-    assert origins == ["*"]
+    with caplog.at_level("WARNING", logger="vllm_mlx.server"):
+        origins = _server_mod().configure_cors_from_env(cli_origins=None)
+    assert origins == []
+    assert any(
+        "RAPID_MLX_CORS_ALLOW_ORIGINS" in rec.message
+        and "empty list" in rec.message.lower()
+        for rec in caplog.records
+    ), (
+        f"Expected an empty-origins WARNING; got "
+        f"{[r.message for r in caplog.records]!r}"
+    )
 
     client = TestClient(fresh_app)
     r = client.options(
@@ -360,8 +371,8 @@ def test_empty_csv_value_treated_as_unset(
             "Access-Control-Request-Method": "POST",
         },
     )
-    assert r.status_code == 200
-    assert r.headers.get("access-control-allow-origin") == "*"
+    # Fail-closed: no CORS middleware, so the OPTIONS verb returns 405.
+    assert r.status_code == 405
 
 
 # ──────────────────────────────────────────────────────────────────────

@@ -637,15 +637,44 @@ def configure_cors_from_env(
     origins: list[str] = []
     came_from_cli = False
     came_from_default = False
+    env_present_but_empty = False
     if cli_origins:
         origins = list(cli_origins)
         came_from_cli = True
     else:
-        env_origins = os.environ.get("RAPID_MLX_CORS_ALLOW_ORIGINS", "").strip()
-        if env_origins:
-            origins = _parse_csv(env_origins)
+        # Codex round-2 BLOCKING (#758): distinguish "env var absent" from
+        # "env var present but parsed empty". The friendly default-wildcard
+        # is for operators who never set the var (single-machine local
+        # dev). An operator who DID set the var to a templating-broken
+        # value like ``" , ,, "`` clearly intended a real allowlist — the
+        # safest interpretation is the literal empty list (no CORS, fail
+        # closed) plus a startup WARNING so the typo is visible. Falling
+        # through to wildcard would silently fail open for a deployment
+        # bug, which is the failure mode codex was flagging.
+        env_raw = os.environ.get("RAPID_MLX_CORS_ALLOW_ORIGINS")
+        if env_raw is not None:
+            parsed = _parse_csv(env_raw)
+            if parsed:
+                origins = parsed
+            else:
+                env_present_but_empty = True
+                # Format via %s/%r placeholders so the env-var name only
+                # appears in the args tuple (test_no_out_of_band_routing
+                # treats inline ``RAPID_MLX_<X>=...`` literals as routing
+                # references — same shape as the methods/headers warnings
+                # below).
+                logger.warning(
+                    "%s=%r parsed to an empty list (whitespace / "
+                    "trailing commas only). Treating as fail-closed "
+                    "(no CORS middleware) so a deployment templating "
+                    "bug is visible. Unset the env var entirely to use "
+                    "the friendly default wildcard, or set it to a real "
+                    "comma-separated origin list.",
+                    "RAPID_MLX_CORS_ALLOW_ORIGINS",
+                    env_raw,
+                )
 
-    if not origins:
+    if not origins and not env_present_but_empty:
         # Default-allow wildcard for friendly single-machine UX. rapid-mlx
         # is primarily run locally — defaulting to deny would break any
         # browser-based frontend ("CORS error" in the console) without an
@@ -759,6 +788,16 @@ def configure_cors_from_env(
                 "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
                 creds_env,
             )
+
+    # Fail-closed path: ``RAPID_MLX_CORS_ALLOW_ORIGINS`` was set but
+    # parsed to an empty list (operator-controlled typo). Don't register
+    # CORSMiddleware — that's the visible signal the WARNING above
+    # promises. Returning ``[]`` here also keeps the legacy ``configure_cors``
+    # back-compat stub callable from tests that monkeypatch a 1-arg
+    # lambda — we never call ``configure_cors(...)`` on the fail-closed
+    # path, so the stub's signature doesn't matter.
+    if not origins:
+        return []
 
     configure_cors(
         origins,
