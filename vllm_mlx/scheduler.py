@@ -3013,9 +3013,7 @@ class Scheduler:
                 f"[abort_request] {request_id[:12]} enqueued for deferred abort"
             )
             return True
-        logger.info(
-            "[abort_request] unknown request_id (rejected without enqueue)"
-        )
+        logger.info("[abort_request] unknown request_id (rejected without enqueue)")
         return False
 
     def _process_pending_aborts(self) -> None:

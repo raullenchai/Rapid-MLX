@@ -30,7 +30,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
 # Routes that MUST require ``X-Rapid-MLX-Internal: true``. Parametrize over all
 # of them so a future addition to ``admin_router`` only needs an entry here to
 # get full unauth/auth/leak coverage.
@@ -74,12 +73,26 @@ def client_factory():
     # already appear in error envelopes.
     cfg.model_name = "mlx-community/secret-org-model-12b-8bit"
 
-    def build(api_key: str | None = None) -> TestClient:
+    def build(api_key: str | None = None, client_host: str = "127.0.0.1") -> TestClient:
+        """Build a TestClient with a configurable origin host.
+
+        ``client_host`` defaults to ``127.0.0.1`` so the loopback branch
+        of ``verify_internal_admin`` resolves true — this lets tests
+        focus on the header gate without also having to thread an
+        operator api-key through every case. Tests that want to assert
+        the LAN-no-api-key 403 path pass ``client_host="10.0.0.5"`` or
+        similar (codex r1 BLOCKING fix).
+        """
         cfg.api_key = api_key
         app = FastAPI()
         app.include_router(router)
         app.include_router(admin_router)
-        return TestClient(app)
+        # ``TestClient(app, client=(host, port))`` injects the supplied
+        # tuple into ``scope["client"]`` so ``request.client.host`` reads
+        # back as ``host``. The default ``("testclient", 50000)`` is NOT
+        # loopback, so without overriding it the new loopback-required
+        # branch would reject every test — masking real bugs.
+        return TestClient(app, client=(client_host, 50000))
 
     try:
         yield build, cfg
@@ -110,9 +123,7 @@ def test_destructive_route_rejects_missing_header(client_factory, method, path):
 
 
 @pytest.mark.parametrize(("method", "path"), _DESTRUCTIVE_ROUTES)
-def test_destructive_route_rejects_wrong_header_value(
-    client_factory, method, path
-):
+def test_destructive_route_rejects_wrong_header_value(client_factory, method, path):
     """The header must literally equal ``true`` (case-insensitive). A typo'd
     or shell-default value like ``1`` / ``yes`` / empty MUST 403 — accepting
     them would turn the gate into a no-op for any client that ships a default
@@ -131,11 +142,14 @@ def test_destructive_route_rejects_wrong_header_value(
 def test_destructive_route_accepts_internal_header_when_no_api_key(
     client_factory, method, path
 ):
-    """F-150 happy path: ``X-Rapid-MLX-Internal: true`` alone is sufficient
-    when ``--api-key`` is not configured.
+    """F-150 happy path: ``X-Rapid-MLX-Internal: true`` + loopback caller is
+    sufficient when ``--api-key`` is not configured.
 
-    We only assert that the auth gate passes (status != 401/403). Specific
-    response shapes are validated in ``test_routes.py`` /
+    Per the codex r1 BLOCKING fix, the header alone is NOT enough — a LAN
+    caller still needs an api-key. Loopback is the dev-only escape hatch.
+    The fixture defaults ``client_host="127.0.0.1"`` so this test exercises
+    that branch. We only assert that the auth gate passes (status != 401/403).
+    Specific response shapes are validated in ``test_routes.py`` /
     ``test_request_cancellation.py``.
     """
     build, _ = client_factory
@@ -150,18 +164,14 @@ def test_destructive_route_accepts_internal_header_when_no_api_key(
 
 
 @pytest.mark.parametrize(("method", "path"), _DESTRUCTIVE_ROUTES)
-def test_destructive_route_case_insensitive_header_value(
-    client_factory, method, path
-):
+def test_destructive_route_case_insensitive_header_value(client_factory, method, path):
     """``True`` / ``TRUE`` are accepted (shells frequently uppercase by reflex).
     Pin this so a future tightening doesn't break documented client code."""
     build, _ = client_factory
     client = build(api_key=None)
 
     for variant in ("true", "True", "TRUE", " true "):
-        r = client.request(
-            method, path, headers={"X-Rapid-MLX-Internal": variant}
-        )
+        r = client.request(method, path, headers={"X-Rapid-MLX-Internal": variant})
         assert r.status_code not in (401, 403), (
             f"{method} {path} rejected variant {variant!r}: {r.text}"
         )
@@ -213,6 +223,90 @@ def test_destructive_route_requires_api_key_when_configured(
         f"{method} {path}: internal header + valid x-api-key should pass, "
         f"got {r.status_code}: {r.text}"
     )
+
+
+@pytest.mark.parametrize(("method", "path"), _DESTRUCTIVE_ROUTES)
+def test_destructive_route_rejects_lan_caller_without_api_key(
+    client_factory, method, path
+):
+    """Codex PR #728 round-1 BLOCKING: when ``--api-key`` is unset, a non-
+    loopback caller with the internal header MUST still 403.
+
+    Pre-codex-fix the header alone was sufficient. That left any LAN client
+    who read the open-source code able to send the header and wipe cache —
+    the header is not a secret, it's a "you meant this" signal. The
+    production posture is: operator sets ``--api-key`` → bearer required;
+    dev posture is: ``--api-key`` unset → loopback-only. There is no
+    "anonymous remote callers with the header" posture anymore.
+    """
+    build, _ = client_factory
+    # 10.x is the canonical "definitely not loopback" LAN range used by
+    # cloud / k8s test fixtures.
+    client = build(api_key=None, client_host="10.0.0.5")
+
+    r = client.request(method, path, headers={"X-Rapid-MLX-Internal": "true"})
+    assert r.status_code == 403, (
+        f"{method} {path}: LAN caller (10.0.0.5) with header but no --api-key "
+        f"should 403, got {r.status_code}: {r.text}"
+    )
+
+
+@pytest.mark.parametrize(("method", "path"), _DESTRUCTIVE_ROUTES)
+def test_destructive_route_accepts_lan_caller_with_valid_api_key(
+    client_factory, method, path
+):
+    """Cross-check the codex fix: a remote caller with the header AND a
+    valid bearer key (the production posture) still works. Otherwise the
+    fix would have made the routes effectively localhost-only, breaking
+    operators who run ``rapid-mlx`` behind a private VPN with ``--api-key``
+    set and want to hit the admin routes from their laptop.
+    """
+    build, _ = client_factory
+    client = build(api_key="operator-secret", client_host="10.0.0.5")
+
+    r = client.request(
+        method,
+        path,
+        headers={
+            "X-Rapid-MLX-Internal": "true",
+            "Authorization": "Bearer operator-secret",
+        },
+    )
+    assert r.status_code not in (401, 403), (
+        f"{method} {path}: LAN caller with valid api-key should pass, "
+        f"got {r.status_code}: {r.text}"
+    )
+
+
+def test_loopback_ipv6_is_recognised():
+    """``::1`` (canonical IPv6 loopback) is treated the same as 127.0.0.1.
+    Defends against a future refactor that switches to a string-equality
+    check and accidentally locks out callers binding on ``::1``."""
+    from vllm_mlx.middleware.auth import _is_loopback_client
+
+    # Build a minimal request-like object exposing ``.client.host``.
+    class _C:
+        def __init__(self, host: str) -> None:
+            self.host = host
+            self.port = 50000
+
+    class _R:
+        def __init__(self, host: str) -> None:
+            self.client = _C(host)
+
+    assert _is_loopback_client(_R("127.0.0.1")) is True
+    assert _is_loopback_client(_R("::1")) is True
+    assert _is_loopback_client(_R("localhost")) is True
+    # Bare IPv4-mapped-IPv6 form of loopback also resolves via is_loopback.
+    assert _is_loopback_client(_R("::ffff:127.0.0.1")) is True
+    # Anything in the 127.0.0.0/8 block.
+    assert _is_loopback_client(_R("127.0.0.42")) is True
+    # And anything outside is NOT loopback.
+    assert _is_loopback_client(_R("10.0.0.5")) is False
+    assert _is_loopback_client(_R("8.8.8.8")) is False
+    assert _is_loopback_client(_R("not-an-ip")) is False
+    # ``request.client`` may be None on some ASGI servers / test rigs.
+    assert _is_loopback_client(_R(None)) is False  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------

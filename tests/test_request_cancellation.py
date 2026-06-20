@@ -134,7 +134,15 @@ class TestCancelRequestEndpoint:
         app = FastAPI()
         app.include_router(router)
         app.include_router(admin_router)
-        client = TestClient(app)
+        # ``TestClient(app)`` defaults the scope's ``client`` to
+        # ``("testclient", 50000)`` which is NOT loopback under
+        # ``ipaddress.is_loopback``. ``verify_internal_admin`` (codex r1 fix)
+        # rejects non-loopback callers when ``cfg.api_key`` is unset, so we
+        # pin the client to ``127.0.0.1`` here — this fixture is exercising
+        # the route's body/leak behaviour, not the auth gate's loopback
+        # branch. The dedicated coverage lives in
+        # ``test_internal_route_auth.py``.
+        client = TestClient(app, client=("127.0.0.1", 50000))
         try:
             yield client, engine
         finally:
@@ -199,7 +207,7 @@ class TestCancelRequestEndpoint:
             app = FastAPI()
             app.include_router(router)
             app.include_router(admin_router)
-            client = TestClient(app)
+            client = TestClient(app, client=("127.0.0.1", 50000))
 
             response = client.post("/v1/requests/any/cancel", headers=self._HDRS)
 

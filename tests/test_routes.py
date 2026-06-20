@@ -479,7 +479,12 @@ class TestHealthRoutes:
         orig = self._patch_config(engine=None)
         try:
             app = self._make_app()
-            client = TestClient(app)
+            # ``TestClient(app)`` defaults to client ``("testclient", 50000)``
+            # which is NOT loopback. ``verify_internal_admin`` (codex r1 fix)
+            # rejects non-loopback callers when ``--api-key`` is unset, so we
+            # pin to 127.0.0.1 here — the auth-gate's loopback branch has its
+            # own coverage in ``test_internal_route_auth.py``.
+            client = TestClient(app, client=("127.0.0.1", 50000))
             r = client.post("/v1/cache/clear", headers=self._INTERNAL_HEADERS)
             assert r.status_code == 503
         finally:
@@ -491,7 +496,7 @@ class TestHealthRoutes:
         orig = self._patch_config(engine=mock_engine)
         try:
             app = self._make_app()
-            client = TestClient(app)
+            client = TestClient(app, client=("127.0.0.1", 50000))
             r = client.post("/v1/cache/clear", headers=self._INTERNAL_HEADERS)
             assert r.status_code == 200
             assert "No prompt cache" in r.json()["message"]
@@ -501,6 +506,9 @@ class TestHealthRoutes:
     def test_cache_stats_no_vlm(self):
         """Cache stats returns fallback when mlx_vlm not available."""
         app = self._make_app()
+        # ``/v1/cache/stats`` is a READ route (gated by ``verify_api_key``, no
+        # internal-header requirement), so default TestClient host is fine
+        # here — this test only verifies the fallback envelope shape.
         client = TestClient(app)
         r = client.get("/v1/cache/stats")
         assert r.status_code == 200
@@ -511,7 +519,9 @@ class TestHealthRoutes:
     def test_cache_delete(self):
         """Cache delete endpoint works."""
         app = self._make_app()
-        client = TestClient(app)
+        # Destructive route — pin loopback so the codex r1 auth check passes
+        # when ``--api-key`` is unset (this test's posture).
+        client = TestClient(app, client=("127.0.0.1", 50000))
         r = client.delete("/v1/cache", headers=self._INTERNAL_HEADERS)
         assert r.status_code == 200
 
