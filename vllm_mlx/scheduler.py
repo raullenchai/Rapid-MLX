@@ -2031,12 +2031,19 @@ class Scheduler:
             # plumbing is engaged on a deployment without spamming the
             # request log on every seeded request. Mirrors the
             # ``_fused_top_p_logged`` belt below.
+            #
+            # Codex r1 NIT: do NOT include the raw seed value here. Seeds
+            # are caller-controlled and routinely come from eval / audit
+            # harnesses where leakage to an operator log would let a
+            # reviewer replay the exact graded outputs. Operators just
+            # need to know the per-request RNG path is engaged; the
+            # request itself can still be correlated by the request id
+            # on the surrounding scheduler log line.
             if not getattr(self, "_seeded_sampler_logged", False):
                 logger.info(
-                    "[seeded_sampler] H-11 engaged — per-request seeds "
-                    "are honoured (first request: seed=%d temp=%.3f "
+                    "[seeded_sampler] H-11 engaged — per-request "
+                    "seeds are honoured (sample shape: temp=%.3f "
                     "top_p=%.3f)",
-                    _seed,
                     sampling_params.temperature,
                     sampling_params.top_p,
                 )

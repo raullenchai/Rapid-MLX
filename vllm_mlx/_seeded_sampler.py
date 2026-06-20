@@ -100,8 +100,14 @@ def make_seeded_sampler(
 
         return greedy
 
-    if temperature <= 0.0:
-        raise ValueError("seeded sampler requires temperature >= 0")
+    # ``temperature == 0`` is already handled by the greedy short-circuit
+    # above; reaching this branch with ``<= 0`` means the caller passed a
+    # negative value (API layer rejects this via Field bounds, but a direct
+    # engine caller bypassing the schema must still get a coherent error).
+    if temperature < 0.0:
+        raise ValueError(
+            f"seeded sampler requires temperature >= 0 (got {temperature})"
+        )
 
     temp_inv = 1.0 / float(temperature)
     use_top_p = 0.0 < top_p < 1.0
@@ -122,11 +128,7 @@ def make_seeded_sampler(
         # fused fast path: half precision rounds the top-p cutoff away
         # on production logits and ``mx.cumsum`` over bfloat16 is
         # unsupported in MLX 0.21.
-        work = (
-            logprobs.astype(mx.float32)
-            if logprobs.dtype != mx.float32
-            else logprobs
-        )
+        work = logprobs.astype(mx.float32) if logprobs.dtype != mx.float32 else logprobs
         vocab = work.shape[-1]
 
         # Build the kept-token mask in VOCAB order so we can sample
