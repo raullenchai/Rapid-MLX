@@ -8,6 +8,7 @@ one cohesive orchestrator, because reasoning/tool/sanitize are tightly coupled.
 
 from __future__ import annotations
 
+import json
 import logging
 import uuid
 from typing import TYPE_CHECKING
@@ -425,6 +426,137 @@ class StreamingPostProcessor:
         # only after the parser call succeeds.
         return "</think>" + delta_text
 
+    def _forced_tool_choice_name(self) -> str | None:
+        """Return the forced ``tool_choice`` function name, if any.
+
+        OpenAI spec: ``tool_choice={"type":"function","function":
+        {"name":"X"}}`` forces the model to call exactly the named
+        function — no other tool may appear in ``tool_calls[*]``.
+
+        F-200 (2026-06-20): reasoning models that share the hermes
+        tool parser (qwen3-thinking, phi-4-mini-reasoning, …)
+        speculatively emit scratch ``<tool_call>...</tool_call>``
+        blocks INSIDE ``<think>`` while planning. The MiniMax tool-
+        markup redirect (load-bearing for the forced-prefix-in-think
+        path) promotes those scratch blocks to content + tool_call
+        detection, which then ship as schema-violating tool_calls
+        with non-JSON ``arguments`` (e.g. bare ``"1234567890"``).
+        Filtering on the forced name at delta-emission time keeps
+        ONLY the spec-compliant call on the wire.
+
+        Returns ``None`` when ``tool_choice`` is unset, ``"auto"`` /
+        ``"none"`` / ``"required"``, or a non-string-named function
+        shape — i.e. only the unambiguous named-function form gates
+        the filter. ``"required"`` (no name) is intentionally NOT
+        gated here: the model may legitimately choose any of the
+        submitted tools.
+        """
+        req = self.request
+        if req is None:
+            return None
+        if isinstance(req, dict):
+            tc = req.get("tool_choice")
+        else:
+            tc = getattr(req, "tool_choice", None)
+        if not isinstance(tc, dict):
+            return None
+        if tc.get("type") != "function":
+            return None
+        fn = tc.get("function")
+        if not isinstance(fn, dict):
+            return None
+        name = fn.get("name")
+        return name if isinstance(name, str) and name else None
+
+    def _apply_forced_tool_choice_filter(
+        self, tool_calls: list[dict]
+    ) -> list[dict]:
+        """Suppress streaming tool_calls deltas that violate a forced
+        ``tool_choice`` named-function contract.
+
+        Two drop conditions, both required by the OpenAI spec:
+
+        1. **Wrong function**: an anchor delta naming a function other
+           than the forced choice. This catches harmony / gemma4
+           channel-routed calls to other tools the model speculated
+           on but the client never requested.
+
+        2. **Schema-violating arguments**: an anchor whose
+           ``arguments`` is non-empty AND does not parse as a JSON
+           OBJECT. The OpenAI spec mandates ``arguments`` be a JSON-
+           encoded string and tool schemas are object-shaped
+           (``{"type":"object","properties":{…}}``); a bare integer
+           ``"1234567890"`` or string ``"☉ Paris output"`` is the
+           model's scratch-pad — not a real call. Captures the
+           F-200 reasoning-model scratch leak that the MiniMax tool-
+           markup redirect promoted into structured deltas.
+
+        Argument-fragment continuation deltas (no name, no id) pass
+        through unconditionally — the parallel-cap layer already
+        tracks ``_no_index_last_dropped`` so fragments routed to a
+        dropped anchor are suppressed.
+
+        No-op when no forced ``tool_choice`` name is set: the request
+        is in auto / required / unset mode, and multi-tool and
+        flexible-argument flows must keep working.
+        """
+        forced_name = self._forced_tool_choice_name()
+        if not forced_name:
+            return tool_calls
+        filtered: list[dict] = []
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                filtered.append(tc)
+                continue
+            fn = tc.get("function") if isinstance(tc.get("function"), dict) else None
+            wrapped_name = (
+                fn.get("name") if fn and isinstance(fn.get("name"), str) else None
+            )
+            flat_name = (
+                tc.get("name") if isinstance(tc.get("name"), str) else None
+            )
+            anchor_name = wrapped_name or flat_name
+            if anchor_name is None:
+                # Continuation fragment — defer to cap-layer routing.
+                filtered.append(tc)
+                continue
+            if anchor_name != forced_name:
+                # Wrong function — suppress this anchor and tell the
+                # cap layer to drop its fragment continuations.
+                self._no_index_last_dropped = True
+                continue
+            # Right function: validate the (so-far complete) arguments
+            # field. ``arguments`` can be absent on an anchor that
+            # only carries name (the JSON body streams in later
+            # fragments); pass those through. When arguments IS
+            # present and is non-empty, require it to parse as a
+            # JSON object.
+            wrapped_args = (
+                fn.get("arguments") if fn and isinstance(fn.get("arguments"), str) else None
+            )
+            flat_args = (
+                tc.get("arguments") if isinstance(tc.get("arguments"), str) else None
+            )
+            args_str = wrapped_args if wrapped_args is not None else flat_args
+            if args_str and args_str.strip():
+                try:
+                    parsed = json.loads(args_str)
+                except (ValueError, TypeError):
+                    # Args don't parse as JSON at all — could be a
+                    # mid-stream fragment that hasn't accumulated yet,
+                    # so let it through; downstream validators will
+                    # log if the final assembly is still broken.
+                    parsed = ...  # sentinel
+                if parsed is not ... and not isinstance(parsed, dict):
+                    # F-200 root case: ``arguments`` parsed as JSON
+                    # but the root type is not ``object`` (bare
+                    # int / string / list). Schema-violating —
+                    # drop the anchor and route fragments to drop.
+                    self._no_index_last_dropped = True
+                    continue
+            filtered.append(tc)
+        return filtered
+
     def _parallel_tool_calls_allowed(self) -> bool:
         """Return False iff the request explicitly opted out of
         parallel tool calls via ``parallel_tool_calls=false``.
@@ -772,6 +904,19 @@ class StreamingPostProcessor:
         # literal harmony sentinels were corrupted by sentinel-
         # anchored regex parsing).
         engine_tool_calls = getattr(output, "tool_calls", None) or []
+        # F-200: when ``tool_choice`` forces a named function, suppress
+        # any structured channel-routed calls whose name does not match.
+        # Harmony / gemma4 channel parsers can surface speculative calls
+        # to other tools alongside the forced one — clients reading the
+        # forced-tool wire expect exactly one call to the named tool.
+        if engine_tool_calls:
+            _forced_name = self._forced_tool_choice_name()
+            if _forced_name:
+                engine_tool_calls = [
+                    _tc
+                    for _tc in engine_tool_calls
+                    if isinstance(_tc, dict) and _tc.get("name") == _forced_name
+                ]
         if output.channel == "tool_call" and engine_tool_calls:
             # ``parallel_tool_calls=false`` is a hard external contract:
             # the non-streaming path caps the parsed list at one
@@ -920,7 +1065,20 @@ class StreamingPostProcessor:
                 # BLOCKING: admit by ``index`` so continuation deltas
                 # (incremental argument fragments for the same call)
                 # don't each consume a slot.
-                allowed_tcs = self._apply_parallel_cap(result["tool_calls"])
+                # F-200: forced ``tool_choice`` name filter MUST run
+                # before the parallel cap — otherwise a scratch-call
+                # delta inside ``<think>`` (qwen3-thinking / phi-4-
+                # mini-reasoning hit the MiniMax tool-markup redirect
+                # which promotes those scratch ``<tool_call>`` bodies
+                # to content + tool_call detection) takes the only
+                # cap slot and the real forced call is dropped as
+                # ``parallel_tool_calls=false`` overflow. The forced-
+                # name filter drops the scratch anchor first so the
+                # cap admits the legitimate forced call.
+                _tc_list = self._apply_forced_tool_choice_filter(
+                    result["tool_calls"]
+                )
+                allowed_tcs = self._apply_parallel_cap(_tc_list)
                 if not allowed_tcs:
                     self.tool_calls_detected = True
                     if output.finished:
@@ -1151,7 +1309,13 @@ class StreamingPostProcessor:
         if reasoning:
             self.accumulated_reasoning += reasoning
 
-        # MiniMax redirect: tool calls wrapped in <think> blocks
+        # MiniMax redirect: tool calls wrapped in <think> blocks.
+        # Also load-bearing for hermes / qwen3-thinking when the chat
+        # template pre-injects ``<think>`` AND a forced ``tool_choice``
+        # prefix lands the model inside an in-think tool envelope —
+        # the reasoning parser would otherwise leave the model's
+        # continuation of the prefix in the reasoning channel and the
+        # tool_call would never surface.
         if self.tool_parser and reasoning:
             _check = self.tool_accumulated_text + reasoning
             if (
@@ -1205,7 +1369,20 @@ class StreamingPostProcessor:
                 # BLOCKING: admit by ``index`` so continuation deltas
                 # (incremental argument fragments for the same call)
                 # don't each consume a slot.
-                allowed_tcs = self._apply_parallel_cap(result["tool_calls"])
+                # F-200: forced ``tool_choice`` name filter MUST run
+                # before the parallel cap — otherwise a scratch-call
+                # delta inside ``<think>`` (qwen3-thinking / phi-4-
+                # mini-reasoning hit the MiniMax tool-markup redirect
+                # which promotes those scratch ``<tool_call>`` bodies
+                # to content + tool_call detection) takes the only
+                # cap slot and the real forced call is dropped as
+                # ``parallel_tool_calls=false`` overflow. The forced-
+                # name filter drops the scratch anchor first so the
+                # cap admits the legitimate forced call.
+                _tc_list = self._apply_forced_tool_choice_filter(
+                    result["tool_calls"]
+                )
+                allowed_tcs = self._apply_parallel_cap(_tc_list)
                 if not allowed_tcs:
                     self.tool_calls_detected = True
                     if output.finished:
@@ -1340,7 +1517,20 @@ class StreamingPostProcessor:
                 # incremental argument fragments don't each consume a
                 # cap slot (qwen3_coder pattern — header delta + N
                 # argument-fragment deltas all share the same index).
-                allowed_tcs = self._apply_parallel_cap(result["tool_calls"])
+                # F-200: forced ``tool_choice`` name filter MUST run
+                # before the parallel cap — otherwise a scratch-call
+                # delta inside ``<think>`` (qwen3-thinking / phi-4-
+                # mini-reasoning hit the MiniMax tool-markup redirect
+                # which promotes those scratch ``<tool_call>`` bodies
+                # to content + tool_call detection) takes the only
+                # cap slot and the real forced call is dropped as
+                # ``parallel_tool_calls=false`` overflow. The forced-
+                # name filter drops the scratch anchor first so the
+                # cap admits the legitimate forced call.
+                _tc_list = self._apply_forced_tool_choice_filter(
+                    result["tool_calls"]
+                )
+                allowed_tcs = self._apply_parallel_cap(_tc_list)
                 if not allowed_tcs:
                     self.tool_calls_detected = True
                     if output.finished:
@@ -1521,17 +1711,32 @@ class StreamingPostProcessor:
                 _fallback_text, request=self.request
             )
             if result.tools_called:
-                events.append(
-                    self._build_tool_call_event(
-                        {
-                            "id": tc["id"],
-                            "name": tc["name"],
-                            "arguments": tc["arguments"],
-                        }
-                        for tc in result.tool_calls
-                    )
+                # F-200: forced ``tool_choice`` filter on the finalize
+                # cross-format recovery path. ``extract_tool_calls``
+                # on the configured parser may return multiple calls
+                # (a scratch ``<tool_call>`` inside ``<think>`` plus
+                # the real one) — drop any whose name does not match
+                # the forced choice. When ALL calls are filtered out,
+                # fall through to the cross-format fallback (parser
+                # may have a different recovery path).
+                _forced_name = self._forced_tool_choice_name()
+                _filtered_calls = (
+                    [tc for tc in result.tool_calls if tc.get("name") == _forced_name]
+                    if _forced_name
+                    else list(result.tool_calls)
                 )
-                self.tool_calls_detected = True
+                if _filtered_calls:
+                    events.append(
+                        self._build_tool_call_event(
+                            {
+                                "id": tc["id"],
+                                "name": tc["name"],
+                                "arguments": tc["arguments"],
+                            }
+                            for tc in _filtered_calls
+                        )
+                    )
+                    self.tool_calls_detected = True
             else:
                 # Cross-format fallback. The configured streaming parser is bound to
                 # ONE wire format; ``parse_tool_calls`` in ``api/tool_calling.py``
@@ -1550,6 +1755,14 @@ class StreamingPostProcessor:
                         "finalize cross-format fallback parser raised: %s", e
                     )
                     fb_tcs = None
+                if fb_tcs:
+                    # F-200: same forced-name filter on the cross-
+                    # format fallback path.
+                    _forced_name = self._forced_tool_choice_name()
+                    if _forced_name:
+                        fb_tcs = [
+                            tc for tc in fb_tcs if tc.function.name == _forced_name
+                        ]
                 if fb_tcs:
                     logger.info(
                         "[finalize] cross-format fallback recovered %d tool_call(s); "
