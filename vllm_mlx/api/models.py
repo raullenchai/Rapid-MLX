@@ -404,9 +404,7 @@ def _validate_response_format_raw(value):
     # message; Pydantic's default union-fallback would otherwise
     # produce a misleading error pointing at the wrong arm.
     if not isinstance(value, dict):
-        raise ValueError(
-            "response_format must be an object with a 'type' field"
-        )
+        raise ValueError("response_format must be an object with a 'type' field")
     # From here we're on the dict arm. Mirror the route-layer enum
     # rules + add the missing inner-``schema`` shape check.
     if "type" not in value:
@@ -414,8 +412,7 @@ def _validate_response_format_raw(value):
     rf_type = value.get("type")
     if rf_type not in _VALID_RESPONSE_FORMAT_TYPES:
         raise ValueError(
-            "response_format.type must be 'text', 'json_object', "
-            "or 'json_schema'"
+            "response_format.type must be 'text', 'json_object', or 'json_schema'"
         )
     if rf_type == "json_schema":
         json_schema_field = value.get("json_schema")
@@ -425,8 +422,17 @@ def _validate_response_format_raw(value):
                 "non-empty 'json_schema' field"
             )
         if not isinstance(json_schema_field, dict):
+            raise ValueError("response_format.json_schema must be an object")
+        # Mirror the typed ``ResponseFormatJsonSchema.name: str``
+        # required field on the dict arm — codex round-1 BLOCKING
+        # follow-up. The bare-dict union arm would otherwise swallow
+        # ``{"json_schema":{"schema":{...}}}`` (no ``name``) and the
+        # downstream guided-generation extractor skips its lookup
+        # silently, producing an unconstrained 200.
+        name_field = json_schema_field.get("name")
+        if not name_field or not isinstance(name_field, str):
             raise ValueError(
-                "response_format.json_schema must be an object"
+                "response_format.json_schema.name is required and must be a string"
             )
         inner_schema = json_schema_field.get("schema")
         if inner_schema is None:
