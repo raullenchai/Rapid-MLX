@@ -3,6 +3,7 @@
 
 import logging
 import os
+import re
 import tempfile
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
@@ -43,6 +44,22 @@ STT_MODEL_ALIASES: dict[str, str] = {
     "parakeet-v3": "mlx-community/parakeet-tdt-0.6b-v3",
 }
 
+# F-210: model strings must canonicalize to either a bare alias name
+# (matches an entry in ``STT_MODEL_ALIASES``) or a single-slash
+# HuggingFace-style ``<org>/<repo>`` id. Anything else — multi-slash
+# paths (``foo/bar/baz``), all-slash strings (``////``), control
+# characters, leading/trailing slashes, etc. — bypasses the alias lookup
+# and trips a downstream codec-open failure that surfaces as a generic
+# 500 ``transcription_failed``. Reject these BEFORE attempting decode so
+# the canonical 404 ``model_not_found_error`` fires instead.
+#
+# Allowed characters mirror HuggingFace's repo-id conventions
+# (alphanumeric, underscore, dot, hyphen, plus). Length cap (128) is
+# defensive; longest legitimate HF repo id observed in the wild is ~80.
+_STT_MODEL_NAME_RE = re.compile(
+    r"^[A-Za-z0-9_.\-+]{1,128}(?:/[A-Za-z0-9_.\-+]{1,128})?$"
+)
+
 
 def _resolve_stt_model(model: str) -> str:
     """Resolve an OpenAI-style STT model alias to the MLX repo path.
@@ -71,6 +88,31 @@ def _resolve_stt_model(model: str) -> str:
         )
     if model in STT_MODEL_ALIASES:
         return STT_MODEL_ALIASES[model]
+
+    # F-210: path-shaped / malformed model ids (``foo/bar/baz``,
+    # ``////``, leading/trailing slashes, control chars) used to slip
+    # past the simple ``"/" in model`` heuristic, then crash inside
+    # ``STTEngine.load`` as a generic 500 ``transcription_failed``.
+    # Canonicalize these to the same 404 ``model_not_found_error`` the
+    # bogus-alias path returns (F-167 / PR #735) by enforcing the
+    # repo-id regex BEFORE attempting any codec open.
+    if not _STT_MODEL_NAME_RE.fullmatch(model):
+        available = ", ".join(sorted(STT_MODEL_ALIASES.keys()))
+        raise HTTPException(
+            status_code=404,
+            detail={
+                "error": {
+                    "message": (
+                        f"The model `{model}` does not exist. "
+                        f"Available STT aliases: {available}"
+                    ),
+                    "type": "model_not_found_error",
+                    "code": "model_not_found",
+                    "param": "model",
+                }
+            },
+        )
+
     if "/" in model:
         # Looks like a HuggingFace repo id — let STTEngine attempt to
         # load it. ImportError / model-load errors still surface, but
