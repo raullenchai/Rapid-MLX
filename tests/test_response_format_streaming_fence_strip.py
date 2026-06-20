@@ -312,6 +312,42 @@ class TestJsonObjectFenceStripping:
         )
         assert joined == '{"answer": 42}'
 
+    def test_non_json_block_closer_then_bare_json_no_misclassification(self):
+        """Codex r10 BLOCKING: a preamble that contains a CLOSED
+        non-JSON code block (``` ```python\\nx\\n``` ``) followed by
+        BARE JSON (no fence) must NOT misclassify the python block's
+        CLOSING ``` ``` `` (which is then followed by ``\\n{``) as
+        an opening JSON fence.
+
+        Earlier ``_find_json_fence_opener`` walked every ``` ``` ``
+        and treated it as an opener if the next non-whitespace char
+        was ``{``/``[``. The python block's CLOSING ``` ``` `` met
+        that test (it sat before the bare ``{`` of the answer) and
+        was anchored on — which caused the JSON to be released
+        truncated. Fix: pair each fence with its matching closer and
+        skip past the closer before scanning the next fence."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        # Note: NO ``` ```json `` wrapper anywhere — just an
+        # illustrative python block then bare JSON.
+        joined = _stream_chunks(
+            pp,
+            [
+                "Here is the python example:\n"
+                "```python\n"
+                "x = 1\n"
+                "```\n"
+                'And the answer: {"k": 1}'
+            ],
+        )
+        # Bare-JSON contract: only the JSON object is emitted (the
+        # existing ``_process_standard`` preamble strip already
+        # peels everything before the first ``{`` — the codex r10
+        # fix ensures the python closer is not anchored on, so the
+        # JSON survives intact).
+        assert joined == '{"k": 1}'
+
     def test_fenced_stream_post_root_close_prose_split_then_fence(self):
         """Codex r9 BLOCKING #1: in fenced mode, bytes between the JSON
         root close and the closing ``` ``` `` fence must NOT leak.

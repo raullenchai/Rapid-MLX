@@ -68,6 +68,15 @@ def _find_json_fence_opener(text: str) -> int:
     that ambiguity — language-tagged code blocks (python, bash,
     etc.) and string-content fences don't match.
 
+    Codex r10 BLOCKING: the scan must NOT look past the
+    matching CLOSING fence of a NON-JSON block. Otherwise a preamble
+    like ``\\n```python\\nx\\n```\\n{"k":1}`` would treat the python
+    block's closing ``` ``` `` (followed by ``\\n{`` in the next text)
+    as an opening JSON fence. We pair each ``` ``` `` with its
+    matching closer and skip past the closer before scanning the
+    next fence — only the OPENING fences can win, and only those
+    whose immediately-following payload begins with a JSON delimiter.
+
     Returns the index of the first backtick of the chosen fence,
     or -1 if no JSON-bearing fence is found. Multiple matches: the
     LAST one wins (preferring the most recent fence — the model is
@@ -82,7 +91,8 @@ def _find_json_fence_opener(text: str) -> int:
             break
         # Skip past the fence + optional ``json`` tag + whitespace.
         cur = pos + 3
-        if text[cur : cur + 4].lower() == "json":
+        is_json_tagged = text[cur : cur + 4].lower() == "json"
+        if is_json_tagged:
             cur += 4
         while cur < n and text[cur] in " \t\r\n":
             cur += 1
@@ -90,7 +100,13 @@ def _find_json_fence_opener(text: str) -> int:
         # fence opens a JSON block — eligible as the opener.
         if cur < n and text[cur] in "{[":
             best = pos
-        i = pos + 3
+        # Codex r10 BLOCKING: advance past the matching CLOSING
+        # fence so we don't treat its trailing whitespace + a later
+        # JSON delimiter as a fresh opener. If no closer exists yet
+        # (streaming: closer hasn't arrived), advance one char past
+        # the opener so we don't loop forever on the same position.
+        closer = text.find("```", pos + 3)
+        i = closer + 3 if closer >= 0 else pos + 3
     return best
 
 
