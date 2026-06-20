@@ -724,7 +724,17 @@ class EngineCore:
             cf = self._mlx_executor.submit(self.scheduler.add_request, request)
             try:
                 await asyncio.wrap_future(cf, loop=loop)
-            except BaseException:
+            except (asyncio.CancelledError, Exception):
+                # Codex r2 P1 #1: catch the request-control exceptions
+                # we own (cancellation and ordinary errors) but let
+                # process-control ``BaseException``s
+                # (``KeyboardInterrupt`` / ``SystemExit``) propagate
+                # unaltered — we should NOT be mutating
+                # scheduler/request state during a process shutdown
+                # path. The cleanup invariants below assume the
+                # executor is still running; under a SIGINT the
+                # interpreter is tearing down and the right thing is
+                # to bubble out cleanly.
                 # The executor task may still be running. Hand
                 # cleanup off to fire AFTER it completes (the abort
                 # MUST land AFTER ``scheduler.add_request`` returns or

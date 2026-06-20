@@ -1266,24 +1266,35 @@ class BatchedEngine(BaseEngine):
                     cached_tokens=output.cached_tokens,
                 )
         finally:
-            # Best-effort defensive abort: hit the SYNC scheduler path
-            # so the finally is safe to run under GeneratorExit (Python
-            # 3.8+ allows ``await`` in an async generator's finally only
-            # for awaitables that resolve without suspending — the
-            # scheduler's ``abort_request`` adds to a thread-safe set
-            # and returns immediately). Idempotent against double-abort
-            # from ``stream_outputs.finally``: it just adds the same id
-            # to ``_pending_abort_ids`` twice, and ``_do_abort_request``
-            # is itself idempotent for the already-finished case.
+            # Best-effort defensive abort. Codex r2 P1 #2 concern: this
+            # runs on the asyncio event-loop thread (we're inside an
+            # async generator's finally), while scheduler.add_request
+            # is dispatched through the MLX executor. The thread-safety
+            # contract that makes this safe is documented on
+            # ``Scheduler.abort_request`` itself ("Queue request for
+            # abort. Thread-safe, called from any thread. The actual
+            # abort is deferred to the executor thread (inside step())
+            # to avoid race conditions with in-flight Metal GPU
+            # operations.") — it is a one-line ``set.add`` + log, NOT
+            # the executor-thread ``_do_abort_request`` which the
+            # scheduler's own ``_process_pending_aborts`` will run on
+            # the next ``step()``. So the event loop is never blocked
+            # here, and the executor-thread invariant is preserved.
+            # ``_cleanup_request`` is also non-blocking — just dict
+            # pops + a ``scheduler.remove_finished_request`` ``pop``.
             #
-            # Also call ``_cleanup_request`` so per-request collectors /
-            # stream state / finished events are released even if
-            # ``stream_outputs.finally`` didn't run (the bug window).
+            # Idempotent against double-abort from
+            # ``stream_outputs.finally``: adds the same id to
+            # ``_pending_abort_ids`` twice, and ``_do_abort_request``
+            # is itself idempotent for the already-finished case.
             try:
                 eng = self._engine
                 if eng is not None and hasattr(eng, "scheduler"):
+                    # Thread-safe non-blocking enqueue — see
+                    # docstring on ``Scheduler.abort_request``.
                     eng.scheduler.abort_request(request_id)
                 if eng is not None and hasattr(eng, "_cleanup_request"):
+                    # Non-blocking dict pops + idempotent.
                     eng._cleanup_request(request_id)
             except Exception:
                 logger.debug(
