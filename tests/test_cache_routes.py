@@ -48,13 +48,29 @@ def cache_client(monkeypatch, sandbox):
 
     app = FastAPI()
     app.include_router(router)
-    yield SimpleNamespace(client=TestClient(app), sandbox=sandbox)
+    # F-180: pin loopback as the TestClient origin so the
+    # ``verify_internal_admin`` loopback escape hatch resolves true. The
+    # default ``("testclient", 50000)`` host is NOT loopback and would 403
+    # every test once the cache router moved onto the admin gate.
+    yield SimpleNamespace(
+        client=TestClient(app, client=("127.0.0.1", 50000)),
+        sandbox=sandbox,
+    )
 
     reset_config()
 
 
 def _auth() -> dict:
-    return {"Authorization": "Bearer test-secret"}
+    """Auth headers for the cache router (F-180).
+
+    Bearer alone is no longer sufficient — the cache router now sits behind
+    ``verify_internal_admin``, which requires ``X-Rapid-MLX-Internal: true``
+    AND (because ``--api-key`` is configured in the fixture) a valid bearer.
+    """
+    return {
+        "Authorization": "Bearer test-secret",
+        "X-Rapid-MLX-Internal": "true",
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -243,24 +259,35 @@ def test_manifest_from_dict_drops_unknown_fields(tmp_path):
     ],
 )
 def test_routes_require_auth(cache_client, method, path, body):
-    """No bearer → 401 on every route."""
+    """F-180: no ``X-Rapid-MLX-Internal`` header → 403 on every route.
+
+    Pre-F-180 these routes were on ``verify_api_key`` which returned 401 on
+    a missing bearer. Post-F-180 the header gate fires first and surfaces
+    as 403 even before the bearer check (auth-stage signals are distinct
+    so monitoring rules can grep them apart)."""
     client = cache_client.client
     if method == "post":
         resp = client.post(path, json=body)
     else:
         resp = client.get(path)
-    assert resp.status_code == 401, resp.text
+    assert resp.status_code == 403, resp.text
+    # The 403 detail must call out the missing header so an operator can
+    # diagnose the misconfiguration without grepping source.
+    body_json = resp.json()
+    detail = body_json.get("detail") or body_json.get("error", {}).get("message", "")
+    if isinstance(detail, dict):
+        detail = detail.get("message", "")
+    assert "X-Rapid-MLX-Internal" in detail, body_json
 
 
 def test_info_requires_auth_even_with_valid_manifest(cache_client):
     """An unauthenticated ``GET /v1/cache/info`` against a path with a
-    valid manifest must still return 401, not 200.
+    valid manifest must still 403 (F-180), not 200.
 
-    Codex round-3 NIT: the parametrized auth check uses an empty default
-    path, where auth-fires-before-handler is indistinguishable from
-    auth-fires-after-handler by 404 vs 401 ordering. With a real manifest
-    in place, a bypassed auth dependency would surface as a 200 — this
-    test catches that exact regression.
+    Codex round-3 NIT (original): with auth-fires-before-handler the empty
+    default path returns the same status as a missing-handler-output. With
+    a real manifest in place, a bypassed auth dependency would surface as
+    a 200 — this test catches that exact regression for the F-180 gate.
     """
     _write_export_root(
         cache_client.sandbox,
@@ -268,14 +295,21 @@ def test_info_requires_auth_even_with_valid_manifest(cache_client):
         Manifest(protocol_version=PROTOCOL_VERSION, model_id="x", entries=1),
     )
     resp = cache_client.client.get("/v1/cache/info?path=valid")
-    assert resp.status_code == 401
+    assert resp.status_code == 403
 
 
 def test_routes_reject_wrong_bearer(cache_client):
+    """With the internal header present but a wrong bearer, the api-key gate
+    fires (because ``cfg.api_key`` is set) and returns 401. Pre-F-180 this
+    test sent only the bearer; post-F-180 we must also send the header so
+    the request gets past the header gate to the bearer check."""
     resp = cache_client.client.post(
         "/v1/cache/export",
         json={},
-        headers={"Authorization": "Bearer wrong"},
+        headers={
+            "Authorization": "Bearer wrong",
+            "X-Rapid-MLX-Internal": "true",
+        },
     )
     assert resp.status_code == 401
 
@@ -286,15 +320,23 @@ def test_routes_reject_wrong_bearer(cache_client):
 
 
 def test_export_default_destination_returns_501(cache_client):
-    """No destination → uses sandbox root, then 501 with #476 link."""
+    """No destination → uses sandbox root, then 501 with the sanitized
+    F-180 envelope (no resolved-path leak, no tracking-URL leak)."""
     resp = cache_client.client.post("/v1/cache/export", json={}, headers=_auth())
     assert resp.status_code == 501
     detail = resp.json()["detail"]
-    assert "issue" in detail and "476" in detail["issue"]
-    assert detail["validated"]["protocol_version"] == PROTOCOL_VERSION
-    # Resolved destination must be inside the sandbox.
+    # F-180: minimal envelope, no operator-controlled fields.
+    assert detail == {
+        "error": {
+            "message": "not implemented",
+            "type": "not_implemented_error",
+            "code": None,
+        }
+    }
+    # The resolved destination must NOT appear anywhere in the body.
     sandbox_real = str(Path(cache_client.sandbox).resolve())
-    assert detail["validated"]["destination"].startswith(sandbox_real)
+    assert sandbox_real not in resp.text
+    assert "github.com" not in resp.text
 
 
 def test_export_rejects_path_traversal(cache_client):
@@ -447,7 +489,8 @@ def test_import_model_id_mismatch_returns_409(cache_client):
 
 
 def test_import_validated_request_returns_501(cache_client):
-    """All checks pass → 501 with the parsed manifest echoed back."""
+    """All checks pass → 501 with the sanitized F-180 envelope (no resolved
+    source path, no parsed-manifest echo, no tracking-URL leak)."""
     manifest = Manifest(
         protocol_version=PROTOCOL_VERSION,
         model_id="qwen3.5-9b-4bit",
@@ -466,9 +509,19 @@ def test_import_validated_request_returns_501(cache_client):
     )
     assert resp.status_code == 501
     detail = resp.json()["detail"]
-    assert detail["issue"].endswith("/476")
-    assert detail["validated"]["merge_strategy"] == "replace"
-    assert detail["validated"]["manifest"]["entries"] == 18
+    # F-180: minimal envelope, no operator-controlled fields.
+    assert detail == {
+        "error": {
+            "message": "not implemented",
+            "type": "not_implemented_error",
+            "code": None,
+        }
+    }
+    # Belt + braces: the resolved source dir and the model id must not surface.
+    sandbox_real = str(Path(cache_client.sandbox).resolve())
+    assert sandbox_real not in resp.text
+    assert "qwen3.5-9b-4bit" not in resp.text
+    assert "github.com" not in resp.text
 
 
 def test_import_rejects_path_traversal(cache_client):

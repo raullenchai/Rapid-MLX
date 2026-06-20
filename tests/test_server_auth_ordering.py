@@ -209,15 +209,21 @@ def _route_paths_with_auth(router):
     ``WebSocketRoute`` plumbing without dependency graphs).
 
     A route counts as auth-gated if it declares ANY dependency from the
-    ``verify_api_key*`` family — currently:
+    ``verify_api_key*`` family or the stricter ``verify_internal_admin``
+    family — currently:
 
     * ``verify_api_key`` — OpenAI-style bearer-token gate used by
-      chat/completions/embeddings/audio/cache/health/mcp/models/responses.
+      chat/completions/embeddings/audio/health/mcp/models/responses.
     * ``verify_api_key_or_x_api_key`` — same gate, additionally
       accepting Anthropic-native ``x-api-key`` header. Used by the
       ``/v1/messages*`` routes that mirror Anthropic's API shape.
+    * ``verify_internal_admin`` (F-180) — strictly stronger than
+      ``verify_api_key``: requires ``X-Rapid-MLX-Internal: true`` AND
+      either a valid api-key or a loopback caller. Used by the cache
+      router (export/import/info) and the health admin router (cache
+      clear, request cancel).
 
-    Both gates run BEFORE the route handler executes; either is
+    All gates run BEFORE the route handler executes; each is
     structurally equivalent for the bind→auth ordering invariant.
     """
     from vllm_mlx.middleware import auth as auth_mod
@@ -227,6 +233,10 @@ def _route_paths_with_auth(router):
         for name in dir(auth_mod)
         if name.startswith("verify_api_key")
     }
+    # F-180: ``verify_internal_admin`` is a strictly-stronger gate than
+    # ``verify_api_key`` — accept it under the same ordering invariant.
+    if hasattr(auth_mod, "verify_internal_admin"):
+        auth_funcs.add(auth_mod.verify_internal_admin)
     for r in router.routes:
         dep = getattr(r, "dependant", None)
         if dep is None:

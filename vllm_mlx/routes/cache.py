@@ -16,8 +16,13 @@ fill in with the engine-level save/load body. Stub behavior:
   whitelisted path and returns it. Lets a peer instance (or oai-mlx) GC
   / inspect an export root without round-tripping a full import.
 
-Auth follows ``vllm_mlx.routes.health``'s ``router``: the bearer key is
-enforced when ``--api-key`` is set, no new header is invented.
+Auth (F-180): mirrors ``vllm_mlx.routes.health``'s ``admin_router`` — every
+route on this router is gated by ``verify_internal_admin``, the same dep
+PR #728 added to ``POST /v1/cache/clear`` for F-150 / F-151. Cache export
+roots reveal disk-layout information (operator home-dir, export sandbox
+path) and import drives engine state, so these are destructive control-plane
+routes and must NOT be reachable from an unauthenticated LAN client when
+``--api-key`` is unset — ``verify_api_key`` is a no-op in that posture.
 """
 
 from __future__ import annotations
@@ -38,21 +43,33 @@ from ..cache.protocol import (
     read_manifest,
     resolve_cache_dir,
 )
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import verify_internal_admin
 
 logger = logging.getLogger(__name__)
 
-_ISSUE_URL = "https://github.com/raullenchai/Rapid-MLX/issues/476"
-_NOT_IMPLEMENTED_MSG = (
-    "engine integration pending; the wire contract (auth, path-whitelist, "
-    f"manifest schema v{PROTOCOL_VERSION}) is live — see {_ISSUE_URL}"
-)
+# F-180: 501 body must NOT echo operator-controlled context (export-root
+# path, issue URL) since the route is reachable pre-engine-integration —
+# sanitize the envelope. The tracking issue stays in source comments / logs
+# only. Mirrors the PR #728 "no model name in body" sanitization on cancel.
+_NOT_IMPLEMENTED_DETAIL = {
+    "error": {
+        "message": "not implemented",
+        "type": "not_implemented_error",
+        "code": None,
+    }
+}
 
 
+# F-180: ``verify_internal_admin`` (same dep PR #728 added to /v1/cache/clear).
+# ALWAYS requires ``X-Rapid-MLX-Internal: true`` even when ``--api-key`` is unset,
+# so an unauthenticated LAN client cannot probe the export sandbox layout
+# (501-body path leak) or call import with a chosen source path. When
+# ``--api-key`` IS configured the dep also requires a valid Bearer / x-api-key —
+# the internal-header is additive, not a bypass.
 router = APIRouter(
     prefix="/v1/cache",
     tags=["cache"],
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(verify_internal_admin)],
 )
 
 
@@ -166,24 +183,17 @@ async def export_cache(req: ExportRequest):
     checks pass.
     """
     destination = _resolve_or_400(req.destination)
+    # F-180: keep the resolved destination in server logs only — don't echo it
+    # in the 501 body. The resolved path expands to the operator's home dir
+    # (``/Users/<USERNAME>/.cache/rapid-mlx/cache_exports``) which is both a
+    # username leak AND a sandbox-layout disclosure useful for a follow-up
+    # path-traversal probe.
     logger.info(
-        "cache/export: validated destination=%s max_bytes=%s — %s",
+        "cache/export: validated destination=%s max_bytes=%s — not implemented",
         destination,
         req.max_bytes,
-        _NOT_IMPLEMENTED_MSG,
     )
-    raise HTTPException(
-        status_code=501,
-        detail={
-            "message": _NOT_IMPLEMENTED_MSG,
-            "issue": _ISSUE_URL,
-            "validated": {
-                "destination": str(destination),
-                "max_bytes": req.max_bytes,
-                "protocol_version": PROTOCOL_VERSION,
-            },
-        },
-    )
+    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED_DETAIL)
 
 
 @router.post("/import", status_code=501)
@@ -221,25 +231,17 @@ async def import_cache(req: ImportRequest):
             ),
         )
 
+    # F-180: keep resolved source path + manifest contents in server logs only.
+    # The manifest may carry model_id / cache layout details the caller already
+    # provided — but the resolved ``source`` expands to the operator home-dir
+    # under the sandbox root, so echoing it in the body is a username leak.
     logger.info(
-        "cache/import: validated source=%s manifest=%s merge=%s — %s",
+        "cache/import: validated source=%s manifest=%s merge=%s — not implemented",
         source,
         manifest.model_id,
         req.merge_strategy,
-        _NOT_IMPLEMENTED_MSG,
     )
-    raise HTTPException(
-        status_code=501,
-        detail={
-            "message": _NOT_IMPLEMENTED_MSG,
-            "issue": _ISSUE_URL,
-            "validated": {
-                "source": str(source),
-                "merge_strategy": req.merge_strategy,
-                "manifest": manifest.to_dict(),
-            },
-        },
-    )
+    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED_DETAIL)
 
 
 @router.get("/info")
