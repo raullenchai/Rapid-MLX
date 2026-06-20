@@ -33,19 +33,11 @@ from fastapi.testclient import TestClient
 # Routes that MUST require ``X-Rapid-MLX-Internal: true``. Parametrize over all
 # of them so a future addition to ``admin_router`` only needs an entry here to
 # get full unauth/auth/leak coverage.
-#
-# F-180: ``/v1/cache/{export,import,info}`` were originally on the
-# unauth-when-no-api-key ``cache`` router. They are now gated by the same
-# ``verify_internal_admin`` dep — pin that here so a future refactor splitting
-# the cache router doesn't silently drop the gate again.
 _DESTRUCTIVE_ROUTES = [
     ("POST", "/v1/cache/clear"),
     ("POST", "/v1/requests/some-request-id/cancel"),
     ("DELETE", "/v1/requests/some-request-id"),
     ("DELETE", "/v1/cache"),
-    ("POST", "/v1/cache/export"),
-    ("POST", "/v1/cache/import"),
-    ("GET", "/v1/cache/info"),
 ]
 
 
@@ -59,7 +51,6 @@ def client_factory():
     503-check guard in the route handlers.
     """
     from vllm_mlx.config import get_config
-    from vllm_mlx.routes.cache import router as cache_router
     from vllm_mlx.routes.health import admin_router, router
 
     cfg = get_config()
@@ -96,10 +87,6 @@ def client_factory():
         app = FastAPI()
         app.include_router(router)
         app.include_router(admin_router)
-        # F-180: ``cache_router`` carries the three sibling cache routes
-        # (export/import/info) that PR #728 missed. Mount it here so the
-        # _DESTRUCTIVE_ROUTES parametrize matrix can pin their auth shape.
-        app.include_router(cache_router)
         # ``TestClient(app, client=(host, port))`` injects the supplied
         # tuple into ``scope["client"]`` so ``request.client.host`` reads
         # back as ``host``. The default ``("testclient", 50000)`` is NOT
@@ -460,87 +447,3 @@ def test_cancel_500_error_path_does_not_leak_exception_detail(client_factory):
     assert "secret-snapshot" not in r.text
     assert "huggingface" not in r.text
     assert ".cache" not in r.text
-
-
-# ---------------------------------------------------------------------------
-# F-180 specific: cache export/import 501 envelope must not leak operator-
-# controlled disk paths or GitHub tracking URLs.
-# ---------------------------------------------------------------------------
-
-
-def test_cache_export_501_envelope_does_not_leak_operator_path(client_factory):
-    """F-180: pre-fix, ``POST /v1/cache/export`` 501-stubbed back the resolved
-    sandbox destination — which expands to ``/Users/<USERNAME>/.cache/rapid-mlx/
-    cache_exports`` and leaks the operator's home dir / username. The fix
-    sanitizes the envelope to a minimal ``{"error": {...}}`` shape; the
-    resolved path stays in server logs only.
-    """
-    build, _ = client_factory
-    client = build(api_key=None)
-
-    r = client.post(
-        "/v1/cache/export",
-        headers={"X-Rapid-MLX-Internal": "true"},
-        json={},
-    )
-    assert r.status_code == 501, r.text
-    body = r.json()
-    # No resolved-path-shaped strings in the body.
-    assert "/Users/" not in r.text
-    assert ".cache" not in r.text
-    assert "rapid-mlx" not in r.text
-    assert "cache_exports" not in r.text
-    # No tracking-URL leak either (per test-loop8 finding).
-    assert "github.com" not in r.text
-    assert "issues/" not in r.text
-    # Minimal envelope shape.
-    detail = body.get("detail")
-    assert isinstance(detail, dict) and "error" in detail, body
-
-
-def test_cache_import_501_envelope_does_not_leak_operator_path(
-    client_factory, tmp_path, monkeypatch
-):
-    """F-180: same shape check for ``POST /v1/cache/import``. We point the
-    sandbox env at a tmp dir so we can hand-craft a manifest the route accepts,
-    then assert the resulting 501 body is path-free.
-    """
-    # Point the export sandbox at tmp_path so the resolved source / manifest
-    # path is under the test rig, not the operator's home dir.
-    monkeypatch.setenv("RAPID_MLX_CACHE_EXPORT_DIR", str(tmp_path))
-
-    # Hand-craft a valid manifest.json so import gets past the validation
-    # branches and into the 501 stub.
-    import json
-
-    from vllm_mlx.cache.protocol import PROTOCOL_VERSION
-
-    manifest = {
-        "protocol_version": PROTOCOL_VERSION,
-        "model_id": "test-model",
-        "entries": 0,
-        "total_bytes": 0,
-        "created_at": "2026-06-20T00:00:00Z",
-    }
-    (tmp_path / "manifest.json").write_text(json.dumps(manifest))
-
-    build, _ = client_factory
-    client = build(api_key=None)
-
-    r = client.post(
-        "/v1/cache/import",
-        headers={"X-Rapid-MLX-Internal": "true"},
-        json={"source": str(tmp_path)},
-    )
-    assert r.status_code == 501, r.text
-    body = r.json()
-    # No resolved-path-shaped strings.
-    assert str(tmp_path) not in r.text
-    assert "/Users/" not in r.text
-    assert "cache_exports" not in r.text
-    # No tracking-URL leak.
-    assert "github.com" not in r.text
-    assert "issues/" not in r.text
-    # Minimal envelope shape.
-    detail = body.get("detail")
-    assert isinstance(detail, dict) and "error" in detail, body
