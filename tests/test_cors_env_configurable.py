@@ -358,10 +358,7 @@ def test_empty_csv_origin_value_fails_closed_with_warning(
         "RAPID_MLX_CORS_ALLOW_ORIGINS" in rec.message
         and "empty list" in rec.message.lower()
         for rec in caplog.records
-    ), (
-        f"Expected an empty-origins WARNING; got "
-        f"{[r.message for r in caplog.records]!r}"
-    )
+    ), f"Expected an empty-origins WARNING; got {[r.message for r in caplog.records]!r}"
 
     client = TestClient(fresh_app)
     r = client.options(
