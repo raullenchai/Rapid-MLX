@@ -104,15 +104,12 @@ class HermesToolParser(ToolParser):
 
     # Hermes is the most flexible parser — handles JSON body inside
     # <tool_call>, the Nemotron-style XML body fallback (covers vanilla
-    # Qwen3.6), bare <function=...> blocks, the VibeThinker
-    # ``<function><name>...</name><arguments>...</arguments></function>``
-    # XML-named shape (F-042), raw JSON tool calls, and the
+    # Qwen3.6), bare <function=...> blocks, raw JSON tool calls, and the
     # [Calling tool:] text-fallback for low-quant degradation.
     EXPECTED_WIRE_FORMATS = (
         "tool_call_json",
         "tool_call_xml_body",
         "function_bare",
-        "function_xml_named",
         "raw_json",
         "calling_tool_text",
     )
@@ -137,45 +134,6 @@ class HermesToolParser(ToolParser):
     )
     # Bare Nemotron XML: <function=name>...</function> without <tool_call> wrapper
     BARE_FUNCTION_PATTERN = re.compile(r"<function=([^>]+)>(.*?)</function>", re.DOTALL)
-    # VibeThinker XML-named shape (F-042): the model emits the call as
-    # ``<function><name>NAME</name><arguments>JSON</arguments></function>``
-    # under ``tool_choice="auto"`` despite the chat template specifying
-    # ``<tool_call>{"name":...,"arguments":...}</tool_call>``. The matcher
-    # is whitespace-tolerant (newlines between tags, indented inner JSON),
-    # ``.*?``-greedy-safe via DOTALL, and per-block so parallel
-    # ``<function>`` emissions parse as multiple tool calls. The arguments
-    # body is parsed via the same ``_parse_function_body`` helper as the
-    # ``<function=...>`` Nemotron path — accepts JSON object or XML
-    # parameter shape, falling through gracefully on either.
-    FUNCTION_XML_NAMED_PATTERN = re.compile(
-        r"<function>\s*<name>\s*(.*?)\s*</name>\s*<arguments>\s*(.*?)\s*</arguments>\s*</function>",
-        re.DOTALL,
-    )
-    # Streaming disambiguation gate (codex round-1 BLOCKING): a bare
-    # ``<function>`` in prose is NOT a tool-call opener — only
-    # ``<function>`` immediately followed (after optional whitespace)
-    # by ``<name>`` is. The streaming branch uses this regex to count
-    # plausible named-XML openers and to decide whether to enter the
-    # hold-back path at all, leaving ordinary content untouched.
-    _FUNCTION_XML_OPENER_RE = re.compile(r"<function>\s*<name\b", re.DOTALL)
-    # In-flight opener prefix matcher (codex round-2 BLOCKING):
-    # ``_FUNCTION_XML_OPENER_RE`` only fires once the full ``<name`` token
-    # has streamed in, so partial chunks like ``<function><n`` or
-    # ``<function>\n <na`` would fall through to the safe-content emit
-    # path and leak tool-call XML as content before the call completes.
-    # This regex matches the suffix of ``current_text`` when the tail
-    # is still a viable prefix of ``<function>\s*<name>`` — i.e. the
-    # text ends with ``<function>`` plus zero or more whitespace plus
-    # zero or more chars of ``<name``. While this matches, the
-    # streaming branch must suppress emission (return ``None``) so the
-    # partial bytes are held. Once the tail concludes with a full
-    # ``<name`` token, ``_FUNCTION_XML_OPENER_RE`` takes over; once the
-    # tail concludes with anything else (e.g. ``<function>!``), the
-    # match drops and the bytes are released as ordinary content.
-    _FUNCTION_XML_OPENER_PARTIAL_RE = re.compile(
-        r"<function>\s*(<(n(a(m(e?)?)?)?)?)?$",
-        re.DOTALL,
-    )
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -255,41 +213,6 @@ class HermesToolParser(ToolParser):
                 )
             if bare_matches:
                 cleaned_text = self.BARE_FUNCTION_PATTERN.sub("", cleaned_text).strip()
-
-        # Try VibeThinker XML-named shape (F-042):
-        #   <function><name>NAME</name><arguments>JSON</arguments></function>
-        # Observed under ``tool_choice="auto"`` even though VibeThinker's
-        # chat template specifies the ``<tool_call>{...}</tool_call>``
-        # shape. Layer fix per the family-wide "matcher in hermes parser,
-        # not per-alias workaround" convention. Body parsing reuses
-        # ``_parse_function_body`` (JSON-first, XML-parameter fallback)
-        # so escaped JSON, indented JSON, and JSON-with-nested-braces all
-        # round-trip cleanly. ``findall`` over the post-strip text handles
-        # parallel ``<function>...</function>`` blocks as separate tool
-        # calls — non-greedy ``.*?`` inside DOTALL prevents the first
-        # opener from swallowing the second block.
-        #
-        # Codex round-4 BLOCKING: the named-XML matcher is NOT gated on
-        # ``if not tool_calls``. The ``<function><name>...</name>...``
-        # shape is structurally disjoint from ``<function=NAME>...`` and
-        # both can co-occur in a single response (e.g. a Nemotron-style
-        # call followed by a VibeThinker-style call). Gating would
-        # silently drop the second call. Matching is additive across
-        # bare-function + named-XML; the ``<tool_call>`` JSON path
-        # remains a hard-precedence winner via the prior strip so it
-        # cannot be double-counted here.
-        named_xml_matches = self.FUNCTION_XML_NAMED_PATTERN.findall(cleaned_text)
-        for name, params_block in named_xml_matches:
-            arguments = _parse_function_body(params_block)
-            tool_calls.append(
-                {
-                    "id": generate_tool_id(),
-                    "name": name.strip(),
-                    "arguments": json.dumps(arguments, ensure_ascii=False),
-                }
-            )
-        if named_xml_matches:
-            cleaned_text = self.FUNCTION_XML_NAMED_PATTERN.sub("", cleaned_text).strip()
 
         # Fallback: try lenient pattern for malformed tags like <tool_call without >
         if not tool_calls:
@@ -397,10 +320,7 @@ class HermesToolParser(ToolParser):
     # are held back until either (a) the full sentinel arrives and
     # the tool-call branch claims it or (b) a non-matching char
     # arrives and the held bytes are released as ordinary content.
-    # F-042: ``<function>`` (no ``=``) is the VibeThinker XML-named
-    # opener. Listed alongside ``<function=`` so the ``<f``/``<fu``
-    # prefix is held until the disambiguating ``>`` or ``=`` arrives.
-    _STREAMING_SENTINELS = ("<tool_call>", "<function=", "<function>")
+    _STREAMING_SENTINELS = ("<tool_call>", "<function=")
 
     @classmethod
     def _safe_content_prefix(cls, text: str) -> str:
@@ -411,18 +331,6 @@ class HermesToolParser(ToolParser):
         prefix of any ``_STREAMING_SENTINELS`` entry that also forms a
         suffix of ``text``. Returns an empty string when the entire
         ``text`` is a sentinel prefix (e.g. ``"<"`` ⇒ hold everything).
-
-        F-042 codex round-2 BLOCKING: the named-XML opener has a
-        variable-length partial form ``<function>\\s*<name?...`` (whitespace
-        and a growing ``<name`` prefix) that cannot be enumerated as
-        literal sentinels. Use ``_FUNCTION_XML_OPENER_PARTIAL_RE`` to find
-        a matching suffix and fold its length into the hold count, so
-        the same prefix-hold + ``flush_held_content`` release mechanism
-        applies. Codex round-3 BLOCKING follow-up: this means a stream
-        legitimately ending with the literal ``<function>`` (e.g. a doc
-        about tool-call syntax) releases the held bytes via
-        ``flush_held_content`` at stream end rather than being silently
-        suppressed.
         """
         max_hold = 0
         for sentinel in cls._STREAMING_SENTINELS:
@@ -431,16 +339,6 @@ class HermesToolParser(ToolParser):
                     if length > max_hold:
                         max_hold = length
                     break
-        partial_match = cls._FUNCTION_XML_OPENER_PARTIAL_RE.search(text)
-        if partial_match is not None:
-            partial_len = len(partial_match.group(0))
-            # Don't hold if the suffix is the FULL canonical named-XML
-            # opener ``<function><name>...``: the named-opener-claim
-            # branch above handles that case. The partial-hold only
-            # covers strictly-shorter prefixes of the opener.
-            if cls._FUNCTION_XML_OPENER_RE.search(partial_match.group(0)) is None:
-                if partial_len > max_hold:
-                    max_hold = partial_len
         return text if max_hold == 0 else text[: len(text) - max_hold]
 
     @classmethod
@@ -520,31 +418,11 @@ class HermesToolParser(ToolParser):
 
         # Bare Nemotron XML: <function=name>...</function> without <tool_call> wrapper
         # This happens when the chat template provides <tool_call> as generation prompt.
-        # F-042: VibeThinker's auto-emit shape ``<function><name>...</name>
-        # <arguments>...</arguments></function>`` (no ``=``) shares the
-        # ``</function>`` closer with this branch, so count both opener
-        # shapes against the same close-tag count. Both shapes resolve
-        # to tool_calls via ``extract_tool_calls``.
-        #
-        # Disambiguation guard (codex round-1 BLOCKING): a bare literal
-        # ``<function>`` in ordinary streamed prose (e.g. the model
-        # explaining tool-call syntax) MUST NOT trigger the hold-back
-        # branch — otherwise the stream is suppressed until a
-        # ``</function>`` arrives that may never come. The named-XML
-        # opener is always ``<function>`` followed (after optional
-        # whitespace / a partial ``<name`` prefix) by the ``<name>`` tag.
-        # Require that pattern before claiming a named-XML opener; any
-        # other ``<function>`` literal falls through to the safe-content
-        # emit path.
-        has_bare_function = "<function=" in current_text
-        has_named_xml_opener = bool(self._FUNCTION_XML_OPENER_RE.search(current_text))
-        if has_bare_function or has_named_xml_opener:
+        if "<function=" in current_text:
             func_close_count = current_text.count("</function>")
             prev_func_close = previous_text.count("</function>")
-            named_open_count = len(self._FUNCTION_XML_OPENER_RE.findall(current_text))
-            open_total = current_text.count("<function=") + named_open_count
 
-            if open_total > func_close_count:
+            if current_text.count("<function=") > func_close_count:
                 # Inside an incomplete function block, suppress output
                 return None
 
@@ -559,18 +437,6 @@ class HermesToolParser(ToolParser):
                         )
 
             return self._emit_safe_content(previous_text, current_text)
-
-        # In-flight named-XML opener (codex round-2 BLOCKING / round-3
-        # follow-up): the tail of ``current_text`` is still a viable
-        # prefix of ``<function>\s*<name>``. ``<function>`` is in flight
-        # but ``<name`` has not fully streamed yet (e.g. ``<function><n``,
-        # ``<function>\n <na``). Handled inside
-        # ``_safe_content_prefix`` via
-        # ``_FUNCTION_XML_OPENER_PARTIAL_RE`` so the partial bytes
-        # participate in the standard prefix-hold + ``flush_held_content``
-        # release mechanism: a stream that legitimately ends with
-        # ``<function>`` releases the held bytes at end-of-stream rather
-        # than being silently suppressed.
 
         # Fallback: check for raw JSON tool calls (detect closing brace pattern)
         if '{"name":' in current_text and '"arguments":' in current_text:
