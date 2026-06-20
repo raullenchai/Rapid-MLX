@@ -743,6 +743,31 @@ class EngineCore:
                 # scheduler — the zombie path).
                 def _on_executor_done(_future: Any) -> None:
                     # Runs on the executor thread.
+                    #
+                    # Codex r3 P1 #1: ``asyncio.wrap_future`` propagates
+                    # cancellation back to the underlying
+                    # ``concurrent.futures.Future``. If the executor
+                    # job had NOT started yet, ``cf.cancel()`` succeeds
+                    # and ``scheduler.add_request`` never runs — in
+                    # that case the request was never admitted and
+                    # there is nothing to abort. Without this gate we
+                    # would teardown a request that was never in the
+                    # scheduler AND wake the engine for a no-op abort.
+                    # Branch on ``cf.cancelled()`` so we only fire the
+                    # abort + cleanup when the executor actually ran
+                    # ``scheduler.add_request`` (success OR raise).
+                    if _future.cancelled():
+                        # Per-request collectors / events were already
+                        # allocated; release them even though the
+                        # scheduler never saw the request, so the
+                        # dicts don't leak under a fast-cancel storm.
+                        try:
+                            loop.call_soon_threadsafe(
+                                self._cleanup_request_safe, request_id
+                            )
+                        except RuntimeError:
+                            self._cleanup_request_safe(request_id)
+                        return
                     try:
                         self.scheduler.abort_request(request_id)
                     except Exception:

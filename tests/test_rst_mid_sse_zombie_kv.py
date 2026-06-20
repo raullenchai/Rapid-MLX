@@ -210,13 +210,24 @@ async def test_add_request_success_path_does_not_abort():
 
 
 @pytest.mark.asyncio
-async def test_stream_generate_aborts_on_generatorexit():
-    """When ``stream_generate``'s async generator is closed mid-flight
-    (the disconnect_guard path on TCP RST), the belt-and-suspenders
-    try/finally MUST call ``scheduler.abort_request`` — so the
-    scheduler reclaims the KV slot even if ``stream_outputs.finally``
-    didn't run (the narrow race window between ``add_request``
-    returning and ``stream_outputs.try`` entering).
+async def test_stream_generate_finally_is_double_safety_net():
+    """``stream_generate``'s belt-and-suspenders ``try/finally``
+    around ``add_request → stream_outputs`` MUST call
+    ``scheduler.abort_request`` + ``_cleanup_request`` even when the
+    inner ``stream_outputs.finally`` did not run.
+
+    Codex r3 P1 #2 honest naming: in real code, once
+    ``stream_outputs`` has yielded its first chunk it is INSIDE its
+    ``try`` block, so its ``finally`` would always abort on real-
+    production aclose. The first-chunk pull below proves this
+    invariant lines up with reality. This test pins the OUTER finally
+    as a double-safety net — it MUST fire as well, idempotently — so
+    a future refactor that breaks ``stream_outputs.finally`` (e.g.
+    moves cleanup into an ``async with`` that swallows
+    ``GeneratorExit``) does not silently re-open the F-012 leak.
+    Idempotency is then exercised separately by the regression suite
+    on the scheduler itself (``_do_abort_request`` handles
+    double-abort).
     """
     from vllm_mlx.engine.batched import BatchedEngine
 
@@ -254,12 +265,10 @@ async def test_stream_generate_aborts_on_generatorexit():
             # Block on a sleep so the consumer can aclose us mid-stream
             await asyncio.sleep(10)
         finally:
-            # IMPORTANT: stream_outputs.finally calls scheduler.abort_request
-            # internally in real code — for this test we DON'T want it to
-            # fire so we can verify the belt-and-suspenders in
-            # stream_generate is the path that aborts. Simulate
-            # stream_outputs.finally NOT running (e.g. it was cancelled
-            # before the try block was entered in the real F-012 race).
+            # Simulate the (intentional) failure of stream_outputs.finally
+            # to abort — so we exercise stream_generate.finally as the
+            # ONLY abort path. This is the worst-case state a future
+            # refactor could land in.
             pass
 
     fake_engine.stream_outputs = stream_outputs
@@ -290,6 +299,91 @@ async def test_stream_generate_aborts_on_generatorexit():
         "stream_generate.finally must also release per-request state"
         " when stream_outputs.finally didn't run"
     )
+
+
+@pytest.mark.asyncio
+async def test_add_request_pure_cancellation_before_executor_runs():
+    """If the asyncio Future wrapper around the executor job IS
+    cancelled before the executor thread picks it up (the
+    ``cf.cancel()`` succeeds path), ``scheduler.add_request`` never
+    runs and we MUST NOT call ``scheduler.abort_request`` for a
+    request that was never admitted. Per-request collectors / events
+    should still be released so the dicts don't grow unbounded.
+
+    Codex r3 P1 #1: ``asyncio.wrap_future`` propagates cancellation
+    to the underlying ``concurrent.futures.Future``; if the
+    executor's worker has not started yet, ``cf.cancel()`` succeeds
+    and the done-callback runs with ``_future.cancelled() is True``.
+    We branch on that to avoid a spurious abort for an unadmitted
+    request.
+    """
+    import time as _time
+    from concurrent.futures import ThreadPoolExecutor
+
+    from vllm_mlx.request import SamplingParams
+
+    eng = _build_engine_core_mock()
+
+    # No-op slow blocker on the SOLE executor thread so the next
+    # submit cannot start until we release. This guarantees the
+    # cancellation path hits a ``cf`` that has not yet run.
+    block = threading.Event()
+
+    def blocker():
+        block.wait(2.0)
+
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        pool.submit(blocker)  # parks the only worker
+
+        eng._mlx_executor = pool
+
+        async def driver():
+            return await eng.add_request(
+                prompt="hello",
+                sampling_params=SamplingParams(max_tokens=64),
+            )
+
+        task = asyncio.create_task(driver())
+        # Give the driver time to submit + start awaiting.
+        await asyncio.sleep(0.05)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        # The executor thread is still blocked on ``blocker``; release
+        # it so the submitted ``scheduler.add_request`` cf transitions
+        # to its final state (cancelled, because nothing ran it).
+        block.set()
+
+        # Give the done-callback a beat to fire on the executor.
+        deadline = _time.monotonic() + 2.0
+        while _time.monotonic() < deadline:
+            if not eng._output_collectors:
+                break
+            await asyncio.sleep(0.01)
+
+        # ``scheduler.add_request`` was never invoked — the cf was
+        # cancelled before it ran.
+        assert not eng.scheduler.add_request.called, (
+            "executor job ran despite cancellation — test setup is wrong"
+        )
+        # And we MUST NOT have asked the scheduler to abort a request
+        # that was never admitted.
+        assert not eng.scheduler.abort_request.called, (
+            "abort_request fired for an un-admitted request — the"
+            " codex r3 P1 #1 spurious-abort path. _on_executor_done"
+            " must branch on _future.cancelled()."
+        )
+        # Per-request state MUST still be released.
+        assert not eng._output_collectors, (
+            "output collector leaked on cancelled-before-run path"
+        )
+        assert not eng._finished_events, (
+            "finished event leaked on cancelled-before-run path"
+        )
+    finally:
+        block.set()
+        pool.shutdown(wait=False, cancel_futures=True)
 
 
 def _completed_future(value):
