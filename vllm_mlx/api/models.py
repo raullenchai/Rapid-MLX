@@ -361,8 +361,10 @@ class ToolDefinition(BaseModel):
     @model_validator(mode="after")
     def _validate_function_name(self) -> "ToolDefinition":
         name = self.function.get("name") if isinstance(self.function, dict) else None
-        if name is None or not isinstance(name, str) or not _FUNCTION_NAME_PATTERN.match(
-            name
+        if (
+            name is None
+            or not isinstance(name, str)
+            or not _FUNCTION_NAME_PATTERN.match(name)
         ):
             raise ValueError(
                 "function.name must be a non-empty string of 1-64 characters "

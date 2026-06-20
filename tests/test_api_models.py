@@ -225,7 +225,9 @@ class TestToolCalling:
         covers the whole class.
         """
         with pytest.raises(ValidationError) as excinfo:
-            ToolDefinition(function={"name": bad_name, "parameters": {"type": "object"}})
+            ToolDefinition(
+                function={"name": bad_name, "parameters": {"type": "object"}}
+            )
         assert "function.name" in str(excinfo.value)
 
     def test_tool_definition_rejects_missing_name(self):
