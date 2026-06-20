@@ -1003,6 +1003,88 @@ def test_f041_cap_below_cleaned_text_unchanged():
     assert cleaned == "answer"
 
 
+def test_f041_cap_with_tool_calls_drops_overflow():
+    """Codex r1 follow-up on F-041: ``tool_calls`` paths legitimately
+    ship ``content=""`` alongside the structured call payload (OpenAI
+    spec — the tool call IS the visible response, ``content`` is null).
+    Without the ``has_tool_calls`` gate the F-041 drop only fires when
+    ``cleaned_text`` is non-empty, so a tool-only response would still
+    route the over-cap reasoning into ``content``, polluting the
+    OpenAI-spec ``tool_calls`` response with the truncated thought
+    trace.
+
+    Repro shape: cleaned_text="" (tool parser stripped the call markup),
+    tool_calls=[{...}], engine_reasoning_text=long_trace,
+    reasoning_max_tokens=10. The F-041 plug must drop the overflow
+    regardless of cleaned_text being blank — the user's visible answer
+    is the tool call, not whatever bytes the legacy fallback would
+    re-route as content.
+    """
+    long_trace = "Reasoning about which tool to call. " * 50
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text=long_trace + "<tool_call>get_weather()</tool_call>",
+        cleaned_text="",  # tool parser stripped the wire payload
+        tool_calls=[{"name": "get_weather", "arguments": "{}"}],
+        reasoning_parser=DeepSeekR1ReasoningParser(),
+        engine_reasoning_text=long_trace,
+        enable_thinking=None,
+        reasoning_max_tokens=10,  # 40 chars
+    )
+    assert reasoning is not None
+    assert len(reasoning) == 40
+    # Tool call IS the visible response — content stays empty (the
+    # tool call payload travels via the ``tool_calls`` field).
+    assert cleaned == ""
+    # Defensive: over-cap reasoning must NOT bleed into the content
+    # field that ships alongside the tool call.
+    assert "tool to call" not in (cleaned or "")
+
+
+def test_f041_cap_with_tool_calls_no_reasoning_parser_drops_overflow():
+    """F-041 portability: the ``has_tool_calls`` gate also wires through
+    the no-reasoning-parser short-circuit (line 252-258) — gemma4 / non-
+    thinking-mode requests that hit the cap from a channel-routed
+    engine_reasoning_text still get the drop semantic."""
+    long_trace = "Some reasoning text. " * 50
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text="",
+        cleaned_text="",
+        tool_calls=[{"name": "do_thing", "arguments": "{}"}],
+        reasoning_parser=None,  # short-circuit path
+        engine_reasoning_text=long_trace,
+        enable_thinking=None,
+        reasoning_max_tokens=10,
+    )
+    assert reasoning is not None
+    assert len(reasoning) == 40
+    assert cleaned == ""
+
+
+def test_f041_cap_empty_content_no_tool_calls_still_falls_back():
+    """F-041 negative control: when neither ``cleaned_text`` nor
+    ``tool_calls`` carry a visible payload (model emitted ONLY
+    reasoning, no tool call, no closed ``</think>``), the silent-drop-
+    guard fallback STILL fires and routes overflow into content. The
+    user opted into the cap but we don't want to silently drop the
+    whole response if it's the only thing the model produced — pin
+    that the ``has_tool_calls`` gate doesn't kill the fallback."""
+    long_trace = "Some reasoning text. " * 50
+    cleaned, reasoning = _finalize_content_and_reasoning(
+        raw_text="",
+        cleaned_text="",
+        tool_calls=[],  # no tool calls
+        reasoning_parser=None,
+        engine_reasoning_text=long_trace,
+        enable_thinking=None,
+        reasoning_max_tokens=10,  # 40 chars
+    )
+    assert reasoning is not None
+    assert len(reasoning) == 40
+    # Fallback fires — overflow surfaces as content so the response
+    # isn't empty.
+    assert len(cleaned) > 0
+
+
 def test_f041_qwen3_cap_with_closed_think_and_real_answer():
     """F-041 portability: the Qwen3 parser (used by
     ``qwen3-4b-thinking-2507-4bit`` and the wider Qwen3 thinking family)

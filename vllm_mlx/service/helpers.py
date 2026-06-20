@@ -247,10 +247,18 @@ def _finalize_content_and_reasoning(
                 engine_reasoning_text, reasoning_max_tokens
             )
         return _apply_reasoning_cap(
-            cleaned_text, engine_reasoning_text, reasoning_max_tokens
+            cleaned_text,
+            engine_reasoning_text,
+            reasoning_max_tokens,
+            has_tool_calls=bool(tool_calls),
         )
     if reasoning_parser is None:
-        return _apply_reasoning_cap(cleaned_text, reasoning_text, reasoning_max_tokens)
+        return _apply_reasoning_cap(
+            cleaned_text,
+            reasoning_text,
+            reasoning_max_tokens,
+            has_tool_calls=bool(tool_calls),
+        )
     # #575 — thread the request-level ``enable_thinking`` so the
     # underlying ``BaseThinkingReasoningParser.extract_reasoning``
     # can apply its symmetric-with-streaming Case-4 fallback when
@@ -425,7 +433,12 @@ def _finalize_content_and_reasoning(
             return cleaned_text, _truncate_reasoning_only(
                 reasoning_text, reasoning_max_tokens
             )
-    return _apply_reasoning_cap(cleaned_text, reasoning_text, reasoning_max_tokens)
+    return _apply_reasoning_cap(
+        cleaned_text,
+        reasoning_text,
+        reasoning_max_tokens,
+        has_tool_calls=bool(tool_calls),
+    )
 
 
 def _truncate_reasoning_only(
@@ -462,6 +475,8 @@ def _apply_reasoning_cap(
     cleaned_text: str,
     reasoning_text: str | None,
     reasoning_max_tokens: int | None,
+    *,
+    has_tool_calls: bool = False,
 ) -> tuple[str, str | None]:
     """Truncate ``reasoning_text`` to the per-request cap and reroute
     the overflow into ``cleaned_text`` (upstream vLLM PR #20859
@@ -477,14 +492,16 @@ def _apply_reasoning_cap(
     finalize all agree on a single token count.
 
     F-041 (2026-06-19): the overflow-into-``cleaned_text`` reroute is
-    only meaningful when ``cleaned_text`` is empty — i.e. the parser
-    found no closed ``</think>`` so the model never produced a real
-    answer (we'd be silently dropping the whole response otherwise).
-    When the parser DID separate a real answer (closed
-    ``<think>…</think>answer`` split — the VibeThinker / Qwen3 /
-    DeepSeek-R1 family's typical wire shape), prepending the
-    over-cap reasoning bytes pollutes the user-visible answer with
-    the truncated thought trace. The vibethinker repro at
+    only meaningful when there is NO real visible payload — i.e. the
+    parser found no closed ``</think>`` AND no tool calls fired, so
+    the model never produced a user-visible answer (we'd be silently
+    dropping the whole response otherwise). When the response DOES
+    have a real payload (closed ``<think>…</think>answer`` split, OR
+    structured ``tool_calls`` — codex r1 follow-up: tool-only responses
+    legitimately ship ``content=""`` per the OpenAI spec, so an empty
+    ``cleaned_text`` alone isn't proof that the response is empty),
+    prepending the over-cap reasoning bytes pollutes the visible
+    payload with the truncated thought trace. The vibethinker repro at
     ``reasoning_max_tokens=30`` shipped the entire post-cap reasoning
     suffix + the model's training-time system prompt into ``content``
     BEFORE the actual answer ``"The capital of Japan is **Tokyo**."``
@@ -492,9 +509,9 @@ def _apply_reasoning_cap(
     ``<think>`` case. The user opting into a small reasoning cap
     explicitly asked us to drop the reasoning past the cap; they did
     not ask us to reclassify those bytes as content. Drop the
-    overflow in that case; preserve the prepend-into-content fallback
-    when ``cleaned_text`` is empty so we don't silently drop the whole
-    response when the model never emitted a closed ``</think>``.
+    overflow when a real payload exists; preserve the prepend-into-
+    content fallback only when both ``cleaned_text`` is empty AND no
+    tool calls fired (the model emitted nothing visible).
     """
     if (
         reasoning_max_tokens is None
@@ -507,13 +524,17 @@ def _apply_reasoning_cap(
         return cleaned_text, reasoning_text
     overflow = reasoning_text[max_chars:]
     truncated = reasoning_text[:max_chars]
-    # F-041 plug: when ``cleaned_text`` already carries a real answer
-    # (parser routed the post-``</think>`` final content into it),
+    # F-041 plug: when the response already carries a real visible
+    # payload (parser routed the post-``</think>`` final content into
+    # ``cleaned_text``, OR the tool parser surfaced structured
+    # ``tool_calls`` — the OpenAI-compat ``tool_choice`` paths
+    # legitimately ship ``content=""`` alongside ``tool_calls``),
     # the model gave us its visible answer — the user-requested cap
     # is the contract, not a "best-effort don't-drop-bytes" hint, so
     # drop the over-cap reasoning suffix rather than letting it bleed
-    # into the answer channel.
-    if cleaned_text and cleaned_text.strip():
+    # into ``content`` ahead of the answer / alongside the tool call.
+    has_visible_content = bool(cleaned_text and cleaned_text.strip())
+    if has_visible_content or has_tool_calls:
         return cleaned_text, truncated
     # Codex round-11 BLOCKING: prepend overflow rather than appending
     # it. In the source ordering, the overflow bytes were emitted by
