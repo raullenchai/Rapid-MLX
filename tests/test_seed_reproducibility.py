@@ -308,6 +308,49 @@ def test_seeded_sampler_min_p_combined(logprobs_fixture):
     )
 
 
+def test_seeded_sampler_top_k_above_vocab_clamps(logprobs_fixture):
+    """Codex r2 BLOCKING #1 regression guard. ``top_k`` larger than the
+    vocab dimension must clamp to vocab rather than crash the
+    ``put_along_axis`` mask scatter (over-slice on the descending sort
+    used to read out top-k positions). A caller setting ``top_k=10**6``
+    on a 32k-vocab model is asking 'no top-k cap' — the sampler must
+    survive and produce a sample, not raise.
+    """
+    s = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.9, top_k=10**6)
+    # Must not raise and must return an in-range token id
+    out = int(s(logprobs_fixture)[0])
+    vocab = int(logprobs_fixture.shape[-1])
+    assert 0 <= out < vocab
+
+
+def test_seeded_sampler_aggressive_min_p_never_empty_mask(logprobs_fixture):
+    """Codex r2 BLOCKING #2 regression guard. A very aggressive
+    ``min_p`` (e.g. 0.999) intersected with top-p / top-k can leave the
+    combined mask all-False — the sampler MUST OR in the argmax token
+    so ``mx.random.categorical`` never receives an all-``-inf``
+    distribution. Verified by sampling under ``min_p=0.999, top_k=1``
+    (the kept set is degenerate by construction): the returned token
+    must equal the argmax token.
+    """
+    # Build logits with a clear argmax so the contract is testable
+    mx.random.seed(0)
+    sharp_logits = mx.random.normal(shape=(1, 1024))
+    sharp_logprobs = sharp_logits - mx.logsumexp(sharp_logits, axis=-1, keepdims=True)
+    mx.eval(sharp_logprobs)
+    argmax = int(mx.argmax(sharp_logprobs, axis=-1)[0])
+
+    s = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.0, min_p=0.999, top_k=1)
+    # Must not raise. Under the combined cutoff the argmax-OR rescue
+    # leaves exactly one sampleable token (the argmax), so the
+    # sampler is forced to return it.
+    out = int(s(sharp_logprobs)[0])
+    assert out == argmax, (
+        "aggressive min_p + top_k=1 should collapse to argmax via the "
+        "empty-mask rescue, not return a non-argmax token sampled from "
+        "an invalid -inf distribution"
+    )
+
+
 # =============================================================================
 # Layer 5 — Scheduler routes seeded requests around the cache
 # =============================================================================

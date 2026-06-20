@@ -1120,10 +1120,20 @@ class ChatCompletionRequest(BaseModel):
     # produce the same token stream. Without this field declaration
     # Pydantic silently dropped the OpenAI ``seed`` parameter and the
     # wire-claim was false (Tomek r3 — five calls with ``seed=42``
-    # produced five different outputs). Range matches the OpenAI spec
-    # (any int) but we clamp to ``uint32`` because that's what
-    # ``mx.random.key`` accepts; the ``_validate_seed`` field_validator
-    # below rejects out-of-range values with a clean 422.
+    # produced five different outputs).
+    #
+    # Range is BACKEND-CONSTRAINED to ``[0, 2**32 - 1]`` — NOT the OpenAI
+    # spec's broader "any integer" surface. mlx-core's ``mx.random.key``
+    # accepts a non-negative integer that fits in ``uint32`` (the
+    # JAX-style PRNG key is a (2,) ``uint32`` array seeded from a 32-bit
+    # value), so a 64-bit OpenAI-style seed would silently truncate
+    # before reaching ``mx.random.key`` — the truncated bits would
+    # produce a different reproducible sequence than the caller
+    # intended, breaking the reproducibility contract in a hard-to-
+    # notice way. Rejecting out-of-range with a 422 surfaces the
+    # narrowing to the client at parse time; pre-fix would have been a
+    # silent reproducibility lie. Codex round-2 NIT pinned the
+    # comment-vs-impl mismatch in the original wording.
     seed: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
 
     # F-011: NaN/inf scrub on the raw dict, BEFORE Pydantic coerces a

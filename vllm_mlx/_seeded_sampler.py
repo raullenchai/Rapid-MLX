@@ -165,9 +165,21 @@ def make_seeded_sampler(
             # Top-k: keep the ``top_k`` largest logits. Use argsort
             # descending then mark positions <= top_k. Mirrors the
             # fast path's intersection semantics — kept-set size is
-            # exactly ``top_k``.
+            # exactly ``min(top_k, vocab)``.
+            #
+            # Codex round-2 BLOCKING #1 fix: clamp ``top_k_val`` to
+            # the vocab dimension. ``sorted_desc[..., :top_k_val]``
+            # with ``top_k_val > vocab`` silently returns the whole
+            # tensor (NumPy/MLX over-slice semantics), but the
+            # subsequent ``put_along_axis`` would then write
+            # ``vocab + something`` positions into a shape that only
+            # has ``vocab`` slots — undefined behaviour in MLX. The
+            # clamp normalises the contract so ``top_k=10**9`` on a
+            # 32k-vocab model collapses to "all tokens eligible"
+            # rather than crashing the sampler.
+            effective_top_k = min(top_k_val, vocab)
             sorted_desc = mx.argsort(-work, axis=-1)
-            top_k_positions = sorted_desc[..., :top_k_val]
+            top_k_positions = sorted_desc[..., :effective_top_k]
             vocab_mask_k = mx.zeros(work.shape, dtype=mx.bool_)
             ones = mx.ones(top_k_positions.shape, dtype=mx.bool_)
             vocab_mask_k = mx.put_along_axis(
@@ -182,6 +194,31 @@ def make_seeded_sampler(
             max_prob = mx.max(probs_for_min, axis=-1, keepdims=True)
             min_p_mask = probs_for_min >= (min_p_val * max_prob)
             mask = mask & min_p_mask
+
+        # Codex round-2 BLOCKING #2 fix: guarantee at least one
+        # sampleable token. Intersecting top-p, top-k, min-p can
+        # produce an all-False row when the cutoffs are too
+        # aggressive (e.g. ``min_p=0.999`` plus a flat distribution)
+        # — ``masked`` would become all ``-inf`` and
+        # ``mx.random.categorical`` would receive an invalid
+        # distribution and return nonsense (uint32 garbage that
+        # decodes to whatever token id it lands on). OR in the
+        # per-row argmax position so the highest-likelihood token is
+        # always kept — same "at least one token" invariant the
+        # top-p branch enforces inside its sorted-space mask, but
+        # applied to the COMBINED mask so it covers any combination
+        # of cutoffs. Mathematically equivalent to "argmax always
+        # wins" which is mlx-lm's documented fallback shape
+        # (apply_top_k / apply_min_p both keep at least one token).
+        argmax_idx = mx.argmax(work, axis=-1, keepdims=True)
+        argmax_keep = mx.zeros(work.shape, dtype=mx.bool_)
+        argmax_keep = mx.put_along_axis(
+            argmax_keep,
+            argmax_idx,
+            mx.ones(argmax_idx.shape, dtype=mx.bool_),
+            axis=-1,
+        )
+        mask = mask | argmax_keep
 
         # Apply mask + temperature scaling. Use ``-inf`` for masked
         # positions so categorical never picks them.
