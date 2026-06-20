@@ -303,9 +303,7 @@ class TestEchoLogprobsCombination:
     silently corrupt prompt-conditioned scores in lm-eval-harness).
     Reject with 400 until we wire prompt-prefill-with-logprobs."""
 
-    def test_echo_with_logprobs_rejected_with_400(
-        self, patched_config, monkeypatch
-    ):
+    def test_echo_with_logprobs_rejected_with_400(self, patched_config, monkeypatch):
         client, _ = _build_completions_app(patched_config, monkeypatch)
         r = client.post(
             "/v1/completions",
@@ -322,9 +320,7 @@ class TestEchoLogprobsCombination:
         )
         assert "echo" in detail.lower() and "logprobs" in detail.lower()
 
-    def test_echo_with_logprobs_zero_still_rejected(
-        self, patched_config, monkeypatch
-    ):
+    def test_echo_with_logprobs_zero_still_rejected(self, patched_config, monkeypatch):
         """``logprobs:0`` is still a logprobs request — must reject too."""
         client, _ = _build_completions_app(patched_config, monkeypatch)
         r = client.post(
@@ -414,9 +410,7 @@ class TestLogprobsResponseShape:
         e.tokenizer = _Tokenizer()
         return e
 
-    def test_logprobs_five_returns_four_arrays(
-        self, patched_config, monkeypatch
-    ):
+    def test_logprobs_five_returns_four_arrays(self, patched_config, monkeypatch):
         client, _ = _build_completions_app(
             patched_config,
             monkeypatch,
@@ -448,9 +442,7 @@ class TestLogprobsResponseShape:
         # synthetic vocab of size 5 in the fixture).
         assert all(len(d) == 5 for d in lp["top_logprobs"])
 
-    def test_logprobs_zero_returns_empty_top_dicts(
-        self, patched_config, monkeypatch
-    ):
+    def test_logprobs_zero_returns_empty_top_dicts(self, patched_config, monkeypatch):
         client, _ = _build_completions_app(
             patched_config,
             monkeypatch,
@@ -509,9 +501,7 @@ class TestLogprobsEngineCapability:
         )
         assert "logprobs" in detail.lower()
 
-    def test_engine_without_tokenizer_returns_501(
-        self, patched_config, monkeypatch
-    ):
+    def test_engine_without_tokenizer_returns_501(self, patched_config, monkeypatch):
         def _factory():
             e = MagicMock()
             e.tokenizer = None
@@ -694,6 +684,125 @@ class TestStreamingEngineCapability:
         # constructed, so the client sees a clean 501 instead of an
         # SSE stream that fails on the first chunk.
         assert r.status_code == 501
+
+
+class TestStreamingCompletionIdStable:
+    """F-154 regression: every SSE chunk emitted by
+    ``stream_completion`` MUST share one ``cmpl-XXXX`` id (and one
+    ``created`` timestamp). Pre-fix the route minted a fresh
+    ``uuid.uuid4().hex[:8]`` per chunk, so client-side aggregators
+    that key on ``id`` to correlate chunks to a request treated each
+    chunk as a separate response and cross-chunk assembly was
+    impossible. ``/v1/chat/completions`` already shares one
+    ``chatcmpl-XXXX`` across chunks; this pins the legacy route to
+    parity with the OpenAI spec.
+    """
+
+    def _build_multichunk_engine(self):
+        class _Chunk:
+            def __init__(self, text, finished, finish_reason=None):
+                self.text = text
+                self.new_text = text
+                self.tokens = []
+                self.new_token_ids = []
+                self.prompt_tokens = 1
+                self.completion_tokens = 1
+                self.finished = finished
+                self.finish_reason = finish_reason
+                self.cached_tokens = 0
+                # ``logprobs`` is the route's signal to call
+                # ``_extract_streaming_token_logprobs`` — leave as None
+                # so the test exercises the no-logprobs branch (which
+                # is the surface the F-154 repro hits).
+                self.logprobs = None
+
+        async def _stream(*_a, **_kw):
+            yield _Chunk("hello", finished=False)
+            yield _Chunk(" there", finished=False)
+            yield _Chunk("!", finished=True, finish_reason="length")
+
+        e = MagicMock()
+        e.stream_generate = _stream
+        return e
+
+    def _parse_sse(self, body: str) -> list[dict]:
+        """Parse SSE ``data:`` lines into JSON, skipping ``[DONE]``."""
+        import json
+
+        chunks = []
+        for line in body.splitlines():
+            if not line.startswith("data: "):
+                continue
+            payload = line[len("data: ") :].strip()
+            if payload == "[DONE]":
+                continue
+            chunks.append(json.loads(payload))
+        return chunks
+
+    def test_all_stream_chunks_share_one_completion_id(
+        self, patched_config, monkeypatch
+    ):
+        client, _ = _build_completions_app(
+            patched_config,
+            monkeypatch,
+            engine_factory=self._build_multichunk_engine,
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hi",
+                "max_tokens": 5,
+                "stream": True,
+            },
+        )
+        assert r.status_code == 200, r.text
+        chunks = self._parse_sse(r.text)
+        assert len(chunks) >= 2, f"expected multiple stream chunks, got {len(chunks)}"
+        ids = {c["id"] for c in chunks}
+        assert len(ids) == 1, (
+            f"F-154 regression: stream emitted distinct ids per chunk "
+            f"({len(ids)} unique across {len(chunks)} chunks): "
+            f"{sorted(ids)}"
+        )
+        # The shared id still follows the canonical ``cmpl-XXXX``
+        # prefix so OpenAI-shape-strict clients don't get surprised.
+        sole_id = next(iter(ids))
+        assert sole_id.startswith("cmpl-"), (
+            f"shared id must keep the OpenAI ``cmpl-`` prefix, got {sole_id!r}"
+        )
+
+    def test_all_stream_chunks_share_one_created_timestamp(
+        self, patched_config, monkeypatch
+    ):
+        """Counterpart to the id contract: ``created`` is also pinned
+        once per request. Pre-fix each chunk called ``int(time.time())``
+        again, so chunks straddling a second boundary disagreed on the
+        request start time. Clients that derive request latency from
+        the first/last chunk timestamps would see jitter rather than
+        a stable origin.
+        """
+        client, _ = _build_completions_app(
+            patched_config,
+            monkeypatch,
+            engine_factory=self._build_multichunk_engine,
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hi",
+                "max_tokens": 5,
+                "stream": True,
+            },
+        )
+        assert r.status_code == 200
+        chunks = self._parse_sse(r.text)
+        timestamps = {c["created"] for c in chunks}
+        assert len(timestamps) == 1, (
+            f"F-154 regression: stream emitted distinct ``created`` "
+            f"timestamps ({sorted(timestamps)}) — must share one start"
+        )
 
 
 class TestFieldDeclarations:
