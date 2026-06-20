@@ -470,29 +470,43 @@ class StreamingPostProcessor:
 
     @staticmethod
     def _forced_tool_choice_arguments_violate_object_root(args_str: str | None) -> bool:
-        """Return True when ``args_str`` parses as JSON but is NOT a
-        JSON object (dict).
+        """Return True when a finalized anchor's ``arguments`` value
+        violates the OpenAI spec.
 
         OpenAI spec: ``tool_calls[i].function.arguments`` is a string
         encoding a JSON object — every declared tool schema is
-        ``{"type":"object","properties":{…}}``. A bare integer
-        (``"1234567890"``), bare string (``"☉ Paris output"``), or
-        array root is the model's scratch — not a real call. F-200
-        finalize path needs this guard too; sharing the helper between
-        the per-delta filter and the finalize / fallback paths keeps
-        the two surfaces from drifting.
+        ``{"type":"object","properties":{…}}``. A finalized anchor
+        whose ``arguments`` is not a JSON-object-encoded string can
+        never satisfy the contract, so it is always the model's
+        scratch:
 
-        Returns False when ``args_str`` is missing, empty / whitespace,
-        or does not parse as JSON at all (mid-stream fragments may not
-        be a complete JSON document yet; the parser path retries on
-        the next delta).
+          * Bare integer (``"1234567890"``) — valid JSON, non-object.
+          * JSON-quoted string (``'"☉ Paris output"'``) — valid JSON,
+            non-object.
+          * Bare unquoted text (``"☉ Paris output"``) — NOT valid
+            JSON at all (codex r2 BLOCKING #1; observed when phi-4-
+            mini-reasoning panics inside ``<think>`` and emits prose
+            where a JSON body should be).
+          * Array root (``"[1,2]"``) — valid JSON, non-object.
+
+        Returns False ONLY when ``args_str`` is missing / empty /
+        whitespace — that's an anchor delta carrying just
+        ``name`` + ``id`` with the body deferred to subsequent
+        argument-fragment deltas. Fragment-emitting parsers like
+        qwen3coder publish those continuations WITHOUT a name field,
+        so they bypass this helper entirely via the anchor-name
+        gate in ``_apply_forced_tool_choice_filter``.
         """
         if not args_str or not args_str.strip():
             return False
         try:
             parsed = json.loads(args_str)
         except (ValueError, TypeError):
-            return False
+            # Non-JSON ``arguments`` on a finalized anchor — the
+            # bare-text scratch shape. The OpenAI spec mandates a
+            # JSON object string, so a non-JSON value can never
+            # satisfy the contract. Drop.
+            return True
         return not isinstance(parsed, dict)
 
     def _apply_forced_tool_choice_filter(self, tool_calls: list[dict]) -> list[dict]:

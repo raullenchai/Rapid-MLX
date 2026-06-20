@@ -180,11 +180,11 @@ class TestForcedToolChoiceFilter:
         assert len(out) == 1
         assert out[0]["function"]["arguments"] == '{"city":"Paris"}'
 
-    def test_drops_bare_string_arguments(self):
-        """Same root pattern, string variant — phi-4-mini-reasoning has
-        been observed emitting ``"arguments":"☉ Paris output output"``
-        inside ``<think>``. Bare string is a valid JSON value but not
-        an object — drop."""
+    def test_drops_json_quoted_string_arguments(self):
+        """Same root pattern, JSON-quoted-string variant — the parser
+        round-trips ``{"arguments": "..."}`` into a stringified JSON
+        value (``'"..."'``) when the model emits a string literal in
+        place of the object. Valid JSON but non-object — drop."""
         pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
         out = pp._apply_forced_tool_choice_filter(
             [
@@ -193,6 +193,37 @@ class TestForcedToolChoiceFilter:
                     "function": {
                         "name": "get_weather",
                         "arguments": '"☉ Paris output output"',
+                    },
+                },
+                {
+                    "index": 1,
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city":"Paris"}',
+                    },
+                },
+            ]
+        )
+        assert len(out) == 1
+        assert json.loads(out[0]["function"]["arguments"]) == {"city": "Paris"}
+
+    def test_drops_bare_unquoted_text_arguments(self):
+        """Codex r2 BLOCKING #1 — phi-4-mini-reasoning has been
+        observed panicking inside ``<think>`` and emitting BARE
+        UNQUOTED prose where a JSON body should be:
+        ``arguments: ☉ Paris output output``. The hermes parser
+        forwards the bytes verbatim as the ``arguments`` string —
+        this is NOT valid JSON at all (no surrounding quotes,
+        non-ASCII). The OpenAI spec mandates a JSON-object string,
+        so a non-JSON value can never satisfy the contract — drop."""
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        out = pp._apply_forced_tool_choice_filter(
+            [
+                {
+                    "index": 0,
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": "☉ Paris output output",
                     },
                 },
                 {
