@@ -231,12 +231,17 @@ class TestJsonObjectFenceStripping:
         assert "```" not in joined
 
     def test_fence_preceded_by_whitespace(self):
-        """Model emits whitespace before the opening fence."""
+        """Model emits whitespace before the opening fence.
+
+        Codex r11 NIT: byte-exact equality (not just ``json.loads``)
+        so a regression that leaks leading/trailing whitespace would
+        fail. ``json.loads`` is permissive about surrounding
+        whitespace and would silently pass."""
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg, json_mode=True)
         pp.reset()
         joined = _stream_chunks(pp, ['\n\n```json\n{"k": 1}\n```\n'])
-        assert json.loads(joined) == {"k": 1}
+        assert joined == '{"k": 1}'
 
     def test_array_payload(self):
         """JSON arrays must work too — the spec allows ``[...]`` root."""
@@ -311,6 +316,32 @@ class TestJsonObjectFenceStripping:
             ],
         )
         assert joined == '{"answer": 42}'
+
+    def test_unfenced_prefix_then_json_matches_non_stream(self):
+        """Codex r11 BLOCKING #2: streaming json_mode with a prose
+        prefix (``Here is the answer: {"k":1}``, no fence) must
+        produce the same JSON-only output as the non-stream
+        ``extract_json_from_response``.
+
+        Non-stream behaviour (verified by direct call): when the
+        text ends with ``}`` and contains a JSON object after the
+        last ``{``, ``extract_json_from_response`` returns the JSON.
+        Streaming gets to the same answer via the existing
+        ``_process_standard`` preamble strip (drops bytes before
+        the first ``{``) + the H-07 ``_apply_json_fence_strip`` /
+        ``_guard_closing_fence`` pass-through (no fence consumed →
+        bypass). The streaming path matches bit-for-bit."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            ['Here is the answer: {"k": 1}'],
+        )
+        from vllm_mlx.api.utils import extract_json_from_response
+
+        assert joined == extract_json_from_response('Here is the answer: {"k": 1}')
+        assert joined == '{"k": 1}'
 
     def test_non_json_block_closer_then_bare_json_no_misclassification(self):
         """Codex r10 BLOCKING: a preamble that contains a CLOSED

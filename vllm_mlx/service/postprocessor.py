@@ -2303,20 +2303,29 @@ class StreamingPostProcessor:
                 json_start = _find_json_start(self._json_preamble_buffer)
                 if json_start >= 0:
                     self._json_preamble_stripped = True
-                    # Codex r8 BLOCKING #2: if the preamble we're about
-                    # to strip ends in an opening ``` ```json `` /
-                    # ``` ``` `` fence (whose payload IS the JSON we
-                    # just landed on), the downstream fence-walker
-                    # must know an opening fence WAS consumed so it
-                    # will suppress the matching closing fence.
-                    # Without this signal the bare-JSON pass-through
-                    # fast-path fires and the closing ``` ``` `` leaks
-                    # onto the wire. ``_find_json_fence_opener`` needs
-                    # the JSON delimiter visible to recognise the
+                    # Codex r8 BLOCKING #2 / r11 design-contract: the
+                    # pre-existing ``_json_preamble_buffer`` path
+                    # (issue #46) and the new H-07 ``_apply_json_fence_strip``
+                    # state machine cooperate by sharing a single
+                    # signal: ``_json_fence_opener_consumed``. This
+                    # path strips the bytes before the first
+                    # ``{``/``[`` — if those stripped bytes contained
+                    # an opening ``` ```json `` / ``` ``` `` fence whose
+                    # payload IS the JSON we landed on, we flip the
+                    # flag so the downstream walker suppresses the
+                    # matching closing fence. ``_find_json_fence_opener``
+                    # needs the JSON delimiter visible to recognise the
                     # fence's payload, so we run it over the FULL
-                    # buffer (preamble + JSON) and check whether the
-                    # found fence sits inside the about-to-be-stripped
-                    # preamble.
+                    # buffer (preamble + JSON) and accept the result
+                    # only if the found fence sits BEFORE the
+                    # delimiter we just landed on (otherwise the fence
+                    # is post-JSON and represents an unrelated code
+                    # block — see ``test_unfenced_prefix_then_json_matches_non_stream``
+                    # for the parity contract). The check is idempotent
+                    # and safe to share: even if the downstream walker
+                    # also calls ``_find_json_fence_opener`` on its
+                    # buffer, both paths agree on the same JSON-bearing
+                    # fence (or its absence).
                     fence_in_full = _find_json_fence_opener(self._json_preamble_buffer)
                     if 0 <= fence_in_full < json_start:
                         self._json_fence_opener_consumed = True
