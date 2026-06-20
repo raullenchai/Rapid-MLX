@@ -26,7 +26,6 @@ import pytest
 
 from vllm_mlx.api.tool_logits import _extract_param_schemas, validate_param_value
 
-
 # ---------------------------------------------------------------------------
 # F-140 known crash shapes — must NOT raise AttributeError
 # ---------------------------------------------------------------------------
@@ -49,19 +48,39 @@ F140_MALFORMED_SHAPES = [
     pytest.param([_tool(3.14)], id="parameters_float"),
     pytest.param([_tool(True)], id="parameters_bool"),
     pytest.param(
-        [{"type": "function", "function": {"name": "f", "parameters": {"properties": []}}}],
+        [
+            {
+                "type": "function",
+                "function": {"name": "f", "parameters": {"properties": []}},
+            }
+        ],
         id="properties_list",
     ),
     pytest.param(
-        [{"type": "function", "function": {"name": "f", "parameters": {"properties": "foo"}}}],
+        [
+            {
+                "type": "function",
+                "function": {"name": "f", "parameters": {"properties": "foo"}},
+            }
+        ],
         id="properties_string",
     ),
     pytest.param(
-        [{"type": "function", "function": {"name": "f", "parameters": {"properties": 42}}}],
+        [
+            {
+                "type": "function",
+                "function": {"name": "f", "parameters": {"properties": 42}},
+            }
+        ],
         id="properties_int",
     ),
     pytest.param(
-        [{"type": "function", "function": {"name": "f", "parameters": {"properties": None}}}],
+        [
+            {
+                "type": "function",
+                "function": {"name": "f", "parameters": {"properties": None}},
+            }
+        ],
         id="properties_null",
     ),
     # Structural variants — tool itself / function field is malformed.
@@ -133,7 +152,10 @@ def test_extract_skips_bad_tool_keeps_good_one():
 def test_extract_skips_bad_properties_keeps_good_tool():
     """``properties`` non-dict on one tool, good ``properties`` on another."""
     tools = [
-        {"type": "function", "function": {"name": "bad", "parameters": {"properties": []}}},
+        {
+            "type": "function",
+            "function": {"name": "bad", "parameters": {"properties": []}},
+        },
         {
             "type": "function",
             "function": {
