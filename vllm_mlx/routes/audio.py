@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
 from starlette.responses import Response
 
 from ..middleware.auth import verify_api_key
@@ -26,6 +26,71 @@ _AUDIO_READ_CHUNK_SIZE = 1024 * 1024  # 1 MB chunks
 # Audio engines (lazy loaded, module-level to persist across requests)
 _stt_engine = None
 _tts_engine = None
+
+# OpenAI-style STT model alias → MLX repo. Promoted to module scope so
+# the route can validate the model BEFORE streaming the upload (F-165):
+# unknown names previously rode the body through the upload cap, then
+# collapsed into a generic 500 "could not open/decode file" once
+# ``STTEngine.load`` failed deep inside mlx-audio. Mirror the
+# ``/v1/chat/completions`` and ``/v1/responses`` contract: validate the
+# model name first and surface 404 with a distinct error type.
+STT_MODEL_ALIASES: dict[str, str] = {
+    "whisper-large-v3": "mlx-community/whisper-large-v3-mlx",
+    "whisper-large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
+    "whisper-medium": "mlx-community/whisper-medium-mlx",
+    "whisper-small": "mlx-community/whisper-small-mlx",
+    "parakeet": "mlx-community/parakeet-tdt-0.6b-v2",
+    "parakeet-v3": "mlx-community/parakeet-tdt-0.6b-v3",
+}
+
+
+def _resolve_stt_model(model: str) -> str:
+    """Resolve an OpenAI-style STT model alias to the MLX repo path.
+
+    Returns the resolved repo path for known aliases or passes through
+    ``mlx-community/...`` / ``<org>/...`` style repo specs verbatim.
+    Raises a 404 ``HTTPException`` for everything else so unknown
+    ``model`` form fields don't reach the ``STTEngine.load`` call and
+    collapse into a generic 500 "could not open/decode file" (F-165).
+
+    Pass-through is intentionally restrictive — any string with a ``/``
+    is treated as a HuggingFace-style repo id. Bare names without a
+    slash that aren't in ``STT_MODEL_ALIASES`` are rejected up front.
+    """
+    if not isinstance(model, str) or not model:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": "`model` must be a non-empty string",
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "param": "model",
+                }
+            },
+        )
+    if model in STT_MODEL_ALIASES:
+        return STT_MODEL_ALIASES[model]
+    if "/" in model:
+        # Looks like a HuggingFace repo id — let STTEngine attempt to
+        # load it. ImportError / model-load errors still surface, but
+        # the client is explicitly opting in by passing a repo path.
+        return model
+    available = ", ".join(sorted(STT_MODEL_ALIASES.keys()))
+    raise HTTPException(
+        status_code=404,
+        detail={
+            "error": {
+                "message": (
+                    f"The model `{model}` does not exist. "
+                    f"Available STT aliases: {available}"
+                ),
+                "type": "model_not_found_error",
+                "code": "model_not_found",
+                "param": "model",
+            }
+        },
+    )
 
 
 class AudioBodyLimitMiddleware:
@@ -229,9 +294,17 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
 @router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
 async def create_transcription(
     file: UploadFile,
-    model: str = "whisper-large-v3",
-    language: str | None = None,
-    response_format: str = "json",
+    # ``model``, ``language``, ``response_format`` are sent as multipart
+    # form fields by OpenAI-compatible clients (the official Whisper API
+    # takes them in the ``multipart/form-data`` body, not the query
+    # string). Without ``Form()``, FastAPI treats them as query params
+    # and silently falls back to the default ``whisper-large-v3`` when
+    # a curl/OpenAI-SDK client puts them in the body. That kept the
+    # F-165 "bogus model" leak alive even after ``_resolve_stt_model``
+    # was wired in, because the bogus name never reached the resolver.
+    model: str = Form("whisper-large-v3"),
+    language: str | None = Form(None),
+    response_format: str = Form("json"),
 ):
     """Transcribe audio to text (OpenAI Whisper API compatible).
 
@@ -256,6 +329,15 @@ async def create_transcription(
     """
     global _stt_engine
 
+    # Resolve / validate the requested model BEFORE draining the upload.
+    # Previously every failure mode (unknown alias, missing mlx-audio,
+    # bad audio bytes) collapsed into a 500 "could not open/decode
+    # file" because ``STTEngine.load`` for a bogus name raised generic
+    # ``Exception`` caught by the catch-all below. Move the alias check
+    # up front so unknown ``model`` form fields fail fast with a 404
+    # "model_not_found_error" and never trigger a model load (F-165).
+    model_name = _resolve_stt_model(model)
+
     tmp_path: str | None = None
     try:
         # SECURITY: Stream the upload to a bounded temp file *before* doing
@@ -268,16 +350,6 @@ async def create_transcription(
             await _stream_upload_to_tempfile(file, tmp)
 
         from ..audio.stt import STTEngine
-
-        model_map = {
-            "whisper-large-v3": "mlx-community/whisper-large-v3-mlx",
-            "whisper-large-v3-turbo": "mlx-community/whisper-large-v3-turbo",
-            "whisper-medium": "mlx-community/whisper-medium-mlx",
-            "whisper-small": "mlx-community/whisper-small-mlx",
-            "parakeet": "mlx-community/parakeet-tdt-0.6b-v2",
-            "parakeet-v3": "mlx-community/parakeet-tdt-0.6b-v3",
-        }
-        model_name = model_map.get(model, model)
 
         if _stt_engine is None or _stt_engine.model_name != model_name:
             _stt_engine = STTEngine(model_name)
@@ -300,12 +372,26 @@ async def create_transcription(
             detail="mlx-audio not installed. Install with: pip install mlx-audio",
         )
     except HTTPException:
-        # Preserve our own status codes (e.g. 413 for oversized uploads)
-        # instead of downgrading them to 500 via the catch-all below.
+        # Preserve our own status codes (e.g. 413 for oversized uploads,
+        # 404 for unknown STT alias) instead of downgrading them to 500
+        # via the catch-all below.
         raise
     except Exception as e:
-        logger.error(f"Transcription failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        # Full traceback goes to the operator log; the client sees a
+        # generic message so we don't leak filesystem paths or
+        # mlx-audio internals (mirrors the global server handler).
+        logger.exception("Transcription failed: %s", e)
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "message": "Audio transcription failed",
+                    "type": "api_error",
+                    "code": "transcription_failed",
+                    "param": None,
+                }
+            },
+        )
     finally:
         if tmp_path is not None:
             try:

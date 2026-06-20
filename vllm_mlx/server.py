@@ -44,10 +44,27 @@ import logging
 import os
 
 import uvicorn
-from fastapi import FastAPI, Request
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from starlette.exceptions import HTTPException as StarletteHTTPException
-from starlette.responses import JSONResponse
+
+# Single source of truth for the OpenAI-shaped 400 / 422 / 500 envelopes
+# (F-161 / F-162 / F-163 / F-094-class). Defined in ``middleware`` so
+# tests can install the same handlers on a stub FastAPI without
+# importing the heavy engine stack.
+from .middleware.exception_handlers import (  # noqa: E402
+    _decode_error_response,  # noqa: F401 — re-exported for back-compat
+    _http_error_response as _http_exception_handler_impl,  # noqa: F401
+    install_exception_handlers,  # noqa: F401 — re-exported for tests
+)
+
+
+# Back-compat shim: ``tests/test_context_length_exceeded.py`` and
+# ``tests/test_config_and_middleware.py`` import this symbol from
+# ``vllm_mlx.server`` and register it manually on a stub FastAPI.
+# The real handler now lives in ``middleware/exception_handlers.py``;
+# keep this signature stable so the existing test suites keep working.
+async def _http_exception_handler(request, exc):  # noqa: ARG001
+    return _http_exception_handler_impl(exc)
 
 # Re-export for backwards compatibility with tests
 from .api.anthropic_adapter import (  # noqa: F401
@@ -498,76 +515,25 @@ from .middleware.auth import (
 )
 
 
-# Registered on the Starlette base class, NOT fastapi.HTTPException,
-# because the router itself raises starlette.exceptions.HTTPException
-# for unknown-route 404s and wrong-method 405s. fastapi.HTTPException
-# is a subclass, so this handler catches both.
-@app.exception_handler(StarletteHTTPException)
-async def _http_exception_handler(
-    request: Request,  # noqa: ARG001
-    exc: StarletteHTTPException,
-):
-    error_type_map = {
-        400: "invalid_request_error",
-        401: "authentication_error",
-        403: "permission_error",
-        404: "not_found_error",
-        405: "invalid_request_error",
-        409: "conflict_error",
-        429: "rate_limit_error",
-    }
-
-    # Structured-detail escape hatch: route handlers may raise
-    # ``HTTPException(detail={"error": {...}})`` to emit a custom
-    # OpenAI-shaped envelope (e.g. ``code: "context_length_exceeded"``
-    # for the token-budget gate). When the detail already carries the
-    # full ``{"error": {...}}`` shape, pass it through unchanged so the
-    # ``code`` / ``param`` fields land in the response. Bare-string
-    # detail keeps the legacy wrapping below.
-    detail = exc.detail
-    if isinstance(detail, dict) and isinstance(detail.get("error"), dict):
-        return JSONResponse(
-            status_code=exc.status_code,
-            content=detail,
-            headers=getattr(exc, "headers", None),
-        )
-
-    return JSONResponse(
-        status_code=exc.status_code,
-        content={
-            "error": {
-                "message": str(exc.detail),
-                "type": error_type_map.get(exc.status_code, "api_error"),
-                "code": None,
-                "param": None,
-            }
-        },
-        headers=getattr(exc, "headers", None),
-    )
-
-
-@app.exception_handler(Exception)
-async def _global_exception_handler(request: Request, exc: Exception):
-    """Catch unhandled exceptions so they return JSON 500 instead of killing
-    the connection. This keeps the server alive for subsequent requests.
-
-    The exception message and type are intentionally NOT echoed back to
-    the client — exception messages routinely contain absolute filesystem
-    paths, model paths, environment values, and other internal state that
-    aids targeted exploitation. Full details (with traceback) go to the
-    server log for operators."""
-    logger.error(
-        "Unhandled exception on %s %s: %s",
-        request.method,
-        request.url.path,
-        exc,
-        exc_info=True,
-    )
-
-    return JSONResponse(
-        status_code=500,
-        content={"error": {"message": "Internal server error"}},
-    )
+# ── Wire the unified exception handlers onto the production app ─────
+#
+# All handler bodies live in ``vllm_mlx.middleware.exception_handlers``
+# (no heavy imports) so isolated route tests can install the identical
+# wiring on a stub FastAPI app without dragging the engine stack into
+# the fixture. Production delegates here for:
+#
+# * ``StarletteHTTPException`` → wraps detail in the OpenAI-shaped
+#   envelope (and passes structured ``{"error": {...}}`` detail through
+#   unchanged — the ``context_length_exceeded`` escape hatch still
+#   works). Closes F-013 / F-094 leakage at the envelope layer.
+# * ``json.JSONDecodeError`` → 400 with OpenAI-shaped envelope
+#   (closes F-161 / F-162 — ``await request.json()`` failures were
+#   hitting the generic 500 path before).
+# * ``RequestValidationError`` → 400 with sanitized message
+#   (strips ``detail[*].input`` echo from F-094/F-104 and the
+#   pydantic.dev URL from F-163).
+# * ``Exception`` → 500 ``Internal server error`` with no message leak.
+install_exception_handlers(app)
 
 
 def _detect_native_tool_support() -> bool:
