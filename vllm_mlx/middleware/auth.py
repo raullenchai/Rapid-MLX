@@ -321,16 +321,54 @@ _LOOPBACK_LITERALS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
 def _is_loopback_client(request: Request) -> bool:
-    """True when ``request.client.host`` is a loopback address.
+    """True when ``request.client.host`` is a loopback address AND the
+    request has no reverse-proxy fingerprint.
 
     Uses ``ipaddress.is_loopback`` so canonical IPv4 (``127.0.0.0/8``) and
     IPv6 (``::1``, ``::ffff:127.0.0.1``) variants all match — defending
     against an attacker who probes for non-canonical loopback spellings to
     see if the gate is implemented with a string compare.
+
+    Codex PR #728 round-3 BLOCKING: a same-host reverse proxy (nginx
+    ``proxy_pass http://127.0.0.1:8000``) makes every external client look
+    like ``127.0.0.1`` to the Worker, so a naive loopback check is a hole.
+    We harden by also REJECTING any request carrying a forwarding-trail
+    header. The header set covers:
+
+      * ``X-Forwarded-For`` / ``X-Forwarded-Host`` / ``X-Forwarded-Proto``
+        (de-facto standard set added by nginx / Apache / HAProxy / ALB /
+        Cloudflare).
+      * ``Forwarded`` (RFC 7239 — set by Apache 2.4.10+).
+      * ``Via`` (RFC 7230 — added by every HTTP/1.1-compliant proxy).
+      * ``CF-Connecting-IP`` (Cloudflare-specific).
+      * ``True-Client-IP`` (Akamai / Cloudflare Enterprise).
+
+    A direct loopback caller from the same machine has none of these
+    (loopback ``curl`` doesn't set them; same-process supervised processes
+    don't either). The trade-off: an attacker who controls a header-
+    stripping proxy can still spoof — but that's a much higher bar than
+    "the default nginx config", and operators in that posture should set
+    ``--api-key`` (production posture) instead.
     """
     client = request.client
     if client is None or not client.host:
         return False
+
+    # Proxy-trail check first — cheaper than the IP parse, and any
+    # forwarded header is an immediate disqualifier regardless of host.
+    forwarded_headers = (
+        "x-forwarded-for",
+        "x-forwarded-host",
+        "x-forwarded-proto",
+        "forwarded",
+        "via",
+        "cf-connecting-ip",
+        "true-client-ip",
+    )
+    for h in forwarded_headers:
+        if request.headers.get(h):
+            return False
+
     host = client.host
     if host in _LOOPBACK_LITERALS:
         return True

@@ -284,15 +284,28 @@ def test_loopback_ipv6_is_recognised():
     check and accidentally locks out callers binding on ``::1``."""
     from vllm_mlx.middleware.auth import _is_loopback_client
 
-    # Build a minimal request-like object exposing ``.client.host``.
+    # Build a minimal request-like object exposing ``.client.host`` and
+    # ``.headers.get(...)`` — both are consumed by ``_is_loopback_client``
+    # (codex r3 added the proxy-trail header check).
     class _C:
         def __init__(self, host: str) -> None:
             self.host = host
             self.port = 50000
 
+    class _H:
+        def __init__(self, headers: dict | None = None) -> None:
+            self._h = headers or {}
+
+        def get(self, name: str, default=None):
+            # Normalise to lower-case to match Starlette's case-insensitive
+            # header lookup — the production code passes already-lowered
+            # keys but a future caller might not.
+            return self._h.get(name.lower(), default)
+
     class _R:
-        def __init__(self, host: str) -> None:
+        def __init__(self, host: str, headers: dict | None = None) -> None:
             self.client = _C(host)
+            self.headers = _H(headers)
 
     assert _is_loopback_client(_R("127.0.0.1")) is True
     assert _is_loopback_client(_R("::1")) is True
@@ -307,6 +320,56 @@ def test_loopback_ipv6_is_recognised():
     assert _is_loopback_client(_R("not-an-ip")) is False
     # ``request.client`` may be None on some ASGI servers / test rigs.
     assert _is_loopback_client(_R(None)) is False  # type: ignore[arg-type]
+
+
+def test_loopback_rejects_proxied_caller(client_factory):
+    """Codex PR #728 round-3 BLOCKING: a same-host reverse proxy (nginx
+    ``proxy_pass http://127.0.0.1:8000``) makes every external client look
+    like ``127.0.0.1``. The fix REJECTS any request carrying a proxy-trail
+    header, so a misconfigured deploy can't expose the admin routes via
+    its load balancer.
+
+    Each parametrised header is tested independently to pin which signals
+    we trust. The set is documented in ``_is_loopback_client``'s docstring.
+    """
+    build, _ = client_factory
+    client = build(api_key=None, client_host="127.0.0.1")
+
+    proxy_signals = [
+        {"X-Forwarded-For": "8.8.8.8"},
+        {"X-Forwarded-Host": "example.com"},
+        {"X-Forwarded-Proto": "https"},
+        {"Forwarded": 'for="8.8.8.8";proto=https'},
+        {"Via": "1.1 nginx-proxy"},
+        {"CF-Connecting-IP": "8.8.8.8"},
+        {"True-Client-IP": "8.8.8.8"},
+    ]
+    for extra in proxy_signals:
+        r = client.post(
+            "/v1/cache/clear",
+            headers={"X-Rapid-MLX-Internal": "true", **extra},
+        )
+        assert r.status_code == 403, (
+            f"Request with proxy signal {list(extra)[0]!r} should 403 "
+            f"even from 127.0.0.1, got {r.status_code}: {r.text}"
+        )
+
+
+def test_loopback_accepts_direct_caller_with_no_proxy_headers(client_factory):
+    """Cross-check: a direct loopback caller without any proxy-trail
+    headers still gets through. Otherwise the round-3 fix would have
+    accidentally locked out the dev-on-localhost path entirely.
+    """
+    build, _ = client_factory
+    client = build(api_key=None, client_host="127.0.0.1")
+
+    r = client.post(
+        "/v1/cache/clear",
+        headers={"X-Rapid-MLX-Internal": "true"},
+    )
+    assert r.status_code not in (401, 403), (
+        f"Direct loopback caller should pass, got {r.status_code}: {r.text}"
+    )
 
 
 # ---------------------------------------------------------------------------
