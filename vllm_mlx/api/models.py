@@ -350,6 +350,112 @@ class ResponseFormatJsonSchema(BaseModel):
         populate_by_name = True
 
 
+# F-103: legal ``response_format.type`` enum, kept in sync with the
+# route-layer ``_VALID_RESPONSE_FORMAT_TYPES`` in
+# ``vllm_mlx/service/helpers.py``. Defined at module scope so both
+# the typed ``ResponseFormat`` Pydantic model and the request-level
+# raw-dict guard share one source of truth.
+_VALID_RESPONSE_FORMAT_TYPES: tuple[str, ...] = (
+    "text",
+    "json_object",
+    "json_schema",
+)
+
+
+def _validate_response_format_raw(value):
+    """Reject malformed ``response_format`` dict payloads BEFORE the
+    typed ``ResponseFormat`` Pydantic arm is reached (F-103).
+
+    ``ChatCompletionRequest.response_format`` is declared as
+    ``ResponseFormat | dict | None`` so OpenAI-compat clients can send
+    the spec-shape directly without our typed model rejecting unknown
+    extension keys. The downside is Pydantic's Union coercion picks
+    the FIRST arm that parses — so when the typed arm rejects (e.g.
+    ``json_schema.schema=42`` because ``ResponseFormatJsonSchema``
+    declares ``schema_: dict``), the bare-``dict`` arm silently
+    swallows the same payload. That was the F-103 silent-200 hazard:
+
+      * ``{"type":"json_schema","json_schema":{"name":"x",
+         "schema":42}}`` (int) → fell through to the dict arm, then
+         ``extract_json_schema_for_guided`` bailed at
+         ``if not schema: return None`` (HTTP 200 with no constraint).
+      * Same with ``"schema":"hello"`` (string truthy → schema was
+         coerced into a string literal in the system prompt;
+         downstream JSON parsing produced garbage).
+
+    The route-layer ``_validate_response_format`` helper closes the
+    ``type``-enum and ``json_schema``-required arms; this validator
+    pins the inner ``json_schema.schema`` shape so the silent-200
+    arm becomes a clean 400 at parse time. Kept in models.py (not the
+    route helper) so the gate fires before any FastAPI dependency runs
+    — the resulting ``ValidationError`` surfaces as a Pydantic 400
+    with a structured ``detail`` body the existing
+    ``_validation_error_response`` handler already strips of
+    ``input``.
+    """
+    # ``None`` flows through (default — no structure enforcement).
+    if value is None:
+        return value
+    # If the value already parses as the typed model, the typed arm's
+    # own validators cover everything we need — pass through.
+    if isinstance(value, ResponseFormat):
+        return value
+    # Non-dict wire forms (string / list / int) — reject with a clean
+    # message; Pydantic's default union-fallback would otherwise
+    # produce a misleading error pointing at the wrong arm.
+    if not isinstance(value, dict):
+        raise ValueError(
+            "response_format must be an object with a 'type' field"
+        )
+    # From here we're on the dict arm. Mirror the route-layer enum
+    # rules + add the missing inner-``schema`` shape check.
+    if "type" not in value:
+        raise ValueError("response_format.type is required")
+    rf_type = value.get("type")
+    if rf_type not in _VALID_RESPONSE_FORMAT_TYPES:
+        raise ValueError(
+            "response_format.type must be 'text', 'json_object', "
+            "or 'json_schema'"
+        )
+    if rf_type == "json_schema":
+        json_schema_field = value.get("json_schema")
+        if not json_schema_field:
+            raise ValueError(
+                "response_format.type='json_schema' requires "
+                "non-empty 'json_schema' field"
+            )
+        if not isinstance(json_schema_field, dict):
+            raise ValueError(
+                "response_format.json_schema must be an object"
+            )
+        inner_schema = json_schema_field.get("schema")
+        if inner_schema is None:
+            # Missing inner ``schema`` member; the route-layer helper
+            # already covers this, but mirroring here keeps the schema
+            # arm self-contained.
+            raise ValueError(
+                "response_format.type='json_schema' requires "
+                "'json_schema.schema' to be a non-empty object"
+            )
+        if not isinstance(inner_schema, dict):
+            # F-103 silent-200 closer: ``schema:42`` / ``schema:"hello"``
+            # / ``schema:[1,2]`` previously fell through the bare-dict
+            # union arm and produced HTTP 200 with no JSON-Schema
+            # enforcement. Now a clean Pydantic ``ValidationError``
+            # naming the actual type the client sent.
+            raise ValueError(
+                "response_format.json_schema.schema must be an object "
+                f"(got {type(inner_schema).__name__})"
+            )
+        if not inner_schema:
+            # Empty dict — also unconstrained, same hazard class.
+            raise ValueError(
+                "response_format.type='json_schema' requires "
+                "'json_schema.schema' to be a non-empty object"
+            )
+    return value
+
+
 class ResponseFormat(BaseModel):
     """
     Response format specification for structured output.
@@ -360,7 +466,12 @@ class ResponseFormat(BaseModel):
     - "json_schema": Forces JSON matching a specific schema
     """
 
-    type: str = "text"  # "text", "json_object", "json_schema"
+    # F-103: ``Literal`` so the typed arm of the
+    # ``ResponseFormat | dict`` union rejects unknown ``type`` values
+    # (``"xml"``, ``""``, etc.) at parse time. The dict arm is
+    # separately guarded by ``_validate_response_format_raw`` on the
+    # request model.
+    type: Literal["text", "json_object", "json_schema"] = "text"
     json_schema: ResponseFormatJsonSchema | None = None
 
 
@@ -527,6 +638,17 @@ class ChatCompletionRequest(BaseModel):
     @classmethod
     def _scrub_nonfinite_sampling(cls, data):
         return _scrub_nonfinite_sampling_raw(data)
+
+    # F-103: tighten ``response_format`` dict-arm validation so the
+    # silent-200 hazard (``json_schema.schema=42`` / ``"hello"``
+    # falling through the union to bare-dict) is rejected with a
+    # clean 422 at parse time. Runs on the raw value BEFORE the
+    # ``ResponseFormat | dict`` union resolves so the dict arm
+    # cannot swallow shapes the typed arm would reject.
+    @field_validator("response_format", mode="before")
+    @classmethod
+    def _validate_response_format(cls, v):
+        return _validate_response_format_raw(v)
 
     # Belt-and-braces: catches non-finite values that bypass the
     # raw-dict path (e.g. ``ChatCompletionRequest(temperature=nan)``
