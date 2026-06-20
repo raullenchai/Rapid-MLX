@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..config import get_config
-from ..middleware.auth import verify_api_key
+from ..middleware.auth import verify_api_key, verify_api_key_or_x_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +23,16 @@ probe_router = APIRouter()
 router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 # Destructive control-plane routes (cache clear, request cancel). Per the
-# operator-intent revert of #728, these run on plain ``verify_api_key`` —
-# single-machine UX means the prior ``verify_internal_admin`` gate (header
-# requirement) was friction for no benefit on the common deployment. The
-# cancel envelope sanitization + scheduler ``abort_request`` correctness
-# fix from #728 STAY — those are real bugs unrelated to the auth gate.
-admin_router = APIRouter(dependencies=[Depends(verify_api_key)])
+# operator-intent revert of #728, these run on the Anthropic-compatible
+# ``verify_api_key_or_x_api_key`` gate — single-machine UX means the
+# prior ``verify_internal_admin`` header requirement was friction for no
+# benefit on the common deployment, but we keep the dual Bearer + x-api-key
+# acceptance that the removed gate had (codex r1 on PR #760: switching
+# to plain ``verify_api_key`` would drop ``x-api-key`` callers, breaking
+# Anthropic-style clients that hit these routes). The cancel envelope
+# sanitization + scheduler ``abort_request`` correctness fixes from #728
+# STAY — those are real bugs unrelated to the auth gate.
+admin_router = APIRouter(dependencies=[Depends(verify_api_key_or_x_api_key)])
 
 
 @probe_router.api_route("/", methods=["GET", "HEAD"])

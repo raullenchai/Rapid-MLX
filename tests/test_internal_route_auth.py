@@ -96,20 +96,23 @@ def client_factory():
 
 
 @pytest.mark.parametrize(("method", "path"), _DESTRUCTIVE_ROUTES)
-def test_destructive_route_requires_bearer_when_api_key_configured(
+def test_destructive_route_requires_credential_when_api_key_configured(
     client_factory, method, path
 ):
     """When the operator sets ``--api-key``, the destructive routes still
-    require a matching Bearer / x-api-key — that's the plain
-    ``verify_api_key`` contract and the only auth gate left after the
-    #728 revert."""
+    require a matching credential — ``verify_api_key_or_x_api_key``
+    accepts EITHER ``Authorization: Bearer ...`` OR ``x-api-key`` (the
+    dual shape that the reverted ``verify_internal_admin`` also accepted,
+    so Anthropic-style clients hitting these routes don't break). Codex
+    r1 on PR #760: switching to plain ``verify_api_key`` here would have
+    silently dropped ``x-api-key`` callers."""
     build, _ = client_factory
     client = build(api_key="operator-secret")
 
-    no_bearer = client.request(method, path)
-    assert no_bearer.status_code == 401, (
-        f"{method} {path}: --api-key set but no bearer → expected 401, "
-        f"got {no_bearer.status_code}: {no_bearer.text}"
+    no_creds = client.request(method, path)
+    assert no_creds.status_code == 401, (
+        f"{method} {path}: --api-key set but no credential → expected 401, "
+        f"got {no_creds.status_code}: {no_creds.text}"
     )
 
     with_bearer = client.request(
@@ -120,6 +123,16 @@ def test_destructive_route_requires_bearer_when_api_key_configured(
     assert with_bearer.status_code not in (401, 403), (
         f"{method} {path}: valid bearer should pass, "
         f"got {with_bearer.status_code}: {with_bearer.text}"
+    )
+
+    with_x_api_key = client.request(
+        method,
+        path,
+        headers={"x-api-key": "operator-secret"},
+    )
+    assert with_x_api_key.status_code not in (401, 403), (
+        f"{method} {path}: valid x-api-key should pass (Anthropic shape), "
+        f"got {with_x_api_key.status_code}: {with_x_api_key.text}"
     )
 
 
