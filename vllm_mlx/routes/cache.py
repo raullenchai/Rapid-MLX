@@ -42,11 +42,19 @@ from ..middleware.auth import verify_api_key
 
 logger = logging.getLogger(__name__)
 
-_ISSUE_URL = "https://github.com/raullenchai/Rapid-MLX/issues/476"
-_NOT_IMPLEMENTED_MSG = (
-    "engine integration pending; the wire contract (auth, path-whitelist, "
-    f"manifest schema v{PROTOCOL_VERSION}) is live — see {_ISSUE_URL}"
-)
+_NOT_IMPLEMENTED_MSG = "engine integration pending"
+
+# Don't echo resolved paths / manifest contents in the 501 response body.
+# Logs keep the validated values for the operator; the client only learns
+# the route is unimplemented. (Avoids leaking $HOME / cache-sandbox layout
+# to any caller — sibling concerns to F-180.)
+_NOT_IMPLEMENTED_DETAIL = {
+    "error": {
+        "message": _NOT_IMPLEMENTED_MSG,
+        "type": "not_implemented_error",
+        "code": None,
+    }
+}
 
 
 router = APIRouter(
@@ -172,18 +180,7 @@ async def export_cache(req: ExportRequest):
         req.max_bytes,
         _NOT_IMPLEMENTED_MSG,
     )
-    raise HTTPException(
-        status_code=501,
-        detail={
-            "message": _NOT_IMPLEMENTED_MSG,
-            "issue": _ISSUE_URL,
-            "validated": {
-                "destination": str(destination),
-                "max_bytes": req.max_bytes,
-                "protocol_version": PROTOCOL_VERSION,
-            },
-        },
-    )
+    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED_DETAIL)
 
 
 @router.post("/import", status_code=501)
@@ -228,18 +225,7 @@ async def import_cache(req: ImportRequest):
         req.merge_strategy,
         _NOT_IMPLEMENTED_MSG,
     )
-    raise HTTPException(
-        status_code=501,
-        detail={
-            "message": _NOT_IMPLEMENTED_MSG,
-            "issue": _ISSUE_URL,
-            "validated": {
-                "source": str(source),
-                "merge_strategy": req.merge_strategy,
-                "manifest": manifest.to_dict(),
-            },
-        },
-    )
+    raise HTTPException(status_code=501, detail=_NOT_IMPLEMENTED_DETAIL)
 
 
 @router.get("/info")

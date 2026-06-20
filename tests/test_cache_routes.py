@@ -286,15 +286,24 @@ def test_routes_reject_wrong_bearer(cache_client):
 
 
 def test_export_default_destination_returns_501(cache_client):
-    """No destination → uses sandbox root, then 501 with #476 link."""
+    """No destination → uses sandbox root, then 501 with a sanitized
+    error envelope. Resolved destination must NOT appear in the response
+    body (sibling concern to F-180 — no operator-home-dir leak)."""
     resp = cache_client.client.post("/v1/cache/export", json={}, headers=_auth())
     assert resp.status_code == 501
-    detail = resp.json()["detail"]
-    assert "issue" in detail and "476" in detail["issue"]
-    assert detail["validated"]["protocol_version"] == PROTOCOL_VERSION
-    # Resolved destination must be inside the sandbox.
+    body = resp.json()
+    detail = body["detail"]
+    # Sanitized envelope: only the error stub, no resolved paths or
+    # issue tracker URL.
+    assert detail["error"]["message"] == "engine integration pending"
+    assert detail["error"]["type"] == "not_implemented_error"
+    # Defense-in-depth: no leaked path / manifest data in the response
+    # body. The operator's resolved destination stays in server logs only.
+    serialized = resp.text
     sandbox_real = str(Path(cache_client.sandbox).resolve())
-    assert detail["validated"]["destination"].startswith(sandbox_real)
+    assert sandbox_real not in serialized
+    assert "validated" not in serialized
+    assert "issue" not in serialized
 
 
 def test_export_rejects_path_traversal(cache_client):
@@ -447,7 +456,8 @@ def test_import_model_id_mismatch_returns_409(cache_client):
 
 
 def test_import_validated_request_returns_501(cache_client):
-    """All checks pass → 501 with the parsed manifest echoed back."""
+    """All wire checks pass → sanitized 501 envelope. Resolved source
+    path AND manifest contents must NOT leak in the response body."""
     manifest = Manifest(
         protocol_version=PROTOCOL_VERSION,
         model_id="qwen3.5-9b-4bit",
@@ -466,9 +476,13 @@ def test_import_validated_request_returns_501(cache_client):
     )
     assert resp.status_code == 501
     detail = resp.json()["detail"]
-    assert detail["issue"].endswith("/476")
-    assert detail["validated"]["merge_strategy"] == "replace"
-    assert detail["validated"]["manifest"]["entries"] == 18
+    assert detail["error"]["message"] == "engine integration pending"
+    assert detail["error"]["type"] == "not_implemented_error"
+    # Defense-in-depth: no leaked manifest fields / paths.
+    serialized = resp.text
+    assert "qwen3.5-9b-4bit" not in serialized
+    assert "validated" not in serialized
+    assert "manifest" not in serialized
 
 
 def test_import_rejects_path_traversal(cache_client):
