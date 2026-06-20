@@ -474,20 +474,51 @@ class StreamingPostProcessor:
         if state == "scan":
             self._json_fence_buffer += content
             buf = self._json_fence_buffer
-            # Look for the first JSON delimiter. Mirror
-            # ``_find_json_start``'s think-tag awareness so a reasoning
-            # parser that already routed think-content to the reasoning
-            # channel still works — and the rare case where the model
-            # emits a literal ``<think>{...}</think>{real}`` sequence
-            # is handled identically to the existing preamble path.
+            # Codex r6 BLOCKING #2: when an opening fence is present
+            # in the preamble, the REAL JSON answer starts AFTER the
+            # fence, not at the first ``{``/``[`` we see. A preamble
+            # like ``Example shape: {"k":...}\n```json\n{"answer":42}\n``` ``
+            # has TWO JSON delimiters; the first is illustrative
+            # content. Prefer the JSON delimiter that appears after
+            # the LAST opening fence in the preamble.
+            # Find the first JSON delimiter AND the first ``` ``` ``.
+            # The order matters: a fence BEFORE the JSON delimiter
+            # is the OPENING fence (we anchor search after it to
+            # skip an illustrative-example JSON in the preamble —
+            # codex r6 BLOCKING #2); a fence AFTER the first JSON
+            # delimiter (or no fence at all) is irrelevant to the
+            # scan-phase anchor — that's the closing fence (the
+            # ``_guard_closing_fence`` walker handles it later).
             json_start = _find_json_start(buf)
-            if json_start < 0:
-                # No JSON delimiter yet. If the buffer grew past the
-                # cap, drop the OLD bytes — but keep enough of the
-                # suffix to catch a fence-opener split across the
-                # boundary. Codex r3 BLOCKING: the earlier draft
-                # RELEASED the entire >4KB buffer raw, which leaked
-                # the preamble + opening fence onto the wire (the
+            fence_pos = buf.find("```")
+            if fence_pos >= 0 and (json_start < 0 or fence_pos < json_start):
+                # Opening fence in preamble. Re-anchor the JSON
+                # search to after the fence + optional ``json`` tag
+                # + whitespace, so an illustrative example JSON
+                # before the fence does NOT win.
+                search_from = fence_pos + 3
+                if buf[search_from : search_from + 4].lower() == "json":
+                    search_from += 4
+                while search_from < len(buf) and buf[search_from] in " \t\r\n":
+                    search_from += 1
+                rel_start = _find_json_start(buf[search_from:])
+                if rel_start < 0:
+                    # Opener seen but no JSON delimiter yet — keep
+                    # scanning. Apply the scan-cap trim if needed.
+                    if len(buf) > self._JSON_FENCE_SCAN_CAP:
+                        self._json_fence_buffer = buf[
+                            -self._JSON_FENCE_SCAN_KEEP_SUFFIX :
+                        ]
+                    return ""
+                json_start = search_from + rel_start
+            elif json_start < 0:
+                # No JSON delimiter AND no opening fence yet. Keep
+                # scanning. If the buffer grew past the cap, drop
+                # the OLD bytes — but keep enough of the suffix to
+                # catch a fence-opener split across the boundary.
+                # Codex r3 BLOCKING: the earlier draft RELEASED
+                # the entire >4KB buffer raw, which leaked the
+                # preamble + opening fence onto the wire (the
                 # opposite of what response_format=json_* requires).
                 # The contract for json_mode is "suppress everything
                 # before the first ``{``/``[``", and that contract
@@ -495,11 +526,14 @@ class StreamingPostProcessor:
                 if len(buf) > self._JSON_FENCE_SCAN_CAP:
                     self._json_fence_buffer = buf[-self._JSON_FENCE_SCAN_KEEP_SUFFIX :]
                 return ""
-            # Found the JSON start. Strip everything before it (preamble
-            # + opening fence). Symmetric with the non-stream
-            # ``extract_json_from_response`` ``rfind('{') ... endswith('}')``
-            # peel: bytes BEFORE the first ``{``/``[`` are the wrapper,
-            # and we are done with them.
+            # else: json_start is set; fence (if any) was AFTER the
+            # JSON delimiter — the ``_guard_closing_fence`` walker
+            # will suppress it. Found the JSON start. Strip everything
+            # before it (preamble + opening fence). Symmetric with the
+            # non-stream ``extract_json_from_response``'s
+            # ``rfind('{') ... endswith('}')`` peel: bytes BEFORE the
+            # first ``{``/``[`` are the wrapper, and we are done
+            # with them.
             payload = buf[json_start:]
             self._json_fence_state = "inside"
             self._json_fence_buffer = ""
@@ -562,7 +596,23 @@ class StreamingPostProcessor:
         # Codex r5 BLOCKING: the earlier draft only suppressed AT the
         # first ``` ``` ``, leaving trailing prose like
         # ``\nHere is code:`` on the wire.
-        json_root_closed_at = -1
+        # Walker tracks JSON-root close AND the closing ``` ``` ``
+        # fence. ``json_root_closed_at`` is the index of the brace
+        # that returned depth to 0 (top-level close). ``fence_idx``
+        # is the index of the FIRST ``` ``` `` that appears OUTSIDE
+        # a JSON string literal AND AT depth==0 (i.e. after the JSON
+        # root has fully closed). For the saw-open-fence path we
+        # truncate at fence_idx; if the buffer contains a root-close
+        # but no fence yet, we MUST continue holding (the model may
+        # still be emitting whitespace between root-close and the
+        # closing fence — that whitespace is suppressed regardless,
+        # but truncating at root-close would lose the chance to
+        # recognise a JSON value that contains a literal terminating
+        # ``}`` followed by more content the model still wants to
+        # emit, e.g. the codex r6 #1 multi-value concern). The
+        # contract: opening fence seen => terminator is the closing
+        # fence, not the root close.
+        fence_idx = -1
         i = 0
         n = len(combined)
         while i < n:
@@ -585,32 +635,30 @@ class StreamingPostProcessor:
                     i += 1
                     continue
                 if c in "}]":
-                    depth -= 1
-                    if depth <= 0:
-                        # JSON root just closed at index ``i`` (the
-                        # closing brace/bracket itself). Capture and
-                        # break — we'll truncate to ``combined[:i+1]``
-                        # (inclusive of the closing brace) below.
-                        # The non-stream path's
-                        # ``rfind('{') ... endswith('}')`` peel does
-                        # the same thing post-hoc. Defensive clamp on
-                        # negative depth (malformed unbalanced output)
-                        # — keep depth == 0 so subsequent processing
-                        # still treats the cursor as outside JSON.
-                        depth = 0
-                        json_root_closed_at = i
-                        break
+                    # Defensive clamp on negative depth (malformed
+                    # unbalanced output).
+                    depth = max(depth - 1, 0)
                     i += 1
                     continue
+                # Triple-backtick OUTSIDE a JSON string AND OUTSIDE
+                # the JSON body (depth==0). Codex r1 + r5 + r6
+                # combined: a backtick inside a string literal is
+                # value content, a backtick inside the structural
+                # body (between matched braces) is also content
+                # (e.g. JSON containing a stringified code block);
+                # the ONLY position that means "closing fence" is
+                # at depth 0 after the root has closed.
+                if c == "`" and depth == 0 and combined[i : i + 3] == "```":
+                    fence_idx = i
+                    break
             i += 1
 
-        if json_root_closed_at >= 0:
-            # JSON root closed at this position. Emit through the
-            # closing brace; suppress everything after (wrapper
-            # explanation, closing fence, stray whitespace) — this
-            # is what the non-stream ``extract_json_from_response``
-            # peels do post-hoc, applied to streaming.
-            payload = combined[: json_root_closed_at + 1]
+        if fence_idx >= 0:
+            # Closing fence found at depth 0. Trim payload at the
+            # fence, dropping the immediately-preceding newline
+            # whitespace symmetric with the non-stream
+            # ``_strip_markdown_code_block`` peel.
+            payload = combined[:fence_idx].rstrip("\r\n")
             self._json_fence_state = "done"
             return payload
 

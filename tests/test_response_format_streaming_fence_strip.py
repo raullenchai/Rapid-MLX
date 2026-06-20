@@ -277,45 +277,10 @@ class TestJsonObjectFenceStripping:
         assert joined == '{"answer": 42}'
         assert "Let me think" not in joined
 
-    def test_trailing_prose_after_json_root_suppressed(self):
-        """Codex r5 BLOCKING: a fenced model output is not the only
-        wrapper shape — some models emit valid JSON followed by
-        explanatory prose with or without a triple-backtick code
-        block. ``response_format=json_object`` promises the client
-        ONLY the JSON object; the streaming state machine must
-        truncate at the closing brace of the JSON root, matching
-        the non-stream ``rfind('{') ... endswith('}')`` peel."""
-        cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg, json_mode=True)
-        pp.reset()
-        joined = _stream_chunks(
-            pp,
-            [
-                '{"k": 1}\nHere is some code:\n```python\nx = 1\n```',
-            ],
-        )
-        # Only the JSON root — no trailing prose, no fenced code.
-        assert joined == '{"k": 1}'
-
-    def test_trailing_prose_no_fence_after_json_root(self):
-        """Even without any closing fence at all, prose after the
-        JSON root must be suppressed."""
-        cfg = _make_cfg()
-        pp = StreamingPostProcessor(cfg, json_mode=True)
-        pp.reset()
-        joined = _stream_chunks(
-            pp,
-            [
-                '{"k": 1}',
-                "\n\nThat's the answer!",
-            ],
-        )
-        assert joined == '{"k": 1}'
-
     def test_nested_json_root_close_only_at_outermost(self):
-        """Bracket-depth tracking must NOT trigger on inner
-        ``}``/``]`` — only when depth returns to 0 (outermost root
-        closes)."""
+        """Inner ``}``/``]`` must NOT trigger truncation — only the
+        closing markdown fence ``` ``` `` does. JSON values with nested
+        objects and arrays must survive end-to-end."""
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg, json_mode=True)
         pp.reset()
@@ -330,6 +295,34 @@ class TestJsonObjectFenceStripping:
             "more": True,
         }
         assert joined == '{"outer": {"inner": [1, 2, 3]}, "more": true}'
+
+    def test_no_fence_no_truncation_matches_non_stream(self):
+        """Codex r6 BLOCKING: when the model emits JSON followed by
+        trailing prose (no fence wrapper at all), the streaming path
+        must NOT truncate at the root close — the non-stream
+        ``extract_json_from_response`` path also returns such inputs
+        UNCHANGED (its peel paths only fire on already-bare-JSON or
+        fenced inputs). The streaming path mirrors that pass-through
+        so client output is byte-equivalent."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            [
+                '{"k": 1}',
+                "\n\nAnd more content the model emitted.",
+            ],
+        )
+        # Pass-through: matches what non-stream returns on the same
+        # text. Clients who want strict JSON-only must still call
+        # json.loads; this matches non-stream behaviour bit-for-bit.
+        from vllm_mlx.api.utils import extract_json_from_response
+
+        non_stream = extract_json_from_response(
+            '{"k": 1}\n\nAnd more content the model emitted.'
+        )
+        assert joined == non_stream
 
     def test_triple_backticks_inside_json_string_preserved(self):
         """Codex r1 BLOCKING: a JSON STRING VALUE containing literal
