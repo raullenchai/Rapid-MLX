@@ -634,7 +634,7 @@ class StreamingPostProcessor:
         return emit
 
     def _filter_events_for_json_fence(
-        self, events: list[StreamEvent]
+        self, events: list[StreamEvent], *, drain_tail: bool = False
     ) -> list[StreamEvent]:
         """Run ``_apply_json_fence_strip`` over a list of StreamEvents.
 
@@ -645,45 +645,70 @@ class StreamingPostProcessor:
         dropped — pristine ``content`` deltas with empty payload would
         otherwise emit an empty SSE chunk.
 
+        Codex r4 BLOCKING #1: rewrites use ``dataclasses.replace`` so
+        all other ``StreamEvent`` fields the inner processors may have
+        attached (``metadata``, ``finish_reason``, ``tool_calls_detected``,
+        future fields) are preserved. The earlier draft constructed a
+        minimal ``StreamEvent(type=..., content=...)`` and dropped the
+        rest.
+
+        Codex r4 BLOCKING #2: when ``drain_tail=True`` (set by
+        ``finalize()``), any held tail bytes are merged into the
+        LAST emitted content/finish event in a single pass — avoids
+        emitting tail content AFTER a finish marker. When no such
+        event exists, the tail is appended as its own content event
+        at the END of the list (still before any terminal-finish
+        chunk the caller will assemble).
+
         No-op fast path when ``json_mode`` is False — caller treats the
         list as already-filtered.
         """
         if not self.json_mode:
             return events
 
+        from dataclasses import replace as _dc_replace
+
         filtered: list[StreamEvent] = []
         for ev in events:
             if ev.type == "content":
                 stripped = self._apply_json_fence_strip(ev.content or "")
                 if stripped:
-                    filtered.append(StreamEvent(type="content", content=stripped))
+                    filtered.append(_dc_replace(ev, content=stripped))
                 # else: fully suppressed (fence/preamble/closer) — drop.
             elif ev.type == "finish":
                 # Finish events can carry merged content (the route's
-                # buffered-finish merge path). Strip it the same way,
-                # plus drain any held tail bytes so a bare-JSON-no-
-                # closing-fence stream still flushes the final chunk.
+                # buffered-finish merge path). Strip it the same way.
+                # Tail draining happens BELOW (after the walk) so we
+                # don't double-drain if the caller also passed
+                # ``drain_tail=True``.
                 terminal = ev.content or ""
                 if terminal:
                     terminal = self._apply_json_fence_strip(terminal)
-                # Drain the held tail (only meaningful for the
-                # bare-JSON-no-fence case where the JSON simply ends).
-                tail = self._flush_json_fence_tail()
-                if tail:
-                    terminal = (terminal or "") + tail
-                filtered.append(
-                    StreamEvent(
-                        type="finish",
-                        finish_reason=ev.finish_reason,
-                        content=terminal or None,
-                        reasoning=ev.reasoning,
-                        tool_calls=ev.tool_calls,
-                        tool_calls_detected=ev.tool_calls_detected,
-                    )
-                )
+                filtered.append(_dc_replace(ev, content=terminal or None))
             else:
                 # reasoning / tool_call / other event types: pass through.
                 filtered.append(ev)
+
+        if drain_tail:
+            tail = self._flush_json_fence_tail()
+            if tail:
+                # Merge into the LAST content-bearing event in one pass
+                # (codex r4 BLOCKING #2 — avoid ordering finalize tail
+                # AFTER a finish event the inner branch emitted). Walk
+                # from the right; prefer ``finish`` (merges into the
+                # terminal SSE chunk), fall back to ``content`` (extends
+                # the last content delta), else append a new content
+                # event at the END.
+                merged = False
+                for i in range(len(filtered) - 1, -1, -1):
+                    if filtered[i].type in ("finish", "content"):
+                        prev = filtered[i].content or ""
+                        filtered[i] = _dc_replace(filtered[i], content=prev + tail)
+                        merged = True
+                        break
+                if not merged:
+                    filtered.append(StreamEvent(type="content", content=tail))
+
         return filtered
 
     def _flush_json_fence_tail(self) -> str:
@@ -2336,20 +2361,16 @@ class StreamingPostProcessor:
             if isinstance(held, str) and held:
                 events.append(StreamEvent(type="content", content=held))
 
-        # H-07: ```json fence-strip on the finalize event list AND flush
-        # any held tail. The route's "buffered_finish" merge path
-        # concatenates ``finalize()``-produced content events into the
-        # terminal SSE chunk; without the strip here the closing fence
-        # would survive on the last few bytes of the stream. The flush
-        # path also rescues the bare-JSON-no-fence stream: when the
-        # model returns ``{...}`` with no closing fence, the tail buffer
-        # at stream end holds the final few bytes that
-        # ``_guard_closing_fence`` held back "just in case". Drain them.
-        events = self._filter_events_for_json_fence(events)
-        if self.json_mode:
-            tail = self._flush_json_fence_tail()
-            if tail:
-                events.append(StreamEvent(type="content", content=tail))
+        # H-07: ```json fence-strip on the finalize event list AND
+        # drain any held tail in the SAME pass. The route's
+        # "buffered_finish" merge path concatenates
+        # ``finalize()``-produced content events into the terminal
+        # SSE chunk; without the strip here the closing fence would
+        # survive on the last few bytes of the stream. The single-
+        # pass drain (``drain_tail=True``) merges any held tail into
+        # the LAST content/finish event in this batch so JSON bytes
+        # never sit after a terminal marker (codex r4 BLOCKING #2).
+        events = self._filter_events_for_json_fence(events, drain_tail=True)
 
         return events
 

@@ -326,6 +326,59 @@ class TestJsonObjectFenceStripping:
         assert json.loads(joined) == {"text": "look: ```"}
 
 
+class TestStreamEventMetadataPreservation:
+    """Codex r4 BLOCKING #1: filter must preserve ALL StreamEvent fields.
+
+    The filter rewrites content but uses ``dataclasses.replace`` so
+    fields like ``metadata``, ``finish_reason``, ``tool_calls_detected``
+    survive. The earlier draft constructed a minimal
+    ``StreamEvent(type=..., content=...)`` and dropped everything else.
+    """
+
+    def test_metadata_preserved_on_content_event(self):
+        """A content event with metadata must keep that metadata
+        after the fence-strip filter runs."""
+        from vllm_mlx.domain.events import StreamEvent
+
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        # Directly invoke the filter so we can inject metadata.
+        # First seed the state machine into "inside" so the content
+        # passes through.
+        ev = StreamEvent(
+            type="content",
+            content='{"k": 1}',
+            metadata={"prompt_tokens": 7, "completion_tokens": 3},
+            tool_calls_detected=False,
+        )
+        out = pp._filter_events_for_json_fence([ev])
+        assert len(out) == 1
+        assert out[0].type == "content"
+        assert out[0].metadata == {"prompt_tokens": 7, "completion_tokens": 3}
+
+    def test_finish_event_fields_preserved(self):
+        """A finish event carrying finish_reason + tool_calls_detected
+        must keep them after the filter rewrites content."""
+        from vllm_mlx.domain.events import StreamEvent
+
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        ev = StreamEvent(
+            type="finish",
+            content='{"k": 1}',
+            finish_reason="stop",
+            tool_calls_detected=False,
+            metadata={"completion_tokens": 5},
+        )
+        out = pp._filter_events_for_json_fence([ev])
+        assert len(out) == 1
+        assert out[0].type == "finish"
+        assert out[0].finish_reason == "stop"
+        assert out[0].metadata == {"completion_tokens": 5}
+
+
 class TestJsonSchemaFenceStripping:
     """``response_format={"type":"json_schema",...}`` + stream=True."""
 
