@@ -243,6 +243,12 @@ class TestVibeThinkerFunctionXmlStreaming:
         an indefinite hang. The disambiguation guard requires
         ``<function>`` to be followed by ``<name`` before claiming a
         named-XML opener.
+
+        Codex round-2 BLOCKING refinement: the prior assertion accepted
+        ``delta is None`` as "OK", which would have stayed green for the
+        exact suppression bug we're catching. Tighten to require a
+        non-``None`` content-only delta — that is the only correct
+        behavior for streamed prose containing ``<function>``.
         """
         previous_text = "The tag is "
         current_text = "The tag is `<function>` — it is followed by `<name>`."
@@ -253,12 +259,61 @@ class TestVibeThinkerFunctionXmlStreaming:
             current_text=current_text,
             delta_text=delta_text,
         )
-        # Must NOT be None (would suppress) and must NOT emit tool_calls.
-        # Content delta path is fine — the test asserts the prose is not
-        # held forever and that no false-positive tool_calls fires.
-        assert delta is None or "tool_calls" not in delta
+        # Must NOT be None — suppression is the bug, content release is
+        # the correct behavior. And must NOT contain ``tool_calls`` —
+        # the prose is not a tool call.
+        assert delta is not None, (
+            "Streaming branch suppressed prose <function> literal — "
+            "F-042 codex round-2 BLOCKING regression."
+        )
+        assert "tool_calls" not in delta, (
+            "Streaming branch false-positive tool_calls on prose <function> literal."
+        )
         # Sanity: non-streaming parse on the same text also yields no
         # tool calls (defense in depth).
         result = parser.extract_tool_calls(current_text)
         assert not result.tools_called
         assert result.tool_calls == []
+
+    def test_partial_named_opener_chunks_held_until_disambiguation(self, parser):
+        """Codex round-2 BLOCKING: ``<function>`` plus a partial ``<name``
+        prefix (e.g. ``<function><n``, ``<function>\\n <na``) must hold
+        the bytes back so they don't leak as content before the
+        opener-claim branch fires.
+
+        Once the next chunk completes ``<name`` the opener-claim branch
+        takes over and the suppression ends. Once the next chunk
+        disambiguates as prose (e.g. ``<function>!``) the partial-opener
+        regex stops matching and the bytes are released via the
+        safe-content path.
+        """
+        # Stage 1: ``<function><n`` — partial named opener. Suppress.
+        delta = parser.extract_tool_calls_streaming(
+            previous_text="",
+            current_text="<function><n",
+            delta_text="<function><n",
+        )
+        assert delta is None, (
+            "Partial named opener <function><n must be held; leaking "
+            "now would expose tool-call XML as content."
+        )
+
+        # Stage 2: ``<function>\n <na`` — partial named opener with
+        # whitespace between tags. Still suppress.
+        delta = parser.extract_tool_calls_streaming(
+            previous_text="<function>\n <n",
+            current_text="<function>\n <na",
+            delta_text="a",
+        )
+        assert delta is None
+
+        # Stage 3: ``<function>!`` — clearly NOT a named opener. Release
+        # via the safe-content path (delta is non-None or content
+        # eventually flushes; assert no tool_calls false positive).
+        delta = parser.extract_tool_calls_streaming(
+            previous_text="<function>",
+            current_text="<function>!",
+            delta_text="!",
+        )
+        if delta is not None:
+            assert "tool_calls" not in delta

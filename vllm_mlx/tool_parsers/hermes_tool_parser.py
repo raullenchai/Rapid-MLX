@@ -158,6 +158,24 @@ class HermesToolParser(ToolParser):
     # plausible named-XML openers and to decide whether to enter the
     # hold-back path at all, leaving ordinary content untouched.
     _FUNCTION_XML_OPENER_RE = re.compile(r"<function>\s*<name\b", re.DOTALL)
+    # In-flight opener prefix matcher (codex round-2 BLOCKING):
+    # ``_FUNCTION_XML_OPENER_RE`` only fires once the full ``<name`` token
+    # has streamed in, so partial chunks like ``<function><n`` or
+    # ``<function>\n <na`` would fall through to the safe-content emit
+    # path and leak tool-call XML as content before the call completes.
+    # This regex matches the suffix of ``current_text`` when the tail
+    # is still a viable prefix of ``<function>\s*<name>`` — i.e. the
+    # text ends with ``<function>`` plus zero or more whitespace plus
+    # zero or more chars of ``<name``. While this matches, the
+    # streaming branch must suppress emission (return ``None``) so the
+    # partial bytes are held. Once the tail concludes with a full
+    # ``<name`` token, ``_FUNCTION_XML_OPENER_RE`` takes over; once the
+    # tail concludes with anything else (e.g. ``<function>!``), the
+    # match drops and the bytes are released as ordinary content.
+    _FUNCTION_XML_OPENER_PARTIAL_RE = re.compile(
+        r"<function>\s*(<(n(a(m(e?)?)?)?)?)?$",
+        re.DOTALL,
+    )
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -512,6 +530,21 @@ class HermesToolParser(ToolParser):
                         )
 
             return self._emit_safe_content(previous_text, current_text)
+
+        # In-flight named-XML opener (codex round-2 BLOCKING): the tail of
+        # ``current_text`` is still a viable prefix of
+        # ``<function>\s*<name>``. ``<function>`` is in flight but
+        # ``<name`` has not fully streamed yet (e.g. ``<function><n``,
+        # ``<function>\n <na``). Without this guard the
+        # ``<function>`` literal would leak as content before the
+        # opener-claim branch above can fire. Suppress to hold the
+        # partial bytes. When the next chunk completes the ``<name``
+        # token the opener-claim branch above takes over; when the next
+        # chunk disambiguates as prose (e.g. ``<function>!``) the regex
+        # stops matching and the bytes get released via
+        # ``_emit_safe_content``.
+        if self._FUNCTION_XML_OPENER_PARTIAL_RE.search(current_text):
+            return None
 
         # Fallback: check for raw JSON tool calls (detect closing brace pattern)
         if '{"name":' in current_text and '"arguments":' in current_text:
