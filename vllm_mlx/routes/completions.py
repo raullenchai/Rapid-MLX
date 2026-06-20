@@ -159,6 +159,29 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         for _p in prompts:
             enforce_context_length_for_prompt(engine, _p, max_tokens=_resolved_max)
 
+        # Codex r2/r3 BLOCKING: engine capability guard for ``logprobs``
+        # applies to BOTH streaming and non-streaming paths. Without
+        # this check on the streaming branch, the AttributeError fires
+        # inside the SSE generator (already-committed
+        # ``StreamingResponse``) and clients see an EventSource that
+        # disconnects after the first chunk instead of a controlled
+        # 501. Lift to the top so both branches are covered.
+        _want_logprobs = request.logprobs is not None
+        if _want_logprobs and (
+            not hasattr(engine, "stream_generate")
+            or getattr(engine, "tokenizer", None) is None
+        ):
+            raise HTTPException(
+                status_code=501,
+                detail=(
+                    "logprobs requested but this engine does not expose "
+                    "the streaming logprobs extraction path "
+                    "(``stream_generate`` + ``tokenizer``). Reissue "
+                    "without ``logprobs`` or use a model that supports "
+                    "per-token distributions."
+                ),
+            )
+
         if request.stream:
             _admission_committed = True
             return StreamingResponse(
@@ -200,28 +223,8 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         top_k_logprobs = request.logprobs or 0
         effective_top_k = max(1, top_k_logprobs)
 
-        # Codex r2 BLOCKING #1: only route through ``stream_generate``
-        # when the concrete engine implements it AND a tokenizer is
-        # available (the extractor decodes ids to text). The MLLM
-        # batch generator does both; alternative engines (dflash, any
-        # future ``BaseEngine`` subclass that ships only ``generate``)
-        # would otherwise crash on a previously-valid non-streaming
-        # request when a client adds ``logprobs:N``. Refuse with a
-        # controlled 501 instead of an AttributeError 500.
-        if want_logprobs and (
-            not hasattr(engine, "stream_generate")
-            or getattr(engine, "tokenizer", None) is None
-        ):
-            raise HTTPException(
-                status_code=501,
-                detail=(
-                    "logprobs requested but this engine does not expose "
-                    "the streaming logprobs extraction path "
-                    "(``stream_generate`` + ``tokenizer``). Reissue "
-                    "without ``logprobs`` or use a model that supports "
-                    "per-token distributions."
-                ),
-            )
+        # Engine capability guard for ``logprobs`` is enforced earlier
+        # (top of the route, covers both streaming + non-streaming).
 
         for i, prompt in enumerate(prompts):
             token_logprobs_list = []
@@ -259,21 +262,32 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 output = await _wait_with_disconnect(
                     _drain_stream(), raw_request, timeout=timeout
                 )
-                # Codex r2 BLOCKING #2: ``_wait_with_disconnect``
-                # returns ``None`` on client disconnect, but
-                # ``_drain_stream`` ALSO returns ``None`` when the
-                # engine yields zero chunks (empty completion).
-                # Distinguish by checking the inner sentinel: if the
-                # stream produced no chunks at all, return a valid
-                # empty completion shape rather than a false 499.
+                # Codex r2/r3 BLOCKING: ``_wait_with_disconnect``
+                # returns ``None`` on client disconnect, on timeout,
+                # OR when ``_drain_stream`` exits cleanly without
+                # yielding any chunks. Disambiguate three cases:
+                #   1. ``_stream_yielded`` — at least one chunk
+                #      reached us; bailing now is a mid-flight
+                #      disconnect or timeout → 499.
+                #   2. ``await raw_request.is_disconnected()`` — the
+                #      client closed BEFORE the first chunk; also
+                #      499. (Codex r3 BLOCKING #2: without this
+                #      check, a disconnect-before-first-token was
+                #      misclassified as a successful empty
+                #      completion.)
+                #   3. Otherwise — engine genuinely returned an empty
+                #      stream; synthesize an empty ``GenerationOutput``
+                #      so the response matches OpenAI's empty-
+                #      completion shape.
                 if output is None:
                     if _stream_yielded:
-                        # Client disconnect — _drain_stream did yield
-                        # but _wait_with_disconnect bailed mid-flight.
                         return Response(status_code=499)
-                    # Stream is empty AND client is still connected
-                    # — synthesize an empty output so the response
-                    # shape matches OpenAI's empty-completion case.
+                    try:
+                        client_gone = await raw_request.is_disconnected()
+                    except Exception:
+                        client_gone = False
+                    if client_gone:
+                        return Response(status_code=499)
                     from ..engine.base import GenerationOutput
 
                     output = GenerationOutput(
@@ -498,6 +512,16 @@ async def stream_completion(
                     "top_logprobs": top_lps,
                     "text_offset": text_offsets,
                 }
+                # Codex r3 BLOCKING #3: pin chunk ``text`` to the
+                # token concatenation so ``text_offset`` is byte-
+                # exact against the field it references (matches the
+                # non-streaming path's alignment fix). Without this
+                # rebind, ``output.new_text`` may differ from
+                # ``"".join(tokens_arr)`` after tokenizer cleanup
+                # or whitespace normalization, and clients that
+                # slice ``chunk.text[offset:offset+len(token)]``
+                # would read garbage.
+                choice["text"] = "".join(tokens_arr)
         # NOTE: distinct per-chunk ``cmpl-XXXX`` ids are F-154 — fixing
         # that here would broaden this PR's scope (F-152/F-153 only).
         # Mint a fresh id per chunk to preserve current behaviour and

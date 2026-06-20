@@ -568,13 +568,25 @@ class TestEmptyStreamNotMistakenForDisconnect:
         assert r.status_code == 200
         body = r.json()
         assert body["choices"][0]["text"] == ""
-        # Logprobs slot present but arrays empty (no generated tokens).
+        # Codex r3 NIT: when a client sent ``logprobs:N``, the
+        # response shape contract is the legacy four-array slot —
+        # even when arrays are empty (no generated tokens). Accept
+        # an explicit empty payload OR an absent slot (the route
+        # short-circuits on empty stream and never builds the
+        # payload). Document the chosen behavior with a clear
+        # assertion either way.
         lp = body["choices"][0].get("logprobs")
-        # ``exclude_none=True`` may drop ``logprobs`` if it was never
-        # constructed — accept that or empty arrays.
         if lp is not None:
+            assert set(lp.keys()) == {
+                "tokens",
+                "token_logprobs",
+                "top_logprobs",
+                "text_offset",
+            }
             assert lp["tokens"] == []
             assert lp["token_logprobs"] == []
+            assert lp["top_logprobs"] == []
+            assert lp["text_offset"] == []
 
 
 class TestTextOffsetAlignment:
@@ -646,6 +658,42 @@ class TestTextOffsetAlignment:
                 f"token #{i}={token!r} at offset {offset} did not "
                 f"align in text={text!r}"
             )
+
+
+class TestStreamingEngineCapability:
+    """Codex r3 BLOCKING #1: capability guard must cover the
+    streaming branch too — without it the AttributeError would fire
+    inside the committed SSE response."""
+
+    def test_stream_logprobs_without_tokenizer_returns_501(
+        self, patched_config, monkeypatch
+    ):
+        def _factory():
+            class _NoTokenizer:
+                tokenizer = None
+
+                async def stream_generate(self, *_a, **_kw):
+                    if False:
+                        yield None
+
+            return _NoTokenizer()
+
+        client, _ = _build_completions_app(
+            patched_config, monkeypatch, engine_factory=_factory
+        )
+        r = client.post(
+            "/v1/completions",
+            json={
+                "model": "stub-model",
+                "prompt": "hi",
+                "stream": True,
+                "logprobs": 3,
+            },
+        )
+        # Route-level guard fires BEFORE StreamingResponse is
+        # constructed, so the client sees a clean 501 instead of an
+        # SSE stream that fails on the first chunk.
+        assert r.status_code == 501
 
 
 class TestFieldDeclarations:
