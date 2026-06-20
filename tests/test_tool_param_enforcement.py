@@ -281,38 +281,38 @@ class TestValidPasses:
 
 
 class TestDeferredPassThrough:
-    """These constraint classes are intentionally left advisory in this
-    scoped PR. Locking the pass-through behaviour as a regression test
-    ensures a future tightening is a deliberate, reviewed change rather
-    than an accidental side-effect of touching ``validate_param_value``."""
+    """Constraint classes still intentionally left advisory after the
+    F-141a follow-up. Locking the pass-through behaviour as regression
+    tests ensures a future tightening is a deliberate, reviewed change
+    rather than an accidental side-effect of touching
+    ``validate_param_value``.
 
-    def test_pattern_violation_does_not_raise(self):
-        """``pattern`` violations remain advisory (TODO(F-141-followup))."""
+    F-141a (PR following #736) flipped ``pattern`` / ``format`` /
+    ``multipleOf`` / ``uniqueItems`` to enforcement — those have moved
+    to ``tests/test_tool_param_enforcement_f141a.py``. The remaining
+    deferred set (``required``, ``oneOf``, ``anyOf``, ``allOf``,
+    ``additionalProperties``) still pass-through.
+    """
+
+    def test_required_missing_key_does_not_raise(self):
+        """``required`` violation: schema requires ``"x"`` but the model
+        emitted ``{}``. Compound semantics — deferred for now."""
         from vllm_mlx.service.helpers import _validate_tool_call_params
 
         tools = [
             _tool(
-                "set_phone",
-                {"phone": {"type": "string", "pattern": "^[0-9]{3}-[0-9]{4}$"}},
+                "f",
+                {"x": {"type": "string"}},
             )
         ]
-        # "abc" clearly violates the regex; if we ever start enforcing
-        # `pattern` this test will need an explicit update.
-        _validate_tool_call_params([_call("set_phone", '{"phone": "abc"}')], tools)
+        # Inject ``required`` into the parameters block.
+        tools[0]["function"]["parameters"]["required"] = ["x"]
+        _validate_tool_call_params([_call("f", "{}")], tools)
 
-    def test_format_violation_does_not_raise(self):
-        """``format`` violations remain advisory (TODO(F-141-followup))."""
+    def test_one_of_violation_does_not_raise(self):
+        """``oneOf`` (and ``anyOf`` / ``allOf``) violations remain
+        advisory — multi-branch schema traversal is a separate lift."""
         from vllm_mlx.service.helpers import _validate_tool_call_params
 
-        tools = [_tool("set_email", {"email": {"type": "string", "format": "email"}})]
-        # "notanemail" is not an email; deferred.
-        _validate_tool_call_params(
-            [_call("set_email", '{"email": "notanemail"}')], tools
-        )
-
-    def test_multiple_of_violation_does_not_raise(self):
-        """``multipleOf`` deferred too — 7 is not a multiple of 3."""
-        from vllm_mlx.service.helpers import _validate_tool_call_params
-
-        tools = [_tool("step", {"n": {"type": "integer", "multipleOf": 3}})]
-        _validate_tool_call_params([_call("step", '{"n": 7}')], tools)
+        tools = [_tool("f", {"x": {"oneOf": [{"const": "a"}, {"const": "b"}]}})]
+        _validate_tool_call_params([_call("f", '{"x": "c"}')], tools)
