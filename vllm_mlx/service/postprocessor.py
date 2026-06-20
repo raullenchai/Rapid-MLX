@@ -458,14 +458,29 @@ class StreamingPostProcessor:
             tc = req.get("tool_choice")
         else:
             tc = getattr(req, "tool_choice", None)
-        if not isinstance(tc, dict):
+        if tc is None:
             return None
-        if tc.get("type") != "function":
+
+        # Production routes call ``request.model_dump(exclude_none=True)``
+        # before constructing the postprocessor so ``tool_choice`` is a
+        # plain dict here. Codex r4 BLOCKING: a typed-request callpath
+        # (test fixtures, future refactors that thread the model
+        # object directly) would leave ``tc`` as a Pydantic model with
+        # ``.type`` / ``.function.name`` attributes — the dict-only
+        # gate silently disabled the filter on that path. Read both
+        # shapes via a tiny shape-agnostic accessor so future drift
+        # cannot reopen the leak.
+        def _get(obj, key):
+            if isinstance(obj, dict):
+                return obj.get(key)
+            return getattr(obj, key, None)
+
+        if _get(tc, "type") != "function":
             return None
-        fn = tc.get("function")
-        if not isinstance(fn, dict):
+        fn = _get(tc, "function")
+        if fn is None:
             return None
-        name = fn.get("name")
+        name = _get(fn, "name")
         return name if isinstance(name, str) and name else None
 
     @staticmethod

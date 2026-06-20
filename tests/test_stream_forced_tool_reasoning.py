@@ -132,6 +132,24 @@ class TestForcedNameHelper:
         pp = StreamingPostProcessor(_make_cfg(), request=req)
         assert pp._forced_tool_choice_name() is None
 
+    def test_returns_name_for_pydantic_shaped_tool_choice(self):
+        """Codex r4 BLOCKING — production routes pass
+        ``request.model_dump(exclude_none=True)`` (a dict), but a
+        typed-request callpath (test fixtures, future refactors) may
+        leave ``tool_choice`` as a Pydantic model with ``.type`` /
+        ``.function.name`` attributes. The dict-only gate would have
+        silently disabled the filter on that path. Helper must read
+        both shapes."""
+        function_obj = MagicMock()
+        function_obj.name = "get_weather"
+        tc = MagicMock()
+        tc.type = "function"
+        tc.function = function_obj
+        req = MagicMock()
+        req.tool_choice = tc
+        pp = StreamingPostProcessor(_make_cfg(), request=req)
+        assert pp._forced_tool_choice_name() == "get_weather"
+
 
 # ── _apply_forced_tool_choice_filter pin ─────────────────────────────
 
