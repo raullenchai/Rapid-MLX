@@ -352,3 +352,250 @@ def test_parallel_assistant_tool_calls_each_id_routable() -> None:
         },
     )
     assert r.status_code == 200, r.text
+
+
+# ---------------------------------------------------------------------------
+# Codex round-1: pending-ID consumption (duplicate reply rejection)
+# ---------------------------------------------------------------------------
+
+
+def test_duplicate_tool_reply_same_id_returns_400() -> None:
+    """A valid tool_call_id is a SINGLE-USE ticket. A second
+    ``role:"tool"`` message reusing the SAME id later in
+    ``messages[]`` must 400 — otherwise an attacker can inject a second
+    authoritative tool result for the same call after the real reply
+    has already been rendered (codex round-1 BLOCKING on PR #731).
+    """
+    client, eng = _client()
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [
+                {"role": "user", "content": "ok"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "calc", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": "REAL"},
+                {
+                    "role": "tool",
+                    "tool_call_id": "c1",
+                    "content": "ATTACKER_OVERRIDE",
+                },
+            ],
+            "tools": [_TOOL],
+        },
+    )
+    assert r.status_code == 400, r.text
+    msg = _error_message(r)
+    assert "c1" in msg
+    assert "prior assistant tool_call" in msg
+    # The engine must never have been called — the duplicate-reply
+    # injection payload cannot reach the model prompt.
+    assert eng.last_messages is None
+
+
+def test_pending_id_consumed_only_by_first_matching_reply() -> None:
+    """After the first ``tool`` message consumes ``c1``, the SECOND
+    assistant turn re-issuing ``c1`` (or a fresh id) re-opens the
+    ticket for a new reply.
+    """
+    client, eng = _client()
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "round1",
+                            "type": "function",
+                            "function": {"name": "calc", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "round1", "content": "A"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "round2",
+                            "type": "function",
+                            "function": {"name": "calc", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "round2", "content": "B"},
+            ],
+            "tools": [_TOOL],
+        },
+    )
+    assert r.status_code == 200, r.text
+    seen = eng.last_messages
+    tool_msgs = [m for m in seen if m["role"] == "tool"]
+    assert [m["tool_call_id"] for m in tool_msgs] == ["round1", "round2"]
+
+
+# ---------------------------------------------------------------------------
+# Codex round-1: empty list rejection
+# ---------------------------------------------------------------------------
+
+
+def test_empty_list_content_returns_400() -> None:
+    """``content: []`` on a tool message must 400. The chat-template
+    normalizer in ``utils/chat_template.py`` does NOT flatten empty
+    lists (an empty array isn't a text-only array); accepting it here
+    would leak a non-string ``content`` into the rendered prompt and
+    crash the template (codex round-1 BLOCKING on PR #731).
+    """
+    client, eng = _client()
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [
+                {"role": "user", "content": "Q"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "calc", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": []},
+            ],
+            "tools": [_TOOL],
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "empty list" in _error_message(r)
+    assert eng.last_messages is None
+
+
+def test_duplicate_assistant_tool_call_ids_within_one_turn_returns_400() -> None:
+    """The OpenAI spec guarantees ``tool_call.id`` is unique across the
+    whole conversation. A duplicate within a single assistant turn
+    weakens the consumable-ticket invariant the F-112 fix relies on, so
+    reject explicitly (codex round-2 NIT on PR #731).
+    """
+    client, eng = _client()
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "dup",
+                            "type": "function",
+                            "function": {"name": "calc", "arguments": "{}"},
+                        },
+                        {
+                            "id": "dup",
+                            "type": "function",
+                            "function": {"name": "calc", "arguments": "{}"},
+                        },
+                    ],
+                },
+            ],
+            "tools": [_TOOL],
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "duplicate id" in _error_message(r)
+    assert eng.last_messages is None
+
+
+def test_duplicate_assistant_tool_call_ids_across_turns_returns_400() -> None:
+    """Same invariant across two assistant turns — re-using an id from
+    an earlier turn silently re-opens a consumed ticket. Reject so
+    the F-112 single-use guarantee holds end-to-end.
+    """
+    client, eng = _client()
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [
+                {"role": "user", "content": "go"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "reused",
+                            "type": "function",
+                            "function": {"name": "calc", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "reused", "content": "ok"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "reused",
+                            "type": "function",
+                            "function": {"name": "calc", "arguments": "{}"},
+                        }
+                    ],
+                },
+            ],
+            "tools": [_TOOL],
+        },
+    )
+    assert r.status_code == 400, r.text
+    assert "duplicate id" in _error_message(r)
+    assert eng.last_messages is None
+
+
+def test_empty_string_content_still_succeeds() -> None:
+    """``content: ""`` is the OpenAI-canonical way to send an empty
+    tool reply and must still be accepted (counterpart to the empty-
+    list rejection above)."""
+    client, _ = _client()
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [
+                {"role": "user", "content": "Q"},
+                {
+                    "role": "assistant",
+                    "content": "",
+                    "tool_calls": [
+                        {
+                            "id": "c1",
+                            "type": "function",
+                            "function": {"name": "calc", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "c1", "content": ""},
+            ],
+            "tools": [_TOOL],
+        },
+    )
+    assert r.status_code == 200, r.text
