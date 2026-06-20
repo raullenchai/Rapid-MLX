@@ -107,6 +107,84 @@ def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) 
     return "<think>" in chat_template and "add_generation_prompt" in chat_template
 
 
+def _filter_tool_calls_by_tool_choice(tool_calls, tool_choice) -> list:
+    """Drop tool_use blocks that don't match a forced ``tool_choice``.
+
+    H-05: Anthropic ``tool_choice={"type":"tool","name":X}`` pins WHICH
+    tool the model must call. The Anthropic adapter has already
+    translated that into the OpenAI form
+    ``{"type":"function","function":{"name":X}}`` on
+    ``openai_request.tool_choice`` by the time we get here. Local
+    inference has no decoder-level constraint, so a small model can
+    happily defy the pin and emit a call to a different tool (the
+    Sergei repro hit qwen3.5-4b on a two-tool prompt where the model
+    fired BOTH the pinned tool AND the un-pinned one). Pre-fix, the
+    downstream JSON-schema validator (F-220) then 400-ed on the
+    un-pinned tool's argument schema — leaking validation across a
+    tool the user never asked for and silently breaking ``tool_choice``.
+
+    Policy: when the choice pins a specific tool, KEEP only the calls
+    to that tool and drop the rest with a warning. This matches the
+    user-visible expectation ("you asked for X, here is X") and keeps
+    the F-220 validator scoped to the pinned tool. ``"auto"`` /
+    ``"required"`` / ``"none"`` / unset shapes pass through unchanged
+    — only the explicit named-tool form has a defined "wrong tool"
+    case to filter.
+
+    Chat.py's named-function path 422s on the same mismatch (see
+    ``routes/chat.py:1665``). The two routes intentionally diverge
+    here: ``/v1/chat/completions`` mirrors OpenAI's strict contract,
+    while ``/v1/messages`` mirrors Anthropic's more forgiving
+    "deliver the pinned tool's call" contract — a 422 on an extra
+    call would surface a confusing error to clients that pinned the
+    very tool the response carries. The validator scope refactor in
+    ``_validate_tool_call_params`` ensures we never validate against
+    the dropped tool's schema even if a future change weakens this
+    filter.
+    """
+    if not tool_calls or not isinstance(tool_choice, dict):
+        return tool_calls or []
+    if tool_choice.get("type") != "function":
+        return tool_calls
+    target = (tool_choice.get("function") or {}).get("name")
+    if not target:
+        return tool_calls
+
+    def _name_of(tc) -> str | None:
+        # Three shapes survive into this point — see
+        # ``routes/chat.py:_tool_call_name`` for the catalogue. Inline
+        # here to avoid a cross-route import dependency from
+        # routes/chat.py into routes/anthropic.py.
+        if isinstance(tc, dict):
+            fn = tc.get("function")
+            if isinstance(fn, dict):
+                return fn.get("name")
+            if fn is not None:
+                return getattr(fn, "name", None)
+            return tc.get("name")
+        fn = getattr(tc, "function", None)
+        if fn is not None:
+            return getattr(fn, "name", None)
+        return getattr(tc, "name", None)
+
+    filtered = []
+    dropped: list[str] = []
+    for tc in tool_calls:
+        if _name_of(tc) == target:
+            filtered.append(tc)
+        else:
+            dropped.append(_name_of(tc) or "<unknown>")
+    if dropped:
+        logger.warning(
+            "tool_choice pinned %r but model also emitted calls to %s; "
+            "dropping the un-pinned calls so the response carries only the "
+            "pinned tool (Anthropic /v1/messages H-05 policy).",
+            target,
+            dropped,
+        )
+    return filtered
+
+
 @router.post(
     "/v1/messages",
     dependencies=[
@@ -319,6 +397,21 @@ async def create_anthropic_message(
         cleaned_text, tool_calls = _parse_tool_calls_with_parser(
             output.text, openai_request, structured_tool_calls=engine_tool_calls
         )
+
+        # H-05: tool_choice={"type":"tool","name":X} pins WHICH tool the
+        # model must call. Local inference can't decoder-enforce that,
+        # so a defiant model can fire an extra call to a different
+        # tool. Pre-fix, the F-220 validator below then 400-ed on the
+        # un-pinned tool's schema — Sergei's repro: pinned
+        # ``get_weather``, model fired ``get_weather`` AND
+        # ``lookup_zip``, 400 came back complaining about ``lookup_zip``.
+        # Drop the un-pinned calls FIRST so the validator only sees the
+        # pinned tool's call(s). See ``_filter_tool_calls_by_tool_choice``
+        # for the policy rationale vs chat.py's 422-on-mismatch.
+        if tool_calls and openai_request.tool_choice:
+            tool_calls = _filter_tool_calls_by_tool_choice(
+                tool_calls, openai_request.tool_choice
+            )
 
         # F-220: enforce the same tool_call JSON-schema validation
         # ``routes/chat.py:1651`` runs on the OpenAI ``/v1/chat/completions``
@@ -1416,6 +1509,15 @@ async def _stream_anthropic_messages(
         openai_request,
         structured_tool_calls=accumulated_structured_tool_calls or None,
     )
+
+    # H-05: same un-pinned-tool drop as the non-streaming branch —
+    # see the non-stream call site for the policy rationale. Run
+    # BEFORE validation so the F-220 enforcer never sees the dropped
+    # tool's schema-violating arguments.
+    if tool_calls and openai_request.tool_choice:
+        tool_calls = _filter_tool_calls_by_tool_choice(
+            tool_calls, openai_request.tool_choice
+        )
 
     # F-220: enforce JSON-schema validation on the model's emitted
     # tool_call arguments. On the streaming branch, headers are already

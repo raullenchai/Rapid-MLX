@@ -1660,11 +1660,43 @@ def _validate_tool_call_params(tool_calls: list, tools: list) -> None:
     parsed args remain warn-only because they indicate a model/parser
     issue rather than a schema violation, and the upstream parser layer
     already surfaces them.
+
+    H-05 scope refactor: the iteration is strictly **per emitted call**.
+    For each ``tc`` we look up the tool spec by its ``function.name``
+    and validate the call's arguments against THAT spec's properties
+    only. Tool specs the model did not call are never consulted — this
+    makes "validate the called tool, not every declared tool" a
+    structural invariant of the function instead of an emergent
+    property of a keyed-schemas dict (which was functionally correct,
+    just less self-evident: a future change to ``_extract_param_schemas``
+    keying could silently re-introduce the cross-tool leak). A model
+    emitting a call to a function not in ``tools`` is treated as
+    schema-unknown (no constraint), mirroring the previous keyed-lookup
+    behaviour.
     """
     from ..api.tool_logits import _extract_param_schemas, validate_param_value
 
     tool_defs = [t.model_dump() if hasattr(t, "model_dump") else t for t in tools]
-    schemas = _extract_param_schemas(tool_defs)
+
+    # Per-tool index: name -> {param_name: schema}. Reuses
+    # ``_extract_param_schemas`` on a single-tool list so the schema
+    # normalisation logic (handles ``parameters`` being null /
+    # non-dict, ``properties`` being non-dict, etc.) stays in exactly
+    # one place. Strip the ``<name>.`` prefix from the keys so the
+    # per-call inner loop only does a ``param_name`` lookup against
+    # the tool we actually matched.
+    tool_by_name: dict[str, dict] = {}
+    for tool in tool_defs:
+        if not isinstance(tool, dict):
+            continue
+        func = tool.get("function", tool)
+        if not isinstance(func, dict):
+            continue
+        name = func.get("name", "")
+        if not name:
+            continue
+        scoped = _extract_param_schemas([tool])
+        tool_by_name[name] = {k.split(".", 1)[1]: v for k, v in scoped.items()}
 
     for tc in tool_calls:
         func = tc.function if hasattr(tc, "function") else tc.get("function", {})
@@ -1674,6 +1706,14 @@ def _validate_tool_call_params(tool_calls: list, tools: list) -> None:
             if hasattr(func, "arguments")
             else func.get("arguments", "{}")
         )
+
+        # Find the called tool's schema. If the model called a tool not
+        # in ``tools`` (parser hallucination), skip — the upstream
+        # tool_choice / parser layers own that case; we have no schema
+        # to validate against here.
+        called_tool_schemas = tool_by_name.get(func_name)
+        if called_tool_schemas is None:
+            continue
 
         try:
             args = json.loads(args_str)
@@ -1687,8 +1727,7 @@ def _validate_tool_call_params(tool_calls: list, tools: list) -> None:
             continue
 
         for param_name, param_value in args.items():
-            schema_key = f"{func_name}.{param_name}"
-            schema = schemas.get(schema_key)
+            schema = called_tool_schemas.get(param_name)
             if not schema:
                 continue
             is_valid, error = validate_param_value(json.dumps(param_value), schema)
