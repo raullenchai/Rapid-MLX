@@ -177,6 +177,44 @@ class TestEnforcement:
 
 
 # ---------------------------------------------------------------------------
+# Union types — `{"type": ["string", "null"]}` must be honoured
+# ---------------------------------------------------------------------------
+
+
+class TestUnionTypes:
+    """Codex round 2 BLOCKING on PR #736 — JSON-Schema lets ``type`` be
+    a list, e.g. ``{"type": ["string", "null"]}``. The original branch
+    tree skipped every check because ``param_type`` was a list, so an
+    integer slipped past for a string-or-null schema. These tests lock
+    the union-type path."""
+
+    def test_union_string_or_null_accepts_string(self):
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("nick", {"name": {"type": ["string", "null"]}})]
+        _validate_tool_call_params([_call("nick", '{"name": "alice"}')], tools)
+
+    def test_union_string_or_null_accepts_null(self):
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("nick", {"name": {"type": ["string", "null"]}})]
+        _validate_tool_call_params([_call("nick", '{"name": null}')], tools)
+
+    def test_union_string_or_null_rejects_integer(self):
+        """Integer should NOT match a ``["string", "null"]`` union."""
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("nick", {"name": {"type": ["string", "null"]}})]
+        with pytest.raises(HTTPException) as exc_info:
+            _validate_tool_call_params([_call("nick", '{"name": 123}')], tools)
+        assert exc_info.value.status_code == 400
+        assert "name" in exc_info.value.detail
+        # Should mention the union members or the offending int type.
+        detail = exc_info.value.detail
+        assert "string" in detail or "null" in detail or "int" in detail
+
+
+# ---------------------------------------------------------------------------
 # Valid baseline — must NOT raise (proves enforcement isn't over-zealous)
 # ---------------------------------------------------------------------------
 

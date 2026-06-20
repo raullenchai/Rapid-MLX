@@ -418,6 +418,45 @@ def create_tool_logits_processor(
     return None
 
 
+# JSON-Schema → Python type predicate. Booleans are explicitly excluded
+# from ``integer`` / ``number`` because Python treats ``True``/``False``
+# as ``int`` subclasses (``isinstance(True, int) is True``); JSON-Schema
+# and pydantic both consider them their own type.
+def _matches_single_json_type(parsed: object, t: str) -> bool:
+    if t == "string":
+        return isinstance(parsed, str)
+    if t == "integer":
+        return isinstance(parsed, int) and not isinstance(parsed, bool)
+    if t == "number":
+        return isinstance(parsed, (int, float)) and not isinstance(parsed, bool)
+    if t == "boolean":
+        return isinstance(parsed, bool)
+    if t == "array":
+        return isinstance(parsed, list)
+    if t == "object":
+        return isinstance(parsed, dict)
+    if t == "null":
+        return parsed is None
+    # Unknown type name — treat as no constraint (skip), matching the
+    # `allowed_types` normalisation in ``validate_param_value`` which
+    # already drops non-string entries.
+    return False
+
+
+def _value_matches_any_type(parsed: object, allowed_types: set[str]) -> bool:
+    """Return True if ``parsed`` matches at least one type in
+    ``allowed_types``.
+
+    Codex round 2 BLOCKING on PR #736 caught that the original
+    branch tree never visited union-typed schemas (``"type": [...]``).
+    Splitting the predicate into a single-type helper lets the union
+    case fall out as a simple ``any()`` over the set.
+    """
+    if not allowed_types:
+        return True  # No declared type → no constraint
+    return any(_matches_single_json_type(parsed, t) for t in allowed_types)
+
+
 def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
     """
     Validate a parameter value against its JSON schema (lightweight).
@@ -447,33 +486,53 @@ def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
         return True, None
     param_type = schema.get("type", "")
 
+    # JSON Schema lets ``type`` be either a single string or a list of
+    # strings (a "union" type — e.g. ``{"type": ["string", "null"]}``).
+    # Normalise to a set of allowed scalar names; an empty set means
+    # "no type constraint declared" (the schema may still carry an
+    # ``enum`` / range / length constraint which we honour below).
+    # Anything we don't recognise (e.g. a stray int that survived the
+    # F-140 guards upstream) is dropped from the allowed set so it
+    # doesn't accidentally permit every type — codex round 2 BLOCKING
+    # on PR #736 caught the original branch leaving union schemas
+    # unchecked.
+    if isinstance(param_type, str):
+        allowed_types: set[str] = {param_type} if param_type else set()
+    elif isinstance(param_type, list):
+        allowed_types = {t for t in param_type if isinstance(t, str)}
+    else:
+        allowed_types = set()
+
     # Try to parse as JSON first
     try:
         parsed = json.loads(value)
     except (json.JSONDecodeError, ValueError):
         # Not valid JSON — check if it's a bare string (common for string params)
-        if param_type == "string":
+        if "string" in allowed_types:
             return True, None  # Bare strings are acceptable for string params
         return False, f"Invalid JSON value: {value!r}"
 
     # Type check (strict — exclude bool from integer/number; pydantic
     # treats ``True``/``False`` as their own type, not as ``1``/``0``).
-    if param_type == "string" and not isinstance(parsed, str):
-        return False, f"Expected string, got {type(parsed).__name__}"
-    elif param_type == "integer" and (
-        not isinstance(parsed, int) or isinstance(parsed, bool)
-    ):
-        return False, f"Expected integer, got {type(parsed).__name__}"
-    elif param_type == "number" and (
-        not isinstance(parsed, (int, float)) or isinstance(parsed, bool)
-    ):
-        return False, f"Expected number, got {type(parsed).__name__}"
-    elif param_type == "boolean" and not isinstance(parsed, bool):
-        return False, f"Expected boolean, got {type(parsed).__name__}"
-    elif param_type == "array" and not isinstance(parsed, list):
-        return False, f"Expected array, got {type(parsed).__name__}"
-    elif param_type == "object" and not isinstance(parsed, dict):
-        return False, f"Expected object, got {type(parsed).__name__}"
+    # For union ``type`` ([...]) the value is valid if it matches ANY
+    # allowed type. ``allowed_types == set()`` means the schema omitted
+    # ``type`` entirely — we skip this branch and fall through to the
+    # enum / range / length checks. Unrecognised type names (anything
+    # outside the six JSON-schema scalars + ``"null"``) are ignored
+    # rather than silently permitting; if the schema lists ONLY
+    # unknown types we skip the type check entirely.
+    if allowed_types:
+        type_matches = _value_matches_any_type(parsed, allowed_types)
+        if not type_matches:
+            display = (
+                next(iter(allowed_types))
+                if len(allowed_types) == 1
+                else f"one of {sorted(allowed_types)}"
+            )
+            return (
+                False,
+                f"Expected {display}, got {type(parsed).__name__}",
+            )
 
     # Enum check
     if "enum" in schema and parsed not in schema["enum"]:
