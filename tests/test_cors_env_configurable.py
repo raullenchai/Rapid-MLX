@@ -291,9 +291,9 @@ def test_malformed_max_age_falls_back_to_default(
     monkeypatch.setenv("RAPID_MLX_CORS_MAX_AGE", "not-a-number")
     with caplog.at_level("WARNING", logger="vllm_mlx.server"):
         _server_mod().configure_cors_from_env(cli_origins=None)
-    assert any(
-        "RAPID_MLX_CORS_MAX_AGE" in rec.message for rec in caplog.records
-    ), f"Expected a malformed-max-age warning; got {[r.message for r in caplog.records]!r}"
+    assert any("RAPID_MLX_CORS_MAX_AGE" in rec.message for rec in caplog.records), (
+        f"Expected a malformed-max-age warning; got {[r.message for r in caplog.records]!r}"
+    )
 
     client = TestClient(fresh_app)
     r = client.options(
