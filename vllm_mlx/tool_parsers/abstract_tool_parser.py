@@ -83,11 +83,16 @@ class ExtractedToolCallInformation:
 #   deepseek_native       — DeepSeek V3 specific
 #   deepseek_v31_native   — DeepSeek V3.1 / R1-0528 specific
 #   qwen3_coder_xml_named — Qwen3-Coder XML variant with named function tags
+#   function_xml_named    — <function><name>NAME</name><arguments>JSON
+#                           </arguments></function>  VibeThinker auto-emit
+#                           (F-042); distinct from ``function_bare`` which
+#                           uses the inline ``<function=NAME>`` attribute form.
 WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
     {
         "tool_call_json",
         "tool_call_xml_body",
         "function_bare",
+        "function_xml_named",
         "raw_json",
         "calling_tool_text",
         "gemma4_native",

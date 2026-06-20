@@ -104,12 +104,15 @@ class HermesToolParser(ToolParser):
 
     # Hermes is the most flexible parser — handles JSON body inside
     # <tool_call>, the Nemotron-style XML body fallback (covers vanilla
-    # Qwen3.6), bare <function=...> blocks, raw JSON tool calls, and the
+    # Qwen3.6), bare <function=...> blocks, the VibeThinker
+    # ``<function><name>...</name><arguments>...</arguments></function>``
+    # XML-named shape (F-042), raw JSON tool calls, and the
     # [Calling tool:] text-fallback for low-quant degradation.
     EXPECTED_WIRE_FORMATS = (
         "tool_call_json",
         "tool_call_xml_body",
         "function_bare",
+        "function_xml_named",
         "raw_json",
         "calling_tool_text",
     )
@@ -134,6 +137,20 @@ class HermesToolParser(ToolParser):
     )
     # Bare Nemotron XML: <function=name>...</function> without <tool_call> wrapper
     BARE_FUNCTION_PATTERN = re.compile(r"<function=([^>]+)>(.*?)</function>", re.DOTALL)
+    # VibeThinker XML-named shape (F-042): the model emits the call as
+    # ``<function><name>NAME</name><arguments>JSON</arguments></function>``
+    # under ``tool_choice="auto"`` despite the chat template specifying
+    # ``<tool_call>{"name":...,"arguments":...}</tool_call>``. The matcher
+    # is whitespace-tolerant (newlines between tags, indented inner JSON),
+    # ``.*?``-greedy-safe via DOTALL, and per-block so parallel
+    # ``<function>`` emissions parse as multiple tool calls. The arguments
+    # body is parsed via the same ``_parse_function_body`` helper as the
+    # ``<function=...>`` Nemotron path — accepts JSON object or XML
+    # parameter shape, falling through gracefully on either.
+    FUNCTION_XML_NAMED_PATTERN = re.compile(
+        r"<function>\s*<name>\s*(.*?)\s*</name>\s*<arguments>\s*(.*?)\s*</arguments>\s*</function>",
+        re.DOTALL,
+    )
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -213,6 +230,34 @@ class HermesToolParser(ToolParser):
                 )
             if bare_matches:
                 cleaned_text = self.BARE_FUNCTION_PATTERN.sub("", cleaned_text).strip()
+
+        # Try VibeThinker XML-named shape (F-042):
+        #   <function><name>NAME</name><arguments>JSON</arguments></function>
+        # Observed under ``tool_choice="auto"`` even though VibeThinker's
+        # chat template specifies the ``<tool_call>{...}</tool_call>``
+        # shape. Layer fix per the family-wide "matcher in hermes parser,
+        # not per-alias workaround" convention. Body parsing reuses
+        # ``_parse_function_body`` (JSON-first, XML-parameter fallback)
+        # so escaped JSON, indented JSON, and JSON-with-nested-braces all
+        # round-trip cleanly. ``findall`` over the post-strip text handles
+        # parallel ``<function>...</function>`` blocks as separate tool
+        # calls — non-greedy ``.*?`` inside DOTALL prevents the first
+        # opener from swallowing the second block.
+        if not tool_calls:
+            named_xml_matches = self.FUNCTION_XML_NAMED_PATTERN.findall(cleaned_text)
+            for name, params_block in named_xml_matches:
+                arguments = _parse_function_body(params_block)
+                tool_calls.append(
+                    {
+                        "id": generate_tool_id(),
+                        "name": name.strip(),
+                        "arguments": json.dumps(arguments, ensure_ascii=False),
+                    }
+                )
+            if named_xml_matches:
+                cleaned_text = self.FUNCTION_XML_NAMED_PATTERN.sub(
+                    "", cleaned_text
+                ).strip()
 
         # Fallback: try lenient pattern for malformed tags like <tool_call without >
         if not tool_calls:
@@ -320,7 +365,10 @@ class HermesToolParser(ToolParser):
     # are held back until either (a) the full sentinel arrives and
     # the tool-call branch claims it or (b) a non-matching char
     # arrives and the held bytes are released as ordinary content.
-    _STREAMING_SENTINELS = ("<tool_call>", "<function=")
+    # F-042: ``<function>`` (no ``=``) is the VibeThinker XML-named
+    # opener. Listed alongside ``<function=`` so the ``<f``/``<fu``
+    # prefix is held until the disambiguating ``>`` or ``=`` arrives.
+    _STREAMING_SENTINELS = ("<tool_call>", "<function=", "<function>")
 
     @classmethod
     def _safe_content_prefix(cls, text: str) -> str:
@@ -418,11 +466,21 @@ class HermesToolParser(ToolParser):
 
         # Bare Nemotron XML: <function=name>...</function> without <tool_call> wrapper
         # This happens when the chat template provides <tool_call> as generation prompt.
-        if "<function=" in current_text:
+        # F-042: VibeThinker's auto-emit shape ``<function><name>...</name>
+        # <arguments>...</arguments></function>`` (no ``=``) shares the
+        # ``</function>`` closer with this branch, so count both opener
+        # shapes against the same close-tag count. Both shapes resolve
+        # to tool_calls via ``extract_tool_calls``.
+        has_bare_function = "<function=" in current_text
+        has_named_xml_function = "<function>" in current_text
+        if has_bare_function or has_named_xml_function:
             func_close_count = current_text.count("</function>")
             prev_func_close = previous_text.count("</function>")
+            open_total = current_text.count("<function=") + current_text.count(
+                "<function>"
+            )
 
-            if current_text.count("<function=") > func_close_count:
+            if open_total > func_close_count:
                 # Inside an incomplete function block, suppress output
                 return None
 
