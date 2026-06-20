@@ -214,6 +214,54 @@ class TestJsonObjectFenceStripping:
         joined = _stream_chunks(pp, ['```json\n{"k": 1}\n```\n\n'])
         assert json.loads(joined) == {"k": 1}
 
+    def test_triple_backticks_inside_json_string_preserved(self):
+        """Codex r1 BLOCKING: a JSON STRING VALUE containing literal
+        triple-backticks must NOT be truncated by the closing-fence
+        scanner. The state machine tracks JSON-string state via a
+        cheap ``"`` toggle, skipping fence detection inside string
+        literals. Mirrors a real-world response_format payload where
+        the model returns a code snippet as a string value."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        # The JSON value carries the literal characters ``` ```python ```,
+        # a newline (encoded as ``\\n``), ``x``, another newline, and
+        # ``` ``` ``. All of this is INSIDE the string literal.
+        joined = _stream_chunks(
+            pp,
+            [
+                '```json\n{"markdown": "',
+                "```python\\nx\\n```",
+                '"}\n```',
+            ],
+        )
+        # The fence-strip must have peeled the OUTER fence and left
+        # the inner triple-backticks alone.
+        assert json.loads(joined) == {"markdown": "```python\nx\n```"}
+
+    def test_bare_json_string_ends_with_backticks(self):
+        """Codex r1 BLOCKING #2: bare JSON whose final string value
+        legitimately ends with backticks must survive the finalize
+        flush. The earlier draft rstripped trailing backticks in
+        ``_flush_json_fence_tail`` at EOS, corrupting these payloads.
+
+        Stream the closing ``"}`` after the trailing backtick lands
+        in its own delta — exactly the chunk-boundary that fooled
+        the old flush."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            [
+                '{"text": "look: `',
+                "`",
+                "`",
+                '"}',
+            ],
+        )
+        assert json.loads(joined) == {"text": "look: ```"}
+
 
 class TestJsonSchemaFenceStripping:
     """``response_format={"type":"json_schema",...}`` + stream=True."""
@@ -227,9 +275,7 @@ class TestJsonSchemaFenceStripping:
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg, json_mode=True)
         pp.reset()
-        joined = _stream_chunks(
-            pp, ['```json\n{"answer": 42, "valid": true}\n```']
-        )
+        joined = _stream_chunks(pp, ['```json\n{"answer": 42, "valid": true}\n```'])
         assert json.loads(joined) == {"answer": 42, "valid": True}
 
 
@@ -243,9 +289,7 @@ class TestNoResponseFormatPassThrough:
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg, json_mode=False)
         pp.reset()
-        joined = _stream_chunks(
-            pp, ["Here is some code:\n```python\nx = 1\n```"]
-        )
+        joined = _stream_chunks(pp, ["Here is some code:\n```python\nx = 1\n```"])
         # Fence must survive — no strip happened.
         assert "```python" in joined
         assert "x = 1" in joined

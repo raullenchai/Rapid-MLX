@@ -285,6 +285,20 @@ class StreamingPostProcessor:
         self._json_fence_state: str = "scan"
         self._json_fence_buffer: str = ""
         self._json_fence_tail: str = ""
+        # Lightweight JSON-string awareness for fence detection.
+        # Tracks whether the cursor (running over emitted JSON body
+        # bytes only) is currently INSIDE a JSON ``"..."`` string
+        # literal — backticks inside a string literal are content, not
+        # fence markers, so we MUST skip them when looking for the
+        # closing ``` ``` ``. The flag flips on every unescaped ``"``
+        # we see in the streamed payload. The escape flag handles
+        # ``\\"`` so the next ``"`` does NOT flip the state.
+        #
+        # Codex r1 BLOCKING #1: without this, a valid JSON value like
+        # ``{"text": "```"}`` would be truncated by the leftmost-find
+        # behavior of the original ``_guard_closing_fence``.
+        self._json_fence_in_string: bool = False
+        self._json_fence_string_escape: bool = False
 
         # Forced ``tool_choice`` assistant-prefix replay swallow (PR #716
         # codex r9 BLOCKING #1). When the route layer forces a function via
@@ -474,20 +488,50 @@ class StreamingPostProcessor:
         combined = self._json_fence_tail + content
         self._json_fence_tail = ""
 
-        # Fast path: scan from the LEFT for the closing fence marker.
-        # If we see ``` `` ` ``` at any position, the JSON body ends
-        # THERE (minus any immediately-preceding newline whitespace)
-        # and we transition to "done". The leftmost match wins:
-        # symmetric with the non-stream
-        # ``_strip_markdown_code_block`` regex which captures up to
-        # the FIRST closing fence (rare-but-real failure mode of a
-        # JSON string containing literal triple-backticks is shared
-        # with the non-stream path — out of scope here).
-        fence_idx = combined.find("```")
+        # Walk the buffer character-by-character, tracking JSON-string
+        # state, so the FIRST ``` `` ` ``` we treat as a closing fence
+        # is actually OUTSIDE a string literal. Codex r1 BLOCKING #1:
+        # the previous leftmost-``find("```")`` truncated valid JSON
+        # whose VALUES happened to contain triple-backticks (e.g.
+        # ``{"markdown": "```python\\nx\\n```"}``).
+        #
+        # The walker starts from the per-instance snapshot of the
+        # (in_string, escape) flags taken at the held-tail boundary on
+        # the previous call. ``combined`` is structured as
+        # ``[previously-held tail] + [fresh content]`` and the snapshot
+        # is exactly the flag state AT the start of that previously-
+        # held tail — so the walker over ``combined`` from index 0
+        # produces the correct flag state at every position.
+        in_string = self._json_fence_in_string
+        escape = self._json_fence_string_escape
+        i = 0
+        n = len(combined)
+        fence_idx = -1
+        while i < n:
+            c = combined[i]
+            if escape:
+                escape = False
+                i += 1
+                continue
+            if c == "\\" and in_string:
+                escape = True
+                i += 1
+                continue
+            if c == '"':
+                in_string = not in_string
+                i += 1
+                continue
+            # Look for ``` ``` `` outside string literals.
+            if not in_string and c == "`" and combined[i : i + 3] == "```":
+                fence_idx = i
+                break
+            i += 1
+
         if fence_idx >= 0:
             payload = combined[:fence_idx]
             payload = payload.rstrip("\r\n")
             self._json_fence_state = "done"
+            # Don't update the in-string flags — we're done.
             return payload
 
         # No complete fence yet. Compute the minimum suffix-hold so the
@@ -498,25 +542,65 @@ class StreamingPostProcessor:
         #   ```\\n``       (no trailing newline; ``` could land at EOS)
         #   ```            (fence-only line, no newlines)
         #
-        # The longest prefix of any of these that could legitimately
-        # appear at the END of a non-fence emission is 4 bytes:
-        # ``\\n`` followed by up to two backticks (the next chunk would
-        # carry the third backtick to complete the fence). Anything
-        # longer than that we KNOW is real JSON body and can release
-        # immediately. Anything shorter that ends in ``\\n`` / ``` ` ```
-        # / ``` `` `` we hold; anything else we release wholesale.
+        # The longest prefix that could legitimately appear at the END
+        # of a non-fence emission is 4 bytes: ``\\n`` followed by up to
+        # two backticks (the next chunk would carry the third backtick
+        # to complete the fence). Anything longer than that we KNOW is
+        # real JSON body and can release immediately. Anything shorter
+        # that ends in ``\\n`` / ``` ` `` / ``` `` `` we hold; anything
+        # else we release wholesale.
         #
-        # This keeps the bare-JSON path zero-latency: a chunk ending
-        # in ``}`` or a digit or a quote releases immediately. Only
-        # chunks ending in suspicious chars pay one chunk of latency.
-        hold_len = _json_fence_suffix_hold_len(combined)
+        # Codex r1 BLOCKING #1 redux: when the trailing fence-prefix
+        # chars are INSIDE a JSON string literal (the running
+        # ``in_string`` flag from the walker says so), they can't be
+        # the start of a closing fence — release them too.
+        # At this point the walker advanced ``in_string`` / ``escape``
+        # to the END of the entire ``combined`` buffer (no fence found).
+        # We need to snapshot the flags as they were at the START of
+        # the soon-to-be-held tail (so the next chunk's walker can
+        # resume there). The held-tail length depends on whether we're
+        # inside a string literal: a trailing ``` ` `` / ``\\n`` inside
+        # a string can't begin a fence and should flush immediately.
+        if in_string:
+            hold_len = 0
+        else:
+            hold_len = _json_fence_suffix_hold_len(combined)
+
         if hold_len == 0:
+            # Snapshot the END-of-buffer flags (== start of next chunk).
+            self._json_fence_in_string = in_string
+            self._json_fence_string_escape = escape
             return combined
         if hold_len >= len(combined):
+            # The whole buffer is suspicious tail. The flags at the
+            # start of this tail are the snapshot we entered with —
+            # leave ``_json_fence_in_string`` / ``_string_escape``
+            # untouched (they already reflect that boundary).
             self._json_fence_tail = combined
             return ""
         emit = combined[:-hold_len]
         self._json_fence_tail = combined[-hold_len:]
+        # Snapshot the flags AT the start of the held tail by
+        # re-walking from the prior snapshot through ``emit``. Held
+        # tail will never include a quote (the hold chars are ``\\n``
+        # / ``\\r`` / ``` ` ``), so this is a defensive replay rather
+        # than load-bearing — but it keeps the next-chunk walker
+        # mechanically correct.
+        prior_in_string, prior_escape = (
+            self._json_fence_in_string,
+            self._json_fence_string_escape,
+        )
+        for c in emit:
+            if prior_escape:
+                prior_escape = False
+                continue
+            if c == "\\" and prior_in_string:
+                prior_escape = True
+                continue
+            if c == '"':
+                prior_in_string = not prior_in_string
+        self._json_fence_in_string = prior_in_string
+        self._json_fence_string_escape = prior_escape
         return emit
 
     def _filter_events_for_json_fence(
@@ -576,28 +660,30 @@ class StreamingPostProcessor:
         """Release any deferred tail bytes at stream end.
 
         Called from ``finalize()`` so the bare-JSON path (model returned
-        ``{...}`` with NO closing fence) still flushes the final
-        ``_JSON_FENCE_TAIL_HOLD`` bytes that were held back in case
-        they were the start of a fence. Idempotent: clears the tail.
+        ``{...}`` with NO closing fence) still flushes the final few
+        bytes that were held back in case they were the start of a
+        fence. Idempotent: clears the tail.
+
+        Codex r1 BLOCKING #2: flush the tail UNCHANGED unless the state
+        machine has already transitioned to ``"done"`` (closing fence
+        detected). The earlier draft rstripped backticks at EOS, which
+        would corrupt a valid bare JSON whose final string value
+        legitimately ends with backticks (``{"text":"```"}`` streamed
+        with the trailing ``\\"}`` arriving in the same chunk as a
+        leading ``` ` `` in the value). When ``state == "done"`` the
+        closing fence was already structurally detected and the tail
+        is dead bytes — we still drop them.
         """
         if not self.json_mode:
             return ""
         if self._json_fence_state == "done":
+            # Closing fence detected; whatever sat in the tail belongs
+            # AFTER the fence and is suppressed.
             self._json_fence_tail = ""
             return ""
         tail = self._json_fence_tail
         self._json_fence_tail = ""
-        if not tail:
-            return ""
-        # Defensive trim: a model that closed the stream mid-fence (rare,
-        # but possible when the engine hit ``max_tokens`` exactly at the
-        # ``` boundary) could leave a partial ``\\n``  or ``\\n``` `` in
-        # the tail. Drop trailing backticks and the newline immediately
-        # before them so the released suffix is still valid JSON.
-        stripped = tail.rstrip("`")
-        if stripped != tail:
-            stripped = stripped.rstrip("\r\n")
-        return stripped
+        return tail
 
     @staticmethod
     def _create_reasoning_parser(cfg: ServerConfig):
@@ -1188,6 +1274,8 @@ class StreamingPostProcessor:
         self._json_fence_state = "scan"
         self._json_fence_buffer = ""
         self._json_fence_tail = ""
+        self._json_fence_in_string = False
+        self._json_fence_string_escape = False
         # Forced-prefix swallow buffer reset to baseline. The route layer
         # re-seeds via ``seed_forced_assistant_prefix`` after ``reset()``
         # when the request carries ``forced_assistant_prefix``; without
