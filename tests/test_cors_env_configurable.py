@@ -429,6 +429,79 @@ def test_credentials_opt_in_via_env(
 
 
 # ──────────────────────────────────────────────────────────────────────
+# Codex round-3 BLOCKING: the legacy ``--cors-origins`` CLI flag is the
+# documented back-compat path. When it's used (cli_origins != None) AND
+# the methods/headers env overrides are unset, the resolver must
+# preserve the legacy wide-open ``["*"]`` default so existing browser
+# clients sending ``OpenAI-Organization`` etc. keep working. Only the
+# env-driven path gets the new F-091 narrowing.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_cli_origins_path_keeps_legacy_wide_open_headers(
+    fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``--cors-origins https://chat.openai.com`` (no method/header env
+    overrides) → preflight echoes back the operator-requested header
+    (legacy ``["*"]`` behavior), not the new narrow allowlist. This
+    preserves the existing CLI contract."""
+    monkeypatch.delenv("RAPID_MLX_CORS_ALLOW_METHODS", raising=False)
+    monkeypatch.delenv("RAPID_MLX_CORS_ALLOW_HEADERS", raising=False)
+    _server_mod().configure_cors_from_env(cli_origins=["https://chat.openai.com"])
+
+    client = TestClient(fresh_app)
+    r = client.options(
+        "/v1/chat/completions",
+        headers={
+            "Origin": "https://chat.openai.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "OpenAI-Organization",
+        },
+    )
+    assert r.status_code == 200
+    allowed = r.headers.get("access-control-allow-headers", "").lower()
+    assert "openai-organization" in allowed or "*" in allowed, (
+        f"Legacy --cors-origins path must keep allow_headers=['*'] "
+        f"semantics; got Access-Control-Allow-Headers={allowed!r}"
+    )
+
+
+def test_env_origins_path_applies_f091_narrowing(
+    fresh_app: FastAPI, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """When origins come from the NEW env-driven path
+    (``RAPID_MLX_CORS_ALLOW_ORIGINS``), the F-091 narrowing kicks in:
+    custom headers like ``OpenAI-Organization`` are NOT in the default
+    allowlist. Operators on this path opt-in to specific headers via
+    ``RAPID_MLX_CORS_ALLOW_HEADERS``."""
+    monkeypatch.setenv("RAPID_MLX_CORS_ALLOW_ORIGINS", "https://chat.openai.com")
+    monkeypatch.delenv("RAPID_MLX_CORS_ALLOW_HEADERS", raising=False)
+    _server_mod().configure_cors_from_env(cli_origins=None)
+
+    client = TestClient(fresh_app)
+    r = client.options(
+        "/v1/chat/completions",
+        headers={
+            "Origin": "https://chat.openai.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "OpenAI-Organization",
+        },
+    )
+    # Preflight still returns 200 (Starlette CORS doesn't 4xx on a
+    # disallowed Access-Control-Request-Headers) but the response's
+    # ``Access-Control-Allow-Headers`` does NOT include the requested
+    # custom header — browser blocks the real request.
+    allowed = r.headers.get("access-control-allow-headers", "").lower()
+    assert "openai-organization" not in allowed
+    assert "*" not in allowed
+    # The narrowed default is still echoed.
+    for expected in ("content-type", "authorization", "x-rapid-mlx-internal"):
+        assert expected in allowed, (
+            f"Expected {expected!r} in narrowed default headers; got {allowed!r}"
+        )
+
+
+# ──────────────────────────────────────────────────────────────────────
 # Codex round-2 BLOCKING: ``configure_cors(origins)`` single-arg
 # back-compat path must keep the legacy wide-open ``allow_headers=["*"]``
 # so existing browser clients sending ``OpenAI-Organization`` /

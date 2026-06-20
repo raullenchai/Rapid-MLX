@@ -624,9 +624,21 @@ def configure_cors_from_env(
 
     Returns the resolved origin list (empty list when CORS is disabled).
     """
+    # ``came_from_cli`` discriminates the two compat tiers (codex round-3
+    # BLOCKING). The legacy ``--cors-origins`` CLI path used to imply
+    # ``allow_headers=["*"]`` / ``allow_methods=["*"]``; existing browser
+    # clients send custom headers like ``OpenAI-Organization`` and
+    # ``X-Requested-With`` that would now fail preflight if we silently
+    # narrowed those defaults. The env-driven path
+    # (``RAPID_MLX_CORS_ALLOW_ORIGINS``) is brand-new in this PR — it
+    # gets the restrictive default (closes F-091 by default). Operators
+    # on either path can still pin the methods/headers explicitly via
+    # ``RAPID_MLX_CORS_ALLOW_METHODS`` / ``_HEADERS``.
     origins: list[str] = []
+    came_from_cli = False
     if cli_origins:
         origins = list(cli_origins)
+        came_from_cli = True
     else:
         env_origins = os.environ.get("RAPID_MLX_CORS_ALLOW_ORIGINS", "").strip()
         if env_origins:
@@ -661,39 +673,47 @@ def configure_cors_from_env(
     # empty after parse`` → log a WARNING and fall back to the default,
     # so the operator sees the typo in the startup log rather than
     # discovering it via a Sentry alert later.
+    #
+    # Codex round-3 BLOCKING: when ``came_from_cli`` is True and the env
+    # override is unset, the default for methods/headers is the legacy
+    # wide-open ``["*"]`` — not the restrictive F-091 default — so the
+    # documented CLI back-compat path doesn't silently break browser
+    # clients that send custom headers (``OpenAI-Organization`` etc.).
     methods_env = os.environ.get("RAPID_MLX_CORS_ALLOW_METHODS")
     if methods_env is None:
-        methods = list(_DEFAULT_CORS_METHODS)
+        methods = ["*"] if came_from_cli else list(_DEFAULT_CORS_METHODS)
     else:
         methods = _parse_csv(methods_env)
         if not methods:
+            fallback_methods = ["*"] if came_from_cli else list(_DEFAULT_CORS_METHODS)
             logger.warning(
                 "%s=%r parsed to an empty list (whitespace / trailing "
-                "commas only); falling back to the default %s allowlist. "
-                "Set the env var to a real comma-separated method list, "
-                "or unset it entirely to use the default.",
+                "commas only); falling back to %s. Set the env var to a "
+                "real comma-separated method list, or unset it entirely "
+                "to use the default.",
                 "RAPID_MLX_CORS_ALLOW_METHODS",
                 methods_env,
-                list(_DEFAULT_CORS_METHODS),
+                fallback_methods,
             )
-            methods = list(_DEFAULT_CORS_METHODS)
+            methods = fallback_methods
 
     headers_env = os.environ.get("RAPID_MLX_CORS_ALLOW_HEADERS")
     if headers_env is None:
-        headers = list(_DEFAULT_CORS_HEADERS)
+        headers = ["*"] if came_from_cli else list(_DEFAULT_CORS_HEADERS)
     else:
         headers = _parse_csv(headers_env)
         if not headers:
+            fallback_headers = ["*"] if came_from_cli else list(_DEFAULT_CORS_HEADERS)
             logger.warning(
                 "%s=%r parsed to an empty list (whitespace / trailing "
-                "commas only); falling back to the default %s allowlist. "
-                "Set the env var to a real comma-separated header list, "
-                "or unset it entirely to use the default.",
+                "commas only); falling back to %s. Set the env var to a "
+                "real comma-separated header list, or unset it entirely "
+                "to use the default.",
                 "RAPID_MLX_CORS_ALLOW_HEADERS",
                 headers_env,
-                list(_DEFAULT_CORS_HEADERS),
+                fallback_headers,
             )
-            headers = list(_DEFAULT_CORS_HEADERS)
+            headers = fallback_headers
 
     max_age_env = os.environ.get("RAPID_MLX_CORS_MAX_AGE", "").strip()
     max_age = _DEFAULT_CORS_MAX_AGE
