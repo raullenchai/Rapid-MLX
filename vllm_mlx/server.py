@@ -532,10 +532,17 @@ def configure_cors(
 ) -> None:
     """Register the CORS middleware with the given allowlist.
 
-    Backwards-compatible signature: callers that pass a single ``origins``
-    list (tests, ``share`` CLI, the dflash speculative server) still work
-    unchanged. New callers pass ``methods=`` / ``headers=`` to mirror the
-    F-091 fix.
+    Backwards-compatible signature: callers that pass only ``origins``
+    (tests, ``share`` CLI, the dflash speculative server) still get the
+    *legacy* wide-open ``allow_methods=["*"]`` / ``allow_headers=["*"]``
+    behavior — codex round-2 BLOCKING flagged that silently narrowing
+    these on the single-arg path would break existing browser clients
+    that send headers like ``OpenAI-Organization`` or
+    ``X-Requested-With`` (preflight 200 → real-request fails because the
+    header isn't on the allowlist). The F-091 narrowing only kicks in
+    on the env-aware path (``configure_cors_from_env``) which passes
+    explicit ``methods=`` / ``headers=`` lists — new callers see the
+    restrictive default, legacy callers stay wide-open.
 
     When the wildcard ``*`` is present, ``allow_credentials`` is forced to
     False to comply with the Fetch standard — browsers reject responses
@@ -574,12 +581,16 @@ def configure_cors(
             "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
         )
         allow_credentials = False
+    # ``methods=None`` and ``headers=None`` mean "back-compat single-arg
+    # caller" — preserve the legacy ``["*"]`` so existing clients keep
+    # working. ``configure_cors_from_env`` always passes explicit lists,
+    # so it gets the F-091 narrowing.
     app.add_middleware(
         CORSMiddleware,
         allow_origins=origins,
         allow_credentials=allow_credentials,
-        allow_methods=list(methods) if methods else list(_DEFAULT_CORS_METHODS),
-        allow_headers=list(headers) if headers else list(_DEFAULT_CORS_HEADERS),
+        allow_methods=list(methods) if methods is not None else ["*"],
+        allow_headers=list(headers) if headers is not None else ["*"],
         max_age=max_age if max_age is not None else _DEFAULT_CORS_MAX_AGE,
     )
 

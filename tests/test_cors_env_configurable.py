@@ -426,3 +426,47 @@ def test_credentials_opt_in_via_env(
     )
     assert r.status_code == 200
     assert r.headers.get("access-control-allow-credentials") == "true"
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Codex round-2 BLOCKING: ``configure_cors(origins)`` single-arg
+# back-compat path must keep the legacy wide-open ``allow_headers=["*"]``
+# so existing browser clients sending ``OpenAI-Organization`` /
+# ``X-Requested-With`` keep working.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def test_legacy_single_arg_configure_cors_keeps_wide_open_headers(
+    fresh_app: FastAPI,
+) -> None:
+    """``configure_cors(origins)`` (no ``headers=`` / ``methods=`` kwargs)
+    is the back-compat path used by tests / ``share`` CLI / dflash
+    integration. Codex round-2 flagged that silently narrowing the
+    defaults would break browser clients that send custom headers
+    (``OpenAI-Organization``, ``X-Requested-With``, etc.). The
+    narrowing only applies on the env-aware path
+    (``configure_cors_from_env`` which passes explicit lists)."""
+    _server_mod().configure_cors(["https://chat.openai.com"])
+
+    client = TestClient(fresh_app)
+    # Preflight requesting a custom header that's NOT in the new
+    # restrictive default — pre-fix this would have failed; with the
+    # back-compat ``["*"]`` it still works.
+    r = client.options(
+        "/v1/chat/completions",
+        headers={
+            "Origin": "https://chat.openai.com",
+            "Access-Control-Request-Method": "POST",
+            "Access-Control-Request-Headers": "OpenAI-Organization",
+        },
+    )
+    assert r.status_code == 200, (
+        f"Legacy single-arg configure_cors() must keep preflight 200 for "
+        f"custom headers like OpenAI-Organization; got {r.status_code}"
+    )
+    # Starlette echoes the requested header back when allow_headers=["*"].
+    allowed = r.headers.get("access-control-allow-headers", "").lower()
+    assert "openai-organization" in allowed or "*" in allowed, (
+        f"Expected the requested header to be echoed or wildcarded; "
+        f"got Access-Control-Allow-Headers={allowed!r}"
+    )
