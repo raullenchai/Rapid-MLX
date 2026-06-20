@@ -250,12 +250,17 @@ class TestJsonObjectFenceStripping:
         assert json.loads(joined) == [{"item": 1}, {"item": 2}]
 
     def test_trailing_newline_after_fence_suppressed(self):
-        """``\\n``` `` plus a trailing ``\\n`` — the trailing nl is dropped."""
+        """``\\n``` `` plus a trailing ``\\n`` — the trailing nl is dropped.
+
+        Codex r9 BLOCKING #2: assert byte-exact equality (not just
+        ``json.loads``) so a regression that leaks trailing whitespace
+        after the strip would fail. ``json.loads`` is permissive about
+        trailing whitespace and would silently pass."""
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg, json_mode=True)
         pp.reset()
         joined = _stream_chunks(pp, ['```json\n{"k": 1}\n```\n\n'])
-        assert json.loads(joined) == {"k": 1}
+        assert joined == '{"k": 1}'
 
     def test_long_preamble_past_scan_cap_does_not_leak(self):
         """Codex r3 BLOCKING: when the model emits >4KB of preamble
@@ -306,6 +311,56 @@ class TestJsonObjectFenceStripping:
             ],
         )
         assert joined == '{"answer": 42}'
+
+    def test_fenced_stream_post_root_close_prose_split_then_fence(self):
+        """Codex r9 BLOCKING #1: in fenced mode, bytes between the JSON
+        root close and the closing ``` ``` `` fence must NOT leak.
+
+        Scenario: chunk N ends ``{"k":1}\\nextra`` (root closes, then
+        extra prose still inside the fence body); chunk N+1 carries
+        the closing ``` ``` ``. The walker now LATCHES root-close,
+        holds all post-close bytes as tail, and drops them when the
+        fence terminator confirms. Without the latch ``\\nextra``
+        would land on the wire before the fence is seen and the
+        joined stream would be ``{"k":1}\\nextra`` (invalid JSON for
+        any client running ``json.loads`` on the concatenated
+        deltas)."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            [
+                '```json\n{"k": 1}',
+                "\nextra",
+                "\n```",
+            ],
+        )
+        # Byte-exact: matches what the non-stream
+        # ``extract_json_from_response`` produces on the equivalent
+        # joined input — the wrapper prose is part of the fenced
+        # body and gets peeled along with the fence.
+        assert joined == '{"k": 1}'
+
+    def test_fenced_stream_post_root_close_prose_then_fence_same_chunk(self):
+        """Codex r9 BLOCKING #1 follow-up: post-root-close prose AND
+        the closing fence both arrive in the SAME later chunk.
+
+        Even though the walker sees the closing fence in this chunk,
+        the cut MUST be at root-close (not at fence_idx) so the
+        intervening prose is dropped. Without the ``cut = root_close_at``
+        rewrite the payload would include ``\\nextra``."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            [
+                '```json\n{"k": 1}',
+                "\nextra\n```",
+            ],
+        )
+        assert joined == '{"k": 1}'
 
     def test_preamble_example_json_before_json_fence_wins_real_answer(self):
         """Codex r8 BLOCKING #1: re-anchor unconditionally when a

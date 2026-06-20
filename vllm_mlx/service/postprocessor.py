@@ -388,6 +388,14 @@ class StreamingPostProcessor:
         # continues with prose containing ``` ``` `` after the JSON
         # would have the prose truncated.
         self._json_fence_opener_consumed: bool = False
+        # Codex r9 BLOCKING #1: persistent flag — has the JSON root
+        # closed (depth returned to 0 from >0 at some point)? Once
+        # this latches in fenced mode, every byte after that point
+        # is wrapper/prose/whitespace/fence; we suppress all of it
+        # until the closing ``` ``` `` fence is confirmed. Without
+        # this latch a chunk boundary between root-close and the
+        # fence leaks the intervening bytes onto the wire.
+        self._json_root_closed: bool = False
 
         # Forced ``tool_choice`` assistant-prefix replay swallow (PR #716
         # codex r9 BLOCKING #1). When the route layer forces a function via
@@ -484,9 +492,15 @@ class StreamingPostProcessor:
     #   "inside" → "done"    when a closing ``` ``` `` is detected (with
     #                        the preceding ``\n`` also dropped).
     #
-    # Bounded buffers: ``_json_fence_buffer`` is capped at 4096 bytes
-    # — past that we give up on fence detection and pass content through
-    # raw rather than swallow the entire stream on a runaway preamble.
+    # Bounded buffers: ``_json_fence_buffer`` is capped at 4096 bytes.
+    # Codex r9 NIT: when the cap is exceeded the implementation TRIMS
+    # the buffer to the trailing ``_JSON_FENCE_SCAN_KEEP_SUFFIX`` bytes
+    # (just enough for a split opening fence to still be detected on
+    # the next chunk) and KEEPS scanning. Older preamble bytes are
+    # dropped from memory but NEVER released onto the wire — the
+    # json-mode contract is "suppress everything before the first
+    # ``{``/``[``" and runaway preambles do not relax that contract
+    # (codex r3 BLOCKING).
 
     # Max bytes to accumulate while scanning for the JSON start. Past
     # this point the buffer is trimmed to the last
@@ -701,7 +715,27 @@ class StreamingPostProcessor:
         # emit, e.g. the codex r6 #1 multi-value concern). The
         # contract: opening fence seen => terminator is the closing
         # fence, not the root close.
+        # Codex r9 BLOCKING #1: track the FIRST index at which the JSON
+        # root closes (depth returns from 1 to 0). For fenced-mode
+        # streams the contract is "emit the JSON object only" — bytes
+        # between the root close and the closing fence are
+        # wrapper / explanation that the non-stream
+        # ``extract_json_from_response`` strips along with the fence.
+        # We must NOT emit those bytes onto the wire as they arrive in
+        # an earlier chunk than the closing ``` ``` ``. Track the
+        # ROOT_CLOSE position so we can suppress everything from it
+        # onward when no fence is found in this chunk (the next chunk
+        # might carry both extra prose AND the fence — we hold both).
         fence_idx = -1
+        # Codex r9 BLOCKING #1: ``root_close_at`` tracks the FIRST
+        # index in ``combined`` at which the JSON root closed. When
+        # the persistent ``_json_root_closed`` latch is already set
+        # (from a PRIOR call's walker), every byte of ``combined`` is
+        # post-root-close — root_close_at = 0 so we suppress from the
+        # start. Otherwise we scan for the first depth-1→0
+        # transition and record its position+1 (the byte AFTER the
+        # closing brace/bracket).
+        root_close_at = 0 if self._json_root_closed else -1
         i = 0
         n = len(combined)
         while i < n:
@@ -726,7 +760,12 @@ class StreamingPostProcessor:
                 if c in "}]":
                     # Defensive clamp on negative depth (malformed
                     # unbalanced output).
+                    prev_depth = depth
                     depth = max(depth - 1, 0)
+                    if prev_depth == 1 and depth == 0 and root_close_at < 0:
+                        # First top-level close — record the position
+                        # right AFTER this closing brace/bracket.
+                        root_close_at = i + 1
                     i += 1
                     continue
                 # Triple-backtick OUTSIDE a JSON string AND OUTSIDE
@@ -744,12 +783,42 @@ class StreamingPostProcessor:
 
         if fence_idx >= 0:
             # Closing fence found at depth 0. Trim payload at the
-            # fence, dropping the immediately-preceding newline
-            # whitespace symmetric with the non-stream
-            # ``_strip_markdown_code_block`` peel.
-            payload = combined[:fence_idx].rstrip("\r\n")
+            # FIRST root close (codex r9 BLOCKING #1: drop any
+            # explanation prose between the JSON root and the fence,
+            # symmetric with the non-stream
+            # ``_strip_markdown_code_block`` peel), then drop the
+            # newline whitespace.
+            cut = root_close_at if 0 <= root_close_at <= fence_idx else fence_idx
+            payload = combined[:cut].rstrip("\r\n")
             self._json_fence_state = "done"
             return payload
+
+        # Codex r9 BLOCKING #1: in fenced mode, once the JSON root has
+        # closed we MUST suppress every byte after the close until the
+        # closing fence arrives. Otherwise a chunk-boundary like
+        # ``{"k":1}\nextra`` (chunk N) + ``` ``` `` (chunk N+1) leaks
+        # ``\nextra`` onto the wire before the fence terminator is
+        # seen — the joined stream would be ``{"k":1}\nextra``,
+        # invalid JSON for any client that runs ``json.loads`` on
+        # the assembled deltas. Emit only the bytes UP TO root close
+        # (the JSON object itself) and HOLD all post-close bytes as
+        # tail. The next call's walker re-examines the full
+        # tail+content buffer for the fence; the tail is bounded by
+        # one chunk's worth of post-close bytes per call.
+        if root_close_at >= 0:
+            head = combined[:root_close_at]
+            self._json_fence_tail = combined[root_close_at:]
+            # Snapshot flags AT the root-close boundary. ``head`` ends
+            # at depth 0 outside any string, so reset the snapshot to
+            # that baseline. The persistent ``_json_root_closed`` latch
+            # ensures the next call's walker treats ``combined``'s very
+            # first byte as already past the close — so any new
+            # post-close bytes are also held until the fence arrives.
+            self._json_fence_in_string = False
+            self._json_fence_string_escape = False
+            self._json_fence_bracket_depth = 0
+            self._json_root_closed = True
+            return head
 
         # No complete fence yet. Compute the minimum suffix-hold so the
         # NEXT chunk can still detect a fence that straddles the chunk
@@ -930,6 +999,15 @@ class StreamingPostProcessor:
         if self._json_fence_state == "done":
             # Closing fence detected; whatever sat in the tail belongs
             # AFTER the fence and is suppressed.
+            self._json_fence_tail = ""
+            return ""
+        # Codex r9 BLOCKING #1: in fenced mode, if the JSON root has
+        # closed but the closing ``` ``` `` never arrived (truncated
+        # stream / model stopped mid-fence), the held tail is
+        # post-root-close prose that the non-stream
+        # ``extract_json_from_response`` would have peeled. Drop it
+        # so the streaming bytes match the non-stream shape.
+        if self._json_fence_opener_consumed and self._json_root_closed:
             self._json_fence_tail = ""
             return ""
         tail = self._json_fence_tail
@@ -1529,6 +1607,7 @@ class StreamingPostProcessor:
         self._json_fence_string_escape = False
         self._json_fence_bracket_depth = 0
         self._json_fence_opener_consumed = False
+        self._json_root_closed = False
         # Forced-prefix swallow buffer reset to baseline. The route layer
         # re-seeds via ``seed_forced_assistant_prefix`` after ``reset()``
         # when the request carries ``forced_assistant_prefix``; without
