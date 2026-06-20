@@ -26,7 +26,6 @@ import pytest
 from fastapi import HTTPException
 from pydantic import ValidationError
 
-
 # ---------------------------------------------------------------------------
 # F-013: response_format validation (route-layer)
 # ---------------------------------------------------------------------------
@@ -48,8 +47,8 @@ class TestResponseFormatValidation:
         ``{}``. Wrapped by ``except Exception: raise
         HTTPException(detail=str(e))`` and the raw error string
         surfaced in the response body."""
-        from vllm_mlx.service.helpers import _validate_response_format
         from vllm_mlx.api.models import ResponseFormat
+        from vllm_mlx.service.helpers import _validate_response_format
 
         with pytest.raises(HTTPException) as ei:
             _validate_response_format(ResponseFormat(type="json_schema"))
@@ -104,9 +103,7 @@ class TestResponseFormatValidation:
         from vllm_mlx.service.helpers import _validate_response_format
 
         with pytest.raises(HTTPException) as ei:
-            _validate_response_format(
-                {"type": "json_schema", "json_schema": {}}
-            )
+            _validate_response_format({"type": "json_schema", "json_schema": {}})
         assert ei.value.status_code == 400
         assert "non-empty" in ei.value.detail
 
@@ -151,8 +148,8 @@ class TestResponseFormatValidation:
         """``type:"text"`` is the documented default and is the
         explicit value Pydantic assigns when no ``type`` is provided
         to the typed path — must not raise."""
-        from vllm_mlx.service.helpers import _validate_response_format
         from vllm_mlx.api.models import ResponseFormat
+        from vllm_mlx.service.helpers import _validate_response_format
 
         # Both shapes — dict and Pydantic — must pass.
         _validate_response_format(ResponseFormat(type="text"))
@@ -160,8 +157,8 @@ class TestResponseFormatValidation:
 
     def test_valid_json_object_passes(self):
         """The OpenAI ``json_object`` JSON-mode shorthand."""
-        from vllm_mlx.service.helpers import _validate_response_format
         from vllm_mlx.api.models import ResponseFormat
+        from vllm_mlx.service.helpers import _validate_response_format
 
         _validate_response_format(ResponseFormat(type="json_object"))
         _validate_response_format({"type": "json_object"})
@@ -213,9 +210,7 @@ class TestImageUrlTypeValidation:
                 messages=[
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "image_url", "image_url": {"url": 123}}
-                        ],
+                        "content": [{"type": "image_url", "image_url": {"url": 123}}],
                     }
                 ],
             )
@@ -225,9 +220,7 @@ class TestImageUrlTypeValidation:
         assert "startswith" not in msg
         assert "'int' object" not in msg
 
-    @pytest.mark.parametrize(
-        "bad_url", [42, 3.14, [1, 2], {"a": "b"}, True]
-    )
+    @pytest.mark.parametrize("bad_url", [42, 3.14, [1, 2], {"a": "b"}, True])
     def test_non_string_url_variants_rejected(self, bad_url):
         """Coverage for the full set of JSON-encodable non-string
         types a buggy client could send. All share the same
@@ -264,9 +257,7 @@ class TestImageUrlTypeValidation:
                 messages=[
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "video_url", "video_url": {"url": 99}}
-                        ],
+                        "content": [{"type": "video_url", "video_url": {"url": 99}}],
                     }
                 ],
             )
@@ -282,9 +273,7 @@ class TestImageUrlTypeValidation:
                 messages=[
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "audio_url", "audio_url": {"url": 7}}
-                        ],
+                        "content": [{"type": "audio_url", "audio_url": {"url": 7}}],
                     }
                 ],
             )
@@ -313,36 +302,49 @@ class TestImageUrlTypeValidation:
         # (not the dict fallback), so the ``image_url`` field is the
         # parsed ``ImageUrl`` model.
         part = req.messages[0].content[0]
-        url = part.image_url.url if hasattr(part, "image_url") else part[
-            "image_url"
-        ]["url"]
+        url = (
+            part.image_url.url
+            if hasattr(part, "image_url")
+            else part["image_url"]["url"]
+        )
         assert url == "https://example.com/x.png"
 
-    def test_valid_string_url_shorthand_accepted(self):
-        """The OpenAI-compat ``image_url`` can also be a plain
-        string — that path bypasses the dict branch entirely and
-        must still parse."""
+    def test_bare_string_image_url_rejected(self):
+        """F-065: the bare-string ``image_url`` shorthand was
+        previously accepted by the union arm
+        (``ImageUrl | dict | str | None``) and then silently
+        dropped by the multimodal preprocessor (which unwrapped
+        ``image["url"]`` from the dict shape but had no fallback
+        for the bare-string form). The model received only the
+        text and hallucinated ("the image is blank").
+
+        Per OpenAI spec the ``image_url`` slot MUST be an object
+        with a required ``url`` field; reject the bare-string form
+        at the schema layer with a clean 422 so the client sees
+        the actual mismatch instead of a silent-correctness bug.
+        """
+        from pydantic import ValidationError
+
         from vllm_mlx.api.models import ChatCompletionRequest
 
-        req = ChatCompletionRequest(
-            model="x",
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {
-                            "type": "image_url",
-                            "image_url": "https://example.com/x.png",
-                        }
-                    ],
-                }
-            ],
-        )
-        # The Pydantic ContentPart variant wins for well-typed input,
-        # so the ContentPart was constructed (not the dict-fallback).
-        assert req.messages[0].content[0].image_url == (
-            "https://example.com/x.png"
-        )
+        with pytest.raises(ValidationError) as ei:
+            ChatCompletionRequest(
+                model="x",
+                messages=[
+                    {
+                        "role": "user",
+                        "content": [
+                            {
+                                "type": "image_url",
+                                "image_url": "https://example.com/x.png",
+                            }
+                        ],
+                    }
+                ],
+            )
+        msg = str(ei.value)
+        assert "must be an object" in msg
+        assert "url" in msg
 
     def test_valid_text_content_unaffected(self):
         """The validator only runs on dict items with multimodal
@@ -413,9 +415,7 @@ class TestProcessImageInputDefenseInDepth:
         # — proves we got past the type guard into the body of the
         # function.
         with pytest.raises(ValueError) as ei:
-            process_image_input(
-                {"url": "/nonexistent/__rapid_mlx_test_path__.png"}
-            )
+            process_image_input({"url": "/nonexistent/__rapid_mlx_test_path__.png"})
         # The error must be the downstream "Cannot process image"
         # marker (path not found), NOT the type guard's "must be a
         # string" — proves the dict was unwrapped and the unwrapped
@@ -430,9 +430,7 @@ class TestProcessImageInputDefenseInDepth:
         from vllm_mlx.models.mllm import process_image_input
 
         with pytest.raises(ValueError) as ei:
-            process_image_input(
-                {"url": {"url": "/nonexistent/__nested_test__.png"}}
-            )
+            process_image_input({"url": {"url": "/nonexistent/__nested_test__.png"}})
         # Same as above — should fall through to the path-not-found
         # error, not be caught by the type guard.
         assert "Cannot process image" in str(ei.value)

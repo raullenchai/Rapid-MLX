@@ -242,37 +242,66 @@ class ContentPart(BaseModel):
 
     @model_validator(mode="after")
     def _validate_media_url_types(self) -> "ContentPart":
-        """Reject non-string ``url`` inside multimodal-content dicts (F-066).
+        """Reject non-string ``url`` inside multimodal-content dicts (F-066)
+        AND reject the bare-string ``image_url`` shorthand when the part
+        ``type`` advertises a media payload (F-065).
 
-        The Union ``ImageUrl | dict | str | None`` falls back to ``dict``
-        when ``url`` is not a string (Pydantic can't coerce e.g. ``int``
-        into the strict-typed ``ImageUrl.url: str`` slot), so the
-        malformed payload used to slip past the schema layer and crash
-        deep inside ``process_image_input`` with
-        ``'int' object has no attribute 'startswith'`` — Python type-
-        error text leaked verbatim in the HTTP 400 body.
+        F-066 covered: ``image_url: dict`` with a non-string ``url`` slot
+        used to fall through the schema layer and crash inside
+        ``process_image_input`` with ``'int' object has no attribute
+        'startswith'``. The dict-arm check below pins that.
 
-        Catching it at the schema layer means the client sees a clean
-        ``image_url.url must be a string`` (mirrors the message pydantic
-        itself would produce if the union allowed only ``ImageUrl |
-        str``) — and the same check applies to the sister
-        ``video_url`` / ``audio_url`` slots whose URL parsers share the
-        same ``startswith`` hazard.
+        F-065 covered: the wire form
+        ``{"type":"image_url","image_url":"data:image/png;base64,..."}``
+        (bare string instead of the OpenAI-spec
+        ``{"url":"data:image/png;base64,..."}`` object) used to pass the
+        schema layer because the ``image_url`` union allowed a plain
+        ``str``. Downstream multimodal preprocessors then unwrapped the
+        dict-shape via ``image["url"]`` but had no fallback for the
+        bare-string form — on a text-only model the request 400'd at
+        preprocess time with a vague "model does not support image"
+        message, and on a multimodal model the image was silently
+        dropped (model received only the text and hallucinated
+        "image is blank"). Both surfaces are silent-correctness bugs
+        OpenAI-compat clients (the official SDK + LangChain serialize
+        the spec-shape, but a hand-rolled payload OR an SDK that
+        flattens the object to a string before posting hits this).
+        Reject at the schema layer with a clean 422 so the client
+        sees the actual mismatch.
+
+        Mirror the same rule on ``video_url`` and ``audio_url`` which
+        share the same OpenAI-spec object shape — same silent-drop
+        hazard if the bare-string shorthand were allowed on those
+        downstream parsers as well.
         """
         for field, label in (
-            ("image_url", "image_url.url"),
-            ("video_url", "video_url.url"),
-            ("audio_url", "audio_url.url"),
+            ("image_url", "image_url"),
+            ("video_url", "video_url"),
+            ("audio_url", "audio_url"),
         ):
             value = getattr(self, field, None)
-            # Only the dict-fallback branch can carry a non-string ``url``
-            # — the Pydantic-typed ``ImageUrl`` / ``VideoUrl`` / ``AudioUrl``
-            # variants reject it at parse time, and the plain-``str``
-            # variant is trivially well-typed.
+            if value is None:
+                continue
+            # F-065: bare-string shorthand is NOT the OpenAI-spec shape.
+            # Gate it on ``type`` so a content part with
+            # ``type:"text"`` that happens to carry an unrelated
+            # ``image_url:"..."`` slot (legacy / hand-rolled clients)
+            # is not collaterally broken — the validator only fires
+            # when the part is ACTUALLY advertising itself as that
+            # media type. Without this gate, code that flattens all
+            # parts through a generic ``ContentPart(**raw)`` could see
+            # surprise rejections.
+            if isinstance(value, str) and self.type == field:
+                raise ValueError(
+                    f"{label} must be an object with required field "
+                    f"'url' (got bare string; OpenAI-spec shape is "
+                    f'`{label}: {{"url": "..."}}`)'
+                )
+            # F-066: dict-arm non-string ``url`` slot.
             if isinstance(value, dict) and "url" in value:
                 url = value["url"]
                 if url is not None and not isinstance(url, str):
-                    raise ValueError(f"{label} must be a string")
+                    raise ValueError(f"{label}.url must be a string")
         return self
 
 
@@ -324,16 +353,26 @@ class Message(BaseModel):
         for item in self.content:
             if not isinstance(item, dict):
                 continue
-            for field, label in (
-                ("image_url", "image_url.url"),
-                ("video_url", "video_url.url"),
-                ("audio_url", "audio_url.url"),
-            ):
+            item_type = item.get("type")
+            for field in ("image_url", "video_url", "audio_url"):
                 value = item.get(field)
+                if value is None:
+                    continue
+                # F-065: bare-string ``image_url`` (etc.) on a part
+                # whose ``type`` advertises that media slot. Gated by
+                # ``type`` for the same back-compat rationale as the
+                # ContentPart-level validator.
+                if isinstance(value, str) and item_type == field:
+                    raise ValueError(
+                        f"{field} must be an object with required "
+                        f"field 'url' (got bare string; OpenAI-spec "
+                        f'shape is `{field}: {{"url": "..."}}`)'
+                    )
+                # F-066: dict-arm non-string ``url`` slot.
                 if isinstance(value, dict) and "url" in value:
                     url = value["url"]
                     if url is not None and not isinstance(url, str):
-                        raise ValueError(f"{label} must be a string")
+                        raise ValueError(f"{field}.url must be a string")
         return self
 
 
