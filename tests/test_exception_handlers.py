@@ -363,6 +363,55 @@ def test_count_tokens_rejects_unknown_model(client):
     assert "definitely-not-loaded" in err["message"]
 
 
+@pytest.mark.parametrize(
+    "bad_model",
+    [123, 12.5, True, [], ["a"], {"name": "x"}],
+)
+def test_count_tokens_rejects_non_string_model(client, bad_model):
+    """Codex follow-up on F-167: a *present* non-string ``model`` was
+    bypassing the validation guard and silently using the loaded
+    engine's tokenizer. Reject with 400 instead."""
+    response = client.client.post(
+        "/v1/messages/count_tokens",
+        json={
+            "model": bad_model,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 400, response.text
+    err = response.json()["error"]
+    assert err["param"] == "model"
+
+
+def test_count_tokens_rejects_empty_string_model(client):
+    """Empty model string mirrors the ``/v1/chat/completions`` 400."""
+    response = client.client.post(
+        "/v1/messages/count_tokens",
+        json={
+            "model": "",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 400, response.text
+    err = response.json()["error"]
+    assert err["param"] == "model"
+
+
+def test_count_tokens_accepts_explicit_null_model(client):
+    """``"model": null`` is treated the same as missing — pass through
+    to the loaded engine for back-compat with clients that always send
+    the field but sometimes leave it null."""
+    response = client.client.post(
+        "/v1/messages/count_tokens",
+        json={
+            "model": None,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["input_tokens"] > 0
+
+
 # ── F-165: audio transcriptions model validation ────────────────────
 
 
@@ -395,6 +444,65 @@ def test_audio_resolve_stt_model_rejects_bogus_name():
     assert detail["error"]["type"] == "model_not_found_error"
     assert detail["error"]["code"] == "model_not_found"
     assert "definitely-not-a-whisper" in detail["error"]["message"]
+
+
+def test_audio_route_accepts_model_via_query_for_back_compat(monkeypatch):
+    """Codex follow-up on F-165: the original route accepted ``model``
+    as a *query* parameter (pre-F-165 internal contract). The fix
+    introduced ``Form(...)`` for OpenAI compatibility — preserve the
+    query-string path for existing callers so we don't silently fall
+    back to the default ``whisper-large-v3`` when they upgrade."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr("vllm_mlx.middleware.auth.verify_api_key", lambda: None)
+    from vllm_mlx.routes.audio import router
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    # Query-string ``model=bogus`` must reach the resolver (and 404)
+    # rather than falling back to the default whisper alias.
+    r = client.post(
+        "/v1/audio/transcriptions?model=bogus",
+        files={"file": ("test.wav", b"", "audio/wav")},
+    )
+    assert r.status_code == 404, r.text
+    err = r.json()
+    # The lightweight test app doesn't have the global envelope
+    # wrappers installed, so the body shape is either ``{"detail": {...}}``
+    # (Starlette default) or ``{"error": {...}}`` if a wrapper is mounted.
+    detail = err.get("detail") or err.get("error", {})
+    msg = (
+        detail.get("error", {}).get("message")
+        if "error" in (detail or {})
+        else detail.get("message", "")
+    )
+    assert "bogus" in str(msg)
+
+
+def test_audio_route_form_field_overrides_query(monkeypatch):
+    """When both query and form supply ``model``, the form wins (it
+    matches the OpenAI Whisper API contract)."""
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    monkeypatch.setattr("vllm_mlx.middleware.auth.verify_api_key", lambda: None)
+    from vllm_mlx.routes.audio import router
+
+    app = FastAPI()
+    app.include_router(router)
+    client = TestClient(app)
+
+    # Query says a known alias (would 503 on missing mlx-audio), form
+    # says ``bogus`` — form must win and we should get the 404.
+    r = client.post(
+        "/v1/audio/transcriptions?model=whisper-small",
+        files={"file": ("test.wav", b"", "audio/wav")},
+        data={"model": "bogus"},
+    )
+    assert r.status_code == 404, r.text
 
 
 def test_audio_resolve_stt_model_rejects_empty_string():

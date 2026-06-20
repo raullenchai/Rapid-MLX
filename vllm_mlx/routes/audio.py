@@ -5,7 +5,7 @@ import logging
 import os
 import tempfile
 
-from fastapi import APIRouter, Depends, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
 from starlette.responses import Response
 
 from ..middleware.auth import verify_api_key
@@ -295,16 +295,24 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
 async def create_transcription(
     file: UploadFile,
     # ``model``, ``language``, ``response_format`` are sent as multipart
-    # form fields by OpenAI-compatible clients (the official Whisper API
-    # takes them in the ``multipart/form-data`` body, not the query
-    # string). Without ``Form()``, FastAPI treats them as query params
-    # and silently falls back to the default ``whisper-large-v3`` when
-    # a curl/OpenAI-SDK client puts them in the body. That kept the
-    # F-165 "bogus model" leak alive even after ``_resolve_stt_model``
-    # was wired in, because the bogus name never reached the resolver.
-    model: str = Form("whisper-large-v3"),
-    language: str | None = Form(None),
-    response_format: str = Form("json"),
+    # form fields by OpenAI-compatible clients (the official Whisper
+    # API puts them in the ``multipart/form-data`` body). Pre-F-165
+    # this route declared them as plain ``str`` parameters, which
+    # FastAPI then resolves as query parameters — meaning a curl /
+    # OpenAI-SDK client putting them in the body silently fell back to
+    # the default ``whisper-large-v3`` and never reached
+    # ``_resolve_stt_model``. To repair the OpenAI contract WITHOUT
+    # breaking any pre-existing internal caller that still passes
+    # ``?model=...`` on the query string (codex-bundled review on the
+    # F-165 PR), accept both sources and prefer the form field when
+    # it is provided. ``...`` (Ellipsis) is *not* used as a default —
+    # leaving both unset still resolves to ``whisper-large-v3``.
+    model_form: str | None = Form(None, alias="model"),
+    language_form: str | None = Form(None, alias="language"),
+    response_format_form: str | None = Form(None, alias="response_format"),
+    model_query: str | None = Query(None, alias="model"),
+    language_query: str | None = Query(None, alias="language"),
+    response_format_query: str | None = Query(None, alias="response_format"),
 ):
     """Transcribe audio to text (OpenAI Whisper API compatible).
 
@@ -328,6 +336,21 @@ async def create_transcription(
     worst-case STT inference cost.
     """
     global _stt_engine
+
+    # Form wins over query when both are present (form is the OpenAI
+    # contract; query is the pre-F-165 internal contract we're keeping
+    # for back-compat). Defaults match the original signature.
+    model = (
+        model_form
+        if model_form is not None
+        else (model_query if model_query is not None else "whisper-large-v3")
+    )
+    language = language_form if language_form is not None else language_query
+    response_format = (
+        response_format_form
+        if response_format_form is not None
+        else (response_format_query if response_format_query is not None else "json")
+    )
 
     # Resolve / validate the requested model BEFORE draining the upload.
     # Previously every failure mode (unknown alias, missing mlx-audio,

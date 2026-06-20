@@ -497,14 +497,43 @@ async def count_anthropic_tokens(request: Request):
     # Validate model name — mirror ``/v1/chat/completions`` and
     # ``/v1/responses``. Claude/Codex aliases pass through to the
     # loaded engine just like in ``create_anthropic_message`` above
-    # (PR #557 contract).
-    requested_model = body.get("model")
-    if (
-        isinstance(requested_model, str)
-        and requested_model
-        and not requested_model.startswith(("claude-", "gpt-"))
-    ):
-        _validate_model_name(requested_model)
+    # (PR #557 contract). A *present* non-string ``model`` (or empty
+    # string) is a client bug — if we silently dropped it the loaded
+    # engine's tokenizer would still produce a count and a cost
+    # estimator would treat it as authoritative (codex bundled review
+    # on the F-167 fix, follow-up to F-160).
+    if "model" in body:
+        requested_model = body["model"]
+        if requested_model is not None and not isinstance(requested_model, str):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": "`model` must be a string",
+                        "type": "invalid_request_error",
+                        "code": "invalid_request",
+                        "param": "model",
+                    }
+                },
+            )
+        if isinstance(requested_model, str) and requested_model == "":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": "`model` must not be empty",
+                        "type": "invalid_request_error",
+                        "code": "invalid_request",
+                        "param": "model",
+                    }
+                },
+            )
+        if (
+            isinstance(requested_model, str)
+            and requested_model
+            and not requested_model.startswith(("claude-", "gpt-"))
+        ):
+            _validate_model_name(requested_model)
 
     engine = get_engine()
     tokenizer = engine.tokenizer

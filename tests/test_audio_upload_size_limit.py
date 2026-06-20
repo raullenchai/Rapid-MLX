@@ -202,7 +202,17 @@ def test_streaming_cap_rejects_chunked_upload_before_engine_load(monkeypatch):
         asyncio.run(
             audio_route.create_transcription(
                 file=fake_upload,  # type: ignore[arg-type]
-                model="whisper-small",
+                # Pre-F-165 the route had a single ``model`` kwarg; the
+                # codex-bundled review split it into form/query sources
+                # so the OpenAI Whisper API multipart contract works.
+                # This test exercises the form path (the OpenAI happy
+                # path) — both fall through to the same alias resolver.
+                model_form="whisper-small",
+                language_form=None,
+                response_format_form=None,
+                model_query=None,
+                language_query=None,
+                response_format_query=None,
             )
         )
 
