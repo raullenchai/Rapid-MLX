@@ -25,7 +25,6 @@ from pydantic import (
     model_validator,
 )
 
-
 # =============================================================================
 # Shared sampling-parameter validators (F-011)
 # =============================================================================
@@ -100,26 +99,46 @@ _FINITE_SAMPLING_FIELDS: tuple[str, ...] = (
 )
 
 
+_NONFINITE_PLACEHOLDER = "<non-finite>"
+
+
 def _scrub_nonfinite_sampling_raw(data):
-    """Pop NaN / ±inf sampling-param values out of the raw request
-    dict and raise a clean ``ValueError`` BEFORE Pydantic stores them.
+    """Replace NaN / ±inf sampling-param values with a JSON-safe
+    placeholder in the raw request dict, then raise ``ValueError``
+    so Pydantic emits a clean ``ValidationError``.
+
+    The mutate-then-raise dance matters because Pydantic captures the
+    raw ``data`` reference as ``input_value`` on the resulting
+    ``ValidationError`` — if NaN remains in the dict the downstream
+    ``starlette.JSONResponse`` (which uses ``json.dumps`` with
+    ``allow_nan=False`` by default) crashes serializing the error
+    body and the client sees a 500 instead of a 422. Replacing the
+    bad value with a string sentinel keeps the captured error body
+    JSON-safe AND preserves enough context for an operator reading
+    the log to see which field was bad. The production
+    ``_validation_error_response`` handler strips ``input`` from the
+    rendered body anyway (F-094/F-104), but this codepath also has
+    to survive a future cleanup that re-enables FastAPI's default
+    422 handler — codex round-1 BLOCKING #1.
 
     Wire forms covered:
       * raw JSON token ``NaN`` / ``Infinity`` / ``-Infinity`` (parsed
         by Python's stdlib json decoder, which is non-strict by
         default — every popular OpenAI client SDK plus ``requests``
-        emits these on the wire when the caller passes ``float('nan')``).
-      * String form ``"NaN"`` / ``"Infinity"`` / ``"-Infinity"`` (sent
-        by clients that defensively pre-stringify floats — the bug
+        emits these on the wire when the caller passes
+        ``float('nan')``).
+      * String form ``"NaN"`` / ``"Infinity"`` / ``"-Infinity"``
+        (clients that defensively pre-stringify floats — the bug
         repro under F-011 uses this form).
 
-    The string form is only checked case-insensitively against the
-    JSON spec tokens; any other string flows through untouched so
-    Pydantic still emits its native ``float_parsing`` 422 for
-    ``temperature: "hot"``.
+    The string form is matched case-insensitively against the JSON
+    spec tokens with an optional sign prefix; any other string flows
+    through untouched so Pydantic still emits its native
+    ``float_parsing`` 422 for ``temperature: "hot"``.
     """
     if not isinstance(data, dict):
         return data
+    bad_field: str | None = None
     for field in _FINITE_SAMPLING_FIELDS:
         if field not in data:
             continue
@@ -134,17 +153,18 @@ def _scrub_nonfinite_sampling_raw(data):
             continue
         if isinstance(v, (int, float)):
             if not math.isfinite(v):
-                raise ValueError(
-                    f"{field} must be a finite number (not NaN or inf)"
-                )
+                data[field] = _NONFINITE_PLACEHOLDER
+                bad_field = bad_field or field
             continue
         if isinstance(v, str):
             stripped = v.strip().lower().lstrip("+-")
             if stripped in ("nan", "inf", "infinity"):
-                raise ValueError(
-                    f"{field} must be a finite number (not NaN or inf)"
-                )
+                data[field] = _NONFINITE_PLACEHOLDER
+                bad_field = bad_field or field
+    if bad_field is not None:
+        raise ValueError(f"{bad_field} must be a finite number (not NaN or inf)")
     return data
+
 
 # =============================================================================
 # Content Types (for multimodal messages)

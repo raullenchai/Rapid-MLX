@@ -48,7 +48,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
 # ---------------------------------------------------------------------------
 # Test-app fixtures: stub the engine on both routes so we hit only the
 # Pydantic-level validators (which run before the route handler).
@@ -172,24 +171,46 @@ def _post_json_raw(client: TestClient, url: str, body: dict):
 # ---------------------------------------------------------------------------
 
 
-INVALID_SHAPES: list[tuple[str, object]] = [
-    # NaN — raw JSON token (json.loads non-strict mode) AND string form
+# Non-finite values — these are the F-011 silent-burn cases. All must
+# go through the project's unified ``invalid_request_error`` 400
+# envelope (production handler in
+# ``vllm_mlx.middleware.exception_handlers``). Asserting the precise
+# envelope shape here pins F-011 to its documented contract instead
+# of letting a future regression slip back into FastAPI's default
+# 422 path (codex round-1 BLOCKING #2).
+NONFINITE_SHAPES: list[tuple[str, object]] = [
+    # Raw JSON tokens (json.loads non-strict mode)
     ("temperature", float("nan")),
     ("top_p", float("nan")),
     ("presence_penalty", float("nan")),
     ("frequency_penalty", float("nan")),
-    ("temperature", "NaN"),
-    ("top_p", "NaN"),
-    ("presence_penalty", "NaN"),
-    ("frequency_penalty", "NaN"),
-    # +inf / -inf
     ("temperature", float("inf")),
     ("top_p", float("inf")),
     ("presence_penalty", float("inf")),
     ("frequency_penalty", float("inf")),
-    ("frequency_penalty", "Infinity"),
     ("presence_penalty", float("-inf")),
-    # Finite but out-of-OpenAI-spec range
+    # String wire forms (the F-011 bug repro uses these exactly)
+    ("temperature", "NaN"),
+    ("top_p", "NaN"),
+    ("presence_penalty", "NaN"),
+    ("frequency_penalty", "NaN"),
+    ("frequency_penalty", "Infinity"),
+    # NaN on auxiliary float sampling fields — would otherwise
+    # propagate into mlx-lm's logits processor with no signal.
+    ("min_p", float("nan")),
+    ("repetition_penalty", float("nan")),
+    ("repetition_penalty", float("inf")),
+]
+
+# Finite-but-out-of-OpenAI-spec-range values. These trip the Field
+# ``ge=``/``le=`` bounds (Pydantic 422) before the scrub validator
+# sees them, so the response is the 400 envelope produced by the
+# project's RequestValidationError handler converting the 422 path
+# down to the 400 contract. Either way the envelope shape + status
+# are identical to the non-finite case, but we keep the two matrices
+# split so a future regression on either path is pinpointed without
+# guesswork.
+OUT_OF_RANGE_SHAPES: list[tuple[str, object]] = [
     ("temperature", 3.0),
     ("temperature", -0.5),
     ("top_p", 2.0),
@@ -198,55 +219,93 @@ INVALID_SHAPES: list[tuple[str, object]] = [
     ("presence_penalty", -10),
     ("frequency_penalty", 10),
     ("frequency_penalty", -3.0),
-    # NaN on the auxiliary float fields too (passthrough to mlx-lm
-    # sampler would otherwise corrupt logits with no signal).
-    ("min_p", float("nan")),
-    ("repetition_penalty", float("nan")),
-    ("repetition_penalty", float("inf")),
 ]
 
+INVALID_SHAPES: list[tuple[str, object]] = NONFINITE_SHAPES + OUT_OF_RANGE_SHAPES
 
-@pytest.mark.parametrize("field,value", INVALID_SHAPES)
-def test_chat_invalid_sampling_param_rejected(
+
+def _assert_invalid_request_envelope(r, field: str, expected_status: int = 400) -> None:
+    """Assert the response matches the project's unified
+    ``invalid_request_error`` envelope (see
+    ``vllm_mlx.middleware.exception_handlers._validation_error_response``)
+    AND that the offending field name appears in the error message.
+
+    This is the production contract — pinning it precisely catches a
+    future cleanup that drops the custom handler and falls back to
+    FastAPI's default 422 path (which embeds ``input_value`` and
+    crashes on NaN serialization — exactly the F-011 secondary bug)."""
+    assert r.status_code == expected_status, (
+        f"expected {expected_status} for {field}; got {r.status_code} "
+        f"body={r.text[:200]}"
+    )
+    body = r.json()
+    assert isinstance(body, dict) and "error" in body, (
+        f"missing top-level ``error`` key in {field} response: {r.text[:200]}"
+    )
+    err = body["error"]
+    assert err.get("type") == "invalid_request_error", (
+        f"wrong error type for {field}: {err}"
+    )
+    assert err.get("code") == "invalid_request", f"wrong error code for {field}: {err}"
+    msg = err.get("message", "")
+    assert isinstance(msg, str) and field in msg, (
+        f"error message for {field} missing field name: {msg!r}"
+    )
+
+
+@pytest.mark.parametrize("field,value", NONFINITE_SHAPES)
+def test_chat_nonfinite_sampling_param_returns_invalid_request_400(
     patched_config, monkeypatch, field, value
 ):
-    """Every invalid sampling shape must be rejected with a clean 4xx
-    on the chat-completions endpoint — never silently accepted."""
+    """F-011 contract: NaN/inf wire values must return the project's
+    unified ``invalid_request_error`` 400 envelope on the chat
+    endpoint — NOT FastAPI's default 422 path (which would crash on
+    NaN serialization, the silent-burn cause F-011 closes)."""
     client = _build_chat_client(patched_config, monkeypatch)
     body = _base_chat_body()
     body[field] = value
     r = _post_json_raw(client, "/v1/chat/completions", body)
-    assert r.status_code in (400, 422), (
-        f"expected 400/422 for {field}={value!r}; "
-        f"got {r.status_code} body={r.text[:200]}"
-    )
-    # The error body must name the offending field so the client can
-    # fix the bug instead of guessing.
-    assert field in r.text, (
-        f"error body for {field}={value!r} missing field name; "
-        f"got {r.text[:200]}"
-    )
+    _assert_invalid_request_envelope(r, field)
 
 
-@pytest.mark.parametrize("field,value", INVALID_SHAPES)
-def test_completions_invalid_sampling_param_rejected(
+@pytest.mark.parametrize("field,value", NONFINITE_SHAPES)
+def test_completions_nonfinite_sampling_param_returns_invalid_request_400(
     patched_config, monkeypatch, field, value
 ):
-    """Same matrix on the legacy /v1/completions endpoint — the
-    schemas share the same gates by construction so the rejection
-    surface must be identical."""
+    """Same F-011 contract on the legacy /v1/completions endpoint —
+    the schemas share gates by construction, so the rejection
+    surface must be byte-for-byte identical."""
     client = _build_completions_client(patched_config, monkeypatch)
     body = _base_completion_body()
     body[field] = value
     r = _post_json_raw(client, "/v1/completions", body)
-    assert r.status_code in (400, 422), (
-        f"expected 400/422 for {field}={value!r}; "
-        f"got {r.status_code} body={r.text[:200]}"
-    )
-    assert field in r.text, (
-        f"error body for {field}={value!r} missing field name; "
-        f"got {r.text[:200]}"
-    )
+    _assert_invalid_request_envelope(r, field)
+
+
+@pytest.mark.parametrize("field,value", OUT_OF_RANGE_SHAPES)
+def test_chat_out_of_range_sampling_param_returns_invalid_request_400(
+    patched_config, monkeypatch, field, value
+):
+    """Finite-but-out-of-OpenAI-spec values must hit the same 400
+    envelope. The Field ``ge=``/``le=`` bound triggers a Pydantic
+    422 that the project's RequestValidationError handler converts
+    down to the documented 400 ``invalid_request_error`` shape."""
+    client = _build_chat_client(patched_config, monkeypatch)
+    body = _base_chat_body()
+    body[field] = value
+    r = _post_json_raw(client, "/v1/chat/completions", body)
+    _assert_invalid_request_envelope(r, field)
+
+
+@pytest.mark.parametrize("field,value", OUT_OF_RANGE_SHAPES)
+def test_completions_out_of_range_sampling_param_returns_invalid_request_400(
+    patched_config, monkeypatch, field, value
+):
+    client = _build_completions_client(patched_config, monkeypatch)
+    body = _base_completion_body()
+    body[field] = value
+    r = _post_json_raw(client, "/v1/completions", body)
+    _assert_invalid_request_envelope(r, field)
 
 
 # ---------------------------------------------------------------------------
@@ -283,38 +342,125 @@ VALID_SHAPES: list[tuple[str, float | int]] = [
 ]
 
 
+def _stub_chat_impl(monkeypatch) -> dict:
+    """Replace the chat route's inner dispatch with a sentinel that
+    records the parsed ``ChatCompletionRequest`` and returns a
+    deterministic 200. Asserting the stub was reached proves the
+    Pydantic schema accepted the request AND the route's
+    pre-engine validation block passed — closing the codex round-1
+    NIT where the previous "field not blamed in 400" check could
+    pass on any downstream 500."""
+    captured: dict = {"called": False, "request": None}
+
+    async def _impl(
+        request,
+        raw_request,
+        engine,
+        _commit_state,
+        _admission_acquired,
+    ):
+        captured["called"] = True
+        captured["request"] = request
+        # The outer route handler manages admission via these lists;
+        # mark committed so the finally-block release is a no-op and
+        # we don't trip the admission accounting in the engine stub.
+        _commit_state[0] = True
+        _admission_acquired[0] = False
+        return {
+            "id": "chatcmpl-stub",
+            "object": "chat.completion",
+            "created": 0,
+            "model": "stub-model",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {"role": "assistant", "content": "ok"},
+                    "finish_reason": "stop",
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 1,
+                "completion_tokens": 1,
+                "total_tokens": 2,
+            },
+        }
+
+    from vllm_mlx.routes import chat as chat_route
+
+    monkeypatch.setattr(chat_route, "_create_chat_completion_impl", _impl, raising=True)
+    return captured
+
+
+def _stub_completion_route(monkeypatch) -> dict:
+    """Same idea on the legacy /v1/completions endpoint — the route
+    body is one big handler so we monkeypatch the engine's
+    ``generate`` instead. The MagicMock baseline already does this,
+    but here we wire a deterministic async coroutine so the route
+    returns 200 and we can assert the request actually reached
+    engine dispatch."""
+    captured: dict = {"called": False, "request": None}
+
+    # Stub at the engine level — the route's pre-engine validation
+    # block has to pass for ``engine.generate`` to be invoked.
+    async def _generate(*args, **kwargs):
+        captured["called"] = True
+        captured["args"] = args
+        captured["kwargs"] = kwargs
+        return {
+            "text": "ok",
+            "prompt_tokens": 1,
+            "completion_tokens": 1,
+            "finish_reason": "stop",
+        }
+
+    return captured, _generate
+
+
 @pytest.mark.parametrize("field,value", VALID_SHAPES)
-def test_chat_valid_sampling_param_passes_validation(
+def test_chat_valid_sampling_param_reaches_route_dispatch(
     patched_config, monkeypatch, field, value
 ):
-    """A valid sampling value must NOT trigger the new gate. The
-    request may still 500 downstream (the mock engine doesn't honor
-    the route's full contract) — that's fine as long as the rejection
-    isn't blaming the field we set."""
+    """A valid sampling value must survive every gate and reach the
+    route's inner dispatch. We assert the dispatch stub was actually
+    invoked — that proves the request made it through Pydantic
+    schema validation AND the route-level guards (codex round-1
+    NIT)."""
     client = _build_chat_client(patched_config, monkeypatch)
+    captured = _stub_chat_impl(monkeypatch)
     body = _base_chat_body()
     body[field] = value
     r = client.post("/v1/chat/completions", json=body)
-    if r.status_code in (400, 422):
-        assert field not in r.text, (
-            f"valid {field}={value!r} unexpectedly blamed in error: "
-            f"{r.text[:200]}"
-        )
+    assert captured["called"], (
+        f"chat dispatch never invoked for {field}={value!r}; "
+        f"status={r.status_code} body={r.text[:200]}"
+    )
+    assert r.status_code == 200, (
+        f"valid {field}={value!r} rejected with {r.status_code}: {r.text[:200]}"
+    )
+    # And pin that the typed value survived to the request object
+    # exactly as sent — catches a future regression where the
+    # validator coerces or drops the field silently.
+    assert getattr(captured["request"], field) == pytest.approx(value)
 
 
 @pytest.mark.parametrize("field,value", VALID_SHAPES)
-def test_completions_valid_sampling_param_passes_validation(
+def test_completions_valid_sampling_param_parses_to_request(
     patched_config, monkeypatch, field, value
 ):
-    client = _build_completions_client(patched_config, monkeypatch)
+    """For the legacy completions endpoint we assert the schema
+    layer accepts the value by parsing it directly through
+    ``CompletionRequest.model_validate`` — the route's engine
+    plumbing is too entangled to stub cleanly here, and the chat
+    test above already pins "request reaches dispatch" for the
+    shared gate. The schema-level assert proves the value typed
+    cleanly through the Field bounds + finite check and survived
+    onto the model with the exact value we sent."""
+    from vllm_mlx.api.models import CompletionRequest
+
     body = _base_completion_body()
     body[field] = value
-    r = client.post("/v1/completions", json=body)
-    if r.status_code in (400, 422):
-        assert field not in r.text, (
-            f"valid {field}={value!r} unexpectedly blamed in error: "
-            f"{r.text[:200]}"
-        )
+    req = CompletionRequest.model_validate(body)
+    assert getattr(req, field) == pytest.approx(value)
 
 
 # ---------------------------------------------------------------------------
