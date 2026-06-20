@@ -1136,6 +1136,11 @@ async def _create_chat_completion_impl(
                     )
                     if result is None:
                         return Response(status_code=499, content="Client disconnected")
+                    # NOTE: L-05's enable_thinking warning intentionally
+                    # does NOT fire on the cloud-routed path — the local
+                    # ``cfg.reasoning_parser_name`` isn't authoritative
+                    # for what the cloud provider does with the ctk
+                    # hint. A warning here would be misleading.
                     return Response(
                         content=json.dumps(result),
                         media_type="application/json",
