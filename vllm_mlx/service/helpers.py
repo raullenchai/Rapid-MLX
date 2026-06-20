@@ -1613,13 +1613,34 @@ async def _disconnect_guard(
     try:
         aiter = generator.__aiter__()
         disconnect_task = asyncio.create_task(_wait_disconnect())
-        # ``anext_task`` is created once per real chunk and re-used
-        # across keepalive ticks — the upstream ``__anext__`` may still
-        # be pending while we emit comment lines, so we MUST NOT
-        # ``cancel`` it just because the wait timed out. Only cancel on
-        # client disconnect or terminal exit.
-        anext_task = asyncio.ensure_future(aiter.__anext__())
+        # Single in-flight ``__anext__`` future at any time. We
+        # re-create it at the TOP of each iteration (NOT eagerly after
+        # ``yield chunk``) so each iteration begins with the consumer
+        # having pulled the previous chunk before we schedule the next
+        # one. Codex r3 BLOCKING on PR #732: eagerly scheduling the
+        # next anext_task right after ``yield`` lets the upstream
+        # generator advance one token ahead of the response stream,
+        # wasting inference work if the consumer is about to
+        # disconnect. Lazy re-creation keeps the generator at most one
+        # token ahead — and that token is the one whose yield we're
+        # already awaiting from the wait below.
+        #
+        # The ``anext_task`` reference is preserved across keepalive
+        # ticks: a keepalive cycle returns to the loop top without
+        # consuming the still-pending anext, so the upstream's work in
+        # flight (the long prefill) is not cancelled mid-step.
         while True:
+            # Lazy (re)create the in-flight ``__anext__``:
+            #   * first iteration: ``anext_task`` is None.
+            #   * after a real chunk: ``anext_task.done()`` is True
+            #     (we consumed ``.result()`` last iteration), and now
+            #     the consumer has pulled the yielded chunk — safe to
+            #     ask the upstream for another token.
+            #   * during a keepalive cycle: ``anext_task.done()`` is
+            #     False (upstream still mid-prefill), so we keep the
+            #     existing future. The wait below ignores it.
+            if anext_task is None or anext_task.done():
+                anext_task = asyncio.ensure_future(aiter.__anext__())
             wait_kwargs: dict = {"return_when": asyncio.FIRST_COMPLETED}
             if keepalive_enabled:
                 wait_kwargs["timeout"] = keepalive_seconds
@@ -1688,14 +1709,22 @@ async def _disconnect_guard(
                     f"[disconnect_guard] first chunk arrived, elapsed={_elapsed()}"
                 )
             yield chunk
-            # Re-arm the anext task for the next iteration. We can only
-            # do this AFTER ``yield chunk`` so the result above is
-            # consumed before we ask the generator for more.
-            anext_task = asyncio.ensure_future(aiter.__anext__())
+            # Loop top will re-create the anext_task now that the
+            # consumer has pulled this chunk. Do NOT eagerly schedule
+            # the next ``__anext__`` here — see the docstring at loop
+            # entry for the rationale (codex r3 BLOCKING).
     except GeneratorExit:
         logger.info(
             f"[disconnect_guard] GeneratorExit after {chunk_count} chunks, elapsed={_elapsed()}"
         )
+        # Codex r3 BLOCKING follow-up: ensure any in-flight
+        # ``anext_task`` is cancelled the moment the consumer aborts
+        # the iteration — the ``finally`` block below also cancels,
+        # but doing it here makes the ordering explicit and avoids a
+        # tiny window where the upstream might advance one more token
+        # before the cleanup runs.
+        if anext_task is not None and not anext_task.done():
+            anext_task.cancel()
     finally:
         if disconnect_task and not disconnect_task.done():
             disconnect_task.cancel()

@@ -249,6 +249,67 @@ def test_disconnect_guard_releases_engine_admission_with_keepalives():
     assert released["value"] is True
 
 
+def test_disconnect_guard_does_not_eagerly_prefetch_after_yield():
+    """Codex r3 BLOCKING on PR #732 — pre-fix, the guard scheduled
+    the next ``__anext__()`` IMMEDIATELY after ``yield chunk`` (via
+    ``asyncio.ensure_future(aiter.__anext__())``). That gave the
+    upstream generator a head-start of one item: the next token's
+    compute could run on the event loop while the response stream's
+    consumer was still chewing through the previous yield. If the
+    consumer was about to disconnect, the wasted token represented
+    GPU work shipped after the client gave up.
+
+    Post-fix the guard re-creates the in-flight future LAZILY at the
+    TOP of the next iteration — only AFTER the consumer has pulled
+    the previous chunk via ``__anext__`` on the wrapper. We pin the
+    contract by instrumenting the upstream generator with a per-yield
+    counter and asserting it never advances ahead of the consumer's
+    pull count.
+    """
+    from vllm_mlx.service.helpers import _disconnect_guard
+
+    upstream_pulls = {"value": 0}
+
+    async def _instrumented_generator():
+        for token in ["a", "b", "c"]:
+            upstream_pulls["value"] += 1
+            yield f"data: {token}\n\n"
+
+    class _FakeRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    consumer_pulls = 0
+    upstream_at_consume = []
+
+    async def _run():
+        nonlocal consumer_pulls
+        agen = _disconnect_guard(
+            _instrumented_generator(),
+            _FakeRequest(),
+            keepalive_seconds=60.0,
+        )
+        async for chunk in agen:
+            consumer_pulls += 1
+            # Sample the upstream's pull counter at the moment the
+            # consumer received a chunk. A regression that re-introduces
+            # eager prefetch would have ``upstream_pulls`` jump ahead
+            # of ``consumer_pulls`` by 1 (the queued-but-unconsumed
+            # item).
+            upstream_at_consume.append(upstream_pulls["value"])
+            # Brief pause so any eager-prefetch regression has time
+            # to actually advance the upstream on the event loop
+            # before the consumer's next ``__anext__``.
+            await asyncio.sleep(0.01)
+
+    asyncio.run(_run())
+
+    # Consumer pulled 3 real chunks (a/b/c). Upstream MUST not be
+    # ahead — every snapshot equals the consumer count at that point.
+    assert consumer_pulls == 3, consumer_pulls
+    assert upstream_at_consume == [1, 2, 3], upstream_at_consume
+
+
 def test_disconnect_guard_keepalive_does_not_break_disconnect_detection():
     """Critical: the keepalive loop must NOT swallow client-
     disconnect events. The pre-existing ``_wait_disconnect`` task
