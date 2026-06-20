@@ -79,12 +79,26 @@ class _MultiCallEngine:
         )
 
     async def stream_chat(self, messages, **kwargs):  # noqa: ARG002
-        yield SimpleNamespace(
-            new_text=self._text,
-            prompt_tokens=10,
-            completion_tokens=1,
-            tool_calls=self._tool_calls,
-        )
+        # Emit text first (mirrors how a real streaming engine
+        # surfaces text tokens chunk-by-chunk before any tool_calls
+        # are finalised by the harmony parser). The route's chunk
+        # loop short-circuits with ``continue`` on any chunk that
+        # carries ``tool_calls``, so text + tool_calls must be on
+        # SEPARATE chunks for both paths to exercise.
+        if self._text:
+            yield SimpleNamespace(
+                new_text=self._text,
+                prompt_tokens=10,
+                completion_tokens=1,
+                tool_calls=None,
+            )
+        if self._tool_calls:
+            yield SimpleNamespace(
+                new_text="",
+                prompt_tokens=10,
+                completion_tokens=1,
+                tool_calls=self._tool_calls,
+            )
 
 
 def _make_client(engine: _MultiCallEngine) -> TestClient:
@@ -476,3 +490,265 @@ def test_validator_multiple_calls_bad_one_raises_about_bad_one_only():
     assert exc_info.value.status_code == 400
     assert "lookup_zip" in exc_info.value.detail
     assert "get_weather" not in exc_info.value.detail
+
+
+# ---------------------------------------------------------------------------
+# PR #763 codex round-1 BLOCKING #1 — when ``tool_choice`` pins X but the
+# filter empties the call list (model emitted zero X calls), the route
+# MUST 422 instead of silently 200-ing with no tool_use. Two emit-shapes
+# of this failure mode:
+#
+#   * model emitted text only (count == 0): pin defied, text returned.
+#   * model emitted only wrong-tool calls (count > 0): pin defied, every
+#     call dropped by the filter.
+#
+# Both leave the user with no ``tool_use`` for the tool they pinned,
+# which violates the forced-tool contract.
+# ---------------------------------------------------------------------------
+
+
+def test_pinned_tool_model_emits_no_tool_calls_returns_422():
+    """``tool_choice={type:tool,name:get_weather}`` + model returns text
+    only → 422. Pre-fix, the route 200-ed with the text response and
+    the client had no ``tool_use`` for the pinned tool to act on.
+    """
+    engine = _MultiCallEngine(None, text="I can't help with weather right now.")
+    client = _make_client(engine)
+
+    response = client.post(
+        "/v1/messages",
+        json=_post_messages(
+            client, tool_choice={"type": "tool", "name": "get_weather"}
+        ),
+    )
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    message = body.get("detail") or body.get("error", {}).get("message", "")
+    assert "get_weather" in message
+    assert "no tool_calls" in message or "text response" in message
+
+
+def test_pinned_tool_model_emits_only_wrong_tool_returns_422():
+    """``tool_choice={type:tool,name:get_weather}`` + model fires only
+    ``lookup_zip`` → 422. The filter drops the un-pinned call and the
+    enforcer fires because no pinned-tool call survives.
+    """
+    engine = _MultiCallEngine([_call("lookup_zip", {"zip": "94105"})])
+    client = _make_client(engine)
+
+    response = client.post(
+        "/v1/messages",
+        json=_post_messages(
+            client, tool_choice={"type": "tool", "name": "get_weather"}
+        ),
+    )
+
+    assert response.status_code == 422, response.text
+    body = response.json()
+    message = body.get("detail") or body.get("error", {}).get("message", "")
+    assert "get_weather" in message
+    # The "model called something else" diagnostic mentions the original
+    # call count so the operator can distinguish defied-pin from no-call.
+    assert "1 call" in message or "none to" in message
+
+
+def test_pinned_tool_streaming_no_calls_emits_sse_error_event():
+    """Stream variant: pinned tool, model returned text only → SSE
+    ``event: error`` with the same diagnostic AND no streamed text
+    deltas reach the wire BEFORE the error.
+
+    Headers are already sent so we cannot 422 the response; the
+    error event is the streaming surface's equivalent. The crucial
+    extra invariant (PR #771 codex round-2 BLOCKING #1) is that the
+    chunk loop's text deltas must NEVER have been emitted — the
+    pre-filter buffer drops them on the floor when enforcement
+    fires. Before the buffering fix, those deltas streamed to the
+    client BEFORE the error event, leaking a partial text payload
+    that violated the forced-tool contract (the client could surface
+    a half-formed "answer" the contract said wasn't allowed).
+    """
+    distinctive_text = "ANTHROPIC_TEXT_LEAK_CANARY_xyzzy"
+    engine = _MultiCallEngine(None, text=distinctive_text)
+    client = _make_client(engine)
+
+    response = client.post(
+        "/v1/messages",
+        json=_post_messages(
+            client,
+            tool_choice={"type": "tool", "name": "get_weather"},
+            stream=True,
+        ),
+    )
+
+    assert response.status_code == 200
+    raw = response.text
+    assert "event: error" in raw, raw
+    assert "invalid_request_error" in raw
+    assert "get_weather" in raw
+    # No tool_use must be shipped to the client — there was nothing
+    # valid to ship in the first place, and the error event already
+    # signalled "this stream is unrecoverable".
+    assert '"type": "tool_use"' not in raw, raw
+    # PR #771 codex round-2 BLOCKING #1: the model's text response
+    # must NOT appear anywhere in the stream — neither as a
+    # ``text_delta`` chunk, a ``content_block_start`` of type
+    # ``text``, nor in the raw SSE payload. The distinctive text
+    # token above makes the leak detectable independent of how the
+    # delta is framed (single chunk, multiple chunks, escaped
+    # whitespace, etc.).
+    assert distinctive_text not in raw, raw
+    assert '"type": "text_delta"' not in raw, raw
+    assert '"type": "text"' not in raw, raw
+
+
+def test_pinned_tool_streaming_only_wrong_tool_emits_sse_error_and_no_tool_use():
+    """Stream variant: pinned tool, model fires only the wrong tool →
+    SSE error event AND no ``tool_use`` content_block for the wrong
+    tool (it was already filtered before the tool_use emit loop ran).
+
+    Locks PR #763 codex round-1 BLOCKING #2: the streaming branch must
+    NOT have shipped any ``tool_use`` content_block_start for the
+    dropped tool before the filter ran. The current code emits tool_use
+    SSE only AFTER ``_parse_tool_calls_with_parser`` (which sits AFTER
+    the filter call) — this test locks that ordering so a future
+    refactor that moves tool_use emission earlier into the
+    chunk-accumulation loop fails loudly.
+    """
+    engine = _MultiCallEngine([_call("lookup_zip", {"zip": "94105"})])
+    client = _make_client(engine)
+
+    response = client.post(
+        "/v1/messages",
+        json=_post_messages(
+            client,
+            tool_choice={"type": "tool", "name": "get_weather"},
+            stream=True,
+        ),
+    )
+
+    assert response.status_code == 200
+    raw = response.text
+    assert "event: error" in raw, raw
+    assert "invalid_request_error" in raw
+    assert "get_weather" in raw
+    # Most importantly: the un-pinned tool name MUST NOT appear in any
+    # tool_use content_block — the filter dropped it before the emit
+    # loop. A pre-fix code path that streamed tool_use during
+    # accumulation would surface "lookup_zip" in a content_block_start
+    # event here.
+    assert '"type": "tool_use"' not in raw, raw
+    assert "lookup_zip" not in raw, raw
+
+
+# ---------------------------------------------------------------------------
+# Direct unit tests on the helpers added in PR #763 codex round-1.
+# ---------------------------------------------------------------------------
+
+
+def test_filter_returns_input_unchanged_for_non_named_tool_choice():
+    """``tool_choice="auto"`` / ``"required"`` / ``"none"`` / unset has
+    no defined "wrong tool" case. The filter must pass calls through
+    unchanged so the validator runs against the full set.
+    """
+    from vllm_mlx.routes.anthropic import _filter_tool_calls_by_tool_choice
+
+    calls = [_call("a", {}), _call("b", {})]
+    # ``None`` (unset).
+    assert _filter_tool_calls_by_tool_choice(calls, None) == calls
+    # ``"auto"`` (string form survives if a caller passed it through).
+    assert _filter_tool_calls_by_tool_choice(calls, "auto") == calls
+    # ``{"type":"function"}`` with no name → no target → passthrough.
+    assert _filter_tool_calls_by_tool_choice(calls, {"type": "function"}) == calls
+    # ``{"type":"function","function":{"name":""}}`` → no target.
+    assert (
+        _filter_tool_calls_by_tool_choice(
+            calls, {"type": "function", "function": {"name": ""}}
+        )
+        == calls
+    )
+
+
+def test_enforce_named_tool_choice_present_noop_for_non_named_choice():
+    """The enforcer must not raise when ``tool_choice`` doesn't pin a
+    specific tool — there's nothing to enforce. Locks against a future
+    bug where adding the enforcer would break ``tool_choice="auto"``
+    flows that the model resolved as text-only.
+    """
+    from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
+
+    # No raise for ``None``, ``"auto"``, or a ``{"type":"function"}``
+    # shape without a name.
+    _enforce_named_tool_choice_present([], None, original_call_count=0)
+    _enforce_named_tool_choice_present([], "auto", original_call_count=0)
+    _enforce_named_tool_choice_present([], {"type": "function"}, original_call_count=0)
+
+
+def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
+    """When the filter kept the pinned-tool call, the enforcer must
+    pass through silently — the contract is satisfied.
+    """
+    from vllm_mlx.api.models import FunctionCall, ToolCall
+    from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
+
+    pinned_call = ToolCall(
+        id="c1",
+        type="function",
+        function=FunctionCall(name="get_weather", arguments='{"location": "SF"}'),
+    )
+    _enforce_named_tool_choice_present(
+        [pinned_call],
+        {"type": "function", "function": {"name": "get_weather"}},
+        original_call_count=1,
+    )
+
+
+def test_pinned_tool_streaming_text_replays_when_enforcement_passes():
+    """Happy-path buffer-replay regression: pinned tool, model emits
+    BOTH the pinned tool AND incidental text. The text must arrive
+    in the SSE stream (it's legitimate output adjacent to the
+    pinned-tool call), AND it must arrive AFTER the buffer-replay —
+    i.e. the order ``message_start`` → text content_block → tool_use
+    is preserved.
+
+    Locks the round-2 fix's "replay buffer on success" branch: a
+    naive implementation that dropped the buffer on every named
+    ``tool_choice`` would lose legitimate text output adjacent to a
+    correct pinned-tool call.
+    """
+    distinctive_text = "ANTHROPIC_STREAM_REPLAY_CANARY_42"
+    engine = _MultiCallEngine(
+        [_call("get_weather", {"location": "SF"})],
+        text=distinctive_text,
+    )
+    client = _make_client(engine)
+
+    response = client.post(
+        "/v1/messages",
+        json=_post_messages(
+            client,
+            tool_choice={"type": "tool", "name": "get_weather"},
+            stream=True,
+        ),
+    )
+
+    assert response.status_code == 200
+    raw = response.text
+    # No error — enforcement passed.
+    assert "event: error" not in raw, raw
+    # Both the text payload AND the pinned tool's tool_use must reach
+    # the client. The buffered text is replayed after the enforcement
+    # check, preserving streaming UX for legitimate adjacent text.
+    assert distinctive_text in raw, raw
+    assert '"type": "tool_use"' in raw
+    assert "get_weather" in raw
+    # Order check: the buffered text content_block_start/stop pair
+    # is replayed BEFORE the tool_use content_block_start. A reversed
+    # order would mean we leaked tool_use first then text — clients
+    # would see the tool result before the surrounding narration.
+    text_block_pos = raw.find(distinctive_text)
+    tool_use_pos = raw.find('"type": "tool_use"')
+    assert text_block_pos < tool_use_pos, (
+        f"text block at {text_block_pos} should precede tool_use at {tool_use_pos}"
+    )
+    assert '"stop_reason": "tool_use"' in raw
