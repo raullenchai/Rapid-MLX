@@ -7,7 +7,7 @@ import logging
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..config import get_config
-from ..middleware.auth import verify_api_key, verify_internal_admin
+from ..middleware.auth import verify_api_key
 
 logger = logging.getLogger(__name__)
 
@@ -22,13 +22,13 @@ probe_router = APIRouter()
 # live on ``admin_router`` below.
 router = APIRouter(dependencies=[Depends(verify_api_key)])
 
-# Destructive control-plane routes (F-150 / F-151 fix). ``verify_internal_admin``
-# ALWAYS requires ``X-Rapid-MLX-Internal: true`` even when ``--api-key`` is unset,
-# so an unauthenticated LAN client cannot wipe the prefix cache (DoS amplifier)
-# or fan out spurious abort calls. When ``--api-key`` IS configured the dep also
-# requires a valid Bearer / x-api-key — the internal-header is additive, not a
-# bypass.
-admin_router = APIRouter(dependencies=[Depends(verify_internal_admin)])
+# Destructive control-plane routes (cache clear, request cancel). Per the
+# operator-intent revert of #728, these run on plain ``verify_api_key`` —
+# single-machine UX means the prior ``verify_internal_admin`` gate (header
+# requirement) was friction for no benefit on the common deployment. The
+# cancel envelope sanitization + scheduler ``abort_request`` correctness
+# fix from #728 STAY — those are real bugs unrelated to the auth gate.
+admin_router = APIRouter(dependencies=[Depends(verify_api_key)])
 
 
 @probe_router.api_route("/", methods=["GET", "HEAD"])

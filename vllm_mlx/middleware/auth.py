@@ -4,12 +4,11 @@
 import hashlib
 import hmac
 
-# ``ipaddress`` was already imported by the pre-existing ``_subnet_bucket``
-# rate-limit helper; ``verify_internal_admin`` / ``_is_loopback_client``
-# (PR #728) reuse it for the loopback check so a LAN caller can't probe
-# non-canonical loopback spellings (``::ffff:127.0.0.1``, ``127.0.0.42``)
-# past a hypothetical string-equality gate. Pinning the import in this diff
-# so future codex passes don't flag it as missing.
+# ``ipaddress`` is imported by ``_subnet_bucket`` (rate-limit helper) and
+# ``_is_loopback_client`` (kept as dead code for future control-plane
+# gates after #728 was reverted). Canonicalising via ``ipaddress`` is the
+# only safe way to identify loopback callers — string comparison misses
+# ``::ffff:127.0.0.1`` and IPv6 spellings.
 import ipaddress
 import logging
 import secrets
@@ -279,44 +278,18 @@ async def verify_api_key_or_x_api_key(
     return _verify_api_key_values(bearer_key, request.headers.get("x-api-key"))
 
 
-# Header gate for destructive control-plane routes that live on the main
-# bind (not a separate admin port). The F-150 root cause is that
-# ``verify_api_key`` returns True (open) when ``--api-key`` is not
-# configured, so ``/v1/cache/clear`` and ``/v1/requests/{id}/cancel`` were
-# reachable from any LAN client — wiping the prefix cache (DoS amplifier)
-# or firing abort calls into the engine with no proof of authorization.
-#
-# The fix is two-layered, evaluated in this order:
-#
-#   1. ALWAYS require the ``X-Rapid-MLX-Internal: true`` header. This blocks
-#      stray cross-site form POSTs, opportunistic scanners, and any client
-#      that doesn't know it's poking an internal route. Pattern mirrors
-#      trio's ``/internal/cookie-status`` (``X-Trio-Internal: true``).
-#
-#   2. ALSO require ONE of:
-#        a) a valid Bearer / x-api-key matching ``cfg.api_key``, OR
-#        b) the request is coming from loopback (127.0.0.1 / ::1 — i.e. the
-#           operator on the same host).
-#      Codex PR #728 round-1 BLOCKING: a hard-coded public header is not
-#      authentication; without (a) or (b) any LAN client who reads the
-#      open-source code can still send the header and wipe cache. (a) is
-#      the production posture (operator sets ``--api-key`` on the deploy);
-#      (b) is the dev-on-loopback escape hatch so ``curl localhost`` from
-#      the same machine still works.
-#
-# When ``cfg.api_key`` is configured (production), the only way to reach
-# these routes from a remote host is with both the header AND a valid
-# bearer/x-api-key — the loopback bypass is irrelevant. When ``cfg.api_key``
-# is unset, only loopback callers with the header get through; LAN
-# attackers are 403'd at step 1 if they don't know the header and 403'd at
-# step 2 if they do.
-_INTERNAL_HEADER_NAME = "X-Rapid-MLX-Internal"
-_INTERNAL_HEADER_EXPECTED = "true"
 # Loopback hosts the operator might appear under. We canonicalise via
 # ``ipaddress`` to catch ``::ffff:127.0.0.1`` and the various IPv6 spellings
 # of ``::1`` (``0000:0:0:0:0:0:0:1`` etc.) — a string-equality check would
 # miss those and let a remote attacker who controls DNS / a reverse proxy
 # forge ``127.0.0.1`` as a literal but fail any canonical form.
+#
+# Note: ``_is_loopback_client`` is kept as dead code in case a future PR
+# reintroduces a control-plane gate. The companion ``verify_internal_admin``
+# dependency was removed when operator-intent reverted #728 — single-machine
+# UX means the destructive routes run on plain ``verify_api_key`` (no-op
+# when ``--api-key`` unset). Cancel-envelope sanitization + scheduler
+# ``abort_request`` correctness from #728 are kept; only the auth gate goes.
 _LOOPBACK_LITERALS = frozenset({"127.0.0.1", "::1", "localhost"})
 
 
@@ -378,64 +351,8 @@ def _is_loopback_client(request: Request) -> bool:
         return False
 
 
-async def verify_internal_admin(
-    request: Request,
-    credentials: HTTPAuthorizationCredentials = Depends(security),
-):
-    """Gate for destructive control-plane routes (cache clear, request cancel).
-
-    Two-layer check (see module-level comment for rationale):
-
-    1. Header ``X-Rapid-MLX-Internal: true`` is ALWAYS required. Missing or
-       wrong value → 403.
-    2. Then EITHER a valid Bearer / x-api-key matching ``cfg.api_key`` OR
-       the request must originate from loopback. Neither → 403 when
-       ``cfg.api_key`` is unset (loopback-only mode), 401 when it IS set
-       (api-key required mode).
-
-    The 401-vs-403 split matches ``verify_api_key`` so monitoring rules that
-    grep for 401-on-control-plane keep working for the authenticated case.
-    """
-    header_value = request.headers.get(_INTERNAL_HEADER_NAME, "")
-    # Strict case-insensitive value match. We accept ``true`` / ``True`` /
-    # ``TRUE`` (some shells uppercase by reflex) but reject ``1``, ``yes``,
-    # empty string — anything that could be a typo'd misfire from an
-    # unrelated client middleware injecting a default header.
-    if header_value.strip().lower() != _INTERNAL_HEADER_EXPECTED:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"Forbidden: {_INTERNAL_HEADER_NAME}: "
-                f"{_INTERNAL_HEADER_EXPECTED} header required for "
-                "control-plane routes"
-            ),
-        )
-
-    bearer_key = credentials.credentials if credentials is not None else None
-    x_api_key = request.headers.get("x-api-key")
-    cfg = get_config()
-
-    if cfg.api_key is not None:
-        # Production posture: --api-key is set. The header gate above is
-        # informational; the real auth is the bearer/x-api-key check. A
-        # loopback caller still needs a valid key — otherwise an operator
-        # who curls from the same host could trip the route accidentally
-        # AND a local-privilege escalation (any other user on the box)
-        # would inherit admin access. Defer to the existing api-key check
-        # which raises 401 on miss/mismatch.
-        return _verify_api_key_values(bearer_key, x_api_key)
-
-    # Unauthenticated server posture: --api-key is unset. The only way
-    # through is loopback OR a valid api-key value (which can't exist when
-    # cfg.api_key is None — short-circuit). Reject any non-loopback caller
-    # with 403 (codex r1 BLOCKING fix). Logging is intentionally terse to
-    # avoid echoing attacker-controlled host strings at INFO level.
-    if _is_loopback_client(request):
-        return True
-    raise HTTPException(
-        status_code=403,
-        detail=(
-            "Forbidden: control-plane routes require either --api-key "
-            "configured or a loopback caller when --api-key is unset"
-        ),
-    )
+# ``verify_internal_admin`` removed per operator-intent revert of #728
+# (single-machine UX, no API key gate on cache-clear / request-cancel).
+# If a future PR needs to gate these routes again, reuse
+# ``_is_loopback_client`` above + the standard ``verify_api_key`` /
+# ``HTTPException`` pattern.
