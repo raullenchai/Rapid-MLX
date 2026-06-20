@@ -66,25 +66,42 @@ def _json_fence_suffix_hold_len(text: str) -> int:
     Only chunks ending in ``\\n``, ``\\r``, or ``` ` `` pay a one-chunk
     delay so the state machine can decide whether the suffix becomes
     a fence.
+
+    Codex r2 BLOCKING: when the trailing suffix is ``\\n```` ``,
+    ``\\n```` ``, or ``\\n``` ``, the hold MUST include the leading
+    ``\\n`` together with the backticks. Otherwise the next chunk's
+    closing-fence completion swallows the backticks but the ``\\n``
+    is already on the wire, leaving the stream output ``...}\\n``
+    instead of the bare ``...}`` the non-stream path produces — a
+    deviation that breaks byte-identical equality with the non-stream
+    response shape.
     """
     if not text:
         return 0
-    # Look at the last 3 chars (max possible fence prefix worth holding).
-    # ``\\n``  +  one  +  two  backticks  is  3  chars;  ``  ``  `  `  alone
-    # is also up to 3.
-    tail3 = text[-3:]
-    # Case 1: text ends in 1, 2, or 3 backticks. Hold all of them — a
-    # 3rd backtick on the next chunk completes the fence.
-    if tail3 == "```":
-        return 3
-    if tail3.endswith("``"):
-        return 2
-    if tail3.endswith("`"):
-        return 1
-    # Case 2: text ends in a newline. Could be the start of ``\\n```\\n``.
-    # Hold ONE byte; if the next chunk starts with backtick we'll
-    # promote it on the combined re-scan.
-    if tail3.endswith("\n") or tail3.endswith("\r"):
+
+    # Walk from the right counting trailing backticks (up to 3).
+    trailing_backticks = 0
+    while trailing_backticks < 3 and trailing_backticks < len(text):
+        if text[-(trailing_backticks + 1)] == "`":
+            trailing_backticks += 1
+        else:
+            break
+
+    if trailing_backticks > 0:
+        # Hold ``trailing_backticks`` backticks AND any immediately
+        # preceding newline. The newline is part of the canonical
+        # closing fence ``\\n``` `` and must not slip onto the wire
+        # before the rest of the fence arrives.
+        pre = len(text) - trailing_backticks
+        if pre > 0 and text[pre - 1] in "\r\n":
+            return trailing_backticks + 1
+        return trailing_backticks
+
+    # No trailing backticks. A lone ``\\n`` at the end could be the
+    # start of ``\\n```\\n``; hold ONE byte. The next chunk's ``` ` ``
+    # will trigger the combined re-scan, and we'll re-evaluate the
+    # hold above with the backtick(s) appended.
+    if text[-1] in "\r\n":
         return 1
     return 0
 

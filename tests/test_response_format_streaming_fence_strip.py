@@ -100,8 +100,8 @@ class TestJsonObjectFenceStripping:
         joined = _stream_chunks(
             pp, ['```json\n{"name": "iPhone 15", "price": 799.99}\n```']
         )
-        assert json.loads(joined) == {"name": "iPhone 15", "price": 799.99}
-        assert "```" not in joined
+        # Byte-exact: matches what the non-stream path produces.
+        assert joined == '{"name": "iPhone 15", "price": 799.99}'
 
     def test_fence_split_across_token_boundaries(self):
         """Fence emitted token-by-token (realistic SSE granularity).
@@ -132,8 +132,7 @@ class TestJsonObjectFenceStripping:
             "```",
         ]
         joined = _stream_chunks(pp, chunks)
-        assert json.loads(joined) == {"name": "iPhone 15", "price": 799.99}
-        assert "```" not in joined
+        assert joined == '{"name": "iPhone 15", "price": 799.99}'
 
     def test_opening_fence_split_two_chunks(self):
         """Opening ``` ```json `` straddles chunks 1 and 2."""
@@ -148,11 +147,18 @@ class TestJsonObjectFenceStripping:
                 '`json\n{"k": 1}\n```',
             ],
         )
-        assert json.loads(joined) == {"k": 1}
-        assert "```" not in joined
+        assert joined == '{"k": 1}'
 
     def test_closing_fence_split_two_chunks(self):
-        """Closing ``` ``` `` straddles the last two chunks."""
+        """Closing ``` ``` `` straddles the last two chunks.
+
+        Codex r2 BLOCKING: assert byte-identical equality with the
+        non-stream output (bare ``{"k": 1}``). The earlier draft only
+        checked ``json.loads`` + no-backticks, which silently passed
+        even when a trailing ``\\n`` slipped onto the wire because
+        the suffix-hold released the newline before the next chunk's
+        backtick completed the fence.
+        """
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg, json_mode=True)
         pp.reset()
@@ -163,8 +169,45 @@ class TestJsonObjectFenceStripping:
                 "`",
             ],
         )
-        assert json.loads(joined) == {"k": 1}
-        assert "```" not in joined
+        # Exact byte equality with the non-stream shape — no leaked
+        # trailing newline, no leaked backticks.
+        assert joined == '{"k": 1}'
+
+    def test_closing_fence_newline_split_from_backticks(self):
+        """Codex r2 BLOCKING: closing fence split as ``\\n`` then
+        ``` ``` ``. The hold MUST cover the newline, otherwise
+        chunk 1's ``\\n`` lands on the wire before chunk 2's
+        backticks transition the state machine to ``done``."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            [
+                '```json\n{"k": 1}',
+                "\n",
+                "```",
+            ],
+        )
+        assert joined == '{"k": 1}'
+
+    def test_closing_fence_newline_plus_two_backticks_split(self):
+        """Closing fence split as ``\\n```` `` then ``` ` ``.
+
+        Tests the case codex r2 specifically called out: chunk N ends
+        ``...}\\n``` ``; hold must include the ``\\n`` so the next
+        chunk's third backtick can close cleanly."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            [
+                '```json\n{"k": 1}\n``',
+                "`\n",
+            ],
+        )
+        assert joined == '{"k": 1}'
 
     def test_bare_json_no_fence_passes_through(self):
         """Model returns bare ``{...}`` — NO fence anywhere.
