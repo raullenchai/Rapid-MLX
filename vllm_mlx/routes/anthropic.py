@@ -1024,6 +1024,52 @@ async def _stream_anthropic_messages(
     }
     yield f"event: message_start\ndata: {json.dumps(message_start)}\n\n"
 
+    # H-05 follow-up (PR #771 codex round-2 BLOCKING #1): when
+    # ``tool_choice`` pins a specific tool, the model is supposed to
+    # emit a ``tool_use`` for that tool. Local inference can't
+    # decoder-enforce that, so a defiant model can stream a TEXT
+    # response instead — and pre-fix, those text deltas were
+    # yielded chunk-by-chunk before we knew to reject the response.
+    # By the time the post-loop enforcement fired the SSE error event,
+    # the client had already received a partial text payload that
+    # violates the forced-tool contract.
+    #
+    # Fix: when a named ``tool_choice`` is set, BUFFER every
+    # content_block / thinking event produced inside the chunk loop
+    # (and the post-loop flushes) into ``pre_filter_buffer`` instead
+    # of yielding it. After the loop finishes we run the same filter +
+    # enforcement step the non-stream branch uses; on success we
+    # replay the buffer so streaming UX is preserved, on failure we
+    # drop the buffer and emit only the SSE error event so the
+    # forbidden text payload never reaches the wire. ``message_start``
+    # is yielded above this (clients use it to allocate the message
+    # frame) and ``message_delta`` / ``message_stop`` are yielded
+    # below the enforcement (they only describe the terminal state).
+    _pinned_tool_target = _named_tool_choice_target(
+        getattr(openai_request, "tool_choice", None)
+    )
+    _buffer_for_pinned_tool = _pinned_tool_target is not None
+    pre_filter_buffer: list[str] = []
+
+    def _capture(event: str) -> str | None:
+        """Either buffer ``event`` and return ``None``, or return
+        ``event`` unchanged.
+
+        When a named ``tool_choice`` is pinned, every chunk-loop
+        content event is appended to ``pre_filter_buffer`` and this
+        helper returns ``None`` so the caller's ``if ev is not None:
+        yield ev`` is a no-op. Otherwise the helper returns the
+        event unchanged and the caller yields it immediately —
+        preserving the original "one event in ⇒ one event out"
+        streaming semantics. ``async for`` constructs in Python 3.12
+        don't allow ``yield from`` against a sync generator helper,
+        so this returns a scalar rather than an iterator.
+        """
+        if _buffer_for_pinned_tool:
+            pre_filter_buffer.append(event)
+            return None
+        return event
+
     accumulated_text = ""
     accumulated_raw = ""
     # Structured tool calls surfaced by the engine's OutputRouter
@@ -1258,7 +1304,9 @@ async def _stream_anthropic_messages(
                         block_index,
                     )
                     for event in events:
-                        yield event
+                        ev = _capture(event)
+                        if ev is not None:
+                            yield ev
                 continue
 
             if reasoning_parser:
@@ -1413,7 +1461,9 @@ async def _stream_anthropic_messages(
                         block_index,
                     )
                     for event in events:
-                        yield event
+                        ev = _capture(event)
+                        if ev is not None:
+                            yield ev
                 continue
 
             # No reasoning_parser path — keep the existing think_router
@@ -1433,7 +1483,9 @@ async def _stream_anthropic_messages(
                     block_index,
                 )
                 for event in events:
-                    yield event
+                    ev = _capture(event)
+                    if ev is not None:
+                        yield ev
 
     # Flush remaining from both filters
     remaining = tool_filter.flush()
@@ -1451,7 +1503,9 @@ async def _stream_anthropic_messages(
             block_index,
         )
         for event in events:
-            yield event
+            ev = _capture(event)
+            if ev is not None:
+                yield ev
 
     if not reasoning_parser:
         flush_pieces = think_router.flush()
@@ -1462,11 +1516,18 @@ async def _stream_anthropic_messages(
                 block_index,
             )
             for event in events:
-                yield event
+                ev = _capture(event)
+                if ev is not None:
+                    yield ev
 
     # Close final content block
     if current_block_type is not None:
-        yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+        ev = _capture(
+            f"event: content_block_stop\ndata: "
+            f"{json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+        )
+        if ev is not None:
+            yield ev
         block_index += 1
 
     # Codex round-3 BLOCKING #2: if the reasoning cap latched on the
@@ -1532,14 +1593,18 @@ async def _stream_anthropic_messages(
                         [("text", filtered)], current_block_type, block_index
                     )
                     for event in events:
-                        yield event
+                        ev = _capture(event)
+                        if ev is not None:
+                            yield ev
         # Close any block we opened above before falling through to the
         # finalize_streaming path.
         if current_block_type is not None:
-            yield (
+            ev = _capture(
                 f"event: content_block_stop\ndata: "
                 f"{json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
             )
+            if ev is not None:
+                yield ev
             block_index += 1
             current_block_type = None
 
@@ -1572,17 +1637,17 @@ async def _stream_anthropic_messages(
             content = strip_special_tokens(final_msg.content)
             if content:
                 accumulated_text = content
-                yield (
+                for raw_event in (
                     f"event: content_block_start\ndata: "
-                    f"{json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n"
-                )
-                delta_event = {
-                    "type": "content_block_delta",
-                    "index": block_index,
-                    "delta": {"type": "text_delta", "text": content},
-                }
-                yield f"event: content_block_delta\ndata: {json.dumps(delta_event)}\n\n"
-                yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n"
+                    f"{json.dumps({'type': 'content_block_start', 'index': block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n",
+                    f"event: content_block_delta\ndata: "
+                    f"{json.dumps({'type': 'content_block_delta', 'index': block_index, 'delta': {'type': 'text_delta', 'text': content}})}\n\n",
+                    f"event: content_block_stop\ndata: "
+                    f"{json.dumps({'type': 'content_block_stop', 'index': block_index})}\n\n",
+                ):
+                    ev = _capture(raw_event)
+                    if ev is not None:
+                        yield ev
                 block_index += 1
 
     # Check for tool calls — prefer engine-surfaced structured payload
@@ -1651,6 +1716,28 @@ async def _stream_anthropic_messages(
             )
             tool_calls = []
 
+    # PR #771 codex round-2 BLOCKING #1: replay or drop the
+    # ``pre_filter_buffer`` we accumulated during the chunk loop.
+    # Until this point in the stream the only event yielded was the
+    # opening ``message_start``; every content_block / thinking event
+    # that the chunk loop produced sits in the buffer. We now know
+    # whether the enforcement passed:
+    #
+    #   * pass → replay the buffer so the streaming UX is preserved
+    #     (clients see the same text-delta cadence they would have
+    #     seen without the buffer). Tool_use blocks emit below.
+    #   * fail → drop the buffer so the would-be text response NEVER
+    #     reaches the wire. Only the SSE error event + the trailing
+    #     ``message_delta`` (end_turn) + ``message_stop`` follow.
+    #
+    # The buffer is unused when ``tool_choice`` is not a named pin —
+    # in that case the chunk loop yielded directly and ``pre_filter_buffer``
+    # is empty, so this block is a no-op on every non-pinned request.
+    if _buffer_for_pinned_tool and not (tool_choice_error or tool_validation_error):
+        for buffered_event in pre_filter_buffer:
+            yield buffered_event
+        pre_filter_buffer.clear()
+
     # Emit a single SSE error event when either the tool_choice
     # enforcement or the schema validator fired. Both classes are
     # surfaced as ``invalid_request_error`` — they describe a
@@ -1658,6 +1745,11 @@ async def _stream_anthropic_messages(
     # whereas a true server failure would arrive via the route-level
     # exception handler.
     if tool_choice_error or tool_validation_error:
+        # On the buffered path the buffer is intentionally NOT replayed
+        # — the would-be text payload that the chunk loop accumulated
+        # is precisely what the named ``tool_choice`` contract forbids.
+        # Drop it on the floor and surface only the error event.
+        pre_filter_buffer.clear()
         error_event = {
             "type": "error",
             "error": {

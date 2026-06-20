@@ -79,12 +79,26 @@ class _MultiCallEngine:
         )
 
     async def stream_chat(self, messages, **kwargs):  # noqa: ARG002
-        yield SimpleNamespace(
-            new_text=self._text,
-            prompt_tokens=10,
-            completion_tokens=1,
-            tool_calls=self._tool_calls,
-        )
+        # Emit text first (mirrors how a real streaming engine
+        # surfaces text tokens chunk-by-chunk before any tool_calls
+        # are finalised by the harmony parser). The route's chunk
+        # loop short-circuits with ``continue`` on any chunk that
+        # carries ``tool_calls``, so text + tool_calls must be on
+        # SEPARATE chunks for both paths to exercise.
+        if self._text:
+            yield SimpleNamespace(
+                new_text=self._text,
+                prompt_tokens=10,
+                completion_tokens=1,
+                tool_calls=None,
+            )
+        if self._tool_calls:
+            yield SimpleNamespace(
+                new_text="",
+                prompt_tokens=10,
+                completion_tokens=1,
+                tool_calls=self._tool_calls,
+            )
 
 
 def _make_client(engine: _MultiCallEngine) -> TestClient:
@@ -541,11 +555,21 @@ def test_pinned_tool_model_emits_only_wrong_tool_returns_422():
 
 def test_pinned_tool_streaming_no_calls_emits_sse_error_event():
     """Stream variant: pinned tool, model returned text only → SSE
-    ``event: error`` with the same diagnostic. Headers are already
-    sent so we cannot 422 the response; the error event is the
-    streaming surface's equivalent.
+    ``event: error`` with the same diagnostic AND no streamed text
+    deltas reach the wire BEFORE the error.
+
+    Headers are already sent so we cannot 422 the response; the
+    error event is the streaming surface's equivalent. The crucial
+    extra invariant (PR #771 codex round-2 BLOCKING #1) is that the
+    chunk loop's text deltas must NEVER have been emitted — the
+    pre-filter buffer drops them on the floor when enforcement
+    fires. Before the buffering fix, those deltas streamed to the
+    client BEFORE the error event, leaking a partial text payload
+    that violated the forced-tool contract (the client could surface
+    a half-formed "answer" the contract said wasn't allowed).
     """
-    engine = _MultiCallEngine(None, text="I cannot help.")
+    distinctive_text = "ANTHROPIC_TEXT_LEAK_CANARY_xyzzy"
+    engine = _MultiCallEngine(None, text=distinctive_text)
     client = _make_client(engine)
 
     response = client.post(
@@ -566,6 +590,16 @@ def test_pinned_tool_streaming_no_calls_emits_sse_error_event():
     # valid to ship in the first place, and the error event already
     # signalled "this stream is unrecoverable".
     assert '"type": "tool_use"' not in raw, raw
+    # PR #771 codex round-2 BLOCKING #1: the model's text response
+    # must NOT appear anywhere in the stream — neither as a
+    # ``text_delta`` chunk, a ``content_block_start`` of type
+    # ``text``, nor in the raw SSE payload. The distinctive text
+    # token above makes the leak detectable independent of how the
+    # delta is framed (single chunk, multiple chunks, escaped
+    # whitespace, etc.).
+    assert distinctive_text not in raw, raw
+    assert '"type": "text_delta"' not in raw, raw
+    assert '"type": "text"' not in raw, raw
 
 
 def test_pinned_tool_streaming_only_wrong_tool_emits_sse_error_and_no_tool_use():
@@ -667,3 +701,54 @@ def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
         {"type": "function", "function": {"name": "get_weather"}},
         original_call_count=1,
     )
+
+
+def test_pinned_tool_streaming_text_replays_when_enforcement_passes():
+    """Happy-path buffer-replay regression: pinned tool, model emits
+    BOTH the pinned tool AND incidental text. The text must arrive
+    in the SSE stream (it's legitimate output adjacent to the
+    pinned-tool call), AND it must arrive AFTER the buffer-replay —
+    i.e. the order ``message_start`` → text content_block → tool_use
+    is preserved.
+
+    Locks the round-2 fix's "replay buffer on success" branch: a
+    naive implementation that dropped the buffer on every named
+    ``tool_choice`` would lose legitimate text output adjacent to a
+    correct pinned-tool call.
+    """
+    distinctive_text = "ANTHROPIC_STREAM_REPLAY_CANARY_42"
+    engine = _MultiCallEngine(
+        [_call("get_weather", {"location": "SF"})],
+        text=distinctive_text,
+    )
+    client = _make_client(engine)
+
+    response = client.post(
+        "/v1/messages",
+        json=_post_messages(
+            client,
+            tool_choice={"type": "tool", "name": "get_weather"},
+            stream=True,
+        ),
+    )
+
+    assert response.status_code == 200
+    raw = response.text
+    # No error — enforcement passed.
+    assert "event: error" not in raw, raw
+    # Both the text payload AND the pinned tool's tool_use must reach
+    # the client. The buffered text is replayed after the enforcement
+    # check, preserving streaming UX for legitimate adjacent text.
+    assert distinctive_text in raw, raw
+    assert '"type": "tool_use"' in raw
+    assert "get_weather" in raw
+    # Order check: the buffered text content_block_start/stop pair
+    # is replayed BEFORE the tool_use content_block_start. A reversed
+    # order would mean we leaked tool_use first then text — clients
+    # would see the tool result before the surrounding narration.
+    text_block_pos = raw.find(distinctive_text)
+    tool_use_pos = raw.find('"type": "tool_use"')
+    assert text_block_pos < tool_use_pos, (
+        f"text block at {text_block_pos} should precede tool_use at {tool_use_pos}"
+    )
+    assert '"stop_reason": "tool_use"' in raw
