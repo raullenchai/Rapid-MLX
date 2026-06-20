@@ -238,6 +238,76 @@ class TestForcedToolChoiceFilter:
         assert len(out) == 1
         assert json.loads(out[0]["function"]["arguments"]) == {"city": "Paris"}
 
+    def test_passes_anchor_with_partial_unclosed_json_arguments(self):
+        """Codex r3 BLOCKING #1 — a hypothetical future parser could
+        emit a single delta carrying ``name`` PLUS the first PARTIAL
+        JSON fragment ``{"city":"Pa``. ``json.loads`` raises but
+        ``{`` count > ``}`` count signals the body is mid-stream;
+        pass through so subsequent fragments can complete it. Only
+        when the JSON is well-formed-but-non-object OR
+        balanced-but-broken does the helper drop."""
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        out = pp._apply_forced_tool_choice_filter(
+            [
+                {
+                    "index": 0,
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city":"Pa',
+                    },
+                }
+            ]
+        )
+        assert len(out) == 1, "partial-JSON anchor was wrongly dropped"
+
+    def test_drops_anchor_with_balanced_but_broken_json(self):
+        """Mirror of the partial-pass-through test — when braces are
+        balanced (``{`` count == ``}`` count) and parsing still fails,
+        the body is finalized garbage (e.g. mis-escaped quotes
+        ``{"city": Paris}``). Drop."""
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        out = pp._apply_forced_tool_choice_filter(
+            [
+                {
+                    "index": 0,
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city": Paris}',
+                    },
+                },
+                {
+                    "index": 1,
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city":"Paris"}',
+                    },
+                },
+            ]
+        )
+        assert len(out) == 1
+        assert json.loads(out[0]["function"]["arguments"]) == {"city": "Paris"}
+
+    def test_drops_wrapped_function_shape_anchor(self):
+        """Codex r3 BLOCKING #2 — channel-routed callers (harmony /
+        gemma4 / future routers) emit calls in the wrapped
+        ``{"function": {"name": ..., "arguments": ...}}`` shape.
+        The forced-name filter must handle BOTH flat and wrapped
+        shapes consistently — the earlier inline channel-routed
+        filter accepted only flat and silently dropped wrapped
+        valid calls."""
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        out = pp._apply_forced_tool_choice_filter(
+            [
+                # Wrong wrapped name — drop.
+                {"function": {"name": "other_tool", "arguments": '{"x":1}'}},
+                # Right wrapped name + valid JSON object — keep.
+                {"function": {"name": "get_weather", "arguments": '{"city":"P"}'}},
+                # Right FLAT name + valid JSON object — also keep.
+                {"name": "get_weather", "arguments": '{"city":"Q"}'},
+            ]
+        )
+        assert len(out) == 2
+
     def test_passes_argument_fragment_continuation(self):
         """A continuation delta (no name, only argument fragment) must
         pass through — the parallel-cap layer routes it to whichever

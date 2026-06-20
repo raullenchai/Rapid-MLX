@@ -489,23 +489,41 @@ class StreamingPostProcessor:
             where a JSON body should be).
           * Array root (``"[1,2]"``) — valid JSON, non-object.
 
-        Returns False ONLY when ``args_str`` is missing / empty /
+        Codex r3 BLOCKING #1: a hypothetical future parser could emit
+        a single delta carrying ``name`` PLUS the first PARTIAL JSON
+        fragment (``'{"city":"Pa'``). The current rapid-mlx parsers
+        don't do this (hermes / qwen3coder finalize args before
+        emitting them with ``name``, or emit ``name`` with empty args
+        and stream fragments WITHOUT ``name``), but defending against
+        it costs only one extra check: when ``json.loads`` raises AND
+        the braces are unbalanced (``{`` count > ``}`` count), treat
+        the body as a partial fragment in progress and pass it
+        through — the cap + tool-call merge will accumulate the rest
+        across subsequent deltas. Only when the JSON is well-formed
+        AND non-object, OR when it's syntactically broken with
+        balanced braces, do we drop the anchor.
+
+        Returns False when ``args_str`` is missing / empty /
         whitespace — that's an anchor delta carrying just
         ``name`` + ``id`` with the body deferred to subsequent
-        argument-fragment deltas. Fragment-emitting parsers like
-        qwen3coder publish those continuations WITHOUT a name field,
-        so they bypass this helper entirely via the anchor-name
-        gate in ``_apply_forced_tool_choice_filter``.
+        argument-fragment deltas.
         """
         if not args_str or not args_str.strip():
             return False
         try:
             parsed = json.loads(args_str)
         except (ValueError, TypeError):
-            # Non-JSON ``arguments`` on a finalized anchor — the
-            # bare-text scratch shape. The OpenAI spec mandates a
-            # JSON object string, so a non-JSON value can never
-            # satisfy the contract. Drop.
+            # Non-JSON: distinguish "partial fragment in progress"
+            # (unclosed object → keep) from "finalized non-JSON
+            # scratch" (balanced or no braces → drop).
+            # ``{`` count > ``}`` count means the JSON object is mid-
+            # stream and hasn't finished closing — pass through so
+            # subsequent fragments can complete it. Otherwise it's
+            # genuine non-JSON (bare prose / mis-escaped) — drop.
+            open_braces = args_str.count("{")
+            close_braces = args_str.count("}")
+            if open_braces > close_braces:
+                return False
             return True
         return not isinstance(parsed, dict)
 
@@ -933,19 +951,20 @@ class StreamingPostProcessor:
         # literal harmony sentinels were corrupted by sentinel-
         # anchored regex parsing).
         engine_tool_calls = getattr(output, "tool_calls", None) or []
-        # F-200: when ``tool_choice`` forces a named function, suppress
-        # any structured channel-routed calls whose name does not match.
-        # Harmony / gemma4 channel parsers can surface speculative calls
-        # to other tools alongside the forced one — clients reading the
-        # forced-tool wire expect exactly one call to the named tool.
+        # F-200: when ``tool_choice`` forces a named function, route
+        # the channel-routed structured calls through the SHARED
+        # filter so the wire-shape variants (flat
+        # ``{"name":"X","arguments":...}`` for HarmonyStreamableParser,
+        # wrapped ``{"function":{"name":...}}`` for any future
+        # router) are handled identically to the text-parser path.
+        # Codex r3 BLOCKING #2: the earlier inline filter accepted
+        # only the flat shape and would have silently dropped a
+        # wrapped-shape channel emission. Reusing the helper also
+        # picks up the JSON-object-root validation for free, which
+        # closes the same scratch-with-primitive-args leak on the
+        # channel-routed path.
         if engine_tool_calls:
-            _forced_name = self._forced_tool_choice_name()
-            if _forced_name:
-                engine_tool_calls = [
-                    _tc
-                    for _tc in engine_tool_calls
-                    if isinstance(_tc, dict) and _tc.get("name") == _forced_name
-                ]
+            engine_tool_calls = self._apply_forced_tool_choice_filter(engine_tool_calls)
         if output.channel == "tool_call" and engine_tool_calls:
             # ``parallel_tool_calls=false`` is a hard external contract:
             # the non-streaming path caps the parsed list at one
