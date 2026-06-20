@@ -1899,7 +1899,8 @@ def _maybe_pin_system_prompt(messages: list) -> None:
 
 def _resolve_sync_scheduler_for_abort(engine):
     """C-01 codex r1 BLOCKING #2 helper: find the SYNC scheduler-side
-    ``abort_request`` entry point for the loaded backend.
+    ``abort_request`` entry point for the **currently active**
+    backend.
 
     The codex reviewer pointed out that ``engine.abort_request`` may
     be a coroutine (``BatchedEngine.abort_request`` when the LLM path
@@ -1908,35 +1909,69 @@ def _resolve_sync_scheduler_for_abort(engine):
     free the GPU on the next ``step()`` — the coroutine has to run
     to reach ``scheduler.abort_request`` (which IS sync). So we walk
     the engine's backend graph to find that sync entry point
-    directly:
+    directly.
 
-      * ``engine.scheduler``                  — plain engines exposing
-                                                the scheduler directly.
-      * ``engine._mllm_scheduler``            — MLLM path on
-                                                BatchedEngine; sync.
-      * ``engine._engine.scheduler``          — text path on
-                                                BatchedEngine via
-                                                AsyncEngineCore's
-                                                ``.scheduler``.
+    codex r2 BLOCKING #1: the walk MUST respect the engine's active
+    path. ``BatchedEngine`` declares BOTH ``_engine`` (AsyncEngineCore
+    for the text path) AND ``_mllm_scheduler`` (MLLM path) as
+    instance attributes. They start at ``None`` and get populated by
+    ``start()`` based on the model's modality — but only ONE is the
+    active backend the live ``request_id`` was admitted into. Calling
+    ``_mllm_scheduler.abort_request(rid)`` on a request that lives in
+    ``_engine.scheduler`` would enqueue the abort into the wrong
+    pending set and leave the real request running. The
+    ``_is_mllm`` flag is the canonical active-path signal — same
+    predicate ``stream_generate`` uses to pick which backend to call
+    in the first place.
+
+    Resolution order:
+
+      * ``engine.scheduler``                          — plain engines
+                                                       exposing the
+                                                       scheduler
+                                                       directly (eg.
+                                                       AsyncEngineCore
+                                                       passed in
+                                                       unwrapped).
+      * MLLM-active: ``engine._mllm_scheduler``       — only when
+                                                       ``engine._is_mllm``
+                                                       is True.
+      * text-active: ``engine._engine.scheduler``     — only when
+                                                       ``engine._is_mllm``
+                                                       is False (or
+                                                       absent).
 
     Returns the first callable found, or ``None`` when none of the
     paths resolve (caller falls back to the public async
     ``engine.abort_request`` as a last resort with documented
     fire-and-forget semantics).
     """
-    for path in ("scheduler", "_mllm_scheduler"):
-        backend = getattr(engine, path, None)
-        if backend is not None:
-            abort = getattr(backend, "abort_request", None)
+    # Plain engines that expose .scheduler directly (no active-path
+    # ambiguity). Includes AsyncEngineCore and the fake engines used
+    # in tests.
+    direct_scheduler = getattr(engine, "scheduler", None)
+    if direct_scheduler is not None:
+        abort = getattr(direct_scheduler, "abort_request", None)
+        if abort is not None and not asyncio.iscoroutinefunction(abort):
+            return abort
+    # BatchedEngine and similar wrappers — gate on the active path.
+    # Default to text-active (``_is_mllm = False``) when the flag is
+    # missing so older engine shapes still resolve sanely.
+    is_mllm_active = bool(getattr(engine, "_is_mllm", False))
+    if is_mllm_active:
+        mllm = getattr(engine, "_mllm_scheduler", None)
+        if mllm is not None:
+            abort = getattr(mllm, "abort_request", None)
             if abort is not None and not asyncio.iscoroutinefunction(abort):
                 return abort
-    inner = getattr(engine, "_engine", None)
-    if inner is not None:
-        inner_sched = getattr(inner, "scheduler", None)
-        if inner_sched is not None:
-            abort = getattr(inner_sched, "abort_request", None)
-            if abort is not None and not asyncio.iscoroutinefunction(abort):
-                return abort
+    else:
+        inner = getattr(engine, "_engine", None)
+        if inner is not None:
+            inner_sched = getattr(inner, "scheduler", None)
+            if inner_sched is not None:
+                abort = getattr(inner_sched, "abort_request", None)
+                if abort is not None and not asyncio.iscoroutinefunction(abort):
+                    return abort
     return None
 
 
@@ -2290,6 +2325,20 @@ async def _disconnect_guard(
             disconnect_task.cancel()
         if anext_task and not anext_task.done():
             anext_task.cancel()
+        # Drive the cascade first: ``generator.aclose()`` propagates
+        # ``GeneratorExit`` into the upstream so its ``finally`` runs
+        # (calls ``stream_generate.finally`` → ``scheduler.abort_request``).
+        # Then the belt-and-suspenders below covers the case where the
+        # cascade itself raised or the upstream's finally didn't reach
+        # the abort. Ordering ``aclose()`` before the belt-and-
+        # suspenders also gives the test layer a clean observable
+        # discriminator between the ``except GeneratorExit`` branch
+        # (which runs BEFORE the cascade) and this finally fallback
+        # (which runs AFTER the cascade).
+        try:
+            await generator.aclose()
+        except Exception:
+            pass
         # C-01 belt-and-suspenders: cover the abnormal-exit paths the
         # explicit ``if disconnect_task in done`` and ``except
         # GeneratorExit`` branches don't see — e.g. an exception
@@ -2301,13 +2350,9 @@ async def _disconnect_guard(
         # pollute logs without freeing any GPU work. The
         # ``Scheduler.abort_request`` idempotency contract still
         # protects against the case where this fires concurrently
-        # with the cascade through ``generator.aclose()``.
+        # with the cascade.
         if not finished_normally:
             _force_abort_request(engine, request_id_holder)
-        try:
-            await generator.aclose()
-        except Exception:
-            pass
         if engine is not None:
             release = getattr(engine, "release_admission_reservation", None)
             if release is not None:

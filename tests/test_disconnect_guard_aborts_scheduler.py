@@ -214,60 +214,81 @@ async def test_no_holder_preserves_pre_c01_contract():
 
 
 @pytest.mark.asyncio
-async def test_generator_exit_branch_force_aborts_before_finally(monkeypatch):
-    """C-01 codex r1 BLOCKING #1: pin the ``except GeneratorExit``
-    branch specifically (not just "abort happened somewhere").
+async def test_generator_exit_branch_force_aborts_before_close(monkeypatch):
+    """C-01 codex r1 BLOCKING #1 + r2 NIT #2: pin the ``except
+    GeneratorExit`` branch behaviorally — not by source-line shape.
 
-    The disconnect_guard now triggers force-abort from THREE places:
-    the explicit disconnect branch, the ``except GeneratorExit``
-    block, AND the ``finally`` belt-and-suspenders. A test that only
-    checks ``scheduler.aborts == [rid]`` would still pass if the
+    The disconnect_guard triggers force-abort from THREE places: the
+    explicit disconnect branch, the ``except GeneratorExit`` block,
+    AND the ``finally`` belt-and-suspenders. A test that only checks
+    ``scheduler.aborts == [rid]`` would still pass if the
     ``except GeneratorExit`` block were deleted, because ``finally``
-    would catch the case. This test discriminates by replacing
-    ``_force_abort_request`` with a wrapper that captures the calling
-    frame's local variable namespace — only the ``except GeneratorExit``
-    block (NOT ``finally``) accumulates ``chunk_count`` AND has yet to
-    cancel ``disconnect_task``. Asserting that the FIRST abort call
-    came from a frame WITHOUT ``finished_normally`` resolved/with
-    ``disconnect_task`` still live pins the branch specifically.
+    would catch the case. Pre-codex-r2 the discrimination used
+    ``f_lineno`` to count distinct source lines, which is brittle
+    against harmless refactors.
 
-    The Astrid r3 fingerprint: Starlette's StreamingResponse tears
-    down via ``aclose()`` (GeneratorExit into our wrapper) when uvicorn
+    The behavioral distinction we pin instead: the ``except
+    GeneratorExit`` branch fires BEFORE the ``finally`` clause's
+    ``await generator.aclose()``. If we make the upstream generator's
+    ``finally`` write to a shared flag, and patch
+    ``_force_abort_request`` to snapshot that flag on each call, the
+    SEQUENCE distinguishes the branches:
+
+      * first abort call: upstream cascade has NOT run yet
+        (flag still ``False``) — this is the except-GeneratorExit
+        branch.
+      * second abort call: upstream cascade HAS run (flag is
+        ``True``) — this is the ``finally`` belt-and-suspenders
+        firing after ``await generator.aclose()`` completed.
+
+    Deleting the ``except GeneratorExit`` block collapses the
+    sequence to a single call AFTER the cascade ran, which fails
+    the test. No source-line coupling.
+
+    Astrid r3 fingerprint: Starlette's StreamingResponse tears down
+    via ``aclose()`` (GeneratorExit into our wrapper) when uvicorn
     detects a write failure to a dead socket — even though
-    ``is_disconnected()`` returned False the entire time. Catching the
-    branch here closes the second half of the runaway window.
+    ``is_disconnected()`` returned False the entire time. Catching
+    the branch here closes the second half of the runaway window.
     """
-    import inspect
-
     from vllm_mlx.service import helpers as _helpers
 
     engine = _FakeEngine()
     holder: list[str | None] = ["req-runaway-xyz"]
 
-    # Record at which suite the abort fired. The except-GeneratorExit
-    # branch runs BEFORE the finally clause; we identify the calling
-    # frame by its source line via ``inspect``.
-    call_sites: list[str] = []
+    # Shared state: did the upstream generator's finally run yet?
+    # ``except GeneratorExit`` block of disconnect_guard fires BEFORE
+    # ``await generator.aclose()`` in finally, so the upstream's
+    # finally has NOT yet executed at that point. The disconnect_guard
+    # ``finally`` block runs AFTER ``await generator.aclose()``, so
+    # the upstream's finally HAS executed by then.
+    upstream_finally_ran = {"value": False}
+    abort_snapshots: list[bool] = []
+
     original = _helpers._force_abort_request
 
-    def _capturing_force_abort(eng, hld):
-        # Walk back to the disconnect_guard frame and capture which
-        # block we're in. The ``except GeneratorExit`` branch and the
-        # ``finally`` clause sit at distinct source lines in helpers.py.
-        frame = inspect.currentframe().f_back
-        if frame is not None:
-            call_sites.append(f"{frame.f_code.co_name}:line-{frame.f_lineno}")
+    def _snapshotting_force_abort(eng, hld):
+        # Snapshot the upstream-finally flag at the moment of each
+        # _force_abort_request call.
+        abort_snapshots.append(upstream_finally_ran["value"])
         return original(eng, hld)
 
-    monkeypatch.setattr(_helpers, "_force_abort_request", _capturing_force_abort)
+    monkeypatch.setattr(_helpers, "_force_abort_request", _snapshotting_force_abort)
 
     async def _gen():
-        yield "data: chunk1\n\n"
-        yield "data: chunk2\n\n"
-        # Sleep so the consumer has time to aclose() us before we
-        # try to yield more.
-        await asyncio.sleep(30.0)
-        yield "data: never\n\n"
+        try:
+            yield "data: chunk1\n\n"
+            yield "data: chunk2\n\n"
+            # Sleep so the consumer has time to aclose() us before we
+            # try to yield more.
+            await asyncio.sleep(30.0)
+            yield "data: never\n\n"
+        finally:
+            # This finally runs when the disconnect_guard's
+            # ``await generator.aclose()`` propagates GeneratorExit
+            # into us. Mark the flag so the test can prove the
+            # sequence.
+            upstream_finally_ran["value"] = True
 
     agen = _helpers._disconnect_guard(
         _gen(),
@@ -292,20 +313,22 @@ async def test_generator_exit_branch_force_aborts_before_finally(monkeypatch):
     )
     assert engine.admission_released is True
 
-    # The discriminating assertion: at least TWO distinct source
-    # lines fired _force_abort_request — the except-GeneratorExit
-    # block AND the finally belt-and-suspenders. If a future refactor
-    # deletes the GeneratorExit branch, the call_sites would collapse
-    # to ONE distinct line (the finally only) and this test would
-    # flag it. (The two source lines live within the same function
-    # ``_disconnect_guard``, so co_name is identical; the
-    # discrimination comes from the f_lineno.)
-    distinct_lines = {site for site in call_sites if "_disconnect_guard" in site}
-    assert len(distinct_lines) >= 2, (
-        "expected force-abort to fire from BOTH the except-GeneratorExit "
-        "branch AND the finally; if only one distinct call site appears, "
-        "one of the branches is missing. call_sites="
-        f"{call_sites} distinct_lines={distinct_lines}"
+    # The discriminating assertion: at least one ``_force_abort_request``
+    # call happened BEFORE the upstream's finally ran (proves the
+    # except-GeneratorExit branch fired), AND at least one happened
+    # AFTER (proves the disconnect_guard finally belt-and-suspenders
+    # also fired). If a refactor deletes the except-GeneratorExit
+    # branch, every snapshot would be ``True`` (only the finally
+    # fired, and that runs after the cascade).
+    assert any(snap is False for snap in abort_snapshots), (
+        "expected at least one _force_abort_request call BEFORE the "
+        "upstream generator's finally ran — pins the except-GeneratorExit "
+        f"branch. snapshots={abort_snapshots}"
+    )
+    assert any(snap is True for snap in abort_snapshots), (
+        "expected at least one _force_abort_request call AFTER the "
+        "upstream generator's finally ran — pins the disconnect_guard "
+        f"finally belt-and-suspenders. snapshots={abort_snapshots}"
     )
 
 
@@ -429,6 +452,11 @@ async def test_force_abort_resolves_sync_scheduler_via_inner_engine():
     class _BatchedEngineLike:
         def __init__(self):
             self._engine = _AsyncEngineCoreLike()
+            # codex r2 BLOCKING #1: text-path is active (_is_mllm=False).
+            # The walk MUST land on _engine.scheduler, not on any
+            # placeholder _mllm_scheduler attribute that might also
+            # exist on the real BatchedEngine.
+            self._is_mllm = False
 
         async def abort_request(self, rid: str) -> bool:  # noqa: ARG002
             raise AssertionError(
@@ -467,6 +495,8 @@ async def test_force_abort_resolves_sync_mllm_scheduler():
     class _BatchedEngineLikeMLLM:
         def __init__(self):
             self._mllm_scheduler = _SyncMLLMScheduler()
+            # codex r2 BLOCKING #1: gate on the active-path flag.
+            self._is_mllm = True
 
         async def abort_request(self, rid: str) -> bool:  # noqa: ARG002
             raise AssertionError(
@@ -478,6 +508,66 @@ async def test_force_abort_resolves_sync_mllm_scheduler():
 
     assert _force_abort_request(engine, holder) is True
     assert engine._mllm_scheduler.aborts == ["req-via-mllm-sched"]
+
+
+@pytest.mark.asyncio
+async def test_force_abort_respects_active_path_when_both_backends_present():
+    """C-01 codex r2 BLOCKING #1: ``BatchedEngine`` declares both
+    ``_engine`` (text path) and ``_mllm_scheduler`` (MLLM path) as
+    instance attributes — they BOTH exist after ``start()``, and
+    which one is the active backend for the live request is signalled
+    by ``_is_mllm``. The pre-r2 resolver picked
+    ``_mllm_scheduler`` unconditionally if present, so a text request
+    on a model with both paths instantiated would enqueue the abort
+    into the WRONG scheduler and leave the actual text request
+    running.
+
+    Pin two directions:
+
+    1. ``_is_mllm = False`` + both backends populated → MUST land on
+       ``_engine.scheduler``, NOT ``_mllm_scheduler``.
+    2. ``_is_mllm = True`` + both backends populated → MUST land on
+       ``_mllm_scheduler``, NOT ``_engine.scheduler``.
+    """
+    from vllm_mlx.service.helpers import _force_abort_request
+
+    class _SyncScheduler:
+        def __init__(self, label: str):
+            self.label = label
+            self.aborts: list[str] = []
+
+        def abort_request(self, rid: str) -> bool:
+            self.aborts.append(rid)
+            return True
+
+    class _InnerEngine:
+        def __init__(self):
+            self.scheduler = _SyncScheduler("text")
+
+    class _DualBackendEngine:
+        def __init__(self, *, is_mllm: bool):
+            self._engine = _InnerEngine()
+            self._mllm_scheduler = _SyncScheduler("mllm")
+            self._is_mllm = is_mllm
+
+        async def abort_request(self, rid: str) -> bool:  # noqa: ARG002
+            raise AssertionError("public async abort should never run")
+
+    # Case 1: text active.
+    text_engine = _DualBackendEngine(is_mllm=False)
+    assert _force_abort_request(text_engine, ["req-text"]) is True
+    assert text_engine._engine.scheduler.aborts == ["req-text"]
+    assert text_engine._mllm_scheduler.aborts == [], (
+        "MLLM scheduler must NOT receive aborts when text path is active"
+    )
+
+    # Case 2: MLLM active.
+    mllm_engine = _DualBackendEngine(is_mllm=True)
+    assert _force_abort_request(mllm_engine, ["req-mllm"]) is True
+    assert mllm_engine._mllm_scheduler.aborts == ["req-mllm"]
+    assert mllm_engine._engine.scheduler.aborts == [], (
+        "text scheduler must NOT receive aborts when MLLM path is active"
+    )
 
 
 @pytest.mark.asyncio
