@@ -105,6 +105,12 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
         # path used by /v1/chat/completions and /v1/messages applies on
         # /v1/responses (upstream vLLM PR #20859 backport).
         reasoning_max_tokens=request.reasoning_max_tokens,
+        # H-11: forward the per-request seed so the Responses surface
+        # honours determinism the same way /v1/chat/completions does.
+        # Without this, the seed declared on ResponsesRequest would
+        # parse, validate, and stop here — the ChatCompletionRequest
+        # the rest of the pipeline reads would carry None.
+        seed=request.seed,
     )
 
 

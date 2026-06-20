@@ -80,6 +80,31 @@ def test_completion_request_preserves_seed():
     assert req.seed == 123
 
 
+def test_responses_request_preserves_seed_through_adapter():
+    """Codex r3 BLOCKING regression guard. The /v1/responses surface
+    has its own ResponsesRequest model — pre-fix, the ``seed`` field
+    was not declared and Pydantic dropped it before the adapter
+    converted the body to ChatCompletionRequest. The result was that
+    seeded Responses requests silently lost determinism.
+
+    Verifies (a) ResponsesRequest declares seed, and (b) the adapter
+    forwards it through to the materialized ChatCompletionRequest so
+    the downstream ``build_extended_sampling_kwargs`` → engine path
+    sees the value.
+    """
+    from vllm_mlx.api.responses_adapter import responses_to_openai
+    from vllm_mlx.api.responses_models import ResponsesRequest
+
+    req = ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=42)
+    assert req.seed == 42, "ResponsesRequest dropped seed at parse"
+
+    chat_req = responses_to_openai(req)
+    assert chat_req.seed == 42, (
+        "responses_adapter did not forward seed to ChatCompletionRequest — "
+        "the Responses route would lose determinism"
+    )
+
+
 def test_seed_accepts_zero():
     """``seed=0`` is a legitimate value — eval harnesses use it as the
     default. The forwarding gate in ``build_extended_sampling_kwargs``
@@ -195,9 +220,15 @@ def logprobs_fixture():
     Built from a fixed-seed normal draw so the same logits are seen on
     every test run, isolating the sampler's PRNG state from the
     fixture's PRNG state.
+
+    Codex round-3 NIT: pass an explicit ``key=`` to ``mx.random.normal``
+    instead of seeding the global ``mx.random.state`` — otherwise this
+    fixture would mutate process-global PRNG state that other tests in
+    the same session pick up (test order would then matter for any
+    sampler test that touches ``mx.random.*``).
     """
-    mx.random.seed(0)
-    logits = mx.random.normal(shape=(1, 32000))
+    fixture_key = mx.random.key(0)
+    logits = mx.random.normal(shape=(1, 32000), key=fixture_key)
     logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
     mx.eval(logprobs)
     return logprobs
@@ -332,9 +363,10 @@ def test_seeded_sampler_aggressive_min_p_never_empty_mask(logprobs_fixture):
     (the kept set is degenerate by construction): the returned token
     must equal the argmax token.
     """
-    # Build logits with a clear argmax so the contract is testable
-    mx.random.seed(0)
-    sharp_logits = mx.random.normal(shape=(1, 1024))
+    # Build logits with a clear argmax so the contract is testable. Use
+    # an explicit ``key=`` so we don't mutate the process-global PRNG
+    # state and pollute other tests in the session (codex r3 NIT).
+    sharp_logits = mx.random.normal(shape=(1, 1024), key=mx.random.key(0))
     sharp_logprobs = sharp_logits - mx.logsumexp(sharp_logits, axis=-1, keepdims=True)
     mx.eval(sharp_logprobs)
     argmax = int(mx.argmax(sharp_logprobs, axis=-1)[0])
@@ -396,8 +428,9 @@ def test_scheduler_seeded_request_skips_cache():
 
     # Same-seed closures must still each produce the same token from
     # the same logits (each closure starts from the seed independently).
-    mx.random.seed(0)
-    logits = mx.random.normal(shape=(1, 32000))
+    # Use an explicit key to avoid mutating the process-global PRNG
+    # state (codex r3 NIT).
+    logits = mx.random.normal(shape=(1, 32000), key=mx.random.key(0))
     logprobs = logits - mx.logsumexp(logits, axis=-1, keepdims=True)
     mx.eval(logprobs)
     assert int(s1(logprobs)[0]) == int(s2(logprobs)[0])

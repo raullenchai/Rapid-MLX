@@ -102,6 +102,13 @@ class ResponsesRequest(BaseModel):
     # and the non-streaming finalize path apply the same enforcement
     # (upstream vLLM PRs #20859 / #42396 / #43402 backport).
     reasoning_max_tokens: int | None = None
+    # H-11: OpenAI Responses API exposes ``seed`` on its own surface —
+    # without declaring it here Pydantic drops it before the adapter
+    # converts to ``ChatCompletionRequest``. Range / validation live on
+    # the ChatCompletionRequest layer (re-applied after conversion), so
+    # this field only needs to survive the parse. See the matching
+    # declaration on ``ChatCompletionRequest`` for the full rationale.
+    seed: int | None = None
 
     @model_validator(mode="before")
     @classmethod
