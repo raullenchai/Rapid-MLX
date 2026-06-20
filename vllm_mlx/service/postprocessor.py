@@ -316,6 +316,23 @@ class StreamingPostProcessor:
         # behavior of the original ``_guard_closing_fence``.
         self._json_fence_in_string: bool = False
         self._json_fence_string_escape: bool = False
+        # Bracket-depth tracker (running over emitted JSON body bytes
+        # only). Increments on ``{``/``[`` outside string literals,
+        # decrements on ``}``/``]``. The closing fence ``` ``` `` is
+        # only recognized when ``depth == 0`` — i.e. AFTER the
+        # top-level JSON root has fully closed. Without this, a
+        # response like
+        # ``{"k": 1}\nHere is code:\n```python\nx = 1\n``` ``
+        # would truncate at the FIRST triple-backtick after the JSON
+        # root and emit ``...\nHere is code:`` as content; with this,
+        # the fence still fires only at depth 0 (after ``}``) and the
+        # trailing markdown still gets suppressed AS the wrapper that
+        # json_mode promises to strip. The state lives on the
+        # instance because the walker re-scans ``combined`` from
+        # index 0 on every call and must resume with the depth value
+        # snapshotted at the start of the held tail. Codex r5
+        # BLOCKING.
+        self._json_fence_bracket_depth: int = 0
 
         # Forced ``tool_choice`` assistant-prefix replay swallow (PR #716
         # codex r9 BLOCKING #1). When the route layer forces a function via
@@ -534,9 +551,20 @@ class StreamingPostProcessor:
         # produces the correct flag state at every position.
         in_string = self._json_fence_in_string
         escape = self._json_fence_string_escape
+        depth = self._json_fence_bracket_depth
+        # ``json_root_closed_at`` records the index IMMEDIATELY AFTER
+        # the brace/bracket that closed the JSON root (depth returned
+        # to 0 from > 0). For json_mode the contract is "emit ONLY the
+        # JSON object", matching the non-stream
+        # ``extract_json_from_response`` shape. Everything after the
+        # closing brace is wrapper/explanation/fence/whitespace and
+        # gets suppressed — whether or not a triple-backtick follows.
+        # Codex r5 BLOCKING: the earlier draft only suppressed AT the
+        # first ``` ``` ``, leaving trailing prose like
+        # ``\nHere is code:`` on the wire.
+        json_root_closed_at = -1
         i = 0
         n = len(combined)
-        fence_idx = -1
         while i < n:
             c = combined[i]
             if escape:
@@ -551,17 +579,39 @@ class StreamingPostProcessor:
                 in_string = not in_string
                 i += 1
                 continue
-            # Look for ``` ``` `` outside string literals.
-            if not in_string and c == "`" and combined[i : i + 3] == "```":
-                fence_idx = i
-                break
+            if not in_string:
+                if c in "{[":
+                    depth += 1
+                    i += 1
+                    continue
+                if c in "}]":
+                    depth -= 1
+                    if depth <= 0:
+                        # JSON root just closed at index ``i`` (the
+                        # closing brace/bracket itself). Capture and
+                        # break — we'll truncate to ``combined[:i+1]``
+                        # (inclusive of the closing brace) below.
+                        # The non-stream path's
+                        # ``rfind('{') ... endswith('}')`` peel does
+                        # the same thing post-hoc. Defensive clamp on
+                        # negative depth (malformed unbalanced output)
+                        # — keep depth == 0 so subsequent processing
+                        # still treats the cursor as outside JSON.
+                        depth = 0
+                        json_root_closed_at = i
+                        break
+                    i += 1
+                    continue
             i += 1
 
-        if fence_idx >= 0:
-            payload = combined[:fence_idx]
-            payload = payload.rstrip("\r\n")
+        if json_root_closed_at >= 0:
+            # JSON root closed at this position. Emit through the
+            # closing brace; suppress everything after (wrapper
+            # explanation, closing fence, stray whitespace) — this
+            # is what the non-stream ``extract_json_from_response``
+            # peels do post-hoc, applied to streaming.
+            payload = combined[: json_root_closed_at + 1]
             self._json_fence_state = "done"
-            # Don't update the in-string flags — we're done.
             return payload
 
         # No complete fence yet. Compute the minimum suffix-hold so the
@@ -600,25 +650,27 @@ class StreamingPostProcessor:
             # Snapshot the END-of-buffer flags (== start of next chunk).
             self._json_fence_in_string = in_string
             self._json_fence_string_escape = escape
+            self._json_fence_bracket_depth = depth
             return combined
         if hold_len >= len(combined):
             # The whole buffer is suspicious tail. The flags at the
             # start of this tail are the snapshot we entered with —
-            # leave ``_json_fence_in_string`` / ``_string_escape``
-            # untouched (they already reflect that boundary).
+            # leave instance fields untouched (they already reflect
+            # that boundary).
             self._json_fence_tail = combined
             return ""
         emit = combined[:-hold_len]
         self._json_fence_tail = combined[-hold_len:]
         # Snapshot the flags AT the start of the held tail by
         # re-walking from the prior snapshot through ``emit``. Held
-        # tail will never include a quote (the hold chars are ``\\n``
-        # / ``\\r`` / ``` ` ``), so this is a defensive replay rather
-        # than load-bearing — but it keeps the next-chunk walker
-        # mechanically correct.
-        prior_in_string, prior_escape = (
+        # tail will never include a quote / brace (the hold chars
+        # are ``\\n`` / ``\\r`` / ``` ` ``), so this is a defensive
+        # replay rather than load-bearing — but it keeps the
+        # next-chunk walker mechanically correct.
+        prior_in_string, prior_escape, prior_depth = (
             self._json_fence_in_string,
             self._json_fence_string_escape,
+            self._json_fence_bracket_depth,
         )
         for c in emit:
             if prior_escape:
@@ -629,8 +681,15 @@ class StreamingPostProcessor:
                 continue
             if c == '"':
                 prior_in_string = not prior_in_string
+                continue
+            if not prior_in_string:
+                if c in "{[":
+                    prior_depth += 1
+                elif c in "}]":
+                    prior_depth = max(prior_depth - 1, 0)
         self._json_fence_in_string = prior_in_string
         self._json_fence_string_escape = prior_escape
+        self._json_fence_bracket_depth = prior_depth
         return emit
 
     def _filter_events_for_json_fence(
@@ -1331,6 +1390,7 @@ class StreamingPostProcessor:
         self._json_fence_tail = ""
         self._json_fence_in_string = False
         self._json_fence_string_escape = False
+        self._json_fence_bracket_depth = 0
         # Forced-prefix swallow buffer reset to baseline. The route layer
         # re-seeds via ``seed_forced_assistant_prefix`` after ``reset()``
         # when the request carries ``forced_assistant_prefix``; without

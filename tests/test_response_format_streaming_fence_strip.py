@@ -277,6 +277,60 @@ class TestJsonObjectFenceStripping:
         assert joined == '{"answer": 42}'
         assert "Let me think" not in joined
 
+    def test_trailing_prose_after_json_root_suppressed(self):
+        """Codex r5 BLOCKING: a fenced model output is not the only
+        wrapper shape — some models emit valid JSON followed by
+        explanatory prose with or without a triple-backtick code
+        block. ``response_format=json_object`` promises the client
+        ONLY the JSON object; the streaming state machine must
+        truncate at the closing brace of the JSON root, matching
+        the non-stream ``rfind('{') ... endswith('}')`` peel."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            [
+                '{"k": 1}\nHere is some code:\n```python\nx = 1\n```',
+            ],
+        )
+        # Only the JSON root — no trailing prose, no fenced code.
+        assert joined == '{"k": 1}'
+
+    def test_trailing_prose_no_fence_after_json_root(self):
+        """Even without any closing fence at all, prose after the
+        JSON root must be suppressed."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            [
+                '{"k": 1}',
+                "\n\nThat's the answer!",
+            ],
+        )
+        assert joined == '{"k": 1}'
+
+    def test_nested_json_root_close_only_at_outermost(self):
+        """Bracket-depth tracking must NOT trigger on inner
+        ``}``/``]`` — only when depth returns to 0 (outermost root
+        closes)."""
+        cfg = _make_cfg()
+        pp = StreamingPostProcessor(cfg, json_mode=True)
+        pp.reset()
+        joined = _stream_chunks(
+            pp,
+            [
+                '```json\n{"outer": {"inner": [1, 2, 3]}, "more": true}\n```',
+            ],
+        )
+        assert json.loads(joined) == {
+            "outer": {"inner": [1, 2, 3]},
+            "more": True,
+        }
+        assert joined == '{"outer": {"inner": [1, 2, 3]}, "more": true}'
+
     def test_triple_backticks_inside_json_string_preserved(self):
         """Codex r1 BLOCKING: a JSON STRING VALUE containing literal
         triple-backticks must NOT be truncated by the closing-fence
@@ -337,24 +391,40 @@ class TestStreamEventMetadataPreservation:
 
     def test_metadata_preserved_on_content_event(self):
         """A content event with metadata must keep that metadata
-        after the fence-strip filter runs."""
+        after the fence-strip filter runs.
+
+        Codex r5 NIT: drive the state machine into ``"inside"``
+        through the public ``process_chunk`` surface so this test
+        exercises an already-in-stream rewrite (not the trivial
+        ``"scan"``-then-find-``{`` path which doesn't touch the
+        rewrite code path most of the time)."""
         from vllm_mlx.domain.events import StreamEvent
 
         cfg = _make_cfg()
         pp = StreamingPostProcessor(cfg, json_mode=True)
         pp.reset()
-        # Directly invoke the filter so we can inject metadata.
-        # First seed the state machine into "inside" so the content
-        # passes through.
+        # Drive state machine into ``"inside"`` and consume the
+        # opening ``{`` via the public process_chunk surface — this
+        # ensures we're testing the in-stream rewrite path that
+        # production deltas hit.
+        pp.process_chunk(_make_output('{"first": 0, '))
+        assert pp._json_fence_state == "inside"
+        # Now inject a synthesised content event WITH metadata and
+        # verify the filter pass preserves it. The content does NOT
+        # close the JSON root, so the filter walks the bytes through
+        # ``_guard_closing_fence`` and rewrites with ``dataclasses.replace``.
         ev = StreamEvent(
             type="content",
-            content='{"k": 1}',
+            content='"second": "value"',
             metadata={"prompt_tokens": 7, "completion_tokens": 3},
             tool_calls_detected=False,
         )
         out = pp._filter_events_for_json_fence([ev])
         assert len(out) == 1
         assert out[0].type == "content"
+        # Content survived (we're inside JSON, no fence here).
+        assert out[0].content == '"second": "value"'
+        # Metadata is the load-bearing assertion.
         assert out[0].metadata == {"prompt_tokens": 7, "completion_tokens": 3}
 
     def test_finish_event_fields_preserved(self):
