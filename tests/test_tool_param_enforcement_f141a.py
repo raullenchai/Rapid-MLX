@@ -154,6 +154,27 @@ class TestFormatEnforcement:
         tools = [_tool("f", {"x": {"type": "string", "format": "my-custom-format"}})]
         _validate_tool_call_params([_call("f", '{"x": "anything"}')], tools)
 
+    def test_date_time_requires_timezone_offset(self):
+        """codex r2 BLOCKING: RFC 3339 ``date-time`` requires a
+        timezone offset (``Z`` or ``±HH:MM``). A naive datetime
+        like ``2024-01-15T10:30:00`` (no tz) used to slip past
+        ``datetime.fromisoformat`` and pass as 200."""
+        import json as _json
+
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [_tool("f", {"x": {"type": "string", "format": "date-time"}})]
+        with pytest.raises(HTTPException):
+            _validate_tool_call_params(
+                [_call("f", _json.dumps({"x": "2024-01-15T10:30:00"}))],
+                tools,
+            )
+        # +00:00 explicit offset must pass.
+        _validate_tool_call_params(
+            [_call("f", _json.dumps({"x": "2024-01-15T10:30:00+00:00"}))],
+            tools,
+        )
+
 
 # ---------------------------------------------------------------------------
 # multipleOf enforcement
@@ -263,3 +284,31 @@ class TestUniqueItemsEnforcement:
             )
         ]
         _validate_tool_call_params([_call("tags", '{"items": ["a", "a"]}')], tools)
+
+    def test_numerically_equal_int_and_float_count_as_duplicate(self):
+        """codex r2 BLOCKING: JSON-schema uniqueItems compares numeric
+        *value*, not representation. ``[1, 1.0]`` must be rejected as
+        a duplicate. Previously ``json.dumps`` keying made them
+        distinct and silently let it pass."""
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [
+            _tool(
+                "nums",
+                {"items": {"type": "array", "uniqueItems": True}},
+            )
+        ]
+        with pytest.raises(HTTPException):
+            _validate_tool_call_params([_call("nums", '{"items": [1, 1.0]}')], tools)
+
+    def test_unique_numbers_pass(self):
+        """Negative control for the above."""
+        from vllm_mlx.service.helpers import _validate_tool_call_params
+
+        tools = [
+            _tool(
+                "nums",
+                {"items": {"type": "array", "uniqueItems": True}},
+            )
+        ]
+        _validate_tool_call_params([_call("nums", '{"items": [1, 2, 3.5]}')], tools)

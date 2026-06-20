@@ -642,16 +642,15 @@ def validate_param_value(value: str, schema: dict) -> tuple[bool, str | None]:
                         f"Value {parsed} is not a multiple of {multiple_of}",
                     )
 
-    # uniqueItems — for arrays. Items must be hashable for ``set()``
-    # to work; nested dicts / lists are skipped (the JSON-schema spec
-    # uses structural equality, which Python doesn't give us for free
-    # on lists/dicts without a deep-equal pass). We use a JSON-canonical
-    # serialisation per item so structurally equal dicts compare equal.
+    # uniqueItems — for arrays. JSON-schema uses *value* equality, not
+    # JSON-text equality, so we need a canonicalisation that respects
+    # number equality (``1`` and ``1.0`` are duplicates per spec) and
+    # nested-dict structural equality. codex r2 BLOCKING: the previous
+    # ``json.dumps`` keying treated ``1`` and ``1.0`` as different and
+    # let real duplicates through.
     if isinstance(parsed, list) and schema.get("uniqueItems") is True:
         try:
-            canonical = [
-                json.dumps(item, sort_keys=True, ensure_ascii=False) for item in parsed
-            ]
+            canonical = [_uniqueitems_canonical(item) for item in parsed]
         except TypeError:
             # Non-JSON-serialisable item somehow leaked in (parsed came
             # from ``json.loads``, so this is unreachable in practice
@@ -722,14 +721,22 @@ def _is_date_time(value: str) -> bool:
     # pre-3.11 Pythons, so swap it for ``+00:00`` first.
     candidate = value.replace("Z", "+00:00") if value.endswith("Z") else value
     try:
-        datetime.datetime.fromisoformat(candidate)
+        dt = datetime.datetime.fromisoformat(candidate)
     except (ValueError, TypeError):
         return False
     # RFC 3339 requires the ``T`` separator (or a space, per the
     # spec's relaxation note) between date and time. ``fromisoformat``
     # accepts a bare ``YYYY-MM-DD`` on 3.11+, which is the wrong
     # format — date, not date-time. Require ``T`` or space.
-    return "T" in value or " " in value
+    if "T" not in value and " " not in value:
+        return False
+    # codex r2 BLOCKING: RFC 3339 also requires a timezone offset (``Z``
+    # or ``±HH:MM``). ``datetime.fromisoformat`` accepts a bare
+    # ``2024-01-15T10:30:00`` as a naive datetime, which JSON-schema's
+    # ``date-time`` format does NOT permit. Reject naive results.
+    if dt.tzinfo is None:
+        return False
+    return True
 
 
 _EMAIL_RE = re.compile(r"[^@\s]+@[^@\s]+\.[^@\s]+")
@@ -741,3 +748,41 @@ _FORMAT_VALIDATORS: dict[str, Callable[[str], bool]] = {
     "date": _is_date,
     "date-time": _is_date_time,
 }
+
+
+def _uniqueitems_canonical(value: object) -> object:
+    """Build a hashable key for ``value`` that respects JSON-schema's
+    value-equality rules.
+
+    codex r2 BLOCKING fix: ``json.dumps`` keying made ``1`` and ``1.0``
+    distinct, but JSON-schema considers numerically-equal numbers as
+    duplicates. Walk the structure recursively, normalising every
+    numeric leaf to a ``float`` (with bools kept separate) and every
+    dict / list to a tuple that hashable ``set()`` can compare.
+    """
+    if isinstance(value, bool):
+        # Booleans are their own JSON type — keep separate from ints.
+        return ("bool", value)
+    if isinstance(value, (int, float)):
+        # Normalise int / float to a single canonical numeric form so
+        # ``1`` and ``1.0`` hash equal (per JSON-schema value equality).
+        # ``float`` is the lossy direction, but JSON-schema's
+        # ``uniqueItems`` rule explicitly compares numeric value, not
+        # representation.
+        return ("num", float(value))
+    if isinstance(value, str):
+        return ("str", value)
+    if value is None:
+        return ("null",)
+    if isinstance(value, list):
+        return ("arr", tuple(_uniqueitems_canonical(v) for v in value))
+    if isinstance(value, dict):
+        # Sort by key for structural-equality semantics regardless of
+        # JSON object key order.
+        return (
+            "obj",
+            tuple(sorted((k, _uniqueitems_canonical(v)) for k, v in value.items())),
+        )
+    # Unknown type — fall back to repr so ``set()`` still works without
+    # raising ``TypeError``. Practically unreachable from ``json.loads``.
+    return ("other", repr(value))
