@@ -468,9 +468,34 @@ class StreamingPostProcessor:
         name = fn.get("name")
         return name if isinstance(name, str) and name else None
 
-    def _apply_forced_tool_choice_filter(
-        self, tool_calls: list[dict]
-    ) -> list[dict]:
+    @staticmethod
+    def _forced_tool_choice_arguments_violate_object_root(args_str: str | None) -> bool:
+        """Return True when ``args_str`` parses as JSON but is NOT a
+        JSON object (dict).
+
+        OpenAI spec: ``tool_calls[i].function.arguments`` is a string
+        encoding a JSON object — every declared tool schema is
+        ``{"type":"object","properties":{…}}``. A bare integer
+        (``"1234567890"``), bare string (``"☉ Paris output"``), or
+        array root is the model's scratch — not a real call. F-200
+        finalize path needs this guard too; sharing the helper between
+        the per-delta filter and the finalize / fallback paths keeps
+        the two surfaces from drifting.
+
+        Returns False when ``args_str`` is missing, empty / whitespace,
+        or does not parse as JSON at all (mid-stream fragments may not
+        be a complete JSON document yet; the parser path retries on
+        the next delta).
+        """
+        if not args_str or not args_str.strip():
+            return False
+        try:
+            parsed = json.loads(args_str)
+        except (ValueError, TypeError):
+            return False
+        return not isinstance(parsed, dict)
+
+    def _apply_forced_tool_choice_filter(self, tool_calls: list[dict]) -> list[dict]:
         """Suppress streaming tool_calls deltas that violate a forced
         ``tool_choice`` named-function contract.
 
@@ -512,9 +537,7 @@ class StreamingPostProcessor:
             wrapped_name = (
                 fn.get("name") if fn and isinstance(fn.get("name"), str) else None
             )
-            flat_name = (
-                tc.get("name") if isinstance(tc.get("name"), str) else None
-            )
+            flat_name = tc.get("name") if isinstance(tc.get("name"), str) else None
             anchor_name = wrapped_name or flat_name
             if anchor_name is None:
                 # Continuation fragment — defer to cap-layer routing.
@@ -532,28 +555,20 @@ class StreamingPostProcessor:
             # present and is non-empty, require it to parse as a
             # JSON object.
             wrapped_args = (
-                fn.get("arguments") if fn and isinstance(fn.get("arguments"), str) else None
+                fn.get("arguments")
+                if fn and isinstance(fn.get("arguments"), str)
+                else None
             )
             flat_args = (
                 tc.get("arguments") if isinstance(tc.get("arguments"), str) else None
             )
             args_str = wrapped_args if wrapped_args is not None else flat_args
-            if args_str and args_str.strip():
-                try:
-                    parsed = json.loads(args_str)
-                except (ValueError, TypeError):
-                    # Args don't parse as JSON at all — could be a
-                    # mid-stream fragment that hasn't accumulated yet,
-                    # so let it through; downstream validators will
-                    # log if the final assembly is still broken.
-                    parsed = ...  # sentinel
-                if parsed is not ... and not isinstance(parsed, dict):
-                    # F-200 root case: ``arguments`` parsed as JSON
-                    # but the root type is not ``object`` (bare
-                    # int / string / list). Schema-violating —
-                    # drop the anchor and route fragments to drop.
-                    self._no_index_last_dropped = True
-                    continue
+            if self._forced_tool_choice_arguments_violate_object_root(args_str):
+                # F-200 root case: ``arguments`` parsed as JSON but
+                # the root type is not ``object``. Schema-violating —
+                # drop the anchor and route fragments to drop.
+                self._no_index_last_dropped = True
+                continue
             filtered.append(tc)
         return filtered
 
@@ -1075,9 +1090,7 @@ class StreamingPostProcessor:
                 # ``parallel_tool_calls=false`` overflow. The forced-
                 # name filter drops the scratch anchor first so the
                 # cap admits the legitimate forced call.
-                _tc_list = self._apply_forced_tool_choice_filter(
-                    result["tool_calls"]
-                )
+                _tc_list = self._apply_forced_tool_choice_filter(result["tool_calls"])
                 allowed_tcs = self._apply_parallel_cap(_tc_list)
                 if not allowed_tcs:
                     self.tool_calls_detected = True
@@ -1379,9 +1392,7 @@ class StreamingPostProcessor:
                 # ``parallel_tool_calls=false`` overflow. The forced-
                 # name filter drops the scratch anchor first so the
                 # cap admits the legitimate forced call.
-                _tc_list = self._apply_forced_tool_choice_filter(
-                    result["tool_calls"]
-                )
+                _tc_list = self._apply_forced_tool_choice_filter(result["tool_calls"])
                 allowed_tcs = self._apply_parallel_cap(_tc_list)
                 if not allowed_tcs:
                     self.tool_calls_detected = True
@@ -1527,9 +1538,7 @@ class StreamingPostProcessor:
                 # ``parallel_tool_calls=false`` overflow. The forced-
                 # name filter drops the scratch anchor first so the
                 # cap admits the legitimate forced call.
-                _tc_list = self._apply_forced_tool_choice_filter(
-                    result["tool_calls"]
-                )
+                _tc_list = self._apply_forced_tool_choice_filter(result["tool_calls"])
                 allowed_tcs = self._apply_parallel_cap(_tc_list)
                 if not allowed_tcs:
                     self.tool_calls_detected = True
@@ -1712,19 +1721,26 @@ class StreamingPostProcessor:
             )
             if result.tools_called:
                 # F-200: forced ``tool_choice`` filter on the finalize
-                # cross-format recovery path. ``extract_tool_calls``
-                # on the configured parser may return multiple calls
-                # (a scratch ``<tool_call>`` inside ``<think>`` plus
-                # the real one) — drop any whose name does not match
-                # the forced choice. When ALL calls are filtered out,
-                # fall through to the cross-format fallback (parser
-                # may have a different recovery path).
+                # ``extract_tool_calls`` recovery path. The parser
+                # may return multiple calls (a scratch
+                # ``<tool_call>`` inside ``<think>`` with bare int /
+                # string ``arguments`` PLUS the real call) — drop
+                # any whose name does not match the forced choice
+                # OR whose ``arguments`` parses as a JSON non-object
+                # (codex r1 BLOCKING: filtering by name alone leaks
+                # a same-name scratch call with primitive args).
                 _forced_name = self._forced_tool_choice_name()
-                _filtered_calls = (
-                    [tc for tc in result.tool_calls if tc.get("name") == _forced_name]
-                    if _forced_name
-                    else list(result.tool_calls)
-                )
+                if _forced_name:
+                    _filtered_calls = [
+                        tc
+                        for tc in result.tool_calls
+                        if tc.get("name") == _forced_name
+                        and not self._forced_tool_choice_arguments_violate_object_root(
+                            tc.get("arguments")
+                        )
+                    ]
+                else:
+                    _filtered_calls = list(result.tool_calls)
                 if _filtered_calls:
                     events.append(
                         self._build_tool_call_event(
@@ -1756,12 +1772,21 @@ class StreamingPostProcessor:
                     )
                     fb_tcs = None
                 if fb_tcs:
-                    # F-200: same forced-name filter on the cross-
-                    # format fallback path.
+                    # F-200: forced ``tool_choice`` filter on the
+                    # cross-format fallback recovery path. Apply BOTH
+                    # name AND arguments-root-object validation —
+                    # codex r1 BLOCKING: name-only filtering let
+                    # same-name scratch calls with primitive / list
+                    # ``arguments`` leak through.
                     _forced_name = self._forced_tool_choice_name()
                     if _forced_name:
                         fb_tcs = [
-                            tc for tc in fb_tcs if tc.function.name == _forced_name
+                            tc
+                            for tc in fb_tcs
+                            if tc.function.name == _forced_name
+                            and not self._forced_tool_choice_arguments_violate_object_root(
+                                tc.function.arguments
+                            )
                         ]
                 if fb_tcs:
                     logger.info(

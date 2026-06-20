@@ -138,13 +138,17 @@ class TestForcedNameHelper:
 
 class TestForcedToolChoiceFilter:
     def test_drops_wrong_function_anchor(self):
-        pp = StreamingPostProcessor(
-            _make_cfg(), request=_forced_request("get_weather")
-        )
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
         out = pp._apply_forced_tool_choice_filter(
             [
-                {"index": 0, "function": {"name": "other_tool", "arguments": '{"x":1}'}},
-                {"index": 1, "function": {"name": "get_weather", "arguments": '{"city":"P"}'}},
+                {
+                    "index": 0,
+                    "function": {"name": "other_tool", "arguments": '{"x":1}'},
+                },
+                {
+                    "index": 1,
+                    "function": {"name": "get_weather", "arguments": '{"city":"P"}'},
+                },
             ]
         )
         assert len(out) == 1
@@ -157,13 +161,20 @@ class TestForcedToolChoiceFilter:
         inside ``<think>`` and the MiniMax redirect promotes it to a
         tool_call delta. ``arguments="1234567890"`` parses as a JSON
         integer (not object) — drop per OpenAI schema requirement."""
-        pp = StreamingPostProcessor(
-            _make_cfg(), request=_forced_request("get_weather")
-        )
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
         out = pp._apply_forced_tool_choice_filter(
             [
-                {"index": 0, "function": {"name": "get_weather", "arguments": "1234567890"}},
-                {"index": 1, "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'}},
+                {
+                    "index": 0,
+                    "function": {"name": "get_weather", "arguments": "1234567890"},
+                },
+                {
+                    "index": 1,
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city":"Paris"}',
+                    },
+                },
             ]
         )
         assert len(out) == 1
@@ -174,13 +185,23 @@ class TestForcedToolChoiceFilter:
         been observed emitting ``"arguments":"☉ Paris output output"``
         inside ``<think>``. Bare string is a valid JSON value but not
         an object — drop."""
-        pp = StreamingPostProcessor(
-            _make_cfg(), request=_forced_request("get_weather")
-        )
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
         out = pp._apply_forced_tool_choice_filter(
             [
-                {"index": 0, "function": {"name": "get_weather", "arguments": '"☉ Paris output output"'}},
-                {"index": 1, "function": {"name": "get_weather", "arguments": '{"city":"Paris"}'}},
+                {
+                    "index": 0,
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '"☉ Paris output output"',
+                    },
+                },
+                {
+                    "index": 1,
+                    "function": {
+                        "name": "get_weather",
+                        "arguments": '{"city":"Paris"}',
+                    },
+                },
             ]
         )
         assert len(out) == 1
@@ -190,9 +211,7 @@ class TestForcedToolChoiceFilter:
         """A continuation delta (no name, only argument fragment) must
         pass through — the parallel-cap layer routes it to whichever
         anchor was last admitted."""
-        pp = StreamingPostProcessor(
-            _make_cfg(), request=_forced_request("get_weather")
-        )
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
         out = pp._apply_forced_tool_choice_filter(
             [{"index": 0, "function": {"arguments": '{"city": "Pa'}}]
         )
@@ -213,15 +232,19 @@ class TestForcedToolChoiceFilter:
         """First chunk often carries just ``name`` + ``id`` with empty
         / missing arguments — body streams in later fragments. Must
         not drop these as ``parsed != object``."""
-        pp = StreamingPostProcessor(
-            _make_cfg(), request=_forced_request("get_weather")
-        )
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
         out = pp._apply_forced_tool_choice_filter(
             [{"index": 0, "id": "call_x", "function": {"name": "get_weather"}}]
         )
         assert len(out) == 1
         out2 = pp._apply_forced_tool_choice_filter(
-            [{"index": 0, "id": "call_x", "function": {"name": "get_weather", "arguments": ""}}]
+            [
+                {
+                    "index": 0,
+                    "id": "call_x",
+                    "function": {"name": "get_weather", "arguments": ""},
+                }
+            ]
         )
         assert len(out2) == 1
 
@@ -241,7 +264,11 @@ class TestStreamForcedReasoningEndToEnd:
         out = []
         for i, (text, finished) in enumerate(chunks):
             evs = processor.process_chunk(
-                _make_output(text=text, finished=finished, finish_reason=("stop" if finished else None))
+                _make_output(
+                    text=text,
+                    finished=finished,
+                    finish_reason=("stop" if finished else None),
+                )
             )
             out.extend(evs)
         out.extend(processor.finalize())
@@ -261,7 +288,7 @@ class TestStreamForcedReasoningEndToEnd:
         # ``</think>``, real call.
         full = (
             '<tool_call>\n{"name": "get_weather", "arguments": 1234567890}\n</tool_call>\n'
-            '</think>\n'
+            "</think>\n"
             '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
         )
         events = pp.process_chunk(_make_output(text=full, finished=True))
@@ -276,22 +303,21 @@ class TestStreamForcedReasoningEndToEnd:
             for tc in ev.tool_calls or []:
                 all_calls.append(tc)
 
-        # F-200 contract: ALL emitted calls match forced name AND have
-        # parseable-object arguments.
-        for tc in all_calls:
-            fn = tc.get("function") or {}
-            assert fn.get("name") == "get_weather"
-            args_str = fn.get("arguments")
-            # Accumulated full body (post-final-chunk) MUST be a JSON
-            # object. Mid-stream fragments would not be tested here
-            # since this is single-chunk replay.
-            if args_str:
-                parsed = json.loads(args_str)
-                assert isinstance(parsed, dict)
-                assert parsed.get("city", "").lower() == "paris"
-
-        # Must emit at least one call (real one survived).
-        assert all_calls, "real forced call was dropped"
+        # F-200 contract: EXACTLY ONE surviving call AND that call
+        # matches the forced name AND its ``arguments`` parse as a
+        # JSON object. Codex r1 BLOCKING — the earlier draft asserted
+        # only "every emitted call is valid" which would accept
+        # duplicate valid calls; the spec requires a single tool_call
+        # per forced ``tool_choice``.
+        assert len(all_calls) == 1, (
+            f"expected exactly 1 surviving tool_call, got {len(all_calls)}: {all_calls!r}"
+        )
+        tc = all_calls[0]
+        fn = tc.get("function") or {}
+        assert fn.get("name") == "get_weather"
+        parsed = json.loads(fn["arguments"])
+        assert isinstance(parsed, dict)
+        assert parsed.get("city", "").lower() == "paris"
 
     def test_qwen3_thinking_stream_auto_keeps_call(self):
         """Same model, no forced ``tool_choice`` (``auto``): the filter
@@ -301,7 +327,7 @@ class TestStreamForcedReasoningEndToEnd:
         pp.reset()
 
         full = (
-            '</think>\n'
+            "</think>\n"
             '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
         )
         events = pp.process_chunk(_make_output(text=full, finished=True))
@@ -314,6 +340,38 @@ class TestStreamForcedReasoningEndToEnd:
             fn = tc.get("function") or {}
             assert fn.get("name") == "get_weather"
 
+    def test_finalize_extract_drops_same_name_primitive_args(self):
+        """Codex r1 BLOCKING #1 — when the streaming parser missed
+        the call and ``finalize()`` runs ``extract_tool_calls`` over
+        the accumulated buffer, the parser may return both a scratch
+        call (same forced name, primitive ``arguments``) AND the real
+        call. Filtering by name alone leaks the scratch; the finalize
+        path must apply the same arguments-root-object validation."""
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, request=_forced_request("get_weather"))
+        pp.reset()
+        # Seed the tool buffer so finalize's extract_tool_calls runs
+        # the hermes parser over a buffer containing both shapes —
+        # bypasses the streaming detection entirely (mimics the path
+        # where the per-chunk parser holds bytes and only the buffer
+        # carries them).
+        pp.tool_accumulated_text = (
+            '<tool_call>\n{"name": "get_weather", "arguments": 1234567890}\n</tool_call>\n'
+            '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
+        )
+        events = pp.finalize()
+        all_calls = [
+            tc
+            for ev in events
+            if ev.type == "tool_call"
+            for tc in (ev.tool_calls or [])
+        ]
+        assert len(all_calls) == 1, f"finalize leaked a scratch call: {all_calls!r}"
+        fn = all_calls[0].get("function") or {}
+        parsed = json.loads(fn["arguments"])
+        assert isinstance(parsed, dict)
+        assert parsed.get("city") == "Paris"
+
     def test_non_reasoning_stream_forced_keeps_call(self):
         """Hermes parser without a reasoning parser (e.g. qwen3-instruct):
         forced ``tool_choice`` + stream still surfaces the call with
@@ -322,9 +380,7 @@ class TestStreamForcedReasoningEndToEnd:
         pp = StreamingPostProcessor(cfg, request=_forced_request("get_weather"))
         pp.reset()
 
-        full = (
-            '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
-        )
+        full = '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
         events = pp.process_chunk(_make_output(text=full, finished=True))
         events.extend(pp.finalize())
 
