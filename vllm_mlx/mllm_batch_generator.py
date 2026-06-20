@@ -605,13 +605,55 @@ class MLLMBatchGenerator:
             getattr(model_config, "image_token_index", None) if model_config else None
         )
 
-        # Prepare inputs using mlx_vlm
-        inputs = prepare_inputs(
-            self.processor,
-            images=all_images if all_images else None,
-            prompts=request.prompt,
-            image_token_index=image_token_index,
-        )
+        # Prepare inputs using mlx_vlm.
+        #
+        # mlx_vlm's ``prepare_inputs`` opens each saved image via PIL,
+        # which raises ``OSError`` ("broken data stream when reading
+        # image file"), ``UnidentifiedImageError``, or
+        # ``ValueError("Failed to load image from <path>: cannot
+        # identify image file ...")`` for corrupted / unsupported
+        # payloads (e.g. mangled-IDAT PNGs, ``data:image/png;base64,``
+        # of "Hello World", SVG-as-PNG, etc.).
+        #
+        # Pre-fix:
+        #   - ``OSError`` escaped the narrow ``except (ValueError,
+        #     RuntimeError)`` in ``MLLMScheduler._step_no_queue`` and
+        #     reached the broad ``except Exception`` in
+        #     ``MLLMScheduler._process_loop``, which logged + retried
+        #     the same broken request forever (F-061: 10 KB image →
+        #     pegged MLLM worker, easy single-request CPU DoS).
+        #   - ``ValueError("Failed to load image …")`` WAS caught by
+        #     ``_step_no_queue`` but the client-error matcher only
+        #     looked for ``"Failed to process image"`` — the request
+        #     was filed as a server error (``finish_reason="length"``,
+        #     ``error=None``), producing a silent ``200 OK`` with
+        #     ``content=null`` and ``prompt_tokens=0`` (F-062).
+        #
+        # Normalize every image-decode failure to the canonical
+        # ``Failed to process image: …`` ``ValueError`` so:
+        #   * ``_step_no_queue``'s ``except (ValueError, RuntimeError)``
+        #     catches it (no infinite retry),
+        #   * ``is_client_error`` fires on the ``"Failed to process
+        #     image"`` substring (clean ``error`` field), and
+        #   * ``routes/chat.py`` / ``routes/anthropic.py`` /
+        #     ``routes/responses.py`` map the marker to HTTP 400 with
+        #     an actionable message.
+        try:
+            inputs = prepare_inputs(
+                self.processor,
+                images=all_images if all_images else None,
+                prompts=request.prompt,
+                image_token_index=image_token_index,
+            )
+        except Exception as e:
+            # Already-canonical messages (the ``process_image_input``
+            # branch above raises ``ValueError("Failed to process image:
+            # …")``) pass through unchanged; everything else gets the
+            # canonical prefix so downstream matchers fire.
+            msg = str(e)
+            if msg.startswith("Failed to process image"):
+                raise
+            raise ValueError(f"Failed to process image: {msg}") from e
 
         request.input_ids = inputs.get("input_ids")
         request.pixel_values = inputs.get("pixel_values")
