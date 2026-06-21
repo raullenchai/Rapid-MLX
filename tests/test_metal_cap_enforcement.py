@@ -338,6 +338,7 @@ class TestProjectedKVAdmissionGate:
         model.config.num_hidden_layers = 80
         model.config.num_key_value_heads = 8
         model.config.head_dim = 128
+        model.config.torch_dtype = "float16"
         sched = Scheduler(model=model, tokenizer=MagicMock(), config=config)
         per_tok = sched._resolve_kv_bytes_per_token()
         assert per_tok == 2 * 80 * 8 * 128 * 2, (
@@ -425,6 +426,134 @@ class TestProjectedKVAdmissionGate:
             "non-string request_id must not break the D-METAL-CAP "
             "WARNING path — codex round 3 NIT #4."
         )
+
+
+class TestInFlightKVReservation:
+    """Codex round 5 BLOCKING #1: the admission gate must include
+    KV reservations of every already-admitted-but-not-finished
+    request in its check. Without this, N concurrent admits each
+    individually under cap will STACK and blow the cap collectively
+    — ``mx.get_active_memory`` lags the allocator until the
+    BatchGenerator picks up each request and runs its first step."""
+
+    def _make_scheduler(self, kv_bytes_per_token: int = 1_000_000):
+        config = SchedulerConfig(
+            max_num_seqs=64,
+            max_concurrent_requests=128,
+            enable_prefix_cache=False,
+            use_memory_aware_cache=False,
+            use_paged_cache=False,
+            gpu_memory_utilization=0.5,
+            metal_cap_kv_bytes_per_token=kv_bytes_per_token,
+        )
+        return Scheduler(
+            model=MagicMock(), tokenizer=MagicMock(), config=config
+        )
+
+    def test_in_flight_reservations_counted_in_cap_check(self):
+        """3 already-admitted requests of ~25 GB each → admission
+        of a 4th request that ALONE would fit must reject because
+        the cumulative reservations push over cap."""
+        sched = self._make_scheduler(kv_bytes_per_token=1_000_000)
+        # Pre-seed 3 in-flight requests of ~25 GB each (25_000 tokens)
+        for i in range(3):
+            prev = _make_request(rid=f"prev-{i}", tokens=25_000)
+            prev.sampling_params = SamplingParams(max_tokens=1)
+            sched.requests[prev.request_id] = prev
+        # The NEW request alone: 25 GB
+        new_req = _make_request(rid="new", tokens=25_000)
+        new_req.sampling_params = SamplingParams(max_tokens=1)
+        # Cap is 100 GB, active is 10 GB. Alone, new_req would fit
+        # (10 + 25 = 35 < 100). With 3 × 25 GB reserved, the cap
+        # check sees 10 + 75 + 25 = 110 GB > 100 GB → reject.
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(sched, "_current_metal_active_bytes", return_value=10 * 10**9),
+            pytest.raises(BackpressureError, match="reserved KV"),
+        ):
+            sched._enforce_metal_cap_at_admission(new_req)
+        assert sched.num_metal_cap_violations == 1
+
+    def test_no_in_flight_reservations_does_not_block(self):
+        """Empty in-flight set → reserved_kv == 0, gate behaves
+        exactly like the round-4 single-request projection path."""
+        sched = self._make_scheduler(kv_bytes_per_token=1_000_000)
+        new_req = _make_request(rid="new", tokens=10_000)
+        new_req.sampling_params = SamplingParams(max_tokens=10)
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(sched, "_current_metal_active_bytes", return_value=10 * 10**9),
+        ):
+            # 10 GB active + 0 reserved + ~10 GB projected = 20 GB << 100 GB
+            sched._enforce_metal_cap_at_admission(new_req)
+        assert sched.num_metal_cap_violations == 0
+
+    def test_sum_in_flight_kv_bytes_returns_zero_without_per_tok(self):
+        """When per-token KV size cannot be resolved (per_tok == 0,
+        e.g. unit-test stub model with no .config), the helper
+        must short-circuit to 0 rather than wandering into
+        ``_estimate_request_kv_bytes`` which also returns 0 — keeps
+        the inner loop cheap on the back-compat path."""
+        sched = self._make_scheduler(kv_bytes_per_token=0)
+        # Pre-seed some requests; with per_tok=0, the sum must be 0.
+        for i in range(5):
+            req = _make_request(rid=f"req-{i}", tokens=10_000)
+            sched.requests[req.request_id] = req
+        # Force the auto-derivation to return 0 (no .config on model)
+        with patch.object(sched, "_resolve_kv_bytes_per_token", return_value=0):
+            total = sched._sum_in_flight_kv_bytes()
+        assert total == 0
+
+
+class TestDtypeInference:
+    """Codex round 5 BLOCKING #2: auto-derived per-token KV bytes
+    must reflect the model dtype rather than hardcoding ``2`` for
+    fp16/bf16. Operators running fp32 KV cache need the gate to
+    over-estimate, not under-estimate."""
+
+    def _build_sched_with_dtype(self, dtype):
+        config = SchedulerConfig(
+            max_num_seqs=8,
+            max_concurrent_requests=64,
+            enable_prefix_cache=False,
+            use_memory_aware_cache=False,
+            use_paged_cache=False,
+            gpu_memory_utilization=0.5,
+            metal_cap_kv_bytes_per_token=0,  # exercise auto-derivation
+        )
+        model = MagicMock()
+        model.config.num_hidden_layers = 4
+        model.config.num_key_value_heads = 2
+        model.config.head_dim = 64
+        model.config.torch_dtype = dtype
+        return Scheduler(
+            model=model, tokenizer=MagicMock(), config=config
+        )
+
+    def test_fp16_uses_2_bytes(self):
+        sched = self._build_sched_with_dtype("float16")
+        per_tok = sched._resolve_kv_bytes_per_token()
+        # 2 (K+V) × 4 layers × 2 kv_heads × 64 head_dim × 2 bytes = 2048
+        assert per_tok == 2 * 4 * 2 * 64 * 2
+
+    def test_bf16_uses_2_bytes(self):
+        sched = self._build_sched_with_dtype("bfloat16")
+        per_tok = sched._resolve_kv_bytes_per_token()
+        assert per_tok == 2 * 4 * 2 * 64 * 2
+
+    def test_fp32_uses_4_bytes(self):
+        sched = self._build_sched_with_dtype("float32")
+        per_tok = sched._resolve_kv_bytes_per_token()
+        # Should DOUBLE the fp16 size — the round-5 fix.
+        assert per_tok == 2 * 4 * 2 * 64 * 4
+
+    def test_unknown_dtype_falls_back_to_4_bytes(self):
+        """Unknown / missing dtype → assume fp32 (largest plausible)
+        so admission gate OVER-estimates KV size. Under-estimating
+        is the unsafe direction."""
+        sched = self._build_sched_with_dtype("some-future-quant-format")
+        per_tok = sched._resolve_kv_bytes_per_token()
+        assert per_tok == 2 * 4 * 2 * 64 * 4
 
 
 class TestMetricsRoute:

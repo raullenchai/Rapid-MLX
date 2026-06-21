@@ -3020,6 +3020,56 @@ class Scheduler:
         except Exception:
             return 0
 
+    def _infer_kv_dtype_bytes(self, model_config: Any) -> int:
+        """Best-effort KV-cache dtype-bytes inference.
+
+        Codex round 5 BLOCKING #2: returns the size in bytes of the
+        KV-cache element dtype. Falls back to ``4`` (fp32) when the
+        dtype cannot be determined, which is the largest plausible
+        dtype for typical MLX deployments — over-estimating is the
+        safe direction (admission rejects a borderline request
+        rather than letting it slip past the cap).
+
+        Reads ``torch_dtype`` (the HuggingFace config convention).
+        Quantized KV-cache deployments are not auto-detected — the
+        operator-tuned ``metal_cap_kv_bytes_per_token`` knob is the
+        right escape hatch for those.
+        """
+        try:
+            dtype_str = ""
+            torch_dtype = getattr(model_config, "torch_dtype", None)
+            if torch_dtype is not None:
+                # ``torch_dtype`` is sometimes a string
+                # (``"float16"``, ``"bfloat16"``) and sometimes a
+                # ``torch.dtype`` whose ``str()`` is e.g.
+                # ``"torch.float16"``.
+                dtype_str = str(torch_dtype).lower()
+            mapping = {
+                "float64": 8,
+                "fp64": 8,
+                "double": 8,
+                "float32": 4,
+                "fp32": 4,
+                "float16": 2,
+                "fp16": 2,
+                "half": 2,
+                "bfloat16": 2,
+                "bf16": 2,
+                "int8": 1,
+                "uint8": 1,
+                "float8": 1,
+                "fp8": 1,
+            }
+            for needle, n in mapping.items():
+                if needle in dtype_str:
+                    return n
+        except Exception:
+            pass
+        # Default: assume the LARGEST plausible dtype (fp32 = 4) so we
+        # over-estimate KV usage and err toward rejection rather than
+        # admitting a request that exceeds the cap.
+        return 4
+
     def _resolve_kv_bytes_per_token(self) -> int:
         """Compute the per-token KV-cache size (cached after first call).
 
@@ -3087,11 +3137,16 @@ class Scheduler:
                     num_heads = _read_int("num_attention_heads")
                     if num_heads > 0:
                         head_dim = hidden_size // num_heads
-                # ``dtype_bytes`` — fp16 is the common assumption.
-                # Quantized KV-cache deployments are safe to OVER-
-                # estimate; the operator-knob branch above lets them
-                # pin a tighter value when needed.
-                dtype_bytes = 2
+                # Codex round 5 BLOCKING #2: derive ``dtype_bytes``
+                # from the model dtype when available. The pre-fix
+                # constant ``2`` (fp16) underestimated fp32 KV
+                # caches by 2× and could admit requests that exceed
+                # the cap despite the projection guard. Fallback is
+                # ``4`` (the largest plausible dtype: fp32) — over-
+                # estimating in the safe direction. Operators on
+                # quantized-KV deployments can still pin a tighter
+                # value via ``metal_cap_kv_bytes_per_token``.
+                dtype_bytes = self._infer_kv_dtype_bytes(model_config)
                 if num_layers > 0 and num_kv_heads > 0 and head_dim > 0:
                     per_tok = 2 * num_layers * num_kv_heads * head_dim * dtype_bytes
         except Exception as e:
@@ -3139,14 +3194,51 @@ class Scheduler:
                 prompt_tokens = len(raw_prompt)
             else:
                 raw = getattr(request, "prompt", "")
-                # Tokens are at most 1 per character for any realistic
-                # tokenizer — an over-estimate is the safe direction.
+                # Codex round 5 NIT #3: for the str fallback (the only
+                # case we hit before tokenization), ``len(prompt)`` =
+                # character count. For typical BPE/SentencePiece this
+                # OVER-estimates token count (~3–5 chars per English
+                # token, ~1.5 per CJK token), which is the safe
+                # direction for an admission gate. The pathological
+                # case is single-byte glyphs that the tokenizer keeps
+                # as single tokens (whitespace runs etc.) — those
+                # still give a 1:1 char:token ratio at WORST, so the
+                # gate never UNDER-estimates token count here.
                 if isinstance(raw, (list, tuple, str)):
                     prompt_tokens = len(raw)
         max_tokens = int(
             getattr(getattr(request, "sampling_params", None), "max_tokens", 0) or 0
         )
         return per_tok * (prompt_tokens + max_tokens)
+
+    def _sum_in_flight_kv_bytes(self) -> int:
+        """Sum projected KV reservations of every in-flight request.
+
+        Codex round 5 BLOCKING #1: ``mx.get_active_memory()`` only
+        reflects the allocator AT THE INSTANT we read it — admitted
+        requests that have not yet been picked up by the BatchGenerator
+        contribute 0 to ``active`` even though they will allocate KV
+        on their first step. Without including their reservations,
+        a burst of concurrent admits each individually under cap will
+        STACK and blow the cap collectively (the multi-client repro
+        path).
+
+        Iterates ``self.requests`` (which holds both waiting and
+        running). Cheap: dict iteration + arithmetic only — no Metal
+        device probe, no lock acquisition (the caller already holds
+        the scheduler lock).
+        """
+        per_tok = self._resolve_kv_bytes_per_token()
+        if per_tok <= 0:
+            return 0
+        total = 0
+        try:
+            requests = self.requests
+        except AttributeError:
+            return 0
+        for req in requests.values():
+            total += self._estimate_request_kv_bytes(req)
+        return int(total)
 
     def _enforce_metal_cap_at_admission(self, request: Request) -> None:
         """D-METAL-CAP: reject the request if Metal active exceeds the cap.
@@ -3190,9 +3282,17 @@ class Scheduler:
             return
         active = self._current_metal_active_bytes()
         projected_kv = self._estimate_request_kv_bytes(request)
+        # Codex round 5 BLOCKING #1: count KV reservations of every
+        # request already admitted but not yet finished. Without this,
+        # a burst of small admits each individually fitting under the
+        # cap stacks up to BLOW the cap collectively — ``active`` lags
+        # the allocator until prefill actually runs.
+        reserved_kv = self._sum_in_flight_kv_bytes()
         # Reject when ALREADY over cap OR when admitting the request
-        # would push the allocator over cap on its own KV grow path.
-        if active < cap and (active + projected_kv) < cap:
+        # would push the allocator over cap on its own KV grow path
+        # OR when the sum of in-flight reservations + this request
+        # would exceed the cap.
+        if active < cap and (active + reserved_kv + projected_kv) < cap:
             return
         self.num_metal_cap_violations += 1
         if not self._metal_cap_warning_logged:
@@ -3206,19 +3306,22 @@ class Scheduler:
             # keeps the warning sane on every input shape.
             rid_str = str(getattr(request, "request_id", ""))[:12]
             logger.warning(
-                "[D-METAL-CAP] Metal active %.1f GB + projected KV "
-                "%.1f GB ≥ cap %.1f GB (gpu_memory_utilization=%.2f) "
-                "— rejecting new request %s with backpressure. Further "
-                "violations will be tracked by "
+                "[D-METAL-CAP] Metal active %.1f GB + reserved KV "
+                "%.1f GB + projected KV %.1f GB ≥ cap %.1f GB "
+                "(gpu_memory_utilization=%.2f) — rejecting new "
+                "request %s with backpressure. Further violations "
+                "will be tracked by "
                 "rapid_mlx_metal_cap_violations_total only.",
                 active / 1e9,
+                reserved_kv / 1e9,
                 projected_kv / 1e9,
                 cap / 1e9,
                 getattr(self.config, "gpu_memory_utilization", 0.0),
                 rid_str,
             )
         raise BackpressureError(
-            f"Metal active {active / 1e9:.1f}GB + projected KV "
+            f"Metal active {active / 1e9:.1f}GB + reserved KV "
+            f"{reserved_kv / 1e9:.1f}GB + projected KV "
             f"{projected_kv / 1e9:.1f}GB would exceed "
             f"gpu_memory_utilization cap {cap / 1e9:.1f}GB "
             f"(D-METAL-CAP); retry after pressure drops"
