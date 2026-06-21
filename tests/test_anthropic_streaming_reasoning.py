@@ -236,9 +236,7 @@ class TestAnthropicStreamingWithReasoningParser:
         # finalize path only emits a text block when
         # ``final_msg.content`` is set; post-fix the rescue surfaces
         # via ``final_msg.reasoning`` so no text block opens.
-        text_starts = [
-            t for t in delta_types if t == ("content_block_start", "text")
-        ]
+        text_starts = [t for t in delta_types if t == ("content_block_start", "text")]
         assert not text_starts, (
             f"D-STOP-THINK regression: finalize correction opened a text "
             f"block; the no-tag bytes already shipped as thinking_delta "

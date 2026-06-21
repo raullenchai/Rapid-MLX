@@ -193,9 +193,7 @@ class TestMaxTokensMidThink:
         assert "5+7" in thinking, (
             f"[{name}] expected reasoning routing; thinking={thinking!r}"
         )
-        assert not text, (
-            f"[{name}] D-STOP-THINK regression — text={text!r}"
-        )
+        assert not text, f"[{name}] D-STOP-THINK regression — text={text!r}"
 
 
 class TestNormalResponseRegression:
@@ -320,8 +318,7 @@ class TestHermesWithReasoningComposition:
         thinking, text = _simulate_anthropic_stream(parser, chunks)
         assert "Let me reason" in thinking
         assert not text, (
-            f"D-STOP-THINK regression under hermes composition: "
-            f"text={text!r}"
+            f"D-STOP-THINK regression under hermes composition: text={text!r}"
         )
 
 

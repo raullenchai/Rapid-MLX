@@ -237,14 +237,12 @@ def test_gemma4_parser_routes_unterminated_thought_to_reasoning():
     )
     reasoning, content = p.extract_reasoning(truncated)
     assert reasoning is not None and "Let me think" in reasoning, (
-        f"unterminated thought must route to reasoning; got "
-        f"reasoning={reasoning!r}"
+        f"unterminated thought must route to reasoning; got reasoning={reasoning!r}"
     )
     # Content holds only the (empty) pre-opener prefix — the trace
     # bytes are no longer leaked.
     assert not content or "Let me think" not in content, (
-        f"thought trace bytes must not leak into content; got "
-        f"content={content!r}"
+        f"thought trace bytes must not leak into content; got content={content!r}"
     )
 
 
