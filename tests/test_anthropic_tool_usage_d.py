@@ -411,13 +411,11 @@ def test_nonstream_tool_choice_named_still_routes_to_specific_tool():
     # ("model returned a text response with no tool_calls"). Either
     # 422 or a 200 with a synth call to ``get_weather`` is contract-
     # compliant; what we explicitly do NOT want is a tool_use for
-    # ``lookup_zip`` or a 200 ``end_turn`` text response.
-    #
-    # Codex review BLOCKING (PR #807): assert ``tool_uses`` non-empty
-    # AND ``stop_reason == "tool_use"`` in the 200 branch so the
-    # forbidden ``end_turn`` text response would FAIL this test. The
-    # earlier ``for tu in tool_uses:`` loop was vacuously true on an
-    # empty list and let the exact bug case slip through.
+    # ``lookup_zip`` or a 200 ``end_turn`` text response. The 200
+    # branch therefore asserts a non-empty ``tool_uses`` list AND
+    # ``stop_reason == "tool_use"`` so the exact failure mode this
+    # test exists to catch (vacuously-empty ``tool_uses``) is
+    # surfaced as a hard fail rather than a silent skip.
     assert r.status_code in (200, 422), r.text
     if r.status_code == 200:
         body = r.json()

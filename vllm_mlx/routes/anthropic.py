@@ -601,6 +601,15 @@ async def create_anthropic_message(
         # if over the model cap. Runs BEFORE the stream/non-stream branch
         # so streaming clients can't bypass the gate by setting
         # ``stream: true``. See service/helpers.py for rationale.
+        #
+        # D-ANTHRO-TOOL-USAGE F5 (codex r2 NIT): capture the
+        # gate-computed prompt-token count so the streaming branch's
+        # ``message_start.usage.input_tokens`` can reuse it instead of
+        # re-rendering + re-tokenising the same messages. The helper
+        # returns ``0`` on permissive-skip paths (MLLM engines, no
+        # build_prompt, empty prompt) so a falsy value means the
+        # streaming branch must fall back to its own estimator helper.
+        _ctx_prompt_tokens = 0
         try:
             _ctx_messages, _, _ = extract_multimodal_content(
                 openai_request.messages,
@@ -609,7 +618,7 @@ async def create_anthropic_message(
         except Exception:
             _ctx_messages = None
         if _ctx_messages is not None:
-            enforce_context_length_for_messages(
+            _ctx_prompt_tokens = enforce_context_length_for_messages(
                 engine,
                 _ctx_messages,
                 tools=openai_request.tools,
@@ -633,6 +642,7 @@ async def create_anthropic_message(
                         openai_request,
                         anthropic_request,
                         request_id_holder=_anth_rid_holder,
+                        prompt_tokens_estimate=_ctx_prompt_tokens,
                     ),
                     request,
                     engine=engine,
@@ -1137,6 +1147,7 @@ async def _stream_anthropic_messages(
     anthropic_request: AnthropicRequest,
     *,
     request_id_holder: list | None = None,
+    prompt_tokens_estimate: int = 0,
 ) -> AsyncIterator[str]:
     """Stream Anthropic Messages API SSE events.
 
@@ -1147,6 +1158,15 @@ async def _stream_anthropic_messages(
             ``_disconnect_guard`` reads the same holder and force-calls
             ``scheduler.abort_request`` on client disconnect. ``None``
             (default) is a no-op.
+        prompt_tokens_estimate: D-ANTHRO-TOOL-USAGE F5 — pre-computed
+            prompt-token count from the route entry-point's
+            ``enforce_context_length_for_messages`` call. Defaults to
+            ``0`` so callers (and tests) that don't pass it fall back
+            to the route-internal ``_estimate_anthropic_prompt_tokens``
+            helper, which goes through the SAME
+            ``build_prompt`` + ``count_prompt_tokens`` path. Non-zero
+            values save a duplicate render+tokenize round-trip on the
+            hot path (codex r2 NIT on PR #807).
     """
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     start_time = time.perf_counter()
@@ -1335,16 +1355,19 @@ async def _stream_anthropic_messages(
     # D-ANTHRO-TOOL-USAGE F5: pre-compute prompt_tokens BEFORE
     # ``message_start`` so the SSE envelope carries the real input
     # estimate instead of the hard-coded ``0`` that under-reported the
-    # input share by 100%. Goes through the same
+    # input share by 100%. Reuses the SAME
     # ``build_prompt`` + ``count_prompt_tokens`` SOURCE OF TRUTH the
-    # non-stream usage builder and the context-length DoS gate already
-    # use; on engines without ``build_prompt`` (MLLM / mock test stubs)
-    # the helper returns 0 and the rest of the streaming path falls back
-    # to the engine-reported ``output.prompt_tokens`` it always used.
-    initial_prompt_tokens_estimate = _estimate_anthropic_prompt_tokens(
-        engine,
-        messages,
-        tools=openai_request.tools,
+    # context-length DoS gate already ran at route entry — codex r2 NIT
+    # (PR #807). On engines without ``build_prompt`` (MLLM / mock test
+    # stubs) the gate returned 0 and the fallback estimator below also
+    # returns 0; the streaming path then degrades to the pre-fix
+    # ``input_tokens=0`` shape rather than 500-ing.
+    initial_prompt_tokens_estimate = prompt_tokens_estimate or (
+        _estimate_anthropic_prompt_tokens(
+            engine,
+            messages,
+            tools=openai_request.tools,
+        )
     )
 
     # Emit message_start
