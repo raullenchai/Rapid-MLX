@@ -40,6 +40,13 @@ _CONTENT_START = re.compile(r"<\|channel>(?:content|final)\n?")
 _CHANNEL_END = re.compile(r"<channel\|>")
 _TURN_END = re.compile(r"<turn\|>")
 
+# Codex round-14 BLOCKING (PR #799): match ANY channel opener so the
+# unterminated-thought split can route downstream channels by TYPE.
+# Captures the channel type into the named group ``type`` so a nested
+# ``thought`` channel that follows the unterminated one routes to
+# reasoning instead of leaking into content.
+_CHANNEL_SEGMENT = re.compile(r"<\|channel>(?P<type>thought|content|final)\n?")
+
 
 class Gemma4ReasoningParser(ReasoningParser):
     """Parser for Gemma 4's channel-based thinking format."""
@@ -148,24 +155,62 @@ class Gemma4ReasoningParser(ReasoningParser):
                     ):
                         reasoning_body = trailing[:next_opener].strip()
                         downstream = trailing[next_opener:]
-                        # Strip channel markers from the downstream
-                        # content. Don't surface a ``thought`` block
-                        # body here — if a second thought channel
-                        # follows we leave it to the regex pass on
-                        # the unmodified ``model_output``, which the
-                        # outer ``if not thought_blocks`` already
-                        # ruled out as no closed pair existing.
-                        downstream_cleaned = _CONTENT_START.sub("", downstream)
-                        downstream_cleaned = _CHANNEL_END.sub("", downstream_cleaned)
-                        downstream_cleaned = _TURN_END.sub(
-                            "", downstream_cleaned
-                        ).strip()
-                        content_out = (
-                            (pre_cleaned + " " + downstream_cleaned).strip()
-                            if pre_cleaned and downstream_cleaned
-                            else (pre_cleaned or downstream_cleaned)
+                        # Codex round-14 BLOCKING (PR #799): parse
+                        # downstream channels BY TYPE so a nested
+                        # ``<|channel>thought…`` after the unterminated
+                        # one is routed to reasoning instead of leaking
+                        # into content. Round-13's ``_CONTENT_START.sub``
+                        # only stripped ``content|final`` markers — any
+                        # body that came under a ``thought`` channel
+                        # was passed straight through to ``content_out``
+                        # with only the marker removed.
+                        downstream_reasoning_parts: list[str] = []
+                        downstream_content_parts: list[str] = []
+                        # Split downstream into (channel_type, body)
+                        # segments. Each segment starts at a
+                        # ``<|channel>X`` marker and ends at the next
+                        # marker OR end-of-text.
+                        for m in _CHANNEL_SEGMENT.finditer(downstream):
+                            ch_type = m.group("type")
+                            body_start = m.end()
+                            # Locate end of this segment: the next
+                            # ``<|channel>`` opener (any type), else EOT.
+                            next_marker = downstream.find("<|channel>", body_start)
+                            seg_end = (
+                                next_marker if next_marker >= 0 else len(downstream)
+                            )
+                            body = downstream[body_start:seg_end]
+                            # Strip the segment's own ``<channel|>``
+                            # closer + any stray ``<turn|>`` end tokens.
+                            body = _CHANNEL_END.sub("", body)
+                            body = _TURN_END.sub("", body).strip()
+                            if not body:
+                                continue
+                            if ch_type == "thought":
+                                downstream_reasoning_parts.append(body)
+                            else:
+                                # ``content`` / ``final`` → content surface.
+                                downstream_content_parts.append(body)
+                        reasoning_full = (
+                            (reasoning_body or "")
+                            + (
+                                ("\n" if reasoning_body else "")
+                                + "\n".join(downstream_reasoning_parts)
+                                if downstream_reasoning_parts
+                                else ""
+                            )
+                        ).strip() or None
+                        downstream_content = (
+                            " ".join(downstream_content_parts).strip()
+                            if downstream_content_parts
+                            else ""
                         )
-                        return reasoning_body or None, content_out or None
+                        content_out = (
+                            (pre_cleaned + " " + downstream_content).strip()
+                            if pre_cleaned and downstream_content
+                            else (pre_cleaned or downstream_content)
+                        )
+                        return reasoning_full, content_out or None
                     reasoning_body = trailing.strip()
                     return reasoning_body or None, pre_cleaned or None
             # No thinking tags — all content

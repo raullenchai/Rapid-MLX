@@ -418,59 +418,40 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # No leading ``<think>`` prefix — Qwen3 chat template
             # injects ``<think>\n`` into the prompt (NOT the model
             # output) so prompt-injected mid-think streams also land
-            # here.
+            # here, alongside genuine casual answers.
             #
-            # Codex round-4 BLOCKING on PR #799: ``matched_stop`` alone
-            # is NOT enough to identify prompt-injected mid-think.
-            # A casual answer like ``"The answer is STOP"`` under
-            # ``stop=["STOP"]`` ALSO has ``matched_stop`` set but is
-            # NOT chain-of-thought. We need an independent signal that
-            # the chat template injected ``<think>``. The route layer
-            # computes ``prompt_thinking_active = _should_start_in_thinking(
-            # chat_template, enable_thinking)`` (anthropic.py:91) which
-            # returns True only when (a) ``enable_thinking`` is non-
-            # False AND (b) the chat template contains a ``<think>``
-            # injection.
+            # Codex round-14 BLOCKING (PR #799): the parser has NO
+            # direct evidence the bytes are chain-of-thought — there
+            # is no literal ``<think>`` opener in ``accumulated_text``.
+            # Earlier rounds (r4/r5/r6) used ``prompt_thinking_active``
+            # as a proxy ("chat template contained ``<think>`` →ass ume
+            # bytes are reasoning"), but that proxy SILENTLY DROPS
+            # legitimate casual answers like ``"The answer is STOP"``
+            # produced while the template contains ``<think>``: the
+            # stop fires, ``matched_stop`` is set,
+            # ``prompt_thinking_active`` is True — but the answer was a
+            # direct response, not a thought trace.
             #
-            # Decision matrix for the no-prefix branch:
+            # Decision matrix (no-prefix branch, r14 final) — only
+            # PARSER EVIDENCE (the cleaned text itself) routes:
             #
-            # finish_reason | matched_stop | prompt_thinking_active | bare_preamble | route
-            # ──────────────┼──────────────┼────────────────────────┼───────────────┼─────────
-            # "length"      | *            | True                   | *             | reasoning (D-STOP-THINK / max_tokens)
-            # "stop"        | set          | True                   | *             | reasoning (D-STOP-THINK / stop)
-            # "stop"        | set          | False                  | *             | content  (casual stop-terminated answer)
-            # *             | None         | *                      | True          | reasoning (#570 label)
-            # *             | None         | *                      | False         | content  (#570/#572 casual)
+            # bare_preamble label | route
+            # ────────────────────┼─────────
+            # True                | reasoning (#570 scratchpad label)
+            # False               | content  (#570/#572 casual answer)
             #
-            # The route layer's truthful signal (``enable_thinking`` +
-            # template inspection) is the only reliable discriminator
-            # — the parser can't otherwise tell a thought trace from
-            # a casual answer at finalize time.
-            #
-            # Codex round-6 BLOCKING on PR #799: ``max_tokens`` mid-think
-            # has the SAME accumulator state as stop-mid-think (parser
-            # routed all bytes to reasoning via base Case-1 ``start_in_prev``,
-            # streaming loop already shipped the bytes as ``reasoning_content``)
-            # so it MUST route to reasoning too, otherwise the same trace
-            # leaks into ``content`` via the bare-text-no-evidence flip.
-            # ``finish_reason="length"`` is the disambiguating signal:
-            # together with ``prompt_thinking_active=True`` it tells the
-            # parser "this is the max_tokens analogue of D-STOP-THINK".
-            if finish_reason == "length" and prompt_thinking_active:
-                # max_tokens cut a prompt-injected thinking stream — route
-                # to reasoning to suppress duplication.
-                return DeltaMessage(reasoning=cleaned)
-            if matched_stop is not None and prompt_thinking_active:
-                # D-STOP-THINK prompt-injected mid-think shape: route
-                # to reasoning to suppress duplication with bytes
-                # already shipped via streaming.
-                return DeltaMessage(reasoning=cleaned)
+            # Trade-off: D-STOP-THINK leak for the no-prefix
+            # prompt-injected mid-think case is the deliberate residual
+            # — a duplicated trace on the wire is recoverable
+            # client-side, but a silently dropped legitimate answer is
+            # not. The literal-opener case (saw_prefix=True above) still
+            # suppresses correctly because the parser has direct
+            # evidence (the ``<think>`` token reached the parser).
             if _looks_like_bare_think_preamble(cleaned):
                 # #570 scratchpad-label fallback — bare-preamble IS
                 # think-mode evidence.
                 return DeltaMessage(reasoning=cleaned)
-            # Casual non-thinking answer — flip to content. Covers
-            # both natural-EOS and stop-terminated answers when
-            # thinking was not active.
+            # No parser evidence of think mode — surface as content
+            # (#570/#572 casual-answer contract).
             return DeltaMessage(content=cleaned)
         return None
