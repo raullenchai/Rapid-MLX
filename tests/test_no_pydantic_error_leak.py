@@ -503,6 +503,72 @@ def test_attacker_extra_field_name_is_collapsed(monkeypatch, evil_field):
         teardown()
 
 
+# ── H-17 round-3 (codex): operator logs must NOT carry attacker bytes ─
+
+
+def test_pydantic_handler_log_does_not_leak_attacker_input(monkeypatch, caplog):
+    """Codex H-17 round-3 BLOCKING: the WARNING log path added for
+    NIT #4 must not write the raw ``ValidationError`` to the log
+    (``exc_info=exc`` or ``str(exc)``) — Pydantic's text form embeds
+    ``input_value=...`` which carries attacker-supplied bytes. An
+    attacker can pivot secrets from a request body into the
+    operator's log pipeline by stuffing them into a field that fails
+    validation.
+
+    Send a malformed body with a sentinel and assert the captured log
+    records contain only sanitized metadata (error ``type`` codes and
+    sanitized ``loc``), never the sentinel and never the leaky
+    Pydantic strings.
+    """
+    from fastapi import Request as _FastAPIRequest
+    from pydantic import BaseModel
+
+    app, _cfg, teardown = _build_app(monkeypatch, with_handlers=True)
+    try:
+
+        class _Inner(BaseModel):
+            field_x: int
+
+        @app.post("/__h17_log_probe__")
+        async def _probe(req: _FastAPIRequest):
+            body = await req.json()
+            return _Inner(**body)
+
+        sentinel = "H17_LOG_SENTINEL_pwned_secret_value"
+        client = TestClient(app)
+
+        with caplog.at_level("WARNING", logger="rapid_mlx.exception_handlers"):
+            response = client.post("/__h17_log_probe__", json={"field_x": sentinel})
+
+        assert response.status_code == 400
+        # The handler must emit at least one log line (the operator-
+        # visibility WARNING).
+        assert any(
+            "pydantic.ValidationError" in r.getMessage() for r in caplog.records
+        ), [r.getMessage() for r in caplog.records]
+        # No log line may carry the attacker sentinel — neither in the
+        # main message, the args, nor the exc_info traceback (which
+        # codex round-3 BLOCKING said must not be set).
+        for record in caplog.records:
+            joined = record.getMessage() + " " + repr(record.args)
+            if record.exc_info:
+                import traceback as _tb
+
+                joined += "".join(_tb.format_exception(*record.exc_info))
+            assert sentinel not in joined, (
+                f"WARNING log leaked attacker sentinel: {joined!r}"
+            )
+            # Sanity: the leaky Pydantic strings stay out of the log too.
+            assert "input_value=" not in joined, (
+                f"WARNING log leaked pydantic input_value=: {joined!r}"
+            )
+            assert "errors.pydantic.dev" not in joined, (
+                f"WARNING log leaked pydantic.dev help URL: {joined!r}"
+            )
+    finally:
+        teardown()
+
+
 # ── Defence-in-depth: the global handler covers the raw Pydantic ─────
 # ``ValidationError`` even when no route is involved (a future endpoint
 # that builds its model manually inherits the fix automatically).

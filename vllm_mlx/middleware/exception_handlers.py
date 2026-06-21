@@ -128,7 +128,7 @@ def _validation_error_response(
 
     The ``loc`` is run through :func:`_sanitize_loc` so attacker-
     controlled dict keys / extra-field names (codex H-17 round-2
-    finding) collapse to ``<key>`` instead of being echoed verbatim
+    finding) collapse to ``<field>`` instead of being echoed verbatim
     in the 400 message.
     """
     details = []
@@ -249,18 +249,33 @@ def install_exception_handlers(app: FastAPI) -> None:
         #
         # Codex H-17 round-2 NIT #4: a global handler converts every
         # internal Pydantic bug into a client 400, which can mask
-        # server-side defects. Log at WARNING with the request path so
-        # operators can spot "this 400 actually came from a server-
-        # side response-model construction failure". The exception
-        # text (which contains the leaky details) goes only to the log
-        # — never to the client.
+        # server-side defects. Log at WARNING with sanitized metadata
+        # so operators can spot "this 400 actually came from a server-
+        # side response-model construction failure".
+        #
+        # Codex H-17 round-3 BLOCKING: do NOT pass the raw exception
+        # (``exc_info=exc`` or ``str(exc)``) — its string form embeds
+        # ``input_value=...`` which can carry attacker-supplied
+        # secrets, and this PR is explicitly preventing that
+        # reflection. Operator log lines must be sanitized too;
+        # otherwise an attacker can stuff secrets into a body field
+        # and pivot them into the operator's log pipeline. We surface
+        # only the per-error ``type`` codes (``missing``,
+        # ``int_parsing``, ``extra_forbidden``, …) and the sanitized
+        # ``loc`` path — both schema-determined.
+        sanitized = [
+            {
+                "type": err.get("type", "validation_error"),
+                "loc": _sanitize_loc(tuple(err.get("loc", ()))),
+            }
+            for err in exc.errors()
+        ]
         logger.warning(
-            "pydantic.ValidationError on %s %s — %d error(s); "
-            "response body is the sanitized H-17 envelope",
+            "pydantic.ValidationError on %s %s — %d sanitized error(s): %s",
             request.method,
             request.url.path,
-            len(exc.errors()),
-            exc_info=exc,
+            len(sanitized),
+            sanitized,
         )
         return _validation_error_response(exc)
 
