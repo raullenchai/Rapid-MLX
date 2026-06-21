@@ -59,6 +59,34 @@ def _reported_modality(model_id: str, profile_modality: str) -> str:
     return profile_modality
 
 
+def _embedding_capabilities(model_id: str) -> list[str]:
+    """Return capability tags for ``model_id``.
+
+    H-09 sub-fix: only the explicitly-configured embedding model is
+    tagged ``"embedding"``. When the server boots without
+    ``--embedding-model``, the route guard rejects ``/v1/embeddings``
+    requests with a 400, so advertising any chat-model id as
+    embedding-capable would be lying to the client.
+
+    Reads from ``ServerConfig.embedding_model_locked`` first and falls
+    back to the ``server._embedding_model_locked`` global so the
+    capability shows up even before ``_sync_config`` has bridged the
+    value (mirrors the same bridge the embeddings route uses).
+    """
+    cfg = get_config()
+    locked = cfg.embedding_model_locked
+    if locked is None:
+        try:
+            from ..server import _embedding_model_locked as _server_locked
+
+            locked = _server_locked
+        except Exception:  # noqa: BLE001
+            locked = None
+    if locked is not None and model_id == locked:
+        return ["embedding"]
+    return []
+
+
 def _build_model_info(model_id: str) -> ModelInfo:
     """Construct a ``ModelInfo`` for ``model_id``, filling vendor
     extension fields from the alias registry when the id resolves.
@@ -72,6 +100,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
     id still advertises ``image`` (F-067 layer fix covers raw HF paths
     too, not just registered aliases).
     """
+    capabilities = _embedding_capabilities(model_id)
     profile = resolve_profile(model_id)
     if profile is None:
         # Preserve the prior unknown-id wire shape (``ModelInfo(id=model_id)``
@@ -84,10 +113,12 @@ def _build_model_info(model_id: str) -> ModelInfo:
         # the schema default.
         try:
             if is_mllm_model(model_id):
-                return ModelInfo(id=model_id, modality="image")
+                return ModelInfo(
+                    id=model_id, modality="image", capabilities=capabilities
+                )
         except Exception:  # noqa: BLE001
             pass
-        return ModelInfo(id=model_id)
+        return ModelInfo(id=model_id, capabilities=capabilities)
     # ``recommended_sampling`` lives on the dataclass as a tuple of
     # ``(key, value)`` pairs (frozen-dataclass requirement); convert
     # back to a dict for JSON serialization. ``None`` stays ``None``
@@ -107,6 +138,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         tool_call_parser=profile.tool_call_parser,
         reasoning_parser=profile.reasoning_parser,
         modality=_reported_modality(model_id, profile.modality),
+        capabilities=capabilities,
     )
 
 
@@ -121,16 +153,42 @@ async def list_models() -> ModelsResponse:
     cfg = get_config()
 
     models = []
+    seen_ids: set[str] = set()
+
+    def _append(info: ModelInfo) -> None:
+        if info.id in seen_ids:
+            return
+        seen_ids.add(info.id)
+        models.append(info)
+
     if cfg.model_registry:
         for entry in cfg.model_registry.list_entries():
-            models.append(_build_model_info(entry.model_name))
+            _append(_build_model_info(entry.model_name))
             for alias in sorted(entry.aliases):
                 if alias != entry.model_name:
-                    models.append(_build_model_info(alias))
+                    _append(_build_model_info(alias))
     elif cfg.model_name:
-        models.append(_build_model_info(cfg.model_name))
+        _append(_build_model_info(cfg.model_name))
         if cfg.model_alias and cfg.model_alias != cfg.model_name:
-            models.append(_build_model_info(cfg.model_alias))
+            _append(_build_model_info(cfg.model_alias))
+
+    # Surface the dedicated embedding model id (when configured) so
+    # clients discover the ``/v1/embeddings``-capable id from the same
+    # ``/v1/models`` listing. H-09 sub-fix: when no embedding model is
+    # configured the route guard already 400s on ``/v1/embeddings``,
+    # so nothing is added here — capability advertisement matches
+    # actual behavior.
+    locked = cfg.embedding_model_locked
+    if locked is None:
+        try:
+            from ..server import _embedding_model_locked as _server_locked
+
+            locked = _server_locked
+        except Exception:  # noqa: BLE001
+            locked = None
+    if locked:
+        _append(_build_model_info(locked))
+
     return ModelsResponse(data=models)
 
 
@@ -147,5 +205,18 @@ async def retrieve_model(model_id: str) -> ModelInfo:
     if cfg.model_registry and model_id in cfg.model_registry:
         return _build_model_info(model_id)
     if model_id in (cfg.model_name, cfg.model_alias):
+        return _build_model_info(model_id)
+    # The dedicated embedding model id is addressable too so callers
+    # can hydrate per-model state from ``/v1/models/{id}`` without
+    # extra wire heuristics.
+    locked = cfg.embedding_model_locked
+    if locked is None:
+        try:
+            from ..server import _embedding_model_locked as _server_locked
+
+            locked = _server_locked
+        except Exception:  # noqa: BLE001
+            locked = None
+    if locked and model_id == locked:
         return _build_model_info(model_id)
     raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")

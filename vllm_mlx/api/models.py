@@ -1857,6 +1857,16 @@ class ModelInfo(BaseModel):
     # dispatches on this — populating from the server lets us drop
     # the desktop-side hard-coded modality map in a future release.
     modality: str | None = None
+    # Capability tags advertised on the wire. Currently used to mark
+    # the configured embedding model with ``"embedding"`` so clients
+    # can discover which entry is wired to ``/v1/embeddings`` without
+    # heuristics on the model id. H-09 sub-fix: when no embedding
+    # model is configured at startup, NO entry carries ``"embedding"``
+    # — the server used to silently fall back to chat-model hidden
+    # states, so listing the chat model as embedding-capable was a
+    # lie the desktop happily believed. Empty list (rather than
+    # ``None``) means "we've thought about it; nothing applies".
+    capabilities: list[str] = Field(default_factory=list)
 
 
 class ModelsResponse(BaseModel):

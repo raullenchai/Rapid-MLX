@@ -1186,6 +1186,15 @@ def serve_command(args):
 
     # Pre-load embedding model if specified
     if args.embedding_model:
+        # H-08 guard: ``--embedding-model`` is advertised in serve --help
+        # but ``mlx_embeddings`` lives behind the ``[embeddings]`` extra.
+        # Probe here so the user gets a clear install hint on stderr +
+        # ``sys.exit(2)`` instead of a raw ``ModuleNotFoundError`` deep
+        # inside the engine load path. Lazy import — base install stays
+        # ``mlx_embeddings``-free.
+        from .embedding import require_mlx_embeddings_or_exit
+
+        require_mlx_embeddings_or_exit()
         print(f"Pre-loading embedding model: {args.embedding_model}")
         server.load_embedding_model(args.embedding_model, lock=True)
         print(f"Embedding model loaded: {args.embedding_model}")
@@ -4977,7 +4986,11 @@ Examples:
         "--embedding-model",
         type=str,
         default=None,
-        help="Pre-load an embedding model at startup (e.g. mlx-community/embeddinggemma-300m-6bit)",
+        help=(
+            "Pre-load an embedding model at startup (e.g. "
+            "mlx-community/embeddinggemma-300m-6bit). Requires the "
+            "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+        ),
     )
     # PFlash long-prompt prefill compression (#287). Off by default; see
     # vllm_mlx/pflash.py for the design and the prefix-cache bypass.

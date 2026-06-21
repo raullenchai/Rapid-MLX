@@ -166,6 +166,7 @@ class TestEmbeddingsEndpoint:
     def test_batch_input_preserves_order(self, client):
         """Test batch embedding returns vectors with correct indices."""
         import vllm_mlx.server as srv
+        from vllm_mlx.config import get_config
 
         texts = ["first", "second", "third"]
         mock_engine = MagicMock()
@@ -177,8 +178,20 @@ class TestEmbeddingsEndpoint:
         ]
         mock_engine.count_tokens.return_value = 9
 
+        cfg = get_config()
         original = srv._embedding_engine
+        original_locked = srv._embedding_model_locked
+        cfg_original_engine = cfg.embedding_engine
+        cfg_original_locked = cfg.embedding_model_locked
         srv._embedding_engine = mock_engine
+        # H-09: the route now requires the embedding model to be
+        # configured (i.e. the server was started with
+        # --embedding-model). Set BOTH the server global AND the cfg
+        # mirror so the route's bridge branch doesn't reset to a
+        # stale value from a prior test that left cfg set.
+        srv._embedding_model_locked = "test-embed"
+        cfg.embedding_engine = mock_engine
+        cfg.embedding_model_locked = "test-embed"
         try:
             resp = client.post(
                 "/v1/embeddings",
@@ -186,6 +199,9 @@ class TestEmbeddingsEndpoint:
             )
         finally:
             srv._embedding_engine = original
+            srv._embedding_model_locked = original_locked
+            cfg.embedding_engine = cfg_original_engine
+            cfg.embedding_model_locked = cfg_original_locked
 
         assert resp.status_code == 200
         body = resp.json()
@@ -199,12 +215,20 @@ class TestEmbeddingsEndpoint:
     def test_empty_input_returns_400(self, client):
         """Test that empty input list returns 400 error."""
         import vllm_mlx.server as srv
+        from vllm_mlx.config import get_config
 
         mock_engine = MagicMock()
         mock_engine.model_name = "test-embed"
 
+        cfg = get_config()
         original = srv._embedding_engine
+        original_locked = srv._embedding_model_locked
+        cfg_original_engine = cfg.embedding_engine
+        cfg_original_locked = cfg.embedding_model_locked
         srv._embedding_engine = mock_engine
+        srv._embedding_model_locked = "test-embed"
+        cfg.embedding_engine = mock_engine
+        cfg.embedding_model_locked = "test-embed"
         try:
             resp = client.post(
                 "/v1/embeddings",
@@ -212,50 +236,76 @@ class TestEmbeddingsEndpoint:
             )
         finally:
             srv._embedding_engine = original
+            srv._embedding_model_locked = original_locked
+            cfg.embedding_engine = cfg_original_engine
+            cfg.embedding_model_locked = cfg_original_locked
 
         assert resp.status_code == 400
 
-    def test_model_hot_swap(self, client):
-        """Test that requesting a different model triggers reload."""
+    def test_model_hot_swap_disabled_when_unlocked(self, client):
+        """H-09: hot-swap is gone — without --embedding-model, every
+        ``/v1/embeddings`` request is rejected with 400.
+
+        Pre-fix the route would call ``load_embedding_model`` on
+        ``request.model`` (typically the chat model, since no embedding
+        model was configured) and silently return chat-model hidden
+        states as if they were embeddings. The new guard refuses to do
+        that — callers must explicitly configure the embedding model at
+        startup.
+        """
         import vllm_mlx.server as srv
+        from vllm_mlx.config import get_config
 
         mock_engine = MagicMock()
         mock_engine.model_name = "old-model"
-        mock_engine.embed.return_value = [[0.1]]
-        mock_engine.count_tokens.return_value = 1
 
+        cfg = get_config()
         original = srv._embedding_engine
+        original_locked = srv._embedding_model_locked
+        cfg_original_engine = cfg.embedding_engine
+        cfg_original_locked = cfg.embedding_model_locked
         srv._embedding_engine = mock_engine
+        srv._embedding_model_locked = None  # not configured
+        cfg.embedding_engine = mock_engine
+        cfg.embedding_model_locked = None
 
         try:
             with patch("vllm_mlx.embedding.EmbeddingEngine") as mock_cls:
-                new_engine = MagicMock()
-                new_engine.model_name = "new-model"
-                new_engine.embed.return_value = [[0.9]]
-                new_engine.count_tokens.return_value = 1
-                mock_cls.return_value = new_engine
-
                 resp = client.post(
                     "/v1/embeddings",
                     json={"model": "new-model", "input": "test"},
                 )
-                assert resp.status_code == 200
-                mock_cls.assert_called_once_with("new-model")
-                new_engine.load.assert_called_once()
+                # Hot-swap path is gone; route 400s without touching
+                # the engine class.
+                assert resp.status_code == 400
+                mock_cls.assert_not_called()
+                body = resp.json()
+                msg = body["error"]["message"]
+                assert "embeddings model not configured" in msg
+                assert "rapid-mlx[embeddings]" in msg
         finally:
             srv._embedding_engine = original
+            srv._embedding_model_locked = original_locked
+            cfg.embedding_engine = cfg_original_engine
+            cfg.embedding_model_locked = cfg_original_locked
 
     def test_model_locked_rejects_different_model(self, client):
         """Test that a locked embedding model rejects requests for different models."""
         import vllm_mlx.server as srv
+        from vllm_mlx.config import get_config
 
         mock_engine = MagicMock()
         mock_engine.model_name = "locked-model"
 
+        cfg = get_config()
         original_engine = srv._embedding_engine
         original_locked = srv._embedding_model_locked
+        cfg_original_engine = cfg.embedding_engine
+        cfg_original_locked = cfg.embedding_model_locked
         srv._embedding_engine = mock_engine
         srv._embedding_model_locked = "locked-model"
+        cfg.embedding_engine = mock_engine
+        cfg.embedding_model_locked = "locked-model"
 
         try:
             resp = client.post(
@@ -272,6 +322,8 @@ class TestEmbeddingsEndpoint:
         finally:
             srv._embedding_engine = original_engine
             srv._embedding_model_locked = original_locked
+            cfg.embedding_engine = cfg_original_engine
+            cfg.embedding_model_locked = cfg_original_locked
 
 
 # =============================================================================

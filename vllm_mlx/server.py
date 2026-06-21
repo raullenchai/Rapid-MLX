@@ -1636,7 +1636,11 @@ Examples:
         "--embedding-model",
         type=str,
         default=None,
-        help="Pre-load an embedding model at startup (e.g. mlx-community/all-MiniLM-L6-v2-4bit)",
+        help=(
+            "Pre-load an embedding model at startup (e.g. "
+            "mlx-community/all-MiniLM-L6-v2-4bit). Requires the "
+            "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+        ),
     )
     parser.add_argument(
         "--default-temperature",
@@ -1789,6 +1793,15 @@ Examples:
         logger.info(f"Reasoning parser enabled: {args.reasoning_parser}")
 
     # Pre-load embedding model if specified
+    if args.embedding_model:
+        # H-08 guard: probe before the engine import path so an opaque
+        # ``ModuleNotFoundError`` traceback is replaced with an
+        # actionable install hint on stderr + ``sys.exit(2)``. Lazy
+        # import — the base install must not pin ``mlx_embeddings`` at
+        # module top-level.
+        from .embedding import require_mlx_embeddings_or_exit
+
+        require_mlx_embeddings_or_exit()
     load_embedding_model(args.embedding_model, lock=True)
 
     # Build a SchedulerConfig so user-supplied flags on this standalone entry

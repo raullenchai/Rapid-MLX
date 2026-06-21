@@ -29,6 +29,7 @@ router = APIRouter()
 )
 async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
     """Create embeddings for the given input text(s)."""
+    from ..embedding import EMBEDDINGS_EXTRA_INSTALL_HINT
     from ..server import load_embedding_model
 
     cfg = get_config()
@@ -42,6 +43,26 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
 
         if _embedding_model_locked is not None:
             cfg.embedding_model_locked = _embedding_model_locked
+
+    # H-09 guard: when the server was started WITHOUT --embedding-model,
+    # the route used to call ``load_embedding_model(request.model)`` and
+    # — if ``mlx_embeddings.load()`` happened to succeed on the chat-
+    # model repo — return a 200 with the chat model's pooled hidden
+    # states as if they were embeddings. Silent-wrong: callers stuff
+    # the garbage vector into a vector store and only notice weeks
+    # later when retrieval quality cratered. Fail loud instead — 400
+    # with the canonical envelope and the same install hint the CLI
+    # probe (H-08) prints, so the user sees the same actionable line
+    # regardless of which surface tripped the guard.
+    if cfg.embedding_model_locked is None:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "embeddings model not configured; start server with "
+                "--embedding-model <model> (requires [embeddings] extra). "
+                + EMBEDDINGS_EXTRA_INSTALL_HINT
+            ),
+        )
 
     try:
         model_name = request.model

@@ -257,7 +257,11 @@ def _build_embed_app(patch_cfg, monkeypatch, embed_return):
     engine.embed.return_value = embed_return
     patch_cfg(
         embedding_engine=engine,
-        embedding_model_locked=None,
+        # H-09 route guard rejects requests when no embedding model is
+        # configured. These dimension/base64 tests aren't exercising the
+        # guard — they only want the success path — so configure a
+        # wildcard lock that matches the test's ``model="any"`` POST.
+        embedding_model_locked="any",
         api_key=None,
     )
 

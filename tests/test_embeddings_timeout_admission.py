@@ -172,7 +172,13 @@ def _build_embed_app(monkeypatch, engine):
         "api_key": cfg.api_key,
     }
     cfg.embedding_engine = engine
-    cfg.embedding_model_locked = None
+    # H-09 (route guard) requires the embedding model to be configured.
+    # These tests use ``model="any"`` so accept anything by locking the
+    # route to a wildcard token that's then rejected only on the
+    # mismatch branch — the test's own POSTs all use ``"any"`` so they
+    # pass the lock check. Setting None here would now 400 at the
+    # route guard instead of exercising the path under test.
+    cfg.embedding_model_locked = "any"
     cfg.api_key = None
 
     monkeypatch.setattr(

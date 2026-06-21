@@ -7,11 +7,62 @@ for the OpenAI-compatible /v1/embeddings endpoint.
 """
 
 import logging
+import sys
 import time
 
 import mlx.core as mx
 
 logger = logging.getLogger(__name__)
+
+# Canonical install-hint copy. Shared between the CLI startup probe
+# (H-08) and the ``/v1/embeddings`` route guard (H-09) so the user sees
+# the same actionable line no matter which surface tripped the guard.
+EMBEDDINGS_EXTRA_INSTALL_HINT = (
+    "Install with: pip install 'rapid-mlx[embeddings]'"
+)
+
+
+def mlx_embeddings_available() -> bool:
+    """Probe whether ``mlx_embeddings`` is importable.
+
+    Lazy import — keeps the base install (without the ``[embeddings]``
+    extra) free of ``mlx_embeddings`` at module top-level. Callers
+    decide what to do when ``False``:
+
+    * CLI startup (:mod:`vllm_mlx.cli`, :mod:`vllm_mlx.server`) calls
+      :func:`require_mlx_embeddings_or_exit` when ``--embedding-model``
+      is passed so the user gets a clear install hint on stderr and
+      ``sys.exit(2)`` — H-08 fix.
+    * The ``/v1/embeddings`` route (:mod:`vllm_mlx.routes.embeddings`)
+      raises a 400 with the same hint when no embedding model is
+      configured — H-09 fix.
+    """
+    try:
+        import mlx_embeddings  # noqa: F401  (probe only)
+    except ImportError:
+        return False
+    return True
+
+
+def require_mlx_embeddings_or_exit() -> None:
+    """CLI-side guard: bail out cleanly when ``--embedding-model`` is
+    passed but the ``[embeddings]`` extra isn't installed.
+
+    H-08: previously the server crashed deep inside
+    :meth:`EmbeddingEngine.load` with a raw ``ModuleNotFoundError``
+    traceback because the help text advertises ``--embedding-model``
+    while ``mlx_embeddings`` lives behind the ``[embeddings]`` extra.
+    Probe at flag-parse time and exit ``2`` (the conventional argparse
+    usage-error code) with an actionable hint to stderr.
+    """
+    if mlx_embeddings_available():
+        return
+    print(
+        "error: --embedding-model requires the [embeddings] extra. "
+        + EMBEDDINGS_EXTRA_INSTALL_HINT,
+        file=sys.stderr,
+    )
+    sys.exit(2)
 
 
 class EmbeddingEngine:

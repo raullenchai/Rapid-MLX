@@ -994,7 +994,10 @@ class TestEmbeddingsRoutes:
 
         with (
             patch.object(get_config(), "embedding_engine", mock_emb_engine),
-            patch.object(get_config(), "embedding_model_locked", None),
+            # H-09 route guard requires an embedding model to be
+            # configured before accepting requests; match the test's
+            # request model so we exercise the success path.
+            patch.object(get_config(), "embedding_model_locked", "test-embed"),
             patch("vllm_mlx.server.load_embedding_model"),
             patch.object(get_config(), "api_key", None),
             patch("vllm_mlx.middleware.auth.check_rate_limit", return_value=None),
@@ -1022,7 +1025,10 @@ class TestEmbeddingsRoutes:
 
         with (
             patch.object(get_config(), "embedding_engine", mock_emb_engine),
-            patch.object(get_config(), "embedding_model_locked", None),
+            # H-09: configure the lock so the route accepts the
+            # ``model="test-embed"`` POST instead of 400ing under the
+            # new guard.
+            patch.object(get_config(), "embedding_model_locked", "test-embed"),
             patch("vllm_mlx.server.load_embedding_model"),
             patch.object(get_config(), "api_key", None),
             patch("vllm_mlx.middleware.auth.check_rate_limit", return_value=None),
