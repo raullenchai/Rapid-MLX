@@ -209,24 +209,35 @@ def _is_vlm(model_id: str, profile_modality: str | None) -> bool:
 def _tools_capable(profile_tool_parser: str | None) -> bool:
     """Return True when ``model_id`` exposes a tool-call surface.
 
-    Combines two signals:
+    Combines three signals (any of which flips ``"tools"`` on):
 
     * The alias profile carries a non-empty ``tool_call_parser``
       (qwen, hermes, mistral, …) — set in ``aliases.json`` for the
       tool-capable families. Authoritative for registered aliases.
-    * Server-level ``_tool_call_parser`` is set (via
-      ``--tool-call-parser`` or auto-detection during boot). Covers
-      raw HF paths the operator wired tools onto with a CLI flag.
-
-    Either signal flips the ``"tools"`` capability on. Reading the
-    server global through ``get_config()`` keeps the import surface
-    flat — no late ``vllm_mlx.server`` import needed in the common
-    path.
+    * ``ServerConfig.tool_call_parser`` (the bridged value
+      ``_sync_config`` plumbs from the server-level global). Covers
+      raw HF paths the operator wired tools onto with a CLI flag,
+      once the config bridge has run.
+    * ``server._tool_call_parser`` (the live server global).
+      Mirrors the ``_locked_embedding_id`` fallback so the
+      capability shows up even before ``_sync_config`` has bridged
+      the value — same reason the embedding fallback exists. Codex
+      r1 BLOCKING on PR #804: pre-fix only ``cfg.tool_call_parser``
+      was checked, so a boot order that updated only the server
+      global (e.g. before the first ``_sync_config``) would silently
+      omit the ``"tools"`` capability on ``/v1/models``.
     """
     if profile_tool_parser:
         return True
     cfg = get_config()
-    return bool(getattr(cfg, "tool_call_parser", None))
+    if getattr(cfg, "tool_call_parser", None):
+        return True
+    try:
+        from ..server import _tool_call_parser as _server_tool_parser
+
+        return bool(_server_tool_parser)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _detect_capabilities(

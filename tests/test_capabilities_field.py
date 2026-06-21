@@ -276,6 +276,70 @@ class TestToolsCapability:
             restore()
         assert "tools" in entry["capabilities"]
 
+    def test_tools_tag_falls_back_to_server_global(self, monkeypatch):
+        """Codex r1 BLOCKING follow-up: ``_tools_capable`` must check
+        ``server._tool_call_parser`` when ``ServerConfig.tool_call_parser``
+        is still None. Mirrors the ``_locked_embedding_id`` bridge — the
+        config sync hasn't bridged the value yet but the global is set,
+        and ``/v1/models`` must still advertise ``"tools"``.
+
+        Without this fallback a boot-order quirk (server global set,
+        ``_sync_config`` not yet run) would silently drop the
+        capability tag for unregistered paths.
+        """
+        from fastapi import FastAPI
+
+        from vllm_mlx.config import get_config
+        from vllm_mlx.routes import models as models_route
+
+        app = FastAPI()
+        app.include_router(models_route.router)
+
+        unknown_id = "operator/custom-tools-model-2"
+        cfg = get_config()
+        saved = {
+            k: getattr(cfg, k, None)
+            for k in (
+                "model_name",
+                "model_alias",
+                "model_registry",
+                "embedding_model_locked",
+                "tool_call_parser",
+                "api_key",
+            )
+        }
+        cfg.model_name = unknown_id
+        cfg.model_alias = unknown_id
+        cfg.model_registry = None
+        cfg.embedding_model_locked = None
+        # Explicitly keep ``cfg.tool_call_parser`` at None — the bridge
+        # hasn't fired yet in this scenario.
+        cfg.tool_call_parser = None
+        cfg.api_key = None
+
+        import vllm_mlx.server as srv
+
+        saved_srv = {
+            "_embedding_model_locked": srv._embedding_model_locked,
+            "_tool_call_parser": srv._tool_call_parser,
+        }
+        srv._embedding_model_locked = None
+        # Server global IS set; config bridge has NOT happened.
+        srv._tool_call_parser = "hermes"
+
+        try:
+            entry = _fetch_entry(TestClient(app), unknown_id)
+        finally:
+            for k, v in saved.items():
+                setattr(cfg, k, v)
+            for k, v in saved_srv.items():
+                setattr(srv, k, v)
+        assert "tools" in entry["capabilities"], (
+            "F3 regression: server global _tool_call_parser was set "
+            "but cfg.tool_call_parser is None, and 'tools' capability "
+            "is missing. The fallback to the server global is gone."
+        )
+
 
 class TestCapabilityShapeAndOrder:
     """Pin the wire shape: list of strings, stable order, no dupes.

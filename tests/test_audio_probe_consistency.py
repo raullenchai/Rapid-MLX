@@ -269,6 +269,55 @@ class TestProbeWiredFromOneSource:
 
 
 # ---------------------------------------------------------------------------
+# Probe covers BOTH TTS and STT sub-modules
+# ---------------------------------------------------------------------------
+
+
+class TestProbeCoversBothLanes:
+    """Codex r1 BLOCKING follow-up: the probe must import BOTH the
+    TTS sub-module (``mlx_audio.tts.generate``) AND the STT
+    sub-module (``mlx_audio.stt.utils``) so a transcription-only
+    breakage doesn't pass the probe then 500 inside the STT route
+    with a different envelope."""
+
+    def test_stt_submodule_failure_trips_probe(self, monkeypatch, _reset_audio_probe):
+        """Simulate an install where ``mlx_audio.tts.generate``
+        imports cleanly but ``mlx_audio.stt.utils`` is broken. The
+        probe must return ok=False so the transcriptions route
+        returns the SAME 503 envelope the speech/voices routes use,
+        rather than letting the STT route reach
+        ``STTEngine.load()`` and 500 with a different shape."""
+        _orig_import = builtins.__import__
+
+        def _broken_stt(name, *args, **kwargs):
+            if name == "mlx_audio.stt.utils" or name.startswith("mlx_audio.stt"):
+                raise ImportError("simulated stt breakage")
+            return _orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _broken_stt)
+
+        from vllm_mlx.audio import probe
+
+        v = probe.mlx_audio_available()
+        assert v.ok is False, "STT-only breakage must trip the probe — F2 BLOCKING."
+        assert "stt" in v.reason.lower(), (
+            f"verdict reason should name the failing submodule, got {v.reason!r}"
+        )
+
+    def test_probe_source_lists_both_submodules(self):
+        """Source-pin so a future refactor that removes the STT
+        sub-module from the probe is caught immediately."""
+        from pathlib import Path
+
+        probe_file = (
+            Path(__file__).resolve().parents[1] / "vllm_mlx" / "audio" / "probe.py"
+        )
+        source = probe_file.read_text()
+        assert "mlx_audio.tts" in source, "TTS submodule probe missing"
+        assert "mlx_audio.stt" in source, "STT submodule probe missing — F2 regression"
+
+
+# ---------------------------------------------------------------------------
 # Probe verdict caching
 # ---------------------------------------------------------------------------
 

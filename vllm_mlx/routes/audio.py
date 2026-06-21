@@ -614,10 +614,20 @@ async def list_voices(model: str = "kokoro"):
     touching ``mlx_audio`` at all, so it advertised TTS-capability
     even when the engine wouldn't load.
     """
+    # Probe FIRST, then import anything that depends on mlx_audio
+    # transitively. Pre-fix this ordering wasn't a problem because
+    # ``vllm_mlx.audio.tts`` doesn't import ``mlx_audio`` at module
+    # level — but pinning the order in the route handler means a
+    # future refactor that hoists an ``import mlx_audio`` to the top
+    # of ``audio/tts.py`` (e.g. for type hints) can't accidentally
+    # bypass the shared 503 envelope by failing at the route's import
+    # statement before ``require_mlx_audio`` even runs. Codex r1
+    # BLOCKING on PR #804.
     from ..audio.probe import require_mlx_audio
-    from ..audio.tts import CHATTERBOX_VOICES, KOKORO_VOICES
 
     require_mlx_audio()
+
+    from ..audio.tts import CHATTERBOX_VOICES, KOKORO_VOICES
 
     if "kokoro" in model.lower():
         return {"voices": KOKORO_VOICES}

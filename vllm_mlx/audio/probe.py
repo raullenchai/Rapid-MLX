@@ -102,14 +102,40 @@ def mlx_audio_available() -> _Verdict:
     # mismatch) shows up here — and we want the route to advertise
     # the real ``ImportError`` reason rather than the generic
     # "install the extra" hint that would mislead the operator.
-    try:
-        import mlx_audio.tts.generate  # noqa: F401
-    except Exception as e:  # noqa: BLE001
-        _cached_verdict = _Verdict(
-            ok=False,
-            reason=f"mlx-audio import failed at runtime: {type(e).__name__}: {e}",
-        )
-        return _cached_verdict
+    #
+    # Probe BOTH ``mlx_audio.tts.generate`` (used by
+    # ``/v1/audio/speech`` + ``/v1/audio/voices``) AND
+    # ``mlx_audio.stt.utils`` (used by ``/v1/audio/transcriptions``)
+    # so the probe verdict reflects the union of the runtime imports
+    # the audio routes actually depend on. Codex r1 BLOCKING on
+    # PR #804: pre-fix only the TTS sub-module was probed, so a
+    # transcription-only ``mlx_audio`` breakage would pass the probe
+    # then 500 in the STT route with a different envelope.
+    _SUBMODULES = (
+        "mlx_audio.tts.generate",  # /v1/audio/speech, voices
+        "mlx_audio.stt.utils",  # /v1/audio/transcriptions
+    )
+    for submod in _SUBMODULES:
+        try:
+            # Use the bare ``__import__`` builtin (rather than
+            # ``importlib.import_module``) so a torn install can be
+            # detected even when an earlier successful import has
+            # already populated ``sys.modules``. ``import_module``
+            # short-circuits to the cached entry; ``__import__``
+            # re-resolves the import machinery, which is what tests
+            # need to validate the broken-install code path AND what
+            # production needs when a runtime force-reload (e.g.
+            # plugin hot-reload) cleared the cache mid-process.
+            __import__(submod)
+        except Exception as e:  # noqa: BLE001
+            _cached_verdict = _Verdict(
+                ok=False,
+                reason=(
+                    f"mlx-audio import failed at runtime: "
+                    f"{type(e).__name__}: {e} (probing {submod})"
+                ),
+            )
+            return _cached_verdict
 
     _cached_verdict = _Verdict(ok=True, reason=None)
     return _cached_verdict
