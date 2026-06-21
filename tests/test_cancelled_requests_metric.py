@@ -169,6 +169,50 @@ def test_total_counter_is_idempotent_against_double_enqueue():
     assert scheduler.get_stats()["num_requests_cancelled"] == 1
 
 
+def test_total_counter_dedupes_against_lifetime_ledger_not_pending_set():
+    """Codex r2 BLOCKING #1: the dedupe ledger must be a lifetime
+    set, not the drainable ``_pending_abort_ids``.
+
+    Pre-fix the dedupe used ``request_id in self._pending_abort_ids``.
+    ``_pending_abort_ids`` is drained every step via
+    ``_process_pending_aborts``; once drained, a later
+    ``abort_request(rid)`` for a still-resident request id (e.g.
+    while the request still lives in ``self.requests`` between the
+    first abort enqueue and the executor draining the pending set,
+    OR request_id reuse across distinct lifetimes) would see
+    ``already_pending=False`` again and double-count.
+
+    The new ledger ``_cancelled_request_ids`` is wiped only on
+    ``reset()`` (matching the prior drain treatment) and survives
+    individual abort drains.
+    """
+    scheduler = _make_scheduler()
+    _admit(scheduler, "req-drain-race")
+
+    # First abort enqueues into _pending_abort_ids AND increments
+    # the counter via the new lifetime ledger.
+    assert scheduler.abort_request("req-drain-race") is True
+    assert scheduler.get_stats()["num_requests_cancelled"] == 1
+
+    # Simulate the executor thread draining the pending set
+    # (``_process_pending_aborts`` pops every id). The lifetime
+    # ledger must NOT be touched.
+    scheduler._pending_abort_ids.clear()
+    # The request itself stays in ``self.requests`` until
+    # ``_do_abort_request`` runs — we don't simulate that here,
+    # because the failure mode codex flagged is the SECOND
+    # ``abort_request`` call landing while the request is still
+    # known (e.g. another abort source races with the drain).
+    assert "req-drain-race" in scheduler.requests
+
+    # Second abort_request for the same still-known id — passes the
+    # ``request_id in self.requests`` predicate. Pre-fix this would
+    # have bumped the counter again because the pending set was
+    # empty. Post-fix the lifetime ledger catches it.
+    assert scheduler.abort_request("req-drain-race") is True
+    assert scheduler.get_stats()["num_requests_cancelled"] == 1
+
+
 def test_total_counter_survives_reset_unchanged():
     """``reset()`` clears in-flight aborts but NOT the lifetime counter.
 

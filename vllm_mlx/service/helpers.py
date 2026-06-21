@@ -1997,9 +1997,16 @@ def _resolve_sync_scheduler_for_abort(engine):
     return None
 
 
-def _resolve_scheduler_for_cancel_attribution(engine):
-    """M-01: walk the engine backend graph and return the scheduler-side
-    object that exposes ``record_disconnect_abort``.
+def _resolve_disconnect_abort_recorder(engine):
+    """M-01: walk the engine backend graph and return the bound
+    ``record_disconnect_abort`` method of the active-path scheduler.
+
+    Codex r2 NIT: returns the BOUND METHOD, not the scheduler object,
+    so the call site stays one expression
+    (``recorder(rid)``) without having to know which attribute name
+    to look up. The name is honest about that — earlier draft was
+    ``_resolve_scheduler_for_cancel_attribution`` which suggested a
+    scheduler object would be returned.
 
     The cancel-attribution sub-counter lives on the same scheduler
     where the public-API total counter lives, so the resolver must
@@ -2036,17 +2043,17 @@ def _resolve_scheduler_for_cancel_attribution(engine):
     # 1) Direct ``engine.scheduler`` — plain engines, tests, fakes.
     direct_scheduler = getattr(engine, "scheduler", None)
     if direct_scheduler is not None:
-        record = getattr(direct_scheduler, "record_disconnect_abort", None)
-        if record is not None:
-            return record
+        recorder = getattr(direct_scheduler, "record_disconnect_abort", None)
+        if recorder is not None:
+            return recorder
     # 2) Active-path gated walk on BatchedEngine.
     is_mllm_active = bool(getattr(engine, "_is_mllm", False))
     if is_mllm_active:
         mllm = getattr(engine, "_mllm_scheduler", None)
         if mllm is not None:
-            record = getattr(mllm, "record_disconnect_abort", None)
-            if record is not None:
-                return record
+            recorder = getattr(mllm, "record_disconnect_abort", None)
+            if recorder is not None:
+                return recorder
     else:
         inner = getattr(engine, "_engine", None)
         if inner is not None:
@@ -2054,9 +2061,9 @@ def _resolve_scheduler_for_cancel_attribution(engine):
             # resolver shape (used by every test stub today).
             inner_sched = getattr(inner, "scheduler", None)
             if inner_sched is not None:
-                record = getattr(inner_sched, "record_disconnect_abort", None)
-                if record is not None:
-                    return record
+                recorder = getattr(inner_sched, "record_disconnect_abort", None)
+                if recorder is not None:
+                    return recorder
             # 2b) ``engine._engine.engine.scheduler`` — the production
             # ``BatchedEngine`` over ``AsyncEngineCore`` shape. The
             # extra hop is where AsyncEngineCore wraps EngineCore.
@@ -2064,9 +2071,9 @@ def _resolve_scheduler_for_cancel_attribution(engine):
             if inner_engine is not None:
                 deep_sched = getattr(inner_engine, "scheduler", None)
                 if deep_sched is not None:
-                    record = getattr(deep_sched, "record_disconnect_abort", None)
-                    if record is not None:
-                        return record
+                    recorder = getattr(deep_sched, "record_disconnect_abort", None)
+                    if recorder is not None:
+                        return recorder
     return None
 
 
@@ -2082,9 +2089,9 @@ def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
     than reality — never breaks the abort itself.
     """
     try:
-        record = _resolve_scheduler_for_cancel_attribution(engine)
-        if record is not None:
-            record(request_id)
+        recorder = _resolve_disconnect_abort_recorder(engine)
+        if recorder is not None:
+            recorder(request_id)
     except Exception:  # pragma: no cover - belt-and-suspenders
         logger.warning(
             "[disconnect_guard] record_disconnect_abort raised; "

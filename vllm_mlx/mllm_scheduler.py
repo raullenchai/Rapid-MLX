@@ -246,6 +246,13 @@ class MLLMScheduler:
         # Thread-safe set for deferred aborts (event loop → executor thread).
         # CPython GIL guarantees set.add() and set.pop() are atomic.
         self._pending_abort_ids: set[str] = set()
+        # M-01 codex r2 BLOCKING #2: lifetime de-dup ledger for the
+        # total cancellation counter. Mirror of
+        # ``Scheduler._cancelled_request_ids`` — see that comment for
+        # the rationale (TL;DR: ``_pending_abort_ids`` drains every
+        # step so it's the wrong ledger to dedupe a lifetime counter
+        # against).
+        self._cancelled_request_ids: set[str] = set()
         # M-01: once-per-request guard for the disconnect-cause
         # sub-counter. Mirrors ``Scheduler._disconnect_abort_ids`` —
         # the helper-layer ``_force_abort_request`` may fire two or
@@ -452,17 +459,16 @@ class MLLMScheduler:
             or request_id in self.running
             or request_id in self._pending_abort_ids
         ):
-            # M-01 codex r1 BLOCKING #4: serialize the
-            # check-add-increment under ``_cancel_counter_lock`` so
-            # concurrent abort callers (disconnect_guard's three
-            # branches + explicit /cancel + engine_core cleanup) can't
-            # both observe ``already_pending=False`` and double-count
-            # the same id. See ``Scheduler.abort_request`` for the
-            # full thread-safety rationale.
+            # M-01 codex r1 BLOCKING #4 + r2 BLOCKING #2: serialize
+            # the check-add-increment AND dedupe against the lifetime
+            # ledger ``_cancelled_request_ids`` rather than the
+            # drainable ``_pending_abort_ids``. See
+            # ``Scheduler.abort_request`` for the full rationale.
             with self._cancel_counter_lock:
-                already_pending = request_id in self._pending_abort_ids
+                already_counted = request_id in self._cancelled_request_ids
+                self._cancelled_request_ids.add(request_id)
                 self._pending_abort_ids.add(request_id)
-                if not already_pending:
+                if not already_counted:
                     self.num_requests_cancelled += 1
             logger.debug(f"Enqueued abort for request {request_id}")
             return True
@@ -1259,6 +1265,11 @@ class MLLMScheduler:
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
         self._detokenizer_pool.clear()
+        # M-01 codex r2: drop the cancellation lifetime ledgers
+        # alongside the in-flight state. The Prometheus counters
+        # themselves are NOT zeroed (lifetime-cumulative contract).
+        self._cancelled_request_ids.clear()
+        self._disconnect_abort_ids.clear()
 
         if self.batch_generator is not None:
             self.batch_generator.close()
