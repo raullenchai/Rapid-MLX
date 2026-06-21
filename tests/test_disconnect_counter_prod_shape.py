@@ -360,48 +360,74 @@ async def test_ten_disconnects_on_prod_shape_yield_ten_ten():
 
 
 def test_mllm_scheduler_admit_below_cap_does_not_attributeerror_on_lock():
-    """Codex r12 BLOCKING follow-up: ``MLLMScheduler.add_request``
-    now acquires ``self._cancel_counter_lock`` to do the
+    """Codex r12 + r13 BLOCKING: ``MLLMScheduler.add_request`` now
+    acquires ``self._cancel_counter_lock`` to do the
     lifetime-ledger clear + commit under one critical section. The
     constructor MUST initialise this lock or the first multimodal
     request raises ``AttributeError`` and breaks every MLLM admit.
 
-    Drive a below-cap admit through ``add_request`` against a stub
-    that mimics the bare scheduler state (no real model needed)
-    and assert the lock + commit path completes without
-    AttributeError. A future refactor that drops the constructor's
-    ``_cancel_counter_lock = threading.Lock()`` line fails here.
+    Run the REAL ``__init__`` (with stub model + processor) so a
+    future refactor that drops the constructor's
+    ``_cancel_counter_lock = threading.Lock()`` line fails loudly
+    on this regression test. Codex r13 BLOCKING called out the
+    prior version of this test which bypassed the constructor and
+    manually installed the lock — that defeated the point of
+    testing the constructor invariant.
     """
-    import threading
-
     from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
 
-    sched = MLLMScheduler.__new__(MLLMScheduler)
-    # Mirror the constructor's ``_cancel_counter_lock`` /
-    # ``_cancelled_request_ids`` / ``_disconnect_abort_ids`` /
-    # ``_pending_abort_ids`` / ``requests`` / ``waiting`` init,
-    # exactly as the real ``__init__`` does. The minimal stub is
-    # sufficient to drive ``add_request`` past the ledger clear +
-    # commit critical section. Anything missing here would raise
-    # AttributeError BEFORE the cap-check vs after; pinning that
-    # add_request reaches the commit line is the contract.
-    sched._cancel_counter_lock = threading.Lock()
-    sched._cancelled_request_ids = set()
-    sched._disconnect_abort_ids = set()
-    sched._pending_abort_ids = set()
-    sched.config = MLLMSchedulerConfig(max_concurrent_requests=4)
-    sched.requests = {}
-    sched.waiting = []
+    class _StubProcessor:
+        # MLLMScheduler._get_stop_tokens consults
+        # ``processor.tokenizer.added_tokens_decoder``; a single
+        # method-shaped stub keeps the constructor path live without
+        # pulling in a real HF tokenizer.
+        class _Tok:
+            eos_token_id = None
+            added_tokens_decoder: dict = {}
 
-    # Call into the real add_request with a stub prompt — minimal
-    # prompt is enough to reach the commit line; we don't care
-    # whether the downstream processing succeeds, only that the
-    # admission gate + ledger clear + commit ran without
-    # AttributeError on the lock.
+            def encode(self, _prompt, **_kw):
+                return [42]
+
+            def decode(self, _ids, **_kw):
+                return ""
+
+            def convert_tokens_to_ids(self, _t):
+                return None
+
+        tokenizer = _Tok()
+
+    class _StubModel:
+        # MultimodalProcessor / MLLMScheduler read ``model.config`` —
+        # a bare object with attribute access via getattr is enough.
+        class _Cfg:
+            image_token_index = None
+
+        config = _Cfg()
+
+    # REAL constructor — this is what codex r13 demanded. If the
+    # constructor's `_cancel_counter_lock = threading.Lock()` line
+    # is ever dropped, the ``add_request`` call below raises
+    # AttributeError on the lock acquisition and this test fails
+    # loudly.
+    sched = MLLMScheduler(
+        model=_StubModel(),
+        processor=_StubProcessor(),
+        config=MLLMSchedulerConfig(max_concurrent_requests=4),
+    )
+
+    # Constructor-invariant pin: the lock MUST be present and a
+    # real Lock before any admit runs.
+    assert hasattr(sched, "_cancel_counter_lock"), (
+        "MLLMScheduler.__init__ MUST initialise _cancel_counter_lock"
+    )
+    assert hasattr(sched._cancel_counter_lock, "acquire")
+
+    # Below-cap admit through the REAL add_request so the
+    # lock-acquired ledger-clear + commit critical section runs end
+    # to end.
     request_id = sched.add_request(prompt="hi", request_id="req-mllm-smoke")
     assert request_id == "req-mllm-smoke"
     assert "req-mllm-smoke" in sched.requests
-    assert sched.requests["req-mllm-smoke"] is not None
     # The lifetime ledger MUST be empty at this point (the clear
     # ran, no abort has fired yet).
     assert "req-mllm-smoke" not in sched._cancelled_request_ids
