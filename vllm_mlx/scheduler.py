@@ -3278,20 +3278,20 @@ class Scheduler:
         self.finished_req_ids.add(request_id)
         self._cleanup_detokenizer(request_id)
 
-        # M-01 codex r3 BLOCKING #1: the dedupe ledgers
-        # ``_cancelled_request_ids`` / ``_disconnect_abort_ids`` are
-        # ACTIVE-LIFETIME guards, not process-lifetime. Keeping the
-        # id in the ledger after ``_do_abort_request`` has actually
-        # torn down the request would silently swallow the next
-        # cancel for a NEW distinct request that happens to reuse
-        # the same ``request_id`` (e.g. integrations that hash
-        # request_ids deterministically, or a client retrying the
-        # same operation). The lock-protected discard pair below
-        # keeps the codex r1 atomicity contract — discards are
-        # idempotent and only nominally cheap.
-        with self._cancel_counter_lock:
-            self._cancelled_request_ids.discard(request_id)
-            self._disconnect_abort_ids.discard(request_id)
+        # M-01 codex r4 BLOCKING #1: do NOT discard the dedupe
+        # ledgers here. The text scheduler intentionally keeps the
+        # ``Request`` object in ``self.requests`` between
+        # ``_do_abort_request`` and the later
+        # ``remove_finished_request`` call (engine_core cleanup),
+        # so ``abort_request`` would still observe
+        # ``request_id in self.requests`` and admit a redundant
+        # enqueue. Discarding the dedupe ledger HERE would let
+        # that redundant enqueue double-count the same request
+        # lifetime. The discard happens in ``remove_finished_request``
+        # instead — by which point the request has truly left every
+        # admit-able map and a fresh ``abort_request`` could only
+        # land via a new admit() with the same id (a distinct
+        # lifetime).
 
         # Flush Metal encoders after removing arrays from batch
         mx.clear_cache()
@@ -4153,7 +4153,30 @@ class Scheduler:
         return self.requests.get(request_id)
 
     def remove_finished_request(self, request_id: str) -> Request | None:
-        """Remove a finished request from tracking."""
+        """Remove a finished request from tracking.
+
+        M-01 codex r4 BLOCKING #1: this is the canonical
+        request-leaves-scheduler boundary, so the cancellation
+        dedupe ledgers (``_cancelled_request_ids`` /
+        ``_disconnect_abort_ids``) are also discarded here. Before
+        this method runs, a redundant ``abort_request`` for the
+        same id would still pass the
+        ``request_id in self.requests`` predicate — so the ledger
+        must stay populated to prevent double-counting that
+        redundant enqueue. After this method runs, ``request_id``
+        is no longer admit-able via the abort-path predicate, so
+        the only way a future ``abort_request(rid)`` can hit
+        ``True`` is through a fresh ``add_request`` (a distinct
+        lifetime), which is exactly when the counter SHOULD tick
+        again.
+
+        Discards are under the same lock as the abort_request
+        increment so the discard + future increment are linearly
+        ordered. Idempotent — re-entry is safe.
+        """
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.discard(request_id)
+            self._disconnect_abort_ids.discard(request_id)
         return self.requests.pop(request_id, None)
 
     def get_running_requests_info(self) -> list[dict[str, Any]]:

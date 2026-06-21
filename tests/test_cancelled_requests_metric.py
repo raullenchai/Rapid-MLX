@@ -199,20 +199,55 @@ def test_total_counter_counts_reused_request_id_after_full_abort_cycle():
     assert scheduler.abort_request("req-reused") is True
     assert scheduler.get_stats()["num_requests_cancelled"] == 1
     scheduler._process_pending_aborts()
-    # The r3 fix: ``_cancelled_request_ids`` is empty for this id
-    # even though ``self.requests`` may still hold the finished
-    # ``Request`` object.
-    assert "req-reused" not in scheduler._cancelled_request_ids
+    # Codex r4 fix: the dedupe ledger MUST stay populated until the
+    # request actually leaves ``self.requests``. Otherwise a
+    # redundant ``abort_request`` arriving while the request is
+    # mid-cleanup would observe ``in self.requests`` AND an empty
+    # ledger and double-count the same lifetime.
+    assert "req-reused" in scheduler._cancelled_request_ids
     # Engine-core cleanup: remove the finished request from the
-    # scheduler's request map so the next admit doesn't collide.
+    # scheduler's request map; the discard of the dedupe ledger
+    # happens HERE per codex r4.
     scheduler.remove_finished_request("req-reused")
     assert "req-reused" not in scheduler.requests
+    assert "req-reused" not in scheduler._cancelled_request_ids
 
     # Second lifetime: distinct request, same id.
     _admit(scheduler, "req-reused")
     assert scheduler.abort_request("req-reused") is True
     # MUST count again — the new request is a distinct cancel.
     assert scheduler.get_stats()["num_requests_cancelled"] == 2
+
+
+def test_total_counter_does_not_double_count_redundant_abort_pre_cleanup():
+    """Codex r4 BLOCKING #1: between ``_do_abort_request`` and
+    ``remove_finished_request`` the request stays resident in
+    ``self.requests``. A redundant ``abort_request`` for the same id
+    in that window MUST NOT double-count.
+
+    Pre-r4-fix (codex r3): the dedupe ledger was cleared inside
+    ``_do_abort_request``, so the redundant call observed the
+    request still in ``self.requests`` AND an empty ledger and
+    incremented the counter a second time for the same lifetime.
+
+    Post-r4: the ledger is only cleared inside
+    ``remove_finished_request``, by which point the request has
+    truly left every admit predicate and a fresh ``abort_request``
+    can only land via a new admit (a distinct lifetime).
+    """
+    scheduler = _make_scheduler()
+    _admit(scheduler, "req-mid-cleanup")
+    scheduler.abort_request("req-mid-cleanup")
+    assert scheduler.get_stats()["num_requests_cancelled"] == 1
+    # Simulate the executor running _do_abort_request — but NOT
+    # yet the engine_core remove_finished_request call. The
+    # request is mid-cleanup.
+    scheduler._process_pending_aborts()
+    assert "req-mid-cleanup" in scheduler.requests  # still resident
+
+    # Redundant abort in the cleanup window. MUST NOT increment.
+    assert scheduler.abort_request("req-mid-cleanup") is True
+    assert scheduler.get_stats()["num_requests_cancelled"] == 1
 
 
 def test_disconnect_subcounter_counts_reused_request_id_after_full_abort_cycle():
@@ -232,9 +267,10 @@ def test_disconnect_subcounter_counts_reused_request_id_after_full_abort_cycle()
     scheduler.record_disconnect_abort("req-disc-reused")
     assert scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 1
     scheduler._process_pending_aborts()
-    # Discarded by _do_abort_request.
-    assert "req-disc-reused" not in scheduler._disconnect_abort_ids
+    # Codex r4: still in ledger until remove_finished_request.
+    assert "req-disc-reused" in scheduler._disconnect_abort_ids
     scheduler.remove_finished_request("req-disc-reused")
+    assert "req-disc-reused" not in scheduler._disconnect_abort_ids
 
     # Second lifetime: distinct request reusing the id.
     _admit(scheduler, "req-disc-reused")
@@ -819,30 +855,57 @@ def test_force_abort_attribution_walks_active_backend():
 # ---------------------------------------------------------------------------
 
 
+class _RealSchedulerEngine:
+    """Engine stub that exposes a REAL ``Scheduler`` instance so the
+    end-to-end disconnect_guard tests pin the actual
+    ``get_stats()["num_requests_cancelled"]`` counter — not a fake
+    counter on a stub.
+
+    Codex r4 BLOCKING #3 fix: the earlier ``_CountingScheduler`` stub
+    only recorded method calls, so the test would still pass if
+    ``Scheduler.num_requests_cancelled`` never advanced. Driving the
+    real scheduler closes that gap — a regression that breaks the
+    counter wiring will now fail the assertion on
+    ``get_stats()``.
+    """
+
+    def __init__(self):
+        self.scheduler = _make_scheduler()
+
+
 @pytest.mark.asyncio
 async def test_three_aborted_streaming_requests_advance_counters_by_three():
     """Fire 3 streaming requests through ``_disconnect_guard`` and
     abort each via ``GeneratorExit``. The total counter and the
-    disconnect sub-counter both increment by 3.
+    disconnect sub-counter both increment by 3 on a REAL
+    ``Scheduler``.
 
     This is the headline behaviour Mei r0.8.1 / Yana r3 asked for:
     aborted streams MUST be visible in /metrics so operators see the
     cancel-rate. Pre-fix the counters didn't exist; post-fix the test
-    pins the +N contract.
+    pins the +N contract against the real scheduler's
+    ``get_stats()``.
+
+    Codex r4 BLOCKING #3: this test previously used a fake
+    ``_CountingScheduler`` and would have passed even if the real
+    scheduler counters never advanced. Replaced with
+    ``_RealSchedulerEngine`` so the assertion now pins the actual
+    Prometheus-facing counter.
     """
     from vllm_mlx.service.helpers import _disconnect_guard
 
-    engine = _Engine()
+    engine = _RealSchedulerEngine()
 
-    aborted_holders: list[list[str]] = []
+    # Admit three requests directly into the real scheduler so
+    # ``abort_request(rid)`` will pass the predicate.
+    for i in range(3):
+        _admit(engine.scheduler, f"req-stream-{i}")
+
     for i in range(3):
         holder = [f"req-stream-{i}"]
-        aborted_holders.append(holder)
 
         async def upstream():
             yield 'data: {"chunk":"hello"}\n\n'
-            # Wait long enough that GeneratorExit reaches us before
-            # the upstream exhausts naturally.
             await asyncio.sleep(60)
             yield "data: [DONE]\n\n"
 
@@ -860,32 +923,27 @@ async def test_three_aborted_streaming_requests_advance_counters_by_three():
         )
 
         # Pull one chunk then close — simulates Starlette tearing
-        # down the StreamingResponse mid-stream (Astrid r3 fingerprint).
+        # down the StreamingResponse mid-stream (Astrid r3
+        # fingerprint).
         agen = guard.__aiter__()
         await agen.__anext__()
         await agen.aclose()
 
-    # All three request_ids should be in the scheduler's abort list
-    # AND the disconnect-attribution list. De-dup guarantees one
-    # entry per id even when the helper fires from multiple branches.
-    accepted_aborts = sorted(set(engine.scheduler.aborts))
-    accepted_records = sorted(set(engine.scheduler.disconnect_records))
-    assert accepted_aborts == [
-        "req-stream-0",
-        "req-stream-1",
-        "req-stream-2",
-    ]
-    assert accepted_records == [
-        "req-stream-0",
-        "req-stream-1",
-        "req-stream-2",
-    ]
+    # The real scheduler's counters MUST have advanced by 3 each.
+    # If the wiring breaks (e.g. someone removes the
+    # ``_record_disconnect_abort_on_scheduler`` call, or the
+    # scheduler stops counting on accepted aborts), THIS is what
+    # catches it — not the side-channel attribute checks the
+    # stub-based version did.
+    stats = engine.scheduler.get_stats()
+    assert stats["num_requests_cancelled"] == 3, stats
+    assert stats["num_requests_cancelled_via_disconnect"] == 3, stats
 
 
 @pytest.mark.asyncio
 async def test_two_completed_streaming_requests_leave_counter_unchanged():
     """Streams that exhaust normally do NOT advance the cancellation
-    counters.
+    counters on a REAL ``Scheduler``.
 
     ``_disconnect_guard.finally`` has a ``finished_normally`` flag
     (codex r1 NIT #3 on PR #777) that skips the belt-and-suspenders
@@ -893,10 +951,15 @@ async def test_two_completed_streaming_requests_leave_counter_unchanged():
     ``StopAsyncIteration``. Without that gate the cancellation
     counter would tick once per completed request and the operator's
     "cancel rate" panel would look like "100% of traffic" — useless.
+
+    Codex r4 BLOCKING #3 same fix as the abort test above: drive a
+    real ``Scheduler`` so the counter assertion has bite.
     """
     from vllm_mlx.service.helpers import _disconnect_guard
 
-    engine = _Engine()
+    engine = _RealSchedulerEngine()
+    for i in range(2):
+        _admit(engine.scheduler, f"req-clean-{i}")
 
     for i in range(2):
         holder = [f"req-clean-{i}"]
@@ -925,9 +988,10 @@ async def test_two_completed_streaming_requests_leave_counter_unchanged():
         # Sanity: the consumer pulled the full stream.
         assert "[DONE]" in chunks[-1]
 
-    # Neither counter should have moved.
-    assert engine.scheduler.aborts == []
-    assert engine.scheduler.disconnect_records == []
+    # Neither counter should have moved on the REAL scheduler.
+    stats = engine.scheduler.get_stats()
+    assert stats["num_requests_cancelled"] == 0, stats
+    assert stats["num_requests_cancelled_via_disconnect"] == 0, stats
 
 
 # ---------------------------------------------------------------------------
