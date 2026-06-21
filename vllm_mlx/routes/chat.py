@@ -233,6 +233,50 @@ def _synthesize_forced_tool_call(name: str, arguments: str = "{}"):
     )
 
 
+def _is_harmony_cut_short_stream(
+    reasoning_parser,
+    accumulated_reasoning: str,
+    accumulated_text: str,
+    tool_calls_detected: bool,
+) -> bool:
+    """D-HARMONY-LEAK gate predicate, factored for direct test reuse.
+
+    Returns True when the streaming postprocessor state matches the
+    harmony "analysis without final" cut-short shape: an active
+    ``HarmonyReasoningParser`` saw reasoning tokens, no content
+    tokens have been streamed, AND no commentary tool call was
+    detected on any chunk. The streaming chat route uses this to
+    decide whether to synthesise a harmony-marked ``raw_text`` so the
+    shared rescue helper's gate fires uniformly across the streaming
+    and non-streaming surfaces.
+
+    Codex r1 BLOCKING #2 (PR #794): plumbing ``tool_calls_detected``
+    keeps a tool-call-only stream from being misclassified as
+    analysis-without-final — the cap-exhaust path in
+    ``StreamingPostProcessor._process_channel_routed`` sets
+    ``tool_calls_detected=True`` even when ``fallback_tool_calls``
+    arrives empty, and a wrongly-fired harmony gate there would not
+    suppress visible bytes but WOULD lose the channel-state signal
+    for any future caller that gates on the synthetic raw shape.
+
+    Codex r2 BLOCKING (PR #794): extracted to a module-level helper
+    so ``tests/test_harmony_finalize.py`` exercises the SAME code
+    object the streaming chat route uses, not a local re-implementation
+    of the predicate.
+    """
+    rp_is_harmony = (
+        type(reasoning_parser).__name__ == "HarmonyReasoningParser"
+        if reasoning_parser is not None
+        else False
+    )
+    return bool(
+        rp_is_harmony
+        and accumulated_reasoning
+        and not accumulated_text
+        and not tool_calls_detected
+    )
+
+
 def _engine_supports_channel_routed_tool_calls(engine) -> bool:
     """Probe whether the engine's tokenizer yields a channel-routed
     streaming path that can emit structured tool calls without a text
@@ -2209,11 +2253,60 @@ async def stream_chat_completion(
                         processor.accumulated_reasoning + processor.accumulated_text
                     )
                 )
-                synthetic_raw = (
-                    "<think>" + processor.accumulated_reasoning
-                    if saw_open_no_close
-                    else processor.accumulated_reasoning or ""
+                # D-HARMONY-LEAK (2026-06-21): harmony-streaming mirror
+                # of the truncated-``<think>`` synthetic raw above. On
+                # gpt-oss / Harmony streaming, the engine token-routes
+                # via ``OutputRouter`` so ``output.channel="reasoning"``
+                # arrives in the postprocessor pre-split — the literal
+                # ``<|channel|>analysis<|message|>`` opener is consumed
+                # as a state transition by ``HarmonyStreamingRouter``
+                # and never lands in ``accumulated_reasoning``. The
+                # streaming counterpart of the bug: when generation
+                # cuts short before a final channel emerges (max_tokens
+                # mid-analysis OR a stop string matching mid-analysis),
+                # ``accumulated_text`` stays empty and the rescue would
+                # promote the analysis trace to ``delta.content`` —
+                # shipping byte-identical content + reasoning_content
+                # to the client. Synthesise a harmony-marked raw_text
+                # so the helper's new harmony-shape gate (analysis
+                # marker present, final marker absent) fires uniformly
+                # across both the streaming and non-streaming surfaces.
+                # Gated on the parser type so the synthetic only fires
+                # for Harmony — gemma-4 / qwen families still rely on
+                # their existing rescue paths.
+                #
+                # Codex r1 BLOCKING #2: the empty-content + non-empty-
+                # reasoning shape ALSO matches a tool-call-only stream
+                # where the parallel-tool-calls cap dropped every
+                # commentary entry (``tool_calls_detected=True`` set on
+                # the cap-exhaust path but ``fallback_tool_calls`` may
+                # arrive empty and ``finish_event.finish_reason`` may
+                # be something other than ``"tool_calls"`` on the
+                # router-cap path before the buffered-finish gate
+                # fires). Plumb ``processor.tool_calls_detected``
+                # through so a commentary-call stream is not
+                # misclassified as analysis-without-final and
+                # accidentally suppressed via the harmony gate —
+                # tool-call-only responses legitimately ship
+                # ``content=None`` per the OpenAI spec and the gate
+                # would only change zero-byte output here, but
+                # honouring the explicit channel signal keeps the
+                # synthetic_raw discrimination accurate.
+                harmony_cut_short = _is_harmony_cut_short_stream(
+                    rp,
+                    processor.accumulated_reasoning,
+                    processor.accumulated_text,
+                    processor.tool_calls_detected,
                 )
+                if harmony_cut_short:
+                    synthetic_raw = (
+                        "<|channel|>analysis<|message|>"
+                        + processor.accumulated_reasoning
+                    )
+                elif saw_open_no_close:
+                    synthetic_raw = "<think>" + processor.accumulated_reasoning
+                else:
+                    synthetic_raw = processor.accumulated_reasoning or ""
                 # PR #715 bundle, fuzz finding C: streaming Case-4
                 # mirror of the non-streaming detection. When the
                 # parser never saw a ``<think>``/``</think>`` token
