@@ -815,6 +815,34 @@ class ToolDefinition(BaseModel):
                 "matching ^[a-zA-Z0-9_-]{1,64}$ (per OpenAI spec); got "
                 f"{name!r}."
             )
+        # D-TOOL-RECUR: reject a ``function.parameters`` (JSON Schema)
+        # whose structural nesting exceeds ``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``
+        # (default 64). Pre-fix, a client could ship a ~1000-deep
+        # nested ``parameters`` schema (~10 KB JSON) and crash the
+        # worker with HTTP 500 inside
+        # ``vllm_mlx.utils.chat_template._sanitize_tools_for_template._walk``
+        # — an unauthenticated DoS surface confirmed against five
+        # tool-call parsers (qwen / hermes / phi / deepseek / glm47).
+        # The iterative walk in ``_sanitize_tools_for_template`` is the
+        # structural fix for the crash; this validator is the upstream
+        # rejection so the canonical 400 envelope (no stack trace, no
+        # leaked tokenizer state) is what the client actually sees,
+        # and so the iterative walk doesn't even have to traverse an
+        # adversarial-sized tree.
+        from ..utils.json_depth import (
+            json_nesting_depth_exceeds,
+            resolve_max_tool_schema_depth,
+        )
+
+        params = self.function.get("parameters") if isinstance(self.function, dict) else None
+        if isinstance(params, (dict, list)):
+            cap = resolve_max_tool_schema_depth()
+            if cap > 0 and json_nesting_depth_exceeds(params, cap):
+                raise ValueError(
+                    f"function.parameters JSON nesting depth exceeds the "
+                    f"{cap}-level server cap (set via "
+                    "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH)."
+                )
         return self
 
 

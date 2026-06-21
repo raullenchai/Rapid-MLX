@@ -495,6 +495,24 @@ install_audio_body_limit_middleware(app)
 # is not trampled by the generic 8 MiB JSON cap), and the limit lookup
 # (ServerConfig.max_request_bytes, overridable via --max-request-bytes /
 # RAPID_MLX_MAX_REQUEST_BYTES).
+# SECURITY: blanket request-body JSON nesting-depth cap across all
+# /v1/* JSON routes. Defends against the D-DEEP-JSON DoS pattern where
+# a ~10 KB body of ``{"a":{"a":…}}`` 1000 levels deep blew the Python
+# recursion limit inside Pydantic's body validator and surfaced as
+# HTTP 500 on every body-binding route (chat / completions /
+# embeddings / messages / responses). See middleware/body_depth.py
+# for the design rationale; the cap is read from
+# ``RAPID_MLX_MAX_BODY_DEPTH`` per request (default 64) so a test
+# fixture mutating the env takes effect immediately. Installed BEFORE
+# the size cap so the size cap ends up OUTERMOST at request time
+# (Starlette stacks middleware in reverse install order). That way a
+# 100 MB body gets bounced for size before this middleware ever sees
+# it — the depth gate is only reached for bodies that already pass
+# the size cap.
+from .middleware.body_depth import install_request_body_depth_middleware  # noqa: E402
+
+install_request_body_depth_middleware(app)
+
 from .middleware.body_size import install_request_body_limit_middleware  # noqa: E402
 
 install_request_body_limit_middleware(app)
