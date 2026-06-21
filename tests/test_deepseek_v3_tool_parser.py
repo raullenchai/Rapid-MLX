@@ -29,9 +29,11 @@ exact parser instance the server uses for that checkpoint.
 from __future__ import annotations
 
 import json
+from unittest.mock import MagicMock
 
 import pytest
 
+from vllm_mlx.service.postprocessor import StreamingPostProcessor
 from vllm_mlx.tool_parsers import ToolParserManager
 from vllm_mlx.tool_parsers.deepseekv31_tool_parser import DeepSeekV31ToolParser
 
@@ -567,6 +569,95 @@ class TestV3Streaming:
             f"V3.1 stream lost its name event — V3 suppression may "
             f"have hijacked the empty-body intermediate state. Events: "
             f"{events!r}"
+        )
+
+
+# --------------------------------------------------------------------
+# Integration: V3 streaming through the real ``StreamingPostProcessor``
+# finalize path. Confirms the suppression + finalize composition
+# actually delivers a ``tool_call`` event to clients — i.e. it would
+# fail if the parser-level suppression worked but the postprocessor's
+# fallback gate didn't pick the V3 calls up at end-of-stream.
+# (codex r9 BLOCKING-3: parser-only tests can't prove this.)
+# --------------------------------------------------------------------
+def _make_postprocessor_cfg() -> MagicMock:
+    """Mock ServerConfig minimally configured to route through the
+    ``deepseek_v31`` tool parser path."""
+    cfg = MagicMock()
+    cfg.engine = None
+    cfg.reasoning_parser = None
+    cfg.reasoning_parser_name = None
+    cfg.enable_auto_tool_choice = True
+    cfg.tool_call_parser = "deepseek_v31"
+    cfg.tool_parser_instance = None
+    return cfg
+
+
+def _make_generation_output(
+    text: str, finished: bool = False, finish_reason: str | None = None
+) -> MagicMock:
+    out = MagicMock()
+    out.new_text = text
+    out.finished = finished
+    out.channel = None
+    out.finish_reason = finish_reason or ("stop" if finished else None)
+    out.prompt_tokens = 10
+    out.completion_tokens = 5
+    out.tokens = []
+    out.logprobs = None
+    out.tool_calls = None
+    return out
+
+
+class TestV3StreamingIntegration:
+    """End-to-end through ``StreamingPostProcessor`` (codex r9)."""
+
+    def test_v3_payload_emits_tool_call_via_finalize(self) -> None:
+        """Drive a V3-shaped payload through the real postprocessor
+        chunk-by-chunk and confirm ``finalize()`` emits a
+        ``tool_call`` event with ``name="get_weather"``. Pins the
+        suppression + fallback composition end-to-end.
+        """
+        cfg = _make_postprocessor_cfg()
+        pp = StreamingPostProcessor(cfg, tools_requested=True)
+        pp.reset()
+
+        payload = _envelope(_v3_block("get_weather", '{"city": "Tokyo"}'))
+
+        # Stream in mid-sized chunks. None of these should emit a
+        # ``tool_call`` event — the parser-level suppression returns
+        # ``None`` for every V3 delta.
+        all_events = []
+        for i in range(0, len(payload), 16):
+            chunk = payload[i : i + 16]
+            is_last = i + 16 >= len(payload)
+            output = _make_generation_output(
+                chunk,
+                finished=is_last,
+                finish_reason="tool_calls" if is_last else None,
+            )
+            all_events.extend(pp.process_chunk(output))
+
+        all_events.extend(pp.finalize())
+
+        # Collect tool_call events from the full event stream.
+        tool_call_events = [e for e in all_events if e.type == "tool_call"]
+        assert tool_call_events, (
+            f"No tool_call event emitted end-to-end. Events: "
+            f"{[(e.type, getattr(e, 'tool_calls', None)) for e in all_events]!r}"
+        )
+        # Aggregate names across emitted events (finalize may emit
+        # one event with multiple calls).
+        names = []
+        for ev in tool_call_events:
+            for tc in ev.tool_calls or []:
+                names.append(tc.get("function", {}).get("name") or tc.get("name"))
+        assert "get_weather" in names, (
+            f"V3 finalize path lost the real tool name. Names: {names!r}"
+        )
+        # And the leaked V3 type tag must NEVER appear.
+        assert "function" not in names, (
+            f"V3 type-tag leaked into the final tool_call event. Names: {names!r}"
         )
 
 

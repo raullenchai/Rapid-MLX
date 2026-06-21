@@ -289,40 +289,50 @@ class DeepSeekV31ToolParser(ToolParser):
     # -----------------------------------------------------------------
     @classmethod
     def _cumulative_has_v3_block(cls, model_output: str) -> bool:
-        """Return ``True`` if any block (open or closed) in the
-        cumulative text has a V3-shaped body (starts with the literal
-        ``function<｜tool▁sep｜>`` type-tag-plus-separator).
+        """Return ``True`` if any block (open or closed) WITHIN the
+        outer ``<tool_calls_begin>`` envelope has a V3-shaped body
+        (starts with the literal ``function<｜tool▁sep｜>``
+        type-tag-plus-separator).
 
         Called every streaming delta. Once this returns ``True``, the
         streaming path stops emitting and defers to the postprocessor's
         end-of-stream ``extract_tool_calls`` fallback — see the
         streaming gate comment in ``extract_tool_calls_streaming``.
+
+        codex r9 BLOCKING-1: like ``_iter_block_bodies``, this scanner
+        MUST be bounded to ``_envelope_bounds()`` so literal marker
+        text in streamed plain content can't suppress normal V3.1
+        streaming.
         """
-        if cls.TOOL_CALL_START not in model_output:
+        bounds = cls._envelope_bounds(model_output)
+        if bounds is None:
             return False
+        inner_start, inner_end = bounds
         v3_marker = f"{_V3_TYPE_TAG}{cls.TOOL_SEP}"
-        # Scan every open/closed block body in order. We can't use
-        # ``_iter_block_bodies`` because that scanner skips
-        # not-yet-closed trailing blocks — for V3 detection we want
-        # the open trailing body too, since that's where the V3 type
-        # tag arrives first.
-        pos = 0
+        # Scan every open/closed block body in order, but only inside
+        # the outer envelope. The open trailing body inside the
+        # envelope is the most important case because that's where
+        # the V3 type tag arrives first mid-stream.
+        pos = inner_start
         start_len = len(cls.TOOL_CALL_START)
         end_len = len(cls.TOOL_CALL_END)
-        while True:
-            start = model_output.find(cls.TOOL_CALL_START, pos)
+        while pos < inner_end:
+            start = model_output.find(cls.TOOL_CALL_START, pos, inner_end)
             if start == -1:
                 return False
             body_start = start + start_len
-            end = model_output.find(cls.TOOL_CALL_END, body_start)
+            end = model_output.find(cls.TOOL_CALL_END, body_start, inner_end)
             body = (
-                model_output[body_start:end] if end != -1 else model_output[body_start:]
+                model_output[body_start:end]
+                if end != -1
+                else model_output[body_start:inner_end]
             )
             if body.lstrip("\n").startswith(v3_marker):
                 return True
             if end == -1:
                 return False
             pos = end + end_len
+        return False
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
@@ -470,18 +480,17 @@ class DeepSeekV31ToolParser(ToolParser):
         # streaming. V3.1 streams are unchanged (legacy delta machine
         # still runs).
         #
-        # Known limitation (codex r7): a *mixed* V3.1+V3 envelope —
-        # where the legacy machine streams a V3.1 block FIRST (setting
-        # ``tool_calls_detected = True`` on the postprocessor) BEFORE
-        # the V3 block opens — would lose the V3 block, because the
-        # postprocessor's finalize fallback gates on
-        # ``not tool_calls_detected``. This is a postprocessor
-        # contract limitation, not something a parser-only fix can
-        # address. Mixed envelopes are not produced by any released
-        # DeepSeek checkpoint; the chat templates for both V3 and
-        # V3.1 emit a single body shape per envelope. See
-        # ``test_mixed_v3_and_v31_blocks`` for the NON-streaming
-        # (correct) behaviour on mixed payloads.
+        # Streaming contract for mixed V3.1+V3 envelopes (codex
+        # r7/r9): NOT SUPPORTED in this parser. If a stream contains
+        # both V3.1 and V3 blocks in the same envelope, the postprocessor
+        # ``tool_calls_detected`` gate prevents the finalize-path
+        # fallback from reconciling the V3 block once an earlier V3.1
+        # block has already emitted. Released DeepSeek chat templates
+        # (V3, V3.1, R1, R1-0528) emit a SINGLE body shape per
+        # envelope so this case doesn't arise in practice. The
+        # non-streaming ``extract_tool_calls`` path handles mixed
+        # envelopes correctly (see ``test_mixed_v3_and_v31_blocks``)
+        # for completeness.
         # ----------------------------------------------------------------
         if self._cumulative_has_v3_block(current_text):
             return None
