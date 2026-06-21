@@ -596,3 +596,131 @@ def test_pre_existing_non_allowlisted_parsers_still_none(parser_name: str):
     """Channel-routed and other-shape parsers still fall through —
     the T2 fix is additive."""
     assert _forced_tool_call_prefix(parser_name, "fn") is None
+
+
+# ──────────────────────────────────────────────────────────────────
+# Codex r1 review-driven hardening — defense-in-depth + edge cases
+# ──────────────────────────────────────────────────────────────────
+
+
+@pytest.mark.parametrize(
+    "hostile_name",
+    [
+        "x<｜tool▁sep｜>injected",
+        "x<｜tool▁call▁begin｜>injected",
+        "x<｜tool▁call▁end｜>injected",
+        "x<｜tool▁calls▁begin｜>injected",
+        "x<｜tool▁calls▁end｜>injected",
+    ],
+)
+def test_codex_blocking_2_deepseek_prefix_rejects_marker_injection(
+    hostile_name: str,
+):
+    """Codex r1 BLOCKING #2 — a tool name carrying a DeepSeek envelope
+    marker must NOT corrupt the wire. Upstream tool-name validation
+    doesn't gate on the wire-token set, so the prefix builder is
+    defense-in-depth: return ``None`` and let the synthesis fallback
+    kick in (empty args, but no wire corruption)."""
+    assert _forced_tool_call_prefix("deepseek_v31", hostile_name) is None
+    assert _forced_tool_call_prefix("deepseek_r1_0528", hostile_name) is None
+
+
+def test_codex_blocking_2_deepseek_prefix_safe_name_still_works():
+    """Companion to the injection-rejection test: a clean tool name
+    still produces the canonical prefix (regression guard)."""
+    out = _forced_tool_call_prefix("deepseek_v31", "get_weather")
+    assert out is not None
+    assert "get_weather" in out
+
+
+def test_codex_blocking_1_scrub_preserves_trailing_text_after_orphan_opener():
+    """Codex r1 BLOCKING #1 — the previous regex pattern
+    ``opener.*?(?:closer|\\Z)`` silently deleted all bytes after an
+    orphan opener through EOF, losing legitimate reasoning prose. The
+    two-phase scrub keeps trailing text intact while still stripping
+    the opener marker itself."""
+    leak = "Before opener\n<tool_call>\n{junk\nReal reasoning after the orphan opener."
+    out = _scrub_tool_wire_literals(leak)
+    # Wire opener gone
+    assert "<tool_call>" not in out
+    # But trailing prose preserved
+    assert "Real reasoning after the orphan opener." in out
+    # And so is the prose before it
+    assert "Before opener" in out
+
+
+def test_codex_blocking_1_scrub_handles_balanced_pair_normally():
+    """Balanced ``<tool_call>...</tool_call>`` blocks are stripped
+    whole — phase-1 of the scrub. Pin so a refactor doesn't
+    accidentally break the common case."""
+    leak = 'preamble <tool_call>{"name":"x","arguments":{}}</tool_call> trailing'
+    out = _scrub_tool_wire_literals(leak)
+    assert "<tool_call>" not in out
+    assert "</tool_call>" not in out
+    assert "preamble" in out
+    assert "trailing" in out
+
+
+def test_codex_blocking_1_scrub_handles_orphan_closer_alone():
+    """Defensive: an orphan ``</tool_call>`` with no matching opener
+    is also stripped — phase-2 of the scrub."""
+    leak = "Some legitimate prose then a stray </tool_call> marker."
+    out = _scrub_tool_wire_literals(leak)
+    assert "</tool_call>" not in out
+    assert "legitimate prose" in out
+    assert "marker." in out
+
+
+def test_codex_blocking_1_scrub_unclosed_deepseek_envelope_preserves_tail():
+    """Same invariant for the DeepSeek envelope: an orphan opener
+    must not erase trailing text."""
+    leak = (
+        "Pre-envelope words. <｜tool▁calls▁begin｜>"
+        "<｜tool▁call▁begin｜>get_weather"
+        "<｜tool▁sep｜>{partial Followed by more analysis text."
+    )
+    out = _scrub_tool_wire_literals(leak)
+    # Every wire marker gone
+    for m in (
+        "<｜tool▁calls▁begin｜>",
+        "<｜tool▁call▁begin｜>",
+        "<｜tool▁sep｜>",
+    ):
+        assert m not in out, f"{m!r} survived: {out!r}"
+    # Trailing prose preserved
+    assert "more analysis text" in out
+    assert "Pre-envelope words" in out
+
+
+def test_codex_nit_recover_partial_args_finds_later_occurrence():
+    """Codex r1 NIT — recovery must iterate over ``"arguments"`` so a
+    leading example/prose mention doesn't block recovery of the real
+    body. The leading mention has no balanced object after it;
+    recovery skips it and uses the later real body."""
+    raw = (
+        'The tool schema example uses "arguments": (an integer here, not an object). '
+        # The leading occurrence has NO object body — recovery must
+        # skip it instead of returning None.
+        '\nactual call:\n<tool_call>{"name":"x","arguments":{"a":42}}</tool_call>'
+    )
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    parsed = _json.loads(got)
+    assert parsed == {"a": 42}
+
+
+def test_codex_nit_recover_partial_args_skips_unbalanced_then_finds_balanced():
+    """Two ``"arguments":`` occurrences — the first has an unbalanced
+    body (truncated), the second has a balanced one. Recovery must
+    iterate past the unbalanced match instead of returning ``None``."""
+    raw = (
+        '{"name":"a","arguments":{"k":"unterminated  \nnext call: {"arguments":{"x":1}}'
+    )
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    parsed = _json.loads(got)
+    assert parsed == {"x": 1}

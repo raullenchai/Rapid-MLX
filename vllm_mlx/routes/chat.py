@@ -222,16 +222,28 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
     }
     if parser_name in _verified_deepseek_v31_parsers:
         # V3.1 body: ``NAME<sep>{json}``. The model continues with the
-        # arguments object and closer. ``function_name`` is interpolated
-        # raw — these are DeepSeek special tokens, not JSON, and the
-        # name is already validated against ``request.tools`` upstream
-        # (the ``_target`` / ``_solo_name`` lookups in chat.py). The
-        # name does NOT pass through ``json.dumps`` because the V3.1
-        # body is not JSON-bodied here — it is a plain ``NAME<sep>``
-        # split. A function name containing ``<｜tool▁sep｜>`` would
-        # corrupt the wire, but such a name is malformed (the chat
-        # template would already fail to render it). Validated against
-        # ``DeepSeekV31ToolParser.extract_tool_calls`` body parser.
+        # arguments object and closer. The name is interpolated raw
+        # because the V3.1 body is NOT JSON-bodied at this position —
+        # it is a literal ``NAME<sep>`` split, so ``json.dumps`` would
+        # wrap the name in quotes and break the wire.
+        #
+        # codex r1 BLOCKING #2: a tool name that itself contains a
+        # DeepSeek envelope marker would corrupt the wire AND could
+        # let a downstream parser re-interpret the suffix as an extra
+        # tool call. Upstream validates names against ``request.tools``
+        # but not against the wire-token set, so we gate here as
+        # defense-in-depth. Hitting any marker returns ``None`` (clean
+        # degradation to the post-parse synthesis fallback) rather
+        # than emitting a corrupt prefix.
+        for _marker in (
+            "<｜tool▁calls▁begin｜>",
+            "<｜tool▁calls▁end｜>",
+            "<｜tool▁call▁begin｜>",
+            "<｜tool▁call▁end｜>",
+            "<｜tool▁sep｜>",
+        ):
+            if _marker in function_name:
+                return None
         return (
             f"<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>{function_name}<｜tool▁sep｜>"
         )
@@ -282,65 +294,85 @@ def _recover_partial_tool_args(raw_text: str | None) -> str | None:
     if not raw_text:
         return None
     text = raw_text
-    args_marker_idx = text.find('"arguments"')
-    if args_marker_idx == -1:
-        return None
-    # Find the colon that follows ``"arguments"`` (may have whitespace
-    # before/after). Scan forward up to a small bound — beyond that the
-    # marker is just prose, not a structural field.
-    colon_idx = text.find(":", args_marker_idx, args_marker_idx + 20)
-    if colon_idx == -1:
-        return None
-    # Skip whitespace after the colon, looking for the object opener.
-    pos = colon_idx + 1
     n = len(text)
-    while pos < n and text[pos] in " \t\n\r":
-        pos += 1
-    if pos >= n or text[pos] != "{":
-        return None
-    # Balanced-brace scan: walk until depth returns to 0, respecting
-    # JSON string boundaries (so a ``"}"`` literal inside an arg value
-    # doesn't close the object early). Cap at 8 KiB so a malformed
-    # giant payload doesn't burn CPU.
-    depth = 0
-    in_string = False
-    escape = False
-    obj_start = pos
-    obj_end = -1
-    scan_end = min(n, obj_start + 8192)
-    while pos < scan_end:
-        ch = text[pos]
-        if escape:
-            escape = False
-        elif in_string:
-            if ch == "\\":
-                escape = True
-            elif ch == '"':
-                in_string = False
-        else:
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    obj_end = pos + 1
-                    break
-        pos += 1
-    if obj_end == -1:
-        return None
-    candidate = text[obj_start:obj_end]
-    try:
-        parsed = json.loads(candidate)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    if not isinstance(parsed, dict):
-        return None
-    # Canonicalise — strip any incidental whitespace / trailing junk
-    # so downstream ``_validate_tool_call_params`` sees a clean JSON
-    # object byte-for-byte.
-    return json.dumps(parsed, ensure_ascii=False)
+    # codex r1 NIT: iterate over EVERY ``"arguments"`` occurrence so
+    # a leading example/prose mention (e.g. ``"the JSON shape is
+    # \"arguments\": {...}"``) doesn't block recovery of the real
+    # body that follows. We accept the first balanced JSON object;
+    # if a doc-string-shaped occurrence yields a parseable object
+    # too we'll still return that — but in practice the tool wire
+    # is always at the END of the response, so the last matching
+    # occurrence is what we want. Walk left-to-right but DON'T
+    # bail on the first non-match.
+    search_start = 0
+    while search_start < n:
+        args_marker_idx = text.find('"arguments"', search_start)
+        if args_marker_idx == -1:
+            return None
+        # Find the colon that follows ``"arguments"`` (may have
+        # whitespace before/after). Scan forward up to a small
+        # bound — beyond that the marker is just prose, not a
+        # structural field.
+        colon_idx = text.find(":", args_marker_idx, args_marker_idx + 20)
+        if colon_idx == -1:
+            # Advance past this occurrence and keep searching.
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        # Skip whitespace after the colon, looking for the object opener.
+        pos = colon_idx + 1
+        while pos < n and text[pos] in " \t\n\r":
+            pos += 1
+        if pos >= n or text[pos] != "{":
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        # Balanced-brace scan: walk until depth returns to 0, respecting
+        # JSON string boundaries (so a ``"}"`` literal inside an arg value
+        # doesn't close the object early). Cap at 8 KiB so a malformed
+        # giant payload doesn't burn CPU.
+        depth = 0
+        in_string = False
+        escape = False
+        obj_start = pos
+        obj_end = -1
+        scan_end = min(n, obj_start + 8192)
+        while pos < scan_end:
+            ch = text[pos]
+            if escape:
+                escape = False
+            elif in_string:
+                if ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        obj_end = pos + 1
+                        break
+            pos += 1
+        if obj_end == -1:
+            # Unbalanced from this marker — try the next one.
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        candidate = text[obj_start:obj_end]
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        if not isinstance(parsed, dict):
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        # Canonicalise — strip any incidental whitespace / trailing junk
+        # so downstream ``_validate_tool_call_params`` sees a clean JSON
+        # object byte-for-byte.
+        return json.dumps(parsed, ensure_ascii=False)
+    return None
 
 
 # Parser-wire literal markers that MUST be scrubbed from ``content`` /
@@ -350,44 +382,104 @@ def _recover_partial_tool_args(raw_text: str | None) -> str | None:
 # ``<tool_call>...`` text the parser couldn't extract — leaks into
 # both user-visible fields.
 #
-# The list intentionally covers EVERY wire-opener we know about across
-# tool parsers (hermes / qwen3coder / nemotron / deepseek / glm /
-# minimax / mistral / kimi / llama / harmony / gemma4 / xlam /
-# functionary / granite / seed_oss / vibethinker named-XML). Adding a
-# parser is a one-line addition; a parser whose wire is already
-# textually clean (no opener literal) is a no-op here.
-_TOOL_WIRE_SCRUB_PATTERNS = (
+# Each entry is ``(opener_regex, closer_regex_or_None)``. The scrubber
+# is two-phase:
+#
+#   1. **Balanced pairs**: when both opener and closer are present,
+#      strip the entire span ``opener…closer``. Non-greedy so
+#      consecutive blocks each get their own match.
+#   2. **Unmatched standalone markers**: any opener/closer literal
+#      that survives phase 1 (e.g. an orphan ``</function>`` or a
+#      stray ``<tool_call>`` with no closer because the model
+#      truncated mid-body) gets stripped as a bare token.
+#
+# Critically, phase 2 strips ONLY the marker bytes themselves — it
+# does NOT delete from the orphan opener to EOF. Codex r1 BLOCKING #1
+# caught this: the prior ``opener.*?(?:closer|\Z)`` pattern would eat
+# all trailing reasoning/prose whenever the model emitted an unclosed
+# opener mid-thought. The new two-phase split preserves trailing
+# content while still scrubbing the marker itself, so a model
+# response shaped like ``<tool_call>{junk}</tool_call>then prose``
+# yields ``then prose`` and ``<tool_call>{junk}\nthen prose`` yields
+# ``{junk}\nthen prose`` (the body is left for the reasoning parser
+# to consume, but the visible ``<tool_call>`` marker is gone).
+#
+# The list covers every wire opener/closer pair we know about
+# (hermes / qwen3coder / nemotron / deepseek / glm / minimax /
+# mistral / kimi / llama / harmony / gemma4 / xlam / functionary /
+# granite / seed_oss / vibethinker named-XML). Adding a parser is a
+# one-line addition.
+_TOOL_WIRE_BALANCED_PAIRS = (
     # Hermes / qwen3 JSON-bodied wire
-    re.compile(r"<tool_call>.*?(?:</tool_call>|\Z)", re.DOTALL),
-    re.compile(r"<tool_call\b[^>]*>.*?(?:</tool_call>|\Z)", re.DOTALL),
-    # Nemotron + bare ``<function=NAME>...`` wire (also picks up the
-    # qwen3 malformed body's trailing ``</parameter></function>``)
-    re.compile(r"<function=[^>]*>.*?(?:</function>|\Z)", re.DOTALL),
-    re.compile(r"<function>.*?(?:</function>|\Z)", re.DOTALL),
-    re.compile(r"</?parameter[^>]*>"),
-    # DeepSeek V3 / V3.1 / R1-0528
-    re.compile(r"<｜tool▁calls▁begin｜>.*?(?:<｜tool▁calls▁end｜>|\Z)", re.DOTALL),
-    re.compile(r"<｜tool▁call▁begin｜>.*?(?:<｜tool▁call▁end｜>|\Z)", re.DOTALL),
+    (re.compile(r"<tool_call>", re.DOTALL), re.compile(r"</tool_call>", re.DOTALL)),
+    # Nemotron-style XML body + bare ``<function=NAME>...``
+    (re.compile(r"<function=[^>]*>", re.DOTALL), re.compile(r"</function>", re.DOTALL)),
+    (re.compile(r"<function>", re.DOTALL), re.compile(r"</function>", re.DOTALL)),
+    # DeepSeek V3 / V3.1 / R1-0528 envelope
+    (
+        re.compile(r"<｜tool▁calls▁begin｜>", re.DOTALL),
+        re.compile(r"<｜tool▁calls▁end｜>", re.DOTALL),
+    ),
+    (
+        re.compile(r"<｜tool▁call▁begin｜>", re.DOTALL),
+        re.compile(r"<｜tool▁call▁end｜>", re.DOTALL),
+    ),
     # GLM-4 / GLM-4.7 wrapper
-    re.compile(r"<arg_key>.*?(?:</arg_value>|\Z)", re.DOTALL),
+    (re.compile(r"<arg_key>", re.DOTALL), re.compile(r"</arg_value>", re.DOTALL)),
     # Minimax
-    re.compile(r"<minimax:tool_call>.*?(?:</minimax:tool_call>|\Z)", re.DOTALL),
-    re.compile(r"<invoke\b[^>]*>.*?(?:</invoke>|\Z)", re.DOTALL),
-    # Llama python-tag and Kimi section markers
-    re.compile(r"<\|python_tag\|>.*?(?=$|\n\n)", re.DOTALL),
-    re.compile(
-        r"<\|tool_calls_section_begin\|>.*?(?:<\|tool_calls_section_end\|>|\Z)",
-        re.DOTALL,
+    (
+        re.compile(r"<minimax:tool_call>", re.DOTALL),
+        re.compile(r"</minimax:tool_call>", re.DOTALL),
+    ),
+    (re.compile(r"<invoke\b[^>]*>", re.DOTALL), re.compile(r"</invoke>", re.DOTALL)),
+    # Kimi section markers
+    (
+        re.compile(r"<\|tool_calls_section_begin\|>", re.DOTALL),
+        re.compile(r"<\|tool_calls_section_end\|>", re.DOTALL),
     ),
     # Mistral
-    re.compile(r"\[TOOL_CALLS\].*?(?:\[/TOOL_CALLS\]|\Z)", re.DOTALL),
+    (
+        re.compile(r"\[TOOL_CALLS\]", re.DOTALL),
+        re.compile(r"\[/TOOL_CALLS\]", re.DOTALL),
+    ),
+)
+
+
+# Standalone marker tokens that must be stripped even when their
+# matching counterpart never arrived. Includes the qwen3 stray
+# ``</parameter>`` (closing-only marker; no opener counterpart in
+# any tool wire we model) and the Llama python-tag (opener-only).
+_TOOL_WIRE_STANDALONE_MARKERS = (
+    re.compile(r"<tool_call>"),
+    re.compile(r"</tool_call>"),
+    re.compile(r"<function=[^>]*>"),
+    re.compile(r"<function>"),
+    re.compile(r"</function>"),
+    re.compile(r"</?parameter[^>]*>"),
+    re.compile(r"<｜tool▁calls▁begin｜>"),
+    re.compile(r"<｜tool▁calls▁end｜>"),
+    re.compile(r"<｜tool▁call▁begin｜>"),
+    re.compile(r"<｜tool▁call▁end｜>"),
+    re.compile(r"<｜tool▁sep｜>"),
+    re.compile(r"<arg_key>"),
+    re.compile(r"</arg_value>"),
+    re.compile(r"<minimax:tool_call>"),
+    re.compile(r"</minimax:tool_call>"),
+    re.compile(r"<invoke\b[^>]*>"),
+    re.compile(r"</invoke>"),
+    re.compile(r"<\|python_tag\|>"),
+    re.compile(r"<\|tool_calls_section_begin\|>"),
+    re.compile(r"<\|tool_calls_section_end\|>"),
+    re.compile(r"\[TOOL_CALLS\]"),
+    re.compile(r"\[/TOOL_CALLS\]"),
 )
 
 
 def _scrub_tool_wire_literals(text: str | None) -> str:
-    """Strip every known parser-wire opener-and-body pattern from
-    ``text``. Returns a whitespace-collapsed result so we don't leave
-    a void where the wire used to live.
+    """Strip every known parser-wire opener/closer marker from
+    ``text`` in two phases (see ``_TOOL_WIRE_BALANCED_PAIRS`` docstring
+    for rationale). Returns a whitespace-collapsed result so we don't
+    leave a void where the wire used to live.
 
     Idempotent: safe to call on text that has no wire literals (the
     regex sweep is a no-op). Called by the chat route ONLY when
@@ -396,12 +488,30 @@ def _scrub_tool_wire_literals(text: str | None) -> str:
     contained tool-call markers the parser couldn't extract from.
     Calling it on clean prose is harmless but wasted work; the route
     therefore gates it on the synth path.
+
+    codex r1 BLOCKING #1: previously used ``opener.*?(?:closer|\\Z)``
+    which silently deleted from an orphan opener through EOF. The
+    two-phase design preserves any trailing prose / reasoning that
+    follows an unmatched marker, while still scrubbing the visible
+    marker bytes themselves.
     """
     if not text:
         return text or ""
     result = text
-    for pattern in _TOOL_WIRE_SCRUB_PATTERNS:
-        result = pattern.sub("", result)
+    # Phase 1: strip every balanced opener…closer span. Non-greedy
+    # so back-to-back blocks each match independently.
+    for opener_re, closer_re in _TOOL_WIRE_BALANCED_PAIRS:
+        # ``opener.pattern + lazy-anything + closer.pattern`` —
+        # build per-call so a closer literal containing regex
+        # metacharacters stays correctly escaped within the
+        # per-pair pattern.
+        balanced = re.compile(opener_re.pattern + r".*?" + closer_re.pattern, re.DOTALL)
+        result = balanced.sub("", result)
+    # Phase 2: strip standalone marker tokens (orphan opener OR
+    # orphan closer that survived phase 1). ONLY the marker bytes
+    # are removed; surrounding text is preserved.
+    for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+        result = marker_re.sub("", result)
     # Collapse any runs of whitespace left by the strip. Preserves
     # single-space separation between surrounding prose words.
     return re.sub(r"\s+", " ", result).strip()
