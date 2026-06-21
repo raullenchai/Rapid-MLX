@@ -42,6 +42,7 @@ import asyncio
 import gc
 import logging
 import os
+import sys
 
 import uvicorn
 from fastapi import FastAPI
@@ -1814,10 +1815,21 @@ Examples:
     # jumps in here still gets the install-hint exit instead of a raw
     # ``ModuleNotFoundError``.
     if args.embedding_model:
-        from .embedding import require_mlx_embeddings_or_exit
+        # D-EMBED-ALIAS: route ``--embedding-model`` through the SAME
+        # alias-resolution + ModelNotFoundError-translation helper the
+        # unified ``rapid-mlx serve`` path uses (see
+        # :func:`vllm_mlx.cli._load_embedding_model_or_exit`). The
+        # ``python -m vllm_mlx.server`` standalone entry has historically
+        # been a slimmer shadow of the CLI, but the H-08 + D-EMBED-ALIAS
+        # fixes share one source-of-truth helper so the behaviour
+        # matches exactly between the two entrypoints (including the
+        # require_mlx_embeddings_or_exit H-08 probe — that fires inside
+        # the helper before the alias/load path). Lazy import to avoid
+        # a circular at module-load time (cli imports server in
+        # ``serve_command``; server imports cli only inside this branch).
+        from .cli import _load_embedding_model_or_exit
 
-        require_mlx_embeddings_or_exit()
-        load_embedding_model(args.embedding_model, lock=True)
+        _load_embedding_model_or_exit(args, load_embedding_model)
 
     # Build a SchedulerConfig so user-supplied flags on this standalone entry
     # (`python -m vllm_mlx.server` / `mise run`) reach the engine. Pre-0.6.52

@@ -1215,6 +1215,35 @@ def serve_command(args):
         from .embedding import require_mlx_embeddings_or_exit
 
         require_mlx_embeddings_or_exit()
+        # D-EMBED-ALIAS fix: route ``--embedding-model`` through the SAME
+        # alias registry the positional chat-model arg goes through
+        # (``resolve_model`` ~5660 above). Sarah F-S2-1: passing an alias
+        # like ``embeddinggemma-300m-6bit`` reached ``mlx_embeddings.load``
+        # verbatim and crashed with ``ModelNotFoundError`` because
+        # mlx_embeddings doesn't know about rapid-mlx's alias mapping.
+        # Resolve the alias first; if the resolution doesn't yield an
+        # alias hit AND the value isn't an HF org/name path AND no local
+        # path exists, fail fast with the same "not a known alias" hint
+        # the chat-model path uses — so the user discovers the typo /
+        # missing-prefix at startup, never with a 30-line mlx_embeddings
+        # stack trace mid-load.
+        from .model_aliases import resolve_model
+
+        original_embed = args.embedding_model
+        resolved_embed = resolve_model(original_embed)
+        if resolved_embed != original_embed:
+            print(f"  Embedding alias: {original_embed} → {resolved_embed}")
+            args.embedding_model = resolved_embed
+        elif "/" not in original_embed and not os.path.exists(original_embed):
+            print(
+                f"\n  Error: --embedding-model '{original_embed}' is not a "
+                f"known alias or HuggingFace path."
+            )
+            _print_unknown_model_help(
+                original_embed,
+                full_path_example="mlx-community/embeddinggemma-300m-6bit",
+            )
+            sys.exit(1)
         print(f"Pre-loading embedding model: {args.embedding_model}")
         server.load_embedding_model(args.embedding_model, lock=True)
         print(f"Embedding model loaded: {args.embedding_model}")

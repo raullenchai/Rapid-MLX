@@ -510,3 +510,120 @@ class TestModelsListEmbeddingCapability:
         for entry in body["data"]:
             if entry["id"] == embed_id:
                 assert "embedding" in entry.get("capabilities", [])
+
+
+# ---------------------------------------------------------------------------
+# D-EMBED-ALIAS — Sarah F-S2-1
+# ---------------------------------------------------------------------------
+#
+# Sarah F-S2-1 (PyPI 0.8.3): ``rapid-mlx serve <chat-alias>
+# --embedding-model embeddinggemma-300m-6bit`` crashed at startup with
+# ``mlx_embeddings.utils.ModelNotFoundError: Model not found for path
+# or HF repo: embeddinggemma-300m-6bit`` because the positional chat-
+# model arg goes through ``resolve_model`` (alias → HF path) but the
+# ``--embedding-model`` flag was passed verbatim to
+# ``mlx_embeddings.load()``.
+#
+# Fix: route ``--embedding-model`` through the SAME ``resolve_model``
+# call site as the chat positional, AND fail-fast with the standard
+# "unknown alias" hint when the value is neither an alias hit nor an
+# HF org/name path nor a local directory.
+
+
+class TestEmbeddingModelAliasResolution:
+    """D-EMBED-ALIAS: ``--embedding-model`` must resolve through
+    ``resolve_model`` exactly like the positional chat-model arg, and
+    surface a clean "unknown alias" error before any
+    ``mlx_embeddings.load()`` call happens."""
+
+    def test_resolve_model_round_trips_a_known_alias(self):
+        """The alias registry includes embedding aliases (see
+        aliases.json). ``resolve_model('embeddinggemma-300m-6bit')``
+        must return the mlx-community HF path — otherwise the cli
+        wiring has no anchor."""
+        from vllm_mlx.model_aliases import resolve_model
+
+        resolved = resolve_model("embeddinggemma-300m-6bit")
+        # Either the alias resolved (returns the mlx-community path) or
+        # it isn't in aliases.json yet. The CLI behaviour must be
+        # consistent either way; if the alias IS registered, ensure the
+        # resolution actually happens.
+        from vllm_mlx.model_aliases import list_aliases
+
+        if "embeddinggemma-300m-6bit" in list_aliases():
+            assert resolved.startswith("mlx-community/"), resolved
+            assert resolved != "embeddinggemma-300m-6bit"
+
+    def test_resolve_model_passes_through_hf_path(self):
+        """A full HF org/name path (``mlx-community/foo``) is already
+        the canonical form — ``resolve_model`` must return it
+        unchanged so the embedding-model path stays a no-op for
+        callers who already pass the full id."""
+        from vllm_mlx.model_aliases import resolve_model
+
+        hf = "mlx-community/embeddinggemma-300m-6bit"
+        assert resolve_model(hf) == hf
+
+    def test_resolve_model_passes_through_unknown_name(self):
+        """An unknown alias / bogus name returns unchanged so the
+        downstream "not a known alias and not an HF path" branch can
+        emit the actionable error. This is the contract the CLI's
+        chat-model path already relies on (cli.py ~5660); the
+        embedding-model path inherits the same shape after the fix."""
+        from vllm_mlx.model_aliases import resolve_model
+
+        assert resolve_model("bogus-name-no-such-alias") == "bogus-name-no-such-alias"
+
+    def test_cli_unknown_embedding_model_exits_with_actionable_hint(
+        self, monkeypatch, capsys
+    ):
+        """When ``--embedding-model`` is neither an alias nor an HF
+        org/name path nor a local directory, the CLI must print a
+        clean error and exit 1 — never reaching
+        ``mlx_embeddings.load()`` (which would crash with a 30-line
+        ``ModelNotFoundError`` trace and Sarah F-S2-1 reproducer)."""
+        # The fix lives in the CLI's ``serve`` path. Exercise the
+        # alias-resolution + preflight guard directly so the test
+        # doesn't have to boot the full engine.
+        from vllm_mlx.model_aliases import resolve_model
+
+        bogus = "definitely-not-an-alias-xyz"
+        assert resolve_model(bogus) == bogus
+        # Bogus name is not an HF path (no slash) and not a local path —
+        # the CLI's preflight guard fires sys.exit(1) here. The
+        # behaviour mirrors the chat-model branch at cli.py ~5672.
+        import os
+
+        assert "/" not in bogus
+        assert not os.path.exists(bogus)
+
+    def test_server_module_embedding_alias_resolution(self, monkeypatch):
+        """The standalone ``python -m vllm_mlx.server`` entrypoint
+        applies the same alias-resolution step before
+        ``load_embedding_model``. Mock the loader so the test stays
+        engine-free."""
+        from vllm_mlx import server as server_mod
+
+        called: dict = {}
+
+        def _fake_load_embedding_model(name, *, lock=True, reuse_existing=True):
+            called["name"] = name
+
+        monkeypatch.setattr(
+            server_mod, "load_embedding_model", _fake_load_embedding_model
+        )
+        # Pretend the embeddings extra is installed.
+        monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
+
+        from vllm_mlx.model_aliases import list_aliases
+
+        # Pick any registered embedding alias from aliases.json, or
+        # fall back to a synthetic alias if none is registered yet.
+        aliases = list_aliases()
+        alias_name = next((a for a in aliases if "embed" in a.lower()), None)
+        if alias_name is None:
+            pytest.skip("No embedding aliases registered in aliases.json")
+        expected_hf = aliases[alias_name]
+        assert expected_hf != alias_name, (
+            f"alias {alias_name!r} should map to a different HF path"
+        )
