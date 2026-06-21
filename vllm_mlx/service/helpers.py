@@ -13,6 +13,7 @@ import hashlib
 import inspect
 import json
 import logging
+import threading
 import uuid
 from collections.abc import AsyncIterator
 
@@ -2119,6 +2120,19 @@ def _resolve_disconnect_abort_recorder(engine):
     return None
 
 
+# M-01 / D-M01-DEAD: once-per-engine-type ledger for the unresolved-
+# engine warning. Without this dedupe, an operator running on an
+# engine shape the resolvers don't yet recognise would see one
+# warning per ABORT — at 1 cancel/second that's 86,400 warnings/day,
+# enough to drown the disconnect_guard log signal entirely. The
+# warning is informational ("which backend shape do the resolvers
+# need to learn") so once-per-engine-type is the right cardinality.
+# Bounded by the number of distinct engine classes in the process,
+# typically 1.
+_unresolved_engine_logged: set[str] = set()
+_unresolved_engine_lock = threading.Lock()
+
+
 def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
     """M-01 attribution helper — bumps the disconnect sub-counter on
     whichever active-path scheduler owns this ``request_id``.
@@ -2136,26 +2150,40 @@ def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
     catching that the production ``BatchedEngine`` over
     ``AsyncEngineCore`` shape exposed no recorder — three personas
     independently observed flat-zero ``via_disconnect_total`` on
-    PyPI 0.8.2. The explicit WARNING below ensures the next
-    engine-shape change cannot silently regress the sub-counter
-    again: an operator will see the unresolved-engine warning in
-    logs the moment any abort path hits a shape neither resolver
-    recognises.
+    PyPI 0.8.2. The WARNING below (rate-limited to once-per-engine-
+    type so it doesn't drown the log under sustained cancel traffic)
+    ensures the next engine-shape change cannot silently regress the
+    sub-counter again. The high-cardinality ``request_id`` is logged
+    at DEBUG only — codex r10 NIT.
     """
     try:
         recorder = _resolve_disconnect_abort_recorder(engine)
         if recorder is None:
-            logger.warning(
-                "[disconnect_guard] no record_disconnect_abort recorder "
-                "found on engine type=%s — via_disconnect sub-counter "
-                "WILL NOT advance for %s. This indicates an unrecognised "
-                "engine shape; the resolvers in "
-                "_resolve_disconnect_abort_recorder + "
-                "_resolve_sync_scheduler_for_abort must learn the new "
-                "backend graph.",
-                type(engine).__name__,
-                str(request_id)[:12] if request_id else request_id,
-            )
+            engine_type = type(engine).__name__
+            should_warn = False
+            with _unresolved_engine_lock:
+                if engine_type not in _unresolved_engine_logged:
+                    _unresolved_engine_logged.add(engine_type)
+                    should_warn = True
+            if should_warn:
+                logger.warning(
+                    "[disconnect_guard] no record_disconnect_abort recorder "
+                    "found on engine type=%s — via_disconnect sub-counter "
+                    "WILL NOT advance for aborts routed through this engine. "
+                    "This indicates an unrecognised engine shape; the "
+                    "resolvers in _resolve_disconnect_abort_recorder + "
+                    "_resolve_sync_scheduler_for_abort must learn the new "
+                    "backend graph. Further occurrences for this engine "
+                    "type will be suppressed at DEBUG.",
+                    engine_type,
+                )
+            else:
+                logger.debug(
+                    "[disconnect_guard] no recorder for engine type=%s "
+                    "(request_id=%s) — warning already emitted",
+                    engine_type,
+                    str(request_id)[:12] if request_id else request_id,
+                )
             return
         recorder(request_id)
     except Exception:  # pragma: no cover - belt-and-suspenders

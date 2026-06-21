@@ -215,17 +215,22 @@ async def test_total_counter_no_2x_overcount_on_prod_shape():
     """``rapid_mlx_requests_cancelled_total`` MUST advance by exactly
     1 per abort on the production engine shape — not 2 (or more).
 
-    Pre-fix repro: the disconnect_guard fires ``_force_abort_request``
-    from up to three branches. Under the async fallback each fire
-    schedules a ``_await_and_record`` coroutine. The coroutine calls
-    ``scheduler.abort_request`` AND ``_cleanup_request``. The cleanup
-    wipes ``_cancelled_request_ids``, so the NEXT
-    ``scheduler.abort_request`` (from another fire branch, or from
-    ``stream_outputs.finally``) sees an empty ledger and re-counts.
-    The dogfood fingerprint: 10 aborts → 20 ticks.
+    Pre-fix repro fingerprint: the disconnect_guard
+    ``_force_abort_request`` reaches the scheduler via one path,
+    and ``EngineCore.stream_outputs.finally`` reaches it via a
+    SECOND path (``scheduler.abort_request`` + ``_cleanup_request``
+    →  ``remove_finished_request``). Pre-fix the cleanup wiped the
+    lifetime ledger, so the SECOND public abort entry observed an
+    empty ledger and double-counted the same lifetime. The dogfood
+    fingerprint: 10 aborts → 20 ticks.
 
-    The pin: ONE id, multiple force-abort fires (mirroring the
-    three-branch helper), total counter advances by exactly 1.
+    The pin replays the EXACT production sequence: one
+    ``_force_abort_request`` (the helper) followed by the
+    ``EngineCore.abort_request`` path (sync ``scheduler.abort_request``
+    + ``_cleanup_request``). Codex r10 BLOCKING: each fire path
+    MUST be modelled distinctly — calling ``_force_abort_request``
+    twice with the same holder doesn't exercise the
+    "two independent abort entries" race the dogfood data captures.
     """
     from vllm_mlx.service.helpers import _force_abort_request
 
@@ -238,19 +243,51 @@ async def test_total_counter_no_2x_overcount_on_prod_shape():
     _admit(scheduler, request_id)
 
     holder = [request_id]
-    # disconnect_guard fires _force_abort_request from BOTH the
-    # disconnect branch AND the finally belt-and-suspenders. Replay
-    # the same two-fire pattern here.
-    _force_abort_request(engine, holder)
-    _force_abort_request(engine, holder)
-    # Drain whatever ensure_future coroutines were scheduled.
-    for _ in range(10):
+    # Path 1: disconnect_guard fires _force_abort_request. With the
+    # D-M01-DEAD resolver fix this lands SYNC on the deep prod
+    # scheduler — scheduler.abort_request returns True, counter ticks
+    # to 1, ledger now carries the id.
+    fired = _force_abort_request(engine, holder)
+    assert fired is True, (
+        "_force_abort_request must resolve to the sync deep prod "
+        "scheduler — falling back to async fallback is the pre-fix shape"
+    )
+    # Drain any deferred coroutines scheduled by the helper.
+    for _ in range(5):
+        await asyncio.sleep(0)
+    assert scheduler.get_stats()["num_requests_cancelled"] == 1
+
+    # Path 2: EngineCore.stream_outputs.finally explicitly calls
+    # ``scheduler.abort_request`` then ``_cleanup_request`` — this is
+    # the OTHER abort entry that races the helper in production. Pre-
+    # fix the cleanup wiped the ledger here, so this second entry's
+    # ``already_counted`` check returned False and the counter ticked
+    # to 2 (the dogfood "20/0" shape). Post-fix the ledger is
+    # lifetime-persistent and the second entry is correctly dedup'd.
+    second_result = scheduler.abort_request(request_id)
+    # ``stream_outputs.finally`` then calls ``_cleanup_request`` →
+    # ``remove_finished_request`` (we drive it explicitly here so the
+    # ledger-clear semantic is what's actually under test, not
+    # whether _cleanup_request fired).
+    scheduler.remove_finished_request(request_id)
+    # Drain any further deferred coroutines.
+    for _ in range(5):
         await asyncio.sleep(0)
 
     stats = scheduler.get_stats()
+    # The contract: even though TWO independent public-API abort
+    # paths each ran sync against the scheduler (one from the
+    # disconnect_guard helper, one from EngineCore's cleanup), the
+    # lifetime-persistent ledger dedupes them and the counter is
+    # exactly 1.
     assert stats["num_requests_cancelled"] == 1, (
-        f"D-M01-2X: total counter over-counted on production engine shape — got {stats}"
+        f"D-M01-2X: two distinct public-API abort paths must "
+        f"dedupe to a single counter tick; got {stats} "
+        f"(second_result={second_result})"
     )
+    # via_disconnect was attributed by the helper path; the
+    # stream_outputs.finally path is NOT a disconnect path so the
+    # sub-counter stays at 1, not 2.
     assert stats["num_requests_cancelled_via_disconnect"] == 1
     # Invariant: via_disconnect <= total always holds.
     assert (
@@ -270,6 +307,14 @@ async def test_ten_disconnects_on_prod_shape_yield_ten_ten():
     disconnects on the production engine shape yield
     ``cancelled_total=10`` AND ``cancelled_via_disconnect_total=10``
     — not the 0.8.2 ``20 / 0`` shape three personas observed.
+
+    Each iteration models BOTH abort paths the disconnect
+    actually traverses in production: (1) the disconnect_guard
+    helper's force-abort, AND (2) ``EngineCore.stream_outputs.finally``
+    invoking ``scheduler.abort_request`` + ``_cleanup_request``.
+    These run on different async surfaces in production; here we
+    drive them sequentially so the lifetime-ledger dedupe contract
+    is the only thing keeping the counter from ticking to 20.
     """
     from vllm_mlx.service.helpers import _force_abort_request
 
@@ -281,18 +326,25 @@ async def test_ten_disconnects_on_prod_shape_yield_ten_ten():
     for i in range(10):
         rid = f"req-disc-{i}"
         _admit(scheduler, rid)
-        holder = [rid]
-        # Two fires per disconnect to match disconnect_guard's branches
-        # (disconnect + finally).
-        _force_abort_request(engine, holder)
-        _force_abort_request(engine, holder)
+        # Path 1: helper force-abort (sync to deep prod scheduler).
+        assert _force_abort_request(engine, [rid]) is True
+        # Path 2: stream_outputs.finally cleanup sequence — direct
+        # scheduler.abort_request followed by remove_finished_request
+        # (the EngineCore._cleanup_request equivalent). Pre-fix this
+        # second path is what drove the counter to 2N because the
+        # cleanup wiped the dedupe ledger.
+        scheduler.abort_request(rid)
+        scheduler.remove_finished_request(rid)
 
-    # Drain the deferred coroutines.
+    # Drain any deferred coroutines.
     for _ in range(30):
         await asyncio.sleep(0)
 
     stats = scheduler.get_stats()
-    assert stats["num_requests_cancelled"] == 10, f"expected 10 aborts, got {stats}"
+    assert stats["num_requests_cancelled"] == 10, (
+        f"expected 10 aborts (lifetime-persistent ledger dedupes the "
+        f"two abort paths per disconnect); got {stats}"
+    )
     assert stats["num_requests_cancelled_via_disconnect"] == 10, (
         f"expected 10 disconnect-attributed aborts, got {stats}"
     )
@@ -370,18 +422,27 @@ def test_unresolved_engine_shape_logs_explicit_warning(caplog):
     """
     import logging
 
+    from vllm_mlx.service import helpers as _helpers
     from vllm_mlx.service.helpers import _record_disconnect_abort_on_scheduler
 
-    class _NakedEngineXYZ:
+    # Use a name unique to this test so the once-per-engine-type
+    # dedupe in the helper doesn't suppress us due to a previous
+    # test's stub class.
+    class _NakedEngineForWarningTest:
         # No .scheduler, no _engine, no _mllm_scheduler — the future
         # shape that PR #783's resolvers would silently no-op on.
         _is_mllm = False
+
+    # Reset the once-per-engine-type dedupe so the warning is
+    # guaranteed to fire even under repeated test runs.
+    with _helpers._unresolved_engine_lock:
+        _helpers._unresolved_engine_logged.discard("_NakedEngineForWarningTest")
 
     # Capture WARNING from whatever logger the helpers module ends up
     # bound to (rapid-mlx aliases ``vllm_mlx`` → ``rapid_mlx`` on the
     # logging tree, see runtime/__init__.py).
     caplog.set_level(logging.WARNING)
-    _record_disconnect_abort_on_scheduler(_NakedEngineXYZ(), "req-naked")
+    _record_disconnect_abort_on_scheduler(_NakedEngineForWarningTest(), "req-naked")
 
     warning_records = [rec for rec in caplog.records if rec.levelname == "WARNING"]
     assert warning_records, (
@@ -396,7 +457,44 @@ def test_unresolved_engine_shape_logs_explicit_warning(caplog):
     # The engine type name is part of the actionable signal — it's
     # how an operator knows WHICH backend shape the resolvers don't
     # yet recognise.
-    assert "_NakedEngineXYZ" in combined, combined
+    assert "_NakedEngineForWarningTest" in combined, combined
     # The "via_disconnect" diagnostic identifies WHICH metric will
     # under-count, so dashboards can flag a sticky warning.
     assert "via_disconnect" in combined, combined
+
+
+def test_unresolved_engine_warning_dedupes_per_engine_type(caplog):
+    """Codex r10 NIT: the unresolved-engine warning is rate-limited
+    to once-per-engine-type so it does not drown the log under
+    sustained cancel traffic. Repeat calls for the SAME engine type
+    emit DEBUG, not WARNING.
+    """
+    import logging
+
+    from vllm_mlx.service import helpers as _helpers
+    from vllm_mlx.service.helpers import _record_disconnect_abort_on_scheduler
+
+    class _NakedEngineForDedupeTest:
+        _is_mllm = False
+
+    # Reset for a clean slate.
+    with _helpers._unresolved_engine_lock:
+        _helpers._unresolved_engine_logged.discard("_NakedEngineForDedupeTest")
+
+    caplog.set_level(logging.DEBUG)
+    # First call: fires the WARNING.
+    _record_disconnect_abort_on_scheduler(_NakedEngineForDedupeTest(), "req-1")
+    # Subsequent calls: suppressed to DEBUG.
+    for i in range(5):
+        _record_disconnect_abort_on_scheduler(
+            _NakedEngineForDedupeTest(), f"req-{i + 2}"
+        )
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    # Exactly one warning, despite 6 calls. The dedupe contract is
+    # what stops a sustained disconnect storm from drowning logs.
+    assert len(warnings) == 1, (
+        f"expected exactly 1 warning across 6 unresolved-engine calls "
+        f"for the same engine type; got {len(warnings)}: "
+        f"{[r.getMessage() for r in warnings]}"
+    )
