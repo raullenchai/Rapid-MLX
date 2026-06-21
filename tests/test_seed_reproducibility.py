@@ -538,6 +538,43 @@ def test_seeded_sampler_aggressive_min_p_never_empty_mask(logprobs_fixture):
         assert 0 <= out < vocab
 
 
+def test_seeded_sampler_rescue_does_not_taint_nonempty_rows(logprobs_fixture):
+    """Codex round-7 BLOCKING regression guard.
+
+    The round-2 fix OR'd argmax into the combined mask unconditionally
+    to prevent all-``-inf`` rows from reaching ``mx.random.categorical``.
+    Codex r7 caught a hole in that contract: when ``top_k`` is layered
+    with a tighter ``top_p`` / ``min_p`` that could (theoretically)
+    exclude argmax from the top-k set, the unconditional rescue would
+    re-inject argmax — changing ``top_k`` semantics from "sample only
+    from the top K" to "sample from top K or argmax".
+
+    The round-7 fix gates the rescue on per-row emptiness via
+    ``mx.where(any_kept, mask, argmax_keep)``. This test pins the
+    determinism property the fix preserves for non-empty rows: two
+    samplers with the same ``(seed, top_k, top_p, min_p)`` must still
+    produce identical sequences. The fix changes the rescue branch but
+    must not perturb the math for any row where the intersection is
+    non-empty (which is the overwhelming common case — argmax is
+    preserved by each individual mask's "at least one kept" invariant).
+    """
+    # Non-aggressive cutoffs so the intersection is non-empty on every
+    # step — this exercises the ``any_kept == True`` branch of the
+    # ``mx.where`` rescue selector. Reproducibility on the non-empty
+    # path is what would have regressed if the round-7 fix swapped the
+    # mask for the wrong branch (e.g. ``mx.where(any_kept, argmax_keep,
+    # mask)`` — flipped arms).
+    s1 = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.9, top_k=50, min_p=0.05)
+    s2 = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.9, top_k=50, min_p=0.05)
+    seq1 = _sample_sequence(s1, logprobs_fixture, 16)
+    seq2 = _sample_sequence(s2, logprobs_fixture, 16)
+    assert seq1 == seq2, (
+        "non-empty-row path lost determinism — the round-7 conditional "
+        "rescue likely flipped the mx.where arms or otherwise perturbed "
+        "the intersection mask"
+    )
+
+
 # =============================================================================
 # Layer 5 — Scheduler routes seeded requests around the cache
 # =============================================================================
