@@ -2923,26 +2923,6 @@ class Scheduler:
                 f"(currently {len(self.requests)} in-flight)"
             )
 
-        # D-M01-2X (0.8.2 dogfood) follow-up: the cancellation dedupe
-        # ledgers are LIFETIME-PERSISTENT to plug the
-        # disconnect_guard multi-branch race (see
-        # ``remove_finished_request`` docstring for the repro). To
-        # preserve request_id-reuse counting semantics (a fresh
-        # admit with a previously-cancelled id legitimately starts
-        # a new lifetime that SHOULD be counted on cancel), we
-        # explicitly clear that id from BOTH ledgers right after
-        # admission control passes — under the same lock that
-        # ``abort_request`` re-validates against, so a concurrent
-        # late abort for the prior lifetime can't observe an
-        # inconsistent transition. Without this, deterministic
-        # integrations that reuse request_ids would silently see
-        # their second cancel omitted from the counter. Placed
-        # AFTER the admission gate so capped admits do not wipe
-        # the prior lifetime's ledger.
-        with self._cancel_counter_lock:
-            self._cancelled_request_ids.discard(request.request_id)
-            self._disconnect_abort_ids.discard(request.request_id)
-
         # Tokenize if needed
         if request.prompt_token_ids is None:
             if isinstance(request.prompt, str):
@@ -3115,8 +3095,30 @@ class Scheduler:
             request.cache_hit_type = "miss"
             request.remaining_tokens = request.prompt_token_ids
 
-        # Add to tracking
-        self.requests[request.request_id] = request
+        # Add to tracking. D-M01-2X (0.8.2 dogfood, codex r10
+        # BLOCKING follow-up): the cancellation dedupe ledgers
+        # (``_cancelled_request_ids`` / ``_disconnect_abort_ids``)
+        # are LIFETIME-PERSISTENT across the
+        # abort+cleanup window (see ``remove_finished_request``
+        # docstring for the multi-branch race repro). Clearing
+        # them at fresh admit preserves the request_id-reuse
+        # counting semantics — but the clear MUST run atomically
+        # with the ``self.requests[...] = request`` commit, NOT
+        # earlier in this method. An earlier clear (e.g. right
+        # after the admission gate) would erase the prior
+        # lifetime's dedupe even if tokenization / cache lookup /
+        # PFlash compression subsequently raised, opening a
+        # double-count window for the OLD lifetime should a late
+        # ``abort_request`` arrive between the failed admit and
+        # the next successful one. By gating the clear on the
+        # same critical section as the actual commit, every
+        # exception path between admission and tracking leaves
+        # the ledger intact and the prior lifetime's dedupe
+        # stays effective.
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.discard(request.request_id)
+            self._disconnect_abort_ids.discard(request.request_id)
+            self.requests[request.request_id] = request
         self.waiting.append(request)
 
         logger.debug(

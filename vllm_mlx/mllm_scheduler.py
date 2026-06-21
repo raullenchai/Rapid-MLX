@@ -402,17 +402,6 @@ class MLLMScheduler:
                 f"(currently {len(self.requests)} in-flight)"
             )
 
-        # D-M01-2X (0.8.2 dogfood) follow-up: mirror the text-path
-        # ``Scheduler.add_request`` ledger clear. The cancellation
-        # dedupe ledgers are now lifetime-persistent across
-        # ``_do_abort_request`` to plug the disconnect_guard
-        # multi-branch race; clearing them at fresh admit (after
-        # admission control passes) preserves the request_id-reuse
-        # counting semantics.
-        with self._cancel_counter_lock:
-            self._cancelled_request_ids.discard(request_id)
-            self._disconnect_abort_ids.discard(request_id)
-
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
@@ -430,7 +419,24 @@ class MLLMScheduler:
             video_max_frames=video_max_frames,
         )
 
-        self.requests[request_id] = request
+        # D-M01-2X (0.8.2 dogfood, codex r10 BLOCKING follow-up):
+        # mirror the text-path ``Scheduler.add_request`` ledger
+        # clear, gated on the same critical section as the
+        # ``self.requests[...] = request`` commit. Earlier clears
+        # would erase the prior lifetime's dedupe even when
+        # ``SamplingParams(...)``, ``MLLMRequest(...)``, or any
+        # other request-construction step subsequently raised —
+        # re-opening the double-count window for the OLD
+        # lifetime should a late ``abort_request`` arrive between
+        # the failed admit and the next successful one. The
+        # ledgers are otherwise lifetime-persistent across the
+        # abort+cleanup window; see
+        # ``Scheduler.remove_finished_request`` docstring for the
+        # multi-branch race repro the persistence plugs.
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.discard(request_id)
+            self._disconnect_abort_ids.discard(request_id)
+            self.requests[request_id] = request
         self.waiting.append(request)
 
         logger.debug(

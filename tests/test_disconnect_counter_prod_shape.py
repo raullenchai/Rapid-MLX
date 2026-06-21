@@ -249,8 +249,7 @@ async def test_total_counter_no_2x_overcount_on_prod_shape():
 
     stats = scheduler.get_stats()
     assert stats["num_requests_cancelled"] == 1, (
-        "D-M01-2X: total counter over-counted on production engine "
-        f"shape — got {stats}"
+        f"D-M01-2X: total counter over-counted on production engine shape — got {stats}"
     )
     assert stats["num_requests_cancelled_via_disconnect"] == 1
     # Invariant: via_disconnect <= total always holds.
@@ -293,9 +292,7 @@ async def test_ten_disconnects_on_prod_shape_yield_ten_ten():
         await asyncio.sleep(0)
 
     stats = scheduler.get_stats()
-    assert stats["num_requests_cancelled"] == 10, (
-        f"expected 10 aborts, got {stats}"
-    )
+    assert stats["num_requests_cancelled"] == 10, f"expected 10 aborts, got {stats}"
     assert stats["num_requests_cancelled_via_disconnect"] == 10, (
         f"expected 10 disconnect-attributed aborts, got {stats}"
     )
@@ -364,22 +361,42 @@ def test_unresolved_engine_shape_logs_explicit_warning(caplog):
     emit an explicit WARNING so the next engine-shape change cannot
     silently regress the sub-counter again — which is precisely how
     D-M01-DEAD escaped PR #783's 9 codex rounds.
+
+    Codex r10 NIT: assert the stable, actionable fragments of the
+    warning (the leading tag, the "no recorder found" diagnostic,
+    AND the engine type name) rather than a loose substring — so a
+    future refactor that accidentally degrades the warning to a
+    generic message still fails this test loudly.
     """
     import logging
 
     from vllm_mlx.service.helpers import _record_disconnect_abort_on_scheduler
 
-    class _NakedEngine:
+    class _NakedEngineXYZ:
         # No .scheduler, no _engine, no _mllm_scheduler — the future
         # shape that PR #783's resolvers would silently no-op on.
         _is_mllm = False
 
-    caplog.set_level(logging.WARNING, logger="vllm_mlx.service.helpers")
-    _record_disconnect_abort_on_scheduler(_NakedEngine(), "req-naked")
-    messages = " ".join(rec.getMessage() for rec in caplog.records)
-    assert "record_disconnect_abort" in messages.lower() or (
-        "via_disconnect" in messages.lower()
-    ), (
-        "expected WARNING log when the engine shape exposes no "
-        f"recorder; got records: {[r.getMessage() for r in caplog.records]}"
+    # Capture WARNING from whatever logger the helpers module ends up
+    # bound to (rapid-mlx aliases ``vllm_mlx`` → ``rapid_mlx`` on the
+    # logging tree, see runtime/__init__.py).
+    caplog.set_level(logging.WARNING)
+    _record_disconnect_abort_on_scheduler(_NakedEngineXYZ(), "req-naked")
+
+    warning_records = [rec for rec in caplog.records if rec.levelname == "WARNING"]
+    assert warning_records, (
+        "expected at least one WARNING-level record when the engine "
+        f"shape exposes no recorder; got: {[r.getMessage() for r in caplog.records]}"
     )
+    # The combined warning text MUST carry the stable diagnostic
+    # fragments operators / dashboards key on.
+    combined = " ".join(rec.getMessage() for rec in warning_records)
+    assert "[disconnect_guard]" in combined, combined
+    assert "no record_disconnect_abort recorder" in combined, combined
+    # The engine type name is part of the actionable signal — it's
+    # how an operator knows WHICH backend shape the resolvers don't
+    # yet recognise.
+    assert "_NakedEngineXYZ" in combined, combined
+    # The "via_disconnect" diagnostic identifies WHICH metric will
+    # under-count, so dashboards can flag a sticky warning.
+    assert "via_disconnect" in combined, combined
