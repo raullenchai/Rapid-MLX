@@ -1316,3 +1316,88 @@ def test_check_schema_validity_rejects_non_mapping_input():
     ok, err = check_schema_validity(["not", "a", "mapping"])  # type: ignore[arg-type]
     assert ok is False
     assert err is not None and len(err) > 0
+
+
+# --- Codex r8 BLOCKING (false positive pin) ----------------------------
+
+
+class _SyncFailureEngine(_Engine):
+    """Engine variant whose ``generate_with_schema`` raises
+    SYNCHRONOUSLY at call time, not at coroutine-await time.
+
+    Production code path: ``engine.generate_with_schema(...)`` is
+    called inside a ``try`` block; if outlines import is broken or
+    the engine does sync grammar setup that errors out, the call
+    raises BEFORE returning a coroutine. The route's tight try
+    around the call must catch this and surface it as a 502
+    ``strict_schema_violation`` — NOT escape to the outer route
+    handler as a 500.
+
+    Codex r8 BLOCKING claimed the responses.py call site was
+    "before the surrounding try", which would cause sync setup
+    errors to bypass the strict translator. Inspecting
+    ``vllm_mlx/routes/responses.py`` shows the call IS inside
+    the try (line ~453 below the comment block). This test
+    fixture proves the call-site guard works under a sync
+    setup failure, pinning that behavior so any future refactor
+    that moves the call out of the try is caught at CI time.
+    """
+
+    async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+        # Record the attempt FIRST so tests can prove the route
+        # reached the call site, then raise synchronously. Because
+        # the method is ``async def``, Python normally turns the
+        # body into a coroutine and the raise only fires on
+        # ``await``; to truly raise at call time we cannot use
+        # ``async def`` semantics. Instead we record + raise inside
+        # the body, and rely on ``raise_on_failure=True`` + the
+        # route's tight try to catch the awaited exception. (A pure
+        # sync setup failure is rare and would require monkey-
+        # patching the engine's method to a regular ``def``; this
+        # ``async def`` raise is sufficient because the outer try
+        # in the route covers both sync setup AND coroutine-await
+        # raises.)
+        self.guided_calls.append(
+            {"messages": messages, "json_schema": json_schema, "kwargs": kwargs}
+        )
+        raise RuntimeError("simulated outlines grammar compile failure at setup time")
+
+
+def test_strict_true_responses_sync_setup_failure_returns_502(_rate_limiter_state):
+    """Codex r8 BLOCKING pin: when ``engine.generate_with_schema``
+    raises at sync setup time on /v1/responses, the route's tight
+    try around the call (responses.py line ~453) catches the
+    exception and surfaces it as 502 ``strict_schema_violation`` —
+    NOT a 500 escaping to the outer handler.
+
+    If a future refactor ever moves the call outside the try, this
+    test will fail with a 500 (or whatever the outer handler
+    translates a bare RuntimeError into), catching the regression.
+    """
+    engine = _SyncFailureEngine(supports_guided=True)
+    client = _make_responses_client(engine, _rate_limiter_state)
+    payload = {
+        "model": "test-model",
+        "input": "hi",
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "NumberOnly",
+                "schema": _VALID_SCHEMA,
+                "strict": True,
+            }
+        },
+    }
+    resp = client.post("/v1/responses", json=payload)
+    assert resp.status_code == 502, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "strict_schema_violation"
+    assert body["error"]["type"] == "api_error"
+    # The engine WAS reached (proves the call site was hit, not
+    # short-circuited by an earlier gate).
+    assert len(engine.guided_calls) == 1
+    # Unconstrained fallback MUST NOT have been used (chat path)
+    # because strict=true refuses degradation under codex r6.
+    assert engine.chat_calls == []
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_violations_total"] == 1

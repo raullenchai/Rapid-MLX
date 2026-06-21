@@ -936,9 +936,21 @@ def check_schema_validity(json_schema: dict[str, Any]) -> tuple[bool, str | None
     exception path and surfaced as a 502 ``strict_schema_violation``
     — a server-side contract breach shape — even though the
     actual cause was client-side. This helper runs the
-    schema-itself through ``jsonschema.Draft7Validator.check_schema``
-    so the route can 400 invalid schemas BEFORE generation,
-    pointing the client at their malformed input.
+    schema-itself through the appropriate ``jsonschema``
+    validator's ``check_schema`` so the route can 400 invalid
+    schemas BEFORE generation, pointing the client at their
+    malformed input.
+
+    Codex r8 NIT: the validator class is selected dynamically
+    via ``jsonschema.validators.validator_for(schema)`` so the
+    preflight uses the SAME draft the request's ``$schema``
+    keyword declared (r7 BLOCKING #1). The pre-fix hard-coded
+    ``Draft7Validator`` silently accepted 2020-12 schemas
+    because Draft-7 ignores unknown keywords like ``prefixItems``,
+    only for the post-decode validator (using the declared
+    draft) to reject them as a 502 strict_schema_violation
+    later — masking a client schema-version mismatch as a
+    server-side breach.
 
     Returns ``(ok, error_message)``; the message is a short
     human-readable summary the route uses in the 400 envelope.

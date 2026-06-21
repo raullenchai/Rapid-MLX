@@ -426,13 +426,24 @@ async def _non_stream(
     # timeout as a server-side contract breach.
     #
     # Strategy: build the guided coroutine OUTSIDE the
-    # _wait_with_disconnect call, so AttributeError /
-    # NotImplementedError / outlines-import errors from
-    # ``engine.generate_with_schema(...)`` (which is sync setup
-    # work followed by awaiting an executor task) materialize
-    # synchronously and can be caught in a tight try around just
-    # that one call. ``_wait_with_disconnect`` then handles the
-    # actual await with its own timeout/disconnect semantics intact.
+    # ``_wait_with_disconnect`` call but INSIDE a dedicated
+    # ``try`` (the one starting at ``try: _guided_coro = ...``
+    # below). Sync setup errors from
+    # ``engine.generate_with_schema(...)`` — AttributeError,
+    # NotImplementedError, outlines-import errors, kwargs
+    # collisions if the sanitization at line ~450 ever regressed —
+    # materialize synchronously and the tight try catches them.
+    # ``_wait_with_disconnect`` then handles the actual await
+    # with its own timeout/disconnect semantics intact, in a
+    # SEPARATE outer try below.
+    #
+    # Codex r8 BLOCKING (false positive): the round-8 review
+    # claimed the call was "before the surrounding try" — see
+    # line 453 below, the call site IS inside the try. The
+    # ``test_strict_true_responses_sync_setup_failure_returns_502``
+    # test in test_response_format_json_schema_strict.py pins
+    # this behavior so any future refactor that moves the call
+    # outside the try is caught.
     if _strict_schema and engine.supports_guided_generation:
         # Codex r5 BLOCKING: ``chat_kwargs`` is the merged
         # ``_resolved_sampling_kwargs`` + tools/thinking flags blob.
