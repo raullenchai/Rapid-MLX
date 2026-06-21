@@ -954,11 +954,29 @@ def check_schema_validity(json_schema: dict[str, Any]) -> tuple[bool, str | None
     # dependency of this project (already used by
     # ``validate_output_against_schema``), so we let any
     # ImportError propagate.
-    from jsonschema import Draft7Validator
+    #
+    # Codex r7 BLOCKING #1: pre-fix this hard-coded ``Draft7Validator``,
+    # so a request carrying ``$schema:"...draft/2020-12..."`` would
+    # pass the preflight (Draft7 ignores unknown keywords) and then
+    # fail later inside the post-decode ``jsonschema.validate`` call
+    # as a 502 strict_schema_violation — a server-side breach shape
+    # for what was actually a client schema-version mismatch. Fix:
+    # pick the right validator class via
+    # ``jsonschema.validators.validator_for`` so the preflight
+    # uses the SAME draft the request declared, and matches the
+    # validator the post-decode path will use.
     from jsonschema.exceptions import SchemaError
+    from jsonschema.validators import validator_for
 
     try:
-        Draft7Validator.check_schema(json_schema)
+        validator_cls = validator_for(json_schema)
+    except TypeError as exc:
+        # Non-mapping input — ``validator_for`` raises TypeError
+        # before it can even look up ``$schema``. Still client-side
+        # malformed input, route to 400.
+        return False, f"{type(exc).__name__}: {exc}"
+    try:
+        validator_cls.check_schema(json_schema)
     except SchemaError as exc:
         return False, f"{type(exc).__name__}: {exc}"
     except TypeError as exc:

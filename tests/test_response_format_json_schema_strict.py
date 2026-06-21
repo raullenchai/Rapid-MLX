@@ -1008,61 +1008,111 @@ def test_responses_strict_true_invalid_schema_returns_400(_rate_limiter_state):
 # --- Codex r5 BLOCKING: kwargs-collision shielding -----------------------
 
 
-def test_strict_true_stream_chat_path_passes_raise_on_failure_exactly_once():
-    """Codex r5 BLOCKING: the streaming chat strict path and the
-    /v1/responses strict path are the two surfaces where
-    ``generate_with_schema`` is called with an explicit
-    ``raise_on_failure=True``. ``chat_kwargs`` is the merged
-    sampling / tools / thinking blob — if any upstream resolver
-    ever surfaced a ``raise_on_failure`` key into that dict, the
-    strict-path call would TypeError ("got multiple values for
-    keyword argument") before constrained decoding ran, and the
-    outer ``except Exception`` would mistranslate the wiring bug
-    into a 502 ``strict_schema_violation`` (server contract-
-    breach shape), masking the root cause from clients and logs.
+@pytest.mark.asyncio
+async def test_strict_true_stream_helper_strips_colliding_raise_on_failure():
+    """Codex r5+r7 BLOCKING (real version): the streaming chat strict
+    helper, ``stream_chat_completion_guided``, sanitizes ``kwargs``
+    so the explicit ``raise_on_failure=True`` it passes to
+    ``engine.generate_with_schema`` cannot collide with an
+    upstream-set value.
 
-    Pin: the strict streaming path passes ``raise_on_failure=True``
-    exactly once, even if the upstream kwargs blob already had
-    that key. Python's call semantics make the double-pass
-    TypeError, so a successful 200 + recorded ``raise_on_failure=True``
-    proves the dedup is effective.
+    Pin: call the helper directly with ``raise_on_failure=False``
+    in ``kwargs``. The production sanitization (``_guided_kwargs =
+    {k:v for k,v in kwargs.items() if k != "raise_on_failure"}``)
+    must strip the colliding key so the call resolves to a single
+    ``raise_on_failure=True``. Without the sanitization, Python
+    would raise ``TypeError: got multiple values for keyword
+    argument 'raise_on_failure'`` and the test would fail.
+    """
+    from fastapi import Request
+
+    from vllm_mlx.api.models import ChatCompletionRequest
+    from vllm_mlx.routes.chat import stream_chat_completion_guided
+
+    engine = _Engine(supports_guided=True)
+    # Minimal valid ChatCompletionRequest pin — only the fields
+    # the helper reads off ``request`` are populated.
+    chat_req = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+
+    class _MockReq:
+        async def is_disconnected(self):
+            return False
+
+    raw_req: Request = _MockReq()  # type: ignore[assignment]
+
+    # The collision case: kwargs ALREADY contains
+    # ``raise_on_failure=False`` — a stale / contradictory value.
+    # The helper's sanitization must strip it and the explicit
+    # True (set by the helper itself) must win. If the
+    # sanitization were removed, this would TypeError during
+    # the ``generate_with_schema(...)`` call.
+    chunks: list[str] = []
+    async for chunk in stream_chat_completion_guided(
+        engine,
+        messages=[{"role": "user", "content": "hi"}],
+        request=chat_req,
+        json_schema=_VALID_SCHEMA,
+        strict_mode=True,
+        raise_on_failure=False,  # colliding stale value
+    ):
+        # Pass raw_request positionally would mismatch the
+        # signature; the helper takes ``request`` only. ``raw_request``
+        # is used via ``request.is_disconnected`` in disconnect
+        # checks, but our request fixture handles that. We don't
+        # need to pass raw_request — the helper signature is
+        # ``(engine, messages, request, json_schema, *, strict_mode,
+        # **kwargs)``.
+        chunks.append(chunk)
+    assert len(engine.guided_calls) == 1
+    recorded_kwargs = engine.guided_calls[0]["kwargs"]
+    # The colliding ``raise_on_failure=False`` was stripped, and
+    # the helper's explicit ``raise_on_failure=True`` won.
+    assert recorded_kwargs.get("raise_on_failure") is True
+    # SSE stream completed normally (no TypeError translated into
+    # a strict_schema_violation envelope).
+    body = "".join(chunks)
+    assert "strict_schema_violation" not in body
+    assert "[DONE]" in body
+
+
+def test_strict_true_responses_strips_colliding_raise_on_failure(
+    _rate_limiter_state, monkeypatch
+):
+    """Codex r5+r7 BLOCKING parity: same proof on /v1/responses.
+
+    The /v1/responses route doesn't accept ``raise_on_failure`` as
+    a top-level body field, so we patch the route's chat-kwargs
+    builder to inject a colliding key into ``chat_kwargs``. The
+    production sanitization in ``responses.py`` (the
+    ``_guided_kwargs`` filter) must strip it; otherwise the route
+    would TypeError and surface as 502 strict_schema_violation.
+
+    A clean 200 + recorded ``raise_on_failure=True`` proves the
+    dedup is effective.
     """
     engine = _Engine(supports_guided=True)
-    client = _make_client(engine)
-    payload = {
-        "model": "test-model",
-        "messages": [{"role": "user", "content": "hi"}],
-        "stream": True,
-        "response_format": {
-            "type": "json_schema",
-            "json_schema": {
-                "name": "NumberOnly",
-                "schema": _VALID_SCHEMA,
-                "strict": True,
-            },
-        },
-    }
-    resp = client.post("/v1/chat/completions", json=payload)
-    assert resp.status_code == 200, resp.text
-    assert resp.headers["content-type"].startswith("text/event-stream")
-    # Drain the body so the streaming generator runs to completion
-    # and records the guided call.
-    _ = resp.text
-    assert len(engine.guided_calls) == 1, (
-        f"expected 1 guided call, got {len(engine.guided_calls)} "
-        f"(chat_calls={len(engine.chat_calls)})"
-    )
-    recorded_kwargs = engine.guided_calls[0]["kwargs"]
-    assert recorded_kwargs.get("raise_on_failure") is True
-
-
-def test_strict_true_responses_passes_raise_on_failure_exactly_once(
-    _rate_limiter_state,
-):
-    """Codex r5 BLOCKING parity: same kwargs-collision guard on
-    the /v1/responses strict path."""
-    engine = _Engine(supports_guided=True)
     client = _make_responses_client(engine, _rate_limiter_state)
+
+    # Patch ``_resolved_sampling_kwargs`` (or wherever ``chat_kwargs``
+    # is composed) to inject a colliding key. The simplest hook is
+    # to monkeypatch ``_resolved_sampling_kwargs`` to add the field
+    # to its return value.
+    from vllm_mlx.routes import responses as responses_mod
+
+    original_sampler = responses_mod._resolved_sampling_kwargs
+
+    def _polluted_sampler(req):
+        out = dict(original_sampler(req))
+        # Inject the colliding key the production code must strip.
+        out["raise_on_failure"] = False
+        return out
+
+    monkeypatch.setattr(responses_mod, "_resolved_sampling_kwargs", _polluted_sampler)
+
     payload = {
         "model": "test-model",
         "input": "hi",
@@ -1076,6 +1126,9 @@ def test_strict_true_responses_passes_raise_on_failure_exactly_once(
         },
     }
     resp = client.post("/v1/responses", json=payload)
+    # Without the sanitization, Python would raise TypeError and
+    # the route's ``except Exception`` arm would translate to a
+    # 502 strict_schema_violation. A clean 200 proves the dedup.
     assert resp.status_code == 200, resp.text
     assert len(engine.guided_calls) == 1
     recorded_kwargs = engine.guided_calls[0]["kwargs"]
@@ -1089,8 +1142,8 @@ def test_check_schema_validity_propagates_dependency_failures(monkeypatch):
     ``invalid_strict_schema`` that tells the client to fix their
     perfectly-valid schema.
 
-    Pin: when the bound ``Draft7Validator.check_schema`` raises
-    a generic non-SchemaError exception (simulating a runtime/
+    Pin: when the bound validator's ``check_schema`` raises a
+    generic non-SchemaError exception (simulating a runtime/
     dependency bug — NOT malformed input), ``check_schema_validity``
     must let it propagate instead of returning ``(False, ...)``.
     """
@@ -1104,11 +1157,63 @@ def test_check_schema_validity_propagates_dependency_failures(monkeypatch):
         def check_schema(schema):
             raise _BoomError("simulated environment failure inside jsonschema")
 
-    import jsonschema
+    # Codex r7 BLOCKING #1: ``check_schema_validity`` now selects
+    # the validator class dynamically via
+    # ``jsonschema.validators.validator_for``, so we patch that
+    # entry point instead of the (now-unused) ``Draft7Validator``.
+    from jsonschema import validators
 
-    monkeypatch.setattr(jsonschema, "Draft7Validator", _BrokenValidator)
+    monkeypatch.setattr(validators, "validator_for", lambda schema: _BrokenValidator)
     with pytest.raises(_BoomError):
         tool_calling.check_schema_validity(_VALID_SCHEMA)
+
+
+def test_check_schema_validity_uses_declared_draft_via_schema_key():
+    """Codex r7 BLOCKING #1: a request that declares
+    ``$schema:"https://json-schema.org/draft/2020-12/schema"`` must
+    be preflighted with a 2020-12 validator, NOT with Draft7. The
+    pre-fix preflight hard-coded ``Draft7Validator``, which ignores
+    unknown keywords and would pass a 2020-12 schema that the
+    post-decode validator (using the declared draft) then rejected
+    — surfacing as a 502 strict_schema_violation for what was
+    actually a client schema-version mismatch.
+
+    Pin: the helper must call ``validator_for(schema)`` so the
+    preflight matches the declared draft.
+    """
+    from jsonschema import Draft202012Validator, validators
+
+    from vllm_mlx.api import tool_calling
+
+    # A 2020-12 schema declaring a feature that DRAFT-7 silently
+    # ignores: ``prefixItems`` (added in 2020-12; Draft-7 has only
+    # ``items``). If the helper preflighted with Draft-7, the
+    # invalid ``prefixItems`` would pass and we'd never know the
+    # declared validator would have flagged it.
+    schema_2020_12 = {
+        "$schema": "https://json-schema.org/draft/2020-12/schema",
+        "type": "array",
+        # An invalid prefixItems entry: ``"not-a-schema"`` is a
+        # string, not a schema object. 2020-12 ``check_schema``
+        # rejects this; Draft-7 doesn't know the keyword and
+        # silently accepts the whole document.
+        "prefixItems": ["not-a-schema"],
+    }
+    # Confirm Draft-7 silently accepts (the bug we're closing):
+    from jsonschema import Draft7Validator
+
+    Draft7Validator.check_schema(schema_2020_12)  # no raise -> bug shape
+    # Confirm 2020-12 rejects (the right behavior):
+    with pytest.raises(Exception):
+        Draft202012Validator.check_schema(schema_2020_12)
+    # And confirm ``validator_for`` picks the 2020-12 class:
+    assert validators.validator_for(schema_2020_12) is Draft202012Validator
+    # The helper, having switched to ``validator_for``, must now
+    # ALSO reject — surfacing the schema-version mismatch as a
+    # client 400 instead of letting it bleed through to a 502.
+    ok, err = tool_calling.check_schema_validity(schema_2020_12)
+    assert ok is False
+    assert err is not None and len(err) > 0
 
 
 # --- Codex r6 BLOCKING: guided-failure must not silently fall back -------
