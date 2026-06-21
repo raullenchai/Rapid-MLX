@@ -363,28 +363,37 @@ class TestMalformedGraceful:
             f"content={result.content!r}"
         )
 
-    def test_v3_anchored_body_with_recoverable_partial_fence(
+    def test_v3_anchored_body_with_partial_fence_drops_block(
         self, parser: DeepSeekV31ToolParser
     ) -> None:
-        """V3 anchor + name + opening JSON fence + body but no closing
-        fence (truncated mid-args): the bounded recovery should pick up
-        the name and pass the body through as args, rather than
-        emitting ``name="function"``.
+        """codex r10 BLOCKING-1: V3-anchored bodies with an incomplete
+        fenced-JSON body are DROPPED entirely (no tool call emitted).
+        The previous bounded recovery could emit a tool call with
+        truncated / non-JSON arguments which would then reach
+        downstream tool execution.
+
+        Pin the explicit contract:
+          * ``tools_called`` is False.
+          * No tool calls in the result.
+          * The malformed text survives in ``content`` so the caller
+            can decide whether to display or retry (codex r8 BLOCKING-2).
         """
         payload = (
             f"{TC_OPEN}{C_OPEN}function{SEP}get_weather\n"
-            f'```json\n{{"city": "Tokyo"'
+            f'```json\n{{"city": "Tokyo"'  # no closing fence, no `}`
             f"{C_CLOSE}{TC_CLOSE}"
         )
 
         result = parser.extract_tool_calls(payload)
 
-        # If we extracted anything, the name MUST be the real tool
-        # name — never the literal ``function`` type tag.
-        for tc in result.tool_calls:
-            assert tc["name"] == "get_weather", (
-                f"V3 partial-fence recovery wrong name: {tc!r}"
-            )
+        assert not result.tools_called, (
+            f"Partial-fence V3 body must NOT emit a tool call. "
+            f"Got: {result.tool_calls!r}"
+        )
+        assert result.tool_calls == []
+        # Raw text passes through so the caller can surface it.
+        assert result.content is not None
+        assert "get_weather" in result.content
 
 
 # --------------------------------------------------------------------

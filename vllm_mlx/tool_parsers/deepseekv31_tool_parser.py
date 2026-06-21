@@ -253,27 +253,16 @@ class DeepSeekV31ToolParser(ToolParser):
             )
             if m is not None:
                 return m.group("name").strip(), m.group("args").strip()
-            # V3 anchor but malformed fence. Try one bounded recovery:
-            # the body shape is ``function<sep>NAME\n``\`\`\`json\n…``
-            # — split off the type-tag-plus-sep and look for the name
-            # terminator (``\n``\`\`\`json``). If both halves
-            # materialise we recover; otherwise the block is unparseable
-            # and we return ``None`` to drop it (NOT fall through to
-            # the V3.1 ``name=function`` mis-split).
-            v3_prefix = f"{_V3_TYPE_TAG}{cls.TOOL_SEP}"
-            tail = body[len(v3_prefix) :]
-            fence_idx = tail.find("\n```json")
-            if fence_idx <= 0:
-                return None
-            name = tail[:fence_idx].strip()
-            args_part = tail[fence_idx + len("\n```json") :].lstrip("\n")
-            # Strip any trailing ``\`\`\`` fence the model produced.
-            if args_part.endswith("```"):
-                args_part = args_part[: -len("```")].rstrip("\n")
-            args = args_part.strip()
-            if not name:
-                return None
-            return name, args
+            # V3-anchored but neither fenced-JSON regex matched. Drop
+            # the block entirely (return ``None``) rather than trying a
+            # bounded recovery: a partial recovery can emit a tool call
+            # with truncated / non-JSON arguments (e.g. ``{"city":
+            # "Tokyo"`` with no closing brace), which would then reach
+            # downstream tool execution (codex r10 BLOCKING). The
+            # malformed block's raw text is preserved as ``content``
+            # by ``extract_tool_calls`` (codex r8 BLOCKING-2), so the
+            # caller can decide whether to display or retry.
+            return None
 
         sep_idx = body.find(cls.TOOL_SEP)
         if sep_idx == -1:
