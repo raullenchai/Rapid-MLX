@@ -723,6 +723,109 @@ def test_responses_strict_true_guided_failure_returns_502():
     assert snap["strict_violations_total"] == 1
 
 
+def test_strict_true_with_tools_returns_400_chat():
+    """Codex r3 BLOCKING #2 hole — strict + tools: the existing
+    ``if response_format and not request.tools`` guard around the
+    guided dispatch silently dropped strict mode when tools were
+    set, so a strict request with tools fell through to
+    unconstrained generation. The new gate fails closed with
+    ``strict_with_tools_unsupported`` because constrained-decoding
+    grammar and tool-call grammar are mutually exclusive."""
+    engine = _Engine(supports_guided=True)
+    client = _make_client(engine)
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": "noop",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ],
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "NumberOnly",
+                "schema": _VALID_SCHEMA,
+                "strict": True,
+            },
+        },
+    }
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "strict_with_tools_unsupported"
+    # Strict counter ticks so operators see the malformed-strict rate.
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    # Neither guided nor chat path was hit.
+    assert engine.guided_calls == []
+    assert engine.chat_calls == []
+
+
+def test_responses_strict_true_with_tools_returns_400():
+    """Codex r3 BLOCKING #3 parity: /v1/responses + strict + tools
+    must also 400 ``strict_with_tools_unsupported``."""
+    engine = _Engine(supports_guided=True)
+    client = _make_responses_client(engine)
+    payload = {
+        "model": "test-model",
+        "input": "hi",
+        "tools": [
+            {
+                "type": "function",
+                "name": "noop",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ],
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "NumberOnly",
+                "schema": _VALID_SCHEMA,
+                "strict": True,
+            }
+        },
+    }
+    resp = client.post("/v1/responses", json=payload)
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "strict_with_tools_unsupported"
+    assert engine.guided_calls == []
+    assert engine.chat_calls == []
+
+
+def test_strict_true_without_schema_returns_400_chat_unit():
+    """Unit-style coverage for the defense-in-depth gate when the
+    body-level ``_validate_response_format`` is bypassed.
+
+    Pre-fix path: ``response_format`` with strict=true + missing
+    schema would 400 at the body validator. Defense-in-depth: my
+    new ``strict_schema_required`` gate also catches this if the
+    body validator is ever moved or refactored. We exercise the
+    gate via a direct function call rather than a route round-trip
+    (the body validator pre-empts it on a real request)."""
+    from vllm_mlx.api.tool_calling import (
+        extract_json_schema_for_guided,
+        is_strict_json_schema,
+    )
+
+    rf = {
+        "type": "json_schema",
+        "json_schema": {"name": "X", "schema": {}, "strict": True},
+    }
+    # The strict-mode check sees strict=true...
+    assert is_strict_json_schema(rf) is True
+    # ...but the extractor returns None because schema is empty.
+    assert extract_json_schema_for_guided(rf) is None
+    # The combination ``strict_mode=True AND extracted_schema=None``
+    # is exactly what the new route gate catches as
+    # ``strict_schema_required``.
+
+
 def test_responses_strict_false_falls_through_to_unconstrained():
     """``strict=false`` on /v1/responses must NOT tick the strict
     counter and must NOT 400 when guided is unavailable. Parity

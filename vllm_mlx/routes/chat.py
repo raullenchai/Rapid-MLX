@@ -1334,6 +1334,66 @@ async def _create_chat_completion_impl(
     # whatever the model produced. Distinguish the two modes here so
     # the rest of the function can react.
     strict_mode = is_strict_json_schema(response_format)
+
+    # Codex r3 BLOCKING #2 + defense-in-depth: ``strict=true`` with
+    # tools set (the route's existing ``if response_format and not
+    # request.tools`` gate below skips the guided dispatch when
+    # tools are present) used to fall through silently — strict
+    # mode would never trigger the gate and the model would emit
+    # unconstrained tokens. Compute the schema BEFORE the tools
+    # gate so the strict-malformed and strict+tools cases both
+    # fail closed (400) instead of failing open (silent 200).
+    # ``_validate_response_format`` already rejects ``schema={}``
+    # at body-parse time but this is the defense-in-depth gate
+    # that closes any future bypass (e.g. a refactor that moves
+    # the validate-response_format call after this point).
+    if strict_mode:
+        _strict_schema_check = extract_json_schema_for_guided(response_format)
+        if not _strict_schema_check:
+            incr_strict_request()
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format.json_schema.strict=true "
+                            "requires a non-empty "
+                            "response_format.json_schema.schema. The "
+                            "request set strict=true but the schema "
+                            "field is missing or empty — the strict "
+                            "contract cannot be enforced without one."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "strict_schema_required",
+                        "param": "response_format.json_schema.schema",
+                    }
+                },
+            )
+        if request.tools:
+            # Strict + tools is mutually exclusive on this engine:
+            # the constrained-decoding path is grammar-driven and
+            # cannot coexist with the tool-call grammar. OpenAI's
+            # cloud API treats this combination as 400 too. Surface
+            # the conflict explicitly so clients see the choice.
+            incr_strict_request()
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format.json_schema.strict=true "
+                            "cannot be combined with 'tools' — the "
+                            "constrained-decoding grammar is mutually "
+                            "exclusive with the tool-call grammar. "
+                            "Drop one or the other and retry."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "strict_with_tools_unsupported",
+                        "param": "response_format.json_schema.strict",
+                    }
+                },
+            )
+
     if response_format and not request.tools:
         json_schema = extract_json_schema_for_guided(response_format)
         if json_schema:

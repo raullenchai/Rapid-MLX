@@ -14,6 +14,7 @@ use that field (openai/codex#3841) — it re-sends the full conversation
 history every turn in ``input``.
 """
 
+import asyncio
 import json
 import logging
 import time
@@ -190,54 +191,96 @@ async def create_response(request: Request):
         _rf = getattr(openai_request, "response_format", None)
         if is_strict_json_schema(_rf):
             _schema = extract_json_schema_for_guided(_rf)
-            if _schema:
-                incr_strict_request()
-                if not engine.supports_guided_generation:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "error": {
-                                "message": (
-                                    "text.format with strict=true requires "
-                                    "the [guided] optional extra. Install "
-                                    "with: pip install 'rapid-mlx[guided]'"
-                                ),
-                                "type": "invalid_request_error",
-                                "code": "guided_extra_required",
-                                "param": "text.format.strict",
-                            }
-                        },
-                    )
-                # Codex r2 BLOCKING #2: streaming on /v1/responses
-                # currently routes through ``engine.stream_chat``,
-                # which is unconstrained — the constrained-decoding
-                # path here is buffered-only. Under the strict
-                # contract we MUST NOT serve a stream we cannot
-                # guarantee, so reject with a clear actionable 400
-                # naming both escape hatches: drop stream=true OR
-                # switch to /v1/chat/completions (which already has
-                # a buffered-guided→synthesized-SSE helper).
-                if responses_request.stream:
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "error": {
-                                "message": (
-                                    "text.format strict=true with stream=true "
-                                    "is not supported on /v1/responses — "
-                                    "constrained decoding on this surface is "
-                                    "buffered-only. Either drop stream=true "
-                                    "(non-stream strict response is honored) "
-                                    "or use /v1/chat/completions which "
-                                    "supports strict+streaming via the "
-                                    "buffered-guided SSE helper."
-                                ),
-                                "type": "invalid_request_error",
-                                "code": "strict_stream_unsupported",
-                                "param": "text.format.strict",
-                            }
-                        },
-                    )
+            incr_strict_request()
+            # Codex r3 BLOCKING #3 parity: a malformed strict request
+            # without an extractable schema must fail closed (400)
+            # not fall through to unconstrained ``engine.chat`` —
+            # mirrors the chat-route gate.
+            if not _schema:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "message": (
+                                "text.format strict=true requires a "
+                                "non-empty schema. The request set "
+                                "strict=true but the schema field is "
+                                "missing or empty — the strict contract "
+                                "cannot be enforced without one."
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "strict_schema_required",
+                            "param": "text.format.schema",
+                        }
+                    },
+                )
+            if openai_request.tools:
+                # Parity with the chat-route ``strict_with_tools_unsupported``
+                # gate: constrained-decoding grammar and tool-call grammar
+                # are mutually exclusive on this engine.
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "message": (
+                                "text.format strict=true cannot be combined "
+                                "with 'tools' — the constrained-decoding "
+                                "grammar is mutually exclusive with the "
+                                "tool-call grammar. Drop one or the other "
+                                "and retry."
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "strict_with_tools_unsupported",
+                            "param": "text.format.strict",
+                        }
+                    },
+                )
+            if not engine.supports_guided_generation:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "message": (
+                                "text.format with strict=true requires "
+                                "the [guided] optional extra. Install "
+                                "with: pip install 'rapid-mlx[guided]'"
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "guided_extra_required",
+                            "param": "text.format.strict",
+                        }
+                    },
+                )
+            # Codex r2 BLOCKING #2: streaming on /v1/responses
+            # currently routes through ``engine.stream_chat``,
+            # which is unconstrained — the constrained-decoding
+            # path here is buffered-only. Under the strict
+            # contract we MUST NOT serve a stream we cannot
+            # guarantee, so reject with a clear actionable 400
+            # naming both escape hatches: drop stream=true OR
+            # switch to /v1/chat/completions (which already has
+            # a buffered-guided→synthesized-SSE helper).
+            if responses_request.stream:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "message": (
+                                "text.format strict=true with stream=true "
+                                "is not supported on /v1/responses — "
+                                "constrained decoding on this surface is "
+                                "buffered-only. Either drop stream=true "
+                                "(non-stream strict response is honored) "
+                                "or use /v1/chat/completions which "
+                                "supports strict+streaming via the "
+                                "buffered-guided SSE helper."
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "strict_stream_unsupported",
+                            "param": "text.format.strict",
+                        }
+                    },
+                )
 
         # Context-length pre-check — same DoS gate the chat/completions/
         # anthropic routes enforce. Runs BEFORE the stream branch so
@@ -330,13 +373,14 @@ async def _non_stream(
 
     # H-06: when the request asks for strict json_schema, route
     # through ``engine.generate_with_schema`` for outlines-backed
-    # constrained decoding. The chat-route gate already 400'd above
-    # if guided was unavailable, so reaching here means
-    # ``supports_guided_generation`` was True. We fall back to
-    # ``engine.chat`` on guided failure rather than 500 — the
-    # post-decode validator below ticks the violations counter so
-    # operators see the degradation, but the request still gets a
-    # response (matches the chat-route fallback semantics).
+    # constrained decoding. The route gate above already 400'd if
+    # guided was unavailable, so reaching here under strict means
+    # ``supports_guided_generation`` was True. Under strict we DO
+    # NOT fall back to unconstrained ``engine.chat`` on guided
+    # failure — that turns ``strict=true`` back into best-effort
+    # output (codex r2 BLOCKING #1). Instead we propagate the
+    # guided-coroutine failure as 502 ``strict_schema_violation``
+    # so the client sees the contract breach explicitly.
     _rf_for_strict = getattr(openai_request, "response_format", None)
     _strict_schema = (
         extract_json_schema_for_guided(_rf_for_strict)
@@ -344,30 +388,94 @@ async def _non_stream(
         else None
     )
 
+    # Codex r3 BLOCKING #1: wrap ONLY the guided coroutine creation
+    # in our exception translator, not ``_wait_with_disconnect``
+    # itself. ``_wait_with_disconnect`` raises
+    # ``asyncio.TimeoutError`` / client-disconnect exceptions that
+    # the outer route relies on to return the canonical 408 / 499 /
+    # 503 envelopes — translating those to 502
+    # ``strict_schema_violation`` would mask client-disconnect /
+    # timeout as a server-side contract breach.
+    #
+    # Strategy: build the guided coroutine OUTSIDE the
+    # _wait_with_disconnect call, so AttributeError /
+    # NotImplementedError / outlines-import errors from
+    # ``engine.generate_with_schema(...)`` (which is sync setup
+    # work followed by awaiting an executor task) materialize
+    # synchronously and can be caught in a tight try around just
+    # that one call. ``_wait_with_disconnect`` then handles the
+    # actual await with its own timeout/disconnect semantics intact.
+    if _strict_schema and engine.supports_guided_generation:
+        try:
+            _guided_coro = engine.generate_with_schema(
+                messages=messages,
+                json_schema=_strict_schema,
+                raise_on_failure=True,
+                **chat_kwargs,
+            )
+        except HTTPException:
+            raise
+        except Exception as guided_err:
+            logger.warning(
+                "Guided generation setup failed on /v1/responses strict path: %s",
+                guided_err,
+            )
+            incr_strict_violation()
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": {
+                        "message": (
+                            "strict response_format requested but "
+                            "constrained decoding failed: "
+                            f"{type(guided_err).__name__}. Investigate "
+                            "the server logs and the "
+                            "rapid_mlx_response_format_strict_violations_total "
+                            "metric."
+                        ),
+                        "type": "api_error",
+                        "code": "strict_schema_violation",
+                        "param": "text.format.strict",
+                    }
+                },
+            ) from guided_err
+    else:
+        _guided_coro = None
+
     try:
-        if _strict_schema and engine.supports_guided_generation:
-            # H-06 (codex r2): under the strict contract we MUST NOT
-            # fall back to unconstrained ``engine.chat`` on guided
-            # failure — that turns ``strict=true`` back into best-
-            # effort output. Propagate the failure as 502 so the
-            # client sees the contract breach instead of silently
-            # consuming schema-invalid bytes.
+        if _guided_coro is not None:
+            # Codex r3 BLOCKING #1: the guided await runs under the
+            # same _wait_with_disconnect contract as the
+            # unconstrained path — timeout/disconnect surface as
+            # the route's standard 408/499/503 envelopes (handled
+            # by the outer try/except). Any guided-specific
+            # runtime failure (outlines grammar error during
+            # await, etc.) is translated to 502 below by checking
+            # the exception class explicitly so cancellation /
+            # timeout aren't misclassified.
             try:
                 output = await _wait_with_disconnect(
-                    engine.generate_with_schema(
-                        messages=messages,
-                        json_schema=_strict_schema,
-                        raise_on_failure=True,
-                        **chat_kwargs,
-                    ),
+                    _guided_coro,
                     request,
                     timeout=timeout,
                 )
             except HTTPException:
                 raise
+            except (TimeoutError, asyncio.TimeoutError):
+                # _wait_with_disconnect surfaces these from its
+                # own timeout machinery — they belong to the
+                # outer route's standard timeout shape, NOT to
+                # the strict_schema_violation contract.
+                raise
+            except asyncio.CancelledError:
+                # Client disconnect / cancellation — same as above,
+                # belongs to the route's standard cancellation
+                # path, not the strict contract.
+                raise
             except Exception as guided_err:
                 logger.warning(
-                    "Guided generation failed on /v1/responses strict path: %s",
+                    "Guided generation failed mid-await on /v1/responses "
+                    "strict path: %s",
                     guided_err,
                 )
                 incr_strict_violation()
