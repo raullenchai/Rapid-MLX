@@ -329,6 +329,50 @@ def test_d_tool_recur_tools_depth_1000_returns_400_canonical_envelope(monkeypatc
     assert "_walk" not in resp.text
 
 
+def test_walk_tools_iter_preserves_nested_tuples():
+    """codex r1 BLOCKING #1 pin: the iterative walk MUST materialise
+    tuple buffers leaves-first so a tuple-of-tuple in the input round-
+    trips with the outer container as a tuple AND the inner container
+    as a tuple. The previous insertion-order conversion materialised
+    the outer tuple while the inner was still a list buffer, so the
+    inner replacement updated a list that the freshly-created outer
+    tuple no longer referenced — the outer tuple ended up containing
+    a (now-mutated) list where it should have a tuple.
+
+    A regression that reverts the depth-sort would surface as the
+    outer tuple containing a list instead of a tuple at the leaf,
+    which this assertion would catch immediately. We exercise the
+    walker directly (not through the ``_sanitize_tools_for_template``
+    wrapper) so the test fails on a tuple regression even if no live
+    payload would ship a nested tuple — the public sanitiser only
+    sees JSON-decoded values (no tuples), but internal callers can
+    construct tools with tuples and the iterative walk's contract
+    promises tuple preservation."""
+    from vllm_mlx.utils.chat_template import _walk_tools_iter
+
+    # Nested tuple: outer -> inner -> "<|im_start|>"
+    inp = ("outer-prefix", ("inner-a", ("deep-leaf-<|im_start|>",)))
+    out = _walk_tools_iter(inp, lambda s: s.replace("<|im_start|>", "BLOCKED"))
+
+    # Same structural shape, every level a tuple.
+    assert isinstance(out, tuple), type(out)
+    assert out[0] == "outer-prefix"
+    assert isinstance(out[1], tuple), type(out[1])
+    assert out[1][0] == "inner-a"
+    assert isinstance(out[1][1], tuple), type(out[1][1])
+    assert out[1][1][0] == "deep-leaf-BLOCKED"
+
+    # Tuple-in-dict-in-tuple shape: cover the cross-container case
+    # too — a tuple nested via a dict value MUST also stay a tuple.
+    inp2 = ({"k": ("a", ("b",))},)
+    out2 = _walk_tools_iter(inp2, lambda s: s.upper())
+    assert isinstance(out2, tuple)
+    assert isinstance(out2[0], dict)
+    assert isinstance(out2[0]["k"], tuple)
+    assert isinstance(out2[0]["k"][1], tuple)
+    assert out2[0]["k"][1][0] == "B"
+
+
 def test_d_tool_recur_iterative_walk_handles_extreme_depth(monkeypatch):
     """The structural fix — ``_sanitize_tools_for_template`` and its
     fail-closed twin walk iteratively now — MUST handle a payload
@@ -406,6 +450,60 @@ def test_d_tool_recur_tool_schema_env_override(monkeypatch):
     resp = client.post("/v1/chat/completions", json=payload)
     assert resp.status_code == 400, resp.text
     assert "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH" in resp.json()["error"]["message"]
+
+
+# ============================================================
+# Body-depth gate: parser-level RecursionError fallback
+# ============================================================
+
+
+def test_body_depth_gate_catches_parser_recursion_error(monkeypatch):
+    """codex r1 BLOCKING #2 pin: if ``json.loads`` itself raises
+    ``RecursionError`` (its C parser carries an internal recursion
+    bound that on truly extreme nesting can trip BEFORE
+    :func:`json_nesting_depth_exceeds` runs), the middleware MUST
+    treat it as a depth-cap rejection instead of letting it propagate
+    to the global handler. Otherwise the operator log records a
+    WARNING trace on every such request — noise that masks real bugs.
+
+    We simulate the condition by swapping the middleware's
+    ``_json`` reference with a stub whose ``loads`` raises
+    ``RecursionError`` deterministically. The expected response is
+    the canonical ``request_body_too_deep`` 400 from the middleware
+    itself, NOT the fallback envelope from the global
+    ``RecursionError`` handler (both carry the same code; the
+    distinguishing signal is the cap-named message vs. the
+    handler-named message).
+
+    NOTE: we patch the ``_json`` MODULE binding rather than
+    ``_bd._json.loads`` directly because the test client uses
+    ``json.loads`` to decode the response body — patching the global
+    ``json`` module would corrupt that decode and lose the test
+    signal."""
+    import json as _real_json
+    import types
+
+    import vllm_mlx.middleware.body_depth as _bd
+
+    stub = types.SimpleNamespace(
+        loads=lambda body: (_ for _ in ()).throw(
+            RecursionError("simulated json.loads stack overflow")
+        ),
+        JSONDecodeError=_real_json.JSONDecodeError,
+        dumps=_real_json.dumps,
+    )
+    monkeypatch.setattr(_bd, "_json", stub)
+    app = _build_minimal_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    # Any JSON body works — the patch raises unconditionally.
+    resp = client.post("/v1/chat/completions", json={"x": 1})
+    assert resp.status_code == 400, resp.text[:300]
+    body = resp.json()
+    assert body["error"]["code"] == "request_body_too_deep"
+    # Cap-naming message — the middleware path, not the global handler
+    # path (whose message says "recursion bound" not "server cap").
+    assert "RAPID_MLX_MAX_BODY_DEPTH" in body["error"]["message"]
+    assert "server cap" in body["error"]["message"]
 
 
 # ============================================================

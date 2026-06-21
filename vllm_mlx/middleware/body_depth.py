@@ -210,6 +210,24 @@ class RequestBodyDepthMiddleware:
             # structure to measure it, and the downstream FastAPI body
             # reader insists on owning the parse itself.
             return await self.app(scope, _replay_buffered(body), send)
+        except RecursionError:
+            # codex r1 BLOCKING #2: ``json.loads`` is implemented in
+            # C and uses an internal recursion bound that, on
+            # sufficiently extreme nesting (well past 1000 levels),
+            # can itself raise ``RecursionError`` BEFORE
+            # :func:`json_nesting_depth_exceeds` runs. Pre-fix, the
+            # ``except _json.JSONDecodeError`` arm let the
+            # ``RecursionError`` propagate and the request relied on
+            # the global :class:`RecursionError` handler — which still
+            # returns the same canonical envelope, but it means the
+            # operator log records the trace at WARNING for every
+            # such request instead of the body-depth gate's quiet
+            # path. Catching the parser-level recursion here surfaces
+            # it as the configured-cap rejection so the trace stays
+            # off the WARNING log and the cap-naming message reaches
+            # the client.
+            await _send_400_depth(send, max_depth=max_depth)
+            return
 
         if json_nesting_depth_exceeds(parsed, max_depth):
             await _send_400_depth(send, max_depth=max_depth)

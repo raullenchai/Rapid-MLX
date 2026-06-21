@@ -834,7 +834,9 @@ class ToolDefinition(BaseModel):
             resolve_max_tool_schema_depth,
         )
 
-        params = self.function.get("parameters") if isinstance(self.function, dict) else None
+        params = (
+            self.function.get("parameters") if isinstance(self.function, dict) else None
+        )
         if isinstance(params, (dict, list)):
             cap = resolve_max_tool_schema_depth()
             if cap > 0 and json_nesting_depth_exceeds(params, cap):

@@ -399,13 +399,13 @@ def _walk_tools_iter(tools, transform):
     string scalars (``int``/``float``/``bool``/``None``) pass through
     unchanged — same contract as the previous recursive form.
     """
-    # The work stack carries ``(parent_container, key_or_index, source_node)``
-    # tuples. We allocate the result container up-front when ``source_node``
-    # is a container, push its children to the stack, and let later
-    # iterations fill in the children slots in the result. For tuples we
-    # accumulate a list and convert at the close — the source-node id maps
-    # to a list buffer we replace with ``tuple(...)`` when its last child
-    # has been processed.
+    # The work stack carries ``(parent_container, key_or_index, source_node,
+    # depth)`` tuples. We allocate the result container up-front when
+    # ``source_node`` is a container, push its children to the stack, and
+    # let later iterations fill in the children slots in the result. For
+    # tuples we accumulate a list buffer and convert in a second pass at
+    # the end — see :func:`_finalize_tuple_buffers` for why the
+    # second pass MUST run leaves-first (codex r1 BLOCKING #1).
     if isinstance(tools, str):
         return transform(tools)
     if not isinstance(tools, (dict, list, tuple)):
@@ -415,26 +415,29 @@ def _walk_tools_iter(tools, transform):
     # assign the root result via the same ``parent[key] = ...`` shape it
     # uses for every other node, without a special-case branch.
     root_holder: list = [None]
-    # Stack entries: (parent, key, source)
-    stack: list = [(root_holder, 0, tools)]
-    # Track tuple buffers: id(source) -> (parent, key, list_buffer)
-    tuple_buffers: dict = {}
+    # Stack entries: (parent, key, source, depth)
+    stack: list = [(root_holder, 0, tools, 0)]
+    # Track tuple buffers with their depth in the result tree so the
+    # second pass can convert leaves-first. Each entry is
+    # ``(depth, parent, key, list_buf)``. Sort by depth DESC at close
+    # so the innermost buf becomes a tuple BEFORE the parent buf is
+    # materialised, otherwise the parent tuple captures the (stale)
+    # list reference and the inner tuple replacement is lost.
+    tuple_buffers: list = []
 
     while stack:
-        parent, key, src = stack.pop()
+        parent, key, src, depth = stack.pop()
         if isinstance(src, str):
             parent[key] = transform(src)
         elif isinstance(src, dict):
             new_dict: dict = {}
             parent[key] = new_dict
-            # Push children. Order doesn't matter for correctness — we
-            # iterate the source dict once and pre-seed every key.
             for k, v in src.items():
                 if isinstance(v, str):
                     new_dict[k] = transform(v)
                 elif isinstance(v, (dict, list, tuple)):
                     new_dict[k] = None  # placeholder filled below
-                    stack.append((new_dict, k, v))
+                    stack.append((new_dict, k, v, depth + 1))
                 else:
                     new_dict[k] = v
         elif isinstance(src, list):
@@ -444,36 +447,42 @@ def _walk_tools_iter(tools, transform):
                 if isinstance(v, str):
                     new_list[i] = transform(v)
                 elif isinstance(v, (dict, list, tuple)):
-                    stack.append((new_list, i, v))
+                    stack.append((new_list, i, v, depth + 1))
                 else:
                     new_list[i] = v
         elif isinstance(src, tuple):
-            # Allocate a list buffer; convert to tuple after the whole
-            # subtree has been filled. Closure-of-subtree detection
-            # would require a second pass, so we collect the buffer
-            # under ``tuple_buffers`` keyed on its position in the
-            # result tree and do one final pass to convert at the end.
+            # Allocate a list buffer; the parent slot temporarily holds
+            # this list. The final-pass converter (post-order, by
+            # descending depth) replaces ``parent[key]`` with
+            # ``tuple(buf)`` only AFTER every child tuple beneath it
+            # has already been converted in place inside ``buf``.
             buf: list = [None] * len(src)
             parent[key] = buf
-            tuple_buffers[id(buf)] = (parent, key, buf)
+            tuple_buffers.append((depth, parent, key, buf))
             for i, v in enumerate(src):
                 if isinstance(v, str):
                     buf[i] = transform(v)
                 elif isinstance(v, (dict, list, tuple)):
-                    stack.append((buf, i, v))
+                    stack.append((buf, i, v, depth + 1))
                 else:
                     buf[i] = v
         else:
             parent[key] = src
 
-    # Convert tuple buffers back into tuples. We iterate from leaves
-    # to root by sorting on python id of the buffer — order doesn't
-    # actually matter for correctness because we mutate via the
-    # captured (parent, key) reference, but doing leaves-first means
-    # a tuple-of-tuple is materialised correctly without an extra
-    # walk. Use a single pass: every buf is already a fully-populated
-    # list at this point (the stack drained), so we just replace.
-    for parent, key, buf in tuple_buffers.values():
+    # Convert tuple buffers back into tuples LEAVES-FIRST (deepest
+    # depth processed first). codex r1 BLOCKING #1: insertion order
+    # is push order, which for a DFS stack is parent-before-child.
+    # If we materialise the outer tuple FIRST, the freshly-created
+    # ``tuple(buf_outer)`` captures the inner buf as a LIST reference;
+    # the subsequent ``buf_outer[i] = tuple(buf_inner)`` mutates the
+    # list buffer but the outer tuple (immutable) still points at the
+    # original list object, so the returned outer tuple contains a
+    # list where the test expects a tuple. Sorting by ``-depth`` (or
+    # equivalently the highest-depth-first descending sort) guarantees
+    # the inner buf has already been replaced with its tuple form
+    # INSIDE ``buf_outer`` before we materialise the outer tuple.
+    tuple_buffers.sort(key=lambda entry: entry[0], reverse=True)
+    for _depth, parent, key, buf in tuple_buffers:
         parent[key] = tuple(buf)
 
     return root_holder[0]
@@ -499,9 +508,7 @@ def _baseline_sanitize_tools(tools):
     baseline_pattern = _build_marker_pattern(set(_CHAT_TEMPLATE_ROLE_MARKERS))
     if baseline_pattern is None:
         return tools
-    return _walk_tools_iter(
-        tools, lambda s: _neutralize_in_string(s, baseline_pattern)
-    )
+    return _walk_tools_iter(tools, lambda s: _neutralize_in_string(s, baseline_pattern))
 
 
 def _sanitize_tools_for_template(tools, template_applicator):
@@ -535,9 +542,7 @@ def _sanitize_tools_for_template(tools, template_applicator):
     pattern = _build_marker_pattern(markers)
     if pattern is None:
         return tools
-    return _walk_tools_iter(
-        tools, lambda s: _neutralize_in_string(s, pattern)
-    )
+    return _walk_tools_iter(tools, lambda s: _neutralize_in_string(s, pattern))
 
 
 def _build_tool_injection_text(tools: list[dict]) -> str:
