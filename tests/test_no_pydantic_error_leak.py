@@ -379,20 +379,35 @@ def test_responses_no_pydantic_leak(client, case_id, msgs_body, resp_body):
 # ── H-17 round-2 (codex): attacker sentinel inside a KEY name ────────
 
 
-def test_attacker_key_in_loc_is_collapsed(monkeypatch):
-    """Codex H-17 round-2 finding: the original sanitizer joined the
-    full ``loc`` tuple into the 400 message verbatim. Pydantic v2
-    puts attacker-controlled dict keys / JSON-pointer escapes / extra-
-    forbid field names directly into ``loc``, so a body like
-    ``{"tags": {"<attacker_pwned>": "x"}}`` against a schema that
-    types ``tags`` as ``dict[str, int]`` would reflect the sentinel
-    in the 400 envelope even though the value was harmless.
+# Codex H-17 round-2 (PR #784 review BLOCKING #2 + #3): exercise the
+# loc-sanitizer across the full byte shape an attacker can choose for
+# a dict key or an extra-forbid field name. The original sanitizer's
+# identifier-shape regex passed valid-identifier sentinels (e.g.
+# ``AWS_SECRET_ACCESS_KEY``) through verbatim; the current sanitizer
+# collapses **every** string ``loc`` component, so all of these must
+# be reflected back as ``<field>`` regardless of byte shape.
+_ATTACKER_KEY_SHAPES = [
+    "AWS_SECRET_ACCESS_KEY",  # valid Python identifier, all caps
+    "h17_key_sentinel_pwned",  # valid Python identifier, all lower
+    "H17KeySentinelPwnedCamel",  # valid Python identifier, camel
+    "<H17_KEY_SENTINEL_pwned>",  # punctuation-bracketed (round-1 only)
+    "X-Forwarded-For",  # contains dashes, header-shaped
+    "../../etc/passwd",  # path-traversal probe
+    "a" * 256,  # oversized identifier
+]
 
-    Wires a throwaway endpoint with a ``dict[str, int]`` field, posts
-    an attacker-controlled key, and asserts the sentinel does NOT
-    appear anywhere in the envelope while the canonical shape still
-    surfaces. Uses :func:`_build_app` so the global handler install is
-    exercised end-to-end.
+
+@pytest.mark.parametrize("evil_key", _ATTACKER_KEY_SHAPES)
+def test_attacker_key_in_loc_is_collapsed(monkeypatch, evil_key):
+    """Codex H-17 round-2 BLOCKING #1: Pydantic v2 puts attacker-
+    controlled dict keys directly into ``loc`` for ``dict[str, T]``
+    fields. The round-1 identifier regex let identifier-shaped keys
+    (e.g. ``AWS_SECRET_ACCESS_KEY``) pass through, still leaking a
+    side-channel for any attacker who can stage a bad value under a
+    chosen key. The current sanitizer must collapse **every** string
+    ``loc`` component regardless of shape — this test parametrizes
+    over identifier-shaped, punctuation-bracketed, dashed, and
+    oversized sentinels and asserts the envelope never reflects them.
     """
     from fastapi import Request as _FastAPIRequest
     from pydantic import BaseModel
@@ -411,14 +426,13 @@ def test_attacker_key_in_loc_is_collapsed(monkeypatch):
             return _KeyEcho(**body)
 
         client = TestClient(app)
-        evil_key = "<H17_KEY_SENTINEL_pwned>"
         response = client.post(
             "/__h17_key_probe__",
             json={"tags": {evil_key: "not-an-int"}},
         )
         assert response.status_code == 400, response.text
         assert evil_key not in response.text, (
-            f"loc echoed attacker-controlled key: {response.text!r}"
+            f"loc echoed attacker-controlled key {evil_key!r}: {response.text!r}"
         )
         # Envelope shape still canonical.
         err = response.json()["error"]
@@ -426,19 +440,34 @@ def test_attacker_key_in_loc_is_collapsed(monkeypatch):
         assert err["code"] == "invalid_request"
         assert err["message"].startswith("Invalid request body:")
         # Sanitized placeholder shows up in place of the dangerous key.
-        assert "<key>" in err["message"], (
-            f"expected sanitized <key> placeholder; got {err['message']!r}"
+        assert "<field>" in err["message"], (
+            f"expected sanitized <field> placeholder; got {err['message']!r}"
         )
     finally:
         teardown()
 
 
-def test_attacker_extra_field_name_is_collapsed(monkeypatch):
-    """Sibling of the dict-key test, but for ``ConfigDict(extra=
-    "forbid")`` schemas: Pydantic puts the rejected extra-field NAME
-    into ``loc[0]``. An attacker who can pick the field name
-    (``POST {"<sentinel>": 1, ...}``) would otherwise see it echoed in
-    the 400 envelope on any forbid-extras model wired to this handler.
+# Codex H-17 round-2 BLOCKING #3: extra-forbid field names also need
+# to be tested with identifier-shaped sentinels; the round-1 regex
+# would have admitted them.
+_ATTACKER_EXTRA_FIELD_SHAPES = [
+    "AWS_SECRET_ACCESS_KEY",
+    "h17_extra_field_pwned",
+    "H17ExtraFieldPwnedCamel",
+    "<H17_EXTRA_FIELD_pwned>",
+    "X-Sensitive-Header",
+    "Z" * 256,
+]
+
+
+@pytest.mark.parametrize("evil_field", _ATTACKER_EXTRA_FIELD_SHAPES)
+def test_attacker_extra_field_name_is_collapsed(monkeypatch, evil_field):
+    """``ConfigDict(extra="forbid")`` puts the rejected field NAME into
+    ``loc[0]``. An attacker who can pick the field name would
+    otherwise see it echoed verbatim. Parametrize over the same shape
+    matrix as the dict-key test so an identifier-shaped extra field
+    (``AWS_SECRET_ACCESS_KEY=...``) is exercised explicitly per codex
+    round-2 BLOCKING #3.
     """
     from fastapi import Request as _FastAPIRequest
     from pydantic import BaseModel, ConfigDict
@@ -456,17 +485,20 @@ def test_attacker_extra_field_name_is_collapsed(monkeypatch):
             return _Strict(**body)
 
         client = TestClient(app)
-        evil_field = "<H17_EXTRA_FIELD_pwned>"
         response = client.post(
             "/__h17_extra_probe__", json={"x": 1, evil_field: "anything"}
         )
         assert response.status_code == 400, response.text
         assert evil_field not in response.text, (
-            f"extra-field name echoed: {response.text!r}"
+            f"extra-field name {evil_field!r} echoed: {response.text!r}"
         )
         err = response.json()["error"]
         assert err["type"] == "invalid_request_error"
         assert err["code"] == "invalid_request"
+        # Sanitized placeholder shows up where the field name used to.
+        assert "<field>" in err["message"], (
+            f"expected <field> placeholder; got {err['message']!r}"
+        )
     finally:
         teardown()
 

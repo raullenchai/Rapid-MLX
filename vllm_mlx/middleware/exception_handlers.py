@@ -37,7 +37,6 @@ from __future__ import annotations
 
 import json as _json
 import logging
-import re
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -47,32 +46,32 @@ from starlette.responses import JSONResponse
 
 logger = logging.getLogger("rapid_mlx.exception_handlers")
 
-# H-17 round-2 (codex): Pydantic v2 puts attacker-controlled dict
-# keys, JSON-pointer-style indices, and (with ``extra="forbid"``)
-# arbitrary extra-field names directly into the ``loc`` tuple of every
-# error it raises. The original sanitizer joined those components
-# verbatim into the 400 envelope — so a request body like
-# ``{"metadata": {"<attacker_pwned>": 12345}}`` against any schema
-# that types ``metadata`` as ``dict[str, int]`` would bounce the
-# sentinel right back to the caller. Lock the surface down: a ``loc``
-# component is allowed through only if it's a positional list index
-# (int) or a strict Python-style identifier from the schema itself.
-# Anything else collapses to ``<key>`` so the envelope still tells the
-# caller "the error was here" without echoing the dangerous bytes.
-_SAFE_LOC_KEY = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
-
 
 def _sanitize_loc(loc: tuple) -> str:
     """Collapse a Pydantic ``loc`` tuple to a safe dotted path.
 
     Drops the synthetic ``"body"`` prefix FastAPI prepends. Keeps
-    positional indices (``int``) and short Python-style identifiers
-    (≤64 chars, ``[A-Za-z_][A-Za-z0-9_]*``) — these are schema-
-    determined and safe to surface. Replaces anything else (Unicode,
-    punctuation, whitespace, oversized strings — all attacker-
-    controlled signals) with the placeholder ``<key>`` so the envelope
-    still carries enough shape to be actionable without reflecting
-    user input.
+    positional indices (``int``) as-is — they come from list/sequence
+    positions and the attacker can't inject arbitrary bytes there.
+    Replaces **every** string component with the placeholder
+    ``<field>`` so attacker-controlled bytes are never reflected:
+
+    * Pydantic v2 puts dict keys (``dict[str, T]`` types), JSON-
+      pointer-style indices, and (with ``ConfigDict(extra="forbid")``)
+      the rejected extra-field NAME directly into ``loc`` —
+      indistinguishable from the schema-owned field names at the
+      string level. Codex H-17 round-2 BLOCKING #1 caught that any
+      shape-based whitelist (e.g. identifier regex) still leaks
+      identifier-shaped attacker bytes like ``AWS_SECRET_ACCESS_KEY``.
+    * Schema-owned field names are public API surface anyway, so
+      losing them in the envelope costs at most an informational
+      hint; the validator message itself ("Field required", "Input
+      should be a valid list", ...) already conveys the failure mode.
+
+    Net effect: the 400 still carries actionable structure (e.g.
+    ``<field>.0.<field>: Input should be a valid integer``) and the
+    Pydantic error message, without echoing a single byte the caller
+    chose.
     """
     parts: list[str] = []
     for raw in loc:
@@ -81,12 +80,12 @@ def _sanitize_loc(loc: tuple) -> str:
         if isinstance(raw, int):
             parts.append(str(raw))
             continue
-        if isinstance(raw, str) and _SAFE_LOC_KEY.match(raw):
-            parts.append(raw)
-            continue
-        # Attacker-supplied dict key, JSON-pointer escape, oversized
-        # extra-field name, etc. Collapse to a fixed placeholder.
-        parts.append("<key>")
+        # All string components — whether schema-owned or attacker-
+        # supplied — collapse to a constant placeholder. The Pydantic
+        # error MESSAGE ("Field required", etc.) is schema-determined
+        # and is still surfaced separately, so we lose only the
+        # field-name hint, never any byte the attacker can choose.
+        parts.append("<field>")
     return ".".join(parts)
 
 
@@ -235,7 +234,7 @@ def install_exception_handlers(app: FastAPI) -> None:
 
     @app.exception_handler(PydanticValidationError)
     async def _pydantic_validation_handler(
-        request: Request,  # noqa: ARG001
+        request: Request,
         exc: PydanticValidationError,
     ):
         # H-17: routes that build a Pydantic model manually
@@ -247,6 +246,22 @@ def install_exception_handlers(app: FastAPI) -> None:
         # bound bodies so the model class name, the pinned pydantic
         # version (``errors.pydantic.dev/2.13/...``), and the attacker-
         # supplied ``input_value`` stay out of the response body.
+        #
+        # Codex H-17 round-2 NIT #4: a global handler converts every
+        # internal Pydantic bug into a client 400, which can mask
+        # server-side defects. Log at WARNING with the request path so
+        # operators can spot "this 400 actually came from a server-
+        # side response-model construction failure". The exception
+        # text (which contains the leaky details) goes only to the log
+        # — never to the client.
+        logger.warning(
+            "pydantic.ValidationError on %s %s — %d error(s); "
+            "response body is the sanitized H-17 envelope",
+            request.method,
+            request.url.path,
+            len(exc.errors()),
+            exc_info=exc,
+        )
         return _validation_error_response(exc)
 
     @app.exception_handler(Exception)
