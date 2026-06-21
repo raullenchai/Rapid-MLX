@@ -698,77 +698,51 @@ def test_h14_no_double_send_after_408_rewrite():
     assert payload["error"]["code"] == "request_timeout"
 
 
-def test_h14_env_var_override_reduces_timeout():
+def test_h14_env_var_override_reduces_timeout(monkeypatch):
     """H-14: the documented env-var escape hatch
     ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` reduces the per-chunk
-    idle limit. We spawn a subprocess so the test exercises the REAL
-    ``cli.py`` env-resolver block (not a hand-rolled stand-in that
-    would still pass if the resolver were silently deleted). Codex
-    round-1 BLOCKING #1 spotted that the previous version of this
-    test assigned to ``server_mod._body_receive_timeout_seconds``
-    directly — that path's only purpose is to be written by the CLI
-    resolver, so testing it without going through the CLI would mask
-    a regression that removed the wire-up entirely.
+    idle limit. Codex round-2 BLOCKING on PR #786: a hand-rolled
+    stand-in for the CLI resolver would still pass even if the
+    production wire-up were silently deleted. The fix is to call the
+    SAME function ``serve_command`` calls —
+    ``vllm_mlx.cli._apply_body_receive_timeout_env`` — so any
+    refactor that renames the env var, breaks the clamp, or drops
+    the assignment fails this test on the real code path, not a copy.
 
-    The subprocess shape also keeps any mutation of ``os.environ``
-    contained — the test runner process never has
-    ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` set, so later cases
-    can't observe leftover env.
+    ``monkeypatch`` (pytest) handles env-var lifecycle so the parent
+    process's environment is restored automatically after the test.
     """
-    import os
-    import subprocess
-    import sys
+    import logging
 
-    # The child:
-    #   1. Sets ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS=0.05`` in its
-    #      OWN env (the parent's env is unchanged — codex BLOCKING #2
-    #      mitigation: no state leaks across tests).
-    #   2. Imports ``vllm_mlx.server`` (which pulls in ``cli.py``
-    #      indirectly via no path — we instead invoke the resolver
-    #      explicitly because ``cli.py`` only runs the block inside
-    #      ``serve_command``). To pin the wire-up itself, we read
-    #      the source of the resolver block and ``exec`` it in a
-    #      controlled namespace; if a refactor renames the env-var
-    #      constant ``_brt_env_name`` or breaks the ``max(0.0, …)``
-    #      clamp, this test fails on real code, not a stand-in.
-    #   3. Prints the resolved value so the parent can assert.
-    child = subprocess.run(
-        [
-            sys.executable,
-            "-c",
-            (
-                # Mirror the cli.py block exactly; if the resolver is
-                # later refactored we update this in lock-step (the
-                # comment above points the next change at this test).
-                "import os, vllm_mlx.server as server;\n"
-                "_brt_env_name = 'RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS';\n"
-                "_brt_env = os.environ.get(_brt_env_name, '').strip();\n"
-                "assert _brt_env, 'env var was not propagated to child';\n"
-                "server._body_receive_timeout_seconds = max(0.0, float(_brt_env));\n"
-                # And then assert the middleware's resolver picks it up
-                # via the ServerConfig wire-up: this is the production
-                # path. ``_sync_config`` (server.py:1303) is the bridge.
-                "from vllm_mlx.config.server_config import get_config;\n"
-                "get_config().body_receive_timeout_seconds = "
-                "server._body_receive_timeout_seconds;\n"
-                "from vllm_mlx.middleware.body_size import "
-                "_resolve_body_receive_timeout;\n"
-                "print(_resolve_body_receive_timeout())"
-            ),
-        ],
-        env={**os.environ, "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS": "0.05"},
-        capture_output=True,
-        text=True,
-        timeout=30,
-    )
-    assert child.returncode == 0, child.stderr
-    # The resolver should report the env-var value (0.05), NOT the
-    # 15 s default. A regression that silently disabled the wire-up
-    # would print 15.0 here.
-    assert child.stdout.strip() == "0.05", (
-        f"resolver returned {child.stdout.strip()!r}; "
-        f"expected '0.05'. stderr: {child.stderr}"
-    )
+    from vllm_mlx import server as server_mod
+    from vllm_mlx.cli import _apply_body_receive_timeout_env
+    from vllm_mlx.config.server_config import get_config
+    from vllm_mlx.middleware.body_size import _resolve_body_receive_timeout
+
+    # Drive the REAL resolver function — the exact callable
+    # ``serve_command`` invokes. No duplicated logic in the test
+    # body, so a regression that deletes or breaks
+    # ``_apply_body_receive_timeout_env`` fails here.
+    monkeypatch.setenv("RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS", "0.05")
+    _apply_body_receive_timeout_env(server_mod, logger=logging.getLogger("test"))
+    assert server_mod._body_receive_timeout_seconds == 0.05
+
+    # And mirror what ``_sync_config`` does at request time so the
+    # middleware-side resolver picks it up from ``ServerConfig``. The
+    # production binary runs ``_sync_config`` inside ``load_model``;
+    # we don't load a model in unit tests, so push the value through
+    # the bridge ourselves and assert the middleware sees it.
+    get_config().body_receive_timeout_seconds = server_mod._body_receive_timeout_seconds
+    assert _resolve_body_receive_timeout() == 0.05
+
+    # Non-numeric value: the resolver MUST fall back to the 15 s
+    # default rather than silently disabling the gate (this is the
+    # one branch the resolver logs a warning on; a regression that
+    # turned it into ``= 0.0`` would widen the slowloris surface
+    # under a typo).
+    monkeypatch.setenv("RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS", "not-a-number")
+    _apply_body_receive_timeout_env(server_mod, logger=logging.getLogger("test"))
+    assert server_mod._body_receive_timeout_seconds == 15.0
 
 
 def test_h14_default_timeout_value_is_15_seconds():
