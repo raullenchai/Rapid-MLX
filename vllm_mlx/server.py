@@ -42,7 +42,6 @@ import asyncio
 import gc
 import logging
 import os
-import sys
 
 import uvicorn
 from fastapi import FastAPI
@@ -1810,23 +1809,13 @@ Examples:
     # Pre-load embedding model if specified. The H-08 guard already
     # fired at the top of this function (F-H08-INCOMPLETE fix); by the
     # time we reach this point either ``args.embedding_model`` is None
-    # or ``mlx_embeddings`` is importable. Re-probe defensively as
-    # belt-and-braces: cheap, and any caller that synthesizes args and
-    # jumps in here still gets the install-hint exit instead of a raw
-    # ``ModuleNotFoundError``.
+    # or ``mlx_embeddings`` is importable. The shared helper re-probes
+    # defensively as belt-and-braces and also performs the D-EMBED-ALIAS
+    # alias-resolution + ModelNotFoundError translation so behaviour
+    # matches the unified ``rapid-mlx serve`` path exactly. Lazy import
+    # to avoid a circular at module-load time (cli imports server in
+    # ``serve_command``; server imports cli only inside this branch).
     if args.embedding_model:
-        # D-EMBED-ALIAS: route ``--embedding-model`` through the SAME
-        # alias-resolution + ModelNotFoundError-translation helper the
-        # unified ``rapid-mlx serve`` path uses (see
-        # :func:`vllm_mlx.cli._load_embedding_model_or_exit`). The
-        # ``python -m vllm_mlx.server`` standalone entry has historically
-        # been a slimmer shadow of the CLI, but the H-08 + D-EMBED-ALIAS
-        # fixes share one source-of-truth helper so the behaviour
-        # matches exactly between the two entrypoints (including the
-        # require_mlx_embeddings_or_exit H-08 probe — that fires inside
-        # the helper before the alias/load path). Lazy import to avoid
-        # a circular at module-load time (cli imports server in
-        # ``serve_command``; server imports cli only inside this branch).
         from .cli import _load_embedding_model_or_exit
 
         _load_embedding_model_or_exit(args, load_embedding_model)

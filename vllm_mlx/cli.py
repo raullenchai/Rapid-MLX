@@ -269,6 +269,98 @@ def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     print(f"  or pass a full path like: {full_path_example}")
 
 
+_EMBEDDING_LOAD_NOT_FOUND_EXC_NAMES = frozenset(
+    {"ModelNotFoundError", "RepositoryNotFoundError", "FileNotFoundError"}
+)
+
+
+def _resolve_embedding_alias(name: str) -> tuple[str, bool]:
+    """Resolve a ``--embedding-model`` alias through the shared registry.
+
+    D-EMBED-ALIAS: Sarah F-S2-1 — the positional chat-model arg goes
+    through ``resolve_model`` at the CLI dispatch (cli.py ~5660), but
+    the ``--embedding-model`` flag was passed verbatim to
+    ``mlx_embeddings.load`` and crashed with ``ModelNotFoundError`` on
+    any alias.
+
+    Returns ``(resolved, did_resolve)``. ``did_resolve`` is True when
+    the registry actually mapped ``name`` to a different HF path —
+    used by the caller to log the alias hop.
+    """
+    from .model_aliases import resolve_model
+
+    resolved = resolve_model(name)
+    return resolved, resolved != name
+
+
+def _load_embedding_model_or_exit(args, load_fn) -> None:
+    """Pre-load ``--embedding-model`` with the H-08 install guard and
+    the D-EMBED-ALIAS alias-resolution + clean error-wrapping path.
+
+    Lifted out of ``serve_command`` so the dispatch sequence can be
+    unit-tested without booting the full engine — the pr_validate
+    codex r0 BLOCKING #1 noted that the in-test exercising the
+    behaviour at module scope didn't actually invoke the CLI path,
+    so a regression that removed the alias resolution would pass.
+    Calling this helper directly gives the test surgical coverage.
+
+    ``args`` mirrors the ``argparse.Namespace`` shape — only
+    ``embedding_model`` is read and (on alias hit) mutated.
+    ``load_fn`` is the embedding-loader callable
+    (``vllm_mlx.server.load_embedding_model``) — passed in so tests
+    can mock it without monkeypatching the server module.
+
+    Failure modes that exit cleanly:
+
+    * Missing ``[embeddings]`` extra → ``sys.exit(2)`` with install
+      hint (H-08, ``require_mlx_embeddings_or_exit``).
+    * Loader raises ``ModelNotFoundError`` / ``RepositoryNotFoundError``
+      / ``FileNotFoundError`` → ``sys.exit(1)`` with an actionable
+      hint pointing at the alias registry and the canonical HF id
+      format. Any OTHER ``Exception`` re-raises so unrelated bugs
+      surface with their real trace.
+    """
+    from .embedding import require_mlx_embeddings_or_exit
+
+    require_mlx_embeddings_or_exit()
+
+    original_embed = args.embedding_model
+    resolved_embed, did_resolve = _resolve_embedding_alias(original_embed)
+    if did_resolve:
+        print(f"  Embedding alias: {original_embed} → {resolved_embed}")
+        args.embedding_model = resolved_embed
+    print(f"Pre-loading embedding model: {args.embedding_model}")
+    try:
+        load_fn(args.embedding_model, lock=True)
+    except Exception as exc:  # noqa: BLE001
+        # Catch ModelNotFoundError (from mlx_embeddings.utils) and the
+        # broader FileNotFoundError / RepositoryNotFoundError tree the
+        # underlying ``snapshot_download`` raises. We re-raise on
+        # anything that isn't a known not-found shape so unrelated
+        # bugs (corrupt safetensors mid-load, OOM, etc.) still surface
+        # with their real trace.
+        exc_name = type(exc).__name__
+        is_not_found = (
+            exc_name in _EMBEDDING_LOAD_NOT_FOUND_EXC_NAMES
+            or "not found" in str(exc).lower()
+        )
+        if not is_not_found:
+            raise
+        print(
+            f"\n  Error: --embedding-model '{original_embed}' could not "
+            f"be loaded ({exc_name}: {exc})."
+        )
+        print(
+            "  Tip: use a registered embedding alias (see "
+            "``rapid-mlx ls`` for the list — e.g. "
+            "``embeddinggemma-300m-6bit``) or pass the full "
+            "HuggingFace id (e.g. "
+            "``mlx-community/embeddinggemma-300m-6bit``).\n"
+        )
+        sys.exit(1)
+    print(f"Embedding model loaded: {args.embedding_model}")
+
+
 def _check_disk_space(model_name: str, force: bool = False) -> None:
     """Verify there's enough disk space to download the model.
 
@@ -1204,49 +1296,20 @@ def serve_command(args):
         print(f"MCP config: {args.mcp_config}")
         os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
-    # Pre-load embedding model if specified
+    # Pre-load embedding model if specified.
+    #
+    # H-08 install guard + D-EMBED-ALIAS alias-resolution + clean
+    # ModelNotFoundError wrapping all live in the shared helper so the
+    # standalone ``python -m vllm_mlx.server`` entry behaves identically.
+    # See :func:`_load_embedding_model_or_exit` for the full contract;
+    # F-H08-INCOMPLETE / D-CAPABILITIES already pre-flighted
+    # ``require_mlx_embeddings_or_exit`` at the top of ``serve_command``
+    # but the helper re-probes defensively so any caller that
+    # synthesizes an ``args`` namespace and jumps into the load path
+    # still gets the install-hint exit instead of a raw
+    # ``ModuleNotFoundError``.
     if args.embedding_model:
-        # H-08 guard already fired at the top of ``serve_command``
-        # (F-H08-INCOMPLETE fix) — by the time we get here ``mlx_embeddings``
-        # is importable. Re-probe defensively as a belt-and-braces:
-        # cheap, and any caller that synthesizes an ``args`` namespace
-        # and jumps straight into the load path still gets the same
-        # install-hint exit code instead of a raw ``ModuleNotFoundError``.
-        from .embedding import require_mlx_embeddings_or_exit
-
-        require_mlx_embeddings_or_exit()
-        # D-EMBED-ALIAS fix: route ``--embedding-model`` through the SAME
-        # alias registry the positional chat-model arg goes through
-        # (``resolve_model`` ~5660 above). Sarah F-S2-1: passing an alias
-        # like ``embeddinggemma-300m-6bit`` reached ``mlx_embeddings.load``
-        # verbatim and crashed with ``ModelNotFoundError`` because
-        # mlx_embeddings doesn't know about rapid-mlx's alias mapping.
-        # Resolve the alias first; if the resolution doesn't yield an
-        # alias hit AND the value isn't an HF org/name path AND no local
-        # path exists, fail fast with the same "not a known alias" hint
-        # the chat-model path uses — so the user discovers the typo /
-        # missing-prefix at startup, never with a 30-line mlx_embeddings
-        # stack trace mid-load.
-        from .model_aliases import resolve_model
-
-        original_embed = args.embedding_model
-        resolved_embed = resolve_model(original_embed)
-        if resolved_embed != original_embed:
-            print(f"  Embedding alias: {original_embed} → {resolved_embed}")
-            args.embedding_model = resolved_embed
-        elif "/" not in original_embed and not os.path.exists(original_embed):
-            print(
-                f"\n  Error: --embedding-model '{original_embed}' is not a "
-                f"known alias or HuggingFace path."
-            )
-            _print_unknown_model_help(
-                original_embed,
-                full_path_example="mlx-community/embeddinggemma-300m-6bit",
-            )
-            sys.exit(1)
-        print(f"Pre-loading embedding model: {args.embedding_model}")
-        server.load_embedding_model(args.embedding_model, lock=True)
-        print(f"Embedding model loaded: {args.embedding_model}")
+        _load_embedding_model_or_exit(args, server.load_embedding_model)
 
     # Warn about deprecated flags
     if getattr(args, "simple_engine", False):
