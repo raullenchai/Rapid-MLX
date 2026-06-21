@@ -26,6 +26,17 @@ def assert_tool_use_id_shape(id_str: str) -> None:
     so the prefix contract has one place to update if Anthropic ever
     widens it. ``toolu_`` is verbatim from Anthropic's public
     examples (see https://docs.anthropic.com/en/api/messages).
+
+    The tail contract is intentionally PERMISSIVE — we only assert
+    the prefix + non-empty tail. The ``to_anthropic_tool_use_id``
+    helper has its OWN idempotency branch that passes a pre-existing
+    ``toolu_*`` id through unchanged (so an engine that natively
+    minted a non-hex tail flows through), and the mint path uses
+    ``secrets.token_hex`` (locked separately by
+    ``test_to_anthropic_tool_use_id_mints_fresh_when_missing`` in
+    this file). Asserting hex here would force callers to filter
+    their upstream-supplied ids, which the F9 codex r1 NIT flagged
+    as over-tightening.
     """
     assert isinstance(id_str, str), (
         f"tool_use.id must be a string (got {type(id_str).__name__})"
@@ -37,15 +48,8 @@ def assert_tool_use_id_shape(id_str: str) -> None:
         f"prefix. See ``to_anthropic_tool_use_id`` for the single "
         f"source of truth."
     )
-    # Anthropic's published examples carry ~24 hex chars after the
-    # prefix. We don't pin the exact length (a hex tail rewritten
-    # from ``call_<8>`` will be 8 chars), but the tail must be
-    # non-empty and hex-shaped so a downstream regex can match.
     tail = id_str[len("toolu_") :]
     assert tail, f"tool_use.id tail must be non-empty (got {id_str!r})"
-    assert all(c in "0123456789abcdef" for c in tail), (
-        f"tool_use.id tail must be hex (got {id_str!r})"
-    )
 
 
 from vllm_mlx.api.anthropic_models import (

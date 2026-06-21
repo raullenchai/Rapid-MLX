@@ -234,10 +234,22 @@ def _enforce_named_tool_choice_present(
     tool_choice,
     *,
     original_call_count: int,
-) -> list:
-    """Return ``tool_calls`` unchanged when the named-tool contract is
-    satisfied; otherwise synthesize a single best-effort ``tool_use``
-    for the pinned tool with empty ``input={}``.
+) -> tuple[list, bool]:
+    """Return ``(tool_calls, synthesized)``.
+
+    The first element is the (possibly synthesized) tool-call list:
+    unchanged when the named-tool contract is satisfied, or a list
+    containing a single synthesized best-effort ``tool_use`` for the
+    pinned tool with empty ``input={}`` when the model failed to
+    comply. The second element is an explicit boolean signal — True
+    iff this call synthesized a placeholder. Callers use the signal
+    to (a) skip JSON-schema validation on the synthesized empty
+    ``input`` (which would otherwise 400 on tools with ``required``
+    fields, codex r1 BLOCKING #1) and (b) drop the streaming
+    buffered-text replay (the model emitted forbidden text instead
+    of the pinned tool, codex r1 BLOCKING #2 — inferring from list
+    lengths can misclassify a legitimate single-call from a filtered
+    list).
 
     F8 history: PR #763 round-1 added this as a 422 "could not enforce"
     surface — honest about local inference's lack of decoder-level
@@ -248,13 +260,6 @@ def _enforce_named_tool_choice_present(
     ``tool_use`` for the pinned tool; we don't have that, but a
     synthesized empty-input call gives clients SOMETHING shaped like
     the pinned tool to dispatch — closer to spec than 422.
-
-    Trade-off: the synthesized ``input={}`` may not satisfy the tool's
-    own JSON-schema (e.g. ``required: ["city"]``). Clients that
-    validate downstream will see a schema failure on THEIR side, which
-    is the right place for a small-model-couldn't-fill-args complaint.
-    The original 422 covered the symptom; the new fallback surfaces
-    the contract (you asked for X, here is X).
 
     Mirrors chat.py's named-function path which 422s on the OpenAI
     surface (strict spec) but the Anthropic spec is more forgiving;
@@ -270,7 +275,7 @@ def _enforce_named_tool_choice_present(
     """
     target = _named_tool_choice_target(tool_choice)
     if not target or tool_calls:
-        return tool_calls
+        return tool_calls, False
     # Log the disambiguation an operator needs to debug small-model
     # compliance issues. The wire response shape is identical either way.
     if original_call_count == 0:
@@ -289,7 +294,7 @@ def _enforce_named_tool_choice_present(
             original_call_count,
             target,
         )
-    return [_synthesize_pinned_tool_call(target)]
+    return [_synthesize_pinned_tool_call(target)], True
 
 
 @router.post(
@@ -561,16 +566,21 @@ async def create_anthropic_message(
         # ``_enforce_named_tool_choice_present`` for the "filter dropped
         # everything" guard added in PR #763 codex round-1.
         original_call_count = len(tool_calls or [])
+        synthesized_pinned_call = False
         if openai_request.tool_choice:
             tool_calls = _filter_tool_calls_by_tool_choice(
                 tool_calls or [], openai_request.tool_choice
             )
-            # F8: ``_enforce_named_tool_choice_present`` now returns a
-            # best-effort synthesized ``tool_use`` (rather than raising
-            # 422) when the model failed to comply with a pinned
-            # ``tool_choice``. The synthesized call has empty
-            # ``input={}`` — closer to Anthropic-spec parity than 422.
-            tool_calls = _enforce_named_tool_choice_present(
+            # F8: ``_enforce_named_tool_choice_present`` now returns
+            # ``(tool_calls, synthesized)`` — best-effort synthesizes a
+            # placeholder ``tool_use`` (rather than raising 422) when
+            # the model failed to comply with a pinned ``tool_choice``.
+            # The explicit ``synthesized`` signal lets us skip
+            # schema validation on the synthesized empty ``input``
+            # (codex r1 BLOCKING #1: pinned tools with ``required``
+            # fields would otherwise 400 the best-effort path back
+            # into the symptom F8 was supposed to fix).
+            tool_calls, synthesized_pinned_call = _enforce_named_tool_choice_present(
                 tool_calls,
                 openai_request.tool_choice,
                 original_call_count=original_call_count,
@@ -585,7 +595,15 @@ async def create_anthropic_message(
         # violation that returns HTTP 400 on chat-completions silently
         # propagated through ``/v1/messages`` as a 200 ``tool_use`` block
         # carrying schema-violating arguments.
-        if tool_calls and openai_request.tools:
+        #
+        # F8 follow-up: synthesized best-effort calls have empty
+        # ``input={}`` which intentionally may not satisfy the
+        # pinned tool's schema (e.g. ``required:["city"]``). Skip
+        # the validator on those — failing them would re-instate
+        # the 422 path F8 is meant to retire. Schema-level "the
+        # synthesized input didn't satisfy `required`" complaints
+        # belong on the client's downstream dispatch path.
+        if tool_calls and openai_request.tools and not synthesized_pinned_call:
             _validate_tool_call_params(tool_calls, openai_request.tools)
 
         # Extract reasoning content via the same orchestration the OpenAI route
@@ -1889,25 +1907,27 @@ async def _stream_anthropic_messages(
     # the buffered-text-replay branch below can drop the forbidden text
     # payload (the model wrote text instead of the pinned tool; replaying
     # would violate the named ``tool_choice`` contract just like the
-    # pre-F8 422 path did).
+    # pre-F8 422 path did). Explicit signal from the helper avoids the
+    # codex r1 BLOCKING #2 misclassification — a legitimate single-call
+    # surviving the filter would otherwise be mis-flagged as synthesis
+    # purely from list-length heuristics.
     synthesized_pinned_call = False
     original_call_count_stream = len(tool_calls or [])
     if openai_request.tool_choice:
         tool_calls = _filter_tool_calls_by_tool_choice(
             tool_calls or [], openai_request.tool_choice
         )
-        # F8: ``_enforce_named_tool_choice_present`` now returns a
-        # best-effort synthesized ``tool_use`` (rather than raising
-        # 422) when the model failed to comply with a pinned
-        # ``tool_choice``. The synthesized call has empty ``input={}``.
-        pre_enforce_len = len(tool_calls or [])
-        tool_calls = _enforce_named_tool_choice_present(
+        # F8: ``_enforce_named_tool_choice_present`` now returns
+        # ``(tool_calls, synthesized)`` — best-effort synthesizes a
+        # placeholder ``tool_use`` (rather than raising 422) when the
+        # model failed to comply with a pinned ``tool_choice``. The
+        # explicit ``synthesized`` signal is the source of truth for
+        # the buffered-text-drop branch below.
+        tool_calls, synthesized_pinned_call = _enforce_named_tool_choice_present(
             tool_calls,
             openai_request.tool_choice,
             original_call_count=original_call_count_stream,
         )
-        # Synthesis fired iff the helper grew the list from zero to one.
-        synthesized_pinned_call = pre_enforce_len == 0 and len(tool_calls or []) == 1
 
     # F-220: enforce JSON-schema validation on the model's emitted
     # tool_call arguments. On the streaming branch, headers are already
@@ -1918,7 +1938,11 @@ async def _stream_anthropic_messages(
     # non-stream branch's 400 contract in spirit while staying within
     # the Anthropic streaming protocol.
     tool_validation_error: str | None = None
-    if tool_calls and openai_request.tools:
+    # F8 follow-up: skip the JSON-schema validator on synthesized
+    # best-effort calls — their empty ``input={}`` is intentionally
+    # placeholder and may not satisfy ``required`` fields. Same
+    # rationale as the non-stream branch (codex r1 BLOCKING #1).
+    if tool_calls and openai_request.tools and not synthesized_pinned_call:
         try:
             _validate_tool_call_params(tool_calls, openai_request.tools)
         except HTTPException as exc:
@@ -1993,6 +2017,18 @@ async def _stream_anthropic_messages(
             except (json.JSONDecodeError, AttributeError):
                 tool_input = {}
 
+            # F9: normalize the ``tool_use.id`` once per call. The
+            # current loop only references ``tc.id`` inside the
+            # ``content_block_start`` event, but if a future patch adds
+            # another emission point (e.g. a ``content_block_delta``
+            # that references the parent id), calling
+            # ``to_anthropic_tool_use_id`` afresh on a ``None`` / non-
+            # ``call_`` id would mint a DIFFERENT ``toolu_<hex>`` each
+            # time, breaking the stable-id correlation across stream
+            # events. Compute once, reference everywhere downstream
+            # (codex r1 BLOCKING #3).
+            anthropic_tool_id = to_anthropic_tool_use_id(tc.id)
+
             tool_block_start = {
                 "type": "content_block_start",
                 "index": tool_index,
@@ -2004,7 +2040,7 @@ async def _stream_anthropic_messages(
                     # (``openai_to_anthropic``) so a client correlating
                     # ``tool_use.id`` across stream + non-stream sees
                     # the same prefix.
-                    "id": to_anthropic_tool_use_id(tc.id),
+                    "id": anthropic_tool_id,
                     "name": tc.function.name,
                     "input": {},
                 },

@@ -282,17 +282,50 @@ def test_f12_count_tokens_applies_chat_template():
 
 def test_f12_count_tokens_matches_messages_usage_input_tokens():
     """F12 parity: the count must equal ``usage.input_tokens`` for an
-    identical request. The fixture engine reports
-    ``prompt_tokens=4`` from its ``chat()`` mock — that path doesn't
-    re-render the prompt, so the test asserts the parity contract at
-    the count_tokens surface via the stub's known boilerplate cost.
+    identical request, end-to-end through both routes.
 
-    Stronger parity is enforced end-to-end by the live-server repro
-    script (``/tmp/d-anthro-polish-repro.py``); this unit test locks
-    the route plumbing so the chat-template path can't silently
-    regress to the per-segment count.
+    Uses a chat() mock that reports ``prompt_tokens`` derived from
+    the rendered prompt the route actually built (read back from
+    the recording engine's ``last_chat_kwargs``) — so a regression
+    that skipped ``build_prompt`` in count_tokens would surface as
+    a delta between the two responses' token counts. Pre-fix this
+    delta was the per-turn role-token boilerplate (~5 tokens for
+    qwen3 templates, Sergei evidence F12).
+
+    Codex r1 NIT: previously this test asserted on the count_tokens
+    value alone (==9) and never actually compared to /v1/messages
+    usage; the parity claim in the docstring was a documentation-
+    only invariant. Now both responses are read and compared
+    directly.
     """
-    engine = _RecordingEngine()
+
+    class _PromptReportingEngine(_RecordingEngine):
+        """Variant of ``_RecordingEngine`` that reports
+        ``prompt_tokens`` from the actual rendered prompt — same
+        path /v1/messages' real engine takes. Lets us assert the
+        wire-level parity contract directly rather than via the
+        stub's known boilerplate cost.
+        """
+
+        async def chat(self, messages, **kwargs):
+            self.last_messages = messages
+            self.last_chat_kwargs = kwargs
+            # Render the same prompt the count_tokens path would render
+            # so the two surfaces' token counts are derived from the
+            # same string. Mirrors what ``BatchedEngine.chat``
+            # internally does via ``_apply_chat_template``.
+            rendered = self.build_prompt(messages, tools=kwargs.get("tools"))
+            prompt_tokens = len(self.tokenizer.encode(rendered))
+            return GenerationOutput(
+                text="ok",
+                raw_text="ok",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=1,
+                finished=True,
+                finish_reason="stop",
+            )
+
+    engine = _PromptReportingEngine()
     client = _make_client(engine)
 
     # Same body to both endpoints (minus max_tokens which count_tokens
@@ -301,19 +334,25 @@ def test_f12_count_tokens_matches_messages_usage_input_tokens():
         "model": "test-model",
         "messages": [{"role": "user", "content": "a quick brown fox"}],
     }
-
     r1 = client.post(
         "/v1/messages",
         json={**body, "max_tokens": 5},
     )
     r2 = client.post("/v1/messages/count_tokens", json=body)
-    assert r1.status_code == 200
-    assert r2.status_code == 200
-    # Both surfaces saw the same rendered prompt — the count must
-    # match the build_prompt-derived token count exactly.
-    count = r2.json()["input_tokens"]
-    # 5 stub tokens (role overhead) + 4 content tokens ("a quick brown fox") = 9.
-    assert count == 9, f"expected 9 tokens, got {count}"
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+    # The wire-level parity contract: both surfaces report the same
+    # input_token count for the same rendered prompt. Pre-fix the
+    # count_tokens path under-reported by the role-prefix overhead.
+    messages_input = r1.json()["usage"]["input_tokens"]
+    count_tokens_input = r2.json()["input_tokens"]
+    assert count_tokens_input == messages_input, (
+        f"count_tokens={count_tokens_input} must equal /v1/messages "
+        f"usage.input_tokens={messages_input} for the same rendered prompt"
+    )
+    # Sanity: the count is non-trivial (excludes a fallback-to-zero
+    # bug where both endpoints report 0).
+    assert count_tokens_input > 0
 
 
 def test_f12_count_tokens_excludes_role_overhead_on_fallback():

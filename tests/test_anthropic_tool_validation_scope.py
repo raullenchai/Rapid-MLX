@@ -700,30 +700,34 @@ def test_enforce_named_tool_choice_present_noop_for_non_named_choice():
     would break ``tool_choice="auto"`` flows that the model resolved
     as text-only.
 
-    F8 contract change: the helper now RETURNS the (possibly
-    synthesized) list instead of raising. The non-pinned case must
-    return its input verbatim.
+    F8 contract change: the helper now RETURNS ``(tool_calls,
+    synthesized)`` instead of raising. The non-pinned case must
+    return its input verbatim with ``synthesized=False``.
     """
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
-    # Returns empty list verbatim for ``None``, ``"auto"``, or a
+    # Returns ``([], False)`` verbatim for ``None``, ``"auto"``, or a
     # ``{"type":"function"}`` shape without a name.
-    assert _enforce_named_tool_choice_present([], None, original_call_count=0) == []
-    assert _enforce_named_tool_choice_present([], "auto", original_call_count=0) == []
-    assert (
-        _enforce_named_tool_choice_present(
-            [], {"type": "function"}, original_call_count=0
-        )
-        == []
+    assert _enforce_named_tool_choice_present([], None, original_call_count=0) == (
+        [],
+        False,
     )
+    assert _enforce_named_tool_choice_present([], "auto", original_call_count=0) == (
+        [],
+        False,
+    )
+    assert _enforce_named_tool_choice_present(
+        [], {"type": "function"}, original_call_count=0
+    ) == ([], False)
 
 
 def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
     """When the filter kept the pinned-tool call, the enforcer must
     pass through silently — the contract is satisfied.
 
-    F8 contract: returns the input list unchanged (no synthesis fires
-    because the contract is already met).
+    F8 contract: returns the input list unchanged with
+    ``synthesized=False`` (no synthesis fires because the contract is
+    already met).
     """
     from vllm_mlx.api.models import FunctionCall, ToolCall
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
@@ -733,18 +737,22 @@ def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
         type="function",
         function=FunctionCall(name="get_weather", arguments='{"location": "SF"}'),
     )
-    result = _enforce_named_tool_choice_present(
+    calls_out, synthesized = _enforce_named_tool_choice_present(
         [pinned_call],
         {"type": "function", "function": {"name": "get_weather"}},
         original_call_count=1,
     )
-    assert result == [pinned_call]
+    assert calls_out == [pinned_call]
+    assert synthesized is False
 
 
 def test_enforce_named_tool_choice_present_synthesizes_when_pinned_call_missing():
     """F8 (D-ANTHRO-SPEC-POLISH): when the pinned tool call is missing,
     the helper synthesizes a single best-effort ``ToolCall`` for the
-    pinned tool with empty JSON arguments.
+    pinned tool with empty JSON arguments AND returns
+    ``synthesized=True``. The explicit signal lets callers skip
+    schema validation on the placeholder ``input={}`` and drop the
+    streaming buffered-text replay (codex r1 BLOCKING #1 and #2).
 
     Single source of truth: same synthesis runs on both the
     non-stream and stream branches via shared helper, so the response
@@ -752,36 +760,69 @@ def test_enforce_named_tool_choice_present_synthesizes_when_pinned_call_missing(
     """
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
-    result = _enforce_named_tool_choice_present(
+    calls_out, synthesized = _enforce_named_tool_choice_present(
         [],
         {"type": "function", "function": {"name": "get_weather"}},
         original_call_count=0,
     )
-    assert len(result) == 1
-    assert result[0].function.name == "get_weather"
-    assert result[0].function.arguments == "{}"
+    assert synthesized is True
+    assert len(calls_out) == 1
+    assert calls_out[0].function.name == "get_weather"
+    assert calls_out[0].function.arguments == "{}"
     # Synthesized id uses OpenAI-style ``call_<hex>`` on the
     # OpenAI-side ``ToolCall`` model — the Anthropic adapter rewrites
     # to ``toolu_`` at the wire boundary (F9).
-    assert result[0].id.startswith("call_")
+    assert calls_out[0].id.startswith("call_")
 
 
 def test_enforce_named_tool_choice_present_synthesizes_when_only_wrong_tool_emitted():
     """F8 disambiguation: the model emitted only WRONG-tool calls
-    (filter dropped them all). Synthesis still fires, with the
-    ``original_call_count > 0`` branch logging a different warning
-    for operator debugging. Wire shape is identical to the
+    (filter dropped them all). Synthesis still fires (synthesized=True),
+    with the ``original_call_count > 0`` branch logging a different
+    warning for operator debugging. Wire shape is identical to the
     no-calls case.
     """
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
-    result = _enforce_named_tool_choice_present(
+    calls_out, synthesized = _enforce_named_tool_choice_present(
         [],
         {"type": "function", "function": {"name": "get_weather"}},
         original_call_count=3,  # model emitted 3 wrong-tool calls
     )
-    assert len(result) == 1
-    assert result[0].function.name == "get_weather"
+    assert synthesized is True
+    assert len(calls_out) == 1
+    assert calls_out[0].function.name == "get_weather"
+
+
+def test_pinned_tool_with_required_field_synthesizes_200_not_400():
+    """codex r1 BLOCKING #1 regression: a pinned tool whose schema has
+    ``required`` fields would, pre-fix, run the synthesized empty
+    ``input={}`` through ``_validate_tool_call_params`` which would
+    400 — turning the F8 best-effort 200 path back into the symptom
+    F8 was supposed to fix. The ``synthesized`` flag from
+    ``_enforce_named_tool_choice_present`` now tells the route to
+    skip the schema validator on the placeholder call.
+    """
+    engine = _MultiCallEngine(None, text="I'd rather not.")
+    client = _make_client(engine)
+    body = {
+        "model": "test-model",
+        "max_tokens": 32,
+        "messages": [{"role": "user", "content": "weather please"}],
+        # ``get_weather`` declares ``location`` as ``required``; the
+        # synthesized empty ``input={}`` violates this schema.
+        "tools": [_GET_WEATHER],
+        "tool_choice": {"type": "tool", "name": "get_weather"},
+    }
+
+    response = client.post("/v1/messages", json=body)
+    assert response.status_code == 200, response.text
+    resp_body = response.json()
+    tool_uses = [b for b in resp_body["content"] if b["type"] == "tool_use"]
+    assert len(tool_uses) == 1
+    assert tool_uses[0]["name"] == "get_weather"
+    assert tool_uses[0]["input"] == {}
+    assert tool_uses[0]["id"].startswith("toolu_")
 
 
 def test_pinned_tool_streaming_text_replays_when_enforcement_passes():
