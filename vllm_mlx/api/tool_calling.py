@@ -925,3 +925,92 @@ def extract_json_schema_for_guided(
         return None
 
     return schema
+
+
+def validate_output_against_schema(
+    output_text: str, json_schema: dict[str, Any]
+) -> tuple[bool, str | None]:
+    """Post-decode belt-and-braces validation for strict json_schema (H-06).
+
+    Outlines-backed constrained decoding should make the output validate
+    against the schema by construction. This helper is the smoke alarm
+    that flags any case where guided decoding silently degraded
+    (e.g. an outlines version bump renames the constraint API and the
+    in-engine fallback kicked in unnoticed).
+
+    Returns ``(ok, error_message)``. ``ok=True`` means the output text
+    parsed as JSON AND :func:`jsonschema.validate` accepted it.
+    ``ok=False`` means at least one of those failed; the message is a
+    short human-readable summary the route logs at WARNING (the chat
+    route bumps the violations counter on ``ok=False`` regardless of
+    cause — schema mismatch, malformed JSON, empty text).
+
+    The validation is intentionally lenient about the JSON wrapper:
+    outlines emits raw JSON without code fences, but a future engine
+    integration that adds a fence would surface here as
+    ``invalid JSON: Expecting value`` rather than as a false-positive
+    schema violation.
+    """
+    text = (output_text or "").strip()
+    if not text:
+        return False, "empty output"
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        return False, f"invalid JSON: {exc}"
+    try:
+        validate(instance=parsed, schema=json_schema)
+    except ValidationError as exc:
+        # ``exc.message`` is the short top-level message (e.g.
+        # ``'value' is a required property``). ``str(exc)`` would
+        # include the full validator path + offending instance, which
+        # we intentionally skip to keep log lines compact and avoid
+        # echoing model-generated content into ops dashboards.
+        return False, f"schema violation: {exc.message}"
+    except Exception as exc:
+        return False, f"validator error: {type(exc).__name__}: {exc}"
+    return True, None
+
+
+def is_strict_json_schema(
+    response_format: ResponseFormat | dict[str, Any] | None = None,
+) -> bool:
+    """Return ``True`` iff the request asks for **strict** json_schema mode.
+
+    OpenAI's structured-output spec (#openai/openai-python ChatCompletions
+    parsed helper) treats ``strict=true`` as a hard contract: the
+    generated text MUST validate against the supplied JSON schema. This
+    helper centralizes the strict-detection logic so the chat / responses
+    routes share one source of truth — H-06 pre-fix, the strict flag was
+    only consulted by ``build_json_system_prompt`` for the prompt-injection
+    fallback, never to drive an enforcement decision.
+
+    A request is "strict" iff:
+    * ``response_format.type == "json_schema"``
+    * ``response_format.json_schema.strict`` is truthy
+
+    Returns ``False`` for every other shape (``None``, ``"text"``,
+    ``"json_object"``, ``json_schema`` with ``strict=false`` or absent).
+    Mirrors the dict-vs-typed-model normalization in
+    :func:`extract_json_schema_for_guided` so both helpers agree on what
+    the caller meant.
+    """
+    if response_format is None:
+        return False
+
+    if isinstance(response_format, ResponseFormat):
+        if response_format.type != "json_schema":
+            return False
+        if response_format.json_schema is None:
+            return False
+        return bool(response_format.json_schema.strict)
+
+    if isinstance(response_format, dict):
+        if response_format.get("type") != "json_schema":
+            return False
+        spec = response_format.get("json_schema") or {}
+        if not isinstance(spec, dict):
+            return False
+        return bool(spec.get("strict"))
+
+    return False

@@ -462,12 +462,22 @@ def test_metrics_output_parses_cleanly_with_escaped_label(metrics_client):
 
 
 def test_metrics_output_parses_cleanly_when_engine_missing(metrics_client):
-    """Even the build-info-only fallback path parses cleanly."""
+    """Even the engine-missing fallback path parses cleanly.
+
+    The fallback emits build_info plus the H-06 response_format
+    counters (which live in process-local module state, not on the
+    engine) so dashboards never flip to "no data" between restarts.
+    Strict-mode counters always present even at zero — same pattern as
+    PFlash counters in the loaded-engine path.
+    """
     from prometheus_client.parser import text_string_to_metric_families
 
     metrics_client.cfg.engine = None
     body = metrics_client.client.get("/metrics").text
 
     families = list(text_string_to_metric_families(body))
-    assert len(families) == 1
-    assert families[0].name == "rapid_mlx_build_info"
+    by_name = {fam.name: fam for fam in families}
+    # build_info + H-06 response_format counters — three families.
+    assert "rapid_mlx_build_info" in by_name
+    assert "rapid_mlx_response_format_strict" in by_name
+    assert "rapid_mlx_response_format_strict_violations" in by_name

@@ -29,9 +29,14 @@ from ..api.models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
+from ..api.response_format_metrics import incr_strict_request
 from ..api.responses_adapter import openai_to_responses, responses_to_openai
 from ..api.responses_models import ResponsesRequest
-from ..api.tool_calling import convert_tools_for_template
+from ..api.tool_calling import (
+    convert_tools_for_template,
+    extract_json_schema_for_guided,
+    is_strict_json_schema,
+)
 from ..api.utils import (
     StreamingThinkRouter,
     StreamingToolCallFilter,
@@ -170,6 +175,35 @@ async def create_response(request: Request):
         # it through the sanitized 400 envelope — no more ``str(e)``
         # echo that leaked the model class name and pydantic version.
         openai_request = responses_to_openai(responses_request)
+
+        # H-06: ``text.format`` with strict json_schema on /v1/responses
+        # was suggestion-only — the route went straight to
+        # ``engine.chat()`` and dropped the constraint. When the engine
+        # cannot honor the contract (``[guided]`` extra missing), 400
+        # loudly instead of silently emitting unconstrained tokens.
+        # Counter tick mirrors the chat-route gate so the operator
+        # dashboards see uniform traffic shape across both surfaces.
+        _rf = getattr(openai_request, "response_format", None)
+        if is_strict_json_schema(_rf):
+            _schema = extract_json_schema_for_guided(_rf)
+            if _schema:
+                incr_strict_request()
+                if not engine.supports_guided_generation:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": {
+                                "message": (
+                                    "text.format with strict=true requires "
+                                    "the [guided] optional extra. Install "
+                                    "with: pip install 'rapid-mlx[guided]'"
+                                ),
+                                "type": "invalid_request_error",
+                                "code": "guided_extra_required",
+                                "param": "text.format.strict",
+                            }
+                        },
+                    )
 
         # Context-length pre-check — same DoS gate the chat/completions/
         # anthropic routes enforce. Runs BEFORE the stream branch so

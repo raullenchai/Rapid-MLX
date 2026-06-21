@@ -171,6 +171,53 @@ def _coerce_number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _render_response_format_counters() -> list[str]:
+    """Render the H-06 strict-mode counters as Prometheus lines.
+
+    Pulled into its own helper so the metrics endpoint can emit these
+    counters even when ``engine.get_stats()`` is unavailable (engine
+    not yet loaded, or partially-initialized — both early-return
+    branches must still surface the response_format counters because
+    they live in their own module-level state and aren't engine-bound).
+    """
+    try:
+        from ..api.response_format_metrics import snapshot as _rf_snapshot
+
+        rf_stats = _rf_snapshot()
+    except Exception:
+        rf_stats = {"strict_requests_total": 0, "strict_violations_total": 0}
+    out: list[str] = []
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_response_format_strict_total",
+            "counter",
+            (
+                "Requests with response_format.type=json_schema and "
+                "strict=true (H-06). Counts admitted strict requests "
+                "regardless of whether the [guided] extra was installed "
+                "— installs missing the extra surface a 400 before "
+                "generation."
+            ),
+            int(rf_stats.get("strict_requests_total", 0)),
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_response_format_strict_violations_total",
+            "counter",
+            (
+                "Strict json_schema responses that failed post-decode "
+                "jsonschema.validate (H-06). Constrained decoding via "
+                "outlines should make this unreachable — any non-zero "
+                "rate signals that the guided-decoding path silently "
+                "degraded (alert on rate > 0)."
+            ),
+            int(rf_stats.get("strict_violations_total", 0)),
+        )
+    )
+    return out
+
+
 def _render_prometheus(cfg: Any) -> str:
     """Render the full /metrics body for a snapshot of cfg.engine state."""
     lines: list[str] = []
@@ -190,16 +237,24 @@ def _render_prometheus(cfg: Any) -> str:
         )
     )
 
+    # H-06 response_format strict-mode counters — process-local state
+    # that is independent of engine availability. Surface BEFORE the
+    # engine-None / get_stats-failure early returns so dashboards see
+    # the series even between restarts.
+    lines.extend(_render_response_format_counters())
+
     if cfg.engine is None:
-        # No engine yet — return only build info. Prometheus must NOT see
-        # a 500 here or the whole target goes "down" between restarts.
+        # No engine yet — return build info + response_format counters
+        # only. Prometheus must NOT see a 500 here or the whole target
+        # goes "down" between restarts.
         return "\n".join(lines) + "\n"
 
     try:
         stats: dict[str, Any] = cfg.engine.get_stats() or {}
     except Exception:
         # Even a partially-initialized engine must not poison /metrics.
-        # Fall back to build_info only so the scrape target stays up.
+        # Fall back to build_info + response_format counters only so the
+        # scrape target stays up.
         return "\n".join(lines) + "\n"
 
     # ---- Scheduler counters & gauges -----------------------------------

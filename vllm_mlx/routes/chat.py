@@ -25,11 +25,17 @@ from ..api.models import (
     TokenLogProb,
     Usage,
 )
+from ..api.response_format_metrics import (
+    incr_strict_request,
+    incr_strict_violation,
+)
 from ..api.tool_calling import (
     build_json_system_prompt,
     convert_tools_for_template,
     extract_json_schema_for_guided,
+    is_strict_json_schema,
     parse_json_output,
+    validate_output_against_schema,
 )
 from ..api.utils import (
     clean_output_text,
@@ -1321,6 +1327,13 @@ async def _create_chat_completion_impl(
     # waybarrios#548.
     use_guided = False
     json_schema = None
+    # H-06: strict mode means the OpenAI contract REQUIRES the model
+    # output to validate against the schema. Pre-fix, ``strict=true``
+    # was suggestion-only — the route dropped the flag at
+    # ``build_json_system_prompt`` time and let the engine emit
+    # whatever the model produced. Distinguish the two modes here so
+    # the rest of the function can react.
+    strict_mode = is_strict_json_schema(response_format)
     if response_format and not request.tools:
         json_schema = extract_json_schema_for_guided(response_format)
         if json_schema:
@@ -1333,19 +1346,56 @@ async def _create_chat_completion_impl(
             # #500 and the v0.6.70 hotfix and have no role now that the
             # contract is explicit.
             use_guided = engine.supports_guided_generation
-            if use_guided:
+            if strict_mode:
+                # Tick the strict-request counter BEFORE the 400 gate so
+                # operators can see traffic shape even on installs that
+                # are missing the [guided] extra. The violations counter
+                # is incremented separately if jsonschema.validate ever
+                # rejects a guided response post-decode.
+                incr_strict_request()
+                if not use_guided:
+                    # OpenAI's structured-output spec treats strict=true
+                    # as a hard contract — the response MUST validate
+                    # against the schema. Without outlines we cannot
+                    # make that guarantee, so 400 is the correct shape
+                    # (and matches what OpenAI returns when a model
+                    # doesn't support strict structured outputs).
+                    # Envelope is hand-rolled here to match the H-17
+                    # sanitized 400 shape that the global exception
+                    # handlers emit for malformed bodies; clients keying
+                    # off ``error.code`` see ``guided_extra_required``
+                    # so an SDK can decode the install hint
+                    # programmatically.
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": {
+                                "message": (
+                                    "response_format.json_schema.strict=true "
+                                    "requires the [guided] optional extra. "
+                                    "Install with: pip install "
+                                    "'rapid-mlx[guided]'"
+                                ),
+                                "type": "invalid_request_error",
+                                "code": "guided_extra_required",
+                                "param": "response_format.json_schema.strict",
+                            }
+                        },
+                    )
+                logger.info(
+                    "Using guided generation for JSON schema enforcement "
+                    "(strict=true)"
+                )
+            elif use_guided:
                 logger.info("Using guided generation for JSON schema enforcement")
             else:
                 # Surface the silent-degradation case: client asked for
-                # json_schema strict mode but the engine can't enforce it
-                # (most commonly: the user installed `rapid-mlx` without
-                # the `[guided]` extra, so outlines is unavailable). The
-                # request will still be served with unconstrained
-                # decoding, but the schema contract is NOT being honored
-                # — without this warning, the client sees garbage
-                # (e.g. the model thinks for max_tokens and never emits
-                # JSON) with no diagnostic signal. v0.6.63 onboarding
-                # sweep finding #5.
+                # json_schema response_format but the engine can't
+                # enforce it (most commonly: the user installed
+                # `rapid-mlx` without the `[guided]` extra). When
+                # ``strict=false`` the OpenAI contract is suggestion-only
+                # so we fall through to prompt-injection (existing
+                # behavior). When ``strict=true`` we 400 above.
                 logger.warning(
                     "json_schema response_format requested but guided "
                     "generation is unavailable (engine="
@@ -1407,7 +1457,12 @@ async def _create_chat_completion_impl(
             return StreamingResponse(
                 _disconnect_guard(
                     stream_chat_completion_guided(
-                        engine, messages, request, json_schema, **chat_kwargs
+                        engine,
+                        messages,
+                        request,
+                        json_schema,
+                        strict_mode=strict_mode,
+                        **chat_kwargs,
                     ),
                     raw_request,
                     engine=engine,
@@ -1590,6 +1645,25 @@ async def _create_chat_completion_impl(
     logger.info(
         f"Chat completion: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
     )
+
+    # H-06 belt-and-braces: when the client asked for strict json_schema
+    # mode and we routed through guided decoding, validate the buffered
+    # text against the schema and bump the violations counter on any
+    # mismatch. Outlines should make this unreachable; a non-zero rate
+    # on ``rapid_mlx_response_format_strict_violations_total`` is the
+    # smoke alarm that the constrained-decoding path silently degraded
+    # (e.g. ``generate_with_schema`` swallowed an outlines API change
+    # and fell back to ``self.chat(...)``). We do NOT fail the request:
+    # the tokens were already produced and surfacing as 500 would lose
+    # them; the contract violation is alertable via the counter.
+    if strict_mode and use_guided and json_schema and output is not None:
+        ok, err = validate_output_against_schema(output.text or "", json_schema)
+        if not ok:
+            incr_strict_violation()
+            logger.warning(
+                "Strict json_schema response failed post-decode validation: %s",
+                err,
+            )
 
     # Parse tool calls from output using configured parser.
     # ``output.tool_calls`` is non-None when the engine's
@@ -2465,6 +2539,8 @@ async def stream_chat_completion_guided(
     messages: list,
     request: ChatCompletionRequest,
     json_schema: dict,
+    *,
+    strict_mode: bool = False,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion with json_schema constrained decoding.
@@ -2574,6 +2650,25 @@ async def stream_chat_completion_guided(
         yield f'{_sse_prefix}"role":"assistant"{_sse_suffix}'
 
         content = output.text or ""
+        # Belt-and-braces post-decode validation for strict mode
+        # (H-06). Outlines should make this unreachable — a non-zero
+        # ``rapid_mlx_response_format_strict_violations_total`` rate
+        # is a smoke alarm that the constrained-decoding path
+        # silently degraded. We DO NOT fail the request on a
+        # post-decode violation: that would lose the buffered tokens
+        # and break clients that already commit to the streaming
+        # protocol; the contract violation is surfaced via the
+        # counter + WARNING log so operators can alert on the rate
+        # rather than the per-request failure shape.
+        if strict_mode and json_schema:
+            ok, err = validate_output_against_schema(content, json_schema)
+            if not ok:
+                incr_strict_violation()
+                logger.warning(
+                    "Strict json_schema response failed post-decode "
+                    "validation (streaming): %s",
+                    err,
+                )
         if content:
             yield f'{_sse_prefix}"content":{json.dumps(content)}{_sse_suffix}'
 
