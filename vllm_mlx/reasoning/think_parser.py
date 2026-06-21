@@ -322,6 +322,70 @@ class BaseThinkingReasoningParser(ReasoningParser):
             return None
         return DeltaMessage(reasoning=emit)
 
+    # ------------------------------------------------------------------
+    # D-STOP-THINK shared finalize contract (cross-cycle bundle):
+    #
+    # When ``stop`` matches inside an unterminated ``<think>`` block (OR
+    # ``max_tokens`` cuts mid-thought before ``</think>``), the streaming
+    # loop has already shipped every reasoning byte as
+    # ``reasoning_content`` (the per-delta route — Anthropic
+    # ``thinking`` block, OpenAI ``delta.reasoning_content``, Responses
+    # API thinking event). Anthropic/Responses streams ALSO call
+    # ``finalize_streaming(accumulated_raw)`` at end-of-stream and emit
+    # ``final_msg.content`` as a NEW text block. Pre-fix Qwen3 and
+    # DeepSeek-R1 ``finalize_streaming`` returned
+    # ``DeltaMessage(content=<full trace>)`` on the unterminated-think
+    # path — which made the client see the EXACT SAME bytes in BOTH
+    # ``reasoning_content`` AND ``content``. Cross-cycle repro across
+    # qwen3 / deepseek_r1 / glm4 / gemma4 / hermes / VibeThinker
+    # families: bug_report.md:128, cycle-3 F-3, cycle-5 F-1 (hermes-
+    # qwen3.5-27b-8bit), cycle-6 F-CORR-2 (gemma-4), cycle-7 F-1
+    # (nemotron-30b), cycle-8 F-801 (glm4.7-9b-4bit), cycle-11 F-11-7
+    # (phi-4-mini-reasoning).
+    #
+    # The shared invariant lives here in the base class so every
+    # ``<think>``-tag parser inherits the same gate:
+    #
+    #     If ``</think>`` was NEVER crossed in the accumulated text,
+    #     ``finalize_streaming`` MUST NOT emit ``content``. The route
+    #     already shipped these bytes as ``reasoning_content`` during
+    #     the stream loop, so a content emission here is a pure
+    #     duplicate.
+    #
+    # Subclasses that want to emit a reasoning ``DeltaMessage`` at
+    # finalize (e.g. Qwen3's bare-text-preamble surfacing for the
+    # non-streaming envelope) MAY do so — Anthropic / Responses routes
+    # only act on ``final_msg.content``, so reasoning-channel finalize
+    # output is harmless. The hard rule is: NEVER content when
+    # ``end_token`` is absent from ``accumulated_text``.
+    def _finalize_in_think_block(self, accumulated_text: str) -> bool:
+        """Return True when finalize fires while still mid-``<think>``.
+
+        "Mid-think" = ``</think>`` was never observed in the accumulated
+        text. This is the load-bearing signal for the D-STOP-THINK
+        cross-cycle fix: when True, ``finalize_streaming`` MUST NOT
+        return ``DeltaMessage(content=...)`` because the bytes have
+        already been shipped as ``reasoning_content`` via the streaming
+        deltas. Returning content here duplicates the bytes into both
+        channels.
+
+        Subclasses with different closer tokens override
+        ``end_token``; this helper reads ``self.end_token`` so the
+        invariant holds uniformly.
+        """
+        return bool(accumulated_text) and self.end_token not in accumulated_text
+
+    def finalize_streaming(self, accumulated_text: str) -> "DeltaMessage | None":
+        """Default base-class finalize: no correction.
+
+        D-STOP-THINK invariant: when ``</think>`` was never crossed,
+        finalize MUST NOT emit content. The default ``return None``
+        upholds that. Subclasses that want to inject a reasoning-channel
+        correction (Qwen3's bare-text preamble surfacing, etc.) MUST
+        gate their content emission on ``not self._finalize_in_think_block``.
+        """
+        return None
+
     def _sweep_residual_think_tags(
         self, reasoning: str, content: str
     ) -> tuple[str, str]:

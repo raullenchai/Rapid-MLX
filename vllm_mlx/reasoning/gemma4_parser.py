@@ -54,6 +54,44 @@ class Gemma4ReasoningParser(ReasoningParser):
         # Extract thought blocks as reasoning
         thought_blocks = _THOUGHT_BLOCK.findall(model_output)
         if not thought_blocks:
+            # D-STOP-THINK (cycle-6 F-CORR-2, gemma-4-26b/12b):
+            # when ``stop`` matches inside ``<|channel>thought\n...``
+            # before the closing ``<channel|>``, the regex above
+            # (which requires the closer to match) returns no
+            # blocks — and the no-blocks branch then leaks the
+            # entire thought trace into ``content`` (only stripping
+            # the literal ``<|channel>thought\n`` opener token, not
+            # the body). Same shape as the qwen3 / deepseek_r1
+            # ``</think>``-never-crossed bug, just expressed in
+            # Gemma 4's channel grammar.
+            #
+            # Detection: ``<|channel>thought`` opener present AND
+            # no matching ``<channel|>`` closer downstream. The
+            # body from the opener to end-of-text is an unterminated
+            # thought trace — route to ``reasoning``, leave content
+            # as the pre-opener prefix (typically empty) so the
+            # client doesn't see the thought trace in the user-
+            # visible answer channel.
+            thought_open_idx = model_output.find("<|channel>thought")
+            if thought_open_idx >= 0:
+                after_opener_idx = thought_open_idx + len("<|channel>thought")
+                # Skip the optional newline directly after the opener.
+                if (
+                    after_opener_idx < len(model_output)
+                    and model_output[after_opener_idx] == "\n"
+                ):
+                    after_opener_idx += 1
+                trailing = model_output[after_opener_idx:]
+                if "<channel|>" not in trailing:
+                    pre_opener = model_output[:thought_open_idx]
+                    # Strip any leading content-channel markers from the
+                    # pre-opener prefix so the user-visible content
+                    # surface stays clean.
+                    pre_cleaned = _CONTENT_START.sub("", pre_opener)
+                    pre_cleaned = _CHANNEL_END.sub("", pre_cleaned)
+                    pre_cleaned = _TURN_END.sub("", pre_cleaned).strip()
+                    reasoning_body = trailing.strip()
+                    return reasoning_body or None, pre_cleaned or None
             # No thinking tags — all content
             cleaned = _CONTENT_START.sub("", model_output)
             cleaned = _CHANNEL_END.sub("", cleaned)

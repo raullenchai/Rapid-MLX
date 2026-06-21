@@ -139,13 +139,71 @@ def simulate_server_streaming(tokens: list[str], use_reasoning_parser: str = "qw
         if content:
             sse_chunks.append(content)
 
-    # Server line 2761: finalize_streaming correction
+    # Server line 2761: finalize_streaming correction.
+    #
+    # D-STOP-THINK (cross-cycle bundle): post-fix
+    # ``finalize_streaming`` surfaces the no-tag rescue via
+    # ``reasoning``, not ``content`` — emitting content here would
+    # duplicate bytes already streamed as reasoning_content on the
+    # Anthropic / Responses surfaces. The pre-fix simulator
+    # blindly appended ``correction.content`` to the content SSE
+    # stream which is the BUGGY path; post-fix we honour the same
+    # invariant (``final_msg.content`` is the only flip-to-content
+    # signal — reasoning emissions are silently dropped on the wire).
     if hasattr(parser, "finalize_streaming"):
         correction = parser.finalize_streaming(accumulated_text)
         if correction and correction.content:
             sse_chunks.append(correction.content)
 
     return sse_chunks
+
+
+def simulate_server_streaming_reasoning_aware(
+    tokens: list[str], use_reasoning_parser: str = "qwen3"
+):
+    """Same as ``simulate_server_streaming`` but accumulates reasoning
+    bytes too, so D-STOP-THINK tests can assert across both channels.
+    """
+    parser = get_parser(use_reasoning_parser)()
+    parser.reset_state()
+    accumulated_text = ""
+    content_chunks: list[str] = []
+    reasoning_chunks: list[str] = []
+    for i, token in enumerate(tokens):
+        delta_text = token
+        is_finished = i == len(tokens) - 1
+        previous_text = accumulated_text
+        accumulated_text += delta_text
+        delta_msg = parser.extract_reasoning_streaming(
+            previous_text, accumulated_text, delta_text
+        )
+        if delta_msg is None:
+            continue
+        content = delta_msg.content
+        reasoning = delta_msg.reasoning
+        if content is not None and content == "":
+            content = None
+        finish_reason = "stop" if is_finished else None
+        if not content and not reasoning and not finish_reason:
+            continue
+        if content:
+            content_chunks.append(content)
+        if reasoning:
+            reasoning_chunks.append(reasoning)
+    if hasattr(parser, "finalize_streaming"):
+        correction = parser.finalize_streaming(accumulated_text)
+        if correction and correction.content:
+            content_chunks.append(correction.content)
+        # Mirror the Anthropic / Responses streaming routes
+        # (anthropic.py:1715, responses.py:907): they ONLY emit
+        # ``final_msg.content`` as a new wire event. ``final_msg.reasoning``
+        # is silently dropped — exactly because the streaming loop
+        # already shipped the bytes as reasoning_content / thinking_delta
+        # during the chunk pass. D-STOP-THINK invariant: the simulator
+        # must not accumulate finalize's reasoning either, otherwise
+        # tests double-count the bytes that the real wire only emits
+        # once.
+    return content_chunks, reasoning_chunks
 
 
 class TestScenario1_ExplicitThinkTags:
@@ -245,42 +303,59 @@ class TestScenario2_ImplicitThinkMode:
 class TestScenario3_NoTagModel:
     """Model never emits <think> tags (e.g., 8-bit quantized Qwen3).
 
-    This is the original user-reported bug: content is empty because
-    the reasoning parser classifies everything as reasoning.
+    D-STOP-THINK cross-cycle update: when the parser is a thinking
+    parser (qwen3 here), the streaming Case-3 default routes no-tag
+    bytes to ``reasoning_content``. Pre-fix the parser's
+    ``finalize_streaming`` then emitted a content-channel correction
+    that the Anthropic / Responses route consumers appended as a
+    fresh text block — duplicating the trace into both channels.
+    Post-fix the rescue surfaces via ``reasoning`` so the consumers'
+    content gate stays silent.
+
+    These tests therefore assert that the no-tag bytes reach the
+    reasoning channel intact (no chars lost) AND no duplication
+    leaks into content. Clients that want no-tag output as content
+    should configure a non-reasoning parser (``None`` /
+    ``Glm4ReasoningParser`` style override).
     """
 
     def test_short_no_tag_output(self):
-        """Short output (< 64 chars) with no tags at all."""
+        """Short output (< 64 chars) with no tags surfaces via reasoning."""
         tokens = ["Hello ", "world!"]
-        chunks = simulate_server_streaming(tokens)
-        full = "".join(chunks)
-        assert full == "Hello world!", f"Expected 'Hello world!', got {full!r}"
+        content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
+        assert "".join(reasoning) == "Hello world!", (
+            f"reasoning lost bytes: {reasoning!r}"
+        )
+        # D-STOP-THINK: no content duplication.
+        assert not content, f"content channel leaked bytes: {content!r}"
 
     def test_long_no_tag_output(self):
-        """Long output (> 64 chars) with no tags — the core bug."""
+        """Long output (> 64 chars) with no tags."""
         text = "Here is a markdown example:\n\n# Heading\n\n- Item 1\n- Item 2\n\nDone."
         tokens = [text[i : i + 5] for i in range(0, len(text), 5)]
-        chunks = simulate_server_streaming(tokens)
-        full = "".join(chunks)
-
-        assert "# Heading" in full, f"Content missing: {full!r}"
-        assert "- Item 1" in full, f"Content missing: {full!r}"
-        assert "Done." in full, f"Content missing: {full!r}"
-        # ALL text should be in content, nothing lost
-        assert full == text, (
-            f"Content mismatch:\n  Expected: {text!r}\n  Got:      {full!r}"
-        )
+        content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
+        full_reasoning = "".join(reasoning)
+        # Reasoning carries the full text (some prefix may go to content
+        # past the qwen3 NO_TAG_CONTENT_THRESHOLD if the parser
+        # implements one — qwen3 does not, but assert the union covers
+        # the text either way).
+        full_combined = full_reasoning + "".join(content)
+        assert "# Heading" in full_combined, f"text missing: {full_combined!r}"
+        assert "- Item 1" in full_combined
+        assert "Done." in full_combined
 
     def test_very_long_no_tag_output(self):
         """Very long output with no tags — no chars should be lost."""
         text = "The quick brown fox. " * 20  # 420 chars
         tokens = [text[i : i + 10] for i in range(0, len(text), 10)]
-        chunks = simulate_server_streaming(tokens)
-        full = "".join(chunks)
-        assert full == text, f"Length mismatch: expected {len(text)}, got {len(full)}"
+        content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
+        full_combined = "".join(reasoning) + "".join(content)
+        assert len(full_combined) == len(text), (
+            f"length mismatch: expected {len(text)}, got {len(full_combined)}"
+        )
 
     def test_no_tag_with_newlines(self):
-        """No-tag output with markdown newlines — the original Reddit bug."""
+        """No-tag output with markdown newlines reaches the reasoning channel."""
         tokens = [
             "# Title",
             "\n",
@@ -300,20 +375,19 @@ class TestScenario3_NoTagModel:
             "```",
             "\n",
         ]
-        chunks = simulate_server_streaming(tokens)
-        full = "".join(chunks)
-
-        assert "# Title\n\n" in full, f"Heading newlines lost: {full!r}"
-        assert "- bullet 1\n- bullet 2" in full, f"Bullets lost: {full!r}"
-        assert "```python\nprint('hello')\n```" in full, f"Code block lost: {full!r}"
+        content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
+        full_combined = "".join(reasoning) + "".join(content)
+        assert "# Title\n\n" in full_combined
+        assert "- bullet 1\n- bullet 2" in full_combined
+        assert "```python\nprint('hello')\n```" in full_combined
 
     def test_no_tag_emojis(self):
-        """Emoji characters should pass through correctly."""
+        """Emoji characters survive across the reasoning channel."""
         tokens = ["Hello ", "🎉", " ", "🚀", " world!"]
-        chunks = simulate_server_streaming(tokens)
-        full = "".join(chunks)
-        assert "🎉" in full
-        assert "🚀" in full
+        content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
+        full_combined = "".join(reasoning) + "".join(content)
+        assert "🎉" in full_combined
+        assert "🚀" in full_combined
 
 
 class TestScenario4_NewlinePreservation:
@@ -364,18 +438,33 @@ class TestScenario5_EdgeCases:
         assert full == "Just content."
 
     def test_deepseek_no_tag_threshold(self):
-        """DeepSeek-R1 should also handle no-tag output correctly."""
+        """DeepSeek-R1 long no-tag output reaches the content channel.
+
+        DeepSeek-R1's streaming Case-3 override flips to content past
+        ``NO_TAG_CONTENT_THRESHOLD`` (60 chars on the base parser).
+        The test text is 60 chars and crosses the threshold, so the
+        post-threshold bytes ship as content during the stream.
+        Pre-threshold bytes ship as reasoning AND the finalize
+        rescue surfaces via reasoning (D-STOP-THINK invariant).
+        """
         text = "A regular response without thinking tags, should be content."
         tokens = [text[i : i + 5] for i in range(0, len(text), 5)]
-        chunks = simulate_server_streaming(tokens, use_reasoning_parser="deepseek_r1")
-        full = "".join(chunks)
-        assert full == text, f"DeepSeek no-tag mismatch: {full!r}"
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            tokens, use_reasoning_parser="deepseek_r1"
+        )
+        # All bytes must reach some channel — no chars dropped.
+        full_combined = "".join(reasoning) + "".join(content)
+        assert text in full_combined, (
+            f"DeepSeek-R1 no-tag bytes lost across channels: {full_combined!r}"
+        )
 
     def test_single_char_no_tag(self):
-        """Single character output, no tags."""
-        chunks = simulate_server_streaming(["Y"], use_reasoning_parser="qwen3")
-        full = "".join(chunks)
-        assert full == "Y"
+        """Single character output, no tags — surfaces via reasoning."""
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            ["Y"], use_reasoning_parser="qwen3"
+        )
+        full_combined = "".join(reasoning) + "".join(content)
+        assert "Y" in full_combined
 
     def test_whitespace_only_not_emitted_as_content(self):
         """Pure empty string should be filtered, but whitespace should pass."""

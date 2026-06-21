@@ -167,14 +167,36 @@ def cfg_without_reasoning_parser():
 class TestAnthropicStreamingWithReasoningParser:
     """Issue #185: _stream_anthropic_messages with reasoning_parser active."""
 
-    def test_no_think_tags_yields_text_delta(self, cfg_with_reasoning_parser):
-        """Model outputs plain text with no think tags → text_delta events.
+    def test_no_think_tags_yields_thinking_delta_under_qwen3_parser(
+        self, cfg_with_reasoning_parser
+    ):
+        """No-tag output under the Qwen3 parser routes to thinking deltas.
 
-        The model (e.g. Qwen3.5-4B answering "count 1 to 5") doesn't output
-        any <think> or </think> tags. The reasoning parser conservatively
-        classifies as reasoning during streaming, but finalize_streaming
-        corrects to content. The Anthropic SDK's text_stream must receive
-        non-empty content.
+        D-STOP-THINK (cross-cycle bundle, cycle-11 phi-4-mini-reasoning):
+        the prior assertion here was that ``finalize_streaming``'s
+        content correction would surface no-tag output as ``text_delta``
+        — but that protocol was the source of the cross-cycle leak.
+        The streaming loop ships every byte as ``thinking_delta``
+        (base class Case-3 "no tags yet → reasoning"), and the pre-fix
+        finalize correction then APPENDED the same bytes as a fresh
+        ``text`` block, duplicating the trace into BOTH the
+        ``thinking`` AND ``text`` channels on the Anthropic
+        envelope. Six parser families repro'd this shape.
+
+        Post-fix: ``finalize_streaming`` surfaces the no-tag rescue
+        via ``reasoning``; the route consumer's
+        ``final_msg.content`` gate stays silent, so no fresh text
+        block is opened and the bytes only ship once — as
+        ``thinking_delta``. The Qwen3 chat template's pre-injected
+        ``<think>\\n`` makes this the correct channel for the
+        reasoning-class alias regardless: a no-tag continuation IS
+        the truncated thought trace. (#575 symmetry.)
+
+        Callers that want no-tag output to surface as ``text_delta``
+        should configure a non-reasoning parser (``None`` /
+        ``deepseek_r1`` with the Case-3 "no tags → content" override
+        — see ``Glm4ReasoningParser`` for the precedent) or rely on
+        the streaming Case-3 default, not the finalize correction.
         """
         from vllm_mlx.routes.anthropic import (
             AnthropicRequest,
@@ -199,21 +221,30 @@ class TestAnthropicStreamingWithReasoningParser:
         events = _collect_sse_events(gen)
 
         delta_types = _extract_delta_types(events)
-        text = _extract_text_from_deltas(events)
 
-        # Must have text content
-        assert text, f"No text_delta content found in events:\n{delta_types}"
-        assert "1" in text and "5" in text, f"Missing expected content in: {text!r}"
-
-        # Must have at least one text_delta event
-        text_deltas = [
-            t for t in delta_types if t == ("content_block_delta", "text_delta")
+        # Must have at least one thinking_delta event carrying the body
+        thinking_deltas = [
+            t for t in delta_types if t == ("content_block_delta", "thinking_delta")
         ]
-        assert text_deltas, f"No text_delta events in: {delta_types}"
+        assert thinking_deltas, (
+            f"No thinking_delta events in: {delta_types}\n"
+            "Expected base class Case-3 reasoning routing for the no-tag path."
+        )
 
-        # Must have at least one text content_block_start
-        text_starts = [t for t in delta_types if t == ("content_block_start", "text")]
-        assert text_starts, f"No text content_block_start in: {delta_types}"
+        # Must NOT have duplicated the bytes via finalize_streaming's
+        # content correction — D-STOP-THINK invariant. The Anthropic
+        # finalize path only emits a text block when
+        # ``final_msg.content`` is set; post-fix the rescue surfaces
+        # via ``final_msg.reasoning`` so no text block opens.
+        text_starts = [
+            t for t in delta_types if t == ("content_block_start", "text")
+        ]
+        assert not text_starts, (
+            f"D-STOP-THINK regression: finalize correction opened a text "
+            f"block; the no-tag bytes already shipped as thinking_delta "
+            f"and a fresh text block here would duplicate them onto the "
+            f"wire. Events: {delta_types}"
+        )
 
     def test_both_think_tags_emits_thinking_and_text(self, cfg_with_reasoning_parser):
         """Model outputs <think>...</think> → separated thinking + text blocks."""

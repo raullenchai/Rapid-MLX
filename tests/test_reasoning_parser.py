@@ -978,7 +978,22 @@ class TestDeepSeekNoTagThreshold:
         assert "content here" in "".join(content_parts)
 
     def test_finalize_corrects_short_no_tag_output(self, parser):
-        """finalize_streaming should correct short no-tag output."""
+        """finalize_streaming surfaces short no-tag output via reasoning.
+
+        D-STOP-THINK (cross-cycle bundle, cycle-11 phi-4-mini-reasoning):
+        when ``</think>`` was never crossed, ``finalize_streaming`` MUST
+        NOT emit ``content`` — the streaming loop already shipped the
+        bytes as ``reasoning_content`` and re-emitting them as content
+        from finalize duplicates them into both channels on the
+        Anthropic / Responses streaming envelopes (the consumers append
+        ``final_msg.content`` as a fresh text block at end-of-stream).
+
+        Post-fix: the correction surfaces the buffered text in
+        ``reasoning`` so callers that inspect the parser contract
+        directly (this test, custom routes) still see the rescue
+        signal, but the route consumers' ``final_msg.content`` gate
+        is silent — no extra bytes hit the wire.
+        """
         parser.reset_state()
 
         # Stream a short output (under 64 chars) without tags
@@ -990,10 +1005,11 @@ class TestDeepSeekNoTagThreshold:
             accumulated += char
             parser.extract_reasoning_streaming(prev, accumulated, char)
 
-        # Finalize should emit correction
+        # Finalize should emit correction in the reasoning channel.
         correction = parser.finalize_streaming(accumulated)
         assert correction is not None
-        assert correction.content == text
+        assert correction.content is None  # NOT content — D-STOP-THINK invariant
+        assert correction.reasoning == text
 
     def test_finalize_no_correction_with_tags(self, parser):
         """finalize_streaming should not correct when tags were seen."""

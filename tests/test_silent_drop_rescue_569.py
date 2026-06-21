@@ -207,17 +207,28 @@ def test_rescue_noop_when_tool_calls_empty_list():
 # ── Integration: parser-level repro of the truncated thought ─────────
 
 
-def test_gemma4_parser_returns_no_reasoning_on_unterminated_thought():
-    """Pins the upstream surface: the Gemma 4 reasoning parser's
-    ``extract_reasoning`` returns ``(None, raw_text_with_marker)``
-    when the thought channel never closed. This is what feeds the
-    silent-drop path — the parser bails, the route then drops content.
+def test_gemma4_parser_routes_unterminated_thought_to_reasoning():
+    """D-STOP-THINK (cross-cycle, cycle-6 F-CORR-2): the Gemma 4
+    parser now detects the unterminated ``<|channel>thought`` opener
+    and routes the body to ``reasoning`` instead of leaking the
+    entire thought trace into ``content`` with the literal channel
+    marker preserved.
 
-    The parser behavior itself is correct (it can't infer where a
-    missing close marker SHOULD have been); the route-layer rescue
-    is what protects clients from the consequence. This test pins
-    the parser's behavior so future parser changes don't silently
-    bypass the rescue's reason for existing.
+    Pre-fix, ``extract_reasoning`` returned
+    ``(None, "<|channel>thought\\n<full trace>")`` on the no-closer
+    branch and the route's ``clean_output_text`` / ``strip_thinking_tags``
+    pipeline did not fully strip the trace. The downstream
+    silent-drop rescue masked the user-facing leak by promoting
+    reasoning_text → content, but ``content`` AND the reasoning
+    channel still ended up holding overlapping bytes on stuck-mid-
+    thought outputs.
+
+    Post-fix: reasoning carries the trace; content holds only the
+    pre-opener prefix (typically empty). The silent-drop rescue
+    still fires when content is empty AND reasoning is populated —
+    its predicate is unchanged. Cross-cycle invariant for the
+    D-STOP-THINK bundle is honoured (no byte duplication into
+    user-visible content channel).
     """
     p = Gemma4ReasoningParser()
     truncated = (
@@ -225,14 +236,16 @@ def test_gemma4_parser_returns_no_reasoning_on_unterminated_thought():
         "I should call get_weather with city=SF. But first let me check"
     )
     reasoning, content = p.extract_reasoning(truncated)
-    assert reasoning is None, (
-        "parser must not pretend it extracted reasoning from an "
-        f"unterminated thought; got {reasoning!r}"
+    assert reasoning is not None and "Let me think" in reasoning, (
+        f"unterminated thought must route to reasoning; got "
+        f"reasoning={reasoning!r}"
     )
-    # Content is the raw text (markers preserved). The route's
-    # ``clean_output_text`` + ``strip_thinking_tags`` will collapse
-    # this; the rescue handles the resulting empty content.
-    assert content is not None and "Let me think" in content
+    # Content holds only the (empty) pre-opener prefix — the trace
+    # bytes are no longer leaked.
+    assert not content or "Let me think" not in content, (
+        f"thought trace bytes must not leak into content; got "
+        f"content={content!r}"
+    )
 
 
 # ── Integration: full _finalize + rescue chain on engine-routed input ──
@@ -1059,13 +1072,28 @@ def test_rescue_still_fires_on_length_when_raw_text_lacks_open_think():
     )
 
 
-def test_rescue_still_fires_on_truncated_think_when_finish_is_stop():
-    """Counter-test: ``raw_text`` opens with unclosed ``<think>`` but
-    ``finish_reason`` is ``stop`` (model voluntarily ended without
-    producing a final answer). The new gate is specifically the
-    ``length`` x truncated-think INTERSECTION — other shapes still
-    rescue. This protects models that emit only a thought block then
-    stop (uncommon but possible)."""
+def test_rescue_skipped_on_truncated_think_when_finish_is_stop():
+    """D-STOP-THINK (cross-cycle bundle, cycle-3 / cycle-7 / cycle-11):
+    when ``stop`` matches inside the unterminated ``<think>`` block,
+    the trim path in the engine cuts the suffix before the closing
+    ``</think>`` arrives. The pre-fix rescue gate only skipped this
+    arm under ``finish_reason="length"``; ``finish_reason="stop"``
+    fell through and the rescue surfaced the in-progress thought as
+    ``content`` — yielding byte-identical ``content`` AND
+    ``reasoning_content`` on the live wire (qwen3-0.6b-4bit live
+    repro with ``stop=["STOP"]``).
+
+    Post-fix the gate is symmetric across ``stop`` and ``length`` for
+    the unclosed-``<think>`` arm. This counter-test pins the new
+    behaviour against future regressions.
+
+    The pre-fix rationale (``model voluntarily ended without
+    producing a final answer``) is preserved on a different gate
+    surface: callers that want to rescue genuinely orphaned
+    reasoning traces can do so via ``finish_reason=None`` (legacy
+    code path, see ``test_rescue_still_fires_on_truncated_think_when_finish_unknown``)
+    — the conservative default still fires there.
+    """
     raw = "<think>just a thought"
     rescued = _rescue_silent_drop_from_reasoning(
         final_content=None,
@@ -1074,7 +1102,10 @@ def test_rescue_still_fires_on_truncated_think_when_finish_is_stop():
         finish_reason="stop",
         raw_text=raw,
     )
-    assert rescued == "just a thought"
+    assert rescued is None, (
+        f"D-STOP-THINK regression — rescue surfaced trace as content "
+        f"under stop-mid-think: rescued={rescued!r}"
+    )
 
 
 def test_rescue_still_fires_on_truncated_think_when_finish_unknown():
@@ -1202,15 +1233,17 @@ def test_rescue_skipped_when_reasoning_is_case4_and_length():
     )
 
 
-def test_rescue_fires_when_case4_but_finish_is_stop():
-    """Counter-test: the Case-4 gate is specifically for the
-    ``length`` x case4 INTERSECTION. A model that voluntarily ended
-    after emitting only reasoning (no ``<think>`` token, finish=stop)
-    is a genuine silent drop — rescue still fires.
+def test_rescue_skipped_when_case4_and_finish_is_stop():
+    """D-STOP-THINK (cross-cycle bundle): the Case-4 signal indicates
+    the parser routed a no-tag truncated thought to reasoning. When
+    ``stop`` matches mid-thought, the trim cuts the suffix and the
+    rescue surfaces would produce byte-identical ``content`` and
+    ``reasoning_content`` on the wire.
 
-    Uncommon but real (a chatty model that "talks itself out" of the
-    final answer). The same shape #569 was originally written for
-    on gemma-4."""
+    Symmetric with the ``finish=length`` x case4 gate added earlier:
+    extend to ``finish=stop`` so user-supplied stop strings firing
+    mid-thought don't trigger the duplication leak.
+    """
     trace = "thought trace that ended cleanly without a final answer"
     rescued = _rescue_silent_drop_from_reasoning(
         final_content=None,
@@ -1220,7 +1253,10 @@ def test_rescue_fires_when_case4_but_finish_is_stop():
         raw_text=trace,
         reasoning_is_case4=True,
     )
-    assert rescued == trace
+    assert rescued is None, (
+        f"D-STOP-THINK regression — rescue surfaced case-4 trace as "
+        f"content under finish=stop: rescued={rescued!r}"
+    )
 
 
 def test_rescue_fires_when_length_but_not_case4():

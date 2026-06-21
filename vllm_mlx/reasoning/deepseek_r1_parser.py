@@ -153,9 +153,29 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         """
         Finalize streaming output.
 
-        If no tags were ever seen and the output was short (under threshold),
-        the base class would have classified it all as reasoning. Emit a
-        correction to reclassify as content.
+        D-STOP-THINK (cycle-11 F-11-7 phi-4-mini-reasoning leak shape):
+        when ``stop`` matches mid-think OR ``max_tokens`` cuts before
+        ``</think>``, the streaming loop has already shipped every
+        reasoning byte as ``reasoning_content``. Pre-fix this method
+        returned ``DeltaMessage(content=accumulated_text)`` for the
+        short-no-tag rescue path, and the Anthropic / Responses
+        ``finalize_streaming`` consumers (anthropic.py:1715,
+        responses.py:907) then appended those bytes as a NEW text
+        block — duplicating the trace into BOTH the thinking block
+        AND the text block. Cross-cycle repro on phi-4-mini-reasoning
+        (cycle-11), nemotron-30b (cycle-7) and VibeThinker
+        (DeepSeek-R1 subclass, cycle-2 F-12-1).
+
+        Fix: surface the short-no-tag rescue text as ``reasoning``,
+        not ``content``. The route consumers' ``final_msg.content``
+        gate ignores reasoning emissions, so no extra bytes hit the
+        wire — exactly the right outcome because the bytes ALREADY
+        shipped as reasoning during the stream loop. Mirrors the
+        D-STOP-THINK fix in ``Qwen3ReasoningParser.finalize_streaming``.
+
+        The base-class invariant (``_finalize_in_think_block``) pins
+        the rule: ``finalize_streaming`` MUST NOT emit ``content``
+        when ``</think>`` was never crossed.
 
         Args:
             accumulated_text: Complete accumulated text from stream.
@@ -168,10 +188,14 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             and accumulated_text
             and len(accumulated_text) < self.NO_TAG_CONTENT_THRESHOLD
         ):
-            # Short no-tag output was misclassified as reasoning.
-            # Return correction: emit as content. The caller should
-            # yield a chunk that moves reasoning → content.
-            return DeltaMessage(content=accumulated_text)
+            # Short no-tag output was streamed as reasoning by the
+            # base class Case-3 default. Pre-fix we returned the
+            # text in ``content`` (intent: flip to content channel);
+            # post-fix we acknowledge the streamed-reasoning state
+            # via ``reasoning=`` so the route consumers' content
+            # gate doesn't fire and the bytes don't reach the wire
+            # twice (D-STOP-THINK).
+            return DeltaMessage(reasoning=accumulated_text)
         return None
 
 

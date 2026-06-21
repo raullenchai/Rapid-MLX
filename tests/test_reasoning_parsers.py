@@ -363,12 +363,20 @@ class TestDeepSeekR1:
         assert result.reasoning == short
 
     def test_finalize_short_no_tag_correction(self):
-        """Short output without tags gets corrected from reasoning to content."""
+        """Short output without tags surfaces via reasoning, not content.
+
+        D-STOP-THINK invariant: ``finalize_streaming`` MUST NOT emit
+        ``content`` when ``</think>`` was never crossed — the route
+        consumers would otherwise duplicate the bytes (already shipped
+        as reasoning during the stream loop) onto the wire as a fresh
+        text block. See ``BaseThinkingReasoningParser._finalize_in_think_block``.
+        """
         self.parser.reset_state()
         self.parser._saw_any_tag = False
         result = self.parser.finalize_streaming("short answer")
         assert result is not None
-        assert result.content == "short answer"
+        assert result.content is None
+        assert result.reasoning == "short answer"
 
     def test_finalize_long_no_tag_no_correction(self):
         """Long output without tags: no correction (already handled by threshold)."""
@@ -1914,35 +1922,36 @@ class TestQwen3:
         )
         assert result is None
 
-    def test_finalize_streaming_bare_preamble_without_think_prefix_routes_to_content(
+    def test_finalize_streaming_bare_preamble_without_think_prefix_routes_to_reasoning(
         self,
     ):
-        # Codex r3 BLOCKING symmetry: ``finalize_streaming`` has no
-        # ``enable_thinking`` kwarg, so the leading ``<think>`` token
-        # is the only evidence the stream is in thinking mode. Without
-        # that evidence, a bare-text preamble in the accumulated text
-        # is more likely a casual answer opener (the user asked the
-        # model to "explain your thinking process") than an actual
-        # truncated thought trace. Pre-fix the streaming side fired
-        # the bare-text fallback regardless of context and silently
-        # routed valid non-thinking answers into the dead-code
-        # ``reasoning`` channel — the route consumer ignores
-        # ``final_msg.reasoning`` so the answer never reached the
-        # client. Symmetric with the explicit-False gate in
-        # ``extract_reasoning``.
+        # D-STOP-THINK (cross-cycle bundle, cycle-11 phi-4-mini-
+        # reasoning): the prior protocol routed no-``<think>``-prefix
+        # finalize output to ``content`` on the theory that the
+        # streaming Case-3 default's reasoning emission would be
+        # "corrected" to a text channel by the consumer. In practice
+        # NO route consumer implements that flip — the Anthropic
+        # ``finalize_streaming`` path (anthropic.py:1715) blindly
+        # appends ``final_msg.content`` as a fresh text block, while
+        # the thinking block opened during the stream loop is never
+        # retracted. Result: BOTH channels carried the same bytes.
+        #
+        # Post-fix: surface the buffered text via ``reasoning`` so
+        # the consumers' content gate stays silent — exactly the
+        # right outcome because the streaming loop already shipped
+        # the bytes as ``reasoning_content``. The reasoning emission
+        # keeps the parser contract honest for callers that inspect
+        # ``DeltaMessage`` directly. See
+        # ``BaseThinkingReasoningParser._finalize_in_think_block`` for
+        # the shared invariant pinning this rule.
         parser = Qwen3ReasoningParser()
         result = parser.finalize_streaming(
             "Here's a thinking process I followed to solve the puzzle: "
             "first I sorted the items, then I picked the largest."
         )
         assert result is not None
-        # ``content`` because the lack of a leading ``<think>`` means
-        # the streaming Case-3 default reasoning emission was wrong
-        # and the correction belongs in the content channel — the
-        # same protocol the parser used pre-#570 for the no-evidence
-        # branch.
-        assert result.content is not None
-        assert result.reasoning is None
+        assert result.content is None  # NOT content — D-STOP-THINK invariant
+        assert result.reasoning is not None
 
     def test_bare_thinking_label_without_process_no_longer_matches(self):
         # Codex r3 BLOCKING: ``Here's my thinking:`` (no ``process``)

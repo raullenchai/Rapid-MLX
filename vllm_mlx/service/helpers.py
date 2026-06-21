@@ -694,14 +694,39 @@ def _rescue_silent_drop_from_reasoning(
     # mistakes the no-content state for a #569 silent drop and
     # surfaces the reasoning as content — duplicating the trace
     # byte-identically. The Case-4 signal stops that.
-    if (
-        finish_reason == "length"
-        and raw_text
-        and raw_text.lstrip().startswith("<think>")
-        and "</think>" not in raw_text
-    ):
-        return final_content
-    if finish_reason == "length" and reasoning_is_case4:
+    # D-STOP-THINK (cross-cycle bundle, cycle-3 F-3 / cycle-7
+    # nemotron-30b / cycle-11 phi-4-mini-reasoning): when ``stop``
+    # matches inside an unterminated ``<think>`` block, the trim path
+    # in the scheduler / engine cuts the suffix before the closing
+    # ``</think>`` ever arrives. The finalize path then sees raw_text
+    # with an unclosed ``<think>`` opener (or the helper's Case-4
+    # signal under chat-template prompt injection) AND
+    # ``finish_reason="stop"`` instead of "length" — the existing
+    # ``finish_reason="length"``-only gate misses this and the
+    # rescue runs, surfacing the in-progress thought as
+    # ``content``. Result: byte-identical ``content`` AND
+    # ``reasoning_content`` on the wire (live-test repro:
+    # ``Think about 5+7. After your thinking, write the word STOP``
+    # with ``stop=["STOP"]`` on qwen3-0.6b-4bit). Six parser
+    # families confirmed.
+    #
+    # Symmetric fix: gate on BOTH ``stop`` and ``length`` for the
+    # unclosed-``<think>``/Case-4 truncation arms — the trim cause
+    # is structurally identical (mid-think suffix removed), only
+    # the reported ``finish_reason`` differs. Other ``stop``
+    # cases (model emitted a closed ``<think>…</think>`` then
+    # generated the stop string in its answer) still get rescued —
+    # the unclosed-opener / Case-4 discriminator picks out the
+    # mid-think arm specifically.
+    truncated_mid_think = bool(finish_reason in ("length", "stop")) and (
+        (
+            raw_text
+            and raw_text.lstrip().startswith("<think>")
+            and "</think>" not in raw_text
+        )
+        or reasoning_is_case4
+    )
+    if truncated_mid_think:
         return final_content
     return reasoning_text
 

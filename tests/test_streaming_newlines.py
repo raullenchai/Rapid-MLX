@@ -26,13 +26,25 @@ class TestQwen3NoTagStreaming:
     def parser(self):
         return get_parser("qwen3")()
 
-    def test_no_tags_streaming_corrected_by_finalize(self, parser):
-        """When no <think> tags appear, finalize_streaming corrects to content.
+    def test_no_tags_streaming_finalize_surfaces_as_reasoning(self, parser):
+        """No-tag output: streaming routes to reasoning; finalize surfaces
+        the rescue text via ``reasoning`` (NOT ``content``).
 
-        During streaming, the base parser defaults all output to reasoning
-        (to support implicit think mode where </think> hasn't arrived yet).
-        At stream end, finalize_streaming detects no tags were ever seen and
-        emits the full text as a content correction.
+        D-STOP-THINK (cross-cycle bundle, cycle-11 phi-4-mini-reasoning):
+        the prior protocol routed finalize's no-tag rescue text to
+        ``content`` on the theory that the route consumer would flip
+        the streamed reasoning into the text channel. No route actually
+        implements that flip — the Anthropic / Responses
+        ``finalize_streaming`` consumers blindly emit ``final_msg.content``
+        as a fresh text block, duplicating the trace into BOTH the
+        thinking AND text channels (the streaming loop already shipped
+        the bytes as reasoning).
+
+        Post-fix: ``finalize_streaming`` surfaces the rescue via
+        ``reasoning`` so the consumers' content gate stays silent (no
+        wire duplication). For Qwen3 specifically this matches the
+        chat-template-injected-``<think>`` semantics — a no-tag
+        continuation IS the truncated thought trace (#575).
         """
         parser.reset_state()
 
@@ -52,10 +64,13 @@ class TestQwen3NoTagStreaming:
         # yet whether </think> will come)
         assert "".join(reasoning_parts) == text
 
-        # finalize_streaming corrects: no tags seen → reclassify as content
+        # finalize_streaming surfaces via reasoning (NOT content) —
+        # D-STOP-THINK invariant. ``correction`` may be None (no
+        # subclass-level emission) OR a DeltaMessage with reasoning
+        # only; it MUST NOT carry content.
         correction = parser.finalize_streaming(accumulated)
-        assert correction is not None
-        assert correction.content == text
+        if correction is not None:
+            assert correction.content is None
 
     def test_no_tags_nonstreaming_is_fine(self, parser):
         """Non-streaming extraction correctly handles no-tag output."""
@@ -86,8 +101,13 @@ class TestQwen3NoTagStreaming:
         assert "Let me think" in "".join(reasoning_parts)
         assert "The answer is 42." in "".join(content_parts)
 
-    def test_short_no_tags_finalized_as_content(self, parser):
-        """Short no-tag output (under threshold) should be corrected by finalize."""
+    def test_short_no_tags_finalized_via_reasoning(self, parser):
+        """Short no-tag output: finalize surfaces rescue via reasoning.
+
+        D-STOP-THINK invariant: when ``</think>`` never crossed,
+        finalize MUST NOT emit content (would duplicate bytes already
+        streamed as reasoning into both Anthropic / Responses channels).
+        """
         parser.reset_state()
 
         text = "Short answer."
@@ -98,10 +118,10 @@ class TestQwen3NoTagStreaming:
             accumulated += char
             parser.extract_reasoning_streaming(prev, accumulated, char)
 
-        # finalize_streaming should emit correction
+        # finalize_streaming surfaces via reasoning (NOT content).
         correction = parser.finalize_streaming(accumulated)
-        assert correction is not None
-        assert correction.content == text
+        if correction is not None:
+            assert correction.content is None
 
     def test_implicit_mode_still_works(self, parser):
         """Ensure fix doesn't break implicit mode (only </think> in output)."""
