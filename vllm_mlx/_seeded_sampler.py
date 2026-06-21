@@ -57,6 +57,53 @@ from collections.abc import Callable
 import mlx.core as mx
 
 
+def _apply_argmax_rescue(mask: mx.array, argmax_idx: mx.array) -> mx.array:
+    """Apply the round-7 conditional argmax rescue to a combined mask.
+
+    Factored out as a module-level helper so the rescue's intersection-
+    preserving contract can be unit-tested directly without driving
+    the whole sampler closure. Codex round-8 BLOCKING regression guard:
+    the prior round-7 sampler test only proved same-seed determinism
+    and would pass under the OLD unconditional ``mask | argmax_keep``
+    behaviour, so the test was vacuous. Exposing the rescue as a pure
+    helper lets the test inject a hand-built non-empty mask that
+    excludes ``argmax_idx`` and assert the rescue does NOT add argmax
+    back — the property the round-7 fix exists to enforce.
+
+    Args:
+        mask: Bool tensor shaped ``[..., vocab]`` — the combined
+            kept-token mask after applying top-p / top-k / min-p.
+        argmax_idx: Int tensor shaped ``[..., 1]`` — the per-row
+            argmax positions (``mx.argmax(work, axis=-1, keepdims=True)``).
+
+    Returns:
+        Bool tensor shaped ``[..., vocab]`` with the round-2 invariant:
+        each row has at least one ``True`` entry, and rows that already
+        had at least one ``True`` entry are returned UNCHANGED (no
+        argmax injected). Rows that were all ``False`` fall back to a
+        single-True at ``argmax_idx``.
+
+    The conditional gate ``mx.where(any_kept, mask, argmax_keep)`` is
+    what makes the contract observable: under the old unconditional
+    form (``mask | argmax_keep``), a non-empty row that excluded
+    argmax would still have argmax OR'd in — violating ``top_k``
+    intersection semantics.
+    """
+    # Build the single-True argmax mask in vocab order.
+    argmax_keep = mx.zeros(mask.shape, dtype=mx.bool_)
+    argmax_keep = mx.put_along_axis(
+        argmax_keep,
+        argmax_idx,
+        mx.ones(argmax_idx.shape, dtype=mx.bool_),
+        axis=-1,
+    )
+    # Per-row "any token kept after intersection?" detector. ``keepdims=True``
+    # gives shape ``[..., 1]`` which broadcasts against ``[..., vocab]``
+    # under ``mx.where``.
+    any_kept = mx.any(mask, axis=-1, keepdims=True)
+    return mx.where(any_kept, mask, argmax_keep)
+
+
 def make_seeded_sampler(
     *,
     seed: int,
@@ -290,21 +337,7 @@ def make_seeded_sampler(
         # the combined intersection, which is exactly the case the
         # rescue targets.
         argmax_idx = mx.argmax(work, axis=-1, keepdims=True)
-        argmax_keep = mx.zeros(work.shape, dtype=mx.bool_)
-        argmax_keep = mx.put_along_axis(
-            argmax_keep,
-            argmax_idx,
-            mx.ones(argmax_idx.shape, dtype=mx.bool_),
-            axis=-1,
-        )
-        # Per-row "any token kept after intersection?" detector;
-        # broadcasts across the vocab axis so ``where`` picks the
-        # original mask row-wise when non-empty, argmax row-wise when
-        # empty. ``keepdims=True`` so the result is shape
-        # ``[..., 1]`` and broadcasts against the ``[..., vocab]``
-        # mask under ``mx.where``.
-        any_kept = mx.any(mask, axis=-1, keepdims=True)
-        mask = mx.where(any_kept, mask, argmax_keep)
+        mask = _apply_argmax_rescue(mask, argmax_idx)
 
         # Apply mask + temperature scaling. Use ``-inf`` for masked
         # positions so categorical never picks them.

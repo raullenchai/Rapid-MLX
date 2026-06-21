@@ -538,40 +538,114 @@ def test_seeded_sampler_aggressive_min_p_never_empty_mask(logprobs_fixture):
         assert 0 <= out < vocab
 
 
-def test_seeded_sampler_rescue_does_not_taint_nonempty_rows(logprobs_fixture):
-    """Codex round-7 BLOCKING regression guard.
+def test_apply_argmax_rescue_preserves_nonempty_mask_excluding_argmax():
+    """Codex round-7 + round-8 BLOCKING regression guard.
 
     The round-2 fix OR'd argmax into the combined mask unconditionally
     to prevent all-``-inf`` rows from reaching ``mx.random.categorical``.
     Codex r7 caught a hole in that contract: when ``top_k`` is layered
-    with a tighter ``top_p`` / ``min_p`` that could (theoretically)
-    exclude argmax from the top-k set, the unconditional rescue would
-    re-inject argmax — changing ``top_k`` semantics from "sample only
-    from the top K" to "sample from top K or argmax".
+    with a tighter ``top_p`` / ``min_p`` that excluded argmax from the
+    top-k set, the unconditional rescue would re-inject argmax —
+    changing ``top_k`` from "sample only from the top K" to "sample
+    from top K or argmax".
 
-    The round-7 fix gates the rescue on per-row emptiness via
-    ``mx.where(any_kept, mask, argmax_keep)``. This test pins the
-    determinism property the fix preserves for non-empty rows: two
-    samplers with the same ``(seed, top_k, top_p, min_p)`` must still
-    produce identical sequences. The fix changes the rescue branch but
-    must not perturb the math for any row where the intersection is
-    non-empty (which is the overwhelming common case — argmax is
-    preserved by each individual mask's "at least one kept" invariant).
+    The round-7 fix gated the rescue via
+    ``mx.where(any_kept, mask, argmax_keep)``. Codex round-8 then
+    flagged that the original round-7 test (asserting same-seed
+    determinism) was vacuous — it would pass under the OLD
+    unconditional ``mask | argmax_keep`` AND under a hypothetical
+    flipped-``mx.where`` because both arms produce reproducible
+    sequences. The test below directly exercises the helper with
+    hand-built masks that pin the actual contract:
+
+      * Non-empty mask that EXCLUDES argmax — must be returned
+        UNCHANGED. The old unconditional ``|`` would have set the
+        argmax position to True; the conditional rescue must not.
+      * All-False mask — must fall back to a single-True at argmax.
+        The round-2 contract (no degenerate ``-inf`` rows) still
+        holds.
+      * Batched two-row case (one row non-empty, one row empty) —
+        per-row gating must keep them independent.
+
+    This test fails under the OLD unconditional ``mask | argmax_keep``
+    behaviour because the argmax position would be flipped from False
+    to True. It also fails under a flipped ``mx.where(any_kept,
+    argmax_keep, mask)`` because the non-empty mask would be replaced
+    by a single-True argmax instead of returned unchanged.
     """
-    # Non-aggressive cutoffs so the intersection is non-empty on every
-    # step — this exercises the ``any_kept == True`` branch of the
-    # ``mx.where`` rescue selector. Reproducibility on the non-empty
-    # path is what would have regressed if the round-7 fix swapped the
-    # mask for the wrong branch (e.g. ``mx.where(any_kept, argmax_keep,
-    # mask)`` — flipped arms).
+    from vllm_mlx._seeded_sampler import _apply_argmax_rescue
+
+    # Build a [1, 8] non-empty mask that explicitly EXCLUDES argmax
+    # position 0. Token 0 is argmax; tokens 1 and 3 are kept by some
+    # upstream cutoff (e.g. top_k=2 selected a non-argmax pair after
+    # top_p had filtered the head). Verifies the rescue does NOT
+    # re-introduce argmax on the non-empty path.
+    mask = mx.array([[False, True, False, True, False, False, False, False]])
+    argmax_idx = mx.array([[0]])
+
+    rescued = _apply_argmax_rescue(mask, argmax_idx)
+    mx.eval(rescued)
+
+    # The kept set must be exactly {1, 3} — argmax (position 0) must
+    # NOT be flipped to True. Under the old unconditional OR,
+    # position 0 would be True here, breaking ``top_k`` intersection
+    # semantics.
+    rescued_list = rescued.tolist()[0]
+    assert rescued_list == [False, True, False, True, False, False, False, False], (
+        "argmax rescue re-introduced argmax on a non-empty mask — the "
+        "round-2 unconditional OR is back, ``top_k`` intersection "
+        "semantics are broken. Got: " + repr(rescued_list)
+    )
+
+    # Empty-mask case: rescue MUST fall back to a single-True at
+    # argmax. The round-2 contract (no ``-inf`` row reaches
+    # categorical) depends on this branch being live for truly empty
+    # intersections.
+    empty_mask = mx.array([[False] * 8])
+    rescued_empty = _apply_argmax_rescue(empty_mask, mx.array([[5]]))
+    mx.eval(rescued_empty)
+    rescued_empty_list = rescued_empty.tolist()[0]
+    expected_empty = [i == 5 for i in range(8)]
+    assert rescued_empty_list == expected_empty, (
+        "argmax rescue failed to inject argmax on an empty mask — the "
+        "round-2 empty-row safeguard is broken. Got: " + repr(rescued_empty_list)
+    )
+
+    # Two-row batched case: row 0 non-empty (must be preserved), row 1
+    # empty (must fall back to argmax). Verifies the per-row gating
+    # works with batched input — a regression here would mean the
+    # ``mx.any(..., axis=-1, keepdims=True)`` reduction broadcasts the
+    # wrong way and one row's emptiness contaminates the other.
+    batched_mask = mx.array(
+        [
+            [False, True, False, True, False],  # non-empty, argmax=0 excluded
+            [False, False, False, False, False],  # empty, argmax=2
+        ]
+    )
+    batched_argmax = mx.array([[0], [2]])
+    rescued_batched = _apply_argmax_rescue(batched_mask, batched_argmax)
+    mx.eval(rescued_batched)
+    rescued_batched_list = rescued_batched.tolist()
+    assert rescued_batched_list[0] == [False, True, False, True, False], (
+        "row 0 (non-empty) had argmax injected — batched gating leaked"
+    )
+    assert rescued_batched_list[1] == [False, False, True, False, False], (
+        "row 1 (empty) did not fall back to argmax — batched gating leaked"
+    )
+
+
+def test_seeded_sampler_rescue_does_not_taint_nonempty_rows(logprobs_fixture):
+    """Round-7 belt: end-to-end determinism on the non-empty rescue
+    path. Sister test to ``test_apply_argmax_rescue_preserves_
+    nonempty_mask_excluding_argmax`` which probes the helper directly.
+    Kept for breadth-of-coverage on the sampler-closure layer."""
     s1 = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.9, top_k=50, min_p=0.05)
     s2 = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.9, top_k=50, min_p=0.05)
     seq1 = _sample_sequence(s1, logprobs_fixture, 16)
     seq2 = _sample_sequence(s2, logprobs_fixture, 16)
     assert seq1 == seq2, (
-        "non-empty-row path lost determinism — the round-7 conditional "
-        "rescue likely flipped the mx.where arms or otherwise perturbed "
-        "the intersection mask"
+        "non-empty-row path lost determinism after the round-7 "
+        "refactor — investigate the rescue helper or its callsite"
     )
 
 
