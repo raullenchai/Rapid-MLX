@@ -22,7 +22,6 @@ were trying to avoid). Pin that here too.
 
 from __future__ import annotations
 
-import sys
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -56,22 +55,21 @@ class TestEmbeddingsExtraProbe:
     def test_probe_returns_false_when_missing(self, monkeypatch):
         """When ``mlx_embeddings`` is not importable the probe returns
         False — the caller then surfaces the install hint. Simulated
-        by poisoning ``sys.modules`` with a sentinel that raises on
-        attribute access, which is how ``importlib`` reports an
-        unimportable module without us having to actually uninstall
-        the package in CI."""
+        by patching ``importlib.util.find_spec`` to report the
+        top-level package as missing, which is exactly the signal the
+        probe's new ``find_spec``-based implementation reads (codex
+        nit closure: don't mask broken-installed-package errors
+        behind the missing-extra hint)."""
+        import importlib.util as _ilu
 
-        # Drop any cached module and forbid re-import.
-        monkeypatch.delitem(sys.modules, "mlx_embeddings", raising=False)
+        real_find_spec = _ilu.find_spec
 
-        real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __import__
+        def _fake_find_spec(name, *args, **kwargs):
+            if name == "mlx_embeddings":
+                return None
+            return real_find_spec(name, *args, **kwargs)
 
-        def _fake_import(name, *args, **kwargs):
-            if name == "mlx_embeddings" or name.startswith("mlx_embeddings."):
-                raise ImportError("simulated: extras not installed")
-            return real_import(name, *args, **kwargs)
-
-        monkeypatch.setattr("builtins.__import__", _fake_import)
+        monkeypatch.setattr("importlib.util.find_spec", _fake_find_spec)
         from vllm_mlx.embedding import mlx_embeddings_available
 
         assert mlx_embeddings_available() is False
@@ -82,16 +80,16 @@ class TestEmbeddingsExtraProbe:
         message must name the ``[embeddings]`` extra and the
         ``rapid-mlx`` install command verbatim so the user can copy-
         paste the fix."""
-        monkeypatch.delitem(sys.modules, "mlx_embeddings", raising=False)
+        import importlib.util as _ilu
 
-        real_import = __import__
+        real_find_spec = _ilu.find_spec
 
-        def _fake_import(name, *args, **kwargs):
-            if name == "mlx_embeddings" or name.startswith("mlx_embeddings."):
-                raise ImportError("simulated: extras not installed")
-            return real_import(name, *args, **kwargs)
+        def _fake_find_spec(name, *args, **kwargs):
+            if name == "mlx_embeddings":
+                return None
+            return real_find_spec(name, *args, **kwargs)
 
-        monkeypatch.setattr("builtins.__import__", _fake_import)
+        monkeypatch.setattr("importlib.util.find_spec", _fake_find_spec)
         from vllm_mlx.embedding import require_mlx_embeddings_or_exit
 
         with pytest.raises(SystemExit) as exc:
@@ -134,9 +132,8 @@ class TestEmbeddingsExtraProbe:
                     # Indented — inside a function/method, that's the
                     # lazy-import form we want.
                     continue
-                if (
-                    stripped.startswith("import mlx_embeddings")
-                    or stripped.startswith("from mlx_embeddings")
+                if stripped.startswith("import mlx_embeddings") or stripped.startswith(
+                    "from mlx_embeddings"
                 ):
                     offenders.append(f"{path.relative_to(pkg_root)}:{lineno}: {line}")
         assert not offenders, (
@@ -359,11 +356,7 @@ class TestModelsListEmbeddingCapability:
 
     def test_retrieve_embedding_model_by_id(self, monkeypatch):
         """Per-id retrieval also surfaces the configured embedding
-        model — desktop hydrates per-model state from this path.
-        Uses a slash-free id so FastAPI's path matcher accepts the
-        ``/v1/models/{id}`` route as-is (HF paths with slashes work in
-        production behind a URL-encoder; the routing semantics under
-        test here are about lookup, not about path serialization)."""
+        model — desktop hydrates per-model state from this path."""
         embed_id = "all-minilm-embed"
         client, restore = self._mount_models_app(
             monkeypatch, embedding_model_locked=embed_id
@@ -376,3 +369,51 @@ class TestModelsListEmbeddingCapability:
         body = r.json()
         assert body["id"] == embed_id
         assert "embedding" in body.get("capabilities", [])
+
+    def test_retrieve_embedding_model_by_hf_path_id(self, monkeypatch):
+        """Codex R1 BLOCKER closure: the configured embedding model is
+        almost always a Hugging Face repo id containing ``/`` (e.g.
+        ``mlx-community/all-MiniLM-L6-v2-4bit``). The
+        ``/v1/models/{model_id:path}`` route must match the raw HF id
+        without forcing clients to URL-encode the slash — every other
+        rapid-mlx endpoint accepts the bare HF id. Pin the production
+        URL shape callers actually use against the production lookup."""
+        embed_id = "mlx-community/all-MiniLM-L6-v2-4bit"
+        client, restore = self._mount_models_app(
+            monkeypatch, embedding_model_locked=embed_id
+        )
+        try:
+            # Raw HF id with slash — no URL-encoding. This is the
+            # production wire shape (rapid-desktop and the curl
+            # examples in the README both send it this way).
+            r = client.get(f"/v1/models/{embed_id}")
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert body["id"] == embed_id
+        assert "embedding" in body.get("capabilities", [])
+
+    def test_list_models_includes_hf_path_embedding_id(self, monkeypatch):
+        """Companion to the per-id test: with a slash-containing
+        embedding model configured, the listing also surfaces it with
+        the ``"embedding"`` capability tag. Catches the case where
+        ``_append`` or the lookup walks a different code path for
+        slash-containing ids than alias-shaped ids."""
+        embed_id = "mlx-community/all-MiniLM-L6-v2-4bit"
+        client, restore = self._mount_models_app(
+            monkeypatch, embedding_model_locked=embed_id
+        )
+        try:
+            r = client.get("/v1/models")
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+        body = r.json()
+        ids = [e["id"] for e in body["data"]]
+        assert embed_id in ids, (
+            f"Configured HF-path embedding id {embed_id} missing from /v1/models"
+        )
+        for entry in body["data"]:
+            if entry["id"] == embed_id:
+                assert "embedding" in entry.get("capabilities", [])

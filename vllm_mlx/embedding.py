@@ -17,17 +17,23 @@ logger = logging.getLogger(__name__)
 # Canonical install-hint copy. Shared between the CLI startup probe
 # (H-08) and the ``/v1/embeddings`` route guard (H-09) so the user sees
 # the same actionable line no matter which surface tripped the guard.
-EMBEDDINGS_EXTRA_INSTALL_HINT = (
-    "Install with: pip install 'rapid-mlx[embeddings]'"
-)
+EMBEDDINGS_EXTRA_INSTALL_HINT = "Install with: pip install 'rapid-mlx[embeddings]'"
 
 
 def mlx_embeddings_available() -> bool:
     """Probe whether ``mlx_embeddings`` is importable.
 
-    Lazy import — keeps the base install (without the ``[embeddings]``
-    extra) free of ``mlx_embeddings`` at module top-level. Callers
-    decide what to do when ``False``:
+    Uses :func:`importlib.util.find_spec` so we only answer "no" for
+    the specific case the install hint is meant to address — the
+    top-level ``mlx_embeddings`` package isn't installed. A broken
+    transitive dependency raising ``ImportError`` deep inside the
+    package surfaces as the real exception (not masked behind the
+    "install the extra" hint), making misdiagnosis less likely
+    (codex review nit on PR #800).
+
+    Lazy resolution — keeps the base install (without the
+    ``[embeddings]`` extra) free of ``mlx_embeddings`` at module
+    top-level. Callers decide what to do when ``False``:
 
     * CLI startup (:mod:`vllm_mlx.cli`, :mod:`vllm_mlx.server`) calls
       :func:`require_mlx_embeddings_or_exit` when ``--embedding-model``
@@ -37,11 +43,9 @@ def mlx_embeddings_available() -> bool:
       raises a 400 with the same hint when no embedding model is
       configured — H-09 fix.
     """
-    try:
-        import mlx_embeddings  # noqa: F401  (probe only)
-    except ImportError:
-        return False
-    return True
+    import importlib.util
+
+    return importlib.util.find_spec("mlx_embeddings") is not None
 
 
 def require_mlx_embeddings_or_exit() -> None:

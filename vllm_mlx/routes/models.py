@@ -192,13 +192,21 @@ async def list_models() -> ModelsResponse:
     return ModelsResponse(data=models)
 
 
-@router.get("/v1/models/{model_id}", dependencies=[Depends(verify_api_key)])
+@router.get("/v1/models/{model_id:path}", dependencies=[Depends(verify_api_key)])
 async def retrieve_model(model_id: str) -> ModelInfo:
     """Retrieve a specific model by ID.
 
     Same vendor-extension shape as `/v1/models` for callers that
     only want the profile for the active alias (rapid-desktop's
     SamplingConfig-bootstrap path).
+
+    Uses Starlette's ``:path`` converter so HF-style ids containing
+    ``/`` (e.g. ``mlx-community/all-MiniLM-L6-v2-4bit``) match the
+    route without forcing clients to URL-encode the slash — every
+    other rapid-mlx endpoint accepts the bare HF id, this one
+    should too. Slashes in alias ids are still safe: the lookup is
+    a string-equality match against the registry / cfg, not a path
+    parse.
     """
     cfg = get_config()
 
