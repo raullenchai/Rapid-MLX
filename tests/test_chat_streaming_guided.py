@@ -321,7 +321,7 @@ def test_streaming_guided_no_duplicate_usage_when_include_usage_true():
     assert any_usage_key2 == [], (
         f"no SSE chunk may carry the usage KEY when include_usage is "
         f"unset; got {len(any_usage_key2)} chunk(s) with the key "
-        f"(includes regressions to ``\"usage\": null``)"
+        f'(includes regressions to ``"usage": null``)'
     )
 
 

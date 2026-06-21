@@ -264,7 +264,7 @@ def test_chat_streaming_without_include_usage_omits_usage_block_entirely():
     assert any_usage_key == [], (
         f"no SSE chunk may carry the usage KEY when include_usage is "
         f"unset; got {len(any_usage_key)} chunk(s) with the key "
-        f"(includes regressions to ``\"usage\": null``)"
+        f'(includes regressions to ``"usage": null``)'
     )
 
 
