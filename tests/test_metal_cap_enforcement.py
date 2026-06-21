@@ -297,6 +297,32 @@ class TestProjectedKVAdmissionGate:
             sched._enforce_metal_cap_at_admission(req)
         assert sched.num_metal_cap_violations == 0
 
+    def test_str_prompt_fallback_uses_utf8_byte_length(self):
+        """Codex round 6 HIGH #1 regression: when neither
+        ``num_prompt_tokens`` nor ``prompt_token_ids`` is set, the
+        estimate falls back to the prompt text. ``len(str)`` counts
+        Python code points, which UNDER-estimates byte-fallback BPE
+        tokenization of multi-byte glyphs (e.g. emoji). The fallback
+        must use UTF-8 byte length so the gate stays conservative
+        on adversarial prompts."""
+        sched = self._make_scheduler_with_kv_estimate(kv_bytes_per_token=1)
+        req = Request(
+            request_id="emoji-prompt",
+            # 100 skulls, each 4 UTF-8 bytes = 400 bytes. ``len(str)``
+            # alone would say 100, which is a 4× undercount on a
+            # byte-fallback tokenizer.
+            prompt="💀" * 100,
+            prompt_token_ids=None,
+            sampling_params=SamplingParams(max_tokens=0),
+        )
+        req.num_prompt_tokens = 0
+        kv = sched._estimate_request_kv_bytes(req)
+        assert kv >= 400, (
+            f"expected ≥400 bytes from UTF-8 byte-length fallback on "
+            f"100 × 💀 (4 bytes/glyph), got {kv} — under-estimate "
+            f"path round 6 HIGH #1 regression."
+        )
+
     def test_estimate_uses_prompt_token_ids_when_num_prompt_tokens_zero(self):
         """The estimate must fall back to ``len(prompt_token_ids)``
         when ``num_prompt_tokens`` hasn't been populated yet (route

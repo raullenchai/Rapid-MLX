@@ -3194,17 +3194,27 @@ class Scheduler:
                 prompt_tokens = len(raw_prompt)
             else:
                 raw = getattr(request, "prompt", "")
-                # Codex round 5 NIT #3: for the str fallback (the only
-                # case we hit before tokenization), ``len(prompt)`` =
-                # character count. For typical BPE/SentencePiece this
-                # OVER-estimates token count (~3–5 chars per English
-                # token, ~1.5 per CJK token), which is the safe
-                # direction for an admission gate. The pathological
-                # case is single-byte glyphs that the tokenizer keeps
-                # as single tokens (whitespace runs etc.) — those
-                # still give a 1:1 char:token ratio at WORST, so the
-                # gate never UNDER-estimates token count here.
-                if isinstance(raw, (list, tuple, str)):
+                # Codex round 6 HIGH #1: ``len(str)`` counts Python
+                # code points, NOT tokenizer tokens. For ASCII English
+                # this OVER-estimates (3–5 chars/token typical), but
+                # adversarial inputs can UNDER-estimate:
+                # - byte-fallback BPE turns a single code point like
+                #   ``💀`` (1 char, 4 UTF-8 bytes) into 4 byte tokens
+                # - sentencepiece on rare CJK glyphs can emit 2+
+                #   tokens per code point
+                # Both reintroduce the D-METAL-CAP under-estimate path
+                # codex flagged. The byte-length of the UTF-8 encoding
+                # is a strict upper bound for every byte-level
+                # tokenizer (one byte ≥ one byte token) and a safe
+                # ceiling for SentencePiece (worst-case 1 byte → 1
+                # token). Lists and tuples we already trust as token
+                # IDs.
+                if isinstance(raw, str):
+                    try:
+                        prompt_tokens = len(raw.encode("utf-8"))
+                    except (UnicodeError, AttributeError):
+                        prompt_tokens = len(raw)
+                elif isinstance(raw, (list, tuple, bytes, bytearray)):
                     prompt_tokens = len(raw)
         max_tokens = int(
             getattr(getattr(request, "sampling_params", None), "max_tokens", 0) or 0
