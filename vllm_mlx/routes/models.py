@@ -11,6 +11,8 @@ them to auto-apply calibrated defaults so a user opening a chat
 on ``qwen3.5-9b-4bit`` doesn't have to hand-tune sliders.
 """
 
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException
 
 from ..api.models import ModelInfo, ModelsResponse
@@ -19,7 +21,96 @@ from ..config import get_config
 from ..middleware.auth import verify_api_key
 from ..model_aliases import resolve_profile
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+
+def _resolve_context_window(model_id: str) -> int | None:
+    """Return the engine-advertised max prompt-token context window for
+    ``model_id`` when an engine is loaded for it, else ``None``.
+
+    The currently-loaded engine knows the real cap — it's the same
+    chain the request-time context-length guard consults
+    (``service.helpers.get_model_max_context``), so advertising it on
+    ``/v1/models`` keeps the client's "max tokens" slider lined up
+    with what the server will actually enforce. Issue #363:
+    rapid-desktop's PR #318 consumer needs this to auto-scale the
+    chat-input cap; absent the field the consumer fell through to a
+    desktop-side per-family heuristic that drifted out of sync with
+    every long-context release.
+
+    Resolution:
+      * Single-model serve — ``cfg.engine`` is THE loaded engine and
+        the route's only entries are ``cfg.model_name`` and
+        ``cfg.model_alias``; both surface the same window.
+      * Multi-model serve — look up the matching ``ModelEntry`` via
+        the registry's index (NOT ``get_engine`` which falls back to
+        the default engine on miss; that would advertise the wrong
+        cap for an unloaded alias).
+      * No live engine for ``model_id`` — return ``None`` so the
+        client falls back to its own per-family default. The desktop
+        carries that fallback as defense-in-depth.
+
+    Failures inside ``get_model_max_context`` (missing attributes,
+    tokenizer probe raises) must NOT 500 the listing endpoint — they
+    fall through to ``None`` and the request still completes. The
+    helper's own fallback (``_FALLBACK_MAX_CONTEXT_TOKENS = 4 Mi``)
+    is a DoS sentinel for the request-time guard, NOT a number worth
+    advertising to clients; we suppress it here by treating any
+    integer ≥ ``_DOS_SENTINEL_FLOOR`` as "no useful value" so the
+    desktop's per-family heuristic still wins for un-introspectable
+    models.
+    """
+    # The DoS sentinel inside ``get_model_max_context`` is 4 MiB
+    # (4_194_304). Anything at or above that floor is the sentinel,
+    # not a real context window — no production LLM today exposes a
+    # 4M-token window on Apple Silicon. Hoisted as a local constant
+    # so the comparison is explicit and the relationship to the
+    # helper's fallback constant is obvious to future readers.
+    _DOS_SENTINEL_FLOOR = 4_194_304
+    engine = None
+    cfg = get_config()
+    if cfg.model_registry is not None:
+        try:
+            entry = cfg.model_registry.get_entry(model_id)
+        except KeyError:
+            entry = None
+        # ``get_entry`` falls back to the default entry on miss — guard
+        # that the entry we got actually matches ``model_id`` so the
+        # listing doesn't advertise the default engine's cap for every
+        # unloaded alias.
+        if entry is not None and entry.matches(model_id):
+            engine = entry.engine
+    else:
+        candidate = getattr(cfg, "engine", None)
+        if candidate is not None:
+            served = {cfg.model_name, cfg.model_alias} - {None}
+            if model_id in served:
+                engine = candidate
+    if engine is None:
+        return None
+    try:
+        # Imported lazily to keep this module's import surface small;
+        # ``service.helpers`` pulls in the request lifecycle which we
+        # don't need at module-load time.
+        from ..service.helpers import get_model_max_context
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        window = get_model_max_context(engine)
+    except Exception as exc:  # noqa: BLE001
+        # A failed probe MUST NOT 500 ``/v1/models``; log once and let
+        # the client fall back to its per-family heuristic.
+        logger.debug(
+            "context_window probe failed for %s: %s", model_id, exc, exc_info=False
+        )
+        return None
+    if not isinstance(window, int) or window <= 0:
+        return None
+    if window >= _DOS_SENTINEL_FLOOR:
+        return None
+    return window
 
 
 def _reported_modality(model_id: str, profile_modality: str) -> str:
@@ -102,6 +193,12 @@ def _build_model_info(model_id: str) -> ModelInfo:
     """
     capabilities = _embedding_capabilities(model_id)
     profile = resolve_profile(model_id)
+    # ``context_window`` is engine-derived (not profile-derived) so it
+    # surfaces even for unregistered operator-supplied ids when an
+    # engine is loaded for them. Resolution is best-effort: probe
+    # failures fall through to ``None`` and the client uses its own
+    # per-family fallback. See ``_resolve_context_window`` docstring.
+    context_window = _resolve_context_window(model_id)
     if profile is None:
         # Preserve the prior unknown-id wire shape (``ModelInfo(id=model_id)``
         # with the schema-default ``modality``) and only override when the
@@ -114,11 +211,18 @@ def _build_model_info(model_id: str) -> ModelInfo:
         try:
             if is_mllm_model(model_id):
                 return ModelInfo(
-                    id=model_id, modality="image", capabilities=capabilities
+                    id=model_id,
+                    modality="image",
+                    capabilities=capabilities,
+                    context_window=context_window,
                 )
         except Exception:  # noqa: BLE001
             pass
-        return ModelInfo(id=model_id, capabilities=capabilities)
+        return ModelInfo(
+            id=model_id,
+            capabilities=capabilities,
+            context_window=context_window,
+        )
     # ``recommended_sampling`` lives on the dataclass as a tuple of
     # ``(key, value)`` pairs (frozen-dataclass requirement); convert
     # back to a dict for JSON serialization. ``None`` stays ``None``
@@ -139,6 +243,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         reasoning_parser=profile.reasoning_parser,
         modality=_reported_modality(model_id, profile.modality),
         capabilities=capabilities,
+        context_window=context_window,
     )
 
 

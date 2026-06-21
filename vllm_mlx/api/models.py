@@ -1857,6 +1857,19 @@ class ModelInfo(BaseModel):
     # dispatches on this — populating from the server lets us drop
     # the desktop-side hard-coded modality map in a future release.
     modality: str | None = None
+    # Max prompt-token context window the loaded engine advertises
+    # for this id. Populated only when the entry maps to an actively
+    # loaded engine (single-model serve, or the matching ModelEntry
+    # in multi-model mode); otherwise ``None``. rapid-desktop reads
+    # this on first chat to auto-scale the ``max_tokens`` slider's
+    # upper bound — without it, the desktop had to fall back to a
+    # per-family hard-coded heuristic that drifted out of sync with
+    # every new long-context release (Qwen3.6-A3B 1M, DeepSeek-Coder
+    # 160K). Sourced from ``service.helpers.get_model_max_context``
+    # which probes the same chain the engine-side context-length
+    # guard uses, so the value the client sees lines up with the
+    # cap the server will actually enforce. Issue #363.
+    context_window: int | None = None
     # Capability tags advertised on the wire. Currently used to mark
     # the configured embedding model with ``"embedding"`` so clients
     # can discover which entry is wired to ``/v1/embeddings`` without
