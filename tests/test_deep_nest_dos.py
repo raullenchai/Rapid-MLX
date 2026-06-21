@@ -674,36 +674,103 @@ def test_quick_depth_heuristic_catches_deep_bodies():
     assert _quick_depth_might_exceed(_deep_dict_bytes(64), 64) is False
 
 
-def test_quick_depth_heuristic_false_positive_falls_back_to_precise():
-    """A body that LOOKS deep via the heuristic (bracket bytes inside
-    a string literal) MUST fall back to the precise parse-and-walk,
-    NOT incorrectly reject. We send a chat body whose ``content``
-    string contains ``{`` characters; the heuristic over-counts, the
-    full parse measures depth 4, gate lets it through."""
+def test_d_deep_json_attack_via_string_padded_closes_still_400():
+    """End-to-end pin for the codex r3 BLOCKING attack: a body
+    crafted to drive the byte-level heuristic into a negative balance
+    via string content, then nest a genuinely deep JSON tree, MUST
+    still hit the middleware's precise gate and 400 with the
+    canonical envelope. Pre-fix the heuristic bypass let the body
+    through to Pydantic and crashed with the original D-DEEP-JSON
+    ``RecursionError``."""
+    app = _build_minimal_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    string_closes = b"]" * 500
+    deep_nest = _deep_dict_bytes(200)
+    payload = b'{"x":"' + string_closes + b'","tree":' + deep_nest + b"}"
+    resp = client.post("/v1/chat/completions", content=payload, headers=_JSON_HEADERS)
+    assert resp.status_code == 400, resp.text[:300]
+    assert resp.json()["error"]["code"] == "request_body_too_deep"
+
+
+def test_quick_depth_heuristic_string_close_brackets_do_not_mask_deep_tree():
+    """codex r3 BLOCKING pin: a string literal containing many close-
+    brackets MUST NOT drive the heuristic's counter negative and let
+    a structurally-deep JSON tree slip past the fast-path bypass.
+
+    Pre-fix the heuristic decremented on every ``]``/``}`` byte
+    regardless of JSON string state, so a payload like
+    ``{"x":"]]]…]]]","tree":<DEEP-NEST>}`` had its counter pushed
+    negative by the string content, the peak of the structurally-deep
+    portion never reached the cap (because it was offset by the
+    pre-negative balance), the heuristic returned ``False``, and the
+    precise parser was bypassed. The full body then hit Pydantic and
+    crashed with the original D-DEEP-JSON ``RecursionError``.
+
+    Post-fix the close-bracket decrement only runs OUTSIDE strings,
+    so the heuristic correctly reports ``True`` (might exceed) and
+    the precise gate fires."""
+    from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
+
+    string_closes = b"]" * 500
+    # Build a body: {"x": "]]]…]]]", "tree": <100-deep nest>}
+    deep_nest = _deep_dict_bytes(100)
+    payload = b'{"x":"' + string_closes + b'","tree":' + deep_nest + b"}"
+    # The heuristic MUST flag this as possibly-deep so the precise
+    # parse runs and the gate fires.
+    assert _quick_depth_might_exceed(payload, 64) is True
+
+
+def test_quick_depth_heuristic_escaped_quote_does_not_break_string_state():
+    """A backslash-escaped quote inside a string MUST NOT terminate
+    the string state. Otherwise the heuristic would re-enter
+    structural mode mid-string and decrement on close brackets that
+    are actually still inside a string. This pins the JSON-aware
+    string state machine on the common ``\\"`` escape shape."""
+    from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
+
+    # String body containing an escaped quote followed by close
+    # brackets: the close brackets are STILL inside the string.
+    # Then a structurally-deep tree appended.
+    deep_nest = _deep_dict_bytes(100)
+    payload = b'{"x":"a\\"]]]]]]]]]","tree":' + deep_nest + b"}"
+    assert _quick_depth_might_exceed(payload, 64) is True
+
+
+def test_quick_depth_heuristic_string_content_does_not_force_fallback():
+    """A body whose string content happens to carry many opening
+    braces — depth-wise irrelevant per JSON semantics — MUST be
+    recognised as shallow by the heuristic so the production hot
+    path doesn't pay the full ``json.loads`` + tree-walk cost on
+    every chat body that mentions ``{`` in a user message.
+
+    Pre-r3 the heuristic naively counted every ``{`` byte, so a chat
+    request whose ``content`` field was ``"a JSON object looks like
+    {…}"`` paid the precise parse cost. Post-r3 the JSON-string
+    state machine inside the heuristic makes the bracket counter
+    inert on bytes inside string literals, so the legitimate body
+    is recognised as obviously-shallow and the bypass fires.
+
+    End-to-end: the gate lets the body through (real depth 4 < 64)
+    and the test sees 200 from the handler."""
     import os
 
     from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
 
-    # A genuinely-shallow body whose string content happens to carry
-    # many opening braces — the heuristic SHOULD over-count and force
-    # the precise path. The precise path then correctly measures the
-    # real structural depth.
     open_braces = b"{" * 100
     suspicious = (
         b'{"model":"x","messages":[{"role":"user","content":"' + open_braces + b'"}]}'
     )
-    # Heuristic: over-counts above the cap.
-    assert _quick_depth_might_exceed(suspicious, 64) is True
+    # Heuristic now correctly recognises bracket bytes inside the
+    # JSON string as inert — real structural depth is 4.
+    assert _quick_depth_might_exceed(suspicious, 64) is False
 
-    # End-to-end through the middleware: the precise walk measures
-    # the real depth (4) and lets the request through.
+    # End-to-end: the body reaches the handler.
     os.environ.pop("RAPID_MLX_MAX_BODY_DEPTH", None)
     app = _build_minimal_app()
     client = TestClient(app, raise_server_exceptions=False)
     resp = client.post(
         "/v1/chat/completions", content=suspicious, headers=_JSON_HEADERS
     )
-    # The body's REAL depth is 4 (default cap 64), so this MUST 200.
     assert resp.status_code == 200, resp.text[:300]
 
 

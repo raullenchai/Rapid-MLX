@@ -67,32 +67,60 @@ _EXCLUDED_PATHS = frozenset({"/v1/audio/transcriptions"})
 def _quick_depth_might_exceed(body: bytes, max_depth: int) -> bool:
     """Cheap byte-level upper bound on JSON nesting depth (codex r2 NIT).
 
-    Walks the bytes once, tracking the running balance of opening minus
-    closing brackets/braces. The depth at any JSON node is bounded
-    above by the simultaneous-open count, so a body whose balance
-    never reaches ``max_depth + 1`` is GUARANTEED to be at or under
-    the cap and the middleware can skip the full ``json.loads`` +
-    iterative-walk pipeline.
+    Walks the bytes once, tracking the simultaneous-open balance of
+    ``{``/``[`` minus ``}``/``]`` OUTSIDE JSON string literals. The
+    depth at any JSON node is bounded above by the simultaneous-open
+    count, so a body whose balance never reaches ``max_depth + 1`` is
+    GUARANTEED to be at or under the cap and the middleware can skip
+    the full ``json.loads`` + iterative-walk pipeline.
 
-    Returns ``True`` if the body MIGHT exceed the cap (caller should
-    do the full check), ``False`` if it definitely does not. The
-    function is intentionally one-sided — false positives only mean
-    "fall back to the precise check", never "incorrectly accept a
-    deeply-nested payload".
+    The function is intentionally one-sided: it returns ``True`` if
+    the body MIGHT exceed the cap (caller MUST do the full check),
+    ``False`` only when the body provably cannot. False positives
+    fall back to the precise parse; a false negative would silently
+    bypass the gate and reopen D-DEEP-JSON.
 
-    The heuristic over-counts when the bracket bytes appear inside a
-    JSON string literal (e.g. a description containing ``{{{{``), but
-    that only forces the full parse — same correctness as the
-    no-heuristic shape, just slightly more work on benign payloads
-    that happen to look adversarial. We don't carry the full JSON
-    state machine here (string-escape, unicode escapes, …) because
-    the precise walk is already correct; this is purely a fast-path
-    bypass for the common case where the body is obviously shallow.
+    codex r3 BLOCKING #1: an earlier version naively decremented on
+    every ``}``/``]`` byte. That let an attacker prepend a string
+    literal carrying ``]]]…]]]`` to drive the counter negative, hiding
+    a genuinely deep JSON tree from the precise parser:
+
+      ``{"x":"]]]]]]]]…]]]]]]]]","tree":<deep nest>}``
+
+    The counter went negative on the string body, the peak of the
+    structurally-deep portion was masked by the negative drift, and
+    the heuristic incorrectly returned ``False``. Fix: track JSON
+    string state so the close-bracket decrement only fires when we
+    really are between structural tokens. ``\\`` inside a string
+    escapes the next byte (covers ``\\"``, ``\\\\``, etc.); we don't
+    interpret unicode escapes (``\\uXXXX``) because the JSON parser
+    rejects malformed escapes downstream — the heuristic only needs
+    to be correct on syntactically-valid JSON to be a safe upper
+    bound, and on malformed JSON the precise parse takes over and
+    bounces with 400.
     """
     cap = max_depth + 1  # depth > max_depth → fail
     depth = 0
     peak = 0
+    in_string = False
+    escape_next = False
     for byte in body:
+        if escape_next:
+            # The previous byte was a backslash inside a string —
+            # consume this byte literally and clear the escape flag.
+            escape_next = False
+            continue
+        if in_string:
+            if byte == 0x5C:  # ``\\``
+                escape_next = True
+            elif byte == 0x22:  # ``"`` closes the string
+                in_string = False
+            # All other bytes inside a string (including ``[``,
+            # ``]``, ``{``, ``}``) are inert.
+            continue
+        if byte == 0x22:  # ``"`` opens a string
+            in_string = True
+            continue
         if byte == 0x7B or byte == 0x5B:  # ``{`` or ``[``
             depth += 1
             if depth > peak:
@@ -100,9 +128,12 @@ def _quick_depth_might_exceed(body: bytes, max_depth: int) -> bool:
                 if peak >= cap:
                     return True
         elif byte == 0x7D or byte == 0x5D:  # ``}`` or ``]``
+            # Outside-string close: the structurally-correct
+            # decrement. Inside-string closes are inert (handled
+            # above), so an attacker cannot prepend stringified
+            # closes to drive the counter negative and mask a deep
+            # structural payload further along.
             depth -= 1
-            # Unmatched closes don't help an attacker; let
-            # ``json.loads`` reject the payload as malformed.
     return peak >= cap
 
 
