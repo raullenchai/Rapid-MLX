@@ -863,6 +863,46 @@ class TestGemma4ChannelGrammar:
         assert reasoning is not None and "Let me think" in reasoning
         assert content is not None and "answer is 12" in content
 
+    def test_unterminated_thought_followed_by_content_channel(self):
+        """Codex round-13 BLOCKING (PR #799): the prior
+        ``if "<channel|>" not in trailing`` heuristic treated ANY later
+        channel closer as closing the unterminated thought block, so
+        ``<|channel>thought\\nsecret<|channel>content\\nanswer<channel|>``
+        (unterminated thought followed by a content channel) fell
+        through to the "No thinking tags — all content" path and leaked
+        the thought ``secret`` into ``content``.
+
+        Post-fix: detect the next ``<|channel>`` opener BEFORE any
+        ``<channel|>`` closer; if a new channel starts before the
+        thought closes, the thought is unterminated. The bytes from
+        the thought opener to the next channel opener are reasoning;
+        the bytes from the next opener onward are downstream
+        content (parsed through the regular channel strippers).
+        """
+        parser = Gemma4ReasoningParser()
+        # Malformed shape: thought channel opens, never closes, then
+        # a content channel opens + closes with the user-visible
+        # answer.
+        text = "<|channel>thought\nsecret<|channel>content\nThe answer is 12.<channel|>"
+        reasoning, content = parser.extract_reasoning(text)
+        assert reasoning is not None and "secret" in reasoning, (
+            f"codex r13 BLOCKING #2 regression — unterminated thought "
+            f"body must surface as reasoning: reasoning={reasoning!r}"
+        )
+        assert content is not None, (
+            f"downstream content channel must still surface: content={content!r}"
+        )
+        assert "secret" not in content, (
+            f"codex r13 BLOCKING #1 regression — thought body leaked into "
+            f"content: content={content!r}"
+        )
+        assert "answer is 12" in content, (
+            f"downstream content body lost: content={content!r}"
+        )
+        assert "<|channel>" not in content, (
+            f"channel marker leaked into content: {content!r}"
+        )
+
 
 class TestHermesWithReasoningComposition:
     """Hermes is NOT a reasoning parser; the cycle-5 cross-confirmation

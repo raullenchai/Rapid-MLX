@@ -14,7 +14,27 @@ import re
 from .base import DeltaMessage, ReasoningParser
 
 # Match full thought blocks in complete text
-_THOUGHT_BLOCK = re.compile(r"<\|channel>thought\n[\s\S]*?<channel\|>\s*", re.DOTALL)
+# Codex round-13 BLOCKING (PR #799): the inner non-greedy
+# ``[\s\S]*?`` previously allowed a stray ``<|channel>`` opener
+# inside the thought body — so the malformed shape
+# ``<|channel>thought\nsecret<|channel>content\nanswer<channel|>``
+# would match as ONE thought block from the opener to the FIRST
+# ``<channel|>`` (the content channel's closer), and the post-
+# match ``replace("<channel|>", "")`` step would leak
+# ``secret<|channel>content\nanswer`` into reasoning while the
+# content branch saw an empty residual.
+#
+# Fix: disallow a nested ``<|channel>`` opener inside the body
+# via a negative lookahead at every position. The match now stops
+# at the FIRST closer ``<channel|>`` OR aborts as soon as
+# another channel opener appears, so the malformed shape falls
+# through to the no-blocks "unterminated thought" branch where
+# the round-13 unterminated-thought split routes the body to
+# reasoning and the downstream content channel to content.
+_THOUGHT_BLOCK = re.compile(
+    r"<\|channel>thought\n(?:(?!<\|channel>)[\s\S])*?<channel\|>\s*",
+    re.DOTALL,
+)
 # Match content channel markers
 _CONTENT_START = re.compile(r"<\|channel>(?:content|final)\n?")
 _CHANNEL_END = re.compile(r"<channel\|>")
@@ -82,7 +102,29 @@ class Gemma4ReasoningParser(ReasoningParser):
                 ):
                     after_opener_idx += 1
                 trailing = model_output[after_opener_idx:]
-                if "<channel|>" not in trailing:
+                # Codex round-13 BLOCKING (PR #799): the prior heuristic
+                # ``if "<channel|>" not in trailing`` treated ANY later
+                # channel closer as closing the thought block, so a
+                # malformed-but-plausible
+                # ``<|channel>thought\nsecret<|channel>content\nanswer<channel|>``
+                # (unterminated thought followed by a content channel)
+                # fell through to the "no thinking tags — all content"
+                # branch and leaked the thought ``secret`` into
+                # ``content``. Fix: locate the NEXT ``<channel|>`` closer
+                # AND the NEXT ``<|channel>`` opener — if the next
+                # opener arrives BEFORE any closer, the thought block
+                # is genuinely unterminated (a new channel started
+                # without closing the previous one). Route the bytes
+                # between the thought opener and the next opener (or
+                # end-of-text) to reasoning.
+                next_closer = trailing.find("<channel|>")
+                next_opener = trailing.find("<|channel>")
+                # Unterminated when either no closer at all, OR the
+                # next opener arrives before any closer.
+                unterminated = next_closer < 0 or (
+                    next_opener >= 0 and next_opener < next_closer
+                )
+                if unterminated:
                     pre_opener = model_output[:thought_open_idx]
                     # Strip any leading content-channel markers from the
                     # pre-opener prefix so the user-visible content
@@ -90,6 +132,40 @@ class Gemma4ReasoningParser(ReasoningParser):
                     pre_cleaned = _CONTENT_START.sub("", pre_opener)
                     pre_cleaned = _CHANNEL_END.sub("", pre_cleaned)
                     pre_cleaned = _TURN_END.sub("", pre_cleaned).strip()
+                    # Codex round-13 BLOCKING (PR #799): when the
+                    # malformed shape includes a content channel
+                    # AFTER the unterminated thought, the bytes
+                    # belonging to the content channel must surface
+                    # as content (not reasoning). Split ``trailing``
+                    # at the next opener if any; everything before
+                    # the opener is the thought body (reasoning),
+                    # everything from the opener onward is the
+                    # downstream channel(s) which we parse with the
+                    # standard sub-pattern strippers so the user
+                    # still sees the answer.
+                    if next_opener >= 0 and (
+                        next_closer < 0 or next_opener < next_closer
+                    ):
+                        reasoning_body = trailing[:next_opener].strip()
+                        downstream = trailing[next_opener:]
+                        # Strip channel markers from the downstream
+                        # content. Don't surface a ``thought`` block
+                        # body here — if a second thought channel
+                        # follows we leave it to the regex pass on
+                        # the unmodified ``model_output``, which the
+                        # outer ``if not thought_blocks`` already
+                        # ruled out as no closed pair existing.
+                        downstream_cleaned = _CONTENT_START.sub("", downstream)
+                        downstream_cleaned = _CHANNEL_END.sub("", downstream_cleaned)
+                        downstream_cleaned = _TURN_END.sub(
+                            "", downstream_cleaned
+                        ).strip()
+                        content_out = (
+                            (pre_cleaned + " " + downstream_cleaned).strip()
+                            if pre_cleaned and downstream_cleaned
+                            else (pre_cleaned or downstream_cleaned)
+                        )
+                        return reasoning_body or None, content_out or None
                     reasoning_body = trailing.strip()
                     return reasoning_body or None, pre_cleaned or None
             # No thinking tags — all content
