@@ -333,6 +333,41 @@ async def create_anthropic_message(
                 cfg_for_log.model_name,
             )
 
+        # Reject image/document content blocks when the loaded model has
+        # no multimodal head (M-16). The Anthropic adapter
+        # (``anthropic_adapter._convert_message_to_openai``) only carries
+        # ``text``/``tool_use``/``tool_result`` blocks forward — every other
+        # block type (``image``, ``document``) is silently dropped. Without
+        # this guard the caller sees HTTP 200 with a hallucinated answer
+        # about the missing media (mirrors the OpenAI-route R9P1 fix in
+        # ``routes/chat.py``: text-only models never silently drop media).
+        cfg_pre = get_config()
+        # ``getattr`` default-True: tests with minimal engine stubs that
+        # never carry image blocks shouldn't trigger this guard, and the
+        # production engine always defines ``is_mllm``. Only a real
+        # text-only model (``is_mllm == False``) trips the rejection.
+        if getattr(engine, "is_mllm", True) is False:
+            for _msg in anthropic_request.messages:
+                _content = _msg.content
+                if not isinstance(_content, list):
+                    continue
+                for _block in _content:
+                    _block_type = (
+                        _block.type
+                        if hasattr(_block, "type")
+                        else (
+                            _block.get("type", "") if isinstance(_block, dict) else ""
+                        )
+                    )
+                    if _block_type in ("image", "document"):
+                        raise HTTPException(
+                            status_code=400,
+                            detail=(
+                                f"Model '{cfg_pre.model_name}' does not support "
+                                "image or document inputs."
+                            ),
+                        )
+
         # Convert Anthropic request -> OpenAI request. The adapter raises
         # ``AnthropicOutputConfigError`` (a ``ValueError`` subclass) on
         # malformed ``output_config`` payloads — backport of upstream vLLM
