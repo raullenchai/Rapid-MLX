@@ -4344,23 +4344,24 @@ class Scheduler:
         return None
 
     def reset(self) -> None:
-        """Reset the scheduler state."""
+        """Reset the scheduler state.
+
+        M-01 codex r8 BLOCKING #1: the cancellation dedupe ledgers
+        (``_cancelled_request_ids`` / ``_disconnect_abort_ids``)
+        MUST be cleared AFTER the abort loop, not before. Clearing
+        before means a concurrent ``record_disconnect_abort`` for a
+        still-live in-flight request could either no-op (id removed
+        from ledger ahead of its lifetime ending) or, worse, re-add
+        the id after ``_do_abort_request`` runs (because that path
+        also does a discard, and the ``add`` came from
+        ``abort_request`` racing against the loop). Clearing AFTER
+        the abort loop AND under the lock means any concurrent
+        ``record_disconnect_abort`` either ran fully BEFORE reset
+        started (correct) or sees the cleared state and no-ops
+        (correct: the request is gone, attribution is meaningless).
+        """
         # Drain any pending deferred aborts
         self._pending_abort_ids.clear()
-        # M-01: drop the cancellation lifetime ledgers alongside the
-        # pending-aborts set. The counters themselves
-        # (``num_requests_cancelled`` /
-        # ``num_requests_cancelled_via_disconnect``) are NOT zeroed —
-        # they're lifetime-cumulative Prometheus counters and resetting
-        # them would make /metrics report a non-monotonic step change
-        # to scrapers. The sticky-counter accumulator in routes/metrics.py
-        # would then fold the apparent reset into a baseline, which is
-        # the right behaviour for the cache series but here we'd rather
-        # never trip it. Wiping the dedupe ledgers ahead of a model
-        # swap is safe because the request_ids they tracked are
-        # post-reset undefined behaviour anyway.
-        self._cancelled_request_ids.clear()
-        self._disconnect_abort_ids.clear()
 
         # Abort all requests directly (reset is synchronous)
         for request_id in list(self.requests.keys()):
@@ -4375,6 +4376,25 @@ class Scheduler:
         self._detokenizer_pool.clear()
         self._close_batch_generator()
         self._current_sampler_params = None
+
+        # M-01: drop the cancellation lifetime ledgers AFTER the
+        # tear-down loop completes. The counters themselves
+        # (``num_requests_cancelled`` /
+        # ``num_requests_cancelled_via_disconnect``) are NOT zeroed —
+        # they're lifetime-cumulative Prometheus counters and
+        # resetting them would make /metrics report a non-monotonic
+        # step change to scrapers. The sticky-counter accumulator in
+        # routes/metrics.py would then fold the apparent reset into
+        # a baseline, which is the right behaviour for the cache
+        # series but here we'd rather never trip it. Wiping the
+        # dedupe ledgers AFTER the abort loop is safe because the
+        # request_ids they tracked have all been torn down by then,
+        # and is correct against the codex r8 BLOCKING #1 race
+        # (clearing before reset's _do_abort_request loop ran would
+        # have re-opened the dedupe window during the tear-down).
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.clear()
+            self._disconnect_abort_ids.clear()
 
         # Clear caches
         if self.block_aware_cache is not None:

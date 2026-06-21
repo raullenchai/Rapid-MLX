@@ -476,6 +476,55 @@ def test_total_counter_dedupes_against_lifetime_ledger_not_pending_set():
     assert scheduler.get_stats()["num_requests_cancelled"] == 1
 
 
+def test_reset_clears_ledgers_after_abort_loop():
+    """Codex r8 BLOCKING #1: ``reset()`` MUST clear the
+    cancellation lifetime ledgers AFTER aborting every live
+    request, not before. Clearing before opens a window during
+    the abort loop where a concurrent ``record_disconnect_abort``
+    could either no-op (id discarded ahead of its lifetime
+    ending) or re-add the id after ``_do_abort_request`` runs
+    (the discard inside ``_do_abort_request`` would conflict).
+
+    Test approach: track the order of operations by patching
+    ``_do_abort_request`` to record when ``_cancelled_request_ids``
+    is empty. Pre-r8 the set is empty for every iteration of the
+    abort loop (cleared upfront); post-r8 the set still contains
+    the in-flight id (cleared after the loop).
+    """
+    scheduler = _make_scheduler()
+    _admit(scheduler, "req-reset-1")
+    _admit(scheduler, "req-reset-2")
+    scheduler.abort_request("req-reset-1")
+    scheduler.abort_request("req-reset-2")
+    # Pre-reset: both ids in the lifetime ledger.
+    assert "req-reset-1" in scheduler._cancelled_request_ids
+    assert "req-reset-2" in scheduler._cancelled_request_ids
+
+    # Track ledger state at the START of each _do_abort_request
+    # call during reset's loop.
+    ledger_snapshots: list[set[str]] = []
+    original_do_abort = scheduler._do_abort_request
+
+    def tracked_do_abort(rid):
+        ledger_snapshots.append(set(scheduler._cancelled_request_ids))
+        return original_do_abort(rid)
+
+    scheduler._do_abort_request = tracked_do_abort  # type: ignore[method-assign]
+
+    scheduler.reset()
+
+    # The abort loop must have observed a NON-EMPTY ledger on at
+    # least one iteration (pre-r8 fix it would be empty on every
+    # iteration because reset cleared it upfront).
+    assert any(snap for snap in ledger_snapshots), (
+        "reset() cleared the lifetime ledger BEFORE the abort loop ran; "
+        "concurrent record_disconnect_abort would have seen "
+        "inconsistent state. Snapshots: " + repr(ledger_snapshots)
+    )
+    # Post-reset: ledger is empty.
+    assert scheduler._cancelled_request_ids == set()
+
+
 def test_total_counter_survives_reset_unchanged():
     """``reset()`` clears in-flight aborts but NOT the lifetime counter.
 
@@ -1246,6 +1295,57 @@ def _fake_engine(stats: dict[str, Any]):
     return SimpleNamespace(get_stats=lambda: stats)
 
 
+def _assert_prom_counter(
+    body: str, metric_name: str, expected_value: int, help_substr: str | None = None
+) -> None:
+    """Codex r8 NIT #3: exact line-by-line assertion of a Prometheus
+    counter render (HELP, TYPE, sample), avoiding substring checks
+    that could match malformed duplicate lines.
+
+    The Prometheus text exposition format pins the line structure:
+      # HELP <name> <help_text>
+      # TYPE <name> <metric_type>
+      <name>[{labels}] <value>
+
+    We parse the body, look for those EXACT lines for the given
+    metric name, and assert (a) HELP appears exactly once, (b) TYPE
+    is ``counter`` exactly once, (c) the sample line is exactly
+    ``<name> <value>`` with the right value, and (d) the sample
+    appears exactly once. A malformed regression (duplicate series,
+    wrong type, missing newline) flips at least one of those
+    counts.
+    """
+    lines = body.splitlines()
+    help_lines = [line for line in lines if line.startswith(f"# HELP {metric_name} ")]
+    type_lines = [line for line in lines if line.startswith(f"# TYPE {metric_name} ")]
+    # Sample lines: the metric name MUST be followed by a space and
+    # the value (we don't render labels for these counters, so the
+    # ``{...}`` form is also a regression). Match by exact split,
+    # not substring.
+    sample_lines = [line for line in lines if line.split(" ", 1)[:1] == [metric_name]]
+
+    assert len(help_lines) == 1, (
+        f"Expected exactly one HELP line for {metric_name}, got {help_lines}"
+    )
+    assert len(type_lines) == 1, (
+        f"Expected exactly one TYPE line for {metric_name}, got {type_lines}"
+    )
+    assert type_lines[0].endswith(" counter"), (
+        f"Expected TYPE line to end with ' counter', got {type_lines[0]!r}"
+    )
+    assert len(sample_lines) == 1, (
+        f"Expected exactly one sample line for {metric_name}, got {sample_lines}"
+    )
+    assert sample_lines[0] == f"{metric_name} {expected_value}", (
+        f"Expected sample line {metric_name} {expected_value!r}, "
+        f"got {sample_lines[0]!r}"
+    )
+    if help_substr is not None:
+        assert help_substr in help_lines[0], (
+            f"Expected HELP line to contain {help_substr!r}, got {help_lines[0]!r}"
+        )
+
+
 _CANCEL_STATS = {
     "num_waiting": 0,
     "num_running": 0,
@@ -1260,13 +1360,20 @@ _CANCEL_STATS = {
 def test_metrics_route_renders_total_cancelled_counter(metrics_client):
     """``rapid_mlx_requests_cancelled_total`` HELP / TYPE / value all
     present and the value matches the scheduler stat.
+
+    Codex r8 NIT #3: assertion uses exact line-by-line parsing of
+    the Prometheus body so a malformed duplicate sample line
+    couldn't mask a regression.
     """
     metrics_client.cfg.engine = _fake_engine(_CANCEL_STATS)
     body = metrics_client.client.get("/metrics").text
 
-    assert "# HELP rapid_mlx_requests_cancelled_total" in body
-    assert "# TYPE rapid_mlx_requests_cancelled_total counter" in body
-    assert "rapid_mlx_requests_cancelled_total 5" in body
+    _assert_prom_counter(
+        body,
+        "rapid_mlx_requests_cancelled_total",
+        5,
+        help_substr="aborted via the scheduler abort path",
+    )
 
 
 def test_metrics_route_renders_disconnect_subcounter(metrics_client):
@@ -1276,9 +1383,12 @@ def test_metrics_route_renders_disconnect_subcounter(metrics_client):
     metrics_client.cfg.engine = _fake_engine(_CANCEL_STATS)
     body = metrics_client.client.get("/metrics").text
 
-    assert "# HELP rapid_mlx_requests_cancelled_via_disconnect_total" in body
-    assert "# TYPE rapid_mlx_requests_cancelled_via_disconnect_total counter" in body
-    assert "rapid_mlx_requests_cancelled_via_disconnect_total 3" in body
+    _assert_prom_counter(
+        body,
+        "rapid_mlx_requests_cancelled_via_disconnect_total",
+        3,
+        help_substr="attributed to client disconnect",
+    )
 
 
 def test_metrics_route_renders_zero_when_cancel_keys_missing(metrics_client):
@@ -1299,8 +1409,8 @@ def test_metrics_route_renders_zero_when_cancel_keys_missing(metrics_client):
     metrics_client.cfg.engine = _fake_engine(stats_without_cancel)
     body = metrics_client.client.get("/metrics").text
 
-    assert "rapid_mlx_requests_cancelled_total 0" in body
-    assert "rapid_mlx_requests_cancelled_via_disconnect_total 0" in body
+    _assert_prom_counter(body, "rapid_mlx_requests_cancelled_total", 0)
+    _assert_prom_counter(body, "rapid_mlx_requests_cancelled_via_disconnect_total", 0)
 
 
 def test_metrics_route_renders_zero_when_both_counters_zero(metrics_client):
@@ -1317,5 +1427,5 @@ def test_metrics_route_renders_zero_when_both_counters_zero(metrics_client):
     metrics_client.cfg.engine = _fake_engine(quiet_stats)
     body = metrics_client.client.get("/metrics").text
 
-    assert "rapid_mlx_requests_cancelled_total 0" in body
-    assert "rapid_mlx_requests_cancelled_via_disconnect_total 0" in body
+    _assert_prom_counter(body, "rapid_mlx_requests_cancelled_total", 0)
+    _assert_prom_counter(body, "rapid_mlx_requests_cancelled_via_disconnect_total", 0)

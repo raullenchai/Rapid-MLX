@@ -544,33 +544,22 @@ class MLLMScheduler:
         if request is not None:
             request.status = RequestStatus.FINISHED_ABORTED
         self.finished_req_ids.add(request_id)
-        # M-01 codex r7 BLOCKING #1 analysis: MLLM's
-        # ``_do_abort_request`` does ``self.requests.pop`` itself
-        # (next line), so the active maps are ALREADY clean by the
-        # time we hit the dedupe-ledger discard below. Any
-        # concurrent ``abort_request`` racing through the inside-
-        # lock predicate (codex r6 fix) would observe
-        # ``request_id not in self.requests`` and return False
-        # before touching the ledger — so the discard
-        # placement here is race-safe. We keep it INSIDE
-        # ``_do_abort_request`` (rather than mirroring the text
-        # path's ``remove_finished_request`` indirection) because
-        # MLLM's lifecycle is intentionally in-line in this
-        # method, and the multiple pop sites (lines 805, 1216,
-        # 969) would otherwise need parallel discards. The
-        # text scheduler's ``remove_finished_request`` is the
-        # ONLY external-to-_do_abort_request pop boundary on
-        # that path; MLLM's analog doesn't exist as a single
-        # external entry point.
-        self.requests.pop(request_id, None)
 
-        self._detokenizer_pool.pop(request_id, None)
-
-        # M-01 codex r3 BLOCKING #2: discard the active-lifetime
-        # dedupe ledgers so request_id reuse for a NEW distinct
-        # request counts correctly. Atomic against the inside-
-        # lock predicate in ``abort_request`` (codex r6 fix).
+        # M-01 codex r8 BLOCKING #2: pop ``self.requests`` AND
+        # discard the cancellation lifetime ledgers under the SAME
+        # critical section. Pre-r8 the pop ran outside the lock,
+        # leaving a window where a concurrent ``abort_request``
+        # acquiring the lock could observe inconsistent state
+        # across ``self.requests`` / ``request_id_to_uid`` /
+        # ``running`` / ``_pending_abort_ids``. With both inside
+        # the lock, any concurrent abort-path predicate (codex r6
+        # fix: also inside the lock) sees a consistent
+        # transition — either everything pre-cleanup or
+        # everything post-cleanup. Detokenizer pool pop also
+        # joins the section for symmetric ordering.
         with self._cancel_counter_lock:
+            self.requests.pop(request_id, None)
+            self._detokenizer_pool.pop(request_id, None)
             self._cancelled_request_ids.discard(request_id)
             self._disconnect_abort_ids.discard(request_id)
 
@@ -1297,11 +1286,17 @@ class MLLMScheduler:
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
         self._detokenizer_pool.clear()
-        # M-01 codex r2: drop the cancellation lifetime ledgers
+        # M-01 codex r2/r8: drop the cancellation lifetime ledgers
         # alongside the in-flight state. The Prometheus counters
         # themselves are NOT zeroed (lifetime-cumulative contract).
-        self._cancelled_request_ids.clear()
-        self._disconnect_abort_ids.clear()
+        # Codex r8 BLOCKING #1 ordering: clear AFTER the abort loop
+        # so a concurrent ``record_disconnect_abort`` for an
+        # in-flight request can't interleave inconsistently, AND
+        # under the lock so the clear is atomic against any
+        # concurrent abort-path mutation.
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.clear()
+            self._disconnect_abort_ids.clear()
 
         if self.batch_generator is not None:
             self.batch_generator.close()
