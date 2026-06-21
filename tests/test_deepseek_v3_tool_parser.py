@@ -334,11 +334,21 @@ class TestMalformedGraceful:
 
 
 # --------------------------------------------------------------------
-# Streaming — V3 short-circuit emits one well-formed tool_call event
-# per closed block instead of leaking mid-stream ``name="function"``
-# deltas. The legacy V3.1 streaming path remains delta-based and is
-# covered by ``test_upstream_regression.TestDeepSeekV31UpstreamStreaming``;
-# here we pin only the V3 short-circuit behaviour.
+# Streaming — V3 streams suppress mid-stream emission and defer the
+# tool-call emission to the postprocessor's end-of-stream finalize
+# path (``service/postprocessor.py``: "Fallback tool call detection"),
+# which calls ``extract_tool_calls`` on the cumulative buffer.
+#
+# Why: the legacy delta machine would otherwise leak ``name="function"``
+# mid-stream for V3 bodies. After several rounds of attempted
+# delta-by-delta short-circuits each composed badly with malformed
+# blocks / mixed V3+V3.1 envelopes / delta boundaries, the conservative
+# contract is: do not attempt to stream V3 — let the closed-buffer
+# extract handle it as a one-shot event. This matches how other
+# wrapped-format parsers (GLM-4.7, Seed-OSS) already behave.
+#
+# V3.1 streaming is unchanged and covered by
+# ``test_upstream_regression.TestDeepSeekV31UpstreamStreaming``.
 # --------------------------------------------------------------------
 class TestV3Streaming:
     def _feed(
@@ -362,172 +372,68 @@ class TestV3Streaming:
             prev = cur
         return results
 
-    def test_v3_block_emits_single_complete_tool_call_on_close(
+    def _no_streamed_tool_calls(self, events: list[dict | None]) -> None:
+        """Assert no mid-stream ``tool_calls`` event leaked from the
+        streaming path for a V3 payload."""
+        for ev in events:
+            if not ev:
+                continue
+            assert "tool_calls" not in ev, (
+                f"V3 stream leaked a mid-stream tool_calls event: {ev!r}. "
+                f"V3 streams must defer emission to the postprocessor "
+                f"end-of-stream finalize path."
+            )
+
+    def test_v3_stream_emits_no_mid_stream_tool_calls(
         self, parser: DeepSeekV31ToolParser
     ) -> None:
-        """No ``name="function"`` deltas — only one fully-resolved
-        ``tool_calls`` event when the block's ``<call_end>`` arrives."""
+        """Single V3 block: streaming path returns no ``tool_calls``
+        events (in particular: NO ``name="function"`` deltas).
+        Emission is deferred to the postprocessor's end-of-stream
+        finalize, which calls ``extract_tool_calls`` and gets the
+        correct ``name="get_weather"``.
+        """
         payload = _envelope(_v3_block("get_weather", '{"city": "Tokyo"}'))
 
         events = self._feed(parser, payload, chunk_size=12)
+        self._no_streamed_tool_calls(events)
 
-        tool_events = [e for e in events if e and "tool_calls" in e]
-        assert len(tool_events) == 1, (
-            f"expected exactly one tool_calls event, got {len(tool_events)}: "
-            f"{tool_events!r}"
-        )
-        tc_list = tool_events[0]["tool_calls"]
-        assert len(tc_list) == 1
-        tc = tc_list[0]
-        assert tc["function"]["name"] == "get_weather"
-        assert json.loads(tc["function"]["arguments"]) == {"city": "Tokyo"}
-        # Index sequence starts at 0 for the first tool call.
-        assert tc["index"] == 0
+        # And the non-streaming extract on the cumulative text emits
+        # the correct call — confirming the postprocessor's finalize
+        # path will produce the right tool_call.
+        result = parser.extract_tool_calls(payload)
+        assert result.tools_called
+        assert result.tool_calls[0]["name"] == "get_weather"
+        assert json.loads(result.tool_calls[0]["arguments"]) == {"city": "Tokyo"}
 
-        # And no event ever leaked ``name="function"`` (the bug shape).
-        for ev in events:
-            if not ev or "tool_calls" not in ev:
-                continue
-            for call in ev["tool_calls"]:
-                assert call.get("function", {}).get("name") != "function", (
-                    f"V3 type-tag leaked into streaming name: {ev!r}"
-                )
-
-    def test_parallel_v3_blocks_emit_per_block(
+    def test_v3_parallel_stream_emits_no_mid_stream_tool_calls(
         self, parser: DeepSeekV31ToolParser
     ) -> None:
-        """Two V3 blocks → two distinct tool_calls deltas with
-        ascending indices."""
+        """Multiple V3 blocks: still no mid-stream emission. Finalize
+        path produces all the calls in one shot."""
         payload = _envelope(
             _v3_block("get_weather", '{"city": "Tokyo"}'),
             _v3_block("get_time", '{"tz": "UTC"}'),
-        )
-
-        events = self._feed(parser, payload, chunk_size=24)
-
-        emitted_names = []
-        emitted_indices = []
-        for ev in events:
-            if not ev or "tool_calls" not in ev:
-                continue
-            for call in ev["tool_calls"]:
-                emitted_names.append(call["function"]["name"])
-                emitted_indices.append(call["index"])
-
-        assert emitted_names == ["get_weather", "get_time"]
-        assert emitted_indices == [0, 1]
-
-    def test_parallel_v3_blocks_emit_distinct_ids(
-        self, parser: DeepSeekV31ToolParser
-    ) -> None:
-        """Each emitted block gets exactly one stable ID (codex r1
-        BLOCKING: the cumulative re-parse must not re-mint IDs for
-        previously emitted blocks).
-
-        We inspect the IDs in emission order — they must all be
-        distinct, and the parser's internal ID cache should record
-        exactly one ID per emitted block (no churn from re-parsing
-        the cumulative text on later deltas).
-        """
-        payload = _envelope(
-            _v3_block("get_weather", '{"city": "Tokyo"}'),
-            _v3_block("get_time", '{"tz": "UTC"}'),
-            _v3_block("search", '{"q": "x"}'),
         )
 
         events = self._feed(parser, payload, chunk_size=18)
+        self._no_streamed_tool_calls(events)
 
-        ids: list[str] = []
-        for ev in events:
-            if not ev or "tool_calls" not in ev:
-                continue
-            for call in ev["tool_calls"]:
-                ids.append(call["id"])
+        result = parser.extract_tool_calls(payload)
+        assert len(result.tool_calls) == 2
+        assert [c["name"] for c in result.tool_calls] == ["get_weather", "get_time"]
 
-        assert len(ids) == 3
-        # Distinct IDs per block.
-        assert len(set(ids)) == 3
-        # Internal cache size matches the emitted block count — proof
-        # that we minted exactly one ID per block, not one per delta.
-        assert len(parser._streamed_v3_ids) == 3
-        # The cache content matches what we emitted, keyed by absolute
-        # block index. Order of values mirrors emission order because
-        # the three blocks are V3 indices 0/1/2.
-        assert parser._streamed_v3_ids == {0: ids[0], 1: ids[1], 2: ids[2]}
-
-    def test_malformed_block_before_v3_block_does_not_shift_indices(
+    def test_v31_then_v3_v3_part_does_not_stream_v31_part_does(
         self, parser: DeepSeekV31ToolParser
     ) -> None:
-        """codex r5 BLOCKING-1: ``extract_tool_calls`` skips malformed
-        blocks, so correlating ``enumerate(result.tool_calls)`` with
-        block-position classification would shift V3 indices and
-        mis-key ``_streamed_v3_ids``.
-
-        We construct an envelope with [malformed, V3] and confirm the
-        V3 block is emitted exactly once at the absolute wire index
-        ``1`` — not at the parsed index ``0`` (which is what the bug
-        would produce).
-        """
-        # Block 0: malformed (no <sep>). Block 1: valid V3.
-        malformed_block = f"{C_OPEN}no_sep_here{C_CLOSE}"
-        v3_block_b = _v3_block("get_weather", '{"city": "Tokyo"}')
-        payload = f"{TC_OPEN}{malformed_block}{v3_block_b}{TC_CLOSE}"
-
-        events = self._feed(parser, payload, chunk_size=12)
-
-        v3_emissions = []
-        for ev in events:
-            if not ev or "tool_calls" not in ev:
-                continue
-            for call in ev["tool_calls"]:
-                if call.get("function", {}).get("name") == "get_weather":
-                    v3_emissions.append(call)
-
-        assert len(v3_emissions) == 1, (
-            f"V3 block emitted {len(v3_emissions)} times "
-            f"(want 1) — malformed block likely shifted indices."
-        )
-        assert v3_emissions[0]["index"] == 1, (
-            f"V3 block emitted at index {v3_emissions[0]['index']} "
-            f"(want 1) — index correlated against parsed-call list "
-            f"instead of wire-block position."
-        )
-        # And the cache is keyed by ABSOLUTE wire index (1), not by
-        # parsed-call index (0).
-        assert 1 in parser._streamed_v3_ids
-        assert 0 not in parser._streamed_v3_ids
-
-    def test_v3_block_at_index_zero_advances_current_tool_id(
-        self, parser: DeepSeekV31ToolParser
-    ) -> None:
-        """codex r5 BLOCKING-2 (edge case): when a V3 block emits at
-        absolute index 0, ``current_tool_id`` must be advanced from
-        ``-1`` to ``0`` so the legacy delta machine doesn't later
-        treat block 0 as an unadvanced V3.1 state.
-        """
-        payload = _envelope(_v3_block("get_weather", '{"city": "Tokyo"}'))
-
-        # Drive the stream all the way through.
-        self._feed(parser, payload, chunk_size=12)
-
-        assert parser.current_tool_id >= 0, (
-            f"current_tool_id={parser.current_tool_id} after a V3 "
-            f"block at index 0 closed — must have advanced from -1 to >=0."
-        )
-        assert 0 in parser._streamed_v3_ids
-
-    def test_v31_then_v3_does_not_re_emit_v3_block(
-        self, parser: DeepSeekV31ToolParser
-    ) -> None:
-        """codex r4 BLOCKING: a V3.1 block before a V3 block puts the
-        V3 block at absolute index 1, but ``_streamed_v3_ids`` records
-        only V3 emissions — so a positional ``idx < len(...)`` boundary
-        would re-emit the V3 block on every subsequent delta because
-        ``len(_streamed_v3_ids)`` stays at 1 while the V3 block's
-        absolute index is also 1.
-
-        The dict-keyed cache makes this structurally impossible: once
-        index 1 is in the cache, it's skipped on every later scan.
+        """Mixed envelope [V3.1, V3]: once V3 is detected in cumulative
+        text, the suppression engages and streaming returns ``None``.
+        The V3.1 block before V3 will have already been streamed by the
+        legacy delta machine (its emissions happen before V3 arrives).
+        Finalize then re-parses the cumulative text and emits both —
+        the postprocessor reconciles via ``tool_calls_detected`` (out
+        of scope for this parser-level test). We assert: no V3-shape
+        ``name="function"`` deltas reach the wire from streaming.
         """
         payload = _envelope(
             _v31_block("first_call", '{"a": 1}'),
@@ -536,32 +442,22 @@ class TestV3Streaming:
 
         events = self._feed(parser, payload, chunk_size=12)
 
-        # Count emissions of the V3 block (``second_call``).
-        v3_emissions = 0
         for ev in events:
             if not ev or "tool_calls" not in ev:
                 continue
             for call in ev["tool_calls"]:
-                if call.get("function", {}).get("name") == "second_call":
-                    v3_emissions += 1
-
-        assert v3_emissions == 1, (
-            f"V3 block at absolute index 1 was emitted {v3_emissions} "
-            f"times — index-keyed cache failed to dedupe."
-        )
+                assert call.get("function", {}).get("name") != "function", (
+                    f"V3 type-tag leaked into a streaming name: {call!r}"
+                )
 
     def test_v31_tool_named_with_function_prefix_streams_normally(
         self, parser: DeepSeekV31ToolParser
     ) -> None:
-        """codex r3 BLOCKING-1: a V3.1 tool whose name *starts* with
-        ``f`` / ``fun`` / ``function_lookup`` (i.e. a prefix of the V3
-        type-tag-plus-sep marker) must not be hijacked by the V3
-        short-circuit.
-
-        After the previous design briefly buffered any open block
-        whose body was a strict prefix of ``function<sep>``, this test
-        documents the fix: V3 buffering ONLY engages once the literal
-        ``function<sep>`` is in the body.
+        """A V3.1 tool named ``function_lookup`` (whose name is a
+        prefix of the V3 type-tag-plus-sep marker) must NOT trip the
+        V3 suppression. ``_cumulative_has_v3_block`` anchors on the
+        literal ``function<sep>`` byte sequence — ``function_lookup``
+        never reaches that exact prefix.
         """
         payload = _envelope(_v31_block("function_lookup", '{"q": "x"}'))
 
@@ -577,72 +473,21 @@ class TestV3Streaming:
         ]
         assert "function_lookup" in names, (
             f"V3.1 tool 'function_lookup' was hijacked by the V3 "
-            f"short-circuit. Events: {events!r}"
+            f"suppression. Events: {events!r}"
         )
 
-    def test_v3_block_close_with_immediate_next_open(
+    def test_v31_stream_empty_block_body_does_not_trigger_v3_suppression(
         self, parser: DeepSeekV31ToolParser
     ) -> None:
-        """codex r3 BLOCKING-2: a delta that closes one V3 block and
-        also opens the next block (with an empty body so far) must
-        still emit the closed V3 call. The closed-block scan runs
-        before the open-block inspection, so the empty trailing open
-        body doesn't mask the just-closed V3.
-        """
-        # Two V3 blocks back-to-back; choose a chunk size that places
-        # the first block's <call_end> AND the second block's
-        # <call_begin> in the SAME delta with an empty body after the
-        # second begin.
-        block_a = _v3_block("get_weather", '{"city": "Tokyo"}')
-        block_b = _v3_block("get_time", '{"tz": "UTC"}')
-        payload = _envelope(block_a, block_b)
-
-        # Pick a chunk_size that makes the close-of-A + start-of-B land
-        # in one delta. The exact value depends on payload geometry —
-        # iterate small sizes and assert at least one chunking
-        # produces a valid emission of both blocks.
-        for chunk_size in (5, 7, 9, 11, 13, 17):
-            p = DeepSeekV31ToolParser()
-            events = self._feed(p, payload, chunk_size=chunk_size)
-            names = [
-                call["function"]["name"]
-                for ev in events
-                if ev and "tool_calls" in ev
-                for call in ev["tool_calls"]
-            ]
-            if names == ["get_weather", "get_time"]:
-                break
-        else:
-            raise AssertionError(
-                "No chunk size emitted both V3 blocks — closed-V3 "
-                "recovery may not survive a delta that closes one "
-                "block and opens the next."
-            )
-
-    def test_v31_stream_empty_block_body_does_not_trigger_v3_short_circuit(
-        self, parser: DeepSeekV31ToolParser
-    ) -> None:
-        """codex r1 BLOCKING: ``"".startswith(...)`` is True for every
-        string, so without an explicit non-empty body guard the V3
-        short-circuit would hijack a V3.1 stream that ended right after
-        ``<call_begin>`` (no body byte yet) and silently swallow the
-        delta instead of letting the legacy delta state machine
-        initialize.
-
-        We replay a V3.1 payload one character at a time and confirm
-        the legacy path eventually emits a fully-streamed V3.1 call —
-        i.e. the V3 short-circuit did NOT hijack the empty-body
-        intermediate state.
+        """``"".startswith(...)`` is True for every string — a V3.1
+        stream that ended right after ``<call_begin>`` (no body byte
+        yet) must NOT trip V3 suppression and silently swallow the
+        legacy delta machine's emissions.
         """
         payload = _envelope(_v31_block("get_weather", '{"city": "Paris"}'))
 
         events = self._feed(parser, payload, chunk_size=1)
 
-        # The V3.1 streaming path emits the name event first, then
-        # arguments deltas, then nothing (V3.1's existing delta
-        # contract). What we care about for this regression: SOMETHING
-        # got emitted with name="get_weather" — the V3 short-circuit
-        # didn't swallow the whole stream.
         names_emitted = [
             call.get("function", {}).get("name")
             for ev in events
@@ -651,7 +496,7 @@ class TestV3Streaming:
             if call.get("function", {}).get("name")
         ]
         assert "get_weather" in names_emitted, (
-            f"V3.1 stream lost its name event — V3 short-circuit may "
+            f"V3.1 stream lost its name event — V3 suppression may "
             f"have hijacked the empty-body intermediate state. Events: "
             f"{events!r}"
         )
