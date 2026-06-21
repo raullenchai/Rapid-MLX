@@ -286,7 +286,25 @@ class TestProbeCoversBothLanes:
         probe must return ok=False so the transcriptions route
         returns the SAME 503 envelope the speech/voices routes use,
         rather than letting the STT route reach
-        ``STTEngine.load()`` and 500 with a different shape."""
+        ``STTEngine.load()`` and 500 with a different shape.
+
+        Codex r2 BLOCKING: clearing the probe's cached verdict isn't
+        enough — if an earlier test imported ``mlx_audio.stt.*``,
+        ``__import__("mlx_audio.stt.utils")`` returns the cached
+        module without re-running the import machinery and the
+        simulated breakage is never exercised. Drop the cached STT
+        modules from ``sys.modules`` first so the next ``__import__``
+        call has to go through the import system (and therefore hit
+        our monkeypatched ``__import__``).
+        """
+        import sys
+
+        # Evict any cached STT modules so the broken-import monkeypatch
+        # actually fires when the probe re-imports.
+        for name in list(sys.modules):
+            if name == "mlx_audio.stt" or name.startswith("mlx_audio.stt."):
+                monkeypatch.delitem(sys.modules, name, raising=False)
+
         _orig_import = builtins.__import__
 
         def _broken_stt(name, *args, **kwargs):
