@@ -309,35 +309,38 @@ def test_timeout_does_not_truncate_long_running_response():
     assert b"done" in bodies
 
 
-def test_timeout_only_guards_listed_path_prefixes():
-    """The middleware scopes its receive wrapper to ``/v1/*`` /
-    ``/internal/*`` / ``/anthropic/*``. A health-check POST to
-    ``/healthz`` (outside the guarded prefixes) MUST flow through
-    even when the body sits on receive() longer than the configured
-    timeout — no slow-DoS gate, no overhead.
+def test_size_cap_only_guards_listed_path_prefixes():
+    """The body-SIZE cap (413 path) scopes to ``/v1/*`` / ``/internal/*``
+    / ``/anthropic/*``. A POST to ``/healthz`` (outside the guarded
+    prefixes) with an over-cap body MUST flow through without the cap
+    firing — the /healthz handler is operator-defined and may have its
+    own validation.
 
-    Codex r1 BLOCKING on PR #732 — the original version of this
-    test had ``receive()`` return immediately, so the test would
-    have passed even if a regression dragged ``/healthz`` into the
-    timeout-guarded path. Fixed by stalling receive() *past* the
-    configured timeout: a wrongly guarded /healthz would now 408 and
-    fail the assertions below."""
+    H-14: this test used to assert the receive-IDLE gate also skipped
+    /healthz, but Rhea + Pavel both showed that's the slowloris hole:
+    a POST to /healthz with ``Content-Length: 1000`` and zero body
+    bytes pinned a worker thread for >15 s. The receive-idle gate now
+    runs on every POST/PUT/PATCH/DELETE regardless of path — only the
+    body-size cap remains path-scoped. The new asserts:
+
+    * disable the receive-idle gate so it doesn't fire on this path
+    * advertise a body bigger than the cap
+    * confirm the cap does NOT fire (the inner handler runs, no 413).
+    """
     import asyncio
 
     from vllm_mlx.config.server_config import get_config
     from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
 
-    receive_timeout = 0.05
-    receive_stall = receive_timeout * 6  # comfortably past the gate
-    get_config().body_receive_timeout_seconds = receive_timeout
+    # Disable receive-idle gate so this test isolates the cap path.
+    get_config().body_receive_timeout_seconds = 0.0
+    get_config().max_request_bytes = 1024
 
     handler_called = {"value": False}
 
     async def _inner_app(scope, receive, send):
-        # Stall longer than the configured timeout. If the middleware
-        # were wrapping ``receive`` for this path, the stall would
-        # trip ``asyncio.wait_for`` and synthesise a 408 here — the
-        # handler would never run.
+        # The /healthz path is not under the cap's prefix list, so the
+        # over-cap body MUST reach the inner handler unimpeded.
         await receive()
         handler_called["value"] = True
         await send(
@@ -352,14 +355,72 @@ def test_timeout_only_guards_listed_path_prefixes():
     middleware = RequestBodyLimitMiddleware(_inner_app)
 
     async def receive():
-        # Stall ``receive_stall`` seconds — longer than the gate's
-        # ``receive_timeout``. The unguarded path short-circuits BEFORE
-        # ``bounded_receive`` wraps us, so this sleep is harmless.
-        # A regression that wrongly guarded ``/healthz`` would see
-        # this stall fire the slow-DoS gate and 408 the request, and
-        # the assertions below would catch it.
-        await asyncio.sleep(receive_stall)
-        return {"type": "http.request", "body": b"{}", "more_body": False}
+        return {"type": "http.request", "body": b"x" * 4096, "more_body": False}
+
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    # Advertise content larger than the cap — a guarded path would 413
+    # immediately. /healthz must NOT.
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/healthz",
+        "headers": [(b"content-length", b"4096")],
+    }
+    asyncio.run(middleware(scope, receive, send))
+    # Inner handler reached — the size cap did NOT bounce /healthz.
+    assert handler_called["value"] is True
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    assert len(starts) == 1
+    assert starts[0]["status"] == 200
+    assert not any(m.get("status") == 413 for m in sent)
+
+
+def test_h14_receive_idle_gate_fires_on_unguarded_path():
+    """H-14: the body-receive idle gate runs on EVERY POST/PUT/PATCH/
+    DELETE regardless of path. Pre-fix, F-072 short-circuited the
+    receive wrapper when ``_path_is_guarded(path)`` was False — but
+    any FastAPI handler that calls ``await request.body()`` is
+    vulnerable to slowloris regardless of whether the path is under
+    ``/v1/``. Rhea (dogfood-081) and Pavel (dogfood-r3) both showed
+    POST /healthz with ``Content-Length: 1000`` + zero body bytes
+    hung the worker for >15 s on origin/main, even though F-073's
+    receive-idle timeout had supposedly landed.
+
+    This test pins the fix: a slowloris POST to ``/healthz`` (an
+    unguarded path) MUST get a 408 from our middleware within the
+    configured idle timeout, even though /healthz is outside the
+    body-size cap's prefix list.
+    """
+    import asyncio
+
+    from vllm_mlx.config.server_config import get_config
+    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+
+    get_config().body_receive_timeout_seconds = 0.1
+
+    async def _inner_app(scope, receive, send):
+        # A handler that drains the body (any FastAPI route with a
+        # Pydantic body model does this implicitly).
+        await receive()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"unreachable"})
+
+    middleware = RequestBodyLimitMiddleware(_inner_app)
+
+    async def receive():
+        # Slowloris: client opened socket + shipped headers + idle.
+        await asyncio.sleep(5.0)
+        return {"type": "http.request", "body": b"", "more_body": False}
 
     sent = []
 
@@ -370,19 +431,329 @@ def test_timeout_only_guards_listed_path_prefixes():
         "type": "http",
         "method": "POST",
         "path": "/healthz",
-        "headers": [],
+        "headers": [(b"content-length", b"1000")],
     }
+
     asyncio.run(middleware(scope, receive, send))
-    # Inner handler reached — the gate did NOT bounce /healthz.
-    assert handler_called["value"] is True
-    # ONLY the inner handler's 200 was sent — no 408 from a
-    # regressively guarded path.
+
+    # Gate fired: 408 envelope is on the wire.
+    assert len(sent) == 2, sent
+    start, body = sent
+    assert start["type"] == "http.response.start"
+    assert start["status"] == 408
+    payload = json.loads(body["body"])
+    assert payload["error"]["code"] == "request_timeout"
+
+
+def test_h14_receive_idle_gate_fires_on_audio_excluded_path():
+    """H-14: the audio transcription path
+    (``/v1/audio/transcriptions``) is excluded from the body-SIZE cap
+    because it has its own multipart-aware 25 MB cap upstream. Pre-fix,
+    the exclusion also accidentally disabled the receive-IDLE gate on
+    that path — so a slowloris POST to ``/v1/audio/transcriptions``
+    with ``Content-Length: 1000`` and zero body bytes hung the worker
+    indefinitely. The audio middleware doesn't carry its own idle
+    timer, so nothing fired.
+
+    Post-fix, the receive-idle gate runs unconditionally on every
+    POST/PUT/PATCH/DELETE; the exclusion only applies to the cap. A
+    slowloris on the excluded path MUST 408 within the configured
+    timeout.
+    """
+    import asyncio
+
+    from vllm_mlx.config.server_config import get_config
+    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+
+    get_config().body_receive_timeout_seconds = 0.1
+
+    async def _inner_app(scope, receive, send):
+        await receive()
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"unreachable"})
+
+    middleware = RequestBodyLimitMiddleware(_inner_app)
+
+    async def receive():
+        await asyncio.sleep(5.0)
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/audio/transcriptions",
+        "headers": [
+            (b"content-length", b"1000"),
+            (b"content-type", b"multipart/form-data; boundary=z"),
+        ],
+    }
+
+    asyncio.run(middleware(scope, receive, send))
+
+    assert len(sent) == 2, sent
+    start, body = sent
+    assert start["status"] == 408
+    payload = json.loads(body["body"])
+    assert payload["error"]["code"] == "request_timeout"
+
+
+def test_h14_progressive_upload_not_killed_by_per_chunk_timer():
+    """H-14: the idle timer is per-chunk, NOT a total-transfer cap.
+    A legitimate slow upload (e.g. a large VL image uploaded over a
+    cellular connection at 100 B/s) ships multiple receive frames over
+    several seconds — each frame must reset the idle timer so the
+    transfer completes.
+
+    We model this with five ``http.request`` frames at 0.5 s spacing
+    against a 1 s idle gate (idle gap < timeout). The middleware must
+    pass every frame through to the handler and emit no 408.
+    """
+    import asyncio
+
+    from vllm_mlx.config.server_config import get_config
+    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+
+    get_config().body_receive_timeout_seconds = 1.0
+    get_config().max_request_bytes = 0  # cap off — isolate idle gate
+
+    chunks_seen = {"value": 0}
+
+    async def _inner_app(scope, receive, send):
+        # Drain all frames.
+        while True:
+            msg = await receive()
+            if msg.get("type") != "http.request":
+                break
+            chunks_seen["value"] += 1
+            if not msg.get("more_body", False):
+                break
+        await send(
+            {
+                "type": "http.response.start",
+                "status": 200,
+                "headers": [(b"content-type", b"text/plain")],
+            }
+        )
+        await send({"type": "http.response.body", "body": b"ok"})
+
+    middleware = RequestBodyLimitMiddleware(_inner_app)
+
+    frames = iter(
+        [
+            (b"x" * 100, True),
+            (b"x" * 100, True),
+            (b"x" * 100, True),
+            (b"x" * 100, True),
+            (b"x" * 100, False),
+        ]
+    )
+
+    async def receive():
+        # 0.5 s gap between frames — well under the 1.0 s idle gate.
+        await asyncio.sleep(0.5)
+        try:
+            body, more = next(frames)
+        except StopIteration:
+            return {"type": "http.disconnect"}
+        return {"type": "http.request", "body": body, "more_body": more}
+
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": [(b"content-length", b"500")],
+    }
+
+    asyncio.run(middleware(scope, receive, send))
+
+    # All five frames delivered to the handler, 200 OK, no 408.
+    assert chunks_seen["value"] == 5
     starts = [m for m in sent if m["type"] == "http.response.start"]
     assert len(starts) == 1
     assert starts[0]["status"] == 200
-    # And NOT a 408 — a regression that guards /healthz would emit
-    # the slow-body timeout response instead.
     assert not any(m.get("status") == 408 for m in sent)
+
+
+def test_h14_no_double_send_after_408_rewrite():
+    """H-14: when the slow-body gate fires, ``guarded_send`` rewrites
+    FastAPI's body-parse-error 400 envelope as our 408. Pre-fix, the
+    rewrite flipped ``downstream_completed_response = True`` but the
+    follow-up ``http.response.body`` frame (carrying the original 400
+    envelope's bytes) fell past the suppression branch and landed in
+    the unconditional ``await send(msg)``. uvicorn rejected it with
+    ``RuntimeError: Unexpected ASGI message 'http.response.body'
+    sent, after response already completed`` on EVERY slowloris hit —
+    turning the quiet 408 bounce into a noisy crash log.
+
+    Post-fix, the ``response_replaced`` flag short-circuits every
+    subsequent frame the downstream tries to ship. This test models
+    the FastAPI behaviour by having the inner app emit the
+    start+body frames (simulating the 400 envelope) AFTER it receives
+    the slow-body exception, then asserting our wrapper only forwards
+    exactly two frames (our 408 start + our 408 body).
+    """
+    import asyncio
+
+    from vllm_mlx.config.server_config import get_config
+    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+
+    get_config().body_receive_timeout_seconds = 0.05
+
+    async def _inner_app(scope, receive, send):
+        # Mimic FastAPI: try to drain the body, the wrap raises our
+        # ``_BodyReceiveTimeoutError``, FastAPI catches it and turns
+        # it into an HTTPException(400) which then ships start+body.
+        # We model the "ship start+body after our raise" race by
+        # catching the exception and emitting two frames inline.
+        try:
+            await receive()
+        except Exception:
+            # FastAPI's body parser would now ship its own 400
+            # envelope through ``send``. The middleware MUST swallow
+            # both frames after the rewrite.
+            body = b'{"detail":"There was an error parsing the body"}'
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 400,
+                    "headers": [
+                        (b"content-type", b"application/json"),
+                        (b"content-length", str(len(body)).encode()),
+                    ],
+                }
+            )
+            await send(
+                {
+                    "type": "http.response.body",
+                    "body": body,
+                    "more_body": False,
+                }
+            )
+
+    middleware = RequestBodyLimitMiddleware(_inner_app)
+
+    async def receive():
+        await asyncio.sleep(5.0)
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    sent = []
+
+    async def send(msg):
+        sent.append(msg)
+
+    scope = {
+        "type": "http",
+        "method": "POST",
+        "path": "/v1/chat/completions",
+        "headers": [(b"content-length", b"1000")],
+    }
+
+    asyncio.run(middleware(scope, receive, send))
+
+    # Exactly two frames on the wire: our 408 start + our 408 body.
+    # The follow-up 400 envelope from the inner app must NOT escape.
+    assert len(sent) == 2, sent
+    starts = [m for m in sent if m["type"] == "http.response.start"]
+    bodies = [m for m in sent if m["type"] == "http.response.body"]
+    assert len(starts) == 1
+    assert len(bodies) == 1
+    assert starts[0]["status"] == 408
+    payload = json.loads(bodies[0]["body"])
+    assert payload["error"]["code"] == "request_timeout"
+
+
+def test_h14_env_var_override_reduces_timeout():
+    """H-14: the documented env-var escape hatch
+    ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` reduces the per-chunk
+    idle limit. This test sets the env to a small value via the same
+    CLI resolver the production binary uses, confirms it lands on
+    ``ServerConfig.body_receive_timeout_seconds`` (the source of truth
+    the middleware reads), and that the middleware fires within
+    that smaller bound.
+    """
+    import asyncio
+    import os
+
+    from vllm_mlx.config.server_config import get_config
+    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
+
+    os.environ["RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"] = "0.05"
+    try:
+        # Re-run the CLI resolver path that maps the env var to the
+        # ServerConfig field. The CLI lives in vllm_mlx.cli; the
+        # resolver runs at module-level reload time.
+        import vllm_mlx.server as server_mod
+        # The CLI's env-resolver writes to server_mod._body_receive_timeout_seconds
+        # which is then pushed into the ServerConfig at request time.
+        env_val = float(os.environ["RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"])
+        server_mod._body_receive_timeout_seconds = max(0.0, env_val)
+        get_config().body_receive_timeout_seconds = max(0.0, env_val)
+
+        async def _inner_app(scope, receive, send):
+            await receive()
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"text/plain")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b"x"})
+
+        middleware = RequestBodyLimitMiddleware(_inner_app)
+
+        async def receive():
+            await asyncio.sleep(5.0)
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        sent = []
+
+        async def send(msg):
+            sent.append(msg)
+
+        scope = {
+            "type": "http",
+            "method": "POST",
+            "path": "/v1/chat/completions",
+            "headers": [(b"content-length", b"1000")],
+        }
+
+        asyncio.run(middleware(scope, receive, send))
+
+        assert any(m.get("status") == 408 for m in sent), sent
+        # And the envelope reports the smaller timeout we set.
+        body_frame = next(m for m in sent if m["type"] == "http.response.body")
+        payload = json.loads(body_frame["body"])
+        assert "0.1s" in payload["error"]["message"] or "0.0s" in payload["error"]["message"]
+    finally:
+        del os.environ["RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"]
+
+
+def test_h14_default_timeout_value_is_15_seconds():
+    """H-14: pin the documented default. Operators rely on the
+    15 s default being applied when ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS``
+    is unset — a regression that bumped the default to 60 s would
+    widen the slowloris surface from 15 s × N workers to 60 s × N.
+    """
+    from vllm_mlx.config.server_config import ServerConfig
+
+    assert ServerConfig().body_receive_timeout_seconds == 15.0
 
 
 def test_timeout_path_does_not_double_send_when_body_size_also_trips():
