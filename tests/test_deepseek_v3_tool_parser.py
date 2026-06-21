@@ -450,8 +450,44 @@ class TestV3Streaming:
         # Internal cache size matches the emitted block count — proof
         # that we minted exactly one ID per block, not one per delta.
         assert len(parser._streamed_v3_ids) == 3
-        # And the cache content matches what we emitted.
-        assert parser._streamed_v3_ids == ids
+        # The cache content matches what we emitted, keyed by absolute
+        # block index. Order of values mirrors emission order because
+        # the three blocks are V3 indices 0/1/2.
+        assert parser._streamed_v3_ids == {0: ids[0], 1: ids[1], 2: ids[2]}
+
+    def test_v31_then_v3_does_not_re_emit_v3_block(
+        self, parser: DeepSeekV31ToolParser
+    ) -> None:
+        """codex r4 BLOCKING: a V3.1 block before a V3 block puts the
+        V3 block at absolute index 1, but ``_streamed_v3_ids`` records
+        only V3 emissions — so a positional ``idx < len(...)`` boundary
+        would re-emit the V3 block on every subsequent delta because
+        ``len(_streamed_v3_ids)`` stays at 1 while the V3 block's
+        absolute index is also 1.
+
+        The dict-keyed cache makes this structurally impossible: once
+        index 1 is in the cache, it's skipped on every later scan.
+        """
+        payload = _envelope(
+            _v31_block("first_call", '{"a": 1}'),
+            _v3_block("second_call", '{"b": 2}'),
+        )
+
+        events = self._feed(parser, payload, chunk_size=12)
+
+        # Count emissions of the V3 block (``second_call``).
+        v3_emissions = 0
+        for ev in events:
+            if not ev or "tool_calls" not in ev:
+                continue
+            for call in ev["tool_calls"]:
+                if call.get("function", {}).get("name") == "second_call":
+                    v3_emissions += 1
+
+        assert v3_emissions == 1, (
+            f"V3 block at absolute index 1 was emitted {v3_emissions} "
+            f"times — index-keyed cache failed to dedupe."
+        )
 
     def test_v31_tool_named_with_function_prefix_streams_normally(
         self, parser: DeepSeekV31ToolParser

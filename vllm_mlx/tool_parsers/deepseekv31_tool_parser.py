@@ -124,13 +124,21 @@ class DeepSeekV31ToolParser(ToolParser):
         self.streamed_args_for_tool: list[str] = []
 
         # IDs we have already emitted on the streaming V3 short-circuit
-        # path. We re-parse the cumulative text every time a block
-        # closes (so any newly-closed block is included), but we MUST
-        # NOT regenerate the IDs of blocks we have already announced —
+        # path, keyed by ABSOLUTE block index in the cumulative parse.
+        # We re-parse the cumulative text every time a block closes (so
+        # any newly-closed block is included), and we MUST NOT
+        # regenerate IDs for blocks we have already announced —
         # downstream clients track tool calls by ID and seeing the same
         # block under a new ID on every subsequent delta would corrupt
         # their state (codex r1 BLOCKING).
-        self._streamed_v3_ids: list[str] = []
+        #
+        # Must be keyed by absolute index, NOT a positional list:
+        # ``_streamed_v3_ids`` records ONLY V3 emissions; a V3.1 block
+        # in front of a V3 block makes the absolute index of the V3
+        # block 1 while ``len(_streamed_v3_ids)`` is 0 — a positional
+        # ``idx < len(...)`` would then re-emit the V3 block on every
+        # subsequent delta (codex r4 BLOCKING).
+        self._streamed_v3_ids: dict[int, str] = {}
 
         # V3.1 streaming regex (unchanged). V3-shaped streaming
         # arrives through the same regex because both shapes share the
@@ -277,12 +285,16 @@ class DeepSeekV31ToolParser(ToolParser):
         is_v3_index = self._classify_block_shapes(current_text)
 
         # Walk the parsed calls; for any index whose block is V3-shaped
-        # AND hasn't been emitted yet, queue it for emission.
+        # AND hasn't been emitted yet, queue it for emission. Emission
+        # state is tracked by ABSOLUTE block index keyed in
+        # ``_streamed_v3_ids`` — NOT by positional length — because
+        # ``_streamed_v3_ids`` records only V3 emissions and the
+        # cumulative parse interleaves V3 and V3.1 blocks (codex r4).
         to_emit: list[tuple[int, dict[str, Any]]] = []
         for idx, tc in enumerate(result.tool_calls):
             if idx >= len(is_v3_index) or not is_v3_index[idx]:
                 continue
-            if idx < len(self._streamed_v3_ids):
+            if idx in self._streamed_v3_ids:
                 continue
             to_emit.append((idx, tc))
 
@@ -292,7 +304,7 @@ class DeepSeekV31ToolParser(ToolParser):
         emitted: list[dict[str, Any]] = []
         for abs_idx, tc in to_emit:
             tc_id = tc["id"]
-            self._streamed_v3_ids.append(tc_id)
+            self._streamed_v3_ids[abs_idx] = tc_id
             # Keep ``current_tool_id`` advanced past this index so the
             # legacy machine doesn't try to re-emit the same block as
             # V3.1 on a subsequent delta. We're a bit defensive: if the
@@ -403,7 +415,7 @@ class DeepSeekV31ToolParser(ToolParser):
             self.streamed_args_for_tool = []
             self.current_tool_id = -1
             self.prev_tool_call_arr = []
-            self._streamed_v3_ids = []
+            self._streamed_v3_ids = {}
 
         current_token_ids = current_token_ids or []
         previous_token_ids = previous_token_ids or []
