@@ -1,0 +1,310 @@
+# SPDX-License-Identifier: Apache-2.0
+"""F-D05 regression tests — unified ``mlx_audio`` probe.
+
+Pre-fix the three audio endpoints used DIFFERENT probes:
+
+* ``/v1/audio/voices`` never touched ``mlx_audio`` at all and always
+  returned a static voice list (200).
+* ``/v1/audio/speech`` did a lazy ``from mlx_audio.tts.generate
+  import load_model`` inside the request handler — if the runtime
+  import broke, it caught ``ImportError`` and 503'd.
+* ``/v1/audio/transcriptions`` did its own lazy import.
+
+When the runtime import actually broke (e.g. a fresh ``[vision]``
+install where ``mlx-audio`` was pulled in as a transitive but
+something downstream was wonky), the endpoints disagreed: voices
+said yes, speech said no. Diego logged this in dogfood 0.8.3.
+
+Fix: every audio route consults the SAME
+:func:`vllm_mlx.audio.probe.require_mlx_audio` helper. The
+``find_spec`` presence check + cached late-import covers both
+"extra not installed" and "installed-but-runtime-broken" failure
+modes with the same 503 envelope.
+"""
+
+from __future__ import annotations
+
+import builtins
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+
+@pytest.fixture
+def _reset_audio_probe():
+    """Clear the cached probe verdict around each test.
+
+    The probe caches at module level so the import check runs at
+    most once per process. Tests that monkeypatch the import path
+    need to drop the cache so the next call re-probes.
+    """
+    from vllm_mlx.audio import probe
+
+    probe._reset_probe_cache()
+    yield
+    probe._reset_probe_cache()
+
+
+def _mount_audio_app():
+    from vllm_mlx.config import get_config
+    from vllm_mlx.routes import audio as audio_route
+
+    app = FastAPI()
+    app.include_router(audio_route.router)
+    cfg = get_config()
+    saved_api = cfg.api_key
+    cfg.api_key = None
+
+    def _restore():
+        cfg.api_key = saved_api
+
+    return TestClient(app), _restore
+
+
+# ---------------------------------------------------------------------------
+# Both routes succeed when mlx_audio is available
+# ---------------------------------------------------------------------------
+
+
+class TestProbeAgreesWhenAvailable:
+    """When ``mlx_audio`` is installed and importable cleanly, every
+    audio route reachable without a model load returns 200."""
+
+    def test_voices_returns_200_when_probe_ok(self, _reset_audio_probe):
+        pytest.importorskip("mlx_audio")
+        client, restore = _mount_audio_app()
+        try:
+            r = client.get("/v1/audio/voices")
+        finally:
+            restore()
+        assert r.status_code == 200, r.text
+        body = r.json()
+        assert "voices" in body
+        assert isinstance(body["voices"], list)
+        assert len(body["voices"]) > 0
+
+
+# ---------------------------------------------------------------------------
+# Both routes 503 with the SAME envelope when mlx_audio is broken
+# ---------------------------------------------------------------------------
+
+
+def _install_broken_mlx_audio(monkeypatch, *, reason="simulated breakage"):
+    """Force ``import mlx_audio`` (and sub-modules) to fail."""
+    _orig_import = builtins.__import__
+
+    def _broken(name, *args, **kwargs):
+        if name == "mlx_audio" or name.startswith("mlx_audio."):
+            raise ImportError(reason)
+        return _orig_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(builtins, "__import__", _broken)
+
+
+def _install_missing_mlx_audio(monkeypatch):
+    """Force ``find_spec("mlx_audio")`` to return None — simulates the
+    extra not being installed."""
+    import importlib.util as _ilu
+
+    real_find_spec = _ilu.find_spec
+
+    def _fake_find_spec(name, *args, **kwargs):
+        if name == "mlx_audio":
+            return None
+        return real_find_spec(name, *args, **kwargs)
+
+    monkeypatch.setattr("importlib.util.find_spec", _fake_find_spec)
+
+
+class TestProbeAgreesWhenBroken:
+    """When ``mlx_audio`` fails at runtime, both ``/v1/audio/speech``
+    and ``/v1/audio/voices`` return 503 with the same envelope shape
+    — the cross-endpoint inconsistency Diego logged is gone."""
+
+    def test_both_routes_503_when_runtime_import_fails(
+        self, monkeypatch, _reset_audio_probe
+    ):
+        _install_broken_mlx_audio(monkeypatch, reason="torn install simulated")
+        client, restore = _mount_audio_app()
+        try:
+            r_voices = client.get("/v1/audio/voices")
+            r_speech = client.post(
+                "/v1/audio/speech",
+                json={"model": "kokoro", "input": "hi", "voice": "af_heart"},
+            )
+        finally:
+            restore()
+        assert r_voices.status_code == 503, r_voices.text
+        assert r_speech.status_code == 503, r_speech.text
+        # Same status, same envelope shape.
+        body_v = r_voices.json()
+        body_s = r_speech.json()
+        assert "detail" in body_v
+        assert "detail" in body_s
+        # Both detail strings mention the runtime failure reason and
+        # the actionable install hint.
+        for body in (body_v, body_s):
+            assert "torn install simulated" in body["detail"] or (
+                "import failed" in body["detail"] or "not installed" in body["detail"]
+            )
+            assert "rapid-mlx[audio]" in body["detail"]
+
+    def test_both_routes_503_when_extra_not_installed(
+        self, monkeypatch, _reset_audio_probe
+    ):
+        _install_missing_mlx_audio(monkeypatch)
+        client, restore = _mount_audio_app()
+        try:
+            r_voices = client.get("/v1/audio/voices")
+            r_speech = client.post(
+                "/v1/audio/speech",
+                json={"model": "kokoro", "input": "hi", "voice": "af_heart"},
+            )
+        finally:
+            restore()
+        assert r_voices.status_code == 503
+        assert r_speech.status_code == 503
+        assert "not installed" in r_voices.json()["detail"]
+        assert "not installed" in r_speech.json()["detail"]
+        # Install hint is uniform.
+        assert "rapid-mlx[audio]" in r_voices.json()["detail"]
+        assert "rapid-mlx[audio]" in r_speech.json()["detail"]
+
+
+# ---------------------------------------------------------------------------
+# Both routes use the SAME helper (via static analysis)
+# ---------------------------------------------------------------------------
+
+
+class TestProbeWiredFromOneSource:
+    """Mechanical guard against re-introducing route-local probes.
+
+    A future refactor that hand-rolls a ``try: import mlx_audio`` in
+    a new audio route — or removes the call to ``require_mlx_audio``
+    from an existing route — would recreate the exact cross-endpoint
+    inconsistency F-D05 fixed. Source-grep the audio routes module:
+    every ``POST``/``GET`` audio route must import/call
+    ``require_mlx_audio``.
+    """
+
+    def _route_body(self, path_marker: str) -> str:
+        """Slice the source between a ``@router.<verb>("<path>"...)``
+        decorator and the next ``@router.`` decorator (or EOF). Keeps
+        the assertion off the module-level docstrings that mention
+        the same path strings."""
+        from pathlib import Path
+
+        route_file = (
+            Path(__file__).resolve().parents[1] / "vllm_mlx" / "routes" / "audio.py"
+        )
+        source = route_file.read_text()
+        decorator = "@router."
+        # Find the decorator line whose immediate next argument is the
+        # route path we care about. Scan @router. occurrences.
+        idx = 0
+        while True:
+            idx = source.find(decorator, idx)
+            if idx == -1:
+                raise AssertionError(f"no route decorator for {path_marker}")
+            # Look ahead a few lines for the path string.
+            line_end = source.find("\n", idx)
+            decorator_chunk = source[idx : line_end + 1]
+            if path_marker in decorator_chunk:
+                break
+            idx = line_end + 1
+        next_decorator = source.find(decorator, idx + 1)
+        end = next_decorator if next_decorator != -1 else len(source)
+        return source[idx:end]
+
+    def test_speech_route_calls_require_mlx_audio(self):
+        body = self._route_body("/v1/audio/speech")
+        assert "require_mlx_audio" in body, (
+            "F-D05 regression: /v1/audio/speech no longer calls "
+            "require_mlx_audio(). Every audio route must consult the "
+            "shared probe — see vllm_mlx/audio/probe.py."
+        )
+
+    def test_voices_route_calls_require_mlx_audio(self):
+        body = self._route_body("/v1/audio/voices")
+        assert "require_mlx_audio" in body, (
+            "F-D05 regression: /v1/audio/voices no longer calls "
+            "require_mlx_audio(). The voices and speech routes diverged."
+        )
+
+    def test_transcriptions_route_calls_require_mlx_audio(self):
+        body = self._route_body("/v1/audio/transcriptions")
+        assert "require_mlx_audio" in body, (
+            "F-D05 regression: /v1/audio/transcriptions no longer "
+            "consults the shared probe. Add ``require_mlx_audio()`` "
+            "to the handler."
+        )
+
+    def test_probe_module_no_top_level_mlx_audio_import(self):
+        """The probe itself must not import ``mlx_audio`` at module
+        top level — otherwise the base install (no ``[audio]`` extra)
+        crashes on ``from vllm_mlx.audio.probe import require_mlx_audio``,
+        defeating the whole point of the lazy probe. Mirror the
+        invariant H-08's ``test_mlx_embeddings_not_imported_at_module_top_level``
+        already pins for embeddings."""
+        from pathlib import Path
+
+        probe_file = (
+            Path(__file__).resolve().parents[1] / "vllm_mlx" / "audio" / "probe.py"
+        )
+        for lineno, line in enumerate(probe_file.read_text().splitlines(), 1):
+            stripped = line.lstrip()
+            if stripped != line:
+                # Indented — inside a function, that's the lazy form.
+                continue
+            assert not stripped.startswith("import mlx_audio"), (
+                f"probe.py:{lineno}: top-level ``import mlx_audio`` — "
+                "the lazy probe must keep mlx_audio out of the base "
+                "install's import surface."
+            )
+            assert not stripped.startswith("from mlx_audio"), (
+                f"probe.py:{lineno}: top-level ``from mlx_audio`` — "
+                "same lazy-import constraint as above."
+            )
+
+
+# ---------------------------------------------------------------------------
+# Probe verdict caching
+# ---------------------------------------------------------------------------
+
+
+class TestProbeCaching:
+    """The probe runs the runtime import at most once per process,
+    then re-uses the verdict. Tests pin the cache behavior so a
+    future refactor that re-imports on every request doesn't quietly
+    add per-request import latency."""
+
+    def test_verdict_is_cached_after_first_call(self, _reset_audio_probe):
+        pytest.importorskip("mlx_audio")
+        from vllm_mlx.audio import probe
+
+        # First call populates the cache.
+        v1 = probe.mlx_audio_available()
+        assert v1.ok is True
+        # Cache is populated.
+        assert probe._cached_verdict is not None
+        v2 = probe.mlx_audio_available()
+        # Same object (cached, not re-computed).
+        assert v1 is v2
+
+    def test_reset_cache_forces_reprobe(self, monkeypatch, _reset_audio_probe):
+        from vllm_mlx.audio import probe
+
+        # Force a False verdict to be cached.
+        _install_missing_mlx_audio(monkeypatch)
+        v1 = probe.mlx_audio_available()
+        assert v1.ok is False
+        # Reset and let the real find_spec answer this time.
+        probe._reset_probe_cache()
+        monkeypatch.undo()
+        # If mlx_audio isn't installed in this venv, skip — the test
+        # is about cache-reset behavior, not the True path.
+        pytest.importorskip("mlx_audio")
+        v2 = probe.mlx_audio_available()
+        assert v2.ok is True
+        assert v1 is not v2

@@ -444,6 +444,15 @@ async def create_transcription(
         else (response_format_query if response_format_query is not None else "json")
     )
 
+    # F-D05: single audio dep probe — same envelope as
+    # ``/v1/audio/speech`` and ``/v1/audio/voices``. Fires BEFORE we
+    # spool any upload bytes so a broken ``mlx_audio`` install rejects
+    # cheaply (no temp file, no read loop). Catches both "extra not
+    # installed" and "installed-but-runtime-broken" failure modes.
+    from ..audio.probe import require_mlx_audio
+
+    require_mlx_audio()
+
     # Resolve / validate the requested model BEFORE draining the upload.
     # Previously every failure mode (unknown alias, missing mlx-audio,
     # bad audio bytes) collapsed into a 500 "could not open/decode
@@ -527,8 +536,26 @@ async def create_speech(
     speed: float = 1.0,
     response_format: str = "wav",
 ):
-    """Generate speech from text (OpenAI TTS API compatible)."""
+    """Generate speech from text (OpenAI TTS API compatible).
+
+    F-D05: probe ``mlx_audio`` availability through the shared
+    :func:`vllm_mlx.audio.probe.require_mlx_audio` helper so this
+    route's 503 envelope matches ``/v1/audio/voices`` and
+    ``/v1/audio/transcriptions``. Pre-fix each audio route hand-rolled
+    its own check; the voices route never probed at all, the speech
+    route only saw the ImportError, and operators couldn't tell from
+    one endpoint that the others were also broken.
+    """
     global _tts_engine
+
+    # Single audio dep probe (F-D05). Fires BEFORE the lazy TTSEngine
+    # import — if mlx_audio is missing or broken at runtime, every
+    # audio route now returns the SAME 503 envelope with the actual
+    # failure reason embedded so operators can distinguish "missing
+    # extra" from "torn install".
+    from ..audio.probe import require_mlx_audio
+
+    require_mlx_audio()
 
     try:
         from ..audio.tts import TTSEngine
@@ -555,10 +582,21 @@ async def create_speech(
         )
         return Response(content=audio_bytes, media_type=content_type)
 
-    except ImportError:
+    except HTTPException:
+        # Preserve probe-emitted 503 (and any other explicit status)
+        # rather than collapsing into the generic 500 catch-all below.
+        raise
+    except ImportError as e:
+        # Defense in depth: if a future refactor introduces an import
+        # path the probe doesn't cover (or the cached verdict is stale
+        # in some edge case), still surface a meaningful 503 instead
+        # of leaking a stack trace through the catch-all 500.
         raise HTTPException(
             status_code=503,
-            detail="mlx-audio not installed. Install with: pip install mlx-audio",
+            detail=(
+                f"mlx-audio import failed at runtime: {e}. "
+                "Install with: pip install 'rapid-mlx[audio]'"
+            ),
         )
     except Exception as e:
         logger.error(f"TTS generation failed: {e}")
@@ -567,8 +605,19 @@ async def create_speech(
 
 @router.get("/v1/audio/voices", dependencies=[Depends(verify_api_key)])
 async def list_voices(model: str = "kokoro"):
-    """List available voices for a TTS model."""
+    """List available voices for a TTS model.
+
+    F-D05: gates on the same :func:`require_mlx_audio` probe that
+    ``/v1/audio/speech`` uses so callers can't get a 200 with a
+    voice list while the very next ``speech`` call 503s on the same
+    server. Pre-fix the voices route returned a static list without
+    touching ``mlx_audio`` at all, so it advertised TTS-capability
+    even when the engine wouldn't load.
+    """
+    from ..audio.probe import require_mlx_audio
     from ..audio.tts import CHATTERBOX_VOICES, KOKORO_VOICES
+
+    require_mlx_audio()
 
     if "kokoro" in model.lower():
         return {"voices": KOKORO_VOICES}

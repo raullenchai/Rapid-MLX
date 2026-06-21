@@ -112,6 +112,99 @@ class TestEmbeddingsExtraProbe:
         # Returns None without raising.
         assert require_mlx_embeddings_or_exit() is None
 
+    def test_guard_fires_before_banner_in_cli_serve(self):
+        """F-H08-INCOMPLETE follow-up: the ``[embeddings]`` extra check
+        in ``cli.py::serve_command`` must run BEFORE the model-download
+        prefetch and the startup banner. Pre-fix the probe lived deep
+        in ``serve_command`` so the operator saw the alias-resolved log
+        line, the "🐆 Rapid-MLX" banner, the feature list, AND the
+        Model id BEFORE the error and ``sys.exit(2)`` — Diego reported
+        this as a warning-and-fall-through because the banner masked
+        the actual exit.
+
+        Source-pin the ordering: in ``cli.py::serve_command``, the
+        first ``require_mlx_embeddings_or_exit`` reference must appear
+        BEFORE the first ``_ensure_model_downloaded`` reference AND
+        BEFORE the first ``"🐆 Rapid-MLX"`` banner string.
+        """
+        cli_file = Path(__file__).resolve().parents[1] / "vllm_mlx" / "cli.py"
+        source = cli_file.read_text()
+        # Locate serve_command body — between ``def serve_command`` and
+        # the next top-level ``def`` so we only scan the relevant function.
+        start = source.index("def serve_command(")
+        # Look for the next ``\ndef `` (top-level function) after start.
+        end = source.find("\ndef ", start + 1)
+        body = source[start : end if end != -1 else len(source)]
+
+        # The guard must appear in serve_command at all. Look for the
+        # actual CALL form ``require_mlx_embeddings_or_exit()`` so
+        # docstring/comment mentions of the helper name don't confuse
+        # the ordering check.
+        idx_require = body.find("require_mlx_embeddings_or_exit()")
+        assert idx_require != -1, (
+            "serve_command does not call require_mlx_embeddings_or_exit() — "
+            "the H-08 guard is gone. Restore the probe at the top of "
+            "serve_command."
+        )
+
+        # Ordering vs the model download. Match the CALL form so a
+        # comment that mentions ``_ensure_model_downloaded`` higher up
+        # doesn't trip the ordering check.
+        idx_download = body.find("_ensure_model_downloaded(")
+        assert idx_download != -1, (
+            "serve_command no longer calls _ensure_model_downloaded() — "
+            "the fixture this test pins against has moved; update the "
+            "test to match the new boot order."
+        )
+        assert idx_require < idx_download, (
+            "F-H08-INCOMPLETE regression: require_mlx_embeddings_or_exit "
+            "fires AFTER _ensure_model_downloaded in serve_command. The "
+            "guard must run first so a cold-cache user doesn't pay a "
+            "multi-minute download before the install-hint exit."
+        )
+
+        # Ordering vs the startup banner.
+        idx_banner = body.find("🐆 Rapid-MLX")
+        if idx_banner != -1:
+            assert idx_require < idx_banner, (
+                "F-H08-INCOMPLETE regression: the H-08 guard fires AFTER "
+                "the '🐆 Rapid-MLX' startup banner — operators saw the "
+                "banner + Features line + Model id before the error, which "
+                "looked like a successful boot. Move the guard BEFORE "
+                "the banner."
+            )
+
+    def test_guard_fires_before_banner_in_server_entrypoint(self):
+        """Same invariant for the standalone ``python -m vllm_mlx.server``
+        entrypoint. Pre-fix the probe lived after ``configure_logging``
+        and the SECURITY CONFIGURATION header; new contract is that
+        nothing prints between ``parse_args()`` and the guard."""
+        server_file = Path(__file__).resolve().parents[1] / "vllm_mlx" / "server.py"
+        source = server_file.read_text()
+
+        # The standalone entrypoint's parse_args sits inside the same
+        # function that prints the SECURITY CONFIGURATION banner.
+        idx_parse = source.find("args = parser.parse_args()")
+        assert idx_parse != -1
+        # Confirm the function body actually contains the guard — look
+        # for the CALL form so a docstring reference doesn't satisfy
+        # the search.
+        idx_require = source.find("require_mlx_embeddings_or_exit()", idx_parse)
+        assert idx_require != -1, (
+            "server.py main entrypoint no longer calls "
+            "require_mlx_embeddings_or_exit after parse_args — H-08 "
+            "regression."
+        )
+        idx_security_banner = source.find("SECURITY CONFIGURATION", idx_parse)
+        # The first SECURITY CONFIGURATION line after parse_args must
+        # come AFTER the guard — i.e. the guard fires before the banner.
+        assert idx_security_banner != -1, "SECURITY banner line missing"
+        assert idx_require < idx_security_banner, (
+            "F-H08-INCOMPLETE regression in server.py: the embedding "
+            "extras probe fires AFTER the SECURITY CONFIGURATION banner. "
+            "Move it to immediately after parse_args()."
+        )
+
     def test_mlx_embeddings_not_imported_at_module_top_level(self):
         """The whole point of H-08: ``mlx_embeddings`` must NOT be
         imported at module top level by any rapid-mlx source file.

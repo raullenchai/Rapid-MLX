@@ -747,6 +747,26 @@ def serve_command(args):
     import os
     import sys
 
+    # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
+    # fire first thing in ``serve_command`` — before
+    # ``prompt_upgrade_if_available`` (which may exit 0 on user
+    # decline), before ``_ensure_model_downloaded`` (which can take
+    # minutes on a cold cache), and well before the startup banner
+    # gets printed. Pre-fix the check lived deeper in the function so
+    # the operator saw the alias-resolved log line, the startup banner,
+    # the feature list, AND the model id BEFORE the
+    # "requires the [embeddings] extra" error and ``sys.exit(2)``,
+    # which read as a successful boot followed by a mysterious failure
+    # — Diego logged this as a warning-and-fall-through bug because
+    # the banner masked the actual exit. Hoisting the probe to the
+    # very top of ``serve_command`` puts the error first, with no
+    # banner output before it. ``mlx_embeddings`` import stays lazy so
+    # the base install (no ``[embeddings]`` extra) keeps booting.
+    if getattr(args, "embedding_model", None):
+        from .embedding import require_mlx_embeddings_or_exit
+
+        require_mlx_embeddings_or_exit()
+
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors
     # RAPID_MLX_DISABLE_VERSION_CHECK, CI=1, and non-TTY stdin. Cached
@@ -1186,12 +1206,12 @@ def serve_command(args):
 
     # Pre-load embedding model if specified
     if args.embedding_model:
-        # H-08 guard: ``--embedding-model`` is advertised in serve --help
-        # but ``mlx_embeddings`` lives behind the ``[embeddings]`` extra.
-        # Probe here so the user gets a clear install hint on stderr +
-        # ``sys.exit(2)`` instead of a raw ``ModuleNotFoundError`` deep
-        # inside the engine load path. Lazy import — base install stays
-        # ``mlx_embeddings``-free.
+        # H-08 guard already fired at the top of ``serve_command``
+        # (F-H08-INCOMPLETE fix) — by the time we get here ``mlx_embeddings``
+        # is importable. Re-probe defensively as a belt-and-braces:
+        # cheap, and any caller that synthesizes an ``args`` namespace
+        # and jumps straight into the load path still gets the same
+        # install-hint exit code instead of a raw ``ModuleNotFoundError``.
         from .embedding import require_mlx_embeddings_or_exit
 
         require_mlx_embeddings_or_exit()

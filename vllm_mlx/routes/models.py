@@ -150,14 +150,8 @@ def _reported_modality(model_id: str, profile_modality: str) -> str:
     return profile_modality
 
 
-def _embedding_capabilities(model_id: str) -> list[str]:
-    """Return capability tags for ``model_id``.
-
-    H-09 sub-fix: only the explicitly-configured embedding model is
-    tagged ``"embedding"``. When the server boots without
-    ``--embedding-model``, the route guard rejects ``/v1/embeddings``
-    requests with a 400, so advertising any chat-model id as
-    embedding-capable would be lying to the client.
+def _locked_embedding_id() -> str | None:
+    """Return the configured embedding model id, if any.
 
     Reads from ``ServerConfig.embedding_model_locked`` first and falls
     back to the ``server._embedding_model_locked`` global so the
@@ -166,16 +160,134 @@ def _embedding_capabilities(model_id: str) -> list[str]:
     """
     cfg = get_config()
     locked = cfg.embedding_model_locked
-    if locked is None:
-        try:
-            from ..server import _embedding_model_locked as _server_locked
+    if locked is not None:
+        return locked
+    try:
+        from ..server import _embedding_model_locked as _server_locked
 
-            locked = _server_locked
-        except Exception:  # noqa: BLE001
-            locked = None
+        return _server_locked
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _is_vlm(model_id: str, profile_modality: str | None) -> bool:
+    """Return True when ``model_id`` accepts image input.
+
+    Single source of truth for VLM detection on the wire. Combines
+    two signals:
+
+    * ``profile_modality != "text"`` — explicit alias registration
+      (``aliases.json``) wins when the profile flags a non-text
+      modality. Catches diffusion / audio / future modalities the
+      raw HF-id heuristic can't see.
+    * :func:`vllm_mlx.api.utils.is_mllm_model` — the same detector
+      ``cli.py`` and ``server.py`` use to route requests through
+      ``MLLMBatchGenerator``. Covers VLM aliases that internally
+      keep ``modality="text"`` (their language backbone IS the AR
+      lane; the multimodal path layers on top — see
+      :func:`_reported_modality`) and raw HF VLM repos that have no
+      alias entry yet.
+
+    Any exception inside ``is_mllm_model`` (corrupt local config,
+    HF cache I/O failure) collapses to ``False`` so the
+    ``/v1/models`` endpoint stays available — losing the ``"vision"``
+    capability tag is far less harmful than 500'ing the whole listing.
+    """
+    if profile_modality is not None and profile_modality != "text":
+        # Non-text profile modalities are authoritative (e.g.
+        # ``image``, ``text-diffusion``). The wire-reported modality
+        # may still flip to ``image`` via ``_reported_modality``
+        # below, but the capability tag is decided independently.
+        if profile_modality == "image":
+            return True
+    try:
+        return bool(is_mllm_model(model_id))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def _tools_capable(profile_tool_parser: str | None) -> bool:
+    """Return True when ``model_id`` exposes a tool-call surface.
+
+    Combines two signals:
+
+    * The alias profile carries a non-empty ``tool_call_parser``
+      (qwen, hermes, mistral, …) — set in ``aliases.json`` for the
+      tool-capable families. Authoritative for registered aliases.
+    * Server-level ``_tool_call_parser`` is set (via
+      ``--tool-call-parser`` or auto-detection during boot). Covers
+      raw HF paths the operator wired tools onto with a CLI flag.
+
+    Either signal flips the ``"tools"`` capability on. Reading the
+    server global through ``get_config()`` keeps the import surface
+    flat — no late ``vllm_mlx.server`` import needed in the common
+    path.
+    """
+    if profile_tool_parser:
+        return True
+    cfg = get_config()
+    return bool(getattr(cfg, "tool_call_parser", None))
+
+
+def _detect_capabilities(
+    model_id: str,
+    profile_modality: str | None = None,
+    profile_tool_parser: str | None = None,
+) -> list[str]:
+    """Compute the ``capabilities`` tag list for ``model_id``.
+
+    F-D01: pre-fix only the configured embedding model carried a tag
+    (``"embedding"``) — every other entry returned ``[]`` even when
+    it accepted image input or exposed a tool-call surface.
+    Downstream clients that route on capabilities couldn't tell a VLM
+    from a text-only model from the wire.
+
+    The unified detector emits the full set in a stable order:
+
+    * ``"embedding"`` — exactly when this id is the
+      ``--embedding-model`` locked at startup. The chat surface is
+      still 400'd by the embeddings route guard for non-locked ids
+      (H-09), so we don't combine ``"text"`` with ``"embedding"``.
+    * ``"text"`` — every non-embedding model accepts text input.
+    * ``"vision"`` — :func:`_is_vlm` returns True (profile flags
+      ``image`` or :func:`is_mllm_model` matches).
+    * ``"tools"`` — :func:`_tools_capable` returns True (alias
+      profile has a parser, or the server is running with one).
+
+    Order is fixed: ``text → vision → tools`` (or just
+    ``["embedding"]`` for the embedding entry). Tests pin this so
+    a future addition (e.g. ``"audio"``) is a deliberate, reviewed
+    change rather than a silent reordering.
+    """
+    locked = _locked_embedding_id()
     if locked is not None and model_id == locked:
+        # H-09 invariant preserved: the embedding model carries
+        # ``"embedding"`` exclusively. Combining it with ``"text"``
+        # would mislead clients into routing chat traffic at the
+        # embedding model id — the chat surface is not wired.
         return ["embedding"]
-    return []
+
+    caps: list[str] = ["text"]
+    if _is_vlm(model_id, profile_modality):
+        caps.append("vision")
+    if _tools_capable(profile_tool_parser):
+        caps.append("tools")
+    return caps
+
+
+def _reported_modality_for_embedding(locked_id: str) -> str:
+    """Return the ``modality`` field for the embedding entry.
+
+    F-D01 cosmetic fix: pre-fix the embedding entry advertised
+    ``modality=None`` while VLMs advertised ``modality="image"``.
+    Clients reading ``modality`` to distinguish lanes saw a
+    three-way (text / image / null) shape instead of the documented
+    text / image / embedding axis. Embedding models accept text
+    input, so the on-wire modality is ``"text"`` — the
+    ``capabilities=["embedding"]`` tag is what distinguishes the
+    lane, not the modality.
+    """
+    return "text"
 
 
 def _build_model_info(model_id: str) -> ModelInfo:
@@ -186,12 +298,12 @@ def _build_model_info(model_id: str) -> ModelInfo:
     HF path (``mlx-community/Qwen3.5-4B-MLX-4bit``); ``resolve_profile``
     handles both. Unknown ids (operator-supplied custom paths, models
     not yet in ``aliases.json``) get the OpenAI baseline shape with
-    every extension field at ``None`` — except modality, which still
-    runs through the multimodal detector so an unregistered VLM repo
-    id still advertises ``image`` (F-067 layer fix covers raw HF paths
-    too, not just registered aliases).
+    every extension field at ``None`` — except modality and
+    capabilities, which still run through the detectors so an
+    unregistered VLM repo id still advertises ``image`` modality
+    plus the ``"vision"`` capability tag (F-D01 + F-067 layer fix
+    covers raw HF paths too, not just registered aliases).
     """
-    capabilities = _embedding_capabilities(model_id)
     profile = resolve_profile(model_id)
     # ``context_window`` is engine-derived (not profile-derived) so it
     # surfaces even for unregistered operator-supplied ids when an
@@ -199,6 +311,40 @@ def _build_model_info(model_id: str) -> ModelInfo:
     # failures fall through to ``None`` and the client uses its own
     # per-family fallback. See ``_resolve_context_window`` docstring.
     context_window = _resolve_context_window(model_id)
+
+    locked = _locked_embedding_id()
+    if locked is not None and model_id == locked:
+        # The embedding entry: ``capabilities=["embedding"]`` plus an
+        # explicit ``modality="text"`` (F-D01 cosmetic — pre-fix this
+        # came back as ``null`` and clients couldn't tell embedding
+        # apart from "unset" on the wire). Pass through the
+        # ``context_window`` so embedding entries also carry the
+        # engine-advertised cap (PR #808 contract) when an engine is
+        # actually loaded for the embedding id.
+        if profile is None:
+            return ModelInfo(
+                id=model_id,
+                modality=_reported_modality_for_embedding(locked),
+                capabilities=["embedding"],
+                context_window=context_window,
+            )
+        sampling = (
+            dict(profile.recommended_sampling)
+            if profile.recommended_sampling is not None
+            else None
+        )
+        return ModelInfo(
+            id=model_id,
+            recommended_sampling=sampling,
+            is_hybrid=profile.is_hybrid,
+            is_moe=profile.is_moe,
+            tool_call_parser=profile.tool_call_parser,
+            reasoning_parser=profile.reasoning_parser,
+            modality=_reported_modality_for_embedding(locked),
+            capabilities=["embedding"],
+            context_window=context_window,
+        )
+
     if profile is None:
         # Preserve the prior unknown-id wire shape (``ModelInfo(id=model_id)``
         # with the schema-default ``modality``) and only override when the
@@ -208,6 +354,9 @@ def _build_model_info(model_id: str) -> ModelInfo:
         # ``ModelInfo.modality``'s default ever flipped from ``None``.
         # Branch on the detector instead so the default path keeps using
         # the schema default.
+        capabilities = _detect_capabilities(
+            model_id, profile_modality=None, profile_tool_parser=None
+        )
         try:
             if is_mllm_model(model_id):
                 return ModelInfo(
@@ -233,6 +382,11 @@ def _build_model_info(model_id: str) -> ModelInfo:
         dict(profile.recommended_sampling)
         if profile.recommended_sampling is not None
         else None
+    )
+    capabilities = _detect_capabilities(
+        model_id,
+        profile_modality=profile.modality,
+        profile_tool_parser=profile.tool_call_parser,
     )
     return ModelInfo(
         id=model_id,
@@ -283,14 +437,7 @@ async def list_models() -> ModelsResponse:
     # configured the route guard already 400s on ``/v1/embeddings``,
     # so nothing is added here — capability advertisement matches
     # actual behavior.
-    locked = cfg.embedding_model_locked
-    if locked is None:
-        try:
-            from ..server import _embedding_model_locked as _server_locked
-
-            locked = _server_locked
-        except Exception:  # noqa: BLE001
-            locked = None
+    locked = _locked_embedding_id()
     if locked:
         _append(_build_model_info(locked))
 
@@ -322,14 +469,7 @@ async def retrieve_model(model_id: str) -> ModelInfo:
     # The dedicated embedding model id is addressable too so callers
     # can hydrate per-model state from ``/v1/models/{id}`` without
     # extra wire heuristics.
-    locked = cfg.embedding_model_locked
-    if locked is None:
-        try:
-            from ..server import _embedding_model_locked as _server_locked
-
-            locked = _server_locked
-        except Exception:  # noqa: BLE001
-            locked = None
+    locked = _locked_embedding_id()
     if locked and model_id == locked:
         return _build_model_info(model_id)
     raise HTTPException(status_code=404, detail=f"Model '{model_id}' not found")

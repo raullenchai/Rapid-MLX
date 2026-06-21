@@ -1694,6 +1694,20 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
+    # fire BEFORE logging configuration and the security/banner side
+    # effects below. Pre-fix on this entrypoint the probe ran AFTER the
+    # parser-init log lines and the security summary, then the user
+    # saw "error: --embedding-model requires the [embeddings] extra"
+    # interleaved with banner output and exit-2 — Diego logged this
+    # as a warning-and-fall-through. Hoisting the probe puts the
+    # error first with nothing else on stderr/stdout before it.
+    if getattr(args, "embedding_model", None):
+        from .embedding import require_mlx_embeddings_or_exit
+
+        require_mlx_embeddings_or_exit()
+
     uvicorn_log_level = configure_logging(args.log_level)
 
     # Set global configuration
@@ -1792,17 +1806,18 @@ Examples:
         _reasoning_parser_name = args.reasoning_parser
         logger.info(f"Reasoning parser enabled: {args.reasoning_parser}")
 
-    # Pre-load embedding model if specified
+    # Pre-load embedding model if specified. The H-08 guard already
+    # fired at the top of this function (F-H08-INCOMPLETE fix); by the
+    # time we reach this point either ``args.embedding_model`` is None
+    # or ``mlx_embeddings`` is importable. Re-probe defensively as
+    # belt-and-braces: cheap, and any caller that synthesizes args and
+    # jumps in here still gets the install-hint exit instead of a raw
+    # ``ModuleNotFoundError``.
     if args.embedding_model:
-        # H-08 guard: probe before the engine import path so an opaque
-        # ``ModuleNotFoundError`` traceback is replaced with an
-        # actionable install hint on stderr + ``sys.exit(2)``. Lazy
-        # import — the base install must not pin ``mlx_embeddings`` at
-        # module top-level.
         from .embedding import require_mlx_embeddings_or_exit
 
         require_mlx_embeddings_or_exit()
-    load_embedding_model(args.embedding_model, lock=True)
+        load_embedding_model(args.embedding_model, lock=True)
 
     # Build a SchedulerConfig so user-supplied flags on this standalone entry
     # (`python -m vllm_mlx.server` / `mise run`) reach the engine. Pre-0.6.52
