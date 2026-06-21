@@ -219,6 +219,85 @@ def test_total_counter_counts_reused_request_id_after_full_abort_cycle():
     assert scheduler.get_stats()["num_requests_cancelled"] == 2
 
 
+def test_abort_request_revalidates_membership_under_lock():
+    """Codex r6 BLOCKING #1: ``abort_request`` MUST re-check
+    request membership INSIDE ``_cancel_counter_lock`` so that
+    ``remove_finished_request`` racing in (and popping
+    ``self.requests`` + clearing the ledger under the same lock)
+    can't leave ``abort_request`` to spuriously increment the
+    counter for an already-removed request.
+
+    Pre-r6-fix the predicate ran lock-free, so an abort that
+    observed the request alive could acquire the lock AFTER the
+    cleanup path ran and re-add the id to ``_pending_abort_ids``
+    + increment ``num_requests_cancelled``. Post-r6 the
+    membership check is inside the critical section.
+
+    Test approach: monkey the lock's ``__enter__`` to simulate
+    the racing ``remove_finished_request`` call THE MOMENT
+    ``abort_request`` acquires the lock — the request is removed
+    from ``self.requests`` BEFORE the inside-lock predicate
+    evaluates. Pre-r6 the abort had already committed to True
+    (predicate ran outside lock); post-r6 the inside-lock
+    predicate flips the result to False and the counter stays
+    at 0.
+    """
+    scheduler = _make_scheduler()
+    _admit(scheduler, "req-stale-race")
+
+    # Wrap the lock with a class whose ``__enter__`` simulates the
+    # concurrent ``remove_finished_request`` racing in the moment
+    # ``abort_request`` acquires the lock. Pre-r6 fix the
+    # membership predicate ran outside the lock — it observed the
+    # request alive, then acquired the lock after this mutation,
+    # then re-added the id to ``_pending_abort_ids`` and bumped
+    # the counter (spurious). Post-r6 the predicate runs INSIDE
+    # the critical section and sees the cleared state.
+    real_lock = scheduler._cancel_counter_lock
+
+    class _RaceInjectingLock:
+        def __init__(self, inner):
+            self._inner = inner
+            self.injected = False
+
+        def __enter__(self):
+            self._inner.acquire()
+            # Inject ONCE per test, mirroring a single racing
+            # ``remove_finished_request`` running between this
+            # ``abort_request``'s predicate and lock acquire.
+            if not self.injected:
+                self.injected = True
+                scheduler.requests.pop("req-stale-race", None)
+                scheduler._cancelled_request_ids.discard("req-stale-race")
+                scheduler._disconnect_abort_ids.discard("req-stale-race")
+            return self
+
+        def __exit__(self, *exc_info):
+            self._inner.release()
+            return False
+
+        def locked(self):
+            return self._inner.locked()
+
+        def acquire(self, *args, **kwargs):
+            return self._inner.acquire(*args, **kwargs)
+
+        def release(self, *args, **kwargs):
+            return self._inner.release(*args, **kwargs)
+
+    scheduler._cancel_counter_lock = _RaceInjectingLock(real_lock)
+
+    # With the codex r6 fix the inside-lock predicate observes
+    # the cleared state and returns False; the counter does NOT
+    # advance.
+    result = scheduler.abort_request("req-stale-race")
+    assert result is False, (
+        "Pre-r6 fix would have returned True; the inside-lock "
+        "membership check must reject the stale id"
+    )
+    assert scheduler.get_stats()["num_requests_cancelled"] == 0
+
+
 def test_remove_finished_request_pops_and_discards_atomically():
     """Codex r5 BLOCKING: ``remove_finished_request`` must perform
     the ``self.requests.pop`` AND the dedupe-ledger discards

@@ -453,27 +453,27 @@ class MLLMScheduler:
         # running, or already pending abort (idempotent double-cancel). We
         # do NOT count ``finished_req_ids`` — the route contract is
         # "404 when already finished".
-        if (
-            request_id in self.requests
-            or request_id in self.request_id_to_uid
-            or request_id in self.running
-            or request_id in self._pending_abort_ids
-        ):
-            # M-01 codex r1 BLOCKING #4 + r2 BLOCKING #2: serialize
-            # the check-add-increment AND dedupe against the lifetime
-            # ledger ``_cancelled_request_ids`` rather than the
-            # drainable ``_pending_abort_ids``. See
-            # ``Scheduler.abort_request`` for the full rationale.
-            with self._cancel_counter_lock:
-                already_counted = request_id in self._cancelled_request_ids
-                self._cancelled_request_ids.add(request_id)
-                self._pending_abort_ids.add(request_id)
-                if not already_counted:
-                    self.num_requests_cancelled += 1
-            logger.debug(f"Enqueued abort for request {request_id}")
-            return True
-        logger.debug("Rejected abort for unknown MLLM request_id")
-        return False
+        # M-01 codex r1 BLOCKING #4 + r2 BLOCKING #2 + r6 BLOCKING #2:
+        # membership check AND check-add-increment serialized under
+        # the same lock to close the stale-admission race against
+        # ``_do_abort_request`` clearing the dedupe ledgers. See
+        # ``Scheduler.abort_request`` for the full rationale.
+        with self._cancel_counter_lock:
+            if not (
+                request_id in self.requests
+                or request_id in self.request_id_to_uid
+                or request_id in self.running
+                or request_id in self._pending_abort_ids
+            ):
+                logger.debug("Rejected abort for unknown MLLM request_id")
+                return False
+            already_counted = request_id in self._cancelled_request_ids
+            self._cancelled_request_ids.add(request_id)
+            self._pending_abort_ids.add(request_id)
+            if not already_counted:
+                self.num_requests_cancelled += 1
+        logger.debug(f"Enqueued abort for request {request_id}")
+        return True
 
     def record_disconnect_abort(self, request_id: str) -> None:
         """M-01: attribute a previously-accepted abort to client disconnect.

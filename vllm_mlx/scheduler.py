@@ -3130,37 +3130,41 @@ class Scheduler:
         # True so a double-cancel doesn't 404 the second caller). We do NOT
         # treat ``finished_req_ids`` as "known" because the abort would be
         # a no-op and the route contract is "404 when already finished".
-        if (
-            request_id in self.requests
-            or request_id in self.request_id_to_uid
-            or request_id in self.running
-            or request_id in self._pending_abort_ids
-        ):
-            # M-01 codex r1 BLOCKING #2 + r2 BLOCKING #1: the
-            # check-add-increment sequence MUST be atomic AND must
-            # dedupe against a lifetime ledger, not the drainable
-            # ``_pending_abort_ids``. The disconnect_guard fires
-            # ``_force_abort_request`` from up to three branches per
-            # disconnect, engine_core's cleanup path can race with
-            # the explicit /cancel route, AND a later abort for the
-            # same still-known request_id (between
-            # ``_process_pending_aborts`` drains) would re-tick the
-            # counter if we deduped against the pending set. The
-            # lock spans only the dedupe-membership + add +
-            # counter-increment so the surrounding ``in`` predicate
-            # remains lock-free.
-            with self._cancel_counter_lock:
-                already_counted = request_id in self._cancelled_request_ids
-                self._cancelled_request_ids.add(request_id)
-                self._pending_abort_ids.add(request_id)
-                if not already_counted:
-                    self.num_requests_cancelled += 1
-            logger.info(
-                f"[abort_request] {request_id[:12]} enqueued for deferred abort"
-            )
-            return True
-        logger.info("[abort_request] unknown request_id (rejected without enqueue)")
-        return False
+        # M-01 codex r1 BLOCKING #2 + r2 BLOCKING #1 + r6 BLOCKING #1:
+        # the membership check AND the check-add-increment sequence
+        # MUST be atomic together — checking ``request_id in
+        # self.requests`` outside the lock leaves a window where
+        # ``remove_finished_request`` can race in, pop ``self.requests``,
+        # clear the dedupe ledger, and let THIS path then re-add the id
+        # to ``_pending_abort_ids`` and increment ``num_requests_cancelled``
+        # for an already-removed request lifetime. By re-validating
+        # membership INSIDE the lock against the same maps
+        # ``remove_finished_request`` mutates (``self.requests``) and
+        # the abort-state maps (``request_id_to_uid`` / ``running`` /
+        # ``_pending_abort_ids``), we guarantee:
+        #   * any abort that passes the inside-lock predicate has a
+        #     live referent that can't be popped concurrently;
+        #   * the dedupe-ledger check + add + counter increment
+        #     remain serialized across all callers.
+        # The lock cost is negligible (microseconds per abort).
+        with self._cancel_counter_lock:
+            if not (
+                request_id in self.requests
+                or request_id in self.request_id_to_uid
+                or request_id in self.running
+                or request_id in self._pending_abort_ids
+            ):
+                logger.info(
+                    "[abort_request] unknown request_id (rejected without enqueue)"
+                )
+                return False
+            already_counted = request_id in self._cancelled_request_ids
+            self._cancelled_request_ids.add(request_id)
+            self._pending_abort_ids.add(request_id)
+            if not already_counted:
+                self.num_requests_cancelled += 1
+        logger.info(f"[abort_request] {request_id[:12]} enqueued for deferred abort")
+        return True
 
     def record_disconnect_abort(self, request_id: str) -> None:
         """M-01: attribute a previously-accepted abort to client disconnect.
