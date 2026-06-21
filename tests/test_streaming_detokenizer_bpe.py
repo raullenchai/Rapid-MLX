@@ -171,6 +171,36 @@ class TestRepairByteLevelDecoder:
         # No mojibake markers in vocab — probe finds nothing — no repair.
         assert repair_byte_level_decoder(plain) is False
 
+    def test_repair_scans_full_vocab_not_just_first_4096_ids(self) -> None:
+        """Codex r2 NIT: the probe must scan the *entire* vocab, not a
+        4 KB prefix — otherwise a valid byte-level tokenizer whose
+        ``Ġ``-prefixed ids all live past 4096 (specials + reserved
+        slots packed at the front) silently skips the repair."""
+        # Build a vocab where the only byte-level token sits well past
+        # the old 4096-id cap. Specials fill 0..5000.
+        vocab = {f"<reserved_{i}>": i for i in range(5000)}
+        vocab["ĠLate"] = 5000  # the lone byte-level entry, past the cap
+        vocab["<pad>"] = 5001
+        model = models.BPE(vocab=vocab, merges=[])
+        rust = Tokenizer(model)
+        rust.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+        rust.decoder = decoders.Sequence(
+            [
+                decoders.Replace("▁", " "),
+                decoders.ByteFallback(),
+                decoders.Fuse(),
+                decoders.Strip(" ", 1, 0),
+            ]
+        )
+        tok = PreTrainedTokenizerFast(tokenizer_object=rust, pad_token="<pad>")
+
+        # Pre-repair: the lone byte-level id leaks Ġ.
+        assert "Ġ" in tok.decode([5000], skip_special_tokens=False)
+        # The repair must find it despite the high id.
+        assert repair_byte_level_decoder(tok) is True
+        assert "Ġ" not in tok.decode([5000], skip_special_tokens=False)
+        assert tok.decode([5000], skip_special_tokens=False) == " Late"
+
     def test_repair_restores_original_decoder_when_swap_fails_verification(
         self,
     ) -> None:

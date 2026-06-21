@@ -124,20 +124,23 @@ def repair_byte_level_decoder(tokenizer) -> bool:
     backend = inner.backend_tokenizer
 
     # Find a probe id whose pretty token starts with a byte-level marker.
-    # We sample the vocab in id order; the first match suffices.
+    # We scan the *entire* vocab (codex r2 NIT) — a 4 KB id prefix cap
+    # silently skips valid byte-level vocabs whose byte tokens all live
+    # past id 4096 (e.g. tokenizers that pack specials + reserved ids
+    # ahead of the BPE merges). The scan walks the dict from
+    # ``get_vocab()`` (token→id), which is O(vocab) one-shot and short-
+    # circuits on the first match — no per-id ``convert_ids_to_tokens``
+    # round-trip, so even a 200k-entry vocab probes in <5 ms.
     probe_id: int | None = None
     probe_pretty: str | None = None
     try:
-        vocab_size = getattr(inner, "vocab_size", None) or len(inner.get_vocab())
+        vocab = inner.get_vocab()
     except Exception:
         return False
-    # Scan a bounded prefix of the vocab for a Ġ-prefixed token. On every
-    # GPT-2 byte-level BPE these appear within the first few hundred ids.
-    for tid in range(min(vocab_size, 4096)):
-        try:
-            pretty = inner.convert_ids_to_tokens(tid)
-        except Exception:
-            continue
+    # ``get_vocab`` returns ``{pretty: id}``. Sort by id so the probe
+    # is deterministic across HF tokenizer versions (some return dicts
+    # in insertion order, others in hash order).
+    for pretty, tid in sorted(vocab.items(), key=lambda kv: kv[1]):
         if not isinstance(pretty, str):
             continue
         if any(pretty.startswith(m) for m in _BYTE_LEVEL_MOJIBAKE_MARKERS):
