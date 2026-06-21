@@ -63,6 +63,27 @@ _GUARDED_PREFIXES = ("/v1/", "/internal/", "/anthropic/")
 # middleware (``vllm_mlx/routes/audio.py``) owns its own cap.
 _EXCLUDED_PATHS = frozenset({"/v1/audio/transcriptions"})
 
+# JSON-API paths whose clients are known to historically omit
+# ``Content-Type`` (the OpenAI Python client < 0.27 did this; some
+# bare-bones curl scripts still do). For these specific paths an
+# absent header is treated as JSON for back-compat. Every OTHER
+# guarded path requires an explicit ``application/json`` (or
+# ``+json`` variant) so a future ``/v1/foo/upload`` that ships raw
+# binary blobs without a ``Content-Type`` doesn't accidentally pay
+# the JSON-parsing cost and risk a spurious ``request_body_too_deep``
+# rejection (codex r3 NIT #3).
+_JSON_CONTENT_TYPE_OPTIONAL_PATHS = frozenset(
+    {
+        "/v1/chat/completions",
+        "/v1/completions",
+        "/v1/embeddings",
+        "/v1/messages",
+        "/v1/messages/count_tokens",
+        "/v1/responses",
+        "/anthropic/v1/messages",
+    }
+)
+
 
 def _quick_depth_might_exceed(body: bytes, max_depth: int) -> bool:
     """Cheap byte-level upper bound on JSON nesting depth (codex r2 NIT).
@@ -145,14 +166,28 @@ def _path_is_guarded(path: str | None) -> bool:
     return any(path.startswith(prefix) for prefix in _GUARDED_PREFIXES)
 
 
-def _is_jsonish_content_type(headers) -> bool:
+def _is_jsonish_content_type(headers, path: str | None) -> bool:
     """Return ``True`` iff the request advertises a JSON-shaped content
-    type. We deliberately accept ``application/json``, ``application/
-    *+json`` (vendor / draft profiles), and an empty / missing
-    ``Content-Type`` (the OpenAI client historically omitted it on
-    POST). Anything else (``multipart/form-data``, ``text/plain``,
-    ``application/octet-stream``, ...) is left alone so we don't try
-    to JSON-parse a binary upload."""
+    type.
+
+    Accepts ``application/json`` and ``application/*+json`` (vendor /
+    draft profiles) unconditionally — those are unambiguous JSON
+    signals.
+
+    An empty / missing ``Content-Type`` is only accepted for the
+    known-JSON paths listed in :data:`_JSON_CONTENT_TYPE_OPTIONAL_PATHS`
+    (codex r3 NIT #3). The OpenAI Python client < 0.27 omitted the
+    header on ``/v1/chat/completions``, and some curl scripts still
+    do; we preserve that back-compat for the exact endpoints where
+    a JSON body is the only legal shape. A future
+    ``/v1/foo/upload`` that ships raw binary without a
+    ``Content-Type`` is left alone so the depth gate never tries to
+    parse it as JSON.
+
+    Anything else (``multipart/form-data``, ``text/plain``,
+    ``application/octet-stream``, …) is left alone so we don't try
+    to JSON-parse a binary upload — same shape as the size cap.
+    """
     ctype: str = ""
     for raw_name, raw_value in headers:
         if raw_name.lower() == b"content-type":
@@ -162,7 +197,7 @@ def _is_jsonish_content_type(headers) -> bool:
                 ctype = ""
             break
     if not ctype:
-        return True
+        return path in _JSON_CONTENT_TYPE_OPTIONAL_PATHS
     primary = ctype.split(";", 1)[0].strip()
     if primary == "application/json":
         return True
@@ -237,7 +272,7 @@ class RequestBodyDepthMiddleware:
         max_depth = resolve_max_body_depth()
         if max_depth <= 0:
             return await self.app(scope, receive, send)
-        if not _is_jsonish_content_type(scope.get("headers", ())):
+        if not _is_jsonish_content_type(scope.get("headers", ()), path):
             return await self.app(scope, receive, send)
 
         # Drain the body into memory. The size cap upstream has already
@@ -362,6 +397,19 @@ def _replay_with_disconnect(chunks: list[bytes]):
     partial body to the downstream app so its cancellation logic
     runs the same way it would have without the middleware in the
     path.
+
+    codex r3 BLOCKING #2: every replayed chunk MUST carry
+    ``more_body=True``. Pre-fix the LAST buffered chunk was emitted
+    with ``more_body=False``, which signals "body fully on the wire"
+    to the downstream app — a truncated upload would then be
+    indistinguishable from a complete one to any handler that polls
+    on ``more_body``. Post-fix the disconnect is the ONLY terminal
+    event, exactly matching the upstream sequence the client
+    actually shipped (partial chunks followed by an
+    ``http.disconnect``), so a downstream that buffers via
+    ``await request.body()`` sees the same Starlette
+    ``ClientDisconnect`` it would have without the middleware in the
+    path.
     """
     idx = {"value": 0}
 
@@ -369,11 +417,14 @@ def _replay_with_disconnect(chunks: list[bytes]):
         i = idx["value"]
         if i < len(chunks):
             idx["value"] = i + 1
-            more_body = (i + 1) < len(chunks)
+            # ALL replayed chunks carry ``more_body=True``; the
+            # original sequence terminated with ``http.disconnect``,
+            # not a final ``more_body=False`` frame, so the downstream
+            # app must see the same disconnect-as-terminator shape.
             return {
                 "type": "http.request",
                 "body": chunks[i],
-                "more_body": more_body,
+                "more_body": True,
             }
         return {"type": "http.disconnect"}
 
