@@ -135,9 +135,7 @@ def _descend_field(tp: _t.Any) -> _t.Any:
     return None
 
 
-def _resolve_root_model(
-    exc: object, loc: tuple
-) -> type[BaseModel] | None:
+def _resolve_root_model(exc: object, loc: tuple) -> type[BaseModel] | None:
     """Pick the root request-model class for ``loc`` from the registry.
 
     Two probes, in order:
@@ -443,9 +441,7 @@ def _sanitize_loc(loc: tuple) -> str:
     return ".".join(parts)
 
 
-def _render_loc_for_envelope(
-    exc: object, loc: tuple
-) -> tuple[str, str | None]:
+def _render_loc_for_envelope(exc: object, loc: tuple) -> tuple[str, str | None]:
     """Render ``loc`` for the user-facing 400 envelope (D-ENVELOPE-FIELD-LEAK).
 
     Returns ``(rendered, param)``. ``rendered`` is the dotted-path

@@ -269,9 +269,42 @@ def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     print(f"  or pass a full path like: {full_path_example}")
 
 
-_EMBEDDING_LOAD_NOT_FOUND_EXC_NAMES = frozenset(
-    {"ModelNotFoundError", "RepositoryNotFoundError", "FileNotFoundError"}
-)
+def _embedding_not_found_exception_classes() -> tuple[type[BaseException], ...]:
+    """Return the concrete exception classes the embedding loader raises
+    for a missing model.
+
+    pr_validate codex r1 NIT: matching ``"not found"`` as a substring of
+    the exception text was too loose — a future ``ValueError("config
+    field 'x' not found in tensor map")`` from a corrupt model could be
+    mis-translated as the alias/HF-id hint, masking the real bug. Bind
+    to the actual classes so the wrap-path only fires on the
+    well-defined not-found shape.
+
+    Lazy import so the base install (no ``[embeddings]`` extra, no
+    ``huggingface_hub`` shadow) stays free of these imports until the
+    code path actually runs. Missing classes are silently skipped — the
+    caller's tuple-based ``except`` accepts an empty tuple as a no-op,
+    so a sparse environment falls back to "re-raise everything", which
+    is the safe default.
+    """
+    classes: list[type[BaseException]] = [FileNotFoundError]
+    try:  # mlx_embeddings — installed via the [embeddings] extra
+        from mlx_embeddings.utils import ModelNotFoundError
+
+        classes.append(ModelNotFoundError)
+    except Exception:  # pragma: no cover — defensive
+        pass
+    try:  # huggingface_hub — transitive of mlx_embeddings
+        from huggingface_hub.errors import (
+            EntryNotFoundError,
+            RepositoryNotFoundError,
+        )
+
+        classes.append(RepositoryNotFoundError)
+        classes.append(EntryNotFoundError)
+    except Exception:  # pragma: no cover — defensive
+        pass
+    return tuple(classes)
 
 
 def _resolve_embedding_alias(name: str) -> tuple[str, bool]:
@@ -330,25 +363,21 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
         print(f"  Embedding alias: {original_embed} → {resolved_embed}")
         args.embedding_model = resolved_embed
     print(f"Pre-loading embedding model: {args.embedding_model}")
+    # Bind to the concrete not-found classes the loader can raise
+    # (mlx_embeddings.utils.ModelNotFoundError +
+    # huggingface_hub.errors.RepositoryNotFoundError/EntryNotFoundError
+    # + stdlib FileNotFoundError for the local-path branch). Any OTHER
+    # exception class falls through unchanged so unrelated bugs (corrupt
+    # safetensors mid-load, Metal OOM, schema mismatch) surface with
+    # their real trace — pr_validate codex r1 NIT closure (the prior
+    # ``"not found"`` substring match was too loose).
+    not_found_exc_classes = _embedding_not_found_exception_classes()
     try:
         load_fn(args.embedding_model, lock=True)
-    except Exception as exc:  # noqa: BLE001
-        # Catch ModelNotFoundError (from mlx_embeddings.utils) and the
-        # broader FileNotFoundError / RepositoryNotFoundError tree the
-        # underlying ``snapshot_download`` raises. We re-raise on
-        # anything that isn't a known not-found shape so unrelated
-        # bugs (corrupt safetensors mid-load, OOM, etc.) still surface
-        # with their real trace.
-        exc_name = type(exc).__name__
-        is_not_found = (
-            exc_name in _EMBEDDING_LOAD_NOT_FOUND_EXC_NAMES
-            or "not found" in str(exc).lower()
-        )
-        if not is_not_found:
-            raise
+    except not_found_exc_classes as exc:
         print(
             f"\n  Error: --embedding-model '{original_embed}' could not "
-            f"be loaded ({exc_name}: {exc})."
+            f"be loaded ({type(exc).__name__}: {exc})."
         )
         print(
             "  Tip: use a registered embedding alias (see "
