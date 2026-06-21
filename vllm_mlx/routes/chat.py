@@ -64,6 +64,7 @@ from ..service.helpers import (
     _resolve_temperature,
     _resolve_top_p,
     _scan_messages_for_lone_surrogates,
+    _should_start_in_thinking,
     _tool_use_required_named_suffix,
     _validate_model_name,
     _validate_response_format,
@@ -1813,20 +1814,22 @@ async def _create_chat_completion_impl(
         )
         # D-STOP-THINK codex round-5 BLOCKING (PR #799): compute
         # ``prompt_thinking_active`` from the chat template +
-        # resolved enable_thinking — same predicate
-        # ``_should_start_in_thinking`` uses in anthropic.py:91 /
-        # responses.py:88. Required by the helper's
+        # resolved enable_thinking. Required by the helper's
         # Case-4 + stop + matched_stop arm to discriminate
         # prompt-injected mid-think from a casual stop-terminated
         # answer.
+        #
+        # Codex round-9 BLOCKING (PR #799): use the SHARED
+        # ``_should_start_in_thinking`` predicate from
+        # ``service.helpers`` instead of inlining the substring
+        # check. Single source of truth — drift across routes is
+        # impossible by construction.
         _chat_template_str = ""
         _tok = getattr(engine, "tokenizer", None)
         if _tok and hasattr(_tok, "chat_template"):
             _chat_template_str = _tok.chat_template or ""
-        prompt_thinking_active = (
-            resolved_thinking is not False
-            and "<think>" in _chat_template_str
-            and "add_generation_prompt" in _chat_template_str
+        prompt_thinking_active = _should_start_in_thinking(
+            _chat_template_str, resolved_thinking
         )
         final_content = _rescue_silent_drop_from_reasoning(
             final_content,
@@ -2281,15 +2284,20 @@ async def stream_chat_completion(
                 # in scope (it's a separate function from the
                 # non-streaming caller), so re-resolve here from the
                 # request.
+                #
+                # Codex round-9 BLOCKING (PR #799): use the SHARED
+                # ``_should_start_in_thinking`` predicate from
+                # ``service.helpers`` instead of inlining the substring
+                # check. Single source of truth — drift across the
+                # non-streaming and streaming paths is impossible by
+                # construction.
                 _stream_resolved_thinking = _resolve_enable_thinking(request)
                 _chat_template_str_stream = ""
                 _tok_stream = getattr(engine, "tokenizer", None)
                 if _tok_stream and hasattr(_tok_stream, "chat_template"):
                     _chat_template_str_stream = _tok_stream.chat_template or ""
-                prompt_thinking_active_stream = (
-                    _stream_resolved_thinking is not False
-                    and "<think>" in _chat_template_str_stream
-                    and "add_generation_prompt" in _chat_template_str_stream
+                prompt_thinking_active_stream = _should_start_in_thinking(
+                    _chat_template_str_stream, _stream_resolved_thinking
                 )
                 # D-STOP-THINK codex round-6 BLOCKING (PR #799):
                 # prefer the per-chunk accumulator over

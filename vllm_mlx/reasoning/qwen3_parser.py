@@ -379,19 +379,52 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
                 # turn because Anthropic / Responses drop
                 # ``final_msg.reasoning`` from the wire.
                 #
+                # Codex round-10 BLOCKING (PR #799): SYMMETRY with the
+                # no-prefix branch — ``matched_stop`` alone is NOT
+                # enough to suppress the content correction when the
+                # model emitted a LITERAL ``<think>`` token (not
+                # prompt-injected). A user-stop firing inside a
+                # literal model-emitted ``<think>`` opener IS a
+                # truncation, but the user did not request thinking
+                # mode (``enable_thinking`` False / chat template
+                # didn't inject ``<think>``); the bytes shipped as
+                # reasoning_content during streaming are still
+                # PRESENT on the wire, but the user expected an
+                # answer in ``content``. Without
+                # ``prompt_thinking_active`` AND the truncation
+                # signal, we cannot distinguish (a) the live-repro
+                # D-STOP-THINK shape (chat template wrapped the
+                # prompt with ``<think>`` and the model continued
+                # the trace with ``<think>more``) from (b) a
+                # spontaneous model emission of ``<think>`` as part
+                # of a casual answer. Apply the AND-of-signals gate
+                # symmetric to the no-prefix branch (codex r4/r5
+                # discriminator) so the suppression only fires when
+                # the route layer confirmed thinking mode was
+                # actually active.
+                #
                 # Suppression matrix (saw-prefix branch):
                 #
-                # finish_reason | matched_stop | route
-                # ──────────────┼──────────────┼─────────
-                # "length"      | *            | reasoning (D-STOP-THINK / max_tokens)
-                # *             | set          | reasoning (D-STOP-THINK / stop)
-                # "stop"/None   | None         | content   (#569 natural EOS rescue)
-                if finish_reason == "length" or matched_stop is not None:
+                # finish_reason | matched_stop | prompt_thinking_active | route
+                # ──────────────┼──────────────┼────────────────────────┼─────────
+                # "length"      | *            | True                   | reasoning (D-STOP-THINK / max_tokens)
+                # "length"      | *            | False                  | content   (literal opener, budget cut)
+                # *             | set          | True                   | reasoning (D-STOP-THINK / stop)
+                # *             | set          | False                  | content   (literal opener, user stop)
+                # "stop"/None   | None         | *                      | content   (#569 natural EOS rescue)
+                if (
+                    finish_reason == "length" or matched_stop is not None
+                ) and prompt_thinking_active:
                     return DeltaMessage(reasoning=cleaned)
-                # Natural-EOS with unclosed ``<think>``: model gave
-                # up voluntarily mid-thought. Surface the trace as
-                # content so the user sees an answer instead of an
-                # empty turn (#569 silent-drop rescue contract).
+                # Either natural EOS (no truncation signal) OR
+                # truncation without active thinking mode — surface
+                # the trace as content so the user sees an answer
+                # instead of an empty turn (#569 silent-drop rescue
+                # contract). The duplication trade-off with the
+                # bytes already shipped on reasoning_content is the
+                # same #569 tolerance the route-level rescue helper
+                # accepts: "duplication into the two fields is the
+                # lesser evil vs. a silently empty response".
                 return DeltaMessage(content=cleaned)
             # No leading ``<think>`` prefix — Qwen3 chat template
             # injects ``<think>\n`` into the prompt (NOT the model

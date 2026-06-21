@@ -159,10 +159,27 @@ def simulate_server_streaming(tokens: list[str], use_reasoning_parser: str = "qw
 
 
 def simulate_server_streaming_reasoning_aware(
-    tokens: list[str], use_reasoning_parser: str = "qwen3"
+    tokens: list[str],
+    use_reasoning_parser: str = "qwen3",
+    *,
+    matched_stop: str | None = None,
+    prompt_thinking_active: bool = False,
+    finish_reason: str | None = None,
 ):
     """Same as ``simulate_server_streaming`` but accumulates reasoning
     bytes too, so D-STOP-THINK tests can assert across both channels.
+
+    Codex round-10 BLOCKING (PR #799): now accepts the
+    ``matched_stop`` / ``prompt_thinking_active`` / ``finish_reason``
+    finalize kwargs so tests can drive the D-STOP-THINK suppression
+    branches (truncation + active thinking) and the #569 natural-EOS
+    rescue branch separately. Without these kwargs the simulator
+    silently exercised only the natural-EOS branches, leaving the
+    new suppression paths untested at the simulator level.
+
+    The defaults (all None / False) preserve the previous "no
+    truncation, no active thinking" semantics so existing callers
+    are unaffected.
     """
     parser = get_parser(use_reasoning_parser)()
     parser.reset_state()
@@ -183,15 +200,20 @@ def simulate_server_streaming_reasoning_aware(
         reasoning = delta_msg.reasoning
         if content is not None and content == "":
             content = None
-        finish_reason = "stop" if is_finished else None
-        if not content and not reasoning and not finish_reason:
+        finish_reason_chunk = "stop" if is_finished else None
+        if not content and not reasoning and not finish_reason_chunk:
             continue
         if content:
             content_chunks.append(content)
         if reasoning:
             reasoning_chunks.append(reasoning)
     if hasattr(parser, "finalize_streaming"):
-        correction = parser.finalize_streaming(accumulated_text)
+        correction = parser.finalize_streaming(
+            accumulated_text,
+            matched_stop=matched_stop,
+            prompt_thinking_active=prompt_thinking_active,
+            finish_reason=finish_reason,
+        )
         if correction and correction.content:
             content_chunks.append(correction.content)
         # Mirror the Anthropic / Responses streaming routes
@@ -618,6 +640,88 @@ class TestScenario5_EdgeCases:
         chunks = simulate_server_streaming(tokens)
         full = "".join(chunks)
         assert "a\n\tb" in full
+
+    def test_explicit_opener_with_matched_stop_suppresses_content(self):
+        """D-STOP-THINK suppression via the simulator: an explicit
+        ``<think>`` opener AND a user stop string firing inside the
+        unclosed block AND ``prompt_thinking_active=True`` MUST route
+        the trace to reasoning only (text channel stays empty).
+
+        Codex round-10 BLOCKING (PR #799): the simulator was
+        previously locked to natural-EOS at finalize — this test
+        threads ``matched_stop`` AND ``prompt_thinking_active`` so
+        the simulator now exercises the D-STOP-THINK suppression
+        branch the production routes hit.
+        """
+        tokens = ["<think>", "Let me think ", "about 5+7."]
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            tokens,
+            use_reasoning_parser="qwen3",
+            matched_stop="STOP",
+            prompt_thinking_active=True,
+        )
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        assert "Let me think" in full_reasoning, (
+            f"streaming should ship reasoning bytes: got reasoning={full_reasoning!r}"
+        )
+        assert full_content == "", (
+            f"D-STOP-THINK suppression: text channel must stay empty "
+            f"under matched_stop + prompt_thinking_active; got "
+            f"content={full_content!r}"
+        )
+
+    def test_explicit_opener_with_length_finish_suppresses_content(self):
+        """D-STOP-THINK ``max_tokens`` suppression via the simulator:
+        explicit ``<think>`` opener AND ``finish_reason="length"`` AND
+        ``prompt_thinking_active=True`` MUST route the trace to
+        reasoning only.
+
+        Codex round-10 BLOCKING (PR #799): pin the budget-cut branch
+        at the simulator level too (complement of the matched_stop
+        test above).
+        """
+        tokens = ["<think>", "5+7"]
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            tokens,
+            use_reasoning_parser="qwen3",
+            finish_reason="length",
+            prompt_thinking_active=True,
+        )
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        assert "5+7" in full_reasoning, (
+            f"streaming should ship reasoning bytes: got reasoning={full_reasoning!r}"
+        )
+        assert full_content == "", (
+            f"D-STOP-THINK max_tokens suppression: text channel must "
+            f"stay empty under finish_reason=length + "
+            f"prompt_thinking_active; got content={full_content!r}"
+        )
+
+    def test_explicit_opener_natural_eos_flips_to_content(self):
+        """#569 silent-drop rescue via the simulator: explicit
+        ``<think>`` opener with NO truncation signal (natural EOS)
+        MUST flip to content so the assistant turn is not silently
+        empty.
+
+        Codex round-10 BLOCKING (PR #799): pin the natural-EOS
+        complement of the suppression tests above. Without this
+        flip the user would get an empty content channel even
+        though the model emitted the trace as their answer.
+        """
+        tokens = ["<think>", "just a thought"]
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            tokens,
+            use_reasoning_parser="qwen3",
+            matched_stop=None,
+            finish_reason=None,
+        )
+        full_content = "".join(content)
+        assert "just a thought" in full_content, (
+            f"#569 natural-EOS rescue: text channel must surface the "
+            f"trace; got content={full_content!r}"
+        )
 
 
 class TestScenario6_NoParserThinkTagPassthrough:

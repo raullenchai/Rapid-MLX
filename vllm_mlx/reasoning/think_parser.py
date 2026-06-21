@@ -378,18 +378,19 @@ class BaseThinkingReasoningParser(ReasoningParser):
     # non-streaming envelope) MAY do so — Anthropic / Responses routes
     # only act on ``final_msg.content``, so reasoning-channel finalize
     # output is harmless.
-    def _finalize_in_think_block(self, accumulated_text: str) -> bool:
+    def _missing_think_close(self, accumulated_text: str) -> bool:
         """Return True when the accumulated text has no closing
         ``</think>`` (or subclass-specific ``end_token``).
 
-        NARROW SEMANTICS (codex round-9 NIT, PR #799): this predicate
-        ONLY tests for missing-closer. It does NOT itself imply that
-        the stream carried thinking evidence, nor that any
-        D-STOP-THINK suppression should fire — those are SEPARATE
-        signals (a literal ``<think>`` opener in the buffer, OR
+        NARROW SEMANTICS (codex round-10 NIT, PR #799): this
+        predicate's name now EXPLICITLY says what it tests —
+        "missing think close". It does NOT itself imply that the
+        stream carried thinking evidence, nor that any D-STOP-THINK
+        suppression should fire — those are SEPARATE signals (a
+        literal ``<think>`` opener in the buffer, OR
         ``prompt_thinking_active`` under a truncation signal). The
-        predicate's job is to be the FIRST gate: callers AND it with
-        their evidence signals before suppressing a content
+        predicate's job is to be the FIRST gate: callers AND it
+        with their evidence signals before suppressing a content
         emission.
 
         Misuse warning: do NOT use this predicate alone to decide
@@ -399,7 +400,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
         turn (the #569/#570/#572 regression this PR closes from the
         OTHER direction). Always combine with evidence:
 
-            if (self._finalize_in_think_block(text)
+            if (self._missing_think_close(text)
                 and (saw_think_opener OR
                      (prompt_thinking_active AND
                       (matched_stop OR finish_reason == "length"))))
@@ -417,6 +418,11 @@ class BaseThinkingReasoningParser(ReasoningParser):
         predicate adapts uniformly.
         """
         return bool(accumulated_text) and self.end_token not in accumulated_text
+
+    # Backward-compatible alias for the renamed predicate. Old call
+    # sites and tests continue to work; the new ``_missing_think_close``
+    # name is canonical going forward (codex round-10 NIT, PR #799).
+    _finalize_in_think_block = _missing_think_close
 
     def finalize_streaming(
         self,

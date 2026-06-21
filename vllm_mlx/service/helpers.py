@@ -579,6 +579,38 @@ def _apply_reasoning_cap(
     return cleaned_text, truncated
 
 
+def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
+    """Shared predicate: does this chat template start the assistant
+    response inside an implicit ``<think>`` block?
+
+    Some thinking-capable chat templates include ``<think>`` in the
+    generated assistant prefix instead of emitting it as a normal
+    output token. In that case the streaming router needs to start in
+    thinking mode so tokens before ``</think>`` are emitted as
+    reasoning deltas (Anthropic thinking_delta, Responses thinking
+    event, OpenAI delta.reasoning_content).
+
+    When thinking is explicitly disabled, the template marker is only
+    stale capability metadata for routing purposes: direct answer
+    tokens should be emitted as text. Otherwise the client receives a
+    message with only a thinking block and no text result.
+
+    Codex round-9 BLOCKING (PR #799): this helper used to live in
+    ``routes/anthropic.py`` and ``routes/responses.py`` as duplicate
+    private functions, plus an inline reimplementation in
+    ``routes/chat.py`` that hard-coded the same ``"<think>"`` +
+    ``"add_generation_prompt"`` substring check. The three copies
+    could drift apart silently — chat completions could misclassify
+    prompt-injected thinking templates that Anthropic / Responses
+    correctly detect. Hoist to the shared service layer so every
+    route uses the same predicate and the contract has a single
+    source of truth.
+    """
+    if enable_thinking is False:
+        return False
+    return "<think>" in chat_template and "add_generation_prompt" in chat_template
+
+
 def _rescue_silent_drop_from_reasoning(
     final_content: str | None,
     reasoning_text: str | None,

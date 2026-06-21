@@ -86,12 +86,18 @@ def _resolved_sampling_kwargs(openai_request: ChatCompletionRequest) -> dict:
 
 
 def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
-    """Same heuristic as routes/anthropic.py: stream that starts inside an
-    implicit ``<think>`` block should be routed as reasoning until the
-    closing tag. Bypass when thinking is explicitly disabled."""
-    if enable_thinking is False:
-        return False
-    return "<think>" in chat_template and "add_generation_prompt" in chat_template
+    """Thin wrapper over the shared
+    ``service.helpers._should_start_in_thinking`` predicate.
+
+    Codex round-9 BLOCKING (PR #799): the same heuristic used to live
+    here AND in ``routes/anthropic.py`` AND was reimplemented inline
+    in ``routes/chat.py``. Single source of truth now lives in
+    ``service/helpers.py``; this thin wrapper is retained so in-module
+    callers stay unchanged.
+    """
+    from ..service.helpers import _should_start_in_thinking as _shared
+
+    return _shared(chat_template, enable_thinking)
 
 
 @router.post(

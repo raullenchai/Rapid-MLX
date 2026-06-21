@@ -210,7 +210,14 @@ class TestStopMidThinkExplicitOpener:
         # ``matched_stop`` simulates a user stop string firing inside
         # the unclosed ``<think>`` block — the live-repro D-STOP-THINK
         # shape (qwen3-0.6b-4bit with ``stop=["STOP"]``).
-        thinking, text = _simulate_anthropic_stream(parser, chunks, matched_stop="STOP")
+        # ``prompt_thinking_active=True`` mirrors the live repro:
+        # the chat template injected ``<think>`` so the model was
+        # actually in thinking mode (codex round-10 BLOCKING — the
+        # saw-prefix branch now requires the AND-of-signals gate
+        # symmetric to the no-prefix branch).
+        thinking, text = _simulate_anthropic_stream(
+            parser, chunks, matched_stop="STOP", prompt_thinking_active=True
+        )
         # Some reasoning must have streamed; what matters is that the
         # text channel does NOT also receive the trace.
         assert "Let me think" in thinking, (
@@ -249,14 +256,18 @@ class TestStopMidThinkExplicitOpener:
         parser = parser_cls()
         # Leading whitespace before the opener — the template-
         # injected case AND a real truncation signal (matched_stop)
-        # so the D-STOP-THINK suppression fires.
+        # AND ``prompt_thinking_active=True`` (chat template injected
+        # ``<think>``) so the D-STOP-THINK suppression fires per the
+        # codex round-10 AND-of-signals gate.
         accumulated = "\n  <think>Let me think about 5+7."
-        result = parser.finalize_streaming(accumulated, matched_stop="STOP")
+        result = parser.finalize_streaming(
+            accumulated, matched_stop="STOP", prompt_thinking_active=True
+        )
         assert result is not None
         assert result.content is None, (
             f"[{name}] codex r2 BLOCKING regression — whitespace-prefixed "
-            f"explicit opener leaked into content under matched_stop: "
-            f"{result.content!r}"
+            f"explicit opener leaked into content under matched_stop + "
+            f"prompt_thinking_active: {result.content!r}"
         )
         assert result.reasoning is not None
         assert "Let me think" in result.reasoning
@@ -289,10 +300,15 @@ class TestStopMidThinkExplicitOpener:
         """
         parser = parser_cls()
         # Mimic the codex repro: leading newline+space before the opener.
+        # ``prompt_thinking_active=True`` mirrors the chat-template
+        # injection that makes this the D-STOP-THINK shape (codex
+        # round-10 AND-of-signals gate).
         prefix = " \n"
         body = "Let me think about 5+7."
         accumulated = f"{prefix}<think>{body}"
-        result = parser.finalize_streaming(accumulated, matched_stop="STOP")
+        result = parser.finalize_streaming(
+            accumulated, matched_stop="STOP", prompt_thinking_active=True
+        )
         assert result is not None
         assert result.content is None, (
             f"[{name}] D-STOP-THINK regression — whitespace-prefixed "
@@ -646,8 +662,14 @@ class TestMaxTokensMidThink:
         chunks = ["<think>", "5+7"]
         # ``finish_reason="length"`` simulates the engine budget cut —
         # the real ``max_tokens`` truncation signal.
+        # ``prompt_thinking_active=True`` mirrors the chat-template
+        # injection that puts the model into thinking mode (codex
+        # round-10 AND-of-signals gate).
         thinking, text = _simulate_anthropic_stream(
-            parser, chunks, finish_reason="length"
+            parser,
+            chunks,
+            finish_reason="length",
+            prompt_thinking_active=True,
         )
         assert "5+7" in thinking, (
             f"[{name}] expected reasoning routing; thinking={thinking!r}"
@@ -706,15 +728,25 @@ class TestFinalizeContractSurface:
     ):
         """D-STOP-THINK invariant: explicit-opener mid-think UNDER A
         REAL TRUNCATION SIGNAL (matched_stop set OR
-        finish_reason="length") MUST surface via reasoning, never
-        content — otherwise the bytes shipped during streaming would
-        be duplicated by the route's finalize content emission.
+        finish_reason="length") AND ``prompt_thinking_active=True``
+        MUST surface via reasoning, never content — otherwise the
+        bytes shipped during streaming would be duplicated by the
+        route's finalize content emission.
 
         Codex round-8 BLOCKING refinement (PR #799): scope the
         invariant to the truncation-signal branches. Natural-EOS with
         an explicit opener now legitimately emits content (the #569
         silent-drop rescue) — that branch is tested separately in
         ``test_natural_eos_with_explicit_opener_flips_to_content``.
+
+        Codex round-10 BLOCKING refinement (PR #799): also gate on
+        ``prompt_thinking_active=True``. Without the chat-template
+        thinking signal, a model that spontaneously emitted a literal
+        ``<think>`` token did NOT enter thinking mode by user
+        request; the saw-prefix branch now requires BOTH the
+        truncation signal AND ``prompt_thinking_active`` to suppress
+        content (symmetric with the no-prefix branch's r4/r5
+        discriminator).
         """
         parser = parser_cls()
         for accumulated in [
@@ -722,10 +754,12 @@ class TestFinalizeContractSurface:
             "<think>5+7",
         ]:
             # Cover both truncation signals — the suppression branch
-            # must hold for stop AND length.
+            # must hold for stop AND length. Combine with
+            # ``prompt_thinking_active=True`` per the codex round-10
+            # AND-of-signals gate.
             for truncation in (
-                {"matched_stop": "STOP"},
-                {"finish_reason": "length"},
+                {"matched_stop": "STOP", "prompt_thinking_active": True},
+                {"finish_reason": "length", "prompt_thinking_active": True},
             ):
                 parser.reset_state()
                 # Drive the streaming state so the parser's internal flags
@@ -737,7 +771,8 @@ class TestFinalizeContractSurface:
                     prev = cur
                 result = parser.finalize_streaming(accumulated, **truncation)
                 # Either None (no correction) OR reasoning-only — never
-                # content under a real truncation signal.
+                # content under a real truncation signal + active
+                # thinking mode.
                 if result is not None:
                     assert result.content is None, (
                         f"[{name}] D-STOP-THINK invariant violation under "
@@ -798,16 +833,28 @@ class TestHermesWithReasoningComposition:
         """Codex round-8 BLOCKING refinement (PR #799): thread the
         ``matched_stop`` truncation signal so the test pins the
         D-STOP-THINK suppression branch under hermes composition.
+
+        Codex round-10 BLOCKING refinement (PR #799): also pass
+        ``prompt_thinking_active=True`` per the AND-of-signals gate
+        — qwen3.5-27b-8bit ran with ``enable_thinking=True`` so the
+        chat template injected ``<think>`` and the model continued
+        the trace with a literal ``<think>`` opener.
         """
         # Hermes tool parser inspection is orthogonal — finalize for
         # the reasoning channel runs on the Qwen3 parser regardless of
         # tool parser choice.
         parser = Qwen3ReasoningParser()
         chunks = ["<think>", "Let me reason ", "step by step. "]
-        # ``matched_stop`` simulates the cycle-5 live-repro shape:
-        # qwen3.5-27b-8bit + hermes tool layer with a user stop string
-        # firing inside the unclosed ``<think>`` block.
-        thinking, text = _simulate_anthropic_stream(parser, chunks, matched_stop="STOP")
+        # ``matched_stop`` + ``prompt_thinking_active=True`` simulate
+        # the cycle-5 live-repro shape: qwen3.5-27b-8bit + hermes
+        # tool layer with a user stop string firing inside the
+        # unclosed ``<think>`` block AND ``enable_thinking=True``.
+        thinking, text = _simulate_anthropic_stream(
+            parser,
+            chunks,
+            matched_stop="STOP",
+            prompt_thinking_active=True,
+        )
         assert "Let me reason" in thinking
         assert not text, (
             f"D-STOP-THINK regression under hermes composition: text={text!r}"

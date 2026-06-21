@@ -89,21 +89,19 @@ router = APIRouter()
 
 
 def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
-    """Return whether streaming should begin in an implicit thinking block.
+    """Thin wrapper over the shared
+    ``service.helpers._should_start_in_thinking`` predicate.
 
-    Some thinking-capable chat templates include ``<think>`` in the generated
-    assistant prefix instead of emitting it as a normal output token.  In that
-    case the stream router needs to start in thinking mode so tokens before
-    ``</think>`` are emitted as Anthropic thinking deltas.
-
-    When thinking is explicitly disabled, however, the template marker is only
-    stale capability metadata for routing purposes: direct answer tokens should
-    be emitted as text.  Otherwise Claude Code receives a message with only a
-    thinking block and no text result.
+    Codex round-9 BLOCKING (PR #799): the same heuristic used to live
+    here AND in ``routes/responses.py`` AND was reimplemented inline
+    in ``routes/chat.py`` with a hard-coded substring check. The three
+    copies could drift apart silently. The single source of truth now
+    lives in ``service/helpers.py``; this thin wrapper is retained so
+    in-module callers stay unchanged.
     """
-    if enable_thinking is False:
-        return False
-    return "<think>" in chat_template and "add_generation_prompt" in chat_template
+    from ..service.helpers import _should_start_in_thinking as _shared
+
+    return _shared(chat_template, enable_thinking)
 
 
 def _named_tool_choice_target(tool_choice) -> str | None:
