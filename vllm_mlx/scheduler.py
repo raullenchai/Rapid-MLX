@@ -2006,6 +2006,16 @@ class Scheduler:
         # ``gpu_memory_utilization`` doc on SchedulerConfig).
         self._metal_cap_bytes: int = 0
         self._metal_cap_bytes_resolved: bool = False
+        # D-METAL-CAP: cached per-token KV-cache size for the
+        # projection-based admission gate. Auto-derived from the
+        # model config on first use (operator override via
+        # ``SchedulerConfig.metal_cap_kv_bytes_per_token`` wins). See
+        # ``_resolve_kv_bytes_per_token`` for the formula. ``0``
+        # means "auto-derive failed / no model config" which
+        # disables the projection branch (back-compat for unit
+        # tests built against MagicMock models).
+        self._kv_bytes_per_token: int = 0
+        self._kv_bytes_per_token_resolved: bool = False
 
         # Prompt-boundary cache snapshot callback for the new mlx-lm 0.31+ API.
         # Built lazily once memory_aware_cache exists and reused per step.
@@ -3010,17 +3020,102 @@ class Scheduler:
         except Exception:
             return 0
 
+    def _resolve_kv_bytes_per_token(self) -> int:
+        """Compute the per-token KV-cache size (cached after first call).
+
+        Codex round 4 BLOCKING #1+#2 closure: the operator-tuned
+        ``metal_cap_kv_bytes_per_token`` is still honored when
+        explicitly set, but when it is 0 (default) we auto-derive a
+        conservative estimate from the model config so the projection-
+        based admission gate works OUT OF THE BOX without operators
+        having to thread a per-model knob. Pre-fix, defaulting to 0
+        meant the projection branch was effectively dead code unless
+        operators set the field — which contradicted the PR's claim
+        to fix the "currently below cap, one large prefill allocates
+        past cap" failure mode by default.
+
+        Auto-derivation formula:
+            ``2 (K + V) × num_layers × num_kv_heads × head_dim × dtype_bytes``
+
+        Defaults match ``model_runner.py``'s cache-block-size helper
+        for consistency. ``dtype_bytes=2`` (fp16) is the dominant
+        case; 8-bit / 4-bit KV-cache deployments OVER-estimate, which
+        is the safe direction (a 4-bit user pays the price of an
+        admission rejection at half the actual cap headroom — still
+        better than the D-METAL-CAP cliff). Operators on quantized-
+        KV deployments can pin a tighter value via the SchedulerConfig
+        field to recover precision.
+
+        Returns ``0`` only when the model config is missing entirely
+        (e.g. unit-test ``MagicMock`` model) so back-compat unit
+        tests that build a Scheduler against a stub model don't
+        suddenly start rejecting requests that previously admitted.
+        """
+        if self._kv_bytes_per_token_resolved:
+            return self._kv_bytes_per_token
+        # Operator override wins.
+        configured = int(getattr(self.config, "metal_cap_kv_bytes_per_token", 0) or 0)
+        if configured > 0:
+            self._kv_bytes_per_token = configured
+            self._kv_bytes_per_token_resolved = True
+            return configured
+        # Auto-derive from model.config — same pattern as
+        # ``model_runner._cache_block_size``. Defensive ``isinstance(..., int)``
+        # filter so a MagicMock model (which returns mock objects on
+        # every attribute access) does not produce a phantom positive
+        # estimate. Pre-fix this was a real surprise during testing:
+        # ``int(MagicMock())`` coerces to ``1``, so a stub model
+        # yielded a 4-byte-per-token estimate that turned every
+        # unit-test admission into a projection rejection. Requiring
+        # ints filters that path.
+        per_tok = 0
+        try:
+            model_config = getattr(self.model, "config", None)
+            if model_config is not None:
+
+                def _read_int(name: str, fallback: int = 0) -> int:
+                    raw = getattr(model_config, name, fallback)
+                    return raw if isinstance(raw, int) else 0
+
+                num_layers = _read_int("num_hidden_layers")
+                num_kv_heads = _read_int("num_key_value_heads")
+                if num_kv_heads <= 0:
+                    num_kv_heads = _read_int("num_attention_heads")
+                head_dim = _read_int("head_dim")
+                if head_dim <= 0:
+                    hidden_size = _read_int("hidden_size")
+                    num_heads = _read_int("num_attention_heads")
+                    if num_heads > 0:
+                        head_dim = hidden_size // num_heads
+                # ``dtype_bytes`` — fp16 is the common assumption.
+                # Quantized KV-cache deployments are safe to OVER-
+                # estimate; the operator-knob branch above lets them
+                # pin a tighter value when needed.
+                dtype_bytes = 2
+                if num_layers > 0 and num_kv_heads > 0 and head_dim > 0:
+                    per_tok = 2 * num_layers * num_kv_heads * head_dim * dtype_bytes
+        except Exception as e:
+            logger.debug(
+                "[D-METAL-CAP] failed to auto-derive kv_bytes_per_token "
+                "from model.config (%s); admission projection will use "
+                "0 — operator can set "
+                "SchedulerConfig.metal_cap_kv_bytes_per_token explicitly",
+                e,
+            )
+            per_tok = 0
+        self._kv_bytes_per_token = per_tok
+        self._kv_bytes_per_token_resolved = True
+        return per_tok
+
     def _estimate_request_kv_bytes(self, request: Request) -> int:
         """Project KV-cache memory the new request would consume.
 
-        Returns ``num_prompt_tokens + max_tokens`` × the operator-
-        configured ``metal_cap_kv_bytes_per_token``. Used by the
-        admission gate to reject prefill requests that would push
-        Metal active PAST the cap before the allocation happens
-        (codex round 3 BLOCKING #1). When
-        ``metal_cap_kv_bytes_per_token == 0`` (default) the
-        projection is 0 and admission falls back to the cheaper
-        current-active-only check.
+        Returns ``num_prompt_tokens + max_tokens`` × per-token KV
+        bytes (auto-derived from model config or operator-overridden
+        via ``metal_cap_kv_bytes_per_token``). Used by the admission
+        gate to reject prefill requests that would push Metal active
+        PAST the cap before the allocation happens (codex round 3
+        BLOCKING #1 + round 4 BLOCKING #1+#2).
 
         Conservative by design: we count both the prompt and the
         full ``max_tokens`` budget (rather than the much smaller
@@ -3028,7 +3123,7 @@ class Scheduler:
         borderline request rather than letting it slip through and
         grow past the cap mid-generation.
         """
-        per_tok = int(getattr(self.config, "metal_cap_kv_bytes_per_token", 0) or 0)
+        per_tok = self._resolve_kv_bytes_per_token()
         if per_tok <= 0:
             return 0
         # ``num_prompt_tokens`` is populated by either the route layer
@@ -3183,25 +3278,34 @@ class Scheduler:
                 break
             if not self._evict_one_prefix_cache_entry():
                 break
-            # Force the MLX allocator to actually return the slab now
-            # that the trie / dict no longer pins the CacheEntry. Without
-            # this, the underlying Metal allocation lingers in the
-            # free-cache list and ``get_active_memory`` does not drop on
-            # the next tick — exactly the D-METAL-PFX symptom (allocator
-            # cache stuck at 0 while active stayed pinned).
-            #
-            # Codex round 3 BLOCKING #2: do NOT swallow ``mx.clear_cache``
-            # failures. If clear_cache raises, the slabs have NOT actually
-            # been returned to MLX's free pool — incrementing the
-            # eviction counter and logging "evicted N entries" would lie
-            # to operators about a recovery that didn't happen. Propagate
-            # so the engine_core warning path surfaces the underlying
-            # MLX failure on the first occurrence per process. Counter
-            # and bookkeeping are bumped AFTER clear_cache succeeds so
-            # the metrics never overcount a phantom recovery.
-            mx.clear_cache()
+            # The entry has been removed from the cache trie — count
+            # this as a successful eviction REGARDLESS of whether the
+            # allocator-cache-flush step below succeeds. Codex round 4
+            # BLOCKING #3: do NOT delay the counter past
+            # ``mx.clear_cache()`` because if clear_cache raises, the
+            # entry has already been removed but the counter would
+            # never tick, leaving cache state and metrics in
+            # disagreement (the trie says "108 → 107 entries" but
+            # the metric still reads 0 cumulative evictions).
             evicted += 1
             self.num_prefix_cache_pressure_evictions += 1
+            # Force the MLX allocator to actually return the slab now
+            # that the trie / dict no longer pins the CacheEntry.
+            # Without this, the underlying Metal allocation lingers in
+            # the free-cache list and ``get_active_memory`` does not
+            # drop on the next tick — exactly the D-METAL-PFX symptom
+            # (allocator cache stuck at 0 while active stayed pinned).
+            #
+            # Codex round 3 BLOCKING #2 + round 4 BLOCKING #3 reconciled:
+            # a failing ``mx.clear_cache`` MUST still propagate to the
+            # engine_core warning path (so operators see the underlying
+            # MLX failure), but the counter has ALREADY ticked above
+            # because the cache mutation already happened — so the
+            # metric reflects ground truth even when the allocator
+            # flush blows up. This satisfies both invariants codex
+            # flagged: surface clear_cache failures, AND keep
+            # cache-state-vs-metric in sync on failure.
+            mx.clear_cache()
         if evicted:
             logger.info(
                 "[D-METAL-PFX] evicted %d prefix-cache entries under Metal "

@@ -312,6 +312,91 @@ class TestProjectedKVAdmissionGate:
         kv = sched._estimate_request_kv_bytes(req)
         assert 30 * 10**9 < kv < 35 * 10**9
 
+    def test_auto_derived_kv_bytes_from_model_config(self):
+        """Codex round 4 BLOCKING #1+#2 closure: when
+        ``metal_cap_kv_bytes_per_token=0`` (default), the scheduler
+        MUST auto-derive a conservative per-token KV size from the
+        model.config so the projection branch protects the cap OUT
+        OF THE BOX. Pre-fix, the default 0 made the projection
+        branch dead code and the gate fell back to current-active-
+        only — the exact "below cap, single prefill grows past cap"
+        failure mode this PR claims to fix."""
+        config = SchedulerConfig(
+            max_num_seqs=8,
+            max_concurrent_requests=64,
+            enable_prefix_cache=False,
+            use_memory_aware_cache=False,
+            use_paged_cache=False,
+            gpu_memory_utilization=0.5,
+            # Operator did NOT set this — auto-derivation kicks in.
+            metal_cap_kv_bytes_per_token=0,
+        )
+        # Synthesize a model.config that looks like a 35B-ish setup:
+        # num_layers=80, num_kv_heads=8, head_dim=128 →
+        # per_tok = 2 (K+V) × 80 × 8 × 128 × 2 (fp16) = 327_680
+        model = MagicMock()
+        model.config.num_hidden_layers = 80
+        model.config.num_key_value_heads = 8
+        model.config.head_dim = 128
+        sched = Scheduler(model=model, tokenizer=MagicMock(), config=config)
+        per_tok = sched._resolve_kv_bytes_per_token()
+        assert per_tok == 2 * 80 * 8 * 128 * 2, (
+            f"auto-derived per-token KV size should be {2 * 80 * 8 * 128 * 2}, "
+            f"got {per_tok}"
+        )
+
+    def test_operator_override_wins_over_auto_derivation(self):
+        """When the operator explicitly sets
+        ``metal_cap_kv_bytes_per_token > 0``, that value MUST be
+        used instead of the auto-derivation — operators on
+        quantized-KV deployments want a tighter value than the
+        fp16-assuming auto path computes."""
+        config = SchedulerConfig(
+            max_num_seqs=8,
+            max_concurrent_requests=64,
+            enable_prefix_cache=False,
+            use_memory_aware_cache=False,
+            use_paged_cache=False,
+            gpu_memory_utilization=0.5,
+            metal_cap_kv_bytes_per_token=42,  # explicit override
+        )
+        model = MagicMock()
+        # Even with a plausible auto-derivation source available,
+        # the explicit knob wins.
+        model.config.num_hidden_layers = 80
+        model.config.num_key_value_heads = 8
+        model.config.head_dim = 128
+        sched = Scheduler(model=model, tokenizer=MagicMock(), config=config)
+        per_tok = sched._resolve_kv_bytes_per_token()
+        assert per_tok == 42, (
+            f"operator override should win, got {per_tok} instead of 42"
+        )
+
+    def test_auto_derivation_falls_back_to_zero_on_missing_model_config(self):
+        """When the model has no ``config`` attribute (unit-test
+        MagicMock without explicit setup), auto-derivation must
+        return 0 (= projection branch disabled) rather than
+        raise — keeps back-compat for the large body of existing
+        unit tests built against stub models."""
+        config = SchedulerConfig(
+            max_num_seqs=8,
+            max_concurrent_requests=64,
+            enable_prefix_cache=False,
+            use_memory_aware_cache=False,
+            use_paged_cache=False,
+            gpu_memory_utilization=0.5,
+            metal_cap_kv_bytes_per_token=0,
+        )
+        # Bare model with no config — MagicMock will return a MagicMock
+        # for .config but int(MagicMock()) would raise TypeError. The
+        # auto-derivation must swallow that and return 0.
+        sched = Scheduler(model=MagicMock(), tokenizer=MagicMock(), config=config)
+        per_tok = sched._resolve_kv_bytes_per_token()
+        assert per_tok == 0, (
+            f"auto-derivation must return 0 on missing/malformed "
+            f"model.config to preserve unit-test back-compat, got {per_tok}"
+        )
+
     def test_warning_log_safe_on_nonstring_request_id(self, caplog):
         """Codex round 3 NIT #4 regression: ``request_id`` slicing
         must coerce via ``str(...)`` so a malformed test/request

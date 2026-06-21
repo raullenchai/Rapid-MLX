@@ -434,16 +434,27 @@ class TestClearCacheFailurePropagation:
         ):
             sched.evict_prefix_cache_under_pressure(max_evict=10)
 
-    def test_counter_not_bumped_on_clear_cache_failure(self):
-        """The eviction counter MUST stay at the pre-call value when
-        ``mx.clear_cache`` raises. Pre-fix, the counter was bumped
-        BEFORE clear_cache ran, so a persistent allocator failure
-        would inflate ``num_prefix_cache_pressure_evictions`` with no
-        actual recovery."""
+    def test_counter_reflects_cache_mutation_on_clear_cache_failure(self):
+        """Codex round 4 BLOCKING #3 fix: when ``mx.clear_cache``
+        raises AFTER the trie has already dropped the entry, the
+        counter MUST tick by the number of entries actually removed
+        from the cache. Pre-fix attempts bumped the counter only
+        after ``clear_cache`` succeeded, but that left cache state
+        and metrics in disagreement on the failure path: the trie
+        had already mutated (entry removed) but the metric stayed at
+        zero, so operators saw ``rapid_mlx_prefix_cache_pressure_
+        evictions_total == 0`` while ``len(prefix_cache)`` showed
+        the entry was actually gone.
+
+        The codex-round-3 propagation invariant (clear_cache
+        failures must reach the engine_core warning path) still
+        holds — the exception bubbles out so the warning fires —
+        but the counter accurately reflects ground truth."""
         sched = _make_scheduler_with_legacy_cache(gpu_memory_utilization=0.5)
         sched.prefix_cache.store_cache([1, 2, 3], ["state-1"])
         sched.prefix_cache.store_cache([4, 5, 6], ["state-2"])
         before = sched.num_prefix_cache_pressure_evictions
+        before_len = len(sched.prefix_cache)
         with (
             patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
             patch.object(
@@ -453,9 +464,18 @@ class TestClearCacheFailurePropagation:
             pytest.raises(RuntimeError),
         ):
             sched.evict_prefix_cache_under_pressure(max_evict=10)
-        # Counter unchanged — failed clear_cache means no recovery
-        # happened, the metric must not lie to operators.
-        assert sched.num_prefix_cache_pressure_evictions == before
+        # The first eviction removed one entry from the trie BEFORE
+        # clear_cache raised — counter must reflect that.
+        after_len = len(sched.prefix_cache)
+        removed = before_len - after_len
+        assert removed == 1, (
+            f"clear_cache failure should stop loop after 1 entry; "
+            f"trie went from {before_len} to {after_len} entries"
+        )
+        assert sched.num_prefix_cache_pressure_evictions == before + removed, (
+            f"counter must match cache mutation: expected "
+            f"{before + removed}, got {sched.num_prefix_cache_pressure_evictions}"
+        )
 
 
 class TestSchedulerPropagatesEvictionErrors:
