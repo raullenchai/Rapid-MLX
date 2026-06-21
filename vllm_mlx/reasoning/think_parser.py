@@ -380,6 +380,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
         accumulated_text: str,
         *,
         matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
     ) -> "DeltaMessage | None":
         """Default base-class finalize: no correction.
 
@@ -389,13 +390,11 @@ class BaseThinkingReasoningParser(ReasoningParser):
         correction (Qwen3's bare-text preamble surfacing, etc.) MUST
         gate their content emission on ``not self._finalize_in_think_block``.
 
-        ``matched_stop`` is forwarded by the route layer when the
-        engine reported a user-supplied stop string fired. Subclasses
-        may use this signal to distinguish a casual non-thinking
-        answer (matched_stop=None — natural EOS) from a
-        prompt-injected ``<think>`` stream truncated mid-thought
-        (matched_stop set). The base class default ignores the signal
-        because the no-correction return is safe either way.
+        The base class default ignores the ``matched_stop`` and
+        ``prompt_thinking_active`` signals because the no-correction
+        return is safe either way. Subclasses (Qwen3 / DeepSeek-R1)
+        use the AND of those two signals to discriminate
+        prompt-injected mid-think from casual no-tag answers.
         """
         return None
 

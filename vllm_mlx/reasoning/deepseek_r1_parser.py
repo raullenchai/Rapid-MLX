@@ -154,33 +154,29 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         accumulated_text: str,
         *,
         matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
     ) -> DeltaMessage | None:
         """
         Finalize streaming output.
 
-        Codex round-3 BLOCKING fix (PR #799 review): the prompt-
-        injected ``<think>\\n`` chat template (DeepSeek-R1 family +
-        VibeThinker subclass) means ``_saw_any_tag`` stays False even
-        when the model IS in active thinking mode. Pre-fix this
-        branch unconditionally emitted ``content`` for short no-tag
-        streams, which duplicated bytes already shipped as
-        ``reasoning`` for the prompt-injected mid-think shape.
+        Codex round-4 BLOCKING fix (PR #799 review): ``matched_stop``
+        alone is NOT enough to identify prompt-injected mid-think.
+        A casual answer like ``"The answer is STOP"`` under
+        ``stop=["STOP"]`` ALSO has matched_stop set but is not
+        chain-of-thought.
 
-        Discriminate using ``matched_stop`` (the engine-supplied
-        truncation signal, scheduler.py:3673):
+        Use the AND of ``matched_stop`` (engine-supplied truncation
+        signal, scheduler.py:3673) AND ``prompt_thinking_active``
+        (route-supplied "chat template injected ``<think>`` AND
+        ``enable_thinking`` is non-False" signal — same boolean
+        ``_should_start_in_thinking`` computes in
+        anthropic.py:91) to discriminate:
 
-        * ``matched_stop`` set → user-supplied stop trimmed the output
-          mid-thought. Combined with the prompt-injected ``<think>``
-          semantics this IS the D-STOP-THINK leak shape: route the
-          rescue text to ``reasoning`` so the route consumer's
-          ``final_msg.content`` gate stays silent.
-        * ``matched_stop`` None → casual non-thinking answer (natural
-          EOS) or ``max_tokens`` cut without a user stop. The
-          streaming Case-3 default routed the bytes to reasoning as a
-          conservative bet; flip to ``content`` so the route consumer
-          surfaces a text block (#570/#572 contract — without this
-          flip the casual answer would be silently empty on
-          ``message.content``).
+        * matched_stop set AND prompt_thinking_active → D-STOP-THINK
+          prompt-injected mid-think shape → route to reasoning.
+        * Otherwise → casual answer (or no-evidence path) → flip to
+          content per #570/#572 so the route consumer surfaces a
+          text block.
 
         The D-STOP-THINK explicit-opener path is still handled by the
         base class default ``finalize_streaming`` which returns None:
@@ -191,6 +187,9 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             accumulated_text: Complete accumulated text from stream.
             matched_stop: User-supplied stop string that fired, or
                 None for natural EOS / max_tokens.
+            prompt_thinking_active: True when the chat template
+                injected ``<think>`` AND ``enable_thinking`` is non-
+                False — i.e. the model was actually in thinking mode.
 
         Returns:
             DeltaMessage correction, or None if no correction needed.
@@ -200,13 +199,14 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             and accumulated_text
             and len(accumulated_text) < self.NO_TAG_CONTENT_THRESHOLD
         ):
-            if matched_stop is not None:
+            if matched_stop is not None and prompt_thinking_active:
                 # Prompt-injected mid-think shape — route to reasoning
                 # to suppress D-STOP-THINK duplication.
                 return DeltaMessage(reasoning=accumulated_text)
-            # Casual no-tag answer (or max_tokens cut) — flip to
-            # content per #570/#572. Without this the casual answer
-            # would be silently empty on message.content.
+            # Casual no-tag answer (or max_tokens cut, or stop without
+            # active thinking) — flip to content per #570/#572.
+            # Without this the casual answer would be silently empty
+            # on message.content.
             return DeltaMessage(content=accumulated_text)
         return None
 

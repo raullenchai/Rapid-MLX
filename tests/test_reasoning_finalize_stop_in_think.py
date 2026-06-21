@@ -262,20 +262,20 @@ class TestStopMidThinkNoOpener:
         )
 
 
-class TestPromptInjectedMidThinkWithMatchedStop:
-    """Codex round-3 BLOCKING fix (PR #799): the prompt-injected
-    ``<think>\\n`` chat template means the literal opener never reaches
-    the parser. ``matched_stop`` (the engine-supplied truncation
-    signal) is the only evidence we have at finalize time to
-    distinguish a casual non-thinking answer (matched_stop=None,
-    natural EOS / max_tokens cut without a user stop) from a
-    prompt-injected mid-think truncation by a user-supplied stop
-    string (matched_stop set).
+class TestPromptInjectedMidThinkDiscriminator:
+    """Codex round-4 BLOCKING fix (PR #799): ``matched_stop`` alone
+    is NOT enough to identify prompt-injected mid-think — a casual
+    answer like ``"The answer is STOP"`` under ``stop=["STOP"]``
+    also has matched_stop set but is not chain-of-thought.
 
-    Without matched_stop, the no-opener path defaulted to flipping
-    to content — which duplicated bytes for prompt-injected
-    mid-think shapes. With matched_stop, route the trace to
-    reasoning instead.
+    The discriminator at finalize time is the AND of:
+    - ``matched_stop`` (engine: a user stop string trimmed the output)
+    - ``prompt_thinking_active`` (route: chat template injected
+      ``<think>`` AND ``enable_thinking`` is non-False)
+
+    Both signals together identify a prompt-injected mid-think shape
+    where the streaming loop routed bytes to reasoning and finalize
+    must NOT duplicate them into content.
     """
 
     @pytest.mark.parametrize(
@@ -286,22 +286,23 @@ class TestPromptInjectedMidThinkWithMatchedStop:
             ("vibethinker", VibeThinkerReasoningParser),
         ],
     )
-    def test_no_opener_with_matched_stop_routes_to_reasoning(self, name, parser_cls):
+    def test_matched_stop_and_thinking_active_routes_to_reasoning(
+        self, name, parser_cls
+    ):
+        """Prompt-injected mid-think shape: matched_stop set AND
+        thinking active → route to reasoning (suppress D-STOP-THINK
+        duplication)."""
         parser = parser_cls()
-        # Short no-tag trace (under deepseek_r1's 64-char threshold;
-        # vibethinker's 1024-char threshold also covers it).
         trace = "5+7 equals 12"
-        result = parser.finalize_streaming(trace, matched_stop="STOP")
+        result = parser.finalize_streaming(
+            trace, matched_stop="STOP", prompt_thinking_active=True
+        )
         assert result is not None
         assert result.content is None, (
-            f"[{name}] D-STOP-THINK regression — matched_stop indicates "
-            f"prompt-injected mid-think but finalize flipped to content: "
-            f"{result.content!r}"
+            f"[{name}] D-STOP-THINK regression — prompt-injected "
+            f"mid-think duplicated into content: {result.content!r}"
         )
-        assert result.reasoning == trace, (
-            f"[{name}] expected reasoning route for prompt-injected "
-            f"mid-think shape: {result!r}"
-        )
+        assert result.reasoning == trace
 
     @pytest.mark.parametrize(
         "name,parser_cls",
@@ -311,20 +312,59 @@ class TestPromptInjectedMidThinkWithMatchedStop:
             ("vibethinker", VibeThinkerReasoningParser),
         ],
     )
-    def test_no_opener_without_matched_stop_flips_to_content(self, name, parser_cls):
-        """Symmetric pin: matched_stop=None (natural EOS) keeps the
-        casual-answer content flip per #570/#572. Suppressing this
-        would silently drop the assistant turn on
-        ``message.content``."""
+    def test_matched_stop_without_thinking_flips_to_content(self, name, parser_cls):
+        """Casual stop-terminated answer: matched_stop set but
+        thinking NOT active → flip to content. The codex round-4
+        counter-example: ``"The answer is STOP"`` under
+        ``stop=["STOP"]`` is a legitimate answer that must reach
+        ``message.content``. Routing to reasoning here would silently
+        drop the answer."""
         parser = parser_cls()
-        trace = "5+7 equals 12"
-        result = parser.finalize_streaming(trace, matched_stop=None)
+        trace = "The answer is 12"
+        result = parser.finalize_streaming(
+            trace, matched_stop="STOP", prompt_thinking_active=False
+        )
         assert result is not None
         assert result.content == trace, (
-            f"[{name}] #569 regression — natural-EOS casual answer "
-            f"suppressed: {result!r}"
+            f"[{name}] codex r4 regression — casual stop-terminated "
+            f"answer suppressed: {result!r}"
         )
         assert result.reasoning is None
+
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [
+            ("qwen3", Qwen3ReasoningParser),
+            ("deepseek_r1", DeepSeekR1ReasoningParser),
+            ("vibethinker", VibeThinkerReasoningParser),
+        ],
+    )
+    def test_no_matched_stop_flips_to_content_regardless_of_thinking(
+        self, name, parser_cls
+    ):
+        """Natural-EOS or max_tokens cut (matched_stop=None) → flip
+        to content per #570/#572 regardless of thinking signal. The
+        D-STOP-THINK shape requires BOTH matched_stop AND active
+        thinking — without matched_stop we don't have the
+        truncation signal."""
+        parser = parser_cls()
+        trace = "5+7 equals 12"
+        # Even with thinking active, natural-EOS still flips to
+        # content (the bytes that streamed as reasoning were
+        # speculative — the model finished cleanly so they were the
+        # actual answer).
+        for thinking in (False, True):
+            result = parser.finalize_streaming(
+                trace, matched_stop=None, prompt_thinking_active=thinking
+            )
+            assert result is not None, (
+                f"[{name}] thinking={thinking}: no rescue emitted"
+            )
+            assert result.content == trace, (
+                f"[{name}] thinking={thinking}: #569 regression — "
+                f"natural-EOS answer suppressed: {result!r}"
+            )
+            assert result.reasoning is None
 
 
 class TestMaxTokensMidThink:

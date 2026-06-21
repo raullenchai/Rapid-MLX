@@ -123,6 +123,7 @@ class ReasoningParser(ABC):
         accumulated_text: str,
         *,
         matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
     ) -> "DeltaMessage | None":
         """
         Finalize streaming and return optional correction chunk.
@@ -135,18 +136,25 @@ class ReasoningParser(ABC):
             accumulated_text: Complete accumulated text from the stream.
             matched_stop: When non-None, indicates the engine truncated
                 the output because a user-supplied stop string matched
-                (scheduler.py:3673). This is the D-STOP-THINK
-                truncation signal: subclasses with prompt-injected
-                ``<think>`` semantics (Qwen3 / DeepSeek-R1 families
-                where the chat template wraps the prompt with
-                ``<think>\\n``) MUST treat this as evidence that the
-                model was in active thinking mode when stop fired —
-                because a casual non-thinking answer that legitimately
-                contained the user's stop string would NOT be a
-                D-STOP-THINK shape, but rather a successful early
-                termination of an actual answer. ``matched_stop=None``
-                means natural EOS / max_tokens — fall back to the
-                content-correction casual-answer contract.
+                (scheduler.py:3673). Combined with
+                ``prompt_thinking_active=True`` this is the
+                D-STOP-THINK signal: the chat template injected
+                ``<think>\\n`` so the opener never reaches the parser,
+                yet the model WAS in active thinking mode when the
+                user stop fired. ``matched_stop`` alone is NOT
+                sufficient — a casual answer like ``"The answer is
+                STOP"`` under ``stop=["STOP"]`` also has
+                ``matched_stop`` set but is not chain-of-thought.
+            prompt_thinking_active: True when the request's
+                ``enable_thinking`` resolved to non-False AND the
+                chat template contains a ``<think>`` injection (the
+                same boolean ``_should_start_in_thinking`` computes in
+                routes/anthropic.py). Combined with ``matched_stop``
+                this distinguishes "model is thinking via injected
+                template, user stop trimmed mid-thought" (route to
+                reasoning) from "model is answering casually, the
+                stop string is part of the literal answer" (flip to
+                content).
 
         Returns:
             DeltaMessage correction chunk, or None if no correction needed.

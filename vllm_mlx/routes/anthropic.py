@@ -1709,15 +1709,21 @@ async def _stream_anthropic_messages(
     # as the safety net for normal parser-held content.
     if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
         # D-STOP-THINK (PR #799): pass the engine-supplied
-        # ``matched_stop`` signal so parsers with prompt-injected
-        # ``<think>`` semantics (Qwen3 / DeepSeek-R1 families) can
-        # distinguish a casual non-thinking answer (matched_stop=None)
-        # from a prompt-injected mid-think truncation (matched_stop
-        # set). The former flips to content for #570/#572; the latter
-        # routes to reasoning to suppress duplication.
+        # ``matched_stop`` signal AND the route-derived
+        # ``prompt_thinking_active`` boolean (same predicate
+        # ``_should_start_in_thinking`` already computed for the
+        # think router) so parsers can distinguish a casual non-
+        # thinking answer that legitimately contains the stop string
+        # (matched_stop set but thinking not active → flip to
+        # content) from a prompt-injected mid-think truncation
+        # (matched_stop set AND thinking active → route to reasoning
+        # to suppress duplication). Both signals together are required
+        # — matched_stop alone is ambiguous (codex round-4 BLOCKING).
         final_msg = (
             reasoning_parser.finalize_streaming(
-                accumulated_raw, matched_stop=stream_matched_stop
+                accumulated_raw,
+                matched_stop=stream_matched_stop,
+                prompt_thinking_active=_starts_thinking,
             )
             if hasattr(reasoning_parser, "finalize_streaming")
             else None

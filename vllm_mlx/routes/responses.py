@@ -915,13 +915,18 @@ async def _stream_responses(
         # finalize pass still runs as the safety net for normal
         # parser-held content.
         if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
-            # D-STOP-THINK (PR #799): pass matched_stop so parsers
-            # with prompt-injected ``<think>`` semantics can route
-            # mid-think truncations to reasoning instead of duplicating
-            # bytes into content.
+            # D-STOP-THINK (PR #799): pass matched_stop AND the
+            # ``_starts_thinking`` boolean (chat template injected
+            # ``<think>`` AND ``enable_thinking`` is non-False) so
+            # parsers can distinguish a prompt-injected mid-think
+            # truncation from a casual stop-terminated answer. Both
+            # signals together are required (codex round-4
+            # BLOCKING). Mirrors routes/anthropic.py.
             final_msg = (
                 reasoning_parser.finalize_streaming(
-                    accumulated_raw, matched_stop=stream_matched_stop
+                    accumulated_raw,
+                    matched_stop=stream_matched_stop,
+                    prompt_thinking_active=_starts_thinking,
                 )
                 if hasattr(reasoning_parser, "finalize_streaming")
                 else None

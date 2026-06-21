@@ -241,6 +241,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         accumulated_text: str,
         *,
         matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
     ) -> DeltaMessage | None:
         """
         Finalize streaming output.
@@ -354,31 +355,44 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # No leading ``<think>`` prefix — Qwen3 chat template
             # injects ``<think>\n`` into the prompt (NOT the model
             # output) so prompt-injected mid-think streams also land
-            # here. Discriminate using ``matched_stop`` (codex r3
-            # BLOCKING on PR #799):
+            # here.
             #
-            # * ``matched_stop`` set → user-supplied stop string
-            #   trimmed the output. Combined with the prompt-injected
-            #   ``<think>`` semantics this IS the D-STOP-THINK leak
-            #   shape: the streaming loop shipped the bytes as
-            #   reasoning (base class Case-3 default) and a content
-            #   emission here would duplicate. Route to reasoning.
-            # * ``matched_stop`` None AND bare-preamble label present
-            #   → scratchpad opener (#570) IS think-mode evidence
-            #   even without ``<think>`` token; route to reasoning to
-            #   mirror the streaming routing.
-            # * Otherwise → casual non-thinking answer (no opener, no
-            #   user-supplied stop). The streaming Case-3 default's
-            #   reasoning routing was the conservative bet; flip the
-            #   buffered text to ``content`` so the route consumer
-            #   surfaces it as a text block (#570/#572 contract).
-            #   Without this flip the casual answer would be silently
-            #   empty on ``message.content``.
-            if matched_stop is not None:
-                # D-STOP-THINK prompt-injected mid-think shape.
+            # Codex round-4 BLOCKING on PR #799: ``matched_stop`` alone
+            # is NOT enough to identify prompt-injected mid-think.
+            # A casual answer like ``"The answer is STOP"`` under
+            # ``stop=["STOP"]`` ALSO has ``matched_stop`` set but is
+            # NOT chain-of-thought. We need an independent signal that
+            # the chat template injected ``<think>``. The route layer
+            # computes ``prompt_thinking_active = _should_start_in_thinking(
+            # chat_template, enable_thinking)`` (anthropic.py:91) which
+            # returns True only when (a) ``enable_thinking`` is non-
+            # False AND (b) the chat template contains a ``<think>``
+            # injection.
+            #
+            # Decision matrix for the no-prefix branch:
+            #
+            # matched_stop | prompt_thinking_active | bare_preamble | route
+            # ─────────────┼────────────────────────┼───────────────┼─────────
+            # set          | True                   | *             | reasoning (D-STOP-THINK)
+            # set          | False                  | *             | content  (casual stop-terminated answer)
+            # None         | *                      | True          | reasoning (#570 label)
+            # None         | *                      | False         | content  (#570/#572 casual)
+            #
+            # The route layer's truthful signal (``enable_thinking`` +
+            # template inspection) is the only reliable discriminator
+            # — the parser can't otherwise tell a thought trace from
+            # a casual answer at finalize time.
+            if matched_stop is not None and prompt_thinking_active:
+                # D-STOP-THINK prompt-injected mid-think shape: route
+                # to reasoning to suppress duplication with bytes
+                # already shipped via streaming.
                 return DeltaMessage(reasoning=cleaned)
             if _looks_like_bare_think_preamble(cleaned):
+                # #570 scratchpad-label fallback — bare-preamble IS
+                # think-mode evidence.
                 return DeltaMessage(reasoning=cleaned)
-            # Casual non-thinking answer — flip to content.
+            # Casual non-thinking answer — flip to content. Covers
+            # both natural-EOS and stop-terminated answers when
+            # thinking was not active.
             return DeltaMessage(content=cleaned)
         return None

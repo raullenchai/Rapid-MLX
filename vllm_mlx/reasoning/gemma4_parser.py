@@ -216,12 +216,14 @@ class Gemma4ReasoningParser(ReasoningParser):
         accumulated_text: str,
         *,
         matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
     ) -> DeltaMessage | None:
         """Handle end of stream — emit any remaining content.
 
-        ``matched_stop`` is accepted for API symmetry with the
-        ``<think>``-family parsers (PR #799 D-STOP-THINK). Gemma4's
-        channel-grammar variant has a separate plug in
-        ``extract_reasoning`` so this finalize is a no-op.
+        ``matched_stop`` and ``prompt_thinking_active`` are accepted
+        for API symmetry with the ``<think>``-family parsers (PR #799
+        D-STOP-THINK). Gemma4's channel-grammar variant has a
+        separate plug in ``extract_reasoning`` so this finalize is a
+        no-op.
         """
         return None
