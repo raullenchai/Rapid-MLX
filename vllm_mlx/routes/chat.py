@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Chat completion endpoints — /v1/chat/completions."""
 
+import asyncio
 import gc
 import json
 import logging
@@ -1657,7 +1658,55 @@ async def _create_chat_completion_impl(
                     raw_request,
                     timeout=timeout,
                 )
+            except HTTPException:
+                raise
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                # These belong to the outer route's standard
+                # timeout / cancellation envelopes — NOT to the
+                # strict-contract breach shape. Let them propagate
+                # unchanged so the 408 / 499 / 503 mapping kicks in.
+                raise
             except Exception as guided_err:
+                # Codex r6 BLOCKING parity (non-streaming chat path):
+                # under strict=true, falling back to ``engine.chat``
+                # IS the H-06 hole — the buffered post-decode validator
+                # at line ~1752 below would catch it as a 502 if the
+                # unconstrained output happened to mis-validate, but
+                # if it coincidentally validates the client receives
+                # an unconstrained response under a ``strict=true``
+                # contract the server never honored. Refuse the
+                # fallback under strict mode, surface the breach as
+                # 502 ``strict_schema_violation`` directly.
+                if strict_mode:
+                    incr_strict_violation()
+                    logger.warning(
+                        "Strict json_schema guided generation failed; "
+                        "refusing to fall back to unconstrained because "
+                        "strict=true: %s",
+                        guided_err,
+                    )
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "error": {
+                                "message": (
+                                    "strict response_format could not be "
+                                    "honored: the constrained-decoding path "
+                                    f"raised {type(guided_err).__name__} "
+                                    "before producing any output. The "
+                                    "server refuses to fall back to "
+                                    "unconstrained generation because the "
+                                    "client asked for strict=true. "
+                                    "Investigate the server logs and the "
+                                    "rapid_mlx_response_format_strict_"
+                                    "violations_total metric."
+                                ),
+                                "type": "api_error",
+                                "code": "strict_schema_violation",
+                                "param": "response_format.json_schema",
+                            }
+                        },
+                    ) from guided_err
                 logger.warning(
                     f"Guided generation failed, falling back to standard: {guided_err}"
                 )
@@ -2730,10 +2779,6 @@ async def stream_chat_completion_guided(
                 **_guided_kwargs,
             )
         except Exception as guided_err:
-            logger.warning(
-                "Guided streaming generation failed, falling back to "
-                f"unconstrained streaming: {guided_err}"
-            )
             # Log only the schema's top-level shape, not the full body —
             # user-supplied schemas may embed PII (default values),
             # internal endpoint names, or be megabytes large. Keys +
@@ -2747,6 +2792,49 @@ async def stream_chat_completion_guided(
             )
             logger.debug(
                 f"Problematic schema shape: keys={_schema_keys} required={_required}"
+            )
+            # Codex r6 BLOCKING: under strict=true the fallback to
+            # unconstrained ``stream_chat_completion`` IS the H-06 hole
+            # we're closing — clients asked for a contract and we
+            # silently degraded to best-effort, just over SSE instead
+            # of buffered. The post-decode validator below never runs
+            # because we ``return`` from the fallback before reaching
+            # it. Fix: when ``strict_mode`` is set, translate the
+            # guided exception into the canonical SSE error envelope
+            # (mirror of the post-decode shape) + DONE, and DO NOT
+            # enter the unconstrained fallback.
+            if strict_mode:
+                incr_strict_violation()
+                logger.warning(
+                    "Strict json_schema streaming guided generation "
+                    "failed; refusing to fall back to unconstrained "
+                    "streaming because strict=true: %s",
+                    guided_err,
+                )
+                _err_envelope = {
+                    "error": {
+                        "message": (
+                            "strict response_format could not be honored: "
+                            "the constrained-decoding path raised "
+                            f"{type(guided_err).__name__} before producing "
+                            "any output. The server refuses to fall back "
+                            "to unconstrained streaming because the client "
+                            "asked for strict=true. Investigate the server "
+                            "logs and the "
+                            "rapid_mlx_response_format_strict_violations_total "
+                            "metric."
+                        ),
+                        "type": "api_error",
+                        "code": "strict_schema_violation",
+                        "param": "response_format.json_schema",
+                    }
+                }
+                yield f"data: {json.dumps(_err_envelope)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            logger.warning(
+                "Guided streaming generation failed, falling back to "
+                f"unconstrained streaming: {guided_err}"
             )
             # Forward the pre-computed response_id + _sse_created so the
             # fallback stream's chunks share id/created with this outer

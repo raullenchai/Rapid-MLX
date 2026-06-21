@@ -88,6 +88,7 @@ class _Engine:
         supports_guided: bool = True,
         guided_text: str = _VALID_PAYLOAD,
         chat_text: str = _VALID_PAYLOAD,
+        guided_raises: Exception | None = None,
     ):
         # Property assignment is required because BaseEngine declares
         # ``supports_guided_generation`` as a property — overriding on
@@ -95,6 +96,12 @@ class _Engine:
         self.supports_guided_generation = supports_guided
         self._guided_text = guided_text
         self._chat_text = chat_text
+        # ``guided_raises``: when set, ``generate_with_schema`` raises
+        # this exception instead of returning a buffered output. Used
+        # by codex r6 BLOCKING tests to prove the strict path refuses
+        # to fall back to unconstrained generation on guided-engine
+        # failure.
+        self._guided_raises = guided_raises
         self.guided_calls: list[dict] = []
         self.chat_calls: list[dict] = []
         self.stream_calls: list[dict] = []
@@ -106,6 +113,8 @@ class _Engine:
         self.guided_calls.append(
             {"messages": messages, "json_schema": json_schema, "kwargs": kwargs}
         )
+        if self._guided_raises is not None:
+            raise self._guided_raises
         return GenerationOutput(
             text=self._guided_text,
             new_text=self._guided_text,
@@ -1100,6 +1109,96 @@ def test_check_schema_validity_propagates_dependency_failures(monkeypatch):
     monkeypatch.setattr(jsonschema, "Draft7Validator", _BrokenValidator)
     with pytest.raises(_BoomError):
         tool_calling.check_schema_validity(_VALID_SCHEMA)
+
+
+# --- Codex r6 BLOCKING: guided-failure must not silently fall back -------
+
+
+def test_strict_true_streaming_guided_raises_emits_error_sse_no_fallback():
+    """Codex r6 BLOCKING: when the strict streaming path's
+    ``generate_with_schema`` raises (outlines API change, grammar
+    compilation failure, runtime error in the executor task), the
+    helper PREVIOUSLY fell back to ``stream_chat_completion`` —
+    silently emitting unconstrained SSE chunks under a contract
+    the client said was strict. Fix: refuse the fallback under
+    strict mode, emit a canonical SSE error envelope + DONE.
+    """
+    engine = _Engine(
+        supports_guided=True,
+        guided_raises=RuntimeError("outlines grammar compile failed"),
+    )
+    client = _make_client(engine)
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
+    assert resp.status_code == 200, resp.text  # SSE response status
+    body = resp.text
+    # The error envelope MUST appear and the unconstrained fallback
+    # MUST NOT have run (no chat_calls, no stream_calls).
+    assert "strict_schema_violation" in body
+    assert "strict response_format could not be honored" in body
+    assert '"role":"assistant"' not in body, (
+        "role chunk must NOT precede strict-violation error envelope"
+    )
+    assert "[DONE]" in body
+    assert engine.chat_calls == [], "non-stream chat fallback must NOT run"
+    assert engine.stream_calls == [], "streaming chat fallback must NOT run"
+
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+
+
+def test_strict_true_non_streaming_guided_raises_returns_502_no_fallback():
+    """Codex r6 BLOCKING parity (non-streaming chat path): under
+    strict=true, ``generate_with_schema`` raising must surface as
+    502 ``strict_schema_violation`` directly — NOT fall back to
+    ``engine.chat`` (which the pre-fix code did, hoping the
+    buffered output would coincidentally validate). The buffered
+    post-decode validator was a safety net for the case where the
+    fallback validates; it isn't a contract guarantee."""
+    engine = _Engine(
+        supports_guided=True,
+        guided_raises=RuntimeError("outlines grammar compile failed"),
+    )
+    client = _make_client(engine)
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 502, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "strict_schema_violation"
+    assert body["error"]["type"] == "api_error"
+    assert "strict response_format could not be honored" in body["error"]["message"]
+    # Unconstrained fallback MUST NOT have run.
+    assert engine.chat_calls == []
+    assert engine.stream_calls == []
+
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+
+
+def test_strict_false_streaming_guided_raises_still_falls_back():
+    """Suggestion-only ``strict=false`` MUST keep the legacy
+    fallback semantics — the H-06 fix only changes behavior under
+    the strict contract. A strict=false caller asking for a JSON
+    schema gets best-effort: outlines tries, and if it fails the
+    unconstrained streaming path takes over."""
+    engine = _Engine(
+        supports_guided=True,
+        guided_raises=RuntimeError("outlines grammar compile failed"),
+    )
+    client = _make_client(engine)
+    resp = client.post("/v1/chat/completions", json=_payload(strict=False, stream=True))
+    assert resp.status_code == 200, resp.text
+    body = resp.text
+    # No strict_schema_violation envelope, and the fallback streaming
+    # path was used.
+    assert "strict_schema_violation" not in body
+    assert len(engine.stream_calls) == 1, (
+        f"expected 1 unconstrained stream fallback call, got {len(engine.stream_calls)}"
+    )
+    # The strict counter must NOT tick (suggestion-only path).
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 0
+    assert snap["strict_violations_total"] == 0
 
 
 def test_check_schema_validity_rejects_non_mapping_input():
