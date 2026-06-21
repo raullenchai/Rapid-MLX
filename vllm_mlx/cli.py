@@ -100,6 +100,57 @@ def _listen_fd_arg(value: str) -> int:
     return fd
 
 
+def _apply_body_receive_timeout_env(server_mod, *, logger=None) -> None:
+    """Resolve ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` onto
+    ``server_mod._body_receive_timeout_seconds`` (H-14 / F-072
+    slow-DoS gate).
+
+    Extracted from ``serve_command`` so the
+    ``tests/test_body_receive_timeout.py::test_h14_env_var_override_reduces_timeout``
+    case exercises the same code path the production binary runs —
+    codex round-2 BLOCKING on PR #786 spotted that an inline-only
+    resolver couldn't be unit-tested without duplicating its logic,
+    which would silently mask a regression that deleted the wire-up.
+
+    Behaviour:
+      * No env var (or empty after strip) → leave the existing
+        ``server_mod._body_receive_timeout_seconds`` untouched (the
+        module's documented 15 s default).
+      * Numeric env value → clamp via ``max(0.0, float(...))`` so
+        negative numbers disable the gate without crashing.
+      * Non-numeric env value → log a warning and explicitly write
+        the 15 s default back to ``server_mod`` (an inherited
+        non-default from a prior call would otherwise leak).
+
+    ``server_mod`` is passed in so the test can hand a fresh
+    ``vllm_mlx.server`` reference each call without dragging the
+    whole import-time CLI prologue along.
+    """
+    import os
+
+    if logger is None:  # pragma: no cover — tests always pass a logger
+        import logging as _logging
+
+        logger = _logging.getLogger(__name__)
+
+    _brt_env_name = "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"
+    _brt_env = os.environ.get(_brt_env_name, "").strip()
+    if not _brt_env:
+        return
+    try:
+        server_mod._body_receive_timeout_seconds = max(0.0, float(_brt_env))
+    except ValueError:
+        # Interpolate the env-var name via ``%s`` instead of baking it
+        # into the format string — same false-positive avoidance
+        # pattern as the SSE-keepalive block above.
+        logger.warning(
+            "%s=%r is not a number; falling back to the 15 s default",
+            _brt_env_name,
+            _brt_env,
+        )
+        server_mod._body_receive_timeout_seconds = 15.0
+
+
 def _run_uvicorn(app, args, log_level: str) -> None:
     """Dispatch into ``uvicorn.run`` with the kwargs that match the
     current ``--listen-fd`` / ``--host``/``--port`` mode.
@@ -923,24 +974,15 @@ def serve_command(args):
             )
             server._sse_keepalive_seconds = 20.0
 
-    # Body-receive idle timeout (F-072 slow-DoS gate). Env-only. 0 disables.
-    # Same ``_sync_config``-then-route-handler ordering rationale as the
-    # SSE keepalive above.
-    _brt_env_name = "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"
-    _brt_env = os.environ.get(_brt_env_name, "").strip()
-    if _brt_env:
-        try:
-            server._body_receive_timeout_seconds = max(0.0, float(_brt_env))
-        except ValueError:
-            # Interpolate the env-var name via ``%s`` instead of baking
-            # it into the format string — same false-positive avoidance
-            # pattern as the SSE-keepalive block above.
-            logger.warning(
-                "%s=%r is not a number; falling back to the 15 s default",
-                _brt_env_name,
-                _brt_env,
-            )
-            server._body_receive_timeout_seconds = 15.0
+    # Body-receive idle timeout (F-072 / H-14 slow-DoS gate). Env-only.
+    # 0 disables. Same ``_sync_config``-then-route-handler ordering
+    # rationale as the SSE keepalive above. Extracted into
+    # :func:`_apply_body_receive_timeout_env` so tests can call the
+    # SAME resolver the production binary uses — codex round-2 BLOCKING
+    # on PR #786 flagged that an inline-only resolver couldn't be
+    # exercised by a unit test without duplicating its logic, which
+    # would mask a regression that deleted the wire-up entirely.
+    _apply_body_receive_timeout_env(server, logger=logger)
 
     # Configure CORS (F-090 + F-091). Default: wildcard ``*`` for friendly
     # single-machine UX — rapid-mlx is primarily run locally and a

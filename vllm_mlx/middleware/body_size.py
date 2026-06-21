@@ -164,14 +164,30 @@ class RequestBodyLimitMiddleware:
             return await self.app(scope, receive, send)
         if scope.get("method") not in _GUARDED_METHODS:
             return await self.app(scope, receive, send)
-        if not _path_is_guarded(scope.get("path")):
-            return await self.app(scope, receive, send)
 
-        limit = _resolve_limit()
+        # H-14: the body-receive idle gate ("slow-DoS gate") runs on
+        # every guarded-method request at every path. F-072 originally
+        # short-circuited the wrapper when ``_path_is_guarded(path)``
+        # was False, but the slow-body-channel surface is wider than
+        # ``/v1/``: a slowloris that POSTs ``/healthz`` (or any other
+        # FastAPI handler that calls ``await request.body()``) with an
+        # honest, in-range ``Content-Length`` and then sits idle pins a
+        # worker thread on ``receive()`` for >15 s before the test
+        # gives up — Rhea + Pavel both confirmed the gap on origin/main.
+        # The narrow ``/v1/`` scope was the right call for the
+        # body-SIZE cap (skipping ``/openapi.json`` &c that have no
+        # body), but the body-receive IDLE timer is orthogonal: it
+        # protects ``receive()`` itself, so it has to wrap every
+        # method that can carry a body. The body-size cap stays
+        # path-scoped below.
         receive_timeout = _resolve_body_receive_timeout()
+        path = scope.get("path")
+        path_guarded = _path_is_guarded(path)
+        limit = _resolve_limit() if path_guarded else 0
         if limit == 0 and receive_timeout <= 0:
-            # Both DoS gates disabled by operator. Skip the wrapper to
-            # avoid per-message overhead.
+            # Both DoS gates disabled by operator (or path-unguarded
+            # AND timeout off). Skip the wrapper to avoid per-message
+            # overhead.
             return await self.app(scope, receive, send)
 
         # Fast path: honest Content-Length over cap (only when cap
@@ -242,6 +258,22 @@ class RequestBodyLimitMiddleware:
         # 408 ``request_timeout`` when the cause was actually our
         # slow-body gate.
         timeout_tripped = {"value": False, "streamed": 0, "timeout": 0.0}
+        # H-14: once ``guarded_send`` has rewritten the downstream's
+        # response with our 408 envelope, EVERY subsequent ASGI message
+        # the downstream tries to ship must be dropped. The pre-fix
+        # logic only suppressed when ``timeout_tripped and not
+        # downstream_completed_response`` — and the rewrite itself
+        # flipped ``downstream_completed_response = True``, so the very
+        # next ``http.response.body`` frame (FastAPI's body-parse-error
+        # response) fell through to the unconditional ``await send(msg)``
+        # at the bottom and uvicorn raised
+        # ``RuntimeError: Unexpected ASGI message 'http.response.body'
+        # sent, after response already completed``. That exception ran
+        # on EVERY slowloris hit, log-flooding the operator and turning
+        # what should be a quiet 408 bounce into a noisy crash signal.
+        # This separate flag stays True for the rest of the request,
+        # so every downstream send is swallowed once we've rewritten.
+        response_replaced = {"value": False}
 
         async def bounded_receive():
             # Per-message idle timeout — F-072 slow-DoS gate. We bound
@@ -280,6 +312,18 @@ class RequestBodyLimitMiddleware:
             # the boundary catch below can decide between "emit 413",
             # "close the stream", or "do nothing" without guessing.
             mtype = msg.get("type")
+            # H-14: once we've swapped in our 408 envelope, swallow
+            # every subsequent frame the downstream emits. FastAPI's
+            # exception machinery wraps the
+            # :class:`_BodyReceiveTimeoutError` into a 400 "error parsing
+            # the body" and ships ``http.response.start`` (intercepted
+            # below as the 408) AND a follow-up ``http.response.body``
+            # carrying the 400 envelope's bytes. The pre-fix logic let
+            # that follow-up frame through and uvicorn raised
+            # ``RuntimeError: Unexpected ASGI message 'http.response.body'
+            # sent, after response already completed`` on every hit.
+            if response_replaced["value"]:
+                return
             # F-072: rewrite the downstream's response to a 408 when
             # the upstream cause was our slow-body timeout. Without
             # this, FastAPI surfaces the raised
@@ -306,7 +350,7 @@ class RequestBodyLimitMiddleware:
                     await send(msg)
                     # Immediately flush the replacement body; the
                     # downstream's subsequent ``http.response.body``
-                    # frames are suppressed below.
+                    # frames are suppressed via ``response_replaced``.
                     await send(
                         {
                             "type": "http.response.body",
@@ -315,10 +359,15 @@ class RequestBodyLimitMiddleware:
                         }
                     )
                     downstream_completed_response["value"] = True
+                    response_replaced["value"] = True
                     return
                 if mtype == "http.response.body":
                     # Suppress the downstream's body frames — our 408
-                    # has already shipped its own terminal body.
+                    # has already shipped its own terminal body. Mark
+                    # the response as replaced so any further frames
+                    # (e.g. FastAPI re-entering after raising) hit the
+                    # early-return above.
+                    response_replaced["value"] = True
                     return
             if mtype == "http.response.start":
                 downstream_started_response["value"] = True
