@@ -54,16 +54,33 @@ from vllm_mlx.reasoning.glm4_parser import Glm4ReasoningParser
 from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 
 
-def _simulate_anthropic_stream(parser, chunks):
+def _simulate_anthropic_stream(
+    parser,
+    chunks,
+    *,
+    matched_stop=None,
+    prompt_thinking_active=False,
+    finish_reason=None,
+):
     """Replay ``chunks`` through the parser the way the Anthropic /
     Responses streaming routes do, then apply the route's
     ``finalize_streaming`` consumer protocol.
 
     The Anthropic route emits each streaming delta's ``reasoning``
     as a ``thinking_delta`` and each ``content`` as a ``text_delta``.
-    At end-of-stream it calls ``finalize_streaming(accumulated_raw)``
+    At end-of-stream it calls ``finalize_streaming(accumulated_raw,
+    matched_stop=..., prompt_thinking_active=..., finish_reason=...)``
     and emits ``final_msg.content`` as a NEW text block (only acts
     on ``.content``, NOT on ``.reasoning``).
+
+    Codex round-8 BLOCKING (PR #799): the simulator now threads the
+    finalize-time signals so tests can exercise the
+    natural-EOS-vs-truncation discriminator the same way the routes
+    do. Previously every test called ``finalize_streaming(prev)``
+    without keywords, which silently exercised only the natural-EOS
+    branches; the D-STOP-THINK suppression branches under
+    ``matched_stop`` / ``finish_reason="length"`` were never reached
+    by these regression tests.
 
     Returns (thinking_bytes, text_bytes) — the byte streams the
     client would see across the two Anthropic channels.
@@ -81,7 +98,12 @@ def _simulate_anthropic_stream(parser, chunks):
             if msg.content:
                 text_bytes += msg.content
         prev = cur
-    final = parser.finalize_streaming(prev)
+    final = parser.finalize_streaming(
+        prev,
+        matched_stop=matched_stop,
+        prompt_thinking_active=prompt_thinking_active,
+        finish_reason=finish_reason,
+    )
     # Route consumer: only acts on final_msg.content (anthropic.py:1715,
     # responses.py:907). final_msg.reasoning is silently dropped — which
     # is the desired outcome because the bytes already shipped as
@@ -129,9 +151,24 @@ class TestStopMidThinkExplicitOpener:
 
     @pytest.mark.parametrize("name,parser_cls", THINK_PARSERS_WITH_BASE)
     def test_no_duplicate_bytes_across_channels(self, name, parser_cls):
+        """D-STOP-THINK shape under a real truncation signal: a user
+        stop string fires inside the unterminated ``<think>`` block
+        (``matched_stop`` set) — finalize MUST route to reasoning to
+        suppress duplication.
+
+        Codex round-8 BLOCKING refinement (PR #799): thread the
+        ``matched_stop`` truncation signal so the test pins the
+        actual D-STOP-THINK suppression branch. Natural EOS without
+        the signal now correctly flips to content per the #569
+        silent-drop rescue contract (covered separately in
+        ``test_natural_eos_with_explicit_opener_flips_to_content``).
+        """
         parser = parser_cls()
         chunks = ["<think>", "Let me think ", "about 5+7. The "]
-        thinking, text = _simulate_anthropic_stream(parser, chunks)
+        # ``matched_stop`` simulates a user stop string firing inside
+        # the unclosed ``<think>`` block — the live-repro D-STOP-THINK
+        # shape (qwen3-0.6b-4bit with ``stop=["STOP"]``).
+        thinking, text = _simulate_anthropic_stream(parser, chunks, matched_stop="STOP")
         # Some reasoning must have streamed; what matters is that the
         # text channel does NOT also receive the trace.
         assert "Let me think" in thinking, (
@@ -157,18 +194,27 @@ class TestStopMidThinkExplicitOpener:
         leaking the thought trace into ``content``.
 
         Post-fix: ``lstrip().startswith`` recognises the opener
-        regardless of leading whitespace; the rescue then surfaces
-        via reasoning so the D-STOP-THINK invariant holds.
+        regardless of leading whitespace; under a real truncation
+        signal (``matched_stop`` set OR ``finish_reason="length"``)
+        the rescue then surfaces via reasoning so the D-STOP-THINK
+        invariant holds.
+
+        Codex round-8 BLOCKING refinement (PR #799): pass
+        ``matched_stop`` so the suppression path actually fires.
+        Without a truncation signal, natural-EOS now correctly flips
+        to content (#569 silent-drop rescue).
         """
         parser = parser_cls()
         # Leading whitespace before the opener — the template-
-        # injected case.
+        # injected case AND a real truncation signal (matched_stop)
+        # so the D-STOP-THINK suppression fires.
         accumulated = "\n  <think>Let me think about 5+7."
-        result = parser.finalize_streaming(accumulated)
+        result = parser.finalize_streaming(accumulated, matched_stop="STOP")
         assert result is not None
         assert result.content is None, (
             f"[{name}] codex r2 BLOCKING regression — whitespace-prefixed "
-            f"explicit opener leaked into content: {result.content!r}"
+            f"explicit opener leaked into content under matched_stop: "
+            f"{result.content!r}"
         )
         assert result.reasoning is not None
         assert "Let me think" in result.reasoning
@@ -187,18 +233,24 @@ class TestStopMidThinkExplicitOpener:
         contract violated wire-equivalence on the finalize correction.
 
         Post-fix: the leading whitespace prefix is preserved inside the
-        reasoning emission. The route consumer drops ``final_msg.reasoning``
-        from the wire anyway (only ``content`` flows downstream on
-        Anthropic / Responses) so this is purely a parser-contract
-        invariant — but it guarantees no byte is silently dropped in
-        the saw-prefix branch.
+        reasoning emission under D-STOP-THINK suppression (matched_stop
+        set). The route consumer drops ``final_msg.reasoning`` from the
+        wire anyway (only ``content`` flows downstream on Anthropic /
+        Responses) so this is purely a parser-contract invariant — but
+        it guarantees no byte is silently dropped in the saw-prefix
+        branch.
+
+        Codex round-8 BLOCKING refinement (PR #799): thread
+        ``matched_stop`` so we exercise the D-STOP-THINK suppression
+        path; the prefix-preservation invariant applies to that
+        branch.
         """
         parser = parser_cls()
         # Mimic the codex repro: leading newline+space before the opener.
         prefix = " \n"
         body = "Let me think about 5+7."
         accumulated = f"{prefix}<think>{body}"
-        result = parser.finalize_streaming(accumulated)
+        result = parser.finalize_streaming(accumulated, matched_stop="STOP")
         assert result is not None
         assert result.content is None, (
             f"[{name}] D-STOP-THINK regression — whitespace-prefixed "
@@ -214,6 +266,41 @@ class TestStopMidThinkExplicitOpener:
             f"reasoning={result.reasoning!r}"
         )
         assert body in result.reasoning
+
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [("qwen3", Qwen3ReasoningParser)],
+    )
+    def test_natural_eos_with_explicit_opener_flips_to_content(self, name, parser_cls):
+        """Codex round-8 BLOCKING (PR #799): natural-EOS stream with a
+        literal ``<think>`` opener but NO ``</think>`` AND NO truncation
+        signal means the model voluntarily ended mid-thought. The
+        finalize correction MUST flip to ``content`` so the
+        Anthropic/Responses route surfaces the trace as the assistant
+        turn — otherwise the user sees an empty turn because the route
+        consumer drops ``final_msg.reasoning``.
+
+        This is the #569 silent-drop rescue contract: a turn that
+        produced only orphaned reasoning must still reach
+        ``message.content`` so the wire is never silently empty.
+        """
+        parser = parser_cls()
+        accumulated = "<think>just a thought that the model gave up on"
+        # Natural EOS: no matched_stop, no finish_reason="length".
+        result = parser.finalize_streaming(
+            accumulated, matched_stop=None, finish_reason=None
+        )
+        assert result is not None, (
+            f"[{name}] natural-EOS with unclosed <think>: no rescue emitted "
+            f"— assistant turn would be empty"
+        )
+        assert result.content is not None, (
+            f"[{name}] codex r8 BLOCKING regression — natural-EOS with "
+            f"unclosed <think> routed to reasoning (route drops it from "
+            f"wire); assistant turn would be empty: {result!r}"
+        )
+        assert "just a thought" in result.content
+        assert result.reasoning is None
 
 
 class TestStopMidThinkNoOpener:
@@ -501,10 +588,25 @@ class TestMaxTokensMidThink:
 
     @pytest.mark.parametrize("name,parser_cls", THINK_PARSERS_WITH_BASE)
     def test_explicit_think_max_tokens_no_duplicate(self, name, parser_cls):
+        """``max_tokens`` cut inside ``<think>``: finalize MUST route to
+        reasoning to suppress duplication.
+
+        Codex round-8 BLOCKING refinement (PR #799): thread
+        ``finish_reason="length"`` through the simulator so the
+        D-STOP-THINK ``max_tokens`` suppression branch actually fires.
+        Without the truncation signal, natural-EOS now correctly flips
+        to content (#569 silent-drop rescue) — that's the complementary
+        path tested in
+        ``test_natural_eos_with_explicit_opener_flips_to_content``.
+        """
         parser = parser_cls()
         # Short prefix simulating ``max_tokens`` cut after a few tokens.
         chunks = ["<think>", "5+7"]
-        thinking, text = _simulate_anthropic_stream(parser, chunks)
+        # ``finish_reason="length"`` simulates the engine budget cut —
+        # the real ``max_tokens`` truncation signal.
+        thinking, text = _simulate_anthropic_stream(
+            parser, chunks, finish_reason="length"
+        )
         assert "5+7" in thinking, (
             f"[{name}] expected reasoning routing; thinking={thinking!r}"
         )
@@ -560,28 +662,47 @@ class TestFinalizeContractSurface:
     def test_finalize_never_emits_content_mid_think_with_explicit_opener(
         self, name, parser_cls
     ):
+        """D-STOP-THINK invariant: explicit-opener mid-think UNDER A
+        REAL TRUNCATION SIGNAL (matched_stop set OR
+        finish_reason="length") MUST surface via reasoning, never
+        content — otherwise the bytes shipped during streaming would
+        be duplicated by the route's finalize content emission.
+
+        Codex round-8 BLOCKING refinement (PR #799): scope the
+        invariant to the truncation-signal branches. Natural-EOS with
+        an explicit opener now legitimately emits content (the #569
+        silent-drop rescue) — that branch is tested separately in
+        ``test_natural_eos_with_explicit_opener_flips_to_content``.
+        """
         parser = parser_cls()
         for accumulated in [
             "<think>still thinking",
             "<think>5+7",
         ]:
-            parser.reset_state()
-            # Drive the streaming state so the parser's internal flags
-            # mirror what the live route would have set.
-            prev = ""
-            for ch in [accumulated]:
-                cur = prev + ch
-                parser.extract_reasoning_streaming(prev, cur, ch)
-                prev = cur
-            result = parser.finalize_streaming(accumulated)
-            # Either None (no correction) OR reasoning-only — never
-            # content.
-            if result is not None:
-                assert result.content is None, (
-                    f"[{name}] D-STOP-THINK invariant violation: "
-                    f"finalize emitted content={result.content!r} for "
-                    f"explicit-opener input {accumulated!r}"
-                )
+            # Cover both truncation signals — the suppression branch
+            # must hold for stop AND length.
+            for truncation in (
+                {"matched_stop": "STOP"},
+                {"finish_reason": "length"},
+            ):
+                parser.reset_state()
+                # Drive the streaming state so the parser's internal flags
+                # mirror what the live route would have set.
+                prev = ""
+                for ch in [accumulated]:
+                    cur = prev + ch
+                    parser.extract_reasoning_streaming(prev, cur, ch)
+                    prev = cur
+                result = parser.finalize_streaming(accumulated, **truncation)
+                # Either None (no correction) OR reasoning-only — never
+                # content under a real truncation signal.
+                if result is not None:
+                    assert result.content is None, (
+                        f"[{name}] D-STOP-THINK invariant violation under "
+                        f"truncation={truncation}: finalize emitted "
+                        f"content={result.content!r} for explicit-opener "
+                        f"input {accumulated!r}"
+                    )
 
 
 class TestGemma4ChannelGrammar:
@@ -632,12 +753,19 @@ class TestHermesWithReasoningComposition:
     """
 
     def test_qwen3_finalize_under_hermes_alias(self):
+        """Codex round-8 BLOCKING refinement (PR #799): thread the
+        ``matched_stop`` truncation signal so the test pins the
+        D-STOP-THINK suppression branch under hermes composition.
+        """
         # Hermes tool parser inspection is orthogonal — finalize for
         # the reasoning channel runs on the Qwen3 parser regardless of
         # tool parser choice.
         parser = Qwen3ReasoningParser()
         chunks = ["<think>", "Let me reason ", "step by step. "]
-        thinking, text = _simulate_anthropic_stream(parser, chunks)
+        # ``matched_stop`` simulates the cycle-5 live-repro shape:
+        # qwen3.5-27b-8bit + hermes tool layer with a user stop string
+        # firing inside the unclosed ``<think>`` block.
+        thinking, text = _simulate_anthropic_stream(parser, chunks, matched_stop="STOP")
         assert "Let me reason" in thinking
         assert not text, (
             f"D-STOP-THINK regression under hermes composition: text={text!r}"

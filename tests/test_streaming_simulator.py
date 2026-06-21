@@ -580,12 +580,37 @@ class TestScenario5_EdgeCases:
         )
 
     def test_single_char_no_tag(self):
-        """Single character output, no tags — surfaces via reasoning."""
+        """Single character ``"Y"`` output, no tags, no truncation
+        signal — qwen3 streaming Case-3 routes the byte to reasoning,
+        finalize short-no-tag arm flips to content per #570/#572
+        (matched_stop=None, prompt_thinking_active=False default).
+
+        Codex round-8 BLOCKING (PR #799): assert the EXACT per-channel
+        contract (``reasoning == ["Y"]`` AND ``content == ["Y"]``)
+        instead of the weak substring check. Under the old
+        ``"Y" in full_combined`` assertion, a regression that dropped
+        the content correction, duplicated the byte across channels,
+        or routed to the wrong channel would still pass — exactly the
+        D-STOP-THINK suppression-vs-rescue boundary this PR pins.
+        """
         content, reasoning = simulate_server_streaming_reasoning_aware(
             ["Y"], use_reasoning_parser="qwen3"
         )
-        full_combined = "".join(reasoning) + "".join(content)
-        assert "Y" in full_combined
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Streaming routed the byte to reasoning (qwen3 base-class
+        # Case-3 default for the no-prefix short answer).
+        assert full_reasoning == "Y", (
+            f"qwen3 streaming should route bare 'Y' to reasoning: "
+            f"got reasoning={full_reasoning!r}"
+        )
+        # Finalize short-no-tag arm flipped to content per #570/#572
+        # (matched_stop=None default → casual-answer contract; no
+        # truncation signal → not D-STOP-THINK).
+        assert full_content == "Y", (
+            f"qwen3 finalize should flip bare 'Y' to content "
+            f"(casual-answer #572 contract): got content={full_content!r}"
+        )
 
     def test_whitespace_only_not_emitted_as_content(self):
         """Pure empty string should be filtered, but whitespace should pass."""

@@ -364,14 +364,35 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
                 # parser via the qwen3 reasoning route + hermes tool
                 # route).
                 #
-                # Fix (shared base-class invariant via
-                # ``_finalize_in_think_block``): emit ``reasoning``
-                # instead of ``content``. The Anthropic / Responses
-                # routes only act on ``final_msg.content`` so the
-                # reasoning emission is silently dropped from the wire
-                # — the bytes ALREADY shipped as reasoning during the
-                # stream loop.
-                return DeltaMessage(reasoning=cleaned)
+                # Codex round-8 BLOCKING (PR #799): emit ``reasoning``
+                # ONLY when there's an actual truncation signal —
+                # either ``finish_reason=="length"`` (engine budget
+                # cut the suffix) OR ``matched_stop is not None`` (a
+                # user-supplied stop string fired and trimmed the
+                # output). For natural EOS (no truncation signal),
+                # the model voluntarily ended after emitting
+                # ``<think>just a thought`` — that's a genuinely
+                # orphaned in-progress thought and we must flip to
+                # ``content`` so the #569 silent-drop rescue surfaces
+                # the trace as the assistant turn. Routing to
+                # reasoning here would leave the user with an empty
+                # turn because Anthropic / Responses drop
+                # ``final_msg.reasoning`` from the wire.
+                #
+                # Suppression matrix (saw-prefix branch):
+                #
+                # finish_reason | matched_stop | route
+                # ──────────────┼──────────────┼─────────
+                # "length"      | *            | reasoning (D-STOP-THINK / max_tokens)
+                # *             | set          | reasoning (D-STOP-THINK / stop)
+                # "stop"/None   | None         | content   (#569 natural EOS rescue)
+                if finish_reason == "length" or matched_stop is not None:
+                    return DeltaMessage(reasoning=cleaned)
+                # Natural-EOS with unclosed ``<think>``: model gave
+                # up voluntarily mid-thought. Surface the trace as
+                # content so the user sees an answer instead of an
+                # empty turn (#569 silent-drop rescue contract).
+                return DeltaMessage(content=cleaned)
             # No leading ``<think>`` prefix — Qwen3 chat template
             # injects ``<think>\n`` into the prompt (NOT the model
             # output) so prompt-injected mid-think streams also land

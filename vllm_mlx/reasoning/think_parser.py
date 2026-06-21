@@ -344,30 +344,61 @@ class BaseThinkingReasoningParser(ReasoningParser):
     # (phi-4-mini-reasoning).
     #
     # The shared invariant lives here in the base class so every
-    # ``<think>``-tag parser inherits the same gate:
+    # ``<think>``-tag parser inherits the same gate. Codex round-8
+    # NIT (PR #799): the gate applies ONLY to streams that gave
+    # EXPLICIT or PROMPT-INJECTED thinking evidence — NOT to bare
+    # no-tag casual answers.
     #
-    #     If ``</think>`` was NEVER crossed in the accumulated text,
-    #     ``finalize_streaming`` MUST NOT emit ``content``. The route
-    #     already shipped these bytes as ``reasoning_content`` during
-    #     the stream loop, so a content emission here is a pure
-    #     duplicate.
+    #     If ``</think>`` was NEVER crossed AND the stream gave
+    #     explicit thinking evidence (a literal ``<think>`` opener
+    #     reached the parser) AND a real truncation fired
+    #     (``finish_reason=="length"`` OR ``matched_stop is not
+    #     None``), ``finalize_streaming`` MUST NOT emit ``content``.
+    #     The route already shipped these bytes as
+    #     ``reasoning_content`` during the stream loop, so a content
+    #     emission here is a pure duplicate. The same suppression
+    #     applies to PROMPT-INJECTED thinking evidence (chat template
+    #     injected ``<think>``, ``enable_thinking`` non-False) under
+    #     the same truncation signals.
+    #
+    #     CASUAL no-tag answers (no opener, no truncation signal,
+    #     no bare-preamble label) are EXEMPT from this rule — Qwen3
+    #     and DeepSeek-R1 INTENTIONALLY emit
+    #     ``DeltaMessage(content=...)`` for that path (#570/#572)
+    #     because the streaming Case-3 default routed the bytes to
+    #     ``reasoning_content`` but the answer was never actually
+    #     chain-of-thought. Without the content correction, the
+    #     casual-answer wire would be a silently empty assistant
+    #     turn. NATURAL-EOS with an explicit ``<think>`` opener but
+    #     no truncation signal is ALSO exempt — see qwen3_parser.py
+    #     saw_think_prefix branch (#569 silent-drop rescue).
     #
     # Subclasses that want to emit a reasoning ``DeltaMessage`` at
     # finalize (e.g. Qwen3's bare-text-preamble surfacing for the
     # non-streaming envelope) MAY do so — Anthropic / Responses routes
     # only act on ``final_msg.content``, so reasoning-channel finalize
-    # output is harmless. The hard rule is: NEVER content when
-    # ``end_token`` is absent from ``accumulated_text``.
+    # output is harmless.
     def _finalize_in_think_block(self, accumulated_text: str) -> bool:
         """Return True when finalize fires while still mid-``<think>``.
 
         "Mid-think" = ``</think>`` was never observed in the accumulated
         text. This is the load-bearing signal for the D-STOP-THINK
-        cross-cycle fix: when True, ``finalize_streaming`` MUST NOT
-        return ``DeltaMessage(content=...)`` because the bytes have
-        already been shipped as ``reasoning_content`` via the streaming
-        deltas. Returning content here duplicates the bytes into both
+        cross-cycle fix: when True AND the stream carried EXPLICIT or
+        PROMPT-INJECTED thinking evidence (literal ``<think>`` opener,
+        OR ``prompt_thinking_active`` under a truncation signal),
+        ``finalize_streaming`` MUST NOT return
+        ``DeltaMessage(content=...)`` because the bytes have already
+        been shipped as ``reasoning_content`` via the streaming deltas.
+        Returning content there would duplicate the bytes into both
         channels.
+
+        Casual no-tag answers (no opener, no truncation signal, no
+        bare-preamble label) AND natural-EOS with an explicit opener
+        but no truncation signal are EXEMPT — Qwen3 / DeepSeek-R1
+        intentionally emit ``content`` for those paths (#569/#570/#572)
+        so the assistant turn is not silently empty. The exemptions
+        are documented in the module-level comment block above
+        (codex round-8 NIT).
 
         Subclasses with different closer tokens override
         ``end_token``; this helper reads ``self.end_token`` so the

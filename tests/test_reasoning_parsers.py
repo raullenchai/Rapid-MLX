@@ -1907,17 +1907,24 @@ class TestQwen3:
 
     def test_finalize_streaming_bare_think_preamble_routes_to_reasoning(self):
         # Streaming counterpart: when the chat template injected
-        # ``<think>`` and the model was truncated mid-thought before
-        # ``</think>``, ``finalize_streaming`` previously emitted a
-        # correction with the full text as ``content``. With the
-        # bare-text fallback it surfaces in ``reasoning`` instead.
+        # ``<think>`` and a real truncation signal fired
+        # (matched_stop set OR finish_reason="length"), the
+        # ``finalize_streaming`` correction surfaces the trace via
+        # ``reasoning`` to suppress D-STOP-THINK duplication with
+        # the bytes already shipped on the reasoning channel.
+        #
+        # Codex round-8 BLOCKING refinement (PR #799): the saw-prefix
+        # branch only routes to reasoning under a real truncation
+        # signal — natural EOS now correctly flips to content per
+        # the #569 silent-drop rescue. Thread ``matched_stop`` so
+        # the test pins the D-STOP-THINK suppression path.
         parser = Qwen3ReasoningParser()
         accumulated = (
             "<think>Here's a thinking process:\n\n"
             "1. Analyze the user's request.\n"
             "2. Compare options."
         )
-        result = parser.finalize_streaming(accumulated)
+        result = parser.finalize_streaming(accumulated, matched_stop="STOP")
         assert result is not None
         assert result.reasoning is not None
         assert "thinking process" in result.reasoning
