@@ -168,6 +168,15 @@ class EngineCore:
         # caller already wired it explicitly to a non-zero value so unit
         # tests that craft a SchedulerConfig in isolation retain their
         # explicit setting.
+        #
+        # Codex round 3 NIT #3: narrow the exception filter to
+        # ``AttributeError``/``TypeError`` — a bare ``except Exception``
+        # would silently swallow ANY failure here (including a
+        # ``RuntimeError`` from a frozen-dataclass subclass) and the
+        # operator would be left with a disabled admission gate despite
+        # the CLI flag being set. Logging at WARN gives an actionable
+        # signal; the engine still starts so a malformed scheduler-
+        # config layer can't take down the server.
         try:
             if (
                 getattr(scheduler_config, "gpu_memory_utilization", 0.0) <= 0.0
@@ -176,8 +185,13 @@ class EngineCore:
                 scheduler_config.gpu_memory_utilization = (
                     self.config.gpu_memory_utilization
                 )
-        except Exception:
-            pass
+        except (AttributeError, TypeError) as e:
+            logger.warning(
+                "[D-METAL-CAP] could not propagate gpu_memory_utilization "
+                "into scheduler_config (%s); admission cap will stay "
+                "disabled even though CLI flag is set",
+                e,
+            )
         self.scheduler = Scheduler(
             model=model,
             tokenizer=tokenizer,

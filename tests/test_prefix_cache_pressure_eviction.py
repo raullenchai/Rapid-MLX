@@ -409,6 +409,55 @@ class TestEngineCoreInvokesPressureEvict:
         )
 
 
+class TestClearCacheFailurePropagation:
+    """Codex round 3 BLOCKING #2 regression — when ``mx.clear_cache``
+    raises during pressure-driven eviction, the slabs have NOT actually
+    been returned to MLX's free pool, so the eviction MUST NOT be
+    counted as successful. Pre-fix, ``clear_cache`` failures were
+    swallowed and the loop kept incrementing
+    ``num_prefix_cache_pressure_evictions``, lying to operators about
+    a recovery that didn't happen."""
+
+    def test_clear_cache_failure_propagates_to_engine_path(self):
+        """``mx.clear_cache`` raising → exception bubbles out of
+        ``evict_prefix_cache_under_pressure`` so the engine_core
+        rate-limited warning surfaces the underlying MLX failure."""
+        sched = _make_scheduler_with_legacy_cache(gpu_memory_utilization=0.5)
+        sched.prefix_cache.store_cache([1, 2, 3], ["state-1"])
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+            patch("mlx.core.clear_cache", side_effect=RuntimeError("metal broken")),
+            pytest.raises(RuntimeError, match="metal broken"),
+        ):
+            sched.evict_prefix_cache_under_pressure(max_evict=10)
+
+    def test_counter_not_bumped_on_clear_cache_failure(self):
+        """The eviction counter MUST stay at the pre-call value when
+        ``mx.clear_cache`` raises. Pre-fix, the counter was bumped
+        BEFORE clear_cache ran, so a persistent allocator failure
+        would inflate ``num_prefix_cache_pressure_evictions`` with no
+        actual recovery."""
+        sched = _make_scheduler_with_legacy_cache(gpu_memory_utilization=0.5)
+        sched.prefix_cache.store_cache([1, 2, 3], ["state-1"])
+        sched.prefix_cache.store_cache([4, 5, 6], ["state-2"])
+        before = sched.num_prefix_cache_pressure_evictions
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+            patch("mlx.core.clear_cache", side_effect=RuntimeError("metal broken")),
+            pytest.raises(RuntimeError),
+        ):
+            sched.evict_prefix_cache_under_pressure(max_evict=10)
+        # Counter unchanged — failed clear_cache means no recovery
+        # happened, the metric must not lie to operators.
+        assert sched.num_prefix_cache_pressure_evictions == before
+
+
 class TestSchedulerPropagatesEvictionErrors:
     """Codex round 2 BLOCKING #1 regression — a failing
     ``_evict_one_prefix_cache_entry`` MUST propagate to

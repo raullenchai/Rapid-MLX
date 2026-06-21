@@ -230,6 +230,23 @@ class SchedulerConfig:
     # See D-METAL-PFX in 0.8TODO for the regression repro.
     metal_pressure_evict_fraction: float = 0.9
 
+    # D-METAL-CAP (codex round 3 BLOCKING #1): conservative per-token
+    # KV-cache reservation, in bytes per (prompt+output) token. When
+    # ``> 0``, ``_enforce_metal_cap_at_admission`` adds
+    # ``(num_prompt_tokens + max_tokens) × kv_bytes_per_token`` to the
+    # current ``mx.get_active_memory`` reading and compares the SUM
+    # to the cap — so a single large prefill that would have grown
+    # active PAST the cap is rejected BEFORE the allocation happens,
+    # not just after. Without this, admission compares only current
+    # active vs cap, which lets a 32k-prefill request slip through
+    # when active is currently below cap and then allocate past it.
+    # Default ``0`` keeps back-compat (the cheap current-active-only
+    # check still runs); operators who want belt-and-suspenders can
+    # set a model-tuned value (e.g. 35B-8bit ≈ 1_300_000). Sanity
+    # tip: ``num_layers × 2 × hidden_dim × dtype_bytes`` is the
+    # per-token KV size for an attention-only model.
+    metal_cap_kv_bytes_per_token: int = 0
+
     # PFlash long-prompt prefill compression (#287). Disabled by default;
     # see vllm_mlx/pflash.py for the design notes and the prefix-cache
     # bypass on compressed requests.
@@ -2993,6 +3010,49 @@ class Scheduler:
         except Exception:
             return 0
 
+    def _estimate_request_kv_bytes(self, request: Request) -> int:
+        """Project KV-cache memory the new request would consume.
+
+        Returns ``num_prompt_tokens + max_tokens`` × the operator-
+        configured ``metal_cap_kv_bytes_per_token``. Used by the
+        admission gate to reject prefill requests that would push
+        Metal active PAST the cap before the allocation happens
+        (codex round 3 BLOCKING #1). When
+        ``metal_cap_kv_bytes_per_token == 0`` (default) the
+        projection is 0 and admission falls back to the cheaper
+        current-active-only check.
+
+        Conservative by design: we count both the prompt and the
+        full ``max_tokens`` budget (rather than the much smaller
+        first-step prefill), so the gate errs toward rejecting a
+        borderline request rather than letting it slip through and
+        grow past the cap mid-generation.
+        """
+        per_tok = int(getattr(self.config, "metal_cap_kv_bytes_per_token", 0) or 0)
+        if per_tok <= 0:
+            return 0
+        # ``num_prompt_tokens`` is populated by either the route layer
+        # (when prompt_token_ids was supplied) or zero at this point
+        # (tokenization runs AFTER admission). Fall back to the length
+        # of the raw prompt as a best-effort proxy in the zero case so
+        # the cap still bites on a 32k-string prompt that has not been
+        # tokenized yet.
+        prompt_tokens = int(getattr(request, "num_prompt_tokens", 0) or 0)
+        if prompt_tokens <= 0:
+            raw_prompt = getattr(request, "prompt_token_ids", None)
+            if raw_prompt is not None:
+                prompt_tokens = len(raw_prompt)
+            else:
+                raw = getattr(request, "prompt", "")
+                # Tokens are at most 1 per character for any realistic
+                # tokenizer — an over-estimate is the safe direction.
+                if isinstance(raw, (list, tuple, str)):
+                    prompt_tokens = len(raw)
+        max_tokens = int(
+            getattr(getattr(request, "sampling_params", None), "max_tokens", 0) or 0
+        )
+        return per_tok * (prompt_tokens + max_tokens)
+
     def _enforce_metal_cap_at_admission(self, request: Request) -> None:
         """D-METAL-CAP: reject the request if Metal active exceeds the cap.
 
@@ -3000,6 +3060,19 @@ class Scheduler:
         immediately after the concurrent-requests cap and BEFORE any
         tokenization / prefix-cache lookup so the rejection cost is a
         single ``mx.get_active_memory`` syscall plus a dict lookup.
+
+        Two-stage check (codex round 3 BLOCKING #1 closure):
+        1. Cheap path — ``active >= cap`` rejects when the allocator
+           is ALREADY over budget. This is the original guard and
+           covers sustained over-cap storms.
+        2. Projection path — when
+           ``metal_cap_kv_bytes_per_token > 0`` and the
+           ``active + projected_kv >= cap``, reject the request
+           BEFORE its prefill grows active past the cap. Without this
+           leg, a single large 32k-prefill admitted while current
+           active sits at e.g. 60% of cap could allocate the
+           remaining 70% and still slip through (the documented
+           D-METAL-CAP failure mode the bug repro hit).
 
         Behavior on cap violation:
         - Increment ``num_metal_cap_violations`` counter (exposed via
@@ -3021,23 +3094,37 @@ class Scheduler:
         if cap <= 0:
             return
         active = self._current_metal_active_bytes()
-        if active < cap:
+        projected_kv = self._estimate_request_kv_bytes(request)
+        # Reject when ALREADY over cap OR when admitting the request
+        # would push the allocator over cap on its own KV grow path.
+        if active < cap and (active + projected_kv) < cap:
             return
         self.num_metal_cap_violations += 1
         if not self._metal_cap_warning_logged:
             self._metal_cap_warning_logged = True
+            # Codex round 3 NIT #4: defensively coerce ``request_id`` to
+            # ``str`` before slicing. ``Request.request_id`` is typed as
+            # ``str`` but unit-test fakes / malformed callers occasionally
+            # pass through bytes or numbers — those would turn the
+            # backpressure log path into an unrelated ``TypeError`` that
+            # masks the real D-METAL-CAP signal. ``str(getattr(...))``
+            # keeps the warning sane on every input shape.
+            rid_str = str(getattr(request, "request_id", ""))[:12]
             logger.warning(
-                "[D-METAL-CAP] Metal active %.1f GB ≥ cap %.1f GB "
-                "(gpu_memory_utilization=%.2f) — rejecting new request "
-                "%s with backpressure. Further violations will be tracked "
-                "by rapid_mlx_metal_cap_violations_total only.",
+                "[D-METAL-CAP] Metal active %.1f GB + projected KV "
+                "%.1f GB ≥ cap %.1f GB (gpu_memory_utilization=%.2f) "
+                "— rejecting new request %s with backpressure. Further "
+                "violations will be tracked by "
+                "rapid_mlx_metal_cap_violations_total only.",
                 active / 1e9,
+                projected_kv / 1e9,
                 cap / 1e9,
                 getattr(self.config, "gpu_memory_utilization", 0.0),
-                request.request_id[:12],
+                rid_str,
             )
         raise BackpressureError(
-            f"Metal active {active / 1e9:.1f}GB exceeds "
+            f"Metal active {active / 1e9:.1f}GB + projected KV "
+            f"{projected_kv / 1e9:.1f}GB would exceed "
             f"gpu_memory_utilization cap {cap / 1e9:.1f}GB "
             f"(D-METAL-CAP); retry after pressure drops"
         )
@@ -3096,18 +3183,25 @@ class Scheduler:
                 break
             if not self._evict_one_prefix_cache_entry():
                 break
-            evicted += 1
-            self.num_prefix_cache_pressure_evictions += 1
             # Force the MLX allocator to actually return the slab now
             # that the trie / dict no longer pins the CacheEntry. Without
             # this, the underlying Metal allocation lingers in the
             # free-cache list and ``get_active_memory`` does not drop on
             # the next tick — exactly the D-METAL-PFX symptom (allocator
             # cache stuck at 0 while active stayed pinned).
-            try:
-                mx.clear_cache()
-            except Exception:
-                pass
+            #
+            # Codex round 3 BLOCKING #2: do NOT swallow ``mx.clear_cache``
+            # failures. If clear_cache raises, the slabs have NOT actually
+            # been returned to MLX's free pool — incrementing the
+            # eviction counter and logging "evicted N entries" would lie
+            # to operators about a recovery that didn't happen. Propagate
+            # so the engine_core warning path surfaces the underlying
+            # MLX failure on the first occurrence per process. Counter
+            # and bookkeeping are bumped AFTER clear_cache succeeds so
+            # the metrics never overcount a phantom recovery.
+            mx.clear_cache()
+            evicted += 1
+            self.num_prefix_cache_pressure_evictions += 1
         if evicted:
             logger.info(
                 "[D-METAL-PFX] evicted %d prefix-cache entries under Metal "

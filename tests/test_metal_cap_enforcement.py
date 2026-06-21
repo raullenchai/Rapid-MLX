@@ -224,6 +224,124 @@ class TestGetStatsExposesCounter:
         assert stats["num_metal_cap_violations"] == 2
 
 
+class TestProjectedKVAdmissionGate:
+    """Codex round 3 BLOCKING #1 regression — when
+    ``metal_cap_kv_bytes_per_token > 0`` the admission gate must
+    reject a request whose ``active + projected_kv`` would push the
+    Metal allocator past the cap, EVEN IF current active is still
+    below cap. Without this, a single large 32k-prefill admitted at
+    e.g. 60% of cap can grow active to 130% of cap before the
+    next admission tick fires — the exact D-METAL-CAP failure mode."""
+
+    def _make_scheduler_with_kv_estimate(
+        self,
+        gpu_memory_utilization: float = 0.5,
+        kv_bytes_per_token: int = 1_000_000,
+    ) -> Scheduler:
+        config = SchedulerConfig(
+            max_num_seqs=8,
+            max_concurrent_requests=64,
+            enable_prefix_cache=False,
+            use_memory_aware_cache=False,
+            use_paged_cache=False,
+            gpu_memory_utilization=gpu_memory_utilization,
+            metal_cap_kv_bytes_per_token=kv_bytes_per_token,
+        )
+        tokenizer = MagicMock()
+        tokenizer.encode = lambda s: list(range(len(s)))
+        return Scheduler(model=MagicMock(), tokenizer=tokenizer, config=config)
+
+    def test_below_cap_admitted_when_projection_zero(self):
+        """Back-compat: ``metal_cap_kv_bytes_per_token=0`` (default)
+        means projection is 0 and the gate falls back to the old
+        current-active-only check."""
+        sched = self._make_scheduler_with_kv_estimate(kv_bytes_per_token=0)
+        req = _make_request(tokens=32_000)
+        req.sampling_params = SamplingParams(max_tokens=1024)
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(sched, "_current_metal_active_bytes", return_value=60 * 10**9),
+        ):
+            # Should NOT raise — active < cap, projection is zero.
+            sched._enforce_metal_cap_at_admission(req)
+        assert sched.num_metal_cap_violations == 0
+
+    def test_below_cap_rejected_when_projected_kv_pushes_over(self):
+        """The core round 3 BLOCKING #1 fix: active < cap, but
+        ``active + projected_kv >= cap`` → reject."""
+        # 1 MB per token × (32_000 prompt + 1024 max_tokens) ≈ 33 GB
+        sched = self._make_scheduler_with_kv_estimate(kv_bytes_per_token=1_000_000)
+        req = _make_request(tokens=32_000)
+        req.sampling_params = SamplingParams(max_tokens=1024)
+        # 80 GB active + ~33 GB projected = 113 GB > 100 GB cap
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(sched, "_current_metal_active_bytes", return_value=80 * 10**9),
+            pytest.raises(BackpressureError, match="D-METAL-CAP"),
+        ):
+            sched._enforce_metal_cap_at_admission(req)
+        assert sched.num_metal_cap_violations == 1
+
+    def test_below_cap_admitted_when_projection_fits(self):
+        """A small request whose projection stays inside cap should
+        still admit — projection-aware gate must not reject every
+        request."""
+        sched = self._make_scheduler_with_kv_estimate(kv_bytes_per_token=1_000_000)
+        req = _make_request(tokens=100)
+        req.sampling_params = SamplingParams(max_tokens=100)
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(sched, "_current_metal_active_bytes", return_value=10 * 10**9),
+        ):
+            # 10 GB active + (100+100) × 1 MB = ~10.2 GB << 100 GB cap
+            sched._enforce_metal_cap_at_admission(req)
+        assert sched.num_metal_cap_violations == 0
+
+    def test_estimate_uses_prompt_token_ids_when_num_prompt_tokens_zero(self):
+        """The estimate must fall back to ``len(prompt_token_ids)``
+        when ``num_prompt_tokens`` hasn't been populated yet (route
+        layer hasn't tokenized — admission runs BEFORE tokenization).
+        Otherwise the projection would always be ``max_tokens × per_tok``
+        on freshly-arrived requests and miss long-prompt over-cap
+        cases."""
+        sched = self._make_scheduler_with_kv_estimate(kv_bytes_per_token=1_000_000)
+        req = _make_request(tokens=32_000)
+        req.num_prompt_tokens = 0  # simulate pre-tokenization
+        req.sampling_params = SamplingParams(max_tokens=10)
+        # 32k from len(prompt_token_ids) + 10 max_tokens → ~32 GB
+        kv = sched._estimate_request_kv_bytes(req)
+        assert 30 * 10**9 < kv < 35 * 10**9
+
+    def test_warning_log_safe_on_nonstring_request_id(self, caplog):
+        """Codex round 3 NIT #4 regression: ``request_id`` slicing
+        must coerce via ``str(...)`` so a malformed test/request
+        object with a non-string id doesn't turn the backpressure
+        warning into an unrelated ``TypeError``."""
+        import logging
+
+        sched = self._make_scheduler_with_kv_estimate(kv_bytes_per_token=0)
+        req = _make_request()
+        req.request_id = 12345  # malformed — int instead of str
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+            caplog.at_level(logging.WARNING),
+            pytest.raises(BackpressureError),
+        ):
+            sched._enforce_metal_cap_at_admission(req)
+        # The WARNING must have been emitted, not crashed with a
+        # TypeError before logging.
+        d_metal_warnings = [
+            r for r in caplog.records if "D-METAL-CAP" in r.getMessage()
+        ]
+        assert len(d_metal_warnings) == 1, (
+            "non-string request_id must not break the D-METAL-CAP "
+            "WARNING path — codex round 3 NIT #4."
+        )
+
+
 class TestMetricsRoute:
     """Pin the Prometheus exposition format — operator dashboards key
     off the exact series name."""
