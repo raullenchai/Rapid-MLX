@@ -420,38 +420,54 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # output) so prompt-injected mid-think streams also land
             # here, alongside genuine casual answers.
             #
-            # Codex round-14 BLOCKING (PR #799): the parser has NO
-            # direct evidence the bytes are chain-of-thought — there
-            # is no literal ``<think>`` opener in ``accumulated_text``.
-            # Earlier rounds (r4/r5/r6) used ``prompt_thinking_active``
-            # as a proxy ("chat template contained ``<think>`` →ass ume
-            # bytes are reasoning"), but that proxy SILENTLY DROPS
-            # legitimate casual answers like ``"The answer is STOP"``
-            # produced while the template contains ``<think>``: the
-            # stop fires, ``matched_stop`` is set,
-            # ``prompt_thinking_active`` is True — but the answer was a
-            # direct response, not a thought trace.
+            # Codex round-15 BLOCKING (PR #799) restores the original
+            # D-STOP-THINK suppression for the no-prefix branch — the
+            # ``prompt_thinking_active`` template signal is the only
+            # discriminator the parser has between (a) prompt-injected
+            # mid-think (chat template injected ``<think>``, streaming
+            # loop already shipped bytes as reasoning_content, finalize
+            # must NOT duplicate into content) and (b) a casual answer.
+            # This mirrors the deepseek_r1 and vibethinker behavior
+            # locked down by
+            # ``test_matched_stop_and_thinking_active_routes_to_reasoning``
+            # and ``test_length_finish_with_thinking_routes_to_reasoning``.
             #
-            # Decision matrix (no-prefix branch, r14 final) — only
-            # PARSER EVIDENCE (the cleaned text itself) routes:
+            # Decision matrix (no-prefix branch, r15 final):
             #
-            # bare_preamble label | route
-            # ────────────────────┼─────────
-            # True                | reasoning (#570 scratchpad label)
-            # False               | content  (#570/#572 casual answer)
+            # finish_reason | matched_stop | prompt_thinking_active | bare_preamble | route
+            # ──────────────┼──────────────┼────────────────────────┼───────────────┼─────────
+            # "length"      | *            | True                   | *             | reasoning (D-STOP-THINK / max_tokens)
+            # *             | set          | True                   | *             | reasoning (D-STOP-THINK / stop)
+            # *             | None         | False                  | True          | reasoning (#570 label)
+            # *             | None         | False                  | False         | content  (#570/#572 casual)
+            # *             | set          | False                  | *             | content  (casual stop-terminated)
+            # natural EOS   | None         | True                   | *             | content  (#569 silent-drop rescue)
             #
-            # Trade-off: D-STOP-THINK leak for the no-prefix
-            # prompt-injected mid-think case is the deliberate residual
-            # — a duplicated trace on the wire is recoverable
-            # client-side, but a silently dropped legitimate answer is
-            # not. The literal-opener case (saw_prefix=True above) still
-            # suppresses correctly because the parser has direct
-            # evidence (the ``<think>`` token reached the parser).
+            # Casual-answer caveat: a direct answer like ``"The answer
+            # is STOP"`` produced while the chat template contains
+            # ``<think>`` AND the user stop fires would also land in
+            # reasoning here. The trade-off matches the saw-prefix
+            # branch's bias and the cross-parser parity: D-STOP-THINK
+            # duplication suppression is the documented PR goal and the
+            # higher-priority leak. The route-level helper
+            # ``_rescue_silent_drop_from_reasoning`` re-surfaces the
+            # reasoning bytes as content when the message would
+            # otherwise be empty, mitigating the silent-drop edge.
+            if finish_reason == "length" and prompt_thinking_active:
+                # max_tokens cut a prompt-injected thinking stream —
+                # route to reasoning to suppress duplication.
+                return DeltaMessage(reasoning=cleaned)
+            if matched_stop is not None and prompt_thinking_active:
+                # D-STOP-THINK prompt-injected mid-think shape: route
+                # to reasoning to suppress duplication with bytes
+                # already shipped via streaming.
+                return DeltaMessage(reasoning=cleaned)
             if _looks_like_bare_think_preamble(cleaned):
                 # #570 scratchpad-label fallback — bare-preamble IS
                 # think-mode evidence.
                 return DeltaMessage(reasoning=cleaned)
-            # No parser evidence of think mode — surface as content
-            # (#570/#572 casual-answer contract).
+            # No truncation signal + no parser evidence — surface as
+            # content (#570/#572 casual-answer / #569 natural-EOS
+            # rescue).
             return DeltaMessage(content=cleaned)
         return None

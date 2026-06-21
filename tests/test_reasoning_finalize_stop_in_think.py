@@ -513,20 +513,7 @@ class TestPromptInjectedMidThinkDiscriminator:
     @pytest.mark.parametrize(
         "name,parser_cls",
         [
-            # Codex round-14 BLOCKING (PR #799): ``qwen3`` is removed
-            # from this parametrize because the no-prefix branch is now
-            # PARSER-EVIDENCE-ONLY (see
-            # ``Qwen3ReasoningParser._finalize_in_think_block``) — bare
-            # text with no ``<think>`` opener is the casual-answer
-            # shape, which MUST reach ``content`` to avoid silently
-            # dropping a legitimate stop-terminated answer like ``"The
-            # answer is STOP"`` produced while the chat template
-            # contains ``<think>``. Coverage for the qwen3 no-prefix
-            # path lives in
-            # ``test_qwen3_no_prefix_with_matched_stop_and_thinking_flips_to_content``
-            # below. ``deepseek_r1`` and ``vibethinker`` keep the
-            # original Case-1 routing because their parsers do not
-            # share qwen3's no-prefix discriminator.
+            ("qwen3", Qwen3ReasoningParser),
             ("deepseek_r1", DeepSeekR1ReasoningParser),
             ("vibethinker", VibeThinkerReasoningParser),
         ],
@@ -536,7 +523,18 @@ class TestPromptInjectedMidThinkDiscriminator:
     ):
         """Prompt-injected mid-think shape: matched_stop set AND
         thinking active → route to reasoning (suppress D-STOP-THINK
-        duplication)."""
+        duplication).
+
+        Codex round-15 BLOCKING (PR #799) RESTORED the qwen3 row in
+        this parametrize after the r14 attempt to restrict qwen3's
+        no-prefix branch to PARSER-EVIDENCE-ONLY (motivated by the
+        casual-answer counter-example ``"The answer is STOP"``) was
+        reverted — that change re-opened the D-STOP-THINK leak this
+        PR exists to close. The ``prompt_thinking_active`` template
+        signal IS the discriminator the parser has for no-prefix
+        streams, and it matches the deepseek_r1 / vibethinker
+        behavior.
+        """
         parser = parser_cls()
         trace = "5+7 equals 12"
         result = parser.finalize_streaming(
@@ -549,39 +547,19 @@ class TestPromptInjectedMidThinkDiscriminator:
         )
         assert result.reasoning == trace
 
-    def test_qwen3_no_prefix_with_matched_stop_and_thinking_flips_to_content(self):
-        """Codex round-14 BLOCKING (PR #799): qwen3 no-prefix +
-        matched_stop + prompt_thinking_active → content (casual-answer
-        rescue). The earlier rule routed this to reasoning, but that
-        silently dropped legitimate stop-terminated answers like ``"The
-        answer is STOP"`` produced while the chat template contains
-        ``<think>``. The r14 contract restricts the no-prefix branch to
-        PARSER-EVIDENCE routing (bare-preamble label only).
-        """
-        parser = Qwen3ReasoningParser()
-        trace = "The answer is 12"
-        result = parser.finalize_streaming(
-            trace, matched_stop="STOP", prompt_thinking_active=True
-        )
-        assert result is not None
-        assert result.content == trace, (
-            f"[qwen3] codex r14 regression — casual stop-terminated "
-            f"answer under prompt-injected thinking silently dropped: "
-            f"{result!r}"
-        )
-        assert result.reasoning is None
-
     def test_qwen3_no_prefix_with_bare_preamble_keeps_reasoning_routing(self):
-        """Codex round-14 (PR #799): qwen3 no-prefix branch keeps
-        reasoning routing when PARSER EVIDENCE is present — the
-        ``Here's a thinking process:`` bare-preamble label (#570
-        scratchpad-label fallback) IS direct evidence of think mode
-        regardless of ``prompt_thinking_active``.
+        """qwen3 no-prefix branch keeps reasoning routing when PARSER
+        EVIDENCE is present — the ``Here's a thinking process:``
+        bare-preamble label (#570 scratchpad-label fallback) IS direct
+        evidence of think mode regardless of
+        ``prompt_thinking_active``. This holds even without
+        truncation signals because the parser has direct evidence the
+        bytes are chain-of-thought.
         """
         parser = Qwen3ReasoningParser()
         trace = "Here's a thinking process: 5+7 equals 12"
         result = parser.finalize_streaming(
-            trace, matched_stop="STOP", prompt_thinking_active=True
+            trace, matched_stop=None, prompt_thinking_active=False
         )
         assert result is not None
         assert result.reasoning == trace, (
@@ -670,12 +648,7 @@ class TestPromptInjectedMidThinkDiscriminator:
     @pytest.mark.parametrize(
         "name,parser_cls",
         [
-            # Codex round-14 BLOCKING (PR #799): ``qwen3`` removed from
-            # this parametrize — see note on
-            # ``test_matched_stop_and_thinking_active_routes_to_reasoning``.
-            # The qwen3-specific length-finish path is covered by
-            # ``test_qwen3_no_prefix_with_length_finish_and_thinking_flips_to_content``
-            # below.
+            ("qwen3", Qwen3ReasoningParser),
             ("deepseek_r1", DeepSeekR1ReasoningParser),
             ("vibethinker", VibeThinkerReasoningParser),
         ],
@@ -712,31 +685,6 @@ class TestPromptInjectedMidThinkDiscriminator:
             f"{result.content!r}"
         )
         assert result.reasoning == trace
-
-    def test_qwen3_no_prefix_with_length_finish_and_thinking_flips_to_content(self):
-        """Codex round-14 BLOCKING (PR #799): qwen3 no-prefix +
-        ``finish_reason="length"`` + ``prompt_thinking_active=True`` →
-        content. Symmetric to the matched_stop case: the no-prefix
-        branch has no parser evidence the bytes were chain-of-thought
-        (no literal ``<think>`` opener), and using
-        ``prompt_thinking_active`` alone as a proxy silently drops
-        legitimate budget-cut answers. The r14 contract restricts the
-        branch to PARSER-EVIDENCE routing (bare-preamble label only).
-        """
-        parser = Qwen3ReasoningParser()
-        trace = "The answer is 12"
-        result = parser.finalize_streaming(
-            trace,
-            matched_stop=None,
-            prompt_thinking_active=True,
-            finish_reason="length",
-        )
-        assert result is not None
-        assert result.content == trace, (
-            f"[qwen3] codex r14 regression — budget-cut answer under "
-            f"prompt-injected thinking silently dropped: {result!r}"
-        )
-        assert result.reasoning is None
 
     @pytest.mark.parametrize(
         "name,parser_cls",
