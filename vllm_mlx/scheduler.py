@@ -4155,9 +4155,9 @@ class Scheduler:
     def remove_finished_request(self, request_id: str) -> Request | None:
         """Remove a finished request from tracking.
 
-        M-01 codex r4 BLOCKING #1: this is the canonical
-        request-leaves-scheduler boundary, so the cancellation
-        dedupe ledgers (``_cancelled_request_ids`` /
+        M-01 codex r4 BLOCKING #1 + codex r5 BLOCKING: this is the
+        canonical request-leaves-scheduler boundary, so the
+        cancellation dedupe ledgers (``_cancelled_request_ids`` /
         ``_disconnect_abort_ids``) are also discarded here. Before
         this method runs, a redundant ``abort_request`` for the
         same id would still pass the
@@ -4170,14 +4170,26 @@ class Scheduler:
         lifetime), which is exactly when the counter SHOULD tick
         again.
 
-        Discards are under the same lock as the abort_request
-        increment so the discard + future increment are linearly
-        ordered. Idempotent — re-entry is safe.
+        Codex r5 BLOCKING: the ``self.requests.pop`` AND the
+        ledger discards MUST happen under a single critical
+        section. Otherwise the window between "ledger discarded"
+        and "request popped" is a race where a concurrent
+        ``abort_request`` observes ``request_id in self.requests``
+        (still True) AND an empty ledger (because we just cleared
+        it) and double-counts the same lifetime. The pop is moved
+        INSIDE the lock and runs BEFORE the discard so any
+        concurrent ``abort_request`` either sees the id still in
+        ``self.requests`` AND in the ledger (no double-count, the
+        dedupe gate catches it) OR sees the id not in
+        ``self.requests`` (returns False per F-151).
+
+        Discards are idempotent — re-entry is safe.
         """
         with self._cancel_counter_lock:
+            popped = self.requests.pop(request_id, None)
             self._cancelled_request_ids.discard(request_id)
             self._disconnect_abort_ids.discard(request_id)
-        return self.requests.pop(request_id, None)
+        return popped
 
     def get_running_requests_info(self) -> list[dict[str, Any]]:
         """Per-request details for status endpoint."""

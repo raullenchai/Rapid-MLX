@@ -219,6 +219,80 @@ def test_total_counter_counts_reused_request_id_after_full_abort_cycle():
     assert scheduler.get_stats()["num_requests_cancelled"] == 2
 
 
+def test_remove_finished_request_pops_and_discards_atomically():
+    """Codex r5 BLOCKING: ``remove_finished_request`` must perform
+    the ``self.requests.pop`` AND the dedupe-ledger discards
+    inside a single critical section so a concurrent
+    ``abort_request`` cannot observe ``request_id in self.requests``
+    AND an empty ledger.
+
+    Pre-r5-fix the discards happened under the lock but the pop
+    was outside, opening a window where a racing thread saw:
+      * ``request_id in self.requests``  (pop hadn't run yet)
+      * ``request_id not in _cancelled_request_ids`` (discard
+        already cleared it)
+    → double-count of the same request lifetime.
+
+    Test approach: monkeypatch ``self.requests.pop`` to verify the
+    lock is HELD across both ``pop`` and ``discard``. We can't
+    reliably exercise the race via real threads (the window is
+    microseconds), so we assert the ordering contract by tracking
+    when each operation runs relative to the lock state. A
+    regression that moves either operation out of the critical
+    section flips one of the assertions.
+    """
+    scheduler = _make_scheduler()
+    _admit(scheduler, "req-atomic-cleanup")
+    scheduler.abort_request("req-atomic-cleanup")
+    scheduler._process_pending_aborts()
+    # Pre-state: ledger populated, request still resident.
+    assert "req-atomic-cleanup" in scheduler._cancelled_request_ids
+    assert "req-atomic-cleanup" in scheduler.requests
+
+    # Wrap ``self.requests`` and ``_cancelled_request_ids`` with
+    # observers that snapshot the lock state at each mutation.
+    # Can't monkeypatch ``dict.pop`` / ``set.discard`` directly
+    # (they're slot-defined read-only), so we replace the whole
+    # container with a subclass.
+    lock = scheduler._cancel_counter_lock
+
+    class _DictObserver(dict):
+        def __init__(self, src):
+            super().__init__(src)
+            self.pop_lock_states: list[bool] = []
+
+        def pop(self, *args, **kwargs):
+            self.pop_lock_states.append(lock.locked())
+            return super().pop(*args, **kwargs)
+
+    class _SetObserver(set):
+        def __init__(self, src):
+            super().__init__(src)
+            self.discard_lock_states: list[bool] = []
+
+        def discard(self, *args, **kwargs):
+            self.discard_lock_states.append(lock.locked())
+            return super().discard(*args, **kwargs)
+
+    scheduler.requests = _DictObserver(scheduler.requests)
+    scheduler._cancelled_request_ids = _SetObserver(scheduler._cancelled_request_ids)
+    scheduler._disconnect_abort_ids = _SetObserver(scheduler._disconnect_abort_ids)
+
+    scheduler.remove_finished_request("req-atomic-cleanup")
+
+    # Both operations must have observed the lock held — that's
+    # the codex r5 contract.
+    assert scheduler.requests.pop_lock_states == [True], (
+        scheduler.requests.pop_lock_states
+    )
+    assert scheduler._cancelled_request_ids.discard_lock_states == [True], (
+        scheduler._cancelled_request_ids.discard_lock_states
+    )
+    # Sanity: the actual cleanup happened.
+    assert "req-atomic-cleanup" not in scheduler.requests
+    assert "req-atomic-cleanup" not in scheduler._cancelled_request_ids
+
+
 def test_total_counter_does_not_double_count_redundant_abort_pre_cleanup():
     """Codex r4 BLOCKING #1: between ``_do_abort_request`` and
     ``remove_finished_request`` the request stays resident in
