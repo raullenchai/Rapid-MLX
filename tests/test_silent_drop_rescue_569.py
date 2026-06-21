@@ -1231,29 +1231,60 @@ def test_rescue_skipped_when_reasoning_is_case4_and_length():
     )
 
 
-def test_rescue_skipped_when_case4_and_finish_is_stop():
-    """D-STOP-THINK (cross-cycle bundle): the Case-4 signal indicates
-    the parser routed a no-tag truncated thought to reasoning. When
-    ``stop`` matches mid-thought, the trim cuts the suffix and the
-    rescue surfaces would produce byte-identical ``content`` and
-    ``reasoning_content`` on the wire.
+def test_rescue_fires_when_case4_and_finish_is_stop_without_opener_evidence():
+    """D-STOP-THINK codex-round-N BLOCKING fix: scope the Case-4 +
+    ``stop`` suppression to require additional truncation evidence.
 
-    Symmetric with the ``finish=length`` x case4 gate added earlier:
-    extend to ``finish=stop`` so user-supplied stop strings firing
-    mid-thought don't trigger the duplication leak.
+    Case-4 alone is NOT direct truncation evidence — VibeThinker's
+    no-think prompts can legitimately produce a Case-4 stream that
+    finishes naturally with ``finish_reason="stop"`` (EOS), and pre-
+    fix those rescues correctly surfaced the reasoning trace as
+    ``content`` (PR #715 fuzz finding C). Suppressing them on
+    ``stop`` would silently drop the assistant turn — the exact #569
+    regression this helper exists to prevent.
+
+    The D-STOP-THINK leak under Case-4 + ``stop`` only fires when
+    the stop string matched inside an unclosed ``<think>`` opener,
+    and that's already covered by the opener-evidence arm above.
+    Case-4 + ``stop`` with NO opener evidence is the natural-EOS
+    path and MUST still rescue.
     """
-    trace = "thought trace that ended cleanly without a final answer"
+    trace = "casual non-thinking answer that finished cleanly at EOS"
     rescued = _rescue_silent_drop_from_reasoning(
         final_content=None,
         reasoning_text=trace,
         tool_calls=None,
         finish_reason="stop",
+        # No ``<think>`` literal in raw_text — natural-EOS shape.
         raw_text=trace,
         reasoning_is_case4=True,
     )
+    assert rescued == trace, (
+        f"#569 regression — rescue suppressed natural-EOS case-4 "
+        f"reasoning trace under finish=stop with no opener evidence: "
+        f"rescued={rescued!r}"
+    )
+
+
+def test_rescue_skipped_when_case4_stop_and_unclosed_think_opener():
+    """D-STOP-THINK leak shape still suppressed when the Case-4
+    stream ALSO has an unclosed ``<think>`` opener in raw_text. The
+    opener-evidence arm (not the Case-4 arm) picks this up — Case-4
+    + ``stop`` + opener is the cross-cycle bundle's actual leak
+    surface."""
+    trace = "thought in progress when STOP fired"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text=trace,
+        tool_calls=None,
+        finish_reason="stop",
+        # Unclosed ``<think>`` opener — D-STOP-THINK shape.
+        raw_text="<think>\n" + trace,
+        reasoning_is_case4=True,
+    )
     assert rescued is None, (
-        f"D-STOP-THINK regression — rescue surfaced case-4 trace as "
-        f"content under finish=stop: rescued={rescued!r}"
+        f"D-STOP-THINK regression — rescue surfaced unclosed-think "
+        f"trace as content under finish=stop: rescued={rescued!r}"
     )
 
 

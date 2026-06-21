@@ -167,36 +167,30 @@ def cfg_without_reasoning_parser():
 class TestAnthropicStreamingWithReasoningParser:
     """Issue #185: _stream_anthropic_messages with reasoning_parser active."""
 
-    def test_no_think_tags_yields_thinking_delta_under_qwen3_parser(
+    def test_no_think_tags_yields_thinking_delta_then_text_correction(
         self, cfg_with_reasoning_parser
     ):
-        """No-tag output under the Qwen3 parser routes to thinking deltas.
+        """No-tag output under the Qwen3 parser: streaming routes to
+        thinking deltas, finalize flips to text block (casual-answer
+        contract).
 
-        D-STOP-THINK (cross-cycle bundle, cycle-11 phi-4-mini-reasoning):
-        the prior assertion here was that ``finalize_streaming``'s
-        content correction would surface no-tag output as ``text_delta``
-        — but that protocol was the source of the cross-cycle leak.
-        The streaming loop ships every byte as ``thinking_delta``
-        (base class Case-3 "no tags yet → reasoning"), and the pre-fix
-        finalize correction then APPENDED the same bytes as a fresh
-        ``text`` block, duplicating the trace into BOTH the
-        ``thinking`` AND ``text`` channels on the Anthropic
-        envelope. Six parser families repro'd this shape.
+        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
+        the no-evidence no-tag path is the casual-answer flip
+        (#570/#572) — the streaming loop ships bytes as
+        ``thinking_delta`` (base class Case-3 "no tags yet →
+        reasoning"), and ``finalize_streaming`` then emits the
+        buffered text via ``content`` so the Anthropic route surfaces
+        it as a ``text_block`` block. The route consumer's content
+        gate fires on the finalize correction.
 
-        Post-fix: ``finalize_streaming`` surfaces the no-tag rescue
-        via ``reasoning``; the route consumer's
-        ``final_msg.content`` gate stays silent, so no fresh text
-        block is opened and the bytes only ship once — as
-        ``thinking_delta``. The Qwen3 chat template's pre-injected
-        ``<think>\\n`` makes this the correct channel for the
-        reasoning-class alias regardless: a no-tag continuation IS
-        the truncated thought trace. (#575 symmetry.)
-
-        Callers that want no-tag output to surface as ``text_delta``
-        should configure a non-reasoning parser (``None`` /
-        ``deepseek_r1`` with the Case-3 "no tags → content" override
-        — see ``Glm4ReasoningParser`` for the precedent) or rely on
-        the streaming Case-3 default, not the finalize correction.
+        The Anthropic-stream apparent duplication (thinking_delta +
+        text_delta carrying same bytes) is the documented trade-off
+        for the no-evidence path; without the content flip, casual
+        answers would silently appear as empty on the OpenAI envelope
+        (the #569 regression). The D-STOP-THINK leak surface targeted
+        by this fix is the EXPLICIT-OPENER path — the base class
+        default finalize returns None there, breaking the duplication
+        chain.
         """
         from vllm_mlx.routes.anthropic import (
             AnthropicRequest,
@@ -231,17 +225,16 @@ class TestAnthropicStreamingWithReasoningParser:
             "Expected base class Case-3 reasoning routing for the no-tag path."
         )
 
-        # Must NOT have duplicated the bytes via finalize_streaming's
-        # content correction — D-STOP-THINK invariant. The Anthropic
-        # finalize path only emits a text block when
-        # ``final_msg.content`` is set; post-fix the rescue surfaces
-        # via ``final_msg.reasoning`` so no text block opens.
+        # Must also have a text block from the finalize content
+        # correction — casual-answer contract (#570/#572). Without
+        # this flip, the casual answer would never reach
+        # ``message.content`` on the OpenAI envelope.
         text_starts = [t for t in delta_types if t == ("content_block_start", "text")]
-        assert not text_starts, (
-            f"D-STOP-THINK regression: finalize correction opened a text "
-            f"block; the no-tag bytes already shipped as thinking_delta "
-            f"and a fresh text block here would duplicate them onto the "
-            f"wire. Events: {delta_types}"
+        assert text_starts, (
+            f"Casual-answer regression: finalize content correction did "
+            f"not open a text block. Without this the no-tag casual "
+            f"answer would be silently empty on message.content. "
+            f"Events: {delta_types}"
         )
 
     def test_both_think_tags_emits_thinking_and_text(self, cfg_with_reasoning_parser):

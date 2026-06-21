@@ -978,21 +978,25 @@ class TestDeepSeekNoTagThreshold:
         assert "content here" in "".join(content_parts)
 
     def test_finalize_corrects_short_no_tag_output(self, parser):
-        """finalize_streaming surfaces short no-tag output via reasoning.
+        """finalize_streaming surfaces short no-tag output via content.
 
-        D-STOP-THINK (cross-cycle bundle, cycle-11 phi-4-mini-reasoning):
-        when ``</think>`` was never crossed, ``finalize_streaming`` MUST
-        NOT emit ``content`` — the streaming loop already shipped the
-        bytes as ``reasoning_content`` and re-emitting them as content
-        from finalize duplicates them into both channels on the
-        Anthropic / Responses streaming envelopes (the consumers append
-        ``final_msg.content`` as a fresh text block at end-of-stream).
+        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
+        the short-no-tag rescue is the CASUAL-ANSWER contract — no
+        explicit ``<think>`` opener was ever seen during streaming, so
+        we have no evidence the model was actually thinking. The
+        streaming Case-3 default routed the bytes to ``reasoning`` as
+        a conservative bet; this finalize correction flips them to
+        ``content`` so the route consumer surfaces them as a text
+        block (#570/#572). Route consumers ignore
+        ``final_msg.reasoning`` (anthropic.py:1715, responses.py:907)
+        so routing this rescue to reasoning would leave the casual
+        answer silently empty on the wire — the exact #569 regression
+        the rescue exists to prevent.
 
-        Post-fix: the correction surfaces the buffered text in
-        ``reasoning`` so callers that inspect the parser contract
-        directly (this test, custom routes) still see the rescue
-        signal, but the route consumers' ``final_msg.content`` gate
-        is silent — no extra bytes hit the wire.
+        The D-STOP-THINK duplication leak surface for DeepSeek-R1 is
+        the EXPLICIT-OPENER path (covered by the base class default
+        which returns None); the short-no-tag arm does NOT fire there
+        because ``_saw_any_tag`` becomes True after the opener.
         """
         parser.reset_state()
 
@@ -1005,11 +1009,12 @@ class TestDeepSeekNoTagThreshold:
             accumulated += char
             parser.extract_reasoning_streaming(prev, accumulated, char)
 
-        # Finalize should emit correction in the reasoning channel.
+        # Finalize should emit correction in the content channel — the
+        # casual-answer contract per #570/#572.
         correction = parser.finalize_streaming(accumulated)
         assert correction is not None
-        assert correction.content is None  # NOT content — D-STOP-THINK invariant
-        assert correction.reasoning == text
+        assert correction.content == text
+        assert correction.reasoning is None
 
     def test_finalize_no_correction_with_tags(self, parser):
         """finalize_streaming should not correct when tags were seen."""

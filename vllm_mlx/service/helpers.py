@@ -710,22 +710,39 @@ def _rescue_silent_drop_from_reasoning(
     # with ``stop=["STOP"]`` on qwen3-0.6b-4bit). Six parser
     # families confirmed.
     #
-    # Symmetric fix: gate on BOTH ``stop`` and ``length`` for the
-    # unclosed-``<think>``/Case-4 truncation arms — the trim cause
-    # is structurally identical (mid-think suffix removed), only
-    # the reported ``finish_reason`` differs. Other ``stop``
-    # cases (model emitted a closed ``<think>…</think>`` then
-    # generated the stop string in its answer) still get rescued —
-    # the unclosed-opener / Case-4 discriminator picks out the
-    # mid-think arm specifically.
-    truncated_mid_think = bool(finish_reason in ("length", "stop")) and (
-        (
-            raw_text
-            and raw_text.lstrip().startswith("<think>")
-            and "</think>" not in raw_text
-        )
-        or reasoning_is_case4
-    )
+    # Symmetric fix (D-STOP-THINK), scoped per codex round-N
+    # review: extend the suppression to BOTH ``stop`` and
+    # ``length`` for the unclosed-``<think>`` arm (the trim cause
+    # is structurally identical — mid-think suffix removed —
+    # only the reported ``finish_reason`` differs).
+    #
+    # The Case-4 arm stays ``length``-ONLY because Case-4 by
+    # itself is NOT direct truncation evidence: VibeThinker's
+    # no-think prompts can legitimately produce a Case-4 stream
+    # that finishes naturally with ``finish_reason="stop"``
+    # (EOS), and pre-fix those rescues correctly surfaced the
+    # reasoning trace as ``content`` (PR #715 fuzz finding C).
+    # Suppressing them on ``stop`` would silently drop the
+    # assistant turn — the exact #569 regression this helper
+    # exists to prevent. The Case-4-with-``stop`` D-STOP-THINK
+    # leak shape only fires when the stop string actually
+    # matched inside ``<think>`` (a user-supplied stop string),
+    # and in that shape ``raw_text`` carries the unclosed
+    # ``<think>`` opener — picked up by the existing
+    # opener-evidence arm above. Case-4 + ``stop`` with no
+    # opener evidence is the natural-EOS path and still gets
+    # rescued.
+    #
+    # Other ``stop`` cases (model emitted a closed
+    # ``<think>…</think>`` then generated the stop string in its
+    # answer) still get rescued — the unclosed-opener arm picks
+    # out the mid-think shape specifically.
+    truncated_mid_think = (
+        bool(finish_reason in ("length", "stop"))
+        and raw_text
+        and raw_text.lstrip().startswith("<think>")
+        and "</think>" not in raw_text
+    ) or (finish_reason == "length" and reasoning_is_case4)
     if truncated_mid_think:
         return final_content
     return reasoning_text

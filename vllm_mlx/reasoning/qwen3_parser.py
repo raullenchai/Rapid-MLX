@@ -247,17 +247,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
            text_delta), or the stream ended right at ``</think>``. No
            correction needed.
 
-        2. No ``</think>`` AND no leading ``<think>`` prefix — the model
-           emitted a bare-text response with NO evidence that thinking
-           mode was active. Pre-fix this returned a content correction
-           so the Anthropic streaming adapter could ship the buffered
-           text as a text_delta; we keep that behaviour here because
-           the streaming Case-3 default initially routed the bytes to
-           ``reasoning`` and the Anthropic ``finalize_streaming`` path
-           treats ``content`` as a flip-to-text directive. (No-evidence
-           branch — see ``test_finalize_streaming_bare_preamble_without_think_prefix``.)
-
-        3. ``</think>`` absent BUT a leading ``<think>`` prefix is present
+        2. ``</think>`` absent BUT a leading ``<think>`` prefix is present
            (the template-injected or model-emitted opener) AND ``stop``
            or ``max_tokens`` cut the stream before the closer arrived.
            This is the D-STOP-THINK leak shape (cross-cycle, six
@@ -267,15 +257,40 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
            already shipped every byte as ``reasoning_content``. Clients
            saw the EXACT SAME bytes in both channels.
 
-           Fix: in this case, surface the trace as ``reasoning`` (the
-           bare-text preamble fallback already does this — extend the
-           same routing to non-preamble trailing thoughts).
-           ``final_msg.reasoning`` is silently dropped by the
-           Anthropic / Responses routes (they only act on
-           ``final_msg.content``), so no extra bytes hit the wire.
-           The reasoning emission keeps the parser contract honest
-           for callers that inspect ``DeltaMessage`` directly
-           (tests, custom routes) without leaking duplicates.
+           Fix: surface the trace as ``reasoning``. The Anthropic /
+           Responses routes only act on ``final_msg.content`` (lines
+           anthropic.py:1715, responses.py:907) so the reasoning
+           emission is silently dropped from the wire — exactly the
+           right outcome because the bytes ALREADY shipped as
+           reasoning during the stream loop. The reasoning emission
+           keeps the parser contract honest for callers that inspect
+           ``DeltaMessage`` directly (tests, custom routes).
+
+           Bare-text-preamble sub-case (#570) ALSO routes here under
+           the same reasoning emission — pre-fix it was a special
+           case that returned reasoning while the surrounding branch
+           returned content; post-fix the whole saw-prefix branch
+           uniformly returns reasoning.
+
+        3. ``</think>`` absent AND no leading ``<think>`` prefix — the
+           model emitted a bare-text response with NO evidence that
+           thinking mode was active. The streaming Case-3 default
+           routes the bytes to ``reasoning``, but without an opener
+           signal we cannot tell whether the model was actually
+           thinking. Pre-fix this returned a content correction so
+           the Anthropic streaming adapter could ship the buffered
+           text as a text_delta; this branch keeps that behaviour
+           because (a) the no-prefix shape is the documented
+           "casual non-thinking answer" path that #570 / codex r3
+           pinned as the FLIP-TO-CONTENT contract, and (b) the
+           D-STOP-THINK duplication only manifests when the parser
+           routed bytes to reasoning AND finalize routes the same
+           bytes to content — for casual non-thinking answers the
+           streaming Case-3 default IS the bug we're correcting (not
+           routing to content from the start), and the finalize
+           content correction is the existing route-level patch for
+           that shape. The bare-text-preamble label fallback still
+           routes to ``reasoning`` (preserves #570).
         """
         if self.end_token in accumulated_text:
             # Case 1: proper close tag seen — no correction
@@ -292,38 +307,53 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             )
             if not cleaned:
                 return None
-            # D-STOP-THINK (cycle-3 F-3 / cycle-5 hermes-qwen3.5-27b-
-            # 8bit / cycle-7 nemotron-30b / cycle-11 phi-4-mini-
-            # reasoning):
+            if saw_think_prefix:
+                # D-STOP-THINK (cycle-3 F-3 / cycle-5 hermes-qwen3.5-
+                # 27b-8bit / cycle-7 nemotron-30b / cycle-11 phi-4-
+                # mini-reasoning):
+                #
+                # The streaming loop has already shipped every reasoning
+                # byte as ``reasoning_content`` (base class Case-1
+                # ``start_in_prev``). Stop OR max_tokens cut before
+                # ``</think>`` arrived. Pre-fix we returned
+                # ``DeltaMessage(content=cleaned)`` here; the Anthropic
+                # / Responses ``finalize_streaming`` path then emitted
+                # ``cleaned`` as a NEW text block — duplicating the
+                # entire thought trace into BOTH the thinking block AND
+                # the text block. Cross-cycle repro on qwen3-0.6b-4bit
+                # (live test) and qwen3.5-27b-8bit + hermes (this
+                # parser via the qwen3 reasoning route + hermes tool
+                # route).
+                #
+                # Fix (shared base-class invariant via
+                # ``_finalize_in_think_block``): emit ``reasoning``
+                # instead of ``content``. The Anthropic / Responses
+                # routes only act on ``final_msg.content`` so the
+                # reasoning emission is silently dropped from the wire
+                # — the bytes ALREADY shipped as reasoning during the
+                # stream loop.
+                return DeltaMessage(reasoning=cleaned)
+            # No leading ``<think>`` prefix — keep the documented
+            # bare-text-preamble fallback (#570) AND fall through to
+            # the legacy content correction for casual non-thinking
+            # answers (codex r3 BLOCKING contract on PR #572).
             #
-            # The streaming loop has already shipped every reasoning
-            # byte as ``reasoning_content`` (base class Case-1
-            # ``start_in_prev`` OR Case-3 "no tags yet → reasoning").
-            # Stop OR max_tokens cut before ``</think>`` arrived. Pre-
-            # fix we returned ``DeltaMessage(content=cleaned)`` here;
-            # the Anthropic / Responses ``finalize_streaming`` path
-            # then emitted ``cleaned`` as a NEW text block — duplicating
-            # the entire thought trace into BOTH the thinking block
-            # AND the text block. Cross-cycle repro on qwen3.5-4b-4bit
-            # (this parser) and qwen3.5-27b-8bit + hermes (this parser
-            # via the qwen3 reasoning route + hermes tool route).
-            #
-            # Fix (shared base-class invariant via
-            # ``_finalize_in_think_block``): emit ``reasoning`` instead
-            # of ``content``. The Anthropic / Responses routes only
-            # act on ``final_msg.content`` (lines anthropic.py:1715,
-            # responses.py:907) so the reasoning emission is silently
-            # dropped from the wire — exactly the right outcome
-            # because the bytes ALREADY shipped as reasoning during
-            # the stream loop. The reasoning emission keeps the
-            # parser contract honest for callers that inspect
-            # ``DeltaMessage`` directly (tests, custom routes).
-            #
-            # Branch detail: bare-text preamble surfaces as
-            # ``reasoning`` (pre-existing #570 behaviour); non-preamble
-            # text ALSO surfaces as ``reasoning`` (D-STOP-THINK fix —
-            # the casual-answer "flip to content" protocol assumed the
-            # consumer would undo the streamed reasoning, which no
-            # route actually implements).
-            return DeltaMessage(reasoning=cleaned)
+            # The bare-text-preamble pre-empts the content correction
+            # because a scratchpad-label opener like ``Here's a
+            # thinking process:`` IS evidence of thinking mode even
+            # without an explicit ``<think>`` token; route to
+            # ``reasoning`` to mirror the streaming behaviour for the
+            # rest of the trace.
+            if _looks_like_bare_think_preamble(cleaned):
+                return DeltaMessage(reasoning=cleaned)
+            # No-evidence branch: the streaming Case-3 default
+            # routed the bytes to ``reasoning`` but the lack of any
+            # opener evidence means the consumer should flip to text.
+            # The Anthropic / Responses routes honor this by emitting
+            # ``final_msg.content`` as a fresh text block — and the
+            # D-STOP-THINK duplication cannot fire here because there
+            # was no ``<think>`` opener for the streaming router to
+            # gate on (the duplication shape requires the saw-prefix
+            # arm above).
+            return DeltaMessage(content=cleaned)
         return None

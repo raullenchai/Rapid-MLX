@@ -320,14 +320,28 @@ class TestScenario3_NoTagModel:
     """
 
     def test_short_no_tag_output(self):
-        """Short output (< 64 chars) with no tags surfaces via reasoning."""
+        """Short output (< 64 chars) with no tags: streaming routes
+        to reasoning, finalize flips to content for the casual-answer
+        contract (#570/#572).
+
+        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
+        the no-evidence no-tag path is the casual-answer flip — route
+        consumers ignore ``final_msg.reasoning``, so the buffered
+        rescue text must surface via ``content`` to reach
+        ``message.content`` on the OpenAI envelope.
+        """
         tokens = ["Hello ", "world!"]
         content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
         assert "".join(reasoning) == "Hello world!", (
             f"reasoning lost bytes: {reasoning!r}"
         )
-        # D-STOP-THINK: no content duplication.
-        assert not content, f"content channel leaked bytes: {content!r}"
+        # Casual-answer content flip — the finalize correction is the
+        # documented bridge between the streaming Case-3 default
+        # (routes to reasoning) and the route consumer's
+        # ``message.content`` surface.
+        assert "".join(content) == "Hello world!", (
+            f"casual-answer content flip missing: {content!r}"
+        )
 
     def test_long_no_tag_output(self):
         """Long output (> 64 chars) with no tags."""
@@ -345,13 +359,27 @@ class TestScenario3_NoTagModel:
         assert "Done." in full_combined
 
     def test_very_long_no_tag_output(self):
-        """Very long output with no tags — no chars should be lost."""
+        """Very long output with no tags — qwen3 has no
+        NO_TAG_CONTENT_THRESHOLD so streaming keeps routing every byte
+        to reasoning, and finalize flips the same bytes to content for
+        the casual-answer contract. Both channels carry the full
+        text (this is the documented no-evidence-path trade-off; the
+        D-STOP-THINK leak surface targeted by PR #799 is the
+        EXPLICIT-OPENER path).
+        """
         text = "The quick brown fox. " * 20  # 420 chars
         tokens = [text[i : i + 10] for i in range(0, len(text), 10)]
         content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
-        full_combined = "".join(reasoning) + "".join(content)
-        assert len(full_combined) == len(text), (
-            f"length mismatch: expected {len(text)}, got {len(full_combined)}"
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # No bytes lost in EITHER channel — qwen3's casual-answer
+        # contract carries the full text through both surfaces.
+        assert full_reasoning == text, (
+            f"reasoning channel lost bytes: got {len(full_reasoning)}, "
+            f"expected {len(text)}"
+        )
+        assert full_content == text, (
+            f"content channel lost bytes: got {len(full_content)}, expected {len(text)}"
         )
 
     def test_no_tag_with_newlines(self):

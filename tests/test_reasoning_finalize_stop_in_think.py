@@ -147,34 +147,87 @@ class TestStopMidThinkNoOpener:
     """``stop`` matches mid-thought WITHOUT an explicit ``<think>``
     opener (Qwen3 / DeepSeek-R1 chat templates pre-inject ``<think>\\n``
     into the prompt, so it never appears in model output).
+
+    Codex round-N BLOCKING scope: the no-opener no-bare-preamble path
+    is the "casual non-thinking answer" contract (#570 / #572) — the
+    finalize correction MUST flip the buffered reasoning bytes to
+    ``content`` so the route's consumer surfaces them as a text block.
+    Without this flip, casual answers would appear as an empty
+    assistant turn on OpenAI envelopes. The Anthropic-stream
+    duplication risk here is the documented trade-off: the route
+    consumer ignores ``final_msg.reasoning``, so emitting reasoning
+    here would never reach the wire — the only correction surface
+    available is ``content``.
+
+    Therefore for the no-opener no-bare-preamble path:
+      - Bare-preamble label (``Here's a thinking process:``) → reasoning
+        (preserves #570 — the label IS thinking evidence)
+      - Casual answer (``Let me think about 5+7``) → content
+        (preserves the casual-answer contract; the streaming
+        Case-3-to-reasoning routing is the bug, finalize is the fix)
     """
 
     @pytest.mark.parametrize("name,parser_cls", THINK_PARSERS_WITH_BASE)
-    def test_no_duplicate_bytes_across_channels(self, name, parser_cls):
+    def test_casual_answer_flips_to_content(self, name, parser_cls):
         parser = parser_cls()
         chunks = ["Let me think ", "about 5+7. "]
         thinking, text = _simulate_anthropic_stream(parser, chunks)
         # GLM-4 overrides Case-3 to content (its chat template does NOT
         # inject ``<think>``; see ``Glm4ReasoningParser`` module
-        # docstring). For GLM-4, the trace goes to text and the
-        # thinking channel stays empty — no duplicate.
+        # docstring). For GLM-4, the trace goes straight to text via
+        # streaming; finalize doesn't need to correct.
         if name == "glm4":
             assert thinking == "", (
                 f"[{name}] glm4 routes no-tag streams to content; "
                 f"thinking should be empty: {thinking!r}"
             )
+            assert "Let me think" in text, (
+                f"[{name}] glm4 should have routed casual answer to "
+                f"content via streaming: text={text!r}"
+            )
             return
         # All other ``<think>``-family parsers (qwen3 / deepseek_r1 /
         # vibethinker) route the no-tag stream to reasoning via the
-        # base class Case-3 default. The finalize MUST NOT then
-        # duplicate the trace into text.
-        assert thinking, (
+        # base class Case-3 default. Finalize then flips the buffered
+        # trace to content via the casual-answer correction contract
+        # (#572). The Anthropic route emits both — streaming thinking
+        # block AND finalize text block — which IS the documented
+        # behaviour for the no-evidence path (codex round-N BLOCKING
+        # scope on D-STOP-THINK).
+        assert "Let me think" in thinking, (
             f"[{name}] expected base-class Case-3 reasoning routing; "
             f"thinking={thinking!r}"
         )
+        assert "Let me think" in text, (
+            f"[{name}] expected finalize content correction for casual "
+            f"answer: text={text!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [
+            ("qwen3", Qwen3ReasoningParser),
+            # deepseek_r1 / vibethinker / glm4 do NOT implement the
+            # bare-preamble label detector — it's Qwen3-specific (#570).
+        ],
+    )
+    def test_bare_preamble_label_routes_to_reasoning(self, name, parser_cls):
+        """The bare-preamble scratchpad-label fallback (#570) IS a
+        think-mode evidence signal — surface via reasoning so the
+        Anthropic stream does NOT duplicate."""
+        parser = parser_cls()
+        chunks = [
+            "Here's a thinking process: ",
+            "first I sort the items, then ",
+            "I pick the largest. ",
+        ]
+        thinking, text = _simulate_anthropic_stream(parser, chunks)
+        assert "thinking process" in thinking, (
+            f"[{name}] bare-preamble must surface as reasoning: thinking={thinking!r}"
+        )
         assert not text, (
-            f"[{name}] D-STOP-THINK regression — bytes duplicated.\n"
-            f"  thinking={thinking!r}\n  text={text!r}"
+            f"[{name}] D-STOP-THINK regression — bare-preamble "
+            f"duplicated into text: text={text!r}"
         )
 
 
@@ -230,17 +283,24 @@ class TestNormalResponseRegression:
 
 class TestFinalizeContractSurface:
     """Spot-check the parser-contract surface of ``finalize_streaming``
-    when mid-think — the rescue text MUST surface via ``reasoning``,
-    NEVER via ``content``. This locks the invariant against future
-    refactors that might re-introduce the content-emission path.
+    when mid-think with explicit-opener evidence — the rescue text
+    MUST surface via ``reasoning``, NEVER via ``content``. This locks
+    the invariant against future refactors that might re-introduce
+    the content-emission path.
+
+    Codex round-N BLOCKING scope: only the explicit-opener and
+    implicit-think-evidence branches are pinned here. The no-opener
+    no-bare-preamble branch (casual answer) IS allowed to emit
+    content — see ``TestStopMidThinkNoOpener.test_casual_answer_flips_to_content``.
     """
 
     @pytest.mark.parametrize("name,parser_cls", THINK_PARSERS_WITH_BASE)
-    def test_finalize_never_emits_content_mid_think(self, name, parser_cls):
+    def test_finalize_never_emits_content_mid_think_with_explicit_opener(
+        self, name, parser_cls
+    ):
         parser = parser_cls()
         for accumulated in [
             "<think>still thinking",
-            "Let me think about it",
             "<think>5+7",
         ]:
             parser.reset_state()
@@ -258,7 +318,7 @@ class TestFinalizeContractSurface:
                 assert result.content is None, (
                     f"[{name}] D-STOP-THINK invariant violation: "
                     f"finalize emitted content={result.content!r} for "
-                    f"mid-think input {accumulated!r}"
+                    f"explicit-opener input {accumulated!r}"
                 )
 
 

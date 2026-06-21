@@ -26,25 +26,25 @@ class TestQwen3NoTagStreaming:
     def parser(self):
         return get_parser("qwen3")()
 
-    def test_no_tags_streaming_finalize_surfaces_as_reasoning(self, parser):
-        """No-tag output: streaming routes to reasoning; finalize surfaces
-        the rescue text via ``reasoning`` (NOT ``content``).
+    def test_no_tags_streaming_finalize_surfaces_as_content(self, parser):
+        """No-tag output: streaming routes to reasoning; finalize flips
+        the rescue text to ``content`` for the casual-answer contract.
 
-        D-STOP-THINK (cross-cycle bundle, cycle-11 phi-4-mini-reasoning):
-        the prior protocol routed finalize's no-tag rescue text to
-        ``content`` on the theory that the route consumer would flip
-        the streamed reasoning into the text channel. No route actually
-        implements that flip — the Anthropic / Responses
-        ``finalize_streaming`` consumers blindly emit ``final_msg.content``
-        as a fresh text block, duplicating the trace into BOTH the
-        thinking AND text channels (the streaming loop already shipped
-        the bytes as reasoning).
+        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
+        the no-evidence no-tag path is the casual-answer contract
+        (#570 / #572) — the streaming Case-3 default routed bytes to
+        reasoning as a conservative bet, and finalize flips them to
+        content so the route consumer surfaces a text block. Route
+        consumers ignore ``final_msg.reasoning``, so routing the
+        rescue via reasoning would leave the casual answer silently
+        empty on the OpenAI envelope — the #569 regression the rescue
+        exists to prevent.
 
-        Post-fix: ``finalize_streaming`` surfaces the rescue via
-        ``reasoning`` so the consumers' content gate stays silent (no
-        wire duplication). For Qwen3 specifically this matches the
-        chat-template-injected-``<think>`` semantics — a no-tag
-        continuation IS the truncated thought trace (#575).
+        The D-STOP-THINK duplication leak (which finalize-to-content
+        triggers on Anthropic streams) is the documented trade-off
+        for the no-evidence path; the explicit-opener path's leak is
+        handled separately by the base class default which returns
+        None.
         """
         parser.reset_state()
 
@@ -64,13 +64,12 @@ class TestQwen3NoTagStreaming:
         # yet whether </think> will come)
         assert "".join(reasoning_parts) == text
 
-        # finalize_streaming surfaces via reasoning (NOT content) —
-        # D-STOP-THINK invariant. ``correction`` may be None (no
-        # subclass-level emission) OR a DeltaMessage with reasoning
-        # only; it MUST NOT carry content.
+        # finalize_streaming flips to content for the casual-answer
+        # contract — codex round-N BLOCKING scope.
         correction = parser.finalize_streaming(accumulated)
-        if correction is not None:
-            assert correction.content is None
+        assert correction is not None
+        assert correction.content == text
+        assert correction.reasoning is None
 
     def test_no_tags_nonstreaming_is_fine(self, parser):
         """Non-streaming extraction correctly handles no-tag output."""
@@ -101,12 +100,13 @@ class TestQwen3NoTagStreaming:
         assert "Let me think" in "".join(reasoning_parts)
         assert "The answer is 42." in "".join(content_parts)
 
-    def test_short_no_tags_finalized_via_reasoning(self, parser):
-        """Short no-tag output: finalize surfaces rescue via reasoning.
+    def test_short_no_tags_finalized_via_content(self, parser):
+        """Short no-tag output: finalize flips rescue to content
+        (casual-answer contract).
 
-        D-STOP-THINK invariant: when ``</think>`` never crossed,
-        finalize MUST NOT emit content (would duplicate bytes already
-        streamed as reasoning into both Anthropic / Responses channels).
+        Codex round-N BLOCKING scope: the no-evidence no-tag rescue
+        is the casual-answer flip (#570/#572) — route to ``content``
+        so the route consumer surfaces a text block.
         """
         parser.reset_state()
 
@@ -118,10 +118,12 @@ class TestQwen3NoTagStreaming:
             accumulated += char
             parser.extract_reasoning_streaming(prev, accumulated, char)
 
-        # finalize_streaming surfaces via reasoning (NOT content).
+        # finalize_streaming flips to content for the casual-answer
+        # contract.
         correction = parser.finalize_streaming(accumulated)
-        if correction is not None:
-            assert correction.content is None
+        assert correction is not None
+        assert correction.content == text
+        assert correction.reasoning is None
 
     def test_implicit_mode_still_works(self, parser):
         """Ensure fix doesn't break implicit mode (only </think> in output)."""

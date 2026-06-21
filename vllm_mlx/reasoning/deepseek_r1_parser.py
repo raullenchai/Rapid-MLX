@@ -153,29 +153,34 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         """
         Finalize streaming output.
 
-        D-STOP-THINK (cycle-11 F-11-7 phi-4-mini-reasoning leak shape):
-        when ``stop`` matches mid-think OR ``max_tokens`` cuts before
-        ``</think>``, the streaming loop has already shipped every
-        reasoning byte as ``reasoning_content``. Pre-fix this method
-        returned ``DeltaMessage(content=accumulated_text)`` for the
-        short-no-tag rescue path, and the Anthropic / Responses
-        ``finalize_streaming`` consumers (anthropic.py:1715,
-        responses.py:907) then appended those bytes as a NEW text
-        block — duplicating the trace into BOTH the thinking block
-        AND the text block. Cross-cycle repro on phi-4-mini-reasoning
-        (cycle-11), nemotron-30b (cycle-7) and VibeThinker
-        (DeepSeek-R1 subclass, cycle-2 F-12-1).
+        D-STOP-THINK (cycle-11 F-11-7 phi-4-mini-reasoning leak shape)
+        — codex round-N scope: the short-no-tag rescue path is the
+        CASUAL-ANSWER contract (no explicit ``<think>`` opener was
+        seen during streaming, so we have no evidence the model was
+        actually thinking). The streaming Case-3 default routed the
+        bytes to ``reasoning`` as a conservative bet; this finalize
+        correction flips them to ``content`` so the route consumer
+        can surface them as a text block.
 
-        Fix: surface the short-no-tag rescue text as ``reasoning``,
-        not ``content``. The route consumers' ``final_msg.content``
-        gate ignores reasoning emissions, so no extra bytes hit the
-        wire — exactly the right outcome because the bytes ALREADY
-        shipped as reasoning during the stream loop. Mirrors the
-        D-STOP-THINK fix in ``Qwen3ReasoningParser.finalize_streaming``.
+        Codex round-N BLOCKING fix (PR #799 review): the previous
+        revision of this method routed ALL no-tag rescues — including
+        the casual-answer shape — to ``reasoning``. That suppressed
+        the documented #570/#572 content-correction contract: route
+        consumers ignore ``final_msg.reasoning`` (anthropic.py:1715,
+        responses.py:907) so the casual-answer text would never reach
+        the wire. Fix: restore the legacy content emission for the
+        no-evidence rescue.
 
-        The base-class invariant (``_finalize_in_think_block``) pins
-        the rule: ``finalize_streaming`` MUST NOT emit ``content``
-        when ``</think>`` was never crossed.
+        The D-STOP-THINK duplication leak surface for DeepSeek-R1 is
+        the EXPLICIT-OPENER path (handled by the base-class default
+        ``finalize_streaming`` which returns ``None``) — when the
+        model emitted a literal ``<think>…<partial>`` and stop/length
+        cut mid-think, the streaming loop shipped the bytes as
+        reasoning AND pre-fix attempts to flip to content here would
+        have duplicated. The short-no-tag arm below does NOT fire for
+        that shape (``_saw_any_tag`` is True after the opener), so
+        the explicit-opener arm naturally falls through to the base
+        class which returns None.
 
         Args:
             accumulated_text: Complete accumulated text from stream.
@@ -189,13 +194,14 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             and len(accumulated_text) < self.NO_TAG_CONTENT_THRESHOLD
         ):
             # Short no-tag output was streamed as reasoning by the
-            # base class Case-3 default. Pre-fix we returned the
-            # text in ``content`` (intent: flip to content channel);
-            # post-fix we acknowledge the streamed-reasoning state
-            # via ``reasoning=`` so the route consumers' content
-            # gate doesn't fire and the bytes don't reach the wire
-            # twice (D-STOP-THINK).
-            return DeltaMessage(reasoning=accumulated_text)
+            # base class Case-3 default but never saw a ``<think>``
+            # opener — casual-answer contract per #570/#572. Flip to
+            # content so the route consumer surfaces a text block.
+            # The Anthropic stream duplication risk (streaming
+            # thinking_delta + finalize text_delta) is the documented
+            # trade-off — alternative is silently empty assistant
+            # turn.
+            return DeltaMessage(content=accumulated_text)
         return None
 
 
