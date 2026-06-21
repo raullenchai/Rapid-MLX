@@ -891,7 +891,12 @@ async def count_anthropic_tokens(request: Request):
     _body_for_parse = dict(body)
     if "max_tokens" not in _body_for_parse:
         _body_for_parse["max_tokens"] = 1
-    if "model" not in _body_for_parse:
+    # Both ``"model" not in body`` (missing) and ``"model": None``
+    # (explicit null) are accepted by the count_tokens contract —
+    # see ``test_count_tokens_accepts_explicit_null_model``. Inject
+    # a placeholder in both cases so the schema parses (the count
+    # path doesn't read the field).
+    if _body_for_parse.get("model") is None:
         _body_for_parse["model"] = "count-tokens-placeholder"
     # Codex r2 BLOCKING #1: let real ``ValidationError`` shapes bubble
     # out — the global ``_pydantic_validation_handler`` will surface
