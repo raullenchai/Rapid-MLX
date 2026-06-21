@@ -423,7 +423,7 @@ def _enforce_required_tool_choice_present(
         'tool_choice={"type":"any"} but the model returned a text response '
         "with no tool_calls. Local inference has no decoder-level "
         "constraint; the system-prompt enforcement was insufficient for "
-        'this prompt. Retry with a more concrete user message or use '
+        "this prompt. Retry with a more concrete user message or use "
         'tool_choice={"type":"tool","name":...} to pin a specific tool.'
     )
     return tool_calls, detail

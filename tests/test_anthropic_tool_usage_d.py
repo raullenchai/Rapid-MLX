@@ -382,8 +382,7 @@ def test_nonstream_tool_choice_any_injects_required_suffix():
     # System message is prepended (no prior system block); the suffix
     # text must appear somewhere in the rendered system content.
     assert any(
-        (m.get("role") if isinstance(m, dict) else getattr(m, "role", None))
-        == "system"
+        (m.get("role") if isinstance(m, dict) else getattr(m, "role", None)) == "system"
         and "MUST call" in (m.get("content") if isinstance(m, dict) else m.content)
         for m in seen
     ), seen
@@ -413,10 +412,18 @@ def test_nonstream_tool_choice_named_still_routes_to_specific_tool():
     # 422 or a 200 with a synth call to ``get_weather`` is contract-
     # compliant; what we explicitly do NOT want is a tool_use for
     # ``lookup_zip`` or a 200 ``end_turn`` text response.
+    #
+    # Codex review BLOCKING (PR #807): assert ``tool_uses`` non-empty
+    # AND ``stop_reason == "tool_use"`` in the 200 branch so the
+    # forbidden ``end_turn`` text response would FAIL this test. The
+    # earlier ``for tu in tool_uses:`` loop was vacuously true on an
+    # empty list and let the exact bug case slip through.
     assert r.status_code in (200, 422), r.text
     if r.status_code == 200:
         body = r.json()
+        assert body["stop_reason"] == "tool_use", body
         tool_uses = [c for c in body["content"] if c["type"] == "tool_use"]
+        assert tool_uses, body
         for tu in tool_uses:
             assert tu["name"] == "get_weather", body
     else:
@@ -680,9 +687,9 @@ def test_stream_message_start_consistent_with_nonstream_input_tokens():
         },
     )
     events = _parse_sse(r_s.text)
-    delta_input = next(
-        e for e in events if e.get("type") == "message_delta"
-    )["usage"]["input_tokens"]
+    delta_input = next(e for e in events if e.get("type") == "message_delta")["usage"][
+        "input_tokens"
+    ]
 
     engine_ns = _ToolStreamingEngine(deltas, engine_prompt_tokens=11)
     client_ns = _make_client(engine_ns)
