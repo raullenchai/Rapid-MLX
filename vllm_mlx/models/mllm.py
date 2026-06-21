@@ -766,6 +766,7 @@ class MLXMultimodalLM:
             # for the full rationale.
             from ..utils.tokenizer import (
                 augment_eos_token_ids_from_generation_config,
+                repair_byte_level_decoder,
             )
 
             tok = (
@@ -774,6 +775,11 @@ class MLXMultimodalLM:
                 else self.processor
             )
             augment_eos_token_ids_from_generation_config(tok, self.model_name)
+            # D-DETOK-BPE: some VLM processors (Qwen3-VL distills, etc.)
+            # carry the same broken SentencePiece-decoder-on-byte-level-BPE
+            # mis-configuration as text-only DeepSeek-R1; patch the live
+            # backend decoder so streaming + non-stream emit clean UTF-8.
+            repair_byte_level_decoder(tok)
 
             self._loaded = True
             self._video_native = hasattr(
