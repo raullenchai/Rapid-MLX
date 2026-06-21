@@ -192,13 +192,48 @@ def test_f7_tool_choice_none_response_has_no_tool_use_block():
 
 
 def test_f7_tool_choice_none_text_has_no_tool_call_marker():
-    """F7 leak check: the model's text output must not contain a raw
-    ``<tool_call>{...}`` marker. With tools stripped from the prompt,
-    the model has nothing to nudge it toward emitting that marker —
-    but we lock the wire shape directly so a future regression
-    surfaces fast.
+    """F7 leak-check regression (codex r2 NIT): use a stub engine that
+    simulates the Sergei-repro symptom — when the chat() kwargs carry
+    ``tools``, the engine emits a raw ``<tool_call>{...}`` marker as
+    text (mirroring qwen3-0.6b-8bit's behavior); when the kwargs
+    carry NO ``tools``, the engine emits clean text.
+
+    This means:
+    * ``tool_choice="none"`` (adapter strips tools) → no marker in
+      the wire response. The Sergei repro stays fixed.
+    * Without the adapter strip (a regression would re-introduce
+      tools into kwargs) → the marker WOULD reach the wire,
+      surfacing the leak the F7 fix is meant to prevent.
+
+    The previous test used ``_RecordingEngine`` whose ``chat()``
+    always returns ``"ok"``, so the assertion would have passed even
+    if tools were silently injected. The new stub exercises the
+    actual leak path.
     """
-    engine = _RecordingEngine()
+
+    class _LeakyOnToolsEngine(_RecordingEngine):
+        async def chat(self, messages, **kwargs):
+            self.last_messages = messages
+            self.last_chat_kwargs = kwargs
+            # Simulates the qwen3-0.6b-8bit symptom: when the model
+            # sees tools, it starts emitting a ``<tool_call>`` marker
+            # but gets cut off by max_tokens, leaking the partial
+            # marker into the text block.
+            tools_seen = kwargs.get("tools")
+            if tools_seen:
+                leak = '<tool_call>\n{"name": "get_weather", "arguments": {"city'
+            else:
+                leak = "I cannot help with that."
+            return GenerationOutput(
+                text=leak,
+                raw_text=leak,
+                prompt_tokens=4,
+                completion_tokens=10,
+                finished=True,
+                finish_reason="stop",
+            )
+
+    engine = _LeakyOnToolsEngine()
     client = _make_client(engine)
     resp = client.post(
         "/v1/messages",
@@ -212,9 +247,47 @@ def test_f7_tool_choice_none_text_has_no_tool_call_marker():
     )
     assert resp.status_code == 200
     body = resp.json()
-    for blk in body.get("content", []):
-        if blk.get("type") == "text":
-            assert "<tool_call>" not in (blk.get("text") or ""), blk
+    # With the adapter strip in place, the engine sees no tools,
+    # emits clean text, and the wire response has no marker. A
+    # regression that forwarded tools verbatim would trigger the
+    # ``leak`` branch and surface the marker here.
+    full_text = "\n".join(
+        blk.get("text", "")
+        for blk in body.get("content", [])
+        if blk.get("type") == "text"
+    )
+    assert "<tool_call>" not in full_text, (
+        f"tool_choice=none leaked <tool_call> marker into text block; "
+        f"engine saw tools={engine.last_chat_kwargs.get('tools')!r}"
+    )
+
+    # Sanity countercheck: re-issue the SAME request WITHOUT
+    # ``tool_choice`` so the adapter does NOT strip tools. The leaky
+    # engine now sees tools and emits the marker — locks the
+    # negative path so the assertion above is actually
+    # discriminating (otherwise the test would pass even on a stub
+    # that never leaks at all).
+    engine2 = _LeakyOnToolsEngine()
+    client2 = _make_client(engine2)
+    resp2 = client2.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "tools": _TOOLS_FIXTURE,
+            "messages": [{"role": "user", "content": "weather in Tokyo?"}],
+        },
+    )
+    assert resp2.status_code == 200
+    full_text2 = "\n".join(
+        blk.get("text", "")
+        for blk in resp2.json().get("content", [])
+        if blk.get("type") == "text"
+    )
+    assert "<tool_call>" in full_text2, (
+        f"countercheck failed: leaky engine should have leaked marker when "
+        f"tools were not stripped, but text was {full_text2!r}"
+    )
 
 
 def test_f7_tool_choice_auto_keeps_tools():

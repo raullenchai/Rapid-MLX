@@ -880,60 +880,79 @@ async def count_anthropic_tokens(request: Request):
     # beats a 500 on a route whose contract is "estimate this prompt".
     total_tokens: int | None = None
     # Anthropic's ``/v1/messages/count_tokens`` does NOT require
-    # ``max_tokens`` (unlike ``/v1/messages``), so callers commonly omit
-    # it when estimating cost. ``AnthropicRequest`` declares ``max_tokens``
-    # as required, so we inject a placeholder ``max_tokens=1`` purely so
-    # the schema parses — the count_tokens path doesn't read it. This
-    # keeps the single-adapter-source-of-truth contract without
-    # tightening the public count_tokens contract beyond Anthropic's spec.
+    # ``max_tokens`` (unlike ``/v1/messages``), so callers commonly
+    # omit it when estimating cost. ``AnthropicRequest`` also declares
+    # ``model`` as required, but this endpoint's pre-existing contract
+    # (test_anthropic_route_auth) accepts requests without ``model``.
+    # Inject placeholders purely so the schema parses — the
+    # count_tokens path doesn't read either field. This keeps the
+    # single-adapter-source-of-truth contract without tightening the
+    # public count_tokens contract beyond what's already shipped.
     _body_for_parse = dict(body)
     if "max_tokens" not in _body_for_parse:
         _body_for_parse["max_tokens"] = 1
+    if "model" not in _body_for_parse:
+        _body_for_parse["model"] = "count-tokens-placeholder"
+    # Codex r2 BLOCKING #1: let real ``ValidationError`` shapes bubble
+    # out — the global ``_pydantic_validation_handler`` will surface
+    # them as sanitized 400s with the same envelope ``/v1/messages``
+    # uses, so the two surfaces share their validation contract.
+    # Swallowing them here would 200 with a "plausible" count for a
+    # malformed request — same cost-estimation footgun F-160 closed
+    # for empty messages.
+    anthropic_request = AnthropicRequest(**_body_for_parse)
+    # Codex r2 BLOCKING #1 continued: ``AnthropicOutputConfigError``
+    # is a structured ``ValueError`` subclass we map to 400 with the
+    # adapter's own message — mirrors the ``/v1/messages`` route's
+    # behavior. Any other unexpected exception from the adapter
+    # propagates as a 500, which is the right shape for a server-side
+    # regression (better than a silent fallback to legacy counting).
     try:
-        anthropic_request = AnthropicRequest(**_body_for_parse)
+        openai_request = anthropic_to_openai(anthropic_request)
+    except AnthropicOutputConfigError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    # Codex r2 BLOCKING #2: ``preserve_native_tool_format`` is an
+    # optional attribute on the engine contract — guard with
+    # ``getattr`` so test stubs without it (or any future engine
+    # implementation that omits it) reach the documented fallback
+    # path instead of 500-ing here. Mirrors the same defensive
+    # pattern in ``count_anthropic_tokens``'s fallback branch.
+    try:
+        _ctx_messages, _, _ = extract_multimodal_content(
+            openai_request.messages,
+            preserve_native_format=getattr(
+                engine, "preserve_native_tool_format", False
+            ),
+        )
     except Exception:
-        anthropic_request = None
-    if anthropic_request is not None:
+        _ctx_messages = None
+    build_prompt = getattr(engine, "build_prompt", None)
+    if _ctx_messages is not None and callable(build_prompt):
+        # Match the ``enable_thinking`` precedence ``/v1/messages``
+        # uses (resolved via shared helper). On qwen3-shaped templates
+        # this adds an opening ``<think>\n`` prefix to the assistant
+        # turn — the prompt actually tokenized at generation time.
+        # Pre-fix the count under-reported by exactly this prefix.
+        _cfg = get_config()
+        resolved_thinking = _resolve_enable_thinking(openai_request)
+        effective_thinking = _effective_enable_thinking(
+            resolved_thinking, _cfg.model_path or _cfg.model_name
+        )
         try:
-            openai_request = anthropic_to_openai(anthropic_request)
-        except (AnthropicOutputConfigError, Exception):
-            openai_request = None
-        if openai_request is not None:
-            try:
-                _ctx_messages, _, _ = extract_multimodal_content(
-                    openai_request.messages,
-                    preserve_native_format=engine.preserve_native_tool_format,
-                )
-            except Exception:
-                _ctx_messages = None
-            build_prompt = getattr(engine, "build_prompt", None)
-            if _ctx_messages is not None and callable(build_prompt):
-                # Match the ``enable_thinking`` precedence
-                # ``/v1/messages`` uses (resolved via shared helper). On
-                # qwen3-shaped templates this adds an opening ``<think>\n``
-                # prefix to the assistant turn — the prompt actually
-                # tokenized at generation time. Pre-fix the count
-                # under-reported by exactly this prefix.
-                _cfg = get_config()
-                resolved_thinking = _resolve_enable_thinking(openai_request)
-                effective_thinking = _effective_enable_thinking(
-                    resolved_thinking, _cfg.model_path or _cfg.model_name
-                )
-                try:
-                    rendered_tools = (
-                        convert_tools_for_template(openai_request.tools)
-                        if openai_request.tools
-                        else None
-                    )
-                    prompt = build_prompt(
-                        _ctx_messages,
-                        tools=rendered_tools,
-                        enable_thinking=effective_thinking,
-                    )
-                except Exception:
-                    prompt = None
-                if isinstance(prompt, str) and prompt:
-                    total_tokens = count_prompt_tokens(engine, prompt)
+            rendered_tools = (
+                convert_tools_for_template(openai_request.tools)
+                if openai_request.tools
+                else None
+            )
+            prompt = build_prompt(
+                _ctx_messages,
+                tools=rendered_tools,
+                enable_thinking=effective_thinking,
+            )
+        except Exception:
+            prompt = None
+        if isinstance(prompt, str) and prompt:
+            total_tokens = count_prompt_tokens(engine, prompt)
 
     # Legacy fallback path — only fires when the adapter / template
     # render failed. Keeps the endpoint useful on test stubs that don't

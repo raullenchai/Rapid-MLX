@@ -852,6 +852,23 @@ class TestAnthropicToolUseIdPrefix:
         # Still has the ``call_`` prefix, so we DO rewrite — the
         # contract is "if it looks like call_<X>, return toolu_<X>".
         assert out.startswith("toolu_")
+
+    def test_to_anthropic_tool_use_id_mints_fresh_on_empty_tail(self):
+        """Codex r2 BLOCKING #3: ``"call_"`` (empty tail) and
+        ``"toolu_"`` (empty tail) are degenerate inputs that the
+        pre-fix preserved verbatim, producing the invalid empty-tail
+        ``"toolu_"`` id. The helper now mints a fresh
+        ``toolu_<24-hex>`` id for both, matching the documented
+        "missing or unusable IDs must be freshly minted" contract.
+        """
+        for degenerate in ("call_", "toolu_"):
+            out = to_anthropic_tool_use_id(degenerate)
+            assert_tool_use_id_shape(out)
+            tail = out[len("toolu_") :]
+            assert len(tail) == 24, (
+                f"empty-tail input {degenerate!r} should mint a 24-hex tail; "
+                f"got {out!r}"
+            )
         # An id with a foreign prefix gets a fresh mint.
         foreign = to_anthropic_tool_use_id("x_abc")
         assert_tool_use_id_shape(foreign)

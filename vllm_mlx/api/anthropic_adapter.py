@@ -52,17 +52,27 @@ from .models import (
 # adapter and route apply this rewrite.
 def to_anthropic_tool_use_id(openai_id: str | None) -> str:
     """Convert an OpenAI-style ``call_<hex>`` id to Anthropic's
-    ``toolu_<hex>`` id (or mint a fresh one when the input is missing).
+    ``toolu_<hex>`` id (or mint a fresh one when the input is missing
+    or unusable).
 
     Preserves the hex tail when present so an operator can correlate
     the same call across the OpenAI-side parser log and the
     Anthropic-side wire response — matching the F9 single-source-of-
-    truth requirement.
+    truth requirement. Codex r2 BLOCKING #3: require a non-empty tail
+    on the ``call_`` rewrite branch so a degenerate input like
+    ``"call_"`` (empty tail) doesn't produce the invalid
+    ``"toolu_"`` id; mint a fresh ``toolu_<hex>`` in that case
+    instead. Same guard applies to a bare ``"toolu_"`` pass-through
+    so a future caller can't accidentally re-emit an empty-tail id.
     """
     if isinstance(openai_id, str) and openai_id.startswith("call_"):
-        return "toolu_" + openai_id[len("call_") :]
+        tail = openai_id[len("call_") :]
+        if tail:
+            return "toolu_" + tail
     if isinstance(openai_id, str) and openai_id.startswith("toolu_"):
-        return openai_id
+        tail = openai_id[len("toolu_") :]
+        if tail:
+            return openai_id
     # Anthropic's public examples use ~24 hex chars after ``toolu_``;
     # ``secrets.token_hex(12)`` gives 24 hex chars from a CSPRNG so
     # we don't rely on uuid4's structure leaking into the id.
