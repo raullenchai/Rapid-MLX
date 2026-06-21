@@ -22,7 +22,6 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
-from pydantic import ValidationError
 
 from ..api.models import (
     AssistantMessage,
@@ -111,18 +110,15 @@ async def create_response(request: Request):
     """
     body = await request.json()
     # ``ResponsesRequest`` is constructed manually (not as a FastAPI body
-    # parameter), so Pydantic ``ValidationError`` would otherwise surface
-    # as a generic 500. Catch it explicitly to give clients a 400 with
-    # the actual validation detail — matches the same pattern in
-    # ``routes/anthropic.py``. Codex bundled-review finding on the
-    # v0.7.32 release bundle: #685's strict ``reasoning_max_tokens``
-    # ``model_validator(mode="before")`` now raises on bad input
-    # (``0``, ``true``, ``"100"``), and without this catch a malformed
-    # client request would 500 here instead of 400.
-    try:
-        responses_request = ResponsesRequest(**body)
-    except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # parameter). The raw :class:`pydantic.ValidationError` it can raise
+    # is now caught by the global ``_pydantic_validation_handler`` in
+    # ``middleware.exception_handlers`` (H-17), which routes it through
+    # the same sanitized 400 envelope used by ``/v1/chat/completions``.
+    # The earlier per-route ``HTTPException(detail=str(e))`` leaked the
+    # model class name (``ResponsesRequest``), the pinned pydantic
+    # version (``errors.pydantic.dev/2.13/...``), and any attacker-
+    # supplied ``input_value`` blob — see Rhea r0.8.1 audit.
+    responses_request = ResponsesRequest(**body)
 
     # Statelessness gate — see module docstring. Codex CLI does not set
     # this field; clients that DO use it would get silent prompt loss
@@ -168,13 +164,12 @@ async def create_response(request: Request):
         # F-034 (and any future ``ChatCompletionRequest``-layer validator):
         # the adapter materializes a fresh ``ChatCompletionRequest`` from
         # the Responses body, which now rejects unsatisfiable combinations
-        # (e.g. ``tool_choice="required"`` with no ``tools``). Surface as
-        # 400 with the validator's message instead of letting Pydantic
-        # crash the route into a 500.
-        try:
-            openai_request = responses_to_openai(responses_request)
-        except ValidationError as e:
-            raise HTTPException(status_code=400, detail=str(e))
+        # (e.g. ``tool_choice="required"`` with no ``tools``). The
+        # resulting :class:`pydantic.ValidationError` bubbles to the
+        # global ``_pydantic_validation_handler`` (H-17) which routes
+        # it through the sanitized 400 envelope — no more ``str(e)``
+        # echo that leaked the model class name and pydantic version.
+        openai_request = responses_to_openai(responses_request)
 
         # Context-length pre-check — same DoS gate the chat/completions/
         # anthropic routes enforce. Runs BEFORE the stream branch so

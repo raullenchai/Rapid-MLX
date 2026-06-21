@@ -129,6 +129,7 @@ def responses_client(monkeypatch):
 
     from vllm_mlx.config import reset_config
     from vllm_mlx.middleware.auth import rate_limiter
+    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
     from vllm_mlx.routes.responses import router
 
     cfg = reset_config()
@@ -142,6 +143,13 @@ def responses_client(monkeypatch):
     rate_limiter._requests.clear()
 
     app = FastAPI()
+    # H-17: mirror production wiring — the route relies on the global
+    # ``pydantic.ValidationError`` handler to map bad bodies to the
+    # sanitized 400 envelope. The earlier fixture omitted handler
+    # install and the route's now-removed per-route ``try/except`` was
+    # producing the 400 instead, which masked the leak this fixture is
+    # meant to gate against.
+    install_exception_handlers(app)
     app.include_router(router)
     yield SimpleNamespace(
         client=TestClient(app),
@@ -194,7 +202,13 @@ class TestResponsesAuth:
         response = client.post("/v1/responses", json=_payload())
 
         assert response.status_code == 401
-        assert response.json()["detail"] == "API key required"
+        # H-17: fixture now installs the global exception handlers
+        # (mirror production). Auth ``HTTPException(detail="...")`` is
+        # wrapped in the canonical OpenAI envelope by
+        # ``_http_error_response`` — assert the new shape, not the raw
+        # FastAPI default ``{"detail": "..."}`` that fixture-less tests
+        # would have seen.
+        assert response.json()["error"]["message"] == "API key required"
         assert engine.calls == []
 
     def test_rejects_invalid_bearer(self, responses_client):
@@ -349,7 +363,10 @@ class TestStatelessGate:
         )
 
         assert response.status_code == 400
-        assert "previous_response_id" in response.json()["detail"]
+        # H-17: fixture installs the global exception handlers (mirror
+        # production), so the route's ``HTTPException`` is wrapped in
+        # the canonical OpenAI envelope by ``_http_error_response``.
+        assert "previous_response_id" in response.json()["error"]["message"]
         # Engine must not have been called.
         assert engine.calls == []
 

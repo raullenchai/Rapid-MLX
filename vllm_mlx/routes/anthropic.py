@@ -9,7 +9,6 @@ from collections.abc import AsyncIterator
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
-from pydantic import ValidationError
 
 from ..api.anthropic_adapter import (
     AnthropicOutputConfigError,
@@ -280,14 +279,14 @@ async def create_anthropic_message(
     """
     body = await request.json()
     # ``AnthropicRequest`` is constructed manually (not as a FastAPI body
-    # parameter), so Pydantic ``ValidationError`` would otherwise surface
-    # as a generic 500. Catch it explicitly to give clients a 400 with
-    # the actual validation detail — matches the ergonomics of the
-    # ``output_config`` 400 path below (PR #42396 backport).
-    try:
-        anthropic_request = AnthropicRequest(**body)
-    except ValidationError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    # parameter). The raw :class:`pydantic.ValidationError` it can raise
+    # is now caught by the global ``_pydantic_validation_handler`` in
+    # ``middleware.exception_handlers`` (H-17), which routes it through
+    # the same sanitized 400 envelope used by ``/v1/chat/completions``.
+    # Letting the exception bubble keeps the model class name, the
+    # pinned pydantic version (``errors.pydantic.dev/2.13/...``), and
+    # the attacker-supplied ``input_value`` out of the response body.
+    anthropic_request = AnthropicRequest(**body)
 
     if not (anthropic_request.model or "").startswith(("claude-", "gpt-")):
         _validate_model_name(anthropic_request.model)
@@ -337,18 +336,17 @@ async def create_anthropic_message(
         # ``AnthropicOutputConfigError`` (a ``ValueError`` subclass) on
         # malformed ``output_config`` payloads — backport of upstream vLLM
         # PR #42396; map directly to HTTP 400 with the adapter's message.
+        # F-034: ``anthropic_to_openai`` constructs a ``ChatCompletionRequest``
+        # which now rejects unsatisfiable combinations (e.g.
+        # ``tool_choice="required"`` — Anthropic ``any`` — with no
+        # ``tools``). The resulting :class:`pydantic.ValidationError` is
+        # caught by the global ``_pydantic_validation_handler`` (H-17)
+        # so we no longer wrap it in ``str(e)`` here — that wrapping was
+        # the source of the H-17 leak (model class name + pydantic
+        # version + attacker ``input_value`` echo).
         try:
             openai_request = anthropic_to_openai(anthropic_request)
         except AnthropicOutputConfigError as e:
-            raise HTTPException(status_code=400, detail=str(e))
-        except ValidationError as e:
-            # F-034 (and any future ``ChatCompletionRequest``-layer
-            # validator): the adapter constructs an OpenAI-shape request
-            # from the Anthropic body, and ``ChatCompletionRequest`` now
-            # rejects unsatisfiable combinations (e.g. ``tool_choice="required"``
-            # — Anthropic ``any`` — with no ``tools``). Surface as 400 with
-            # the validator's message instead of letting Pydantic crash
-            # the route into a 500.
             raise HTTPException(status_code=400, detail=str(e))
 
         # Context-length pre-check — same DoS gate the chat/completions/

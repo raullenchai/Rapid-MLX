@@ -19,6 +19,18 @@ Fixes covered:
 * F-094 / F-104 mitigation — the default FastAPI 422 echoes the
   offending value verbatim in ``detail[*].input``. We collapse to a
   400 with no value echo and strip the pydantic.dev help URL (F-163).
+* H-17 — ``/v1/messages`` and ``/v1/responses`` construct their
+  Pydantic request models manually (``AnthropicRequest(**body)`` /
+  ``ResponsesRequest(**body)``) instead of binding them as FastAPI
+  body parameters, so the resulting :class:`pydantic.ValidationError`
+  never reached ``RequestValidationError``. The previous per-route
+  ``raise HTTPException(status_code=400, detail=str(e))`` patches
+  echoed the full Pydantic message — leaking the model class name,
+  the pinned pydantic version (``errors.pydantic.dev/2.13/...``),
+  and attacker-controlled ``input_value`` blobs. The dedicated
+  ``pydantic.ValidationError`` handler below routes both routes
+  through the same sanitized 400 envelope used by ``/v1/chat/
+  completions`` and ``/v1/completions``.
 """
 
 from __future__ import annotations
@@ -28,6 +40,7 @@ import logging
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
@@ -55,12 +68,21 @@ def _decode_error_response(exc: _json.JSONDecodeError) -> JSONResponse:
     )
 
 
-def _validation_error_response(exc: RequestValidationError) -> JSONResponse:
+def _validation_error_response(
+    exc: RequestValidationError | PydanticValidationError,
+) -> JSONResponse:
     """Build the 400 envelope for Pydantic body-validation failures.
 
     Strips ``detail[*].input`` (F-094 / F-104 secret-bounce vector)
     and drops the pydantic.dev help URL (F-163). Surfaces only the
     location + message so clients still get an actionable hint.
+
+    Accepts both the FastAPI-wrapped :class:`RequestValidationError`
+    (raised when a Pydantic model is bound as a FastAPI body parameter)
+    and the raw :class:`pydantic.ValidationError` (raised when a route
+    constructs the request model manually — e.g. ``/v1/messages`` and
+    ``/v1/responses``). Both expose the same ``.errors()`` shape, so a
+    single sanitizer covers both code paths (H-17).
     """
     details = []
     for err in exc.errors():
@@ -163,6 +185,22 @@ def install_exception_handlers(app: FastAPI) -> None:
     ):
         return _validation_error_response(exc)
 
+    @app.exception_handler(PydanticValidationError)
+    async def _pydantic_validation_handler(
+        request: Request,  # noqa: ARG001
+        exc: PydanticValidationError,
+    ):
+        # H-17: routes that build a Pydantic model manually
+        # (``AnthropicRequest(**body)`` on /v1/messages,
+        # ``ResponsesRequest(**body)`` on /v1/responses, plus the
+        # adapter-layer ``ChatCompletionRequest`` constructions inside
+        # those routes) raise the raw ``pydantic.ValidationError``.
+        # Route it through the same sanitized envelope as the FastAPI-
+        # bound bodies so the model class name, the pinned pydantic
+        # version (``errors.pydantic.dev/2.13/...``), and the attacker-
+        # supplied ``input_value`` stay out of the response body.
+        return _validation_error_response(exc)
+
     @app.exception_handler(Exception)
     async def _generic_handler(request: Request, exc: Exception):
         # Re-route the specific subclasses in case a TaskGroup /
@@ -172,6 +210,8 @@ def install_exception_handlers(app: FastAPI) -> None:
         if isinstance(exc, _json.JSONDecodeError):
             return _decode_error_response(exc)
         if isinstance(exc, RequestValidationError):
+            return _validation_error_response(exc)
+        if isinstance(exc, PydanticValidationError):
             return _validation_error_response(exc)
         if isinstance(exc, StarletteHTTPException):
             return _http_error_response(exc)
