@@ -304,7 +304,7 @@ class RequestBodyDepthMiddleware:
 
         if not body.strip():
             # Empty body: no JSON to parse, no depth to enforce.
-            return await self.app(scope, _replay_buffered(body), send)
+            return await self.app(scope, _replay_buffered(body, receive), send)
 
         # Cheap byte-level heuristic (codex r2 NIT): the absolute
         # maximum structural depth of a JSON document is bounded above
@@ -322,7 +322,7 @@ class RequestBodyDepthMiddleware:
         # that triggers a fallback to the full parse, never in the
         # direction that bypasses the gate.
         if not _quick_depth_might_exceed(body, max_depth):
-            return await self.app(scope, _replay_buffered(body), send)
+            return await self.app(scope, _replay_buffered(body, receive), send)
 
         try:
             parsed = _json.loads(body)
@@ -335,7 +335,7 @@ class RequestBodyDepthMiddleware:
             # parse is unavoidable: the depth gate has to know the
             # structure to measure it, and the downstream FastAPI body
             # reader insists on owning the parse itself.
-            return await self.app(scope, _replay_buffered(body), send)
+            return await self.app(scope, _replay_buffered(body, receive), send)
         except RecursionError:
             # codex r1 BLOCKING #2: ``json.loads`` is implemented in
             # C and uses an internal recursion bound that, on
@@ -359,22 +359,29 @@ class RequestBodyDepthMiddleware:
             await _send_400_depth(send, max_depth=max_depth)
             return
 
-        return await self.app(scope, _replay_buffered(body), send)
+        return await self.app(scope, _replay_buffered(body, receive), send)
 
 
-def _replay_buffered(body: bytes):
-    """Build a synthetic ``receive`` that ships ``body`` in one frame.
+def _replay_buffered(body: bytes, original_receive):
+    """Build a synthetic ``receive`` that ships ``body`` in one frame,
+    then delegates to ``original_receive`` for everything after.
 
     The downstream app sees the same bytes the client sent — Pydantic
     re-parses from these bytes, so its view of the request is identical
     to the no-middleware case (apart from the depth check we already
     cleared).
 
-    Once the body frame is consumed, subsequent ``receive()`` calls
-    return ``http.disconnect`` so a downstream that polls
-    ``request.is_disconnected()`` after reading the body sees the
-    correct lifecycle. Mirrors Starlette's own
-    ``Request._receive_after_body`` shape.
+    codex r5 BLOCKING: an earlier shape returned ``http.disconnect``
+    immediately after the body frame, so guarded JSON routes that poll
+    ``request.is_disconnected()`` between the body read and the
+    upstream-engine call (chat-completions streaming aborts on the
+    disconnect signal) saw a false client disconnect and bailed out of
+    legitimate inference work. Post-fix the synthetic ``receive``
+    delegates to the original ASGI ``receive`` callable once the body
+    frame is consumed — the real
+    ``http.disconnect`` (or future ASGI message) flows through
+    unchanged, so the disconnect signal reflects actual transport
+    state instead of a middleware-side fabrication.
     """
     sent = {"value": False}
 
@@ -382,7 +389,11 @@ def _replay_buffered(body: bytes):
         if not sent["value"]:
             sent["value"] = True
             return {"type": "http.request", "body": body, "more_body": False}
-        return {"type": "http.disconnect"}
+        # Body already shipped: defer to the original ASGI receive so
+        # downstream polls of ``request.is_disconnected()`` reflect the
+        # actual transport state, not a middleware-side synthesised
+        # disconnect.
+        return await original_receive()
 
     return receive
 

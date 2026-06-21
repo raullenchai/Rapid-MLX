@@ -912,6 +912,67 @@ def test_body_depth_replay_with_disconnect_preserves_disconnect_semantics():
     assert seen[-1]["type"] == "http.disconnect"
 
 
+def test_body_depth_replay_buffered_delegates_to_original_receive_after_body():
+    """codex r5 BLOCKING pin: ``_replay_buffered`` MUST delegate to the
+    original ASGI ``receive`` once the body frame has been shipped —
+    NOT synthesise an immediate ``http.disconnect``. Pre-fix, any
+    guarded JSON route that polled ``request.is_disconnected()``
+    between the body read and the upstream-engine call (chat-
+    completions streaming aborts on the disconnect signal) saw a
+    false client disconnect and bailed out of legitimate inference
+    work.
+
+    Post-fix the synthetic receive returns the buffered body once,
+    then awaits the real upstream ``receive`` so the actual transport
+    state (a still-connected client, a deferred disconnect, etc.)
+    flows through unchanged."""
+    import asyncio
+
+    from vllm_mlx.middleware.body_depth import _replay_buffered
+
+    # Simulate a real ASGI receive that returns nothing immediately —
+    # the client is still connected and idle. Pre-fix the synthetic
+    # receive would have returned ``http.disconnect`` after the body
+    # frame; post-fix it must await the original.
+    real_receive_called = {"count": 0}
+    awaited = asyncio.Event()
+
+    async def real_receive():
+        real_receive_called["count"] += 1
+        # Mark that we got here, then deliver a disconnect so the
+        # caller can finish. The key assertion is that we got here at
+        # all — pre-fix this callable was never invoked.
+        awaited.set()
+        return {"type": "http.disconnect"}
+
+    body = b'{"hello":"world"}'
+    receive = _replay_buffered(body, real_receive)
+
+    async def _drive():
+        # First call → body frame (synthetic).
+        first = await receive()
+        # Second call → must delegate to ``real_receive``, not return
+        # a synthesised disconnect directly. We assert that
+        # ``real_receive`` was invoked.
+        second = await receive()
+        return first, second
+
+    first, second = asyncio.run(_drive())
+    assert first["type"] == "http.request"
+    assert first["body"] == body
+    assert first["more_body"] is False
+    # Pre-fix this was 0 (synthetic disconnect bypassed the upstream
+    # receive entirely). Post-fix delegating the call increments the
+    # counter — proof that downstream routes will see the actual
+    # transport state, not a middleware-fabricated disconnect.
+    assert real_receive_called["count"] == 1, (
+        "post-codex-r5: _replay_buffered must delegate to the original "
+        "receive after the body frame; a synthesised http.disconnect "
+        "would mask a still-connected client and abort downstream work"
+    )
+    assert second["type"] == "http.disconnect"
+
+
 def test_body_depth_missing_content_type_only_defaults_to_json_on_known_paths(
     monkeypatch,
 ):
