@@ -36,6 +36,7 @@ from ..config import get_config
 from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
 from ..service.helpers import (
+    _TOOL_USE_REQUIRED_SUFFIX,
     SSE_RESPONSE_HEADERS,
     _apply_reasoning_cutoff_notice,
     _build_usage,
@@ -51,10 +52,12 @@ from ..service.helpers import (
     _resolve_reasoning_enabled,
     _resolve_temperature,
     _resolve_top_p,
+    _tool_use_required_named_suffix,
     _validate_model_name,
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    count_prompt_tokens,
     enforce_context_length_for_messages,
     get_engine,
 )
@@ -262,6 +265,213 @@ def _enforce_named_tool_choice_present(
     raise HTTPException(status_code=422, detail=detail)
 
 
+def _is_required_tool_choice(tool_choice) -> bool:
+    """Return True when ``tool_choice`` forces the model to call ANY tool.
+
+    The Anthropic adapter maps ``{"type":"any"}`` → OpenAI ``"required"``
+    in ``api/anthropic_adapter._convert_tool_choice``. By the time we get
+    here ``tool_choice`` is the post-adapter OpenAI shape, so the
+    ``"required"`` string IS the Anthropic ``any`` contract.
+
+    D-ANTHRO-TOOL-USAGE F3: the route was previously a no-op on this
+    branch — ``_named_tool_choice_target`` returned ``None`` for
+    ``"required"`` and the post-parse enforcement only fired for the
+    named-function form. A request with ``tool_choice={"type":"any"}``
+    therefore sailed through with the model's text reply and
+    ``stop_reason="end_turn"`` — a direct spec violation. Mirror the
+    OpenAI-side enforcement (``routes/chat.py`` lines 973-978 +
+    1878-1902) on this surface.
+    """
+    return tool_choice == "required"
+
+
+def _synthesize_anthropic_forced_tool_call(name: str):
+    """Build a single ``ToolCall`` for a forced ``tool_choice`` whose
+    parser surfaced no calls — Anthropic-route mirror of chat.py's
+    ``_synthesize_forced_tool_call``.
+
+    Inlined here (instead of importing the chat.py helper) to keep the
+    two routes' import surfaces independent — the Anthropic route
+    deliberately avoids depending on ``routes/chat`` so a future split
+    can move them into separate modules. The behaviour is identical:
+    OpenAI ``tool_choice`` is parser-agnostic and forced calls MUST
+    surface a ``tool_use`` block, so when the text parser found nothing
+    we synthesise an empty-argument call to the unambiguous target.
+    """
+    from ..api.models import FunctionCall, ToolCall
+
+    return ToolCall(
+        id=f"call_{uuid.uuid4().hex[:8]}",
+        type="function",
+        function=FunctionCall(name=name, arguments="{}"),
+    )
+
+
+def _inject_tool_use_required_suffix(
+    messages: list,
+    tool_choice,
+    *,
+    tools: list | None,
+) -> list:
+    """Mutate-in-place: append ``_TOOL_USE_REQUIRED_SUFFIX`` (or the
+    named variant) to the system message so a forced ``tool_choice``
+    has the same prompt-level lever the OpenAI route applies.
+
+    Returns the (possibly prepended) ``messages`` list. When no system
+    message exists, a new one is prepended carrying just the suffix.
+    Mirrors ``routes/chat.py`` lines 990-1009 byte-for-byte so the two
+    surfaces inject the same lever for the same tool_choice value.
+
+    No-op when ``tool_choice`` does not force a call, OR when ``tools``
+    is empty — there is nothing for the model to call, so the suffix
+    would produce only a confusing "you must call a tool" stanza with
+    no tools defined.
+    """
+    if not tools:
+        return messages
+    suffix = None
+    if _is_required_tool_choice(tool_choice):
+        suffix = _TOOL_USE_REQUIRED_SUFFIX
+    elif isinstance(tool_choice, dict) and tool_choice.get("type") == "function":
+        named = (tool_choice.get("function") or {}).get("name")
+        if named:
+            suffix = _tool_use_required_named_suffix(named)
+    if not suffix:
+        return messages
+
+    has_system = any(
+        (m.get("role") if isinstance(m, dict) else getattr(m, "role", None)) == "system"
+        for m in messages
+    )
+    if has_system:
+        for i, m in enumerate(messages):
+            role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+            if role == "system":
+                content = (
+                    m.get("content")
+                    if isinstance(m, dict)
+                    else getattr(m, "content", "")
+                )
+                # Normalise non-string content to a string before appending
+                # — Anthropic system blocks may arrive as list[dict] (text
+                # blocks) which the adapter has already joined into a
+                # string by this point, but be defensive.
+                if not isinstance(content, str):
+                    content = str(content) if content is not None else ""
+                if isinstance(m, dict):
+                    messages[i] = {**m, "content": content + suffix}
+                else:
+                    m.content = content + suffix
+                break
+    else:
+        messages.insert(0, {"role": "system", "content": suffix.strip()})
+    return messages
+
+
+def _enforce_required_tool_choice_present(
+    tool_calls,
+    tool_choice,
+    *,
+    tools: list | None,
+):
+    """OpenAI ``tool_choice="required"`` / Anthropic ``{"type":"any"}``
+    post-parse enforcement.
+
+    Mirrors ``routes/chat.py`` lines 1878-1902. When a forced-any
+    ``tool_choice`` produced no tool_calls:
+
+      * single-tool case → synthesise a call to that tool so the
+        ``tool_use`` block contract holds (the choice is unambiguous).
+      * multi-tool case → return ``("error", detail)`` so the caller
+        can 422 on the non-stream branch or surface an SSE error on
+        the stream branch.
+
+    Returns ``(tool_calls, error_detail_or_None)``. The caller is
+    responsible for raising / emitting the SSE error event.
+    """
+    if not _is_required_tool_choice(tool_choice):
+        return tool_calls, None
+    if tool_calls:
+        return tool_calls, None
+    if tools and len(tools) == 1:
+        # Defensive: tools entries may be Pydantic ``Tool`` models or
+        # plain dicts depending on whether the request flowed through
+        # the adapter as a model instance. Prefer the model attribute
+        # path so we honour any future Tool-shape changes without
+        # touching this branch.
+        tool = tools[0]
+        fn = (
+            tool.function
+            if hasattr(tool, "function")
+            else (tool.get("function") if isinstance(tool, dict) else None)
+        )
+        if fn is None:
+            fn = {}
+        solo_name = (
+            fn.get("name") if isinstance(fn, dict) else getattr(fn, "name", None)
+        )
+        if solo_name:
+            logger.warning(
+                "tool_choice={'type':'any'} on Anthropic route produced no "
+                "tool_calls; synthesising a call to the sole available tool "
+                "%r with empty arguments to honour the forced-tool contract "
+                "(D-ANTHRO-TOOL-USAGE F3).",
+                solo_name,
+            )
+            return [_synthesize_anthropic_forced_tool_call(solo_name)], None
+    detail = (
+        'tool_choice={"type":"any"} but the model returned a text response '
+        "with no tool_calls. Local inference has no decoder-level "
+        "constraint; the system-prompt enforcement was insufficient for "
+        'this prompt. Retry with a more concrete user message or use '
+        'tool_choice={"type":"tool","name":...} to pin a specific tool.'
+    )
+    return tool_calls, detail
+
+
+def _estimate_anthropic_prompt_tokens(engine, messages, tools) -> int:
+    """Return the prompt-token count under the engine's chat template, or 0.
+
+    D-ANTHRO-TOOL-USAGE F5: the Anthropic streaming surface previously
+    hard-coded ``message_start.usage.input_tokens=0`` because the engine
+    hadn't run yet — but billing dashboards parsing the SSE stream
+    therefore under-reported the input share by 100%. Anthropic's
+    public stream emits ``input_tokens`` in ``message_start`` (the
+    server-side estimate, finalised in ``message_delta``).
+
+    Uses the SAME ``count_prompt_tokens`` helper the DoS gate
+    (``enforce_context_length_for_messages``) already calls so the
+    estimate is byte-for-byte consistent with what the context-length
+    pre-check used. The render goes through ``engine.build_prompt`` so
+    chat-template / tools rendering matches what the engine itself
+    will tokenise during generation.
+
+    Returns ``0`` when:
+
+      * the engine has no ``build_prompt`` (MLLM / mock test stub) —
+        the streaming usage path falls back to the engine-reported
+        ``output.prompt_tokens`` like before, and the public-API
+        contract just degrades to the pre-fix ``input_tokens=0`` shape
+        rather than fabricating a tokenizer-free count.
+      * the template render or tokenizer call raises — same fallback
+        rationale; surfacing a tokenizer error here would obscure the
+        actual generation error from the client.
+    """
+    build_prompt = getattr(engine, "build_prompt", None)
+    if build_prompt is None or getattr(engine, "is_mllm", False):
+        return 0
+    try:
+        prompt = build_prompt(messages, tools=tools)
+    except Exception:
+        return 0
+    if not prompt:
+        return 0
+    try:
+        return count_prompt_tokens(engine, prompt)
+    except Exception:
+        return 0
+
+
 @router.post(
     "/v1/messages",
     dependencies=[
@@ -442,6 +652,19 @@ async def create_anthropic_message(
             preserve_native_format=engine.preserve_native_tool_format,
         )
 
+        # D-ANTHRO-TOOL-USAGE F3: forced ``tool_choice`` levers.
+        # The Anthropic route bypasses chat.py, so chat.py's prompt-suffix
+        # injection (``_TOOL_USE_REQUIRED_SUFFIX`` / named variant) was
+        # silently skipped for /v1/messages. The OpenAI surface enforces
+        # ``tool_choice="any"`` (Anthropic ``any``) primarily via prompt
+        # injection + post-parse synth/422; mirror BOTH levers here so the
+        # two routes ship the same forced-call contract.
+        _inject_tool_use_required_suffix(
+            messages,
+            openai_request.tool_choice,
+            tools=openai_request.tools,
+        )
+
         chat_kwargs = {
             "max_tokens": _resolve_max_tokens(
                 openai_request.max_tokens,
@@ -540,6 +763,18 @@ async def create_anthropic_message(
                 openai_request.tool_choice,
                 original_call_count=original_call_count,
             )
+            # D-ANTHRO-TOOL-USAGE F3: Anthropic ``{"type":"any"}`` enforcement.
+            # The adapter has mapped it to OpenAI ``"required"``; mirror the
+            # chat-route synth+422 policy so a no-tool reply either becomes
+            # a synthesised single-tool call (unambiguous case) or surfaces
+            # a 422 the client can act on.
+            tool_calls, _required_err = _enforce_required_tool_choice_present(
+                tool_calls,
+                openai_request.tool_choice,
+                tools=openai_request.tools,
+            )
+            if _required_err:
+                raise HTTPException(status_code=422, detail=_required_err)
 
         # F-220: enforce the same tool_call JSON-schema validation
         # ``routes/chat.py:1651`` runs on the OpenAI ``/v1/chat/completions``
@@ -921,6 +1156,18 @@ async def _stream_anthropic_messages(
         preserve_native_format=engine.preserve_native_tool_format,
     )
 
+    # D-ANTHRO-TOOL-USAGE F3: forced ``tool_choice`` levers — same
+    # injection the non-stream branch performs. The streaming path was
+    # previously a silent no-op for ``tool_choice={"type":"any"}``
+    # (and the named-tool form's prompt level), letting the model emit
+    # a text reply that violated the forced-call contract before the
+    # post-stream enforcement could fire.
+    _inject_tool_use_required_suffix(
+        messages,
+        openai_request.tool_choice,
+        tools=openai_request.tools,
+    )
+
     chat_kwargs = {
         "max_tokens": _resolve_max_tokens(
             openai_request.max_tokens,
@@ -1085,6 +1332,21 @@ async def _stream_anthropic_messages(
                 effective = block_type
         return out
 
+    # D-ANTHRO-TOOL-USAGE F5: pre-compute prompt_tokens BEFORE
+    # ``message_start`` so the SSE envelope carries the real input
+    # estimate instead of the hard-coded ``0`` that under-reported the
+    # input share by 100%. Goes through the same
+    # ``build_prompt`` + ``count_prompt_tokens`` SOURCE OF TRUTH the
+    # non-stream usage builder and the context-length DoS gate already
+    # use; on engines without ``build_prompt`` (MLLM / mock test stubs)
+    # the helper returns 0 and the rest of the streaming path falls back
+    # to the engine-reported ``output.prompt_tokens`` it always used.
+    initial_prompt_tokens_estimate = _estimate_anthropic_prompt_tokens(
+        engine,
+        messages,
+        tools=openai_request.tools,
+    )
+
     # Emit message_start
     message_start = {
         "type": "message_start",
@@ -1097,7 +1359,7 @@ async def _stream_anthropic_messages(
             "stop_reason": None,
             "stop_sequence": None,
             "usage": {
-                "input_tokens": 0,
+                "input_tokens": initial_prompt_tokens_estimate,
                 "output_tokens": 0,
             },
         },
@@ -1128,7 +1390,16 @@ async def _stream_anthropic_messages(
     _pinned_tool_target = _named_tool_choice_target(
         getattr(openai_request, "tool_choice", None)
     )
-    _buffer_for_pinned_tool = _pinned_tool_target is not None
+    # D-ANTHRO-TOOL-USAGE F3: extend the pre-filter buffer to the
+    # ``tool_choice={"type":"any"}`` case (Anthropic ``any`` →
+    # OpenAI ``"required"``). Same rationale as the named-pin branch:
+    # a defiant model can stream a text reply that violates the
+    # forced-call contract, and post-loop synthesis / SSE error must
+    # arrive without the forbidden text bytes ever reaching the wire.
+    _buffer_for_pinned_tool = _pinned_tool_target is not None or (
+        _is_required_tool_choice(getattr(openai_request, "tool_choice", None))
+        and bool(openai_request.tools)
+    )
     pre_filter_buffer: list[str] = []
 
     def _capture(event: str) -> str | None:
@@ -1174,7 +1445,13 @@ async def _stream_anthropic_messages(
         _chat_template, chat_kwargs.get("enable_thinking")
     )
     think_router = StreamingThinkRouter(start_in_thinking=_starts_thinking)
-    prompt_tokens = 0
+    # D-ANTHRO-TOOL-USAGE F5: seed the running counter with the
+    # pre-message_start estimate so the terminal ``message_delta`` is
+    # NEVER worse than what we already announced in ``message_start``.
+    # The engine's own ``output.prompt_tokens`` (when it surfaces a
+    # non-zero value below) wins over the seed because the engine count
+    # is authoritative — the seed is a floor, not a ceiling.
+    prompt_tokens = initial_prompt_tokens_estimate
     completion_tokens = 0
     cached_tokens = 0
     # H-03: track the most-recently-surfaced ``matched_stop`` so the
@@ -1792,6 +2069,27 @@ async def _stream_anthropic_messages(
             tool_choice_error = (
                 exc.detail if isinstance(exc.detail, str) else str(exc.detail)
             )
+
+        # D-ANTHRO-TOOL-USAGE F3: stream variant of
+        # ``_enforce_required_tool_choice_present`` for
+        # ``tool_choice={"type":"any"}`` (Anthropic ``any`` →
+        # OpenAI ``"required"``). Headers are already on the wire so
+        # the 422 the non-stream branch raises becomes a buffer-replay-
+        # AND-error path: when synthesis is unambiguous (single tool),
+        # we add the synth call so a downstream client sees a
+        # ``tool_use`` block; otherwise we surface the same
+        # ``invalid_request_error`` event the named-pin branch uses.
+        # Mirrors the OpenAI route's stream behaviour: best-effort
+        # prompt-injection upstream + post-parse synth where the
+        # target is unambiguous + SSE error event when it isn't.
+        if not tool_choice_error:
+            tool_calls, _required_err_stream = _enforce_required_tool_choice_present(
+                tool_calls,
+                openai_request.tool_choice,
+                tools=openai_request.tools,
+            )
+            if _required_err_stream:
+                tool_choice_error = _required_err_stream
 
     # F-220: enforce JSON-schema validation on the model's emitted
     # tool_call arguments. On the streaming branch, headers are already
