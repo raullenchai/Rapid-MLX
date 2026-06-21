@@ -781,34 +781,39 @@ def _rescue_silent_drop_from_reasoning(
     # discriminator.
     # Codex round-7 BLOCKING (PR #799): the previous formulation
     # treated EVERY ``finish_reason="stop"`` with an unclosed
-    # ``<think>`` in raw_text as truncation evidence. But ``stop``
-    # is ALSO the natural-EOS signal, so a model that voluntarily
-    # ends after emitting ``<think>just a thought`` (no closing
-    # ``</think>``, no user stop fired) is NOT truncated — the
-    # turn legitimately ended with an in-progress thought. Under
-    # the old gate, the #569 rescue would NOT fire and the user
-    # would get a silently empty assistant message. Fix: for the
-    # explicit-opener arm, require ``matched_stop is not None``
-    # under ``finish_reason="stop"`` so only ENGINE-initiated stops
-    # (user stop string fired) suppress the rescue; natural EOS
-    # falls through to the rescue path. ``finish_reason="length"``
-    # stays unconditional (length is unambiguously truncation).
+    # ``<think>`` in raw_text as truncation evidence. R7 narrowed
+    # the stop-arm to require ``matched_stop is not None`` so a
+    # model that voluntarily ends after emitting ``<think>just a
+    # thought`` would still rescue via #569.
+    #
+    # Codex round-11 BLOCKING (PR #799): REVERTS the r7 narrow.
+    # An unclosed ``<think>`` in raw_text is STRONG direct
+    # evidence that the trace is in-progress — surfacing it as
+    # ``content`` re-introduces the D-STOP-THINK leak whenever a
+    # caller / engine path reports only ``finish_reason="stop"``
+    # without propagating ``matched_stop``. (The streaming chat
+    # path can lose ``matched_stop`` between the sampler chunk
+    # and the helper call site; making the propagation mandatory
+    # at every call site is brittle. The raw-text evidence is
+    # the authoritative discriminator.) Suppress on raw-text
+    # evidence regardless of ``matched_stop`` — symmetric with
+    # the parser-level saw-prefix branch which now suppresses
+    # on truncation alone (round-11 BLOCKING #1).
+    #
+    # The "model voluntarily ended mid-thought" case (codex r7
+    # concern) loses the #569 silent-drop rescue here — that's
+    # the deliberate trade-off in r11: an empty assistant turn
+    # is a SAFER failure than a duplicated trace, because the
+    # client can detect the empty turn via ``finish_reason``
+    # and either retry or surface a "model gave up" UX. A
+    # duplicated trace would be silently wrong on the wire.
     truncated_mid_think = (
-        # Explicit-opener under length: engine ran out of budget
-        # before ``</think>``. Unconditional — length is always
-        # truncation.
+        # Explicit-opener under length OR stop: raw_text proves
+        # an in-progress ``<think>`` was truncated. Suppress the
+        # rescue regardless of ``matched_stop`` (codex round-11
+        # BLOCKING #2).
         (
-            finish_reason == "length"
-            and raw_text
-            and raw_text.lstrip().startswith("<think>")
-            and "</think>" not in raw_text
-        )
-        # Explicit-opener under stop: only when a user-supplied
-        # stop string actually fired. Without ``matched_stop`` the
-        # "stop" is natural EOS and the model finished voluntarily.
-        or (
-            finish_reason == "stop"
-            and matched_stop is not None
+            finish_reason in ("length", "stop")
             and raw_text
             and raw_text.lstrip().startswith("<think>")
             and "</think>" not in raw_text

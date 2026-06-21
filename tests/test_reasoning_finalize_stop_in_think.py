@@ -360,6 +360,51 @@ class TestStopMidThinkExplicitOpener:
         assert "just a thought" in result.content
         assert result.reasoning is None
 
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [("qwen3", Qwen3ReasoningParser)],
+    )
+    def test_model_spontaneous_think_with_matched_stop_no_prompt_thinking(
+        self, name, parser_cls
+    ):
+        """Codex round-11 BLOCKING #1 (PR #799): the saw-prefix branch
+        MUST suppress the content correction on truncation alone,
+        regardless of ``prompt_thinking_active``. Round-10's added
+        ``AND prompt_thinking_active`` gate created a leak: a model
+        that SPONTANEOUSLY emits a literal ``<think>`` opener (no
+        chat-template injection → ``prompt_thinking_active=False``)
+        with ``matched_stop`` firing inside the unclosed block would
+        fall through to ``DeltaMessage(content=cleaned)`` and the
+        trace would duplicate into both channels.
+
+        The saw-prefix branch has DIRECT evidence of thinking — the
+        literal opener reached the parser — so the suppression does
+        not need the route-supplied template signal as a
+        discriminator. ``prompt_thinking_active`` is reserved for
+        the NO-PREFIX branch where the parser has no direct
+        evidence.
+        """
+        parser = parser_cls()
+        # Model-spontaneous ``<think>`` (NOT chat-template-injected):
+        # finish via a user stop string with prompt_thinking_active
+        # explicitly False — the round-11 leak shape.
+        accumulated = "<think>still in progress when STOP fired"
+        result = parser.finalize_streaming(
+            accumulated,
+            matched_stop="STOP",
+            prompt_thinking_active=False,
+        )
+        assert result is not None, (
+            f"[{name}] codex r11 BLOCKING #1: no correction emitted"
+        )
+        assert result.content is None, (
+            f"[{name}] codex r11 BLOCKING #1 regression — model-"
+            f"spontaneous <think>...STOP leaked into content: "
+            f"{result.content!r}"
+        )
+        assert result.reasoning is not None
+        assert "still in progress" in result.reasoning
+
 
 class TestStopMidThinkNoOpener:
     """``stop`` matches mid-thought WITHOUT an explicit ``<think>``

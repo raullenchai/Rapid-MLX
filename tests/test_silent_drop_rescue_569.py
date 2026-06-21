@@ -1105,22 +1105,24 @@ def test_rescue_skipped_on_truncated_think_when_finish_is_stop_with_matched_stop
     )
 
 
-def test_rescue_fires_on_natural_eos_truncated_think_without_matched_stop():
-    """Codex round-7 BLOCKING counter-case (PR #799): the previous
-    gate suppressed the rescue on EVERY ``finish_reason="stop"`` with
-    an unclosed ``<think>`` in raw_text — but ``stop`` is ALSO the
-    natural-EOS signal. A model that voluntarily ends after emitting
-    ``<think>just a thought`` (no closing ``</think>``, no user stop
-    fired) is NOT truncated; the turn legitimately ended with an
-    in-progress thought. Under the old gate, the #569 rescue would
-    NOT fire and the user would get a silently empty assistant
-    message — exactly the silent-drop failure mode #569 exists to
-    prevent.
+def test_rescue_skipped_on_truncated_think_under_finish_stop_regardless_of_matched_stop():
+    """Codex round-11 BLOCKING (PR #799): REVERTS the round-7
+    natural-EOS-rescue carve-out for the explicit-opener arm.
 
-    Post-fix the gate distinguishes engine-initiated trim
-    (``matched_stop is not None``) from natural EOS
-    (``matched_stop is None``). Natural EOS falls through to the
-    rescue path; engine trim suppresses the rescue (D-STOP-THINK).
+    The unclosed ``<think>`` in ``raw_text`` is STRONG direct
+    evidence that the trace is in-progress; surfacing the trace as
+    ``content`` re-introduces the D-STOP-THINK leak whenever an
+    engine path reports ``finish_reason="stop"`` without
+    propagating ``matched_stop`` (the streaming chat path can lose
+    ``matched_stop`` between the sampler chunk and the helper call
+    site). The raw-text evidence is the authoritative discriminator
+    — the suppression now fires regardless of ``matched_stop``.
+
+    The "model voluntarily ended mid-thought" #569 silent-drop
+    rescue case loses out here — that's the deliberate r11
+    trade-off: an empty assistant turn (client can detect via
+    ``finish_reason``) is a SAFER failure than a duplicated trace
+    (silently wrong on the wire).
     """
     raw = "<think>just a thought"
     rescued = _rescue_silent_drop_from_reasoning(
@@ -1131,9 +1133,10 @@ def test_rescue_fires_on_natural_eos_truncated_think_without_matched_stop():
         raw_text=raw,
         matched_stop=None,
     )
-    assert rescued == "just a thought", (
-        f"#569 regression — natural-EOS with unclosed <think> silently "
-        f"dropped instead of rescued: rescued={rescued!r}"
+    assert rescued is None, (
+        f"codex r11 BLOCKING regression — explicit unclosed <think> "
+        f"with finish=stop should suppress regardless of matched_stop; "
+        f"got rescued={rescued!r}"
     )
 
 
