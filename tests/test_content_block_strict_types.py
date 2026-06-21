@@ -168,9 +168,15 @@ class TestAnthropicContentBlockTextStrictType:
         block = AnthropicContentBlock(type="text", text="hi")
         assert block.text == "hi"
 
-    def test_null_text_accepted(self) -> None:
-        block = AnthropicContentBlock(type="text", text=None)
-        assert block.text is None
+    def test_null_text_rejected(self) -> None:
+        """D-ANTHRO-VALIDATION F4 update: ``text=None`` was previously
+        treated as a legal no-op text part. Sergei's F4 evidence
+        shows the Anthropic spec rejects ``{type:'text'}`` (and the
+        ``text=None`` shape is equivalent — both pass no usable text
+        to the model). Aligned with the spec at the schema layer."""
+        with pytest.raises(ValidationError) as exc_info:
+            AnthropicContentBlock(type="text", text=None)
+        assert "is missing required field(s): text" in str(exc_info.value)
 
 
 class TestAnthropicImageSourceStrictType:

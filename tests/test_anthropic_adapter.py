@@ -8,6 +8,8 @@ These are pure logic tests with no MLX dependency.
 
 import json
 
+import pytest
+
 from vllm_mlx.api.anthropic_adapter import (
     _convert_message,
     _convert_stop_reason,
@@ -197,19 +199,40 @@ class TestConvertMessage:
         assert result[0].role == "tool"
         assert result[0].content == "line one\nline two"
 
-    def test_tool_result_with_none_content(self):
+    def test_tool_result_with_empty_string_content(self):
+        """D-ANTHRO-VALIDATION F4 update: ``tool_result`` blocks now
+        require a ``content`` field at construction time (the spec
+        requires non-None content). Test the adapter still emits the
+        right shape for the legal ``content=""`` case — the
+        ``content=None`` pre-fix shape is rejected at the schema
+        layer with a clear ``is missing required field(s): content``
+        error instead of silently being treated as an empty string."""
         msg = AnthropicMessage(
             role="user",
             content=[
                 AnthropicContentBlock(
                     type="tool_result",
                     tool_use_id="call_1",
-                    content=None,
+                    content="",
                 ),
             ],
         )
         result = _convert_message(msg)
         assert result[0].content == ""
+
+    def test_tool_result_with_none_content_rejected_at_construction(self):
+        """D-ANTHRO-VALIDATION F4: ``content=None`` on a tool_result
+        block 422s at schema layer with the named-field message —
+        replaces the pre-fix silent-empty-string fallback."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc_info:
+            AnthropicContentBlock(
+                type="tool_result",
+                tool_use_id="call_1",
+                content=None,
+            )
+        assert "is missing required field(s): content" in str(exc_info.value)
 
     def test_assistant_with_tool_use(self):
         msg = AnthropicMessage(

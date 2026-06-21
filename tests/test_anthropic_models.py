@@ -68,8 +68,15 @@ class TestAnthropicContentBlock:
         assert block.source["type"] == "base64"
 
     def test_optional_fields_default_to_none(self):
-        block = AnthropicContentBlock(type="text")
-        assert block.text is None
+        """D-ANTHRO-VALIDATION F4 update: per-type required fields are
+        now enforced at construction (text block REQUIRES text). The
+        "all-optional" surface for a text block accepted ``{type:'text'}``
+        with no payload and let the model run on empty content. The
+        original spirit of this test — that *other* fields default to
+        None when only the relevant per-type field is set — is
+        preserved below by building a well-formed text block."""
+        block = AnthropicContentBlock(type="text", text="")
+        assert block.text == ""
         assert block.id is None
         assert block.name is None
         assert block.input is None

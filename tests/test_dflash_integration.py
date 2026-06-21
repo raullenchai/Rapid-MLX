@@ -282,7 +282,11 @@ def test_chat_completions_rejects_tools() -> None:
         },
     )
     assert r.status_code == 400
-    assert "tool calling" in r.json()["detail"].lower()
+    # D-ANTHRO-VALIDATION F11: the dflash app now installs the shared
+    # exception handlers so HTTPException responses go through the
+    # canonical envelope ``{"error":{"message":...}}`` instead of the
+    # bare FastAPI ``{"detail":...}`` shape.
+    assert "tool calling" in r.json()["error"]["message"].lower()
 
 
 def test_chat_completions_rejects_empty_messages() -> None:
@@ -344,7 +348,9 @@ def test_chat_completions_rejects_logprobs() -> None:
         },
     )
     assert r.status_code == 400
-    assert "logprobs" in r.json()["detail"].lower()
+    # D-ANTHRO-VALIDATION F11: canonical envelope shape — see comment
+    # on test_chat_completions_rejects_tools above.
+    assert "logprobs" in r.json()["error"]["message"].lower()
 
 
 def test_chat_completions_rejects_response_format() -> None:
@@ -378,7 +384,9 @@ def test_chat_completions_rejects_response_format() -> None:
         },
     )
     assert r.status_code == 400
-    assert "response_format" in r.json()["detail"].lower()
+    # D-ANTHRO-VALIDATION F11: canonical envelope shape — see comment
+    # on test_chat_completions_rejects_tools above.
+    assert "response_format" in r.json()["error"]["message"].lower()
 
 
 def _capture_enable_thinking(monkeypatch, *, no_thinking: bool, request_body: dict):

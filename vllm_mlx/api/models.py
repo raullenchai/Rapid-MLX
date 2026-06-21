@@ -1058,7 +1058,13 @@ class ChatCompletionRequest(BaseModel):
     """Request for chat completion."""
 
     model: str = "default"
-    messages: list[Message]
+    # D-ANTHRO-VALIDATION F11 (Anthropic sibling fix on OpenAI surface):
+    # OpenAI's real ``/v1/chat/completions`` requires ``messages`` to be
+    # a non-empty array (a request without prompts is structurally
+    # uninterpretable). Pre-fix this server accepted ``messages=[]`` and
+    # downstream code raised an unhandled exception → 500. Enforce at
+    # the schema layer so the 4xx fires before any handler logic.
+    messages: list[Message] = Field(..., min_length=1)
     # F-011: range bounds match OpenAI spec; the field-level Field
     # constraints cover finite out-of-range values (Pydantic 422). NaN
     # slips past Field bounds (every NaN comparison is False) so the

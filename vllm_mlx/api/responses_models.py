@@ -159,6 +159,29 @@ class ResponsesRequest(BaseModel):
             )
         return data
 
+    @model_validator(mode="after")
+    def _validate_input_nonempty(self) -> "ResponsesRequest":
+        """D-ANTHRO-VALIDATION F11 sibling — reject an empty ``input``.
+
+        ``input=[]`` (and ``input=""``) pre-fix slipped past the schema
+        and the downstream adapter then crashed dereferencing an empty
+        list / running a no-token prompt through the engine. Anthropic-
+        parity surface: same shape rejected at the schema layer with a
+        clear 400 instead of a 500.
+        """
+        if isinstance(self.input, str):
+            if self.input == "":
+                raise ValueError(
+                    "`input` must be a non-empty string or a non-empty "
+                    "list of input items."
+                )
+        elif isinstance(self.input, list):
+            if len(self.input) == 0:
+                raise ValueError(
+                    "`input` must be a non-empty list of input items."
+                )
+        return self
+
 
 # =============================================================================
 # Response Models

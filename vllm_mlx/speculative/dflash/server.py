@@ -114,6 +114,14 @@ def _build_app(
     can't run while another's generator is mid-step.
     """
     app = FastAPI(title="Rapid-MLX (DFlash)")
+    # D-ANTHRO-VALIDATION F11: install the shared exception handlers so
+    # Pydantic validation errors return the canonical
+    # ``{"error":{"type":"invalid_request_error","code":"invalid_request",
+    # ...}}`` envelope at HTTP 400 instead of FastAPI's default 422 with
+    # an unbounded ``detail`` array. Same handlers the main server uses.
+    from ...middleware.exception_handlers import install_exception_handlers
+
+    install_exception_handlers(app)
     # F-090/F-091: register CORS only when an explicit origin allowlist is
     # configured. ``cors_origins=[]`` (the new default — see
     # ``vllm_mlx/server.py::configure_cors_from_env``) skips the middleware

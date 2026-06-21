@@ -667,10 +667,15 @@ class TestAdmissionControl:
 
         from vllm_mlx.config import get_config
         from vllm_mlx.engine.batched import BatchedEngine
+        from vllm_mlx.middleware.exception_handlers import install_exception_handlers
         from vllm_mlx.routes import chat as chat_route
         from vllm_mlx.scheduler import SchedulerConfig
 
         app = FastAPI()
+        # D-ANTHRO-VALIDATION F11: install the shared exception
+        # handlers so the canonical 400 envelope fires when Pydantic
+        # rejects ``messages=[]`` at the new ``min_length=1`` constraint.
+        install_exception_handlers(app)
         app.include_router(chat_route.router)
 
         # MagicMock engine — ``MagicMock`` doesn't enforce
