@@ -208,6 +208,36 @@ async def create_response(request: Request):
                             }
                         },
                     )
+                # Codex r2 BLOCKING #2: streaming on /v1/responses
+                # currently routes through ``engine.stream_chat``,
+                # which is unconstrained — the constrained-decoding
+                # path here is buffered-only. Under the strict
+                # contract we MUST NOT serve a stream we cannot
+                # guarantee, so reject with a clear actionable 400
+                # naming both escape hatches: drop stream=true OR
+                # switch to /v1/chat/completions (which already has
+                # a buffered-guided→synthesized-SSE helper).
+                if responses_request.stream:
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": {
+                                "message": (
+                                    "text.format strict=true with stream=true "
+                                    "is not supported on /v1/responses — "
+                                    "constrained decoding on this surface is "
+                                    "buffered-only. Either drop stream=true "
+                                    "(non-stream strict response is honored) "
+                                    "or use /v1/chat/completions which "
+                                    "supports strict+streaming via the "
+                                    "buffered-guided SSE helper."
+                                ),
+                                "type": "invalid_request_error",
+                                "code": "strict_stream_unsupported",
+                                "param": "text.format.strict",
+                            }
+                        },
+                    )
 
         # Context-length pre-check — same DoS gate the chat/completions/
         # anthropic routes enforce. Runs BEFORE the stream branch so
@@ -316,27 +346,49 @@ async def _non_stream(
 
     try:
         if _strict_schema and engine.supports_guided_generation:
+            # H-06 (codex r2): under the strict contract we MUST NOT
+            # fall back to unconstrained ``engine.chat`` on guided
+            # failure — that turns ``strict=true`` back into best-
+            # effort output. Propagate the failure as 502 so the
+            # client sees the contract breach instead of silently
+            # consuming schema-invalid bytes.
             try:
                 output = await _wait_with_disconnect(
                     engine.generate_with_schema(
                         messages=messages,
                         json_schema=_strict_schema,
+                        raise_on_failure=True,
                         **chat_kwargs,
                     ),
                     request,
                     timeout=timeout,
                 )
+            except HTTPException:
+                raise
             except Exception as guided_err:
                 logger.warning(
-                    "Guided generation failed on /v1/responses, falling back "
-                    "to unconstrained: %s",
+                    "Guided generation failed on /v1/responses strict path: %s",
                     guided_err,
                 )
-                output = await _wait_with_disconnect(
-                    engine.chat(messages=messages, **chat_kwargs),
-                    request,
-                    timeout=timeout,
-                )
+                incr_strict_violation()
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "error": {
+                            "message": (
+                                "strict response_format requested but "
+                                "constrained decoding failed: "
+                                f"{type(guided_err).__name__}. Investigate "
+                                "the server logs and the "
+                                "rapid_mlx_response_format_strict_violations_total "
+                                "metric."
+                            ),
+                            "type": "api_error",
+                            "code": "strict_schema_violation",
+                            "param": "text.format.strict",
+                        }
+                    },
+                ) from guided_err
         else:
             output = await _wait_with_disconnect(
                 engine.chat(messages=messages, **chat_kwargs),
@@ -380,13 +432,11 @@ async def _non_stream(
         f"({tokens_per_sec:.1f} tok/s)"
     )
 
-    # H-06 belt-and-braces: same post-decode validator the chat route
-    # runs for strict requests. Outlines should make this unreachable;
-    # any non-zero ``rapid_mlx_response_format_strict_violations_total``
-    # rate signals the constrained-decoding path silently degraded
-    # (e.g. the guided-fallback branch above caught a real outlines
-    # failure). We don't fail the request — the tokens were already
-    # produced — the contract violation is alertable via the counter.
+    # H-06 (codex r2): post-decode validation under strict mode is a
+    # HARD contract — a knowingly schema-invalid 200 violates
+    # OpenAI's ``strict=true`` semantics. Counter ticks for ops
+    # visibility, then 502 so the client sees the contract breach
+    # instead of silently consuming garbage.
     if _strict_schema and output is not None:
         ok, err = validate_output_against_schema(output.text or "", _strict_schema)
         if not ok:
@@ -395,6 +445,23 @@ async def _non_stream(
                 "Strict json_schema response failed post-decode validation "
                 "on /v1/responses: %s",
                 err,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": {
+                        "message": (
+                            "strict response_format violated: model output "
+                            f"did not validate against the supplied schema ({err}). "
+                            "This indicates the constrained-decoding path silently "
+                            "degraded; investigate the server logs and the "
+                            "rapid_mlx_response_format_strict_violations_total metric."
+                        ),
+                        "type": "api_error",
+                        "code": "strict_schema_violation",
+                        "param": "text.format",
+                    }
+                },
             )
 
     engine_tool_calls = getattr(output, "tool_calls", None)
@@ -1094,29 +1161,13 @@ async def _stream_responses(
             )
             tool_output_index += 1
 
-        # H-06 belt-and-braces: when the client asked for strict
-        # json_schema mode, run jsonschema.validate on the
-        # accumulated assistant text and tick the violations counter
-        # on any mismatch. The streaming /v1/responses path uses
-        # ``engine.stream_chat`` (constraint enforcement on
-        # streaming responses is suggestion-only here — the
-        # entry-point gate has already 400'd on missing [guided] —
-        # so we treat the post-decode validator as the contract
-        # observability hook. Non-zero rate on
-        # ``rapid_mlx_response_format_strict_violations_total``
-        # signals the constraint silently degraded.
-        _rf_for_strict = getattr(openai_request, "response_format", None)
-        if is_strict_json_schema(_rf_for_strict):
-            _schema = extract_json_schema_for_guided(_rf_for_strict)
-            if _schema:
-                ok, err = validate_output_against_schema(accumulated_text, _schema)
-                if not ok:
-                    incr_strict_violation()
-                    logger.warning(
-                        "Strict json_schema response failed post-decode "
-                        "validation on /v1/responses stream: %s",
-                        err,
-                    )
+        # H-06 (codex r2): the streaming /v1/responses path is
+        # unreachable for strict=true requests — the entry-point
+        # gate above 400s them as ``strict_stream_unsupported``
+        # because constrained decoding here is buffered-only. So no
+        # post-decode validation is needed in the stream loop;
+        # belt-and-braces validation runs in the non-stream path
+        # where the buffered output is available.
 
         # response.completed — terminal event. Codex treats a missing
         # one as a hard failure (it logs "stream closed before

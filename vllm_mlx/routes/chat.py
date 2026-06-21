@@ -1645,16 +1645,23 @@ async def _create_chat_completion_impl(
         f"Chat completion: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
     )
 
-    # H-06 belt-and-braces: when the client asked for strict json_schema
-    # mode and we routed through guided decoding, validate the buffered
-    # text against the schema and bump the violations counter on any
-    # mismatch. Outlines should make this unreachable; a non-zero rate
-    # on ``rapid_mlx_response_format_strict_violations_total`` is the
-    # smoke alarm that the constrained-decoding path silently degraded
-    # (e.g. ``generate_with_schema`` swallowed an outlines API change
-    # and fell back to ``self.chat(...)``). We do NOT fail the request:
-    # the tokens were already produced and surfacing as 500 would lose
-    # them; the contract violation is alertable via the counter.
+    # H-06: when the client asked for strict json_schema mode and we
+    # routed through guided decoding, validate the buffered text
+    # against the schema. Outlines should make this unreachable; a
+    # non-zero ``rapid_mlx_response_format_strict_violations_total``
+    # rate signals that the constrained-decoding path silently
+    # degraded (e.g. ``generate_with_schema`` swallowed an outlines
+    # API change and fell back to ``self.chat(...)``).
+    #
+    # Codex r2 BLOCKING #3: under the strict contract, returning a
+    # known schema-invalid 200 body is itself a contract violation —
+    # the OpenAI ``strict=true`` semantics promise the response
+    # validates. Surface as 502 (upstream/internal contract failed)
+    # so clients using ``chat.completions.parsed`` see the error
+    # instead of silently consuming garbage that ``model_validate``
+    # then rejects with a confusing stack-trace far from the source.
+    # The violations counter still ticks before we raise so the
+    # operator sees both the rate AND the error response.
     if strict_mode and use_guided and json_schema and output is not None:
         ok, err = validate_output_against_schema(output.text or "", json_schema)
         if not ok:
@@ -1662,6 +1669,23 @@ async def _create_chat_completion_impl(
             logger.warning(
                 "Strict json_schema response failed post-decode validation: %s",
                 err,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": {
+                        "message": (
+                            "strict response_format violated: model output "
+                            f"did not validate against the supplied schema ({err}). "
+                            "This indicates the constrained-decoding path silently "
+                            "degraded; investigate the server logs and the "
+                            "rapid_mlx_response_format_strict_violations_total metric."
+                        ),
+                        "type": "api_error",
+                        "code": "strict_schema_violation",
+                        "param": "response_format.json_schema",
+                    }
+                },
             )
 
     # Parse tool calls from output using configured parser.
@@ -2644,21 +2668,23 @@ async def stream_chat_completion_guided(
                 yield chunk
             return
 
-        # Success path: synthesize SSE stream from the buffered output.
-        # First chunk with role.
-        yield f'{_sse_prefix}"role":"assistant"{_sse_suffix}'
-
         content = output.text or ""
-        # Belt-and-braces post-decode validation for strict mode
-        # (H-06). Outlines should make this unreachable — a non-zero
-        # ``rapid_mlx_response_format_strict_violations_total`` rate
-        # is a smoke alarm that the constrained-decoding path
-        # silently degraded. We DO NOT fail the request on a
-        # post-decode violation: that would lose the buffered tokens
-        # and break clients that already commit to the streaming
-        # protocol; the contract violation is surfaced via the
-        # counter + WARNING log so operators can alert on the rate
-        # rather than the per-request failure shape.
+
+        # H-06 (codex r2): validate the buffered guided output BEFORE
+        # emitting any SSE chunks for strict requests. The streaming
+        # path here is a synthesized stream over a buffered output —
+        # ``generate_with_schema`` returns a single GenerationOutput
+        # rather than a token stream — so we still have a window to
+        # convert a strict-contract violation into a clean error
+        # SSE envelope instead of letting the schema-invalid bytes
+        # reach the client.
+        #
+        # Outlines should make this unreachable; the violations
+        # counter ticks regardless so operators see both the rate
+        # AND the error response. We emit a single SSE error chunk
+        # carrying the canonical OpenAI envelope, then DONE — clients
+        # parsing the SSE stream see the error before any role/content
+        # chunks land.
         if strict_mode and json_schema:
             ok, err = validate_output_against_schema(content, json_schema)
             if not ok:
@@ -2668,6 +2694,28 @@ async def stream_chat_completion_guided(
                     "validation (streaming): %s",
                     err,
                 )
+                _err_envelope = {
+                    "error": {
+                        "message": (
+                            "strict response_format violated: model output "
+                            f"did not validate against the supplied schema ({err}). "
+                            "This indicates the constrained-decoding path silently "
+                            "degraded; investigate the server logs and the "
+                            "rapid_mlx_response_format_strict_violations_total metric."
+                        ),
+                        "type": "api_error",
+                        "code": "strict_schema_violation",
+                        "param": "response_format.json_schema",
+                    }
+                }
+                yield f"data: {json.dumps(_err_envelope)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
+        # Success path: synthesize SSE stream from the buffered output.
+        # First chunk with role.
+        yield f'{_sse_prefix}"role":"assistant"{_sse_suffix}'
+
         if content:
             yield f'{_sse_prefix}"content":{json.dumps(content)}{_sse_suffix}'
 

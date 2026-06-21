@@ -443,43 +443,62 @@ def test_strict_false_guided_available_routes_to_guided():
 # ---------------------------------------------------------------------------
 
 
-def test_post_decode_violation_bumps_counter_non_streaming():
-    """If guided decoding silently produces invalid JSON, the violation
-    counter must tick — outlines should make this unreachable, so a
-    non-zero rate is the smoke alarm operators alert on.
+def test_post_decode_violation_returns_502_non_streaming():
+    """Codex r2 BLOCKING #3: under strict mode, a post-decode
+    validation failure MUST surface as 5xx — a 200 with knowingly
+    schema-invalid body violates the OpenAI ``strict=true`` contract.
 
-    Simulated here by handing the mock engine a string that would
-    *normally* fail validation: prose around the JSON body. The
-    response still returns 200 (clients in strict-mode validate
-    themselves) but the counter records the breach.
+    The violations counter still ticks before we raise so operators
+    see both the alertable rate AND the error response.
     """
     engine = _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE)
     client = _make_client(engine)
     resp = client.post("/v1/chat/completions", json=_payload(strict=True))
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 502, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "strict_schema_violation"
+    assert body["error"]["type"] == "api_error"
+    assert "strict response_format violated" in body["error"]["message"]
 
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
     assert snap["strict_violations_total"] == 1
 
 
-def test_post_decode_violation_bumps_counter_streaming():
-    """Streaming path must run the same belt-and-braces check."""
+def test_post_decode_violation_emits_error_sse_envelope_streaming():
+    """Codex r2 BLOCKING #3 streaming variant: SSE clients can't
+    receive a 5xx mid-stream (status was already 200), but the
+    helper must emit a canonical OpenAI error SSE envelope BEFORE
+    any role/content chunks land, then [DONE]. That way clients
+    parsing SSE see the contract breach explicitly instead of
+    silently consuming schema-invalid bytes."""
     engine = _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE)
     client = _make_client(engine)
     resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
+    # SSE response starts before validation; the status itself is 200.
     assert resp.status_code == 200, resp.text
+    body = resp.text
+
+    # The error envelope MUST appear and the role/content chunks
+    # MUST NOT — the helper short-circuits before emitting them.
+    assert "strict_schema_violation" in body
+    assert "strict response_format violated" in body
+    assert '"role":"assistant"' not in body, (
+        "role chunk must NOT precede an error envelope for strict violations"
+    )
+    assert "[DONE]" in body
+
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
     assert snap["strict_violations_total"] == 1
 
 
-def test_post_decode_schema_violation_bumps_counter():
-    """Schema-violation (vs JSON-parse-failure) also bumps the counter."""
+def test_post_decode_schema_violation_returns_502():
+    """Schema-violation (vs JSON-parse-failure) also surfaces as 502."""
     engine = _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_WRONG_KEY)
     client = _make_client(engine)
     resp = client.post("/v1/chat/completions", json=_payload(strict=True))
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 502, resp.text
     snap = response_format_metrics.snapshot()
     assert snap["strict_violations_total"] == 1
 
@@ -639,17 +658,68 @@ def test_responses_strict_true_guided_available_routes_to_constrained():
     assert snap["strict_violations_total"] == 0
 
 
-def test_responses_strict_true_post_decode_violation_bumps_counter():
-    """Codex r1 BLOCKING parity: the /v1/responses non-stream path
-    must run the same post-decode validator the chat route runs.
-    Pre-fix, a strict request on /v1/responses with a buggy guided
-    output silently passed through — no violations counter ticked."""
+def test_responses_strict_true_post_decode_violation_returns_502():
+    """Codex r2 BLOCKING #3 parity: /v1/responses non-stream must
+    surface a 502 (not 200) when the post-decode validation fails.
+
+    Pre-fix the route returned 200 with the schema-invalid body in
+    the response — that violates the OpenAI strict contract on the
+    Responses surface just as it did on /v1/chat/completions.
+    """
     engine = _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE)
     client = _make_responses_client(engine)
     resp = client.post("/v1/responses", json=_responses_payload(strict=True))
-    assert resp.status_code == 200, resp.text
+    assert resp.status_code == 502, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "strict_schema_violation"
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+
+
+def test_responses_strict_true_stream_rejected_with_400():
+    """Codex r2 BLOCKING #2 parity: /v1/responses + strict + stream
+    is rejected with a clear 400 because constrained decoding on
+    the Responses surface is buffered-only — there is no
+    guided-streaming SSE helper for the Responses event shape
+    today. The error message names both escape hatches (drop
+    stream=true, or use /v1/chat/completions)."""
+    engine = _Engine(supports_guided=True, guided_text=_VALID_PAYLOAD)
+    client = _make_responses_client(engine)
+    resp = client.post(
+        "/v1/responses",
+        json=_responses_payload(strict=True, stream=True),
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "strict_stream_unsupported"
+    assert "stream=true" in body["error"]["message"]
+    assert "/v1/chat/completions" in body["error"]["message"]
+    # The counter still ticks — clients asking for strict+stream
+    # are reflected in the strict-traffic series even though we 400.
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+
+
+def test_responses_strict_true_guided_failure_returns_502():
+    """Codex r2 BLOCKING #1 parity: under strict mode the
+    /v1/responses non-stream path MUST NOT fall back to
+    unconstrained ``engine.chat`` on guided failure — it must
+    propagate the failure as 502."""
+
+    class _BrokenEngine(_Engine):
+        async def generate_with_schema(self, *, messages, json_schema, **kwargs):
+            raise RuntimeError("simulated outlines failure")
+
+    engine = _BrokenEngine(supports_guided=True)
+    client = _make_responses_client(engine)
+    resp = client.post("/v1/responses", json=_responses_payload(strict=True))
+    assert resp.status_code == 502, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "strict_schema_violation"
+    # Unconstrained chat path MUST NOT have been called.
+    assert engine.chat_calls == []
+    snap = response_format_metrics.snapshot()
     assert snap["strict_violations_total"] == 1
 
 
