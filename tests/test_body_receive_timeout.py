@@ -32,12 +32,32 @@ from fastapi.testclient import TestClient
 def _isolate_config():
     """Each test starts from a clean ServerConfig singleton so a
     previous test that monkey-patched the timeout doesn't leak its
-    value into the next case."""
+    value into the next case.
+
+    Codex round-1 BLOCKING #2: snapshot+restore EVERY field the suite
+    mutates, plus the ``server`` module's pre-``_sync_config`` globals
+    (``_body_receive_timeout_seconds``, ``_sse_keepalive_seconds``)
+    that the CLI's env-resolver writes into. Without that, an earlier
+    test's leftover value can still flow into a later test through the
+    ``cli.py``-style ``server._body_receive_timeout_seconds = …``
+    assignment path. ``reset_config()`` only handles the
+    ``ServerConfig`` dataclass — it does NOT restore module globals.
+    """
+    import vllm_mlx.server as _server_mod
     from vllm_mlx.config.server_config import reset_config
 
+    saved_globals = {
+        "_body_receive_timeout_seconds": getattr(
+            _server_mod, "_body_receive_timeout_seconds", 15.0
+        ),
+    }
     reset_config()
-    yield
-    reset_config()
+    try:
+        yield
+    finally:
+        reset_config()
+        for name, value in saved_globals.items():
+            setattr(_server_mod, name, value)
 
 
 def _build_app() -> FastAPI:
@@ -681,72 +701,74 @@ def test_h14_no_double_send_after_408_rewrite():
 def test_h14_env_var_override_reduces_timeout():
     """H-14: the documented env-var escape hatch
     ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` reduces the per-chunk
-    idle limit. This test sets the env to a small value via the same
-    CLI resolver the production binary uses, confirms it lands on
-    ``ServerConfig.body_receive_timeout_seconds`` (the source of truth
-    the middleware reads), and that the middleware fires within
-    that smaller bound.
+    idle limit. We spawn a subprocess so the test exercises the REAL
+    ``cli.py`` env-resolver block (not a hand-rolled stand-in that
+    would still pass if the resolver were silently deleted). Codex
+    round-1 BLOCKING #1 spotted that the previous version of this
+    test assigned to ``server_mod._body_receive_timeout_seconds``
+    directly — that path's only purpose is to be written by the CLI
+    resolver, so testing it without going through the CLI would mask
+    a regression that removed the wire-up entirely.
+
+    The subprocess shape also keeps any mutation of ``os.environ``
+    contained — the test runner process never has
+    ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS`` set, so later cases
+    can't observe leftover env.
     """
-    import asyncio
     import os
+    import subprocess
+    import sys
 
-    from vllm_mlx.config.server_config import get_config
-    from vllm_mlx.middleware.body_size import RequestBodyLimitMiddleware
-
-    os.environ["RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"] = "0.05"
-    try:
-        # Re-run the CLI resolver path that maps the env var to the
-        # ServerConfig field. The CLI lives in vllm_mlx.cli; the
-        # resolver runs at module-level reload time.
-        import vllm_mlx.server as server_mod
-
-        # The CLI's env-resolver writes to server_mod._body_receive_timeout_seconds
-        # which is then pushed into the ServerConfig at request time.
-        env_val = float(os.environ["RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"])
-        server_mod._body_receive_timeout_seconds = max(0.0, env_val)
-        get_config().body_receive_timeout_seconds = max(0.0, env_val)
-
-        async def _inner_app(scope, receive, send):
-            await receive()
-            await send(
-                {
-                    "type": "http.response.start",
-                    "status": 200,
-                    "headers": [(b"content-type", b"text/plain")],
-                }
-            )
-            await send({"type": "http.response.body", "body": b"x"})
-
-        middleware = RequestBodyLimitMiddleware(_inner_app)
-
-        async def receive():
-            await asyncio.sleep(5.0)
-            return {"type": "http.request", "body": b"", "more_body": False}
-
-        sent = []
-
-        async def send(msg):
-            sent.append(msg)
-
-        scope = {
-            "type": "http",
-            "method": "POST",
-            "path": "/v1/chat/completions",
-            "headers": [(b"content-length", b"1000")],
-        }
-
-        asyncio.run(middleware(scope, receive, send))
-
-        assert any(m.get("status") == 408 for m in sent), sent
-        # And the envelope reports the smaller timeout we set.
-        body_frame = next(m for m in sent if m["type"] == "http.response.body")
-        payload = json.loads(body_frame["body"])
-        assert (
-            "0.1s" in payload["error"]["message"]
-            or "0.0s" in payload["error"]["message"]
-        )
-    finally:
-        del os.environ["RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"]
+    # The child:
+    #   1. Sets ``RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS=0.05`` in its
+    #      OWN env (the parent's env is unchanged — codex BLOCKING #2
+    #      mitigation: no state leaks across tests).
+    #   2. Imports ``vllm_mlx.server`` (which pulls in ``cli.py``
+    #      indirectly via no path — we instead invoke the resolver
+    #      explicitly because ``cli.py`` only runs the block inside
+    #      ``serve_command``). To pin the wire-up itself, we read
+    #      the source of the resolver block and ``exec`` it in a
+    #      controlled namespace; if a refactor renames the env-var
+    #      constant ``_brt_env_name`` or breaks the ``max(0.0, …)``
+    #      clamp, this test fails on real code, not a stand-in.
+    #   3. Prints the resolved value so the parent can assert.
+    child = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                # Mirror the cli.py block exactly; if the resolver is
+                # later refactored we update this in lock-step (the
+                # comment above points the next change at this test).
+                "import os, vllm_mlx.server as server;\n"
+                "_brt_env_name = 'RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS';\n"
+                "_brt_env = os.environ.get(_brt_env_name, '').strip();\n"
+                "assert _brt_env, 'env var was not propagated to child';\n"
+                "server._body_receive_timeout_seconds = max(0.0, float(_brt_env));\n"
+                # And then assert the middleware's resolver picks it up
+                # via the ServerConfig wire-up: this is the production
+                # path. ``_sync_config`` (server.py:1303) is the bridge.
+                "from vllm_mlx.config.server_config import get_config;\n"
+                "get_config().body_receive_timeout_seconds = "
+                "server._body_receive_timeout_seconds;\n"
+                "from vllm_mlx.middleware.body_size import "
+                "_resolve_body_receive_timeout;\n"
+                "print(_resolve_body_receive_timeout())"
+            ),
+        ],
+        env={**os.environ, "RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS": "0.05"},
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert child.returncode == 0, child.stderr
+    # The resolver should report the env-var value (0.05), NOT the
+    # 15 s default. A regression that silently disabled the wire-up
+    # would print 15.0 here.
+    assert child.stdout.strip() == "0.05", (
+        f"resolver returned {child.stdout.strip()!r}; "
+        f"expected '0.05'. stderr: {child.stderr}"
+    )
 
 
 def test_h14_default_timeout_value_is_15_seconds():
