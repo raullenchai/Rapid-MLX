@@ -13,6 +13,7 @@ The scheduler follows vLLM's design with:
 
 import logging
 import os
+import threading
 import time
 from collections import OrderedDict, deque
 from dataclasses import dataclass, field
@@ -1873,6 +1874,20 @@ class Scheduler:
         # count by up to 3x per disconnect. Lives on the scheduler so
         # the lifetime matches the abort-tracking state next to it.
         self._disconnect_abort_ids: set[str] = set()
+        # M-01 codex r1 BLOCKING #2/#3: serialize the cancellation-
+        # counter mutations against the ``_pending_abort_ids`` /
+        # ``_disconnect_abort_ids`` membership checks. ``set.add`` and
+        # ``x in set`` are individually GIL-atomic, but the check-add-
+        # increment sequence is NOT — two threads calling
+        # ``abort_request(rid)`` concurrently can both observe
+        # ``already_pending=False`` and double-count the same
+        # request. The disconnect_guard fires from up to three branches
+        # per disconnect (potentially on different async tasks) and
+        # the explicit cancel route can race with engine_core's own
+        # cleanup-abort enqueue — both real concurrency surfaces. The
+        # lock cost is negligible (microseconds per abort), well below
+        # the existing per-step Metal latency.
+        self._cancel_counter_lock = threading.Lock()
 
         # Statistics
         self.num_requests_processed = 0
@@ -3105,20 +3120,23 @@ class Scheduler:
             or request_id in self.running
             or request_id in self._pending_abort_ids
         ):
-            # M-01: count only when the id was NOT already pending —
-            # ``abort_request`` is intentionally idempotent (see the
-            # last branch of the predicate above), so concurrent
-            # disconnect-guard + engine_core cleanup paths both
-            # enqueue the same id and both return True. Counting on
-            # the True return without this gate would double-count
-            # every disconnect-triggered abort. ``set.add`` is GIL-
-            # atomic and the ``in`` check just above is consistent
-            # with the immediately-following ``add`` on CPython since
-            # we never yield between them.
-            already_pending = request_id in self._pending_abort_ids
-            self._pending_abort_ids.add(request_id)
-            if not already_pending:
-                self.num_requests_cancelled += 1
+            # M-01 codex r1 BLOCKING #2: the check-add-increment
+            # sequence MUST be atomic against concurrent callers.
+            # ``abort_request`` is intentionally idempotent — the
+            # disconnect_guard fires from multiple branches per
+            # disconnect, and engine_core's cleanup path can race
+            # with the explicit /cancel route. Counting on a True
+            # return without the lock would let two threads both
+            # observe ``already_pending=False`` for the same id and
+            # double-count. The lock spans only the
+            # set-membership + add + counter increment, so the
+            # surrounding ``in`` predicate evaluation (already done
+            # GIL-atomically per-set) remains lock-free.
+            with self._cancel_counter_lock:
+                already_pending = request_id in self._pending_abort_ids
+                self._pending_abort_ids.add(request_id)
+                if not already_pending:
+                    self.num_requests_cancelled += 1
             logger.info(
                 f"[abort_request] {request_id[:12]} enqueued for deferred abort"
             )
@@ -3130,19 +3148,35 @@ class Scheduler:
         """M-01: attribute a previously-accepted abort to client disconnect.
 
         Called by ``_force_abort_request`` (service/helpers.py) AFTER
-        the sync ``abort_request`` returned True, so the total counter
-        was already bumped exactly once on the public entry-point. The
-        ``request_id`` is recorded into the dedicated
-        ``_disconnect_abort_ids`` set so concurrent
-        disconnect-guard + finally belt-and-suspenders paths (both fire
-        the helper) only attribute once per request — matching the
-        once-per-request semantics of the total counter. Safe to call
-        from any thread (set.add is GIL-atomic), never raises.
+        the sync ``abort_request`` returned True (or the async fallback
+        scheduled the abort), so the total counter was already bumped
+        exactly once on the public entry-point. The ``request_id`` is
+        recorded into the dedicated ``_disconnect_abort_ids`` set so
+        concurrent disconnect-guard + finally belt-and-suspenders
+        paths (both fire the helper) only attribute once per request
+        — matching the once-per-request semantics of the total
+        counter.
+
+        Codex r1 BLOCKING #3: the check-add-increment sequence is
+        serialized against the same ``_cancel_counter_lock`` that
+        guards the total counter, because the disconnect_guard fires
+        from up to three branches per disconnect across potentially
+        different async tasks. Without the lock two threads could
+        both observe ``request_id not in _disconnect_abort_ids`` and
+        double-count the sub-counter. The lock cost is microseconds
+        per call, negligible against the existing disconnect-path
+        latency.
+
+        Safe to call from any thread, never raises. Empty / None ids
+        are no-ops.
         """
         try:
-            if request_id and request_id not in self._disconnect_abort_ids:
-                self._disconnect_abort_ids.add(request_id)
-                self.num_requests_cancelled_via_disconnect += 1
+            if not request_id:
+                return
+            with self._cancel_counter_lock:
+                if request_id not in self._disconnect_abort_ids:
+                    self._disconnect_abort_ids.add(request_id)
+                    self.num_requests_cancelled_via_disconnect += 1
         except Exception:  # pragma: no cover - belt-and-suspenders
             # Observability must never break a live disconnect path —
             # a counter that fails to advance is preferable to one

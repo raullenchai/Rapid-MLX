@@ -2165,7 +2165,38 @@ def _force_abort_request(engine, request_id_holder) -> bool:
         if public_abort is not None:
             result = public_abort(request_id)
             if asyncio.iscoroutine(result):
-                asyncio.ensure_future(result)
+                # M-01 codex r1 BLOCKING #1: attribution MUST chain on
+                # the abort result, not fire-and-forget. Pre-fix this
+                # path called ``_record_disconnect_abort_on_scheduler``
+                # IMMEDIATELY after scheduling the coroutine, so a
+                # stale / unknown ``request_id`` (which makes
+                # ``Scheduler.abort_request`` return False and skip
+                # the total counter) would still tick the sub-counter
+                # — corrupting the (total - via_disconnect) gap
+                # operators rely on for cause attribution. The fix:
+                # wrap the coroutine in an awaiter that records ONLY
+                # after the awaited abort returns truthy. The
+                # ``ensure_future`` still keeps the disconnect path
+                # synchronous (we don't await it here), but the
+                # eventual coroutine resolution is now the gate for
+                # the sub-counter.
+                attribution_engine = engine
+
+                async def _await_and_record(coro=result, rid=request_id):
+                    try:
+                        accepted = await coro
+                    except Exception:  # pragma: no cover - belt-and-suspenders
+                        logger.warning(
+                            "[disconnect_guard] async force-abort raised; "
+                            "via_disconnect sub-counter NOT advanced for "
+                            f"{str(rid)[:12]}",
+                            exc_info=True,
+                        )
+                        return
+                    if accepted:
+                        _record_disconnect_abort_on_scheduler(attribution_engine, rid)
+
+                asyncio.ensure_future(_await_and_record())
                 logger.warning(
                     f"[disconnect_guard] force-abort fell back to async "
                     f"engine.abort_request({str(request_id)[:12]}); the "
@@ -2173,24 +2204,6 @@ def _force_abort_request(engine, request_id_holder) -> bool:
                     f"time disconnect handling returns. The "
                     f"generator-close cascade is the remaining defense."
                 )
-                # M-01 attribution must fire on the async-fallback path
-                # too: ``BatchedEngine`` over ``AsyncEngineCore`` wraps
-                # the sync ``Scheduler.abort_request`` behind an async
-                # ``engine.abort_request`` shim, so the sync resolver
-                # returns ``None`` and we land here on the production
-                # default text path. The scheduler's
-                # ``_disconnect_abort_ids`` de-dup still pins the once-
-                # per-request semantics — calling
-                # ``record_disconnect_abort`` here is symmetric with the
-                # sync branch above. ``False`` is still returned because
-                # the abort itself isn't guaranteed in flight; the
-                # attribution counter ticks regardless because the
-                # eventual sync abort WILL reach the total counter via
-                # ``Scheduler.abort_request`` and we'd otherwise leave
-                # the via_disconnect sub-counter stuck at zero on every
-                # real-world disconnect (the bug Mei + Yana surfaced
-                # would only be HALF fixed).
-                _record_disconnect_abort_on_scheduler(engine, request_id)
                 # ``False`` so the contract reflects async-fallback;
                 # callers / tests treat that as "I tried, cascade is
                 # the remaining defense".

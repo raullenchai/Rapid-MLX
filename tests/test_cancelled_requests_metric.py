@@ -385,6 +385,188 @@ def test_force_abort_does_not_crash_when_record_method_absent():
 
 
 @pytest.mark.asyncio
+async def test_force_abort_async_fallback_does_not_attribute_on_false_result():
+    """Codex r1 BLOCKING #1: async-fallback path must await the abort
+    coroutine and skip the sub-counter when the eventual result is
+    False (unknown id rejected by the scheduler).
+
+    Pre-fix the helper called ``_record_disconnect_abort_on_scheduler``
+    immediately after ``asyncio.ensure_future(coro)`` without ever
+    inspecting ``coro``'s eventual result, so a stale holder with
+    a request_id that's already finished would leave the total
+    counter unchanged (correct — scheduler returned False) but tick
+    the via_disconnect sub-counter (wrong — would inflate the gap
+    operators rely on). The fix chains attribution on the awaited
+    coroutine result.
+    """
+    from vllm_mlx.service.helpers import _force_abort_request
+
+    records: list[str] = []
+
+    class _SyncScheduler:
+        def record_disconnect_abort(self, rid: str) -> None:
+            records.append(rid)
+
+    class _EngineCoreLike:
+        def __init__(self):
+            self.scheduler = _SyncScheduler()
+
+    class _AsyncEngineCoreLike:
+        def __init__(self):
+            self.engine = _EngineCoreLike()
+
+        async def abort_request(self, rid: str) -> bool:
+            # Scheduler-side rejection: the public abort returned
+            # False (unknown id / already finished). The sub-counter
+            # MUST NOT advance.
+            return False
+
+    class _BatchedEngineLike:
+        def __init__(self):
+            self._engine = _AsyncEngineCoreLike()
+            self._is_mllm = False
+
+        async def abort_request(self, rid: str) -> bool:
+            return await self._engine.abort_request(rid)
+
+    engine = _BatchedEngineLike()
+    holder = ["req-stale"]
+
+    fired = _force_abort_request(engine, holder)
+    # Let the chained awaiter run to completion.
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+    # The helper returned False (async fallback path) AND no
+    # attribution landed because the coroutine returned False.
+    assert fired is False
+    assert records == []
+
+
+@pytest.mark.asyncio
+async def test_force_abort_async_fallback_attributes_on_true_result():
+    """Symmetric to the False case: async-fallback attribution DOES
+    fire when the awaited coroutine returns True.
+
+    This is the production text-path happy case (BatchedEngine over
+    AsyncEngineCore) — the abort is accepted by the underlying
+    scheduler, the total counter ticks, and the sub-counter
+    attributes the cause.
+    """
+    from vllm_mlx.service.helpers import _force_abort_request
+
+    records: list[str] = []
+
+    class _SyncScheduler:
+        def record_disconnect_abort(self, rid: str) -> None:
+            records.append(rid)
+
+    class _EngineCoreLike:
+        def __init__(self):
+            self.scheduler = _SyncScheduler()
+
+    class _AsyncEngineCoreLike:
+        def __init__(self):
+            self.engine = _EngineCoreLike()
+
+        async def abort_request(self, rid: str) -> bool:
+            return True  # scheduler accepted
+
+    class _BatchedEngineLike:
+        def __init__(self):
+            self._engine = _AsyncEngineCoreLike()
+            self._is_mllm = False
+
+        async def abort_request(self, rid: str) -> bool:
+            return await self._engine.abort_request(rid)
+
+    engine = _BatchedEngineLike()
+    holder = ["req-accepted"]
+
+    fired = _force_abort_request(engine, holder)
+    for _ in range(4):
+        await asyncio.sleep(0)
+
+    assert fired is False  # async-fallback returns False per contract
+    assert records == ["req-accepted"]
+
+
+def test_total_counter_atomic_against_concurrent_aborts():
+    """Codex r1 BLOCKING #2: concurrent ``abort_request`` calls for
+    the same id must not double-count.
+
+    Pre-fix the check-add-increment was not atomic: two threads
+    could both observe ``request_id not in _pending_abort_ids`` and
+    both bump the counter. With the lock the second thread sees the
+    first thread's add and skips the increment.
+
+    Uses a ``threading.Barrier`` to force all N threads into a hot
+    race rather than relying on luck — pre-fix this test would
+    catch the double-count in a small number of runs; with the lock
+    it's deterministic.
+    """
+    import threading as _threading
+
+    scheduler = _make_scheduler()
+    _admit(scheduler, "req-race")
+
+    n_threads = 32
+    barrier = _threading.Barrier(n_threads)
+    results: list[bool] = []
+    results_lock = _threading.Lock()
+
+    def race():
+        barrier.wait()
+        accepted = scheduler.abort_request("req-race")
+        with results_lock:
+            results.append(accepted)
+
+    threads = [_threading.Thread(target=race) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    # All N threads return True (idempotent), but the counter must
+    # be exactly 1.
+    assert all(results)
+    assert scheduler.get_stats()["num_requests_cancelled"] == 1
+
+
+def test_disconnect_subcounter_atomic_against_concurrent_records():
+    """Codex r1 BLOCKING #3: concurrent ``record_disconnect_abort``
+    calls for the same id must not double-count.
+
+    Pinning the helper-layer fire pattern: the disconnect_guard
+    invokes ``_force_abort_request`` from up to three branches
+    (disconnect / GeneratorExit / finally) which can be running on
+    different async tasks, each one potentially in a different
+    executor thread. Without the lock the set-membership / add /
+    increment sequence races and the sub-counter inflates.
+    """
+    import threading as _threading
+
+    scheduler = _make_scheduler()
+    _admit(scheduler, "req-race-disc")
+    scheduler.abort_request("req-race-disc")  # total = 1
+
+    n_threads = 32
+    barrier = _threading.Barrier(n_threads)
+
+    def race():
+        barrier.wait()
+        scheduler.record_disconnect_abort("req-race-disc")
+
+    threads = [_threading.Thread(target=race) for _ in range(n_threads)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 1
+
+
+@pytest.mark.asyncio
 async def test_force_abort_attribution_walks_production_batched_engine_shape():
     """Production ``BatchedEngine`` over ``AsyncEngineCore`` hides the
     scheduler at ``engine._engine.engine.scheduler`` (one hop deeper

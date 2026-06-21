@@ -20,6 +20,7 @@ Architecture:
 
 import asyncio
 import logging
+import threading
 import time
 import uuid
 from collections import deque
@@ -253,6 +254,14 @@ class MLLMScheduler:
         # needs its own de-dup set instead of leaning on
         # ``_pending_abort_ids`` which drains every step.
         self._disconnect_abort_ids: set[str] = set()
+        # M-01 codex r1 BLOCKING #4/#5: same atomicity rationale as
+        # ``Scheduler._cancel_counter_lock`` — the check-add-increment
+        # for both the total and via_disconnect counters must be
+        # serialized across threads. MLLM-active engines reach this
+        # path from the same disconnect_guard multi-branch fire AND
+        # the explicit cancel route, so the concurrency surface is
+        # identical.
+        self._cancel_counter_lock = threading.Lock()
         # Aborted request IDs that need queue signaling (executor → event loop).
         self._aborted_queue_ids: set[str] = set()
 
@@ -443,15 +452,18 @@ class MLLMScheduler:
             or request_id in self.running
             or request_id in self._pending_abort_ids
         ):
-            # M-01: count only when the id was NOT already pending —
-            # see ``Scheduler.abort_request`` for the de-dup rationale.
-            # Concurrent disconnect_guard + engine_core cleanup paths
-            # both enqueue the same id; without the gate the counter
-            # would double-count every disconnect-triggered abort.
-            already_pending = request_id in self._pending_abort_ids
-            self._pending_abort_ids.add(request_id)
-            if not already_pending:
-                self.num_requests_cancelled += 1
+            # M-01 codex r1 BLOCKING #4: serialize the
+            # check-add-increment under ``_cancel_counter_lock`` so
+            # concurrent abort callers (disconnect_guard's three
+            # branches + explicit /cancel + engine_core cleanup) can't
+            # both observe ``already_pending=False`` and double-count
+            # the same id. See ``Scheduler.abort_request`` for the
+            # full thread-safety rationale.
+            with self._cancel_counter_lock:
+                already_pending = request_id in self._pending_abort_ids
+                self._pending_abort_ids.add(request_id)
+                if not already_pending:
+                    self.num_requests_cancelled += 1
             logger.debug(f"Enqueued abort for request {request_id}")
             return True
         logger.debug("Rejected abort for unknown MLLM request_id")
@@ -463,12 +475,16 @@ class MLLMScheduler:
         Mirrors ``Scheduler.record_disconnect_abort`` so MLLM-active
         engines surface the same ``via_disconnect`` sub-counter on
         /metrics. See that method's docstring for the once-per-request
-        semantics and thread-safety contract.
+        semantics, lock-based atomicity contract (codex r1 BLOCKING
+        #5), and thread-safety guarantees.
         """
         try:
-            if request_id and request_id not in self._disconnect_abort_ids:
-                self._disconnect_abort_ids.add(request_id)
-                self.num_requests_cancelled_via_disconnect += 1
+            if not request_id:
+                return
+            with self._cancel_counter_lock:
+                if request_id not in self._disconnect_abort_ids:
+                    self._disconnect_abort_ids.add(request_id)
+                    self.num_requests_cancelled_via_disconnect += 1
         except Exception:  # pragma: no cover - belt-and-suspenders
             pass
 
