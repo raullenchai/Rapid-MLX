@@ -73,7 +73,6 @@ from ..service.helpers import (
     enable_thinking_warning_header,
     enforce_context_length_for_messages,
     get_engine,
-    get_usage,
 )
 
 logger = logging.getLogger(__name__)
@@ -2053,16 +2052,17 @@ async def stream_chat_completion(
                                 finish_reason=event.finish_reason,
                             )
                         ],
-                        # Usage placement: when ``stream_options.include_usage``
-                        # is True, usage MUST appear ONLY in the dedicated
-                        # trailing chunk per the OpenAI streaming spec.
-                        # Without ``include_usage``, legacy clients expect it
-                        # on the finish chunk.
-                        usage=(
-                            None
-                            if include_usage
-                            else (get_usage(output) if output.finished else None)
-                        ),
+                        # Usage placement (OpenAI streaming spec, D-SSE-USAGE):
+                        # ``usage`` MUST appear ONLY when the caller opted
+                        # in via ``stream_options.include_usage=true``,
+                        # and then ONLY in the dedicated trailing chunk
+                        # (this finish chunk carries ``null`` so it
+                        # serializes as ``"usage": null`` per spec). When
+                        # ``include_usage`` is false / unset, the field
+                        # is omitted from every chunk — LangChain /
+                        # AI-SDK / vercel-ai-stream parsers double-count
+                        # token totals when usage shows up unexpectedly.
+                        usage=None,
                     )
                     _tc_sse = f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
                     logger.info(f"[SSE-TC] {_tc_sse.strip()[:300]}")
@@ -2275,12 +2275,11 @@ async def stream_chat_completion(
                         logprobs=_build_chunk_logprobs(finish_output),
                     )
                 ],
-                # See "Usage placement" note on the tool_call branch.
-                usage=(
-                    None
-                    if include_usage
-                    else (get_usage(finish_output) if finish_output.finished else None)
-                ),
+                # See "Usage placement" note on the tool_call branch
+                # (D-SSE-USAGE). When ``include_usage`` is false / unset
+                # the field is omitted from this terminal chunk; the
+                # dedicated trailing usage chunk is suppressed too.
+                usage=None,
             )
             yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
         elif fallback_tool_calls or finalize_content:
@@ -2504,31 +2503,20 @@ async def stream_chat_completion_guided(
         # engine emits (DeepSeek pr_validate round 3 finding).
         finish_reason = getattr(output, "finish_reason", None)
 
-        # Final chunk with finish_reason. Usage placement:
+        # Final chunk with finish_reason. Usage placement
+        # (OpenAI streaming spec, D-SSE-USAGE):
         #  - When ``stream_options.include_usage`` is True, usage MUST
-        #    appear ONLY in the dedicated usage chunk below (per the
-        #    OpenAI spec; emitting it in both places would have clients
-        #    that aggregate usage double-count). DeepSeek review caught
-        #    the duplication on first pass.
-        #  - When False, attach usage to the finish chunk so a client
-        #    that doesn't set ``include_usage`` still receives token
-        #    counts in the final delta (matches the legacy behavior of
-        #    ``stream_chat_completion`` and the non-streaming response
-        #    shape).
-        finish_usage = (
-            None
-            if include_usage
-            else Usage(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=prompt_tokens + completion_tokens,
-                prompt_tokens_details=(
-                    PromptTokensDetails(cached_tokens=cached_tokens)
-                    if cached_tokens
-                    else None
-                ),
-            )
-        )
+        #    appear ONLY in the dedicated usage chunk below (this finish
+        #    chunk carries ``null`` so it serializes consistently per
+        #    spec; emitting it in both places had clients that
+        #    aggregate usage double-count).
+        #  - When False / unset, the field is omitted from EVERY chunk.
+        #    The legacy behavior of attaching usage to the finish chunk
+        #    when ``include_usage`` was unset was the D-SSE-USAGE bug:
+        #    LangChain / AI-SDK / vercel-ai-stream parsers double-count
+        #    token totals when usage appears on chunks the spec does
+        #    not allow. Clients that want usage MUST opt in.
+        finish_usage = None
         # ``created`` must be passed explicitly: the SSE prefix-style
         # chunks above already share ``_sse_created`` (computed once at
         # the top of the helper). ``ChatCompletionChunk.created`` has

@@ -1581,6 +1581,14 @@ class CompletionRequest(BaseModel):
     top_p: float | None = Field(default=None, gt=0.0, le=1.0)
     max_tokens: int | None = None
     stream: bool = False
+    # OpenAI streaming-spec parity (D-SSE-USAGE): legacy ``/v1/completions``
+    # also accepts ``stream_options.include_usage`` to opt in to a
+    # dedicated trailing usage chunk on SSE responses. Pre-fix this
+    # field was silently dropped, so the only behavior was the
+    # non-compliant "usage attached to finish chunk" that breaks
+    # LangChain / AI-SDK accumulators (same root cause as the
+    # chat-route bug). Default ``None`` ⇒ no usage on the wire.
+    stream_options: StreamOptions | None = None
     stop: list[str] | None = None
     # Extended OpenAI-compatible sampling parameters — see #355 + the
     # matching block on ChatCompletionRequest for wiring + caveats.

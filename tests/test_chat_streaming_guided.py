@@ -232,9 +232,10 @@ def test_streaming_guided_no_duplicate_usage_when_include_usage_true():
     double-count tokens. DeepSeek review caught this on first pass; a
     later refactor that re-introduces the duplication trips this gate.
 
-    When ``include_usage`` is False (default), usage stays on the finish
-    chunk so basic clients still receive token counts. The two pin
-    assertions below lock both branches.
+    When ``include_usage`` is False / unset (D-SSE-USAGE, v0.8.2),
+    usage MUST be absent from EVERY chunk including the finish chunk —
+    per the OpenAI streaming spec. The two pin assertions below lock
+    both branches.
     """
     engine = _GuidedEngine(guided_text=_GUIDED_OUTPUT)
     client = _make_client(engine)
@@ -282,9 +283,11 @@ def test_streaming_guided_no_duplicate_usage_when_include_usage_true():
         f"all SSE chunks must share one created timestamp; saw {created_values}"
     )
 
-    # include_usage default-False branch: usage stays on the finish chunk
-    # (legacy behavior — bare clients that don't set the flag still get
-    # token counts in the final delta).
+    # include_usage default-False branch (D-SSE-USAGE, v0.8.2):
+    # ``usage`` MUST be absent from EVERY chunk including the finish
+    # chunk. Pre-fix the finish chunk carried a populated usage block
+    # under the "legacy bare-client accommodation" — LangChain /
+    # AI-SDK / vercel-ai-stream parsers double-counted as a result.
     engine2 = _GuidedEngine(guided_text=_GUIDED_OUTPUT)
     client2 = _make_client(engine2)
     resp2 = client2.post(
@@ -307,12 +310,17 @@ def test_streaming_guided_no_duplicate_usage_when_include_usage_true():
     ]
     usage_only_events2 = [e for e in events2 if not e.get("choices") and e.get("usage")]
     assert len(finish_events2) == 1
-    assert finish_events2[0].get("usage") is not None, (
-        "finish chunk MUST carry usage when include_usage is unset — "
-        "matches the legacy stream_chat_completion behavior"
+    assert finish_events2[0].get("usage") is None, (
+        "finish chunk MUST NOT carry usage when include_usage is unset — "
+        "OpenAI streaming spec requires opt-in via stream_options"
     )
     assert usage_only_events2 == [], (
         "no dedicated usage chunk when include_usage is unset"
+    )
+    any_usage2 = [e for e in events2 if e.get("usage")]
+    assert any_usage2 == [], (
+        f"no SSE chunk may carry a usage block when include_usage is "
+        f"unset; got {len(any_usage2)} chunk(s) with usage"
     )
 
 

@@ -513,6 +513,14 @@ async def stream_completion(
     effective_top_k = max(1, top_k_logprobs)  # see non-stream branch
     text_offset_cursor = 0  # echo+logprobs is rejected upstream
 
+    # D-SSE-USAGE: capture the engine-reported usage from the final
+    # ``GenerationOutput`` so the dedicated trailing usage chunk (only
+    # emitted when ``stream_options.include_usage=true``) can read it
+    # AFTER the per-token loop has finished. Pre-fix this code attached
+    # usage to the finish chunk unconditionally — see comment further
+    # down at the chunk-build site.
+    _final_usage = None
+
     async for output in engine.stream_generate(
         prompt=prompt,
         max_tokens=_resolve_max_tokens(request.max_tokens),
@@ -573,8 +581,36 @@ async def stream_completion(
             "model": model_name,
             "choices": [choice],
         }
+        # D-SSE-USAGE: capture usage from the engine but DO NOT attach
+        # it to this finish chunk — the OpenAI streaming spec says
+        # ``usage`` is opt-in via ``stream_options.include_usage=true``
+        # and, when opted in, MUST appear ONLY on a dedicated trailing
+        # chunk with empty ``choices``. Pre-fix this branch ALWAYS
+        # attached usage to the finish chunk, double-counting on
+        # aggregating clients (LangChain / AI-SDK / vercel-ai-stream).
         if output.finished:
-            data["usage"] = get_usage(output).model_dump(exclude_none=True)
+            _final_usage = get_usage(output)
         yield f"data: {json.dumps(data)}\n\n"
+
+    # Dedicated trailing usage chunk (OpenAI spec — empty ``choices``,
+    # populated ``usage``). Only emitted when the caller opted in via
+    # ``stream_options.include_usage=true``; otherwise the field is
+    # omitted from the wire entirely. Mirrors the trailing usage chunk
+    # on ``/v1/chat/completions`` so SDK shape is identical across
+    # both endpoints.
+    if (
+        _final_usage is not None
+        and request.stream_options is not None
+        and request.stream_options.include_usage
+    ):
+        usage_data = {
+            "id": completion_id,
+            "object": "text_completion",
+            "created": created_ts,
+            "model": model_name,
+            "choices": [],
+            "usage": _final_usage.model_dump(exclude_none=True),
+        }
+        yield f"data: {json.dumps(usage_data)}\n\n"
 
     yield "data: [DONE]\n\n"
