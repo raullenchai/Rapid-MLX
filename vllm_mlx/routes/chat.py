@@ -295,46 +295,56 @@ def _recover_partial_tool_args(raw_text: str | None) -> str | None:
         return None
     text = raw_text
     n = len(text)
-    # codex r1 NIT: iterate over EVERY ``"arguments"`` occurrence so
-    # a leading example/prose mention (e.g. ``"the JSON shape is
-    # \"arguments\": {...}"``) doesn't block recovery of the real
-    # body that follows. We accept the first balanced JSON object;
-    # if a doc-string-shaped occurrence yields a parseable object
-    # too we'll still return that — but in practice the tool wire
-    # is always at the END of the response, so the last matching
-    # occurrence is what we want. Walk left-to-right but DON'T
-    # bail on the first non-match.
-    search_start = 0
-    while search_start < n:
-        args_marker_idx = text.find('"arguments"', search_start)
-        if args_marker_idx == -1:
-            return None
-        # Find the colon that follows ``"arguments"`` (may have
-        # whitespace before/after). Scan forward up to a small
-        # bound — beyond that the marker is just prose, not a
-        # structural field.
-        colon_idx = text.find(":", args_marker_idx, args_marker_idx + 20)
-        if colon_idx == -1:
-            # Advance past this occurrence and keep searching.
-            search_start = args_marker_idx + len('"arguments"')
-            continue
-        # Skip whitespace after the colon, looking for the object opener.
-        pos = colon_idx + 1
-        while pos < n and text[pos] in " \t\n\r":
-            pos += 1
-        if pos >= n or text[pos] != "{":
-            search_start = args_marker_idx + len('"arguments"')
-            continue
-        # Balanced-brace scan: walk until depth returns to 0, respecting
-        # JSON string boundaries (so a ``"}"`` literal inside an arg value
-        # doesn't close the object early). Cap at 8 KiB so a malformed
-        # giant payload doesn't burn CPU.
+
+    # Wire markers that signal a real tool-call body. When at least
+    # one occurrence of ``"arguments":`` sits INSIDE such a span,
+    # restrict the search to those — the prose example before the
+    # wire span (e.g. a docstring quoting the JSON shape) is then
+    # ignored entirely. When NONE of the occurrences are inside a
+    # wire span, fall back to scanning the full text (handles the
+    # bare-JSON case where the model emitted a raw call with no
+    # wrapper).
+    #
+    # codex r2 BLOCKING: previously this returned the FIRST
+    # parseable ``"arguments": {...}``; a docstring-style leading
+    # example (``the JSON shape is "arguments": {"a": 0}``) would
+    # then beat the actual malformed call further down the response
+    # and we'd ship the example's arguments to the client. The fix
+    # uses two heuristics in order:
+    #
+    #   1. PREFER any candidate INSIDE a tool-call wire span
+    #      (``<tool_call>...``, ``<function=...>``, DeepSeek envelope
+    #      markers, ``[TOOL_CALLS]``, ``<|python_tag|>``). Among
+    #      those, pick the LAST parseable one (most-recent intent).
+    #   2. If no candidates land inside a wire span, accept the LAST
+    #      parseable candidate anywhere in the text — still
+    #      preferring "later" because the tool wire is conventionally
+    #      at the end of a response.
+    _WIRE_SPAN_OPENERS = (
+        "<tool_call>",
+        "<function=",
+        "<function>",
+        "<｜tool▁calls▁begin｜>",
+        "<｜tool▁call▁begin｜>",
+        "[TOOL_CALLS]",
+        "<|python_tag|>",
+        "<|tool_calls_section_begin|>",
+        "<minimax:tool_call>",
+        "<invoke",
+        "<arg_key>",
+    )
+
+    def _scan_balanced_object_at(start_brace: int) -> tuple[int, str] | None:
+        """Return ``(end_offset, raw_object_text)`` if the substring
+        starting at ``start_brace`` is a balanced JSON object,
+        ``None`` otherwise. Cap 8 KiB to avoid burning CPU on a
+        malformed giant payload.
+        """
         depth = 0
         in_string = False
         escape = False
-        obj_start = pos
-        obj_end = -1
-        scan_end = min(n, obj_start + 8192)
+        pos = start_brace
+        scan_end = min(n, start_brace + 8192)
         while pos < scan_end:
             ch = text[pos]
             if escape:
@@ -352,14 +362,50 @@ def _recover_partial_tool_args(raw_text: str | None) -> str | None:
                 elif ch == "}":
                     depth -= 1
                     if depth == 0:
-                        obj_end = pos + 1
-                        break
+                        return (pos + 1, text[start_brace : pos + 1])
             pos += 1
-        if obj_end == -1:
-            # Unbalanced from this marker — try the next one.
+        return None
+
+    def _position_in_wire_span(idx: int) -> bool:
+        """Is ``idx`` inside (or immediately after) a known tool-wire
+        opener? We don't require a balanced closer — the qwen3 leak
+        shape often has no clean closer."""
+        # Look backward up to 256 bytes for any wire opener whose
+        # span could plausibly include ``idx``. The bound keeps the
+        # check O(1).
+        window_start = max(0, idx - 256)
+        window = text[window_start:idx]
+        return any(opener in window for opener in _WIRE_SPAN_OPENERS)
+
+    # Collect every parseable candidate, tagged with whether it sits
+    # inside a wire span.
+    candidates_in_wire: list[str] = []
+    candidates_outside_wire: list[str] = []
+    search_start = 0
+    while search_start < n:
+        args_marker_idx = text.find('"arguments"', search_start)
+        if args_marker_idx == -1:
+            break
+        # Find the colon that follows ``"arguments"`` (may have
+        # whitespace before/after). Scan forward up to a small
+        # bound — beyond that the marker is just prose, not a
+        # structural field.
+        colon_idx = text.find(":", args_marker_idx, args_marker_idx + 20)
+        if colon_idx == -1:
             search_start = args_marker_idx + len('"arguments"')
             continue
-        candidate = text[obj_start:obj_end]
+        # Skip whitespace after the colon, looking for the object opener.
+        pos = colon_idx + 1
+        while pos < n and text[pos] in " \t\n\r":
+            pos += 1
+        if pos >= n or text[pos] != "{":
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        scan = _scan_balanced_object_at(pos)
+        if scan is None:
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        obj_end, candidate = scan
         try:
             parsed = json.loads(candidate)
         except (json.JSONDecodeError, ValueError):
@@ -368,10 +414,23 @@ def _recover_partial_tool_args(raw_text: str | None) -> str | None:
         if not isinstance(parsed, dict):
             search_start = args_marker_idx + len('"arguments"')
             continue
-        # Canonicalise — strip any incidental whitespace / trailing junk
-        # so downstream ``_validate_tool_call_params`` sees a clean JSON
-        # object byte-for-byte.
-        return json.dumps(parsed, ensure_ascii=False)
+        canonical = json.dumps(parsed, ensure_ascii=False)
+        if _position_in_wire_span(args_marker_idx):
+            candidates_in_wire.append(canonical)
+        else:
+            candidates_outside_wire.append(canonical)
+        search_start = obj_end
+
+    # Prefer candidates INSIDE a wire span (the real tool call); fall
+    # back to outside-wire candidates only when no wire-span match
+    # existed. Within each pool, pick the LAST (rightmost) candidate
+    # — the tool wire is conventionally at the end of the response,
+    # so "last" is "most recent" and most likely to be the actual
+    # call rather than a leading example.
+    if candidates_in_wire:
+        return candidates_in_wire[-1]
+    if candidates_outside_wire:
+        return candidates_outside_wire[-1]
     return None
 
 

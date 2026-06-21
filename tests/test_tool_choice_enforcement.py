@@ -298,12 +298,19 @@ def test_t2_chat_route_wires_deepseek_v31_prefix_to_engine():
             "max_tokens": 32,
         },
     )
-    # The mock engine returns text="ok" so the route's post-parse path
-    # will then synthesise a call (no real model in the loop). Either
-    # the prefix wire-up worked (we'll see the prefix in kwargs) or
-    # the suffix fell through to the synthesis path; the structural
-    # invariant is the prefix is shipped to the engine.
-    assert resp.status_code in (200, 422), resp.text
+    # codex r2 NIT: assert the exact expected status BEFORE inspecting
+    # engine kwargs — a loose ``in (200, 422)`` would let a response-
+    # path regression slip through silently. The mock engine returns
+    # ``text="ok"`` with ``finish_reason="stop"``, so the route's
+    # post-parse path synthesises a tool call (single-tool
+    # ``required``) and ships 200.
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    assert body["choices"][0]["message"].get("tool_calls"), (
+        f"tool_choice=required must yield tool_calls in the response; got {body!r}"
+    )
+    # Separately assert that the prefix WAS injected into engine kwargs
+    # — this is the T2 invariant the test pins.
     assert engine.last_chat_kwargs is not None
     prefix_kw = engine.last_chat_kwargs.get("forced_assistant_prefix")
     assert prefix_kw is not None, (
@@ -724,3 +731,82 @@ def test_codex_nit_recover_partial_args_skips_unbalanced_then_finds_balanced():
 
     parsed = _json.loads(got)
     assert parsed == {"x": 1}
+
+
+def test_codex_r2_blocking_prefers_in_wire_span_over_prose_example():
+    """Codex r2 BLOCKING — when a docstring-style prose example
+    appears BEFORE the actual tool wire, recovery must pick the
+    wire-span occurrence, NOT the prose example. The previous
+    "first-parseable" strategy would have shipped the example's
+    arguments as the synthesised call's args."""
+    raw = (
+        # Prose example with valid JSON — this is what the previous
+        # first-parseable strategy would have grabbed.
+        'The tool schema requires "arguments": {"a": 0, "b": 0} '
+        "shape (this is just an example).\n"
+        # The actual call inside the wire span — this is what we want.
+        '<tool_call>\n{"name":"add_numbers","arguments":{"a":42,"b":99}}\n'
+        "</tool_call>"
+    )
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    parsed = _json.loads(got)
+    assert parsed == {"a": 42, "b": 99}, (
+        f"recovery picked the wrong occurrence (prose example over wire span); "
+        f"got {parsed!r}"
+    )
+
+
+def test_codex_r2_blocking_falls_back_to_last_when_no_wire_span():
+    """When NO ``"arguments":`` occurrence sits inside a wire-span
+    opener, recovery falls back to the last (rightmost) parseable
+    occurrence. Pins the bare-JSON tool emission case where the
+    model didn't wrap the call at all."""
+    raw = (
+        # No wire markers — bare JSON only. The last balanced object
+        # should win.
+        'first: "arguments": {"a": 1}\nsecond: "arguments": {"a": 2}'
+    )
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    parsed = _json.loads(got)
+    assert parsed == {"a": 2}
+
+
+def test_codex_r2_blocking_prefers_last_within_wire_span():
+    """When MULTIPLE candidates sit inside wire spans, the LAST one
+    wins (most-recent intent — the tool wire is conventionally at
+    the end of the response)."""
+    raw = (
+        '<tool_call>{"name":"x","arguments":{"v":1}}</tool_call>'
+        "\nThe model continued and emitted a second corrected call:\n"
+        '<tool_call>{"name":"x","arguments":{"v":2}}</tool_call>'
+    )
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    parsed = _json.loads(got)
+    assert parsed == {"v": 2}
+
+
+def test_codex_r2_blocking_deepseek_envelope_counts_as_wire_span():
+    """DeepSeek's V3.1 envelope markers also qualify as wire spans —
+    a prose mention before the envelope must not beat the real call
+    inside."""
+    raw = (
+        'Documentation note: "arguments" usually look like {"city": "X"}.\n'
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_weather"
+        '<｜tool▁sep｜>{"arguments":{"city":"Tokyo","units":"c"}}'
+        "<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+    )
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    parsed = _json.loads(got)
+    assert parsed == {"city": "Tokyo", "units": "c"}
