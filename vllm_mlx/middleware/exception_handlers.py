@@ -346,8 +346,9 @@ def install_exception_handlers(app: FastAPI) -> None:
         # logged, mirroring the H-17 round-3 sanitization rule.
         logger.warning(
             "RecursionError on %s %s — caught at framework boundary, "
-            "returning sanitized 400. Add a structural fix (iterative "
-            "walk / depth guard) for the new recursion site.",
+            "returning sanitized 500 (Internal server error). Add a "
+            "structural fix (iterative walk / depth guard) for the new "
+            "recursion site.",
             request.method,
             request.url.path,
             exc_info=True,
@@ -375,7 +376,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             # rationale as the other ``isinstance`` rerouting above).
             logger.warning(
                 "RecursionError on %s %s (via generic handler) — "
-                "returning sanitized 400.",
+                "returning sanitized 500 (Internal server error).",
                 request.method,
                 request.url.path,
                 exc_info=True,
