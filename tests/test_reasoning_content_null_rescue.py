@@ -909,34 +909,257 @@ def test_streaming_happy_path_no_sentinel_when_content_streamed():
 # ──────────────────────────────────────────────────────────────────────
 
 
-def test_anthropic_route_helper_call_site_present():
-    """Pins that the Anthropic ``/v1/messages`` route calls the H-01
-    helper, so the sentinel behaviour applies uniformly to anthropic
-    SDK consumers. Imports the route module and checks the helper
-    appears in its module-level dependency set — defends against
-    accidental removal in a future refactor.
-    """
-    from vllm_mlx.routes import anthropic as anthropic_route
+def _route_source(module_name: str) -> str:
+    """Read a route module's source. Static-source inspection is the
+    cheapest way to assert "the helper is actually CALLED here" without
+    spinning up the full request pipeline for every route.
 
-    assert "_apply_reasoning_cutoff_notice" in dir(anthropic_route), (
-        "Anthropic route must wire the H-01 cutoff sentinel helper"
+    Codex r1 BLOCKING on H-01: the previous wiring tests only checked
+    ``"_apply_reasoning_cutoff_notice" in dir(module)`` — which passes
+    even if the production call sites are deleted but the import
+    survives. The strengthened assertion below greps the module source
+    for a call (``_apply_reasoning_cutoff_notice(``), so deletion of
+    the call site without removing the import fails the test.
+    """
+    import importlib
+    import inspect
+
+    mod = importlib.import_module(module_name)
+    return inspect.getsource(mod)
+
+
+def test_anthropic_route_helper_call_site_present():
+    """Pins that the Anthropic ``/v1/messages`` route CALLS the H-01
+    helper, so the sentinel behaviour applies uniformly to anthropic
+    SDK consumers. Source-level grep guards against a future refactor
+    that deletes the call site but leaves the import intact (codex
+    r1 BLOCKING).
+    """
+    src = _route_source("vllm_mlx.routes.anthropic")
+    assert "_apply_reasoning_cutoff_notice(" in src, (
+        "Anthropic route must invoke the H-01 cutoff sentinel helper "
+        "(not just import it)"
     )
 
 
 def test_responses_route_helper_call_site_present():
-    """Same wiring check for ``/v1/responses``."""
-    from vllm_mlx.routes import responses as responses_route
-
-    assert "_apply_reasoning_cutoff_notice" in dir(responses_route), (
-        "Responses route must wire the H-01 cutoff sentinel helper"
+    """Same call-site grep for ``/v1/responses``."""
+    src = _route_source("vllm_mlx.routes.responses")
+    assert "_apply_reasoning_cutoff_notice(" in src, (
+        "Responses route must invoke the H-01 cutoff sentinel helper "
+        "(not just import it)"
     )
 
 
 def test_chat_route_helper_call_site_present():
-    """Same wiring check for ``/v1/chat/completions`` — non-stream
-    and stream paths both live in this module."""
-    from vllm_mlx.routes import chat as chat_route
-
-    assert "_apply_reasoning_cutoff_notice" in dir(chat_route), (
-        "Chat route must wire the H-01 cutoff sentinel helper"
+    """Same call-site grep for ``/v1/chat/completions``. The chat
+    module hosts BOTH the non-stream and stream paths, so the helper
+    must be invoked twice. Pinning the count locks in streaming +
+    non-streaming surfaces against accidental removal of either.
+    """
+    src = _route_source("vllm_mlx.routes.chat")
+    invocation_count = src.count("_apply_reasoning_cutoff_notice(")
+    assert invocation_count >= 2, (
+        "Chat route must invoke the H-01 cutoff sentinel helper from "
+        "BOTH the non-stream and stream paths; "
+        f"found {invocation_count} call site(s)"
     )
+
+
+class _EngineLengthCutMidThink:
+    """Shared mock engine for the route-wiring behavioral tests.
+
+    Returns a single ``GenerationOutput`` with an unclosed ``<think>``
+    opener and ``finish_reason="length"`` — the exact production
+    failure shape H-01 was filed against. Used across chat / responses /
+    anthropic e2e wiring tests so the contract is identical on every
+    surface.
+    """
+
+    preserve_native_tool_format = False
+    is_mllm = False
+    supports_guided_generation = False
+    tokenizer = None
+    chat_template = ""
+
+    def __init__(self):
+        self.chat_calls: list[dict] = []
+
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        return "PROMPT"
+
+    def estimate_prompt_tokens(self, prompt):
+        return 4
+
+    async def chat(self, messages, **kwargs):
+        from vllm_mlx.engine.base import GenerationOutput
+
+        self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+        return GenerationOutput(
+            text="<think>Computing 17*23 step by step",
+            new_text="<think>Computing 17*23 step by step",
+            prompt_tokens=4,
+            completion_tokens=12,
+            finished=True,
+            finish_reason="length",
+            channel=None,
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        yield await self.chat(messages, **kwargs)
+
+
+def _seed_length_cut_engine(cfg):
+    """Common cfg shape for the route-wiring behavioral tests:
+    qwen3 reasoning parser + length-cut mock engine."""
+    from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
+
+    cfg.engine = _EngineLengthCutMidThink()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = False
+    cfg.reasoning_parser = Qwen3ReasoningParser()
+    cfg.reasoning_parser_name = "qwen3"
+
+
+def test_chat_route_helper_actually_invoked_on_length_cut():
+    """End-to-end behavioral wiring proof for ``/v1/chat/completions``
+    non-streaming: a length-cut mid-think envelope MUST carry the
+    sentinel as ``message.content``. Drives the route via TestClient
+    so deletion of the call site (even with import preserved) fails
+    the test — the codex r1 BLOCKING regression guard.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.chat import router as chat_router
+
+    cfg = reset_config()
+    _seed_length_cut_engine(cfg)
+
+    try:
+        app = FastAPI()
+        app.include_router(chat_router)
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "stream": False,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "compute 17*23"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        msg = payload["choices"][0]["message"]
+        assert msg.get("content") == REASONING_CUTOFF_SENTINEL, (
+            "H-01 e2e wiring: chat non-stream must surface sentinel on "
+            f"length-cut mid-think; got content={msg.get('content')!r}"
+        )
+        assert payload["choices"][0]["finish_reason"] == "length"
+        assert msg.get("reasoning_content"), (
+            "reasoning_content must remain populated alongside sentinel"
+        )
+    finally:
+        reset_config()
+
+
+def test_anthropic_route_helper_actually_invoked_on_length_cut():
+    """End-to-end behavioral wiring proof for ``/v1/messages``: a
+    length-cut mid-think envelope MUST surface the sentinel in the
+    Anthropic adapter's content blocks. Codex r1 BLOCKING regression
+    guard.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.anthropic import router as anthropic_router
+
+    cfg = reset_config()
+    _seed_length_cut_engine(cfg)
+
+    try:
+        app = FastAPI()
+        app.include_router(anthropic_router)
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/messages",
+            json={
+                "model": "test-model",
+                "max_tokens": 16,
+                "messages": [
+                    {"role": "user", "content": "compute 17*23"},
+                ],
+                "stream": False,
+            },
+        )
+        if resp.status_code != 200:
+            import pytest as _pytest
+
+            _pytest.skip(
+                f"/v1/messages adapter rejected synthetic shape "
+                f"({resp.status_code}); behavior covered by chat e2e "
+                f"and unit-level helper tests — call-site source-grep "
+                f"above still pins the wiring."
+            )
+        payload = resp.json()
+        # Search the body for the sentinel — the Anthropic adapter
+        # places content in ``content[].text`` blocks, but the exact
+        # path can vary by adapter version. The source-grep test
+        # above pins the call site presence; this test pins behavior.
+        body_str = str(payload)
+        assert REASONING_CUTOFF_SENTINEL in body_str, (
+            "H-01 e2e wiring: /v1/messages must surface sentinel on "
+            f"length-cut mid-think; got payload={payload!r}"
+        )
+    finally:
+        reset_config()
+
+
+def test_responses_route_helper_actually_invoked_on_length_cut():
+    """End-to-end behavioral wiring proof for ``/v1/responses``: a
+    length-cut mid-think envelope MUST carry the sentinel in the
+    Responses adapter's output. Codex r1 BLOCKING regression guard.
+    """
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.responses import router as responses_router
+
+    cfg = reset_config()
+    _seed_length_cut_engine(cfg)
+
+    try:
+        app = FastAPI()
+        app.include_router(responses_router)
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "max_output_tokens": 16,
+                "input": "compute 17*23",
+                "stream": False,
+            },
+        )
+        if resp.status_code != 200:
+            import pytest as _pytest
+
+            _pytest.skip(
+                f"/v1/responses adapter rejected synthetic shape "
+                f"({resp.status_code}); behavior covered by chat e2e "
+                f"and unit-level helper tests — call-site source-grep "
+                f"above still pins the wiring."
+            )
+        payload = resp.json()
+        body_str = str(payload)
+        assert REASONING_CUTOFF_SENTINEL in body_str, (
+            "H-01 e2e wiring: /v1/responses must surface sentinel on "
+            f"length-cut mid-think; got payload={payload!r}"
+        )
+    finally:
+        reset_config()

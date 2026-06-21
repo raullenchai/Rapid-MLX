@@ -330,12 +330,22 @@ async def _non_stream(
 
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
 
-    # H-01: /v1/responses mirror of the chat-route cutoff sentinel. The
-    # Responses surface doesn't go through ``_rescue_silent_drop_from_reasoning``
-    # (no historical issue#569 silent-drop on this endpoint) but the same
-    # SDK consumers read ``output.text``/``content`` and render an empty
-    # bubble on a length-cut mid-think — so the UX sentinel applies
-    # uniformly. Helper owns the predicate set incl. the env opt-out.
+    # H-01: /v1/responses mirror of the chat-route cutoff sentinel.
+    #
+    # Codex r1 NIT (PR #802): the Responses surface intentionally does
+    # NOT run ``_rescue_silent_drop_from_reasoning`` (this endpoint
+    # never carried the issue#569 silent-drop pre-history, and the
+    # adapter shape makes the rescue's #569 promotion semantically
+    # ambiguous), so the predicate set this helper sees on Responses
+    # is broader than on chat/anthropic — ANY length-finished response
+    # with empty content + non-empty reasoning + no tool calls trips
+    # the sentinel, NOT specifically "rescue-suppressed promotion".
+    # That broader scope is OK here: the same UX gap (SDK consumers
+    # see empty bubbles) is exactly what the sentinel fixes, and on
+    # this surface there is no ``_rescue_silent_drop_from_reasoning``
+    # call that could have produced the empty shape for a different
+    # reason. Helper owns the env opt-out + finish-reason gate so
+    # back-compat is preserved.
     final_content = _apply_reasoning_cutoff_notice(
         final_content,
         reasoning_text,
