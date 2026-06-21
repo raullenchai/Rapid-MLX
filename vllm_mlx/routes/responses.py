@@ -37,6 +37,7 @@ from ..api.response_format_metrics import (
 from ..api.responses_adapter import openai_to_responses, responses_to_openai
 from ..api.responses_models import ResponsesRequest
 from ..api.tool_calling import (
+    check_schema_validity,
     convert_tools_for_template,
     extract_json_schema_for_guided,
     is_strict_json_schema,
@@ -214,6 +215,30 @@ async def create_response(request: Request):
                         }
                     },
                 )
+            # Codex r4 NIT #5 parity: validate the user-supplied
+            # schema BEFORE generation so an invalid JSON Schema
+            # (e.g. ``"type":"objct"`` typo) surfaces as a 400
+            # ``invalid_strict_schema`` pointing at the client's
+            # malformed input — instead of falling into the
+            # post-decode validator and surfacing as a 502
+            # ``strict_schema_violation`` (server-side breach shape).
+            _schema_ok, _schema_err = check_schema_validity(_schema)
+            if not _schema_ok:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "message": (
+                                "text.format.schema is not a valid "
+                                f"JSON Schema document: {_schema_err}. "
+                                "Fix the schema and retry."
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "invalid_strict_schema",
+                            "param": "text.format.schema",
+                        }
+                    },
+                )
             if openai_request.tools:
                 # Parity with the chat-route ``strict_with_tools_unsupported``
                 # gate: constrained-decoding grammar and tool-call grammar
@@ -235,31 +260,18 @@ async def create_response(request: Request):
                         }
                     },
                 )
-            if not engine.supports_guided_generation:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error": {
-                            "message": (
-                                "text.format with strict=true requires "
-                                "the [guided] optional extra. Install "
-                                "with: pip install 'rapid-mlx[guided]'"
-                            ),
-                            "type": "invalid_request_error",
-                            "code": "guided_extra_required",
-                            "param": "text.format.strict",
-                        }
-                    },
-                )
-            # Codex r2 BLOCKING #2: streaming on /v1/responses
-            # currently routes through ``engine.stream_chat``,
-            # which is unconstrained — the constrained-decoding
-            # path here is buffered-only. Under the strict
-            # contract we MUST NOT serve a stream we cannot
-            # guarantee, so reject with a clear actionable 400
-            # naming both escape hatches: drop stream=true OR
-            # switch to /v1/chat/completions (which already has
-            # a buffered-guided→synthesized-SSE helper).
+            # Codex r4 NIT #4: check the strict+stream gate BEFORE
+            # the missing-extra gate. Strict streaming on
+            # /v1/responses is structurally unsupported here
+            # regardless of whether [guided] is installed (the
+            # constrained-decoding path is buffered-only on this
+            # surface), so telling a strict+stream caller to
+            # ``pip install rapid-mlx[guided]`` would be
+            # misleading — installing the extra still wouldn't
+            # let them use strict+stream on /v1/responses. Naming
+            # the actual escape hatches first (drop stream=true,
+            # or switch to /v1/chat/completions) is more
+            # actionable.
             if responses_request.stream:
                 raise HTTPException(
                     status_code=400,
@@ -277,6 +289,22 @@ async def create_response(request: Request):
                             ),
                             "type": "invalid_request_error",
                             "code": "strict_stream_unsupported",
+                            "param": "text.format.strict",
+                        }
+                    },
+                )
+            if not engine.supports_guided_generation:
+                raise HTTPException(
+                    status_code=400,
+                    detail={
+                        "error": {
+                            "message": (
+                                "text.format with strict=true requires "
+                                "the [guided] optional extra. Install "
+                                "with: pip install 'rapid-mlx[guided]'"
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "guided_extra_required",
                             "param": "text.format.strict",
                         }
                     },

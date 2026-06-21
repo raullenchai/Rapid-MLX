@@ -927,6 +927,31 @@ def extract_json_schema_for_guided(
     return schema
 
 
+def check_schema_validity(json_schema: dict[str, Any]) -> tuple[bool, str | None]:
+    """Validate the user-supplied schema itself as a JSON Schema document.
+
+    Codex r4 NIT #5: pre-fix, an invalid client-supplied schema
+    (e.g. ``"type": "objct"`` typo, missing required JSON Schema
+    keywords) fell into the post-decode validator's broad
+    exception path and surfaced as a 502 ``strict_schema_violation``
+    — a server-side contract breach shape — even though the
+    actual cause was client-side. This helper runs the
+    schema-itself through ``jsonschema.Draft7Validator.check_schema``
+    so the route can 400 invalid schemas BEFORE generation,
+    pointing the client at their malformed input.
+
+    Returns ``(ok, error_message)``; the message is a short
+    human-readable summary the route uses in the 400 envelope.
+    """
+    try:
+        from jsonschema import Draft7Validator
+
+        Draft7Validator.check_schema(json_schema)
+    except Exception as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return True, None
+
+
 def validate_output_against_schema(
     output_text: str, json_schema: dict[str, Any]
 ) -> tuple[bool, str | None]:

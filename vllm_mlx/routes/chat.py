@@ -31,6 +31,7 @@ from ..api.response_format_metrics import (
 )
 from ..api.tool_calling import (
     build_json_system_prompt,
+    check_schema_validity,
     convert_tools_for_template,
     extract_json_schema_for_guided,
     is_strict_json_schema,
@@ -1365,6 +1366,32 @@ async def _create_chat_completion_impl(
                         ),
                         "type": "invalid_request_error",
                         "code": "strict_schema_required",
+                        "param": "response_format.json_schema.schema",
+                    }
+                },
+            )
+        # Codex r4 NIT #5: validate the user-supplied schema BEFORE
+        # generation so an invalid JSON Schema (e.g. ``type:"objct"``
+        # typo) surfaces as a 400 ``invalid_strict_schema`` —
+        # pointing at the client's malformed input — instead of
+        # falling into the post-decode validator and surfacing as
+        # a 502 ``strict_schema_violation`` (server-side breach
+        # shape). The check covers both the strict route and the
+        # /v1/responses entry below via the same helper.
+        _schema_ok, _schema_err = check_schema_validity(_strict_schema_check)
+        if not _schema_ok:
+            incr_strict_request()
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format.json_schema.schema is not "
+                            f"a valid JSON Schema document: {_schema_err}. "
+                            "Fix the schema and retry."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "invalid_strict_schema",
                         "param": "response_format.json_schema.schema",
                     }
                 },
