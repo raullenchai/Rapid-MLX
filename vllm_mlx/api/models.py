@@ -309,16 +309,32 @@ def _validate_logit_bias_finite(
 
 
 def _validate_seed(v) -> int | None:
-    """Reject bool / non-integer / out-of-range values on ``seed`` (H-11).
+    """Reject bool / non-integer values on ``seed`` (H-11).
 
-    Pydantic v2 silently coerces ``bool`` to ``int`` (``True`` → 1) on
-    an ``int | None`` field, but seeds are conceptually opaque integers
-    and ``seed=True`` is almost always a serialization mistake — same
-    family as the ``n: true`` footgun ``_reject_non_one_n`` already
-    closes. ``mx.random.key`` accepts a non-negative integer that fits
-    in ``uint32`` (the JAX-style PRNG key is built from a 32-bit seed),
-    so we clamp to ``[0, 2^32-1]`` and reject anything outside that
-    range with a clean 422.
+    OpenAI's spec documents ``seed`` as an unbounded integer (their
+    Python SDK ships ``seed: Optional[int]`` with no range), so the
+    request-model layer accepts the FULL public range. The backend-
+    specific narrowing to mlx-core's ``uint32`` ``mx.random.key`` is
+    applied LATER, in ``make_seeded_sampler``, via a deterministic
+    bit-fold (``seed & 0xFFFFFFFF``). That keeps OpenAI-compatible
+    clients passing 64-bit / negative seeds working: same input value
+    always maps to the same backend key, so reproducibility is
+    preserved within rapid-mlx (the OpenAI spec only promises
+    within-engine determinism — "we cannot guarantee determinism
+    across model versions or backends"). Codex round-6 BLOCKING fix
+    on the original ``le=0xFFFFFFFF`` Field bound that 422'd valid
+    OpenAI seed values.
+
+    What we DO still reject at the request layer:
+
+      * ``bool`` — Pydantic v2 silently coerces ``True`` → 1 / ``False``
+        → 0 on an ``int | None`` field, but ``seed=True`` is almost
+        always a serialization mistake (same family as the ``n: true``
+        footgun ``_reject_non_one_n`` already closes). A
+        ``bool``-as-seed silent acceptance would mask client bugs.
+      * Non-integer types — strings, floats, dicts. The OpenAI spec
+        is unambiguous that ``seed`` is an integer; a float seed is
+        a serialization bug, not a legitimate request.
 
     Returns ``None`` unchanged so the field's optional contract is
     preserved (no value → no per-request seed → process-global
@@ -331,8 +347,10 @@ def _validate_seed(v) -> int | None:
         raise ValueError("seed must be an integer (not bool)")
     if not isinstance(v, int):
         raise ValueError("seed must be an integer")
-    if v < 0 or v > 0xFFFFFFFF:
-        raise ValueError("seed must be in the range [0, 2**32 - 1]")
+    # No range check — see the docstring. Any Python int (positive,
+    # negative, or larger than uint32) is accepted at the API layer;
+    # ``make_seeded_sampler`` folds it to the backend's uint32 PRNG
+    # key range at sampler construction.
     return v
 
 
@@ -1122,19 +1140,20 @@ class ChatCompletionRequest(BaseModel):
     # wire-claim was false (Tomek r3 — five calls with ``seed=42``
     # produced five different outputs).
     #
-    # Range is BACKEND-CONSTRAINED to ``[0, 2**32 - 1]`` — NOT the OpenAI
-    # spec's broader "any integer" surface. mlx-core's ``mx.random.key``
-    # accepts a non-negative integer that fits in ``uint32`` (the
-    # JAX-style PRNG key is a (2,) ``uint32`` array seeded from a 32-bit
-    # value), so a 64-bit OpenAI-style seed would silently truncate
-    # before reaching ``mx.random.key`` — the truncated bits would
-    # produce a different reproducible sequence than the caller
-    # intended, breaking the reproducibility contract in a hard-to-
-    # notice way. Rejecting out-of-range with a 422 surfaces the
-    # narrowing to the client at parse time; pre-fix would have been a
-    # silent reproducibility lie. Codex round-2 NIT pinned the
-    # comment-vs-impl mismatch in the original wording.
-    seed: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
+    # The field is intentionally UNBOUNDED at the request layer to
+    # match the OpenAI spec surface — their SDK ships
+    # ``seed: Optional[int]`` with no range and clients routinely pass
+    # 64-bit integer seeds. The backend-specific narrowing to mlx-core's
+    # ``uint32`` ``mx.random.key`` is applied in ``make_seeded_sampler``
+    # via a deterministic ``seed & 0xFFFFFFFF`` bit-fold: same input
+    # value always maps to the same backend key, so reproducibility is
+    # preserved within rapid-mlx. (OpenAI's spec only promises within-
+    # engine determinism — "we cannot guarantee determinism across
+    # model versions or backends".) Codex round-6 BLOCKING fix on the
+    # original ``Field(ge=0, le=0xFFFFFFFF)`` bound that 422'd valid
+    # OpenAI seed values and broke compatibility for clients using the
+    # broader documented integer range.
+    seed: int | None = None
 
     # F-011: NaN/inf scrub on the raw dict, BEFORE Pydantic coerces a
     # bad value onto the typed float slot. Needed because (a) Field
@@ -1617,7 +1636,9 @@ class CompletionRequest(BaseModel):
     # H-11: OpenAI ``seed`` — mirror of ChatCompletionRequest.seed. See
     # the matching declaration on the chat schema for the full rationale
     # block and the plumbing path through SamplingParams → scheduler.
-    seed: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
+    # Unbounded at the request layer (codex round-6); backend uint32
+    # narrowing happens in ``make_seeded_sampler``.
+    seed: int | None = None
 
     # F-011: NaN/inf scrub + finite belt-and-braces, exactly mirroring
     # ChatCompletionRequest. See the rationale block at the top of

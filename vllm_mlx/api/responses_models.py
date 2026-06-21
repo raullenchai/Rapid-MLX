@@ -108,17 +108,22 @@ class ResponsesRequest(BaseModel):
     # without declaring it here Pydantic drops it before the adapter
     # converts to ``ChatCompletionRequest``.
     #
-    # Codex round-4 BLOCKING fix: apply the SAME ``Field(ge=, le=)`` +
-    # ``mode="before"`` bool/non-int guard the chat schema uses,
-    # because the conversion path
-    # (``ResponsesRequest.seed: True`` → Pydantic coerces to ``1`` →
-    # ``responses_to_openai`` passes ``1`` to ChatCompletionRequest →
+    # Codex round-4 BLOCKING fix: apply the SAME ``mode="before"``
+    # bool/non-int guard the chat schema uses, because the conversion
+    # path (``ResponsesRequest.seed: True`` → Pydantic coerces to ``1``
+    # → ``responses_to_openai`` passes ``1`` to ChatCompletionRequest →
     # ChatCompletionRequest sees a legitimate ``int=1``) silently
     # swallows the bool. Validating AT THIS LAYER closes the bypass
     # so the contract is enforced regardless of which surface the
     # client hit. See ``api/models.py::_validate_seed`` for the
     # rationale block.
-    seed: int | None = Field(default=None, ge=0, le=0xFFFFFFFF)
+    #
+    # Codex round-6 BLOCKING fix: removed the ``Field(ge=0,
+    # le=0xFFFFFFFF)`` bound so the Responses surface accepts the full
+    # OpenAI-documented integer range and uint32 narrowing happens
+    # downstream in ``make_seeded_sampler`` (parity with the chat /
+    # legacy completion surfaces).
+    seed: int | None = None
 
     @field_validator("seed", mode="before")
     @classmethod

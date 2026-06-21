@@ -122,7 +122,31 @@ def make_seeded_sampler(
     # can rebind it (Python doesn't expose ``nonlocal`` on assignment
     # without an enclosing function-local binding; the list sidesteps
     # that without adding ``nonlocal`` boilerplate).
-    state = [mx.random.key(int(seed))]
+    #
+    # Codex round-6 BLOCKING fix: the API layer now accepts the full
+    # OpenAI-documented integer range (no ``Field(ge=, le=)`` bound on
+    # ``seed``) to match clients that pass 64-bit or negative integer
+    # seeds. mlx-core's ``mx.random.key`` requires a non-negative
+    # ``uint32``, so we fold the public seed value to the backend's
+    # PRNG key range HERE — once, at sampler construction. The fold
+    # is purely deterministic (``seed & 0xFFFFFFFF``), which means:
+    #
+    #   * Same input seed always maps to the same backend key, so
+    #     reproducibility is preserved within rapid-mlx. (OpenAI's spec
+    #     only promises within-engine determinism — they explicitly
+    #     warn "we cannot guarantee determinism across model versions
+    #     or backends".)
+    #   * Negative seeds work via Python's well-defined ``int.__and__``
+    #     semantics on negatives (conceptually two's complement with
+    #     an infinite sign bit), so e.g. ``-1 & 0xFFFFFFFF == 0xFFFFFFFF``
+    #     rather than raising or silently truncating to garbage.
+    #   * Two callers passing seeds that happen to fold to the same
+    #     uint32 (e.g. ``42`` and ``42 + 2**32``) get the same
+    #     sequence — this is an honest consequence of the backend's
+    #     32-bit key space and matches the silent narrowing JAX /
+    #     mlx-lm would do internally anyway.
+    seed_uint32 = int(seed) & 0xFFFFFFFF
+    state = [mx.random.key(seed_uint32)]
 
     # Codex round-5 BLOCKING #2 defensive belt: serialize key-state
     # advancement so two concurrent callers of THE SAME closure can't

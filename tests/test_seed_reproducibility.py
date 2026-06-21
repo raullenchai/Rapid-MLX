@@ -10,8 +10,11 @@ The fix plumbs ``seed`` through five layers — the same surfaces F-011 /
 #355 covered for the other sampling params:
 
   1. ``ChatCompletionRequest`` / ``CompletionRequest`` (api/models.py) —
-     ``seed: int | None`` declared with a ``[0, 2**32-1]`` range bound
-     and a ``mode="before"`` validator that rejects bool / non-int.
+     ``seed: int | None`` declared without a range bound (matches
+     OpenAI's documented unbounded-int surface; codex round-6) and
+     guarded by a ``mode="before"`` validator that rejects bool /
+     non-int. Backend uint32 narrowing happens in
+     ``make_seeded_sampler`` via a deterministic ``& 0xFFFFFFFF`` fold.
   2. ``build_extended_sampling_kwargs`` (service/helpers.py) — forwards
      the request's ``seed`` value through to ``chat_kwargs``.
   3. ``SamplingParams`` (request.py) — carries ``seed: int | None``.
@@ -119,19 +122,29 @@ def test_responses_request_rejects_bool_seed():
         ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=True)
 
 
-def test_responses_request_rejects_negative_seed():
-    """Range guard mirrors ChatCompletionRequest — uint32 narrowing."""
+def test_responses_request_accepts_negative_seed():
+    """Codex round-6 BLOCKING regression guard. The OpenAI Responses
+    API surface accepts any integer ``seed``; rapid-mlx must not 422
+    on negative seeds (or 64-bit positive ones) — that would break
+    compatibility with clients passing the documented unbounded
+    integer range. Narrowing to mlx-core's uint32 happens later in
+    ``make_seeded_sampler``."""
     from vllm_mlx.api.responses_models import ResponsesRequest
 
-    with pytest.raises(ValidationError):
-        ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=-1)
+    req = ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=-1)
+    assert req.seed == -1
 
 
-def test_responses_request_rejects_above_uint32_seed():
+def test_responses_request_accepts_above_uint32_seed():
+    """64-bit seeds the OpenAI spec permits must reach the sampler
+    layer rather than 422'ing at parse time. The downstream fold
+    (``seed & 0xFFFFFFFF`` in ``make_seeded_sampler``) maps them
+    deterministically to the backend's uint32 PRNG-key range."""
     from vllm_mlx.api.responses_models import ResponsesRequest
 
-    with pytest.raises(ValidationError):
-        ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=0x1_00000000)
+    big_seed = 0x1_00000000
+    req = ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=big_seed)
+    assert req.seed == big_seed
 
 
 def test_seed_accepts_zero():
@@ -146,26 +159,58 @@ def test_seed_accepts_zero():
     assert req.seed == 0
 
 
-def test_seed_rejects_negative():
-    """Negative seeds are not in the ``mx.random.key`` accepted range
-    (uint32). Pre-fix Pydantic would have coerced any int unchecked."""
-    with pytest.raises(ValidationError):
-        ChatCompletionRequest(
-            model="qwen3-0.6b-8bit",
-            messages=[{"role": "user", "content": "hi"}],
-            seed=-1,
-        )
+def test_seed_accepts_negative():
+    """Codex round-6 BLOCKING regression guard.
+
+    OpenAI's spec documents ``seed`` as an unbounded integer (their
+    Python SDK ships ``seed: Optional[int]`` with no range), so the
+    request-model layer must NOT 422 on negative seeds. Backend
+    narrowing to mlx-core's uint32 PRNG key range is applied
+    deterministically downstream in ``make_seeded_sampler`` via
+    ``seed & 0xFFFFFFFF`` — Python's well-defined ``int.__and__`` on
+    negatives makes the fold round-trip cleanly.
+
+    Pre-fix (round 5): ``Field(ge=0)`` rejected this with a 422 and
+    broke compatibility for the OpenAI-documented surface.
+    """
+    req = ChatCompletionRequest(
+        model="qwen3-0.6b-8bit",
+        messages=[{"role": "user", "content": "hi"}],
+        seed=-1,
+    )
+    assert req.seed == -1
 
 
-def test_seed_rejects_above_uint32():
-    """``mx.random.key`` accepts only ``[0, 2**32-1]``; reject anything
-    larger with a clean 422 rather than letting it overflow downstream."""
-    with pytest.raises(ValidationError):
-        ChatCompletionRequest(
-            model="qwen3-0.6b-8bit",
-            messages=[{"role": "user", "content": "hi"}],
-            seed=0x1_00000000,  # 2**32
-        )
+def test_seed_accepts_above_uint32():
+    """Codex round-6 BLOCKING regression guard.
+
+    OpenAI clients routinely pass 64-bit (or larger) seeds. Rapid-MLX
+    must accept the value at the request layer; the deterministic
+    fold in ``make_seeded_sampler`` collapses it to mlx-core's uint32
+    PRNG key range. The reproducibility contract still holds
+    (within-engine — same input value → same output sequence) which
+    is all the OpenAI spec promises.
+    """
+    big_seed = 0x1_00000000  # 2**32
+    req = ChatCompletionRequest(
+        model="qwen3-0.6b-8bit",
+        messages=[{"role": "user", "content": "hi"}],
+        seed=big_seed,
+    )
+    assert req.seed == big_seed
+
+
+def test_completion_request_accepts_wide_int_seed():
+    """Codex round-6 BLOCKING regression guard on the legacy
+    completions surface. Same contract as ChatCompletionRequest /
+    ResponsesRequest — accept the full OpenAI integer surface; narrow
+    in the sampler."""
+    req = CompletionRequest(
+        model="qwen3-0.6b-8bit",
+        prompt="hi",
+        seed=2**40,
+    )
+    assert req.seed == 2**40
 
 
 def test_seed_rejects_bool():
@@ -265,6 +310,59 @@ def logprobs_fixture():
 
 def _sample_sequence(sampler, logprobs, n: int) -> list[int]:
     return [int(sampler(logprobs)[0]) for _ in range(n)]
+
+
+def test_seeded_sampler_accepts_negative_seed(logprobs_fixture):
+    """Codex round-6 regression guard. The sampler factory must accept
+    negative seeds without raising — the fold (``seed & 0xFFFFFFFF``)
+    handles negative ints via Python's well-defined ``int.__and__``
+    semantics (conceptually two's complement with an infinite sign
+    bit, so e.g. ``-1 & 0xFFFFFFFF == 0xFFFFFFFF``)."""
+    s = make_seeded_sampler(seed=-1, temperature=0.7, top_p=0.9)
+    out = int(s(logprobs_fixture)[0])
+    vocab = int(logprobs_fixture.shape[-1])
+    assert 0 <= out < vocab
+
+
+def test_seeded_sampler_accepts_large_seed(logprobs_fixture):
+    """Codex round-6 regression guard. Large (>uint32) seeds must
+    work — same input value always maps to the same backend key."""
+    s = make_seeded_sampler(seed=2**40 + 17, temperature=0.7, top_p=0.9)
+    out = int(s(logprobs_fixture)[0])
+    vocab = int(logprobs_fixture.shape[-1])
+    assert 0 <= out < vocab
+
+
+def test_seeded_sampler_seeds_with_same_uint32_fold_match(logprobs_fixture):
+    """Codex round-6 regression guard on the deterministic-fold
+    contract. Two seeds whose low 32 bits are identical (here ``42``
+    and ``42 + 2**32``) must produce the SAME token sequence — that
+    is the explicit consequence of folding to mlx-core's uint32 PRNG
+    key range. Documenting this in a test makes the contract
+    discoverable and pins it against accidental future changes to
+    the fold function (e.g. a switch to ``hash()`` which would break
+    cross-seed reproducibility unpredictably)."""
+    s_low = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.9)
+    s_high = make_seeded_sampler(seed=42 + 2**32, temperature=0.7, top_p=0.9)
+    seq_low = _sample_sequence(s_low, logprobs_fixture, 8)
+    seq_high = _sample_sequence(s_high, logprobs_fixture, 8)
+    assert seq_low == seq_high, (
+        "seeds with the same low-32 bits must fold to the same backend "
+        "PRNG key and produce identical sequences — the fold contract "
+        "is broken"
+    )
+
+
+def test_seeded_sampler_negative_seed_deterministic(logprobs_fixture):
+    """Codex round-6 regression guard. Two samplers with the same
+    negative seed must produce the same sequence — negative seeds
+    are not second-class citizens, they just take the deterministic
+    fold path."""
+    s1 = make_seeded_sampler(seed=-12345, temperature=0.7, top_p=0.9)
+    s2 = make_seeded_sampler(seed=-12345, temperature=0.7, top_p=0.9)
+    seq1 = _sample_sequence(s1, logprobs_fixture, 8)
+    seq2 = _sample_sequence(s2, logprobs_fixture, 8)
+    assert seq1 == seq2
 
 
 def test_seeded_sampler_same_seed_same_sequence(logprobs_fixture):
