@@ -177,9 +177,7 @@ class ResponsesRequest(BaseModel):
                 )
         elif isinstance(self.input, list):
             if len(self.input) == 0:
-                raise ValueError(
-                    "`input` must be a non-empty list of input items."
-                )
+                raise ValueError("`input` must be a non-empty list of input items.")
         return self
 
 
