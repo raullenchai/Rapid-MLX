@@ -3073,9 +3073,22 @@ class Scheduler:
         cap = self._resolve_metal_cap_bytes()
         if cap <= 0:
             return 0
-        threshold = int(
-            cap * float(getattr(self.config, "metal_pressure_evict_fraction", 0.9))
-        )
+        # Codex round 2 NIT: clamp the configured pressure-evict
+        # fraction into a documented ``(0, 1]`` range. A zero or
+        # negative value would otherwise compute ``threshold <= 0``
+        # and trip the eviction loop on every tick even when Metal is
+        # quiet. A value > 1.0 would push the threshold ABOVE the cap
+        # itself, so pressure eviction would never run before the
+        # admission gate started rejecting requests — defeating the
+        # whole D-METAL-PFX recovery path. Out-of-range values are
+        # clamped (not rejected) so a misconfigured operator gets a
+        # working default rather than a hard server failure.
+        raw_fraction = float(getattr(self.config, "metal_pressure_evict_fraction", 0.9))
+        if not (raw_fraction > 0.0):
+            raw_fraction = 0.9
+        if raw_fraction > 1.0:
+            raw_fraction = 1.0
+        threshold = int(cap * raw_fraction)
         evicted = 0
         for _ in range(max(0, int(max_evict))):
             active = self._current_metal_active_bytes()
@@ -3120,24 +3133,30 @@ class Scheduler:
         - ``block_aware_cache``: paged block table; out of scope for
           the pressure trigger (blocks are released by
           ``PagedCacheManager`` ref-counts), so we no-op.
+
+        Exception policy (codex round 2 BLOCKING #1): a failing
+        ``_evict_lru`` call MUST propagate to
+        ``evict_prefix_cache_under_pressure`` and from there to
+        engine_core's rate-limited warning. Pre-fix this method
+        swallowed every exception and returned False, making a broken
+        cache variant indistinguishable from "nothing eligible" — the
+        engine_core ``logger.warning(...)`` path could then never fire
+        because the caller saw ``evicted=0`` and returned cleanly. By
+        propagating the exception, the engine_core ``except
+        Exception as evict_exc:`` block surfaces the underlying
+        failure on the first occurrence per process.
         """
         if self.memory_aware_cache is not None:
-            try:
-                with self.memory_aware_cache._lock:  # noqa: SLF001 — coordinated eviction
-                    if not self.memory_aware_cache._entries:  # noqa: SLF001
-                        return False
-                    self.memory_aware_cache._evict_lru()  # noqa: SLF001
-                return True
-            except Exception:
-                return False
-        if self.prefix_cache is not None:
-            try:
-                if not getattr(self.prefix_cache, "_lru", None):
+            with self.memory_aware_cache._lock:  # noqa: SLF001 — coordinated eviction
+                if not self.memory_aware_cache._entries:  # noqa: SLF001
                     return False
-                self.prefix_cache._evict_lru()  # noqa: SLF001 — coordinated eviction
-                return True
-            except Exception:
+                self.memory_aware_cache._evict_lru()  # noqa: SLF001
+            return True
+        if self.prefix_cache is not None:
+            if not getattr(self.prefix_cache, "_lru", None):
                 return False
+            self.prefix_cache._evict_lru()  # noqa: SLF001 — coordinated eviction
+            return True
         return False
 
     def add_request(self, request: Request) -> None:

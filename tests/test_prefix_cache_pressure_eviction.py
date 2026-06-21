@@ -302,134 +302,230 @@ class TestPressureEvictionMetric:
 
 
 class TestEngineCoreInvokesPressureEvict:
-    """Codex round 1 BLOCKING regression — engine_core's memory-
-    pressure tick must call ``evict_prefix_cache_under_pressure``
-    UNCONDITIONALLY (i.e. NOT only when ``active_mem`` exceeds the
-    legacy ``_memory_pressure_threshold``). That threshold is
-    computed from ``gpu_memory_utilization + 0.05`` and on a low cap
-    like ``--gpu-memory-utilization 0.45`` it can sit ABOVE the
-    scheduler's ``metal_pressure_evict_fraction × cap``, so a
-    threshold-gated call would never fire on exactly the configuration
-    the bug repro flagged.
+    """Codex round 1 BLOCKING + round 2 BLOCKING #2 regression —
+    engine_core's memory-pressure tick must call
+    ``evict_prefix_cache_under_pressure`` UNCONDITIONALLY (NOT only
+    when ``active_mem`` exceeds the legacy
+    ``_memory_pressure_threshold``), and a scheduler eviction failure
+    MUST surface a rate-limited ``logger.warning`` in the engine log.
 
-    The check below stubs out the rest of the engine loop and verifies
-    that one call into the engine's pressure-tick path triggers the
-    scheduler eviction even when ``active_mem`` is well below the
-    legacy threshold.
+    Both behaviours are pinned by driving
+    ``EngineCore._run_pressure_evict_tick`` directly with a stub
+    scheduler. Round 1 used source-text scans; round 2 BLOCKING #2
+    asked for actual behavioural assertions, which this rewrite
+    provides.
     """
 
-    def test_eviction_invoked_unconditionally_in_pressure_tick(self):
-        """The engine_core loop body for the pressure-tick must call
-        ``self.scheduler.evict_prefix_cache_under_pressure()`` outside
-        the ``active_mem > _memory_pressure_threshold`` branch.
+    def _build_minimal_engine_core(self, scheduler_stub):
+        """Construct an ``EngineCore`` shell that bypasses the model-
+        registry / executor setup so the tick helper can be driven
+        without booting a real MLX engine. Only attributes touched by
+        ``_run_pressure_evict_tick`` are populated."""
+        from vllm_mlx.engine_core import EngineCore
 
-        Rather than spin up a real engine loop, this test snapshots the
-        engine_core source to assert the call site lives OUTSIDE the
-        legacy threshold branch. Source-level assertion is brittle vs.
-        a behavioural one, but the alternative (instrument the live
-        loop with mocks) requires booting the full MLX engine for a
-        per-tick assertion — way out of scope for a unit test."""
-        import textwrap
-        from pathlib import Path
+        ec = EngineCore.__new__(EngineCore)
+        ec.scheduler = scheduler_stub
+        # The helper checks ``_pressure_evict_error_logged`` via
+        # ``getattr(..., default=False)``, so we don't need to set
+        # it up-front; it materializes on first failure.
+        return ec
 
-        eng_core_path = Path(__file__).parent.parent / "vllm_mlx" / "engine_core.py"
-        body = eng_core_path.read_text()
-        # The eviction call must appear OUTSIDE the
-        # "active_mem > _memory_pressure_threshold:" branch — i.e.
-        # at the same indent level as the ``if active_mem >`` line,
-        # not inside it. The simplest pin is to look for the call
-        # appearing AFTER the matching ``except Exception:`` block
-        # but BEFORE the next ``# Fast path:`` comment.
-        # The exact substring guards against a future refactor
-        # accidentally re-introducing the codex BLOCKING.
-        assert "self.scheduler.evict_prefix_cache_under_pressure()" in body
-        # Pin the unconditional invocation: ``# D-METAL-PFX:`` doc
-        # block that explains why we don't gate on the legacy
-        # threshold must remain — its absence is the regression
-        # signal.
-        assert (
-            "pressure-driven prefix-cache" in body
-            and "INDEPENDENTLY of the legacy" in body
-        ), (
-            "engine_core must explicitly document the unconditional "
-            "invocation of evict_prefix_cache_under_pressure — codex "
-            "BLOCKING regression guard."
-        )
-        # Confirm there's at least one prefix_cache_under_pressure
-        # call OUTSIDE the inner-try block that follows the
-        # ``mx.clear_cache()`` call.
-        # Find the line where the eviction call lives, and walk
-        # backwards looking for the ``if active_mem`` predicate. The
-        # assertion is that the eviction call lives at LESS indent
-        # than that predicate (i.e. outside the branch).
-        lines = body.splitlines()
-        evict_line_indents = [
-            len(line) - len(line.lstrip())
-            for line in lines
-            if "self.scheduler.evict_prefix_cache_under_pressure()" in line
-        ]
-        # Find the ``if active_mem > _memory_pressure_threshold:`` indent
-        threshold_branch_indent = next(
-            (
-                len(line) - len(line.lstrip())
-                for line in lines
-                if "if active_mem > _memory_pressure_threshold" in line
-            ),
-            None,
-        )
-        assert threshold_branch_indent is not None, (
-            "engine_core dropped the legacy memory-pressure threshold "
-            "branch — the new D-METAL-PFX call needs the same "
-            "16-step tick wrapper around it."
-        )
-        # At least one eviction call must be at OR BELOW the same
-        # indent as the threshold-branch ``if`` line — i.e. not nested
-        # strictly inside the branch.
-        assert any(
-            indent <= threshold_branch_indent for indent in evict_line_indents
-        ), textwrap.dedent("""
-            evict_prefix_cache_under_pressure() must be called
-            OUTSIDE the active_mem > _memory_pressure_threshold
-            branch so a low --gpu-memory-utilization cap still
-            triggers D-METAL-PFX recovery. See codex round 1
-            BLOCKING on PR #797.
-            """).strip()
+    def test_pressure_tick_calls_scheduler_regardless_of_legacy_threshold(self):
+        """Codex round 1 BLOCKING regression: the helper must invoke
+        ``scheduler.evict_prefix_cache_under_pressure`` on every
+        call, irrespective of any external pressure-threshold gate.
+        Behavioural pin — stubs the scheduler and counts calls."""
+        scheduler = MagicMock()
+        scheduler.evict_prefix_cache_under_pressure = MagicMock(return_value=0)
+        ec = self._build_minimal_engine_core(scheduler)
 
-    def test_eviction_error_logged_once(self, caplog):
-        """Codex round 1 NIT regression — a failure in the eviction
-        path must surface at WARN at least once, rate-limited per
-        process so a persistent failure doesn't flood the engine
-        log at the 16-step pressure-tick cadence."""
+        ec._run_pressure_evict_tick()
+        ec._run_pressure_evict_tick()
+        ec._run_pressure_evict_tick()
+
+        assert scheduler.evict_prefix_cache_under_pressure.call_count == 3, (
+            "engine_core must call the scheduler eviction tick once "
+            "per invocation, with no internal gating — see codex "
+            "round 1 BLOCKING on PR #797."
+        )
+
+    def test_pressure_tick_logs_warning_once_on_eviction_failure(self, caplog):
+        """Codex round 2 BLOCKING #2 regression: when the scheduler
+        eviction call raises, the engine MUST emit a single WARNING
+        and rate-limit subsequent failures so a persistent broken
+        cache variant doesn't flood the engine log at 16-step
+        cadence. Behavioural pin — stubs the scheduler to raise and
+        asserts exactly one D-METAL-PFX WARNING across multiple
+        calls."""
         import logging
 
-        from vllm_mlx import engine_core as engine_core_mod
+        scheduler = MagicMock()
+        boom = RuntimeError("simulated cache eviction failure")
+        scheduler.evict_prefix_cache_under_pressure = MagicMock(side_effect=boom)
+        ec = self._build_minimal_engine_core(scheduler)
 
-        # We don't spin up a real engine; we just verify the engine_core
-        # module documents the rate-limited error log pattern. (Real
-        # behavioural test would need a live engine loop, out of scope
-        # for unit tests; the docstring + module-level invariant is the
-        # next-best regression guard.)
-        body_text = engine_core_mod.__doc__ or ""
-        # Read the source instead of __doc__ since we need the call site.
-        from pathlib import Path
+        with caplog.at_level(logging.WARNING, logger="vllm_mlx.engine_core"):
+            for _ in range(5):
+                # Helper must NOT re-raise — engine loop continues.
+                ec._run_pressure_evict_tick()
 
-        eng_core_path = Path(__file__).parent.parent / "vllm_mlx" / "engine_core.py"
-        src = eng_core_path.read_text()
-        # The rate-limit guard must use a sentinel attribute on self —
-        # ``_pressure_evict_error_logged`` is the codex-suggested name.
-        assert "_pressure_evict_error_logged" in src, (
-            "engine_core must rate-limit the D-METAL-PFX eviction-"
-            "error log via a once-per-process sentinel attribute."
+        # Scheduler was hit every tick.
+        assert scheduler.evict_prefix_cache_under_pressure.call_count == 5
+
+        d_metal_warnings = [
+            r for r in caplog.records if "D-METAL-PFX" in r.getMessage()
+        ]
+        assert len(d_metal_warnings) == 1, (
+            f"expected exactly 1 D-METAL-PFX WARNING across 5 failing "
+            f"ticks (rate-limit sentinel), got {len(d_metal_warnings)}: "
+            f"{[r.getMessage() for r in d_metal_warnings]}"
         )
-        # Confirm there's at least one logger.warning call referencing
-        # D-METAL-PFX in the eviction-error path.
-        assert "D-METAL-PFX" in src and "logger.warning" in src, (
-            "engine_core must log the eviction error at WARN with a "
-            "D-METAL-PFX prefix so operators can grep for it."
+        # The warning MUST surface the underlying exception repr so
+        # operators can correlate the stalled D-METAL-PFX series with
+        # the root cause without enabling debug logging.
+        assert "simulated cache eviction failure" in d_metal_warnings[0].getMessage()
+        # Sentinel was set so further ticks stay silent.
+        assert ec._pressure_evict_error_logged is True
+
+    def test_pressure_tick_silent_on_success(self, caplog):
+        """A clean eviction call must NOT emit any WARNING — the rate-
+        limit warning is reserved for failures, not for every tick."""
+        import logging
+
+        scheduler = MagicMock()
+        scheduler.evict_prefix_cache_under_pressure = MagicMock(return_value=0)
+        ec = self._build_minimal_engine_core(scheduler)
+
+        with caplog.at_level(logging.WARNING, logger="vllm_mlx.engine_core"):
+            for _ in range(3):
+                ec._run_pressure_evict_tick()
+
+        d_metal_warnings = [
+            r for r in caplog.records if "D-METAL-PFX" in r.getMessage()
+        ]
+        assert d_metal_warnings == [], (
+            f"clean ticks must not log D-METAL-PFX warnings, got "
+            f"{[r.getMessage() for r in d_metal_warnings]}"
         )
-        # caplog is set up here for future behavioural-test upgrade;
-        # the body_text usage above silences ruff B007 by referencing it.
-        _ = caplog, body_text, logging
+
+
+class TestSchedulerPropagatesEvictionErrors:
+    """Codex round 2 BLOCKING #1 regression — a failing
+    ``_evict_one_prefix_cache_entry`` MUST propagate to
+    ``evict_prefix_cache_under_pressure`` (and from there to
+    engine_core's rate-limited warning). Pre-fix the inner method
+    swallowed every exception and returned ``False``, making a
+    broken cache variant indistinguishable from "nothing eligible"
+    so the engine warning never fired."""
+
+    def test_memory_aware_cache_eviction_error_propagates(self):
+        """``MemoryAwarePrefixCache._evict_lru`` raising under
+        coordinated eviction must propagate up — not be silently
+        squashed."""
+        sched = _make_scheduler_with_memory_aware_cache(gpu_memory_utilization=0.5)
+        mac = sched.memory_aware_cache
+        assert mac is not None
+        # Populate at least one entry so the early-return guard
+        # (empty ``_entries``) does not short-circuit before
+        # ``_evict_lru``.
+        mac._entries[(1, 2, 3)] = MagicMock(memory_bytes=1024)
+        mac._sorted_keys = [(1, 2, 3)]
+        mac._current_memory = 1024
+
+        with (
+            patch.object(mac, "_evict_lru", side_effect=RuntimeError("eviction broke")),
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+            pytest.raises(RuntimeError, match="eviction broke"),
+        ):
+            sched.evict_prefix_cache_under_pressure(max_evict=10)
+
+    def test_legacy_prefix_cache_eviction_error_propagates(self):
+        """``PrefixCacheManager._evict_lru`` raising must propagate up."""
+        sched = _make_scheduler_with_legacy_cache(gpu_memory_utilization=0.5)
+        sched.prefix_cache.store_cache([1, 2, 3], ["state-1"])
+
+        with (
+            patch.object(
+                sched.prefix_cache,
+                "_evict_lru",
+                side_effect=RuntimeError("trie eviction broke"),
+            ),
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=200 * 10**9
+            ),
+            pytest.raises(RuntimeError, match="trie eviction broke"),
+        ):
+            sched.evict_prefix_cache_under_pressure(max_evict=10)
+
+
+class TestPressureEvictFractionClamp:
+    """Codex round 2 NIT regression — ``metal_pressure_evict_fraction``
+    must be clamped into a documented ``(0, 1]`` range so a zero or
+    out-of-range configuration cannot subtly break the recovery loop."""
+
+    def test_zero_fraction_clamped_to_default(self):
+        """A zero / negative fraction must not evict on every tick —
+        clamp to the safe default (0.9)."""
+        config = SchedulerConfig(
+            enable_prefix_cache=True,
+            use_memory_aware_cache=False,
+            use_paged_cache=False,
+            prefix_cache_size=4,
+            gpu_memory_utilization=0.5,
+            metal_pressure_evict_fraction=0.0,  # invalid
+        )
+        sched = Scheduler(
+            model=MagicMock(),
+            tokenizer=MagicMock(),
+            config=config,
+        )
+        sched.prefix_cache.store_cache([1, 2, 3], ["state-1"])
+        # Active = 80% of cap. With the default-clamped fraction (0.9),
+        # 80% < 90%, so no eviction. If the clamp were missing, a
+        # threshold of 0 would mean "evict on every tick".
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(sched, "_current_metal_active_bytes", return_value=80 * 10**9),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+        assert n == 0
+        assert len(sched.prefix_cache) == 1
+
+    def test_above_one_fraction_clamped_to_one(self):
+        """A fraction > 1.0 would push the threshold above the cap
+        itself, making pressure eviction never run before admission
+        starts rejecting. Clamp to 1.0 (= the cap) so eviction at
+        least kicks in right before admission rejects."""
+        config = SchedulerConfig(
+            enable_prefix_cache=True,
+            use_memory_aware_cache=False,
+            use_paged_cache=False,
+            prefix_cache_size=4,
+            gpu_memory_utilization=0.5,
+            metal_pressure_evict_fraction=2.5,  # invalid
+        )
+        sched = Scheduler(
+            model=MagicMock(),
+            tokenizer=MagicMock(),
+            config=config,
+        )
+        sched.prefix_cache.store_cache([1, 2, 3], ["state-1"])
+        # Active exactly = cap → with clamp-to-1.0, threshold is the cap
+        # itself, so active < threshold is False and eviction triggers.
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=100 * 10**9
+            ),
+        ):
+            n = sched.evict_prefix_cache_under_pressure(max_evict=10)
+        # Eviction triggered → entry removed.
+        assert n == 1
+        assert len(sched.prefix_cache) == 0
 
 
 class TestMetalCacheMemoryMetric:

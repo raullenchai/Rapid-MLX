@@ -389,6 +389,50 @@ class EngineCore:
         """Check if engine is running."""
         return self._running
 
+    def _run_pressure_evict_tick(self) -> None:
+        """D-METAL-PFX: drive the scheduler pressure-eviction loop once.
+
+        Extracted from ``_engine_loop`` so the codex round 2 BLOCKING
+        behavioural test can drive the exact error-handling path
+        without spinning up a full asyncio engine loop.
+
+        Why this is its own helper:
+        - Called every 16 steps from the asyncio engine loop's
+          memory-pressure tick INDEPENDENTLY of the legacy
+          ``active_mem > _memory_pressure_threshold`` gate. That
+          gate is computed once at startup from
+          ``gpu_memory_utilization + 0.05`` (capped at 0.99) and on a
+          low cap like ``--gpu-memory-utilization 0.45`` it can sit
+          ABOVE the scheduler's own ``metal_pressure_evict_fraction ×
+          cap`` — gating on it would prevent D-METAL-PFX recovery on
+          exactly the configuration the bug repro flagged (codex
+          round 1 BLOCKING).
+        - ``Scheduler.evict_prefix_cache_under_pressure`` is itself
+          short-circuited when pressure is below its threshold AND
+          when the cap is disabled (default ``gpu_memory_utilization
+          = 0.0``), so calling this every 16 steps costs one
+          ``mx.get_active_memory()`` and one dict lookup on
+          configurations that don't need it.
+        - Exceptions from the eviction path (codex round 2 BLOCKING
+          #1: e.g. ``memory_aware_cache._evict_lru`` raising under a
+          subtle lock-state bug) MUST surface in the engine log so
+          operators can correlate a stalled D-METAL-PFX series with
+          the underlying error. Rate-limited via the
+          ``_pressure_evict_error_logged`` sentinel so a persistent
+          failure doesn't flood at 16-step cadence.
+        """
+        try:
+            self.scheduler.evict_prefix_cache_under_pressure()
+        except Exception as evict_exc:
+            if not getattr(self, "_pressure_evict_error_logged", False):
+                self._pressure_evict_error_logged = True
+                logger.warning(
+                    "[D-METAL-PFX] prefix-cache pressure "
+                    "eviction raised; further failures "
+                    "will be suppressed: %r",
+                    evict_exc,
+                )
+
     async def _engine_loop(self) -> None:
         """Main engine loop."""
         # The single mlx-step worker thread is created in start() so that
@@ -463,45 +507,9 @@ class EngineCore:
                         # D-METAL-PFX: pressure-driven prefix-cache
                         # eviction must run INDEPENDENTLY of the legacy
                         # ``_memory_pressure_threshold`` gate above.
-                        # That threshold is computed once at startup
-                        # from ``gpu_memory_utilization + 0.05`` (capped
-                        # at 0.99), while the scheduler's own
-                        # ``metal_pressure_evict_fraction`` (default
-                        # 0.9) can sit BELOW the legacy threshold —
-                        # particularly on low caps like
-                        # ``--gpu-memory-utilization 0.45`` where
-                        # 0.9 × cap is far below the legacy 0.5 ×
-                        # max_recommended check. If we only called the
-                        # scheduler tick from inside the
-                        # ``active_mem > _memory_pressure_threshold``
-                        # branch, the new D-METAL-PFX recovery loop
-                        # would never fire on exactly the configuration
-                        # the bug repro flagged (codex round 1
-                        # BLOCKING). The scheduler's own
-                        # ``evict_prefix_cache_under_pressure`` is
-                        # short-circuited when pressure is below its
-                        # threshold AND when the cap is disabled
-                        # (default), so calling it every 16 steps is
-                        # cheap on configurations that don't need it.
-                        try:
-                            self.scheduler.evict_prefix_cache_under_pressure()
-                        except Exception as evict_exc:
-                            # Codex round 1 NIT: do not silently swallow
-                            # — a broken cache variant must surface in
-                            # the engine log so operators can correlate
-                            # a stalled D-METAL-PFX series with the
-                            # underlying error. Rate-limited to once
-                            # per process (``_pressure_evict_error_logged``)
-                            # so a persistent failure doesn't flood at
-                            # 16-step cadence.
-                            if not getattr(self, "_pressure_evict_error_logged", False):
-                                self._pressure_evict_error_logged = True
-                                logger.warning(
-                                    "[D-METAL-PFX] prefix-cache pressure "
-                                    "eviction raised; further failures "
-                                    "will be suppressed: %r",
-                                    evict_exc,
-                                )
+                        # See ``_run_pressure_evict_tick`` for the full
+                        # rationale (codex round 1 BLOCKING + NIT).
+                        self._run_pressure_evict_tick()
 
                     # Fast path: distribute outputs to collectors
                     outputs = output.outputs
