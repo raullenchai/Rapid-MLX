@@ -1383,8 +1383,7 @@ async def _create_chat_completion_impl(
                         },
                     )
                 logger.info(
-                    "Using guided generation for JSON schema enforcement "
-                    "(strict=true)"
+                    "Using guided generation for JSON schema enforcement (strict=true)"
                 )
             elif use_guided:
                 logger.info("Using guided generation for JSON schema enforcement")

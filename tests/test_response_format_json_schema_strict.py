@@ -193,6 +193,32 @@ def test_is_strict_json_schema_recognizes_dict_payloads():
     assert is_strict_json_schema(None) is False
 
 
+def test_is_strict_json_schema_rejects_truthy_non_true_strict_values():
+    """Codex r1 NIT: a malformed payload like ``"strict": "false"``
+    is truthy under ``bool()`` but is clearly NOT a strict=true
+    intent. We require identity-True so the dict arm matches the
+    typed-model arm's semantics (Pydantic coerces strings/None to
+    bool there) and a client that fat-fingers the strict value
+    fails closed (opts INTO suggestion-only) rather than failing
+    open (silent enforcement)."""
+    # Strings are truthy under bool() but must NOT enable strict mode.
+    rf_strict_str_false = {
+        "type": "json_schema",
+        "json_schema": {"name": "X", "schema": _VALID_SCHEMA, "strict": "false"},
+    }
+    rf_strict_str_yes = {
+        "type": "json_schema",
+        "json_schema": {"name": "X", "schema": _VALID_SCHEMA, "strict": "yes"},
+    }
+    rf_strict_one = {
+        "type": "json_schema",
+        "json_schema": {"name": "X", "schema": _VALID_SCHEMA, "strict": 1},
+    }
+    assert is_strict_json_schema(rf_strict_str_false) is False
+    assert is_strict_json_schema(rf_strict_str_yes) is False
+    assert is_strict_json_schema(rf_strict_one) is False
+
+
 def test_validate_output_against_schema_accepts_valid_json():
     """Post-decode helper must accept output that parses + validates."""
     ok, err = validate_output_against_schema(_VALID_PAYLOAD, _VALID_SCHEMA)
@@ -210,9 +236,7 @@ def test_validate_output_against_schema_rejects_prose_wrapped_json():
 
 def test_validate_output_against_schema_rejects_schema_violation():
     """Schema violations must be flagged separately from JSON parse errors."""
-    ok, err = validate_output_against_schema(
-        _INVALID_PAYLOAD_WRONG_KEY, _VALID_SCHEMA
-    )
+    ok, err = validate_output_against_schema(_INVALID_PAYLOAD_WRONG_KEY, _VALID_SCHEMA)
     assert ok is False
     assert err is not None
     assert "schema violation" in err
@@ -301,10 +325,7 @@ def test_strict_true_guided_available_streaming_routes_to_constrained():
 
 @pytest.mark.parametrize(
     "valid_payload",
-    [
-        json.dumps({"value": v})
-        for v in [1, 2, 7, 13, 42, 50, 73, 88, 99, 100]
-    ],
+    [json.dumps({"value": v}) for v in [1, 2, 7, 13, 42, 50, 73, 88, 99, 100]],
 )
 def test_strict_true_responses_validate_for_10_distinct_valid_payloads(valid_payload):
     """10-prompt sweep: every response the route admits MUST validate
@@ -446,9 +467,7 @@ def test_post_decode_violation_bumps_counter_streaming():
     """Streaming path must run the same belt-and-braces check."""
     engine = _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE)
     client = _make_client(engine)
-    resp = client.post(
-        "/v1/chat/completions", json=_payload(strict=True, stream=True)
-    )
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
     assert resp.status_code == 200, resp.text
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
@@ -528,10 +547,119 @@ def test_metrics_reflects_strict_request_count_after_traffic():
     body = resp.text
     # Look for the exact sample line for the counter.
     for line in body.splitlines():
-        if line.startswith("rapid_mlx_response_format_strict_total ") and not line.startswith("#"):
+        if line.startswith(
+            "rapid_mlx_response_format_strict_total "
+        ) and not line.startswith("#"):
             assert line.endswith(" 3"), line
             break
     else:
         raise AssertionError(
             "rapid_mlx_response_format_strict_total sample line missing"
         )
+
+
+# ---------------------------------------------------------------------------
+# /v1/responses parity — same gate + same post-decode validation
+# ---------------------------------------------------------------------------
+
+
+def _make_responses_client(engine: _Engine) -> TestClient:
+    """Mount the /v1/responses router with shared cfg + metrics surface."""
+    from vllm_mlx.middleware.auth import rate_limiter
+    from vllm_mlx.routes.responses import router as responses_router
+
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+
+    rate_limiter.enabled = False
+    rate_limiter.requests_per_minute = 60
+    rate_limiter._requests.clear()
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(responses_router)
+    app.include_router(metrics_router)
+    return TestClient(app)
+
+
+def _responses_payload(*, strict: bool, stream: bool = False) -> dict:
+    """Responses-API body shape with ``text.format`` carrying the schema."""
+    return {
+        "model": "test-model",
+        "input": "Pick a number between 1 and 100",
+        "stream": stream,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "NumberOnly",
+                "schema": _VALID_SCHEMA,
+                "strict": strict,
+            }
+        },
+    }
+
+
+def test_responses_strict_true_guided_unavailable_returns_400():
+    """Codex r1 BLOCKING parity: /v1/responses + strict=true + no
+    guided → canonical 400 with the same envelope shape the chat
+    route emits. The two surfaces must agree on the contract."""
+    engine = _Engine(supports_guided=False)
+    client = _make_responses_client(engine)
+    resp = client.post("/v1/responses", json=_responses_payload(strict=True))
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "guided_extra_required"
+    assert "rapid-mlx[guided]" in body["error"]["message"]
+    # Counter must tick on /v1/responses too — the same strict-traffic
+    # series spans both surfaces.
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+
+
+def test_responses_strict_true_guided_available_routes_to_constrained():
+    """Codex r1 BLOCKING parity: /v1/responses non-stream + strict +
+    guided → dispatches to ``generate_with_schema`` (constrained),
+    NOT ``chat`` (unconstrained). This was the bug the codex review
+    flagged: pre-fix, /v1/responses dropped the strict flag and went
+    straight to ``engine.chat()``."""
+    engine = _Engine(supports_guided=True, guided_text=_VALID_PAYLOAD)
+    client = _make_responses_client(engine)
+    resp = client.post("/v1/responses", json=_responses_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    # Constrained path is the dispatch; unconstrained chat must not
+    # be the primary call when strict+guided.
+    assert len(engine.guided_calls) == 1
+    assert engine.chat_calls == []
+    # Counter ticks; no violation on valid output.
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
+
+
+def test_responses_strict_true_post_decode_violation_bumps_counter():
+    """Codex r1 BLOCKING parity: the /v1/responses non-stream path
+    must run the same post-decode validator the chat route runs.
+    Pre-fix, a strict request on /v1/responses with a buggy guided
+    output silently passed through — no violations counter ticked."""
+    engine = _Engine(supports_guided=True, guided_text=_INVALID_PAYLOAD_PROSE)
+    client = _make_responses_client(engine)
+    resp = client.post("/v1/responses", json=_responses_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+
+
+def test_responses_strict_false_falls_through_to_unconstrained():
+    """``strict=false`` on /v1/responses must NOT tick the strict
+    counter and must NOT 400 when guided is unavailable. Parity
+    with the chat route's suggestion-only contract."""
+    engine = _Engine(supports_guided=False)
+    client = _make_responses_client(engine)
+    resp = client.post("/v1/responses", json=_responses_payload(strict=False))
+    assert resp.status_code == 200, resp.text
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 0

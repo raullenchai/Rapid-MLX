@@ -1003,7 +1003,12 @@ def is_strict_json_schema(
             return False
         if response_format.json_schema is None:
             return False
-        return bool(response_format.json_schema.strict)
+        # Pydantic coerces ``"true"`` / ``"false"`` strings to the
+        # canonical bool, so by the time we get here ``strict`` is
+        # either ``True``, ``False``, or ``None``. Compare against
+        # the literal ``True`` so the ``None``/``False`` arms collapse
+        # to non-strict — matches the dict-arm semantics below.
+        return response_format.json_schema.strict is True
 
     if isinstance(response_format, dict):
         if response_format.get("type") != "json_schema":
@@ -1011,6 +1016,13 @@ def is_strict_json_schema(
         spec = response_format.get("json_schema") or {}
         if not isinstance(spec, dict):
             return False
-        return bool(spec.get("strict"))
+        # On the raw-dict path we deliberately require ``strict is True``
+        # rather than ``bool(strict)``: a malformed payload like
+        # ``"strict": "false"`` (string) is truthy under ``bool()`` and
+        # would silently enable enforcement on a client that intended
+        # to opt out. The Pydantic-typed arm is already strict (the
+        # field is typed ``bool | None``) so requiring identity here
+        # keeps both arms semantically aligned (codex r1 NIT).
+        return spec.get("strict") is True
 
     return False

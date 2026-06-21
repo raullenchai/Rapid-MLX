@@ -29,13 +29,17 @@ from ..api.models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
 )
-from ..api.response_format_metrics import incr_strict_request
+from ..api.response_format_metrics import (
+    incr_strict_request,
+    incr_strict_violation,
+)
 from ..api.responses_adapter import openai_to_responses, responses_to_openai
 from ..api.responses_models import ResponsesRequest
 from ..api.tool_calling import (
     convert_tools_for_template,
     extract_json_schema_for_guided,
     is_strict_json_schema,
+    validate_output_against_schema,
 )
 from ..api.utils import (
     StreamingThinkRouter,
@@ -294,12 +298,51 @@ async def _non_stream(
     start_time = time.perf_counter()
     timeout = cfg.default_timeout
 
+    # H-06: when the request asks for strict json_schema, route
+    # through ``engine.generate_with_schema`` for outlines-backed
+    # constrained decoding. The chat-route gate already 400'd above
+    # if guided was unavailable, so reaching here means
+    # ``supports_guided_generation`` was True. We fall back to
+    # ``engine.chat`` on guided failure rather than 500 — the
+    # post-decode validator below ticks the violations counter so
+    # operators see the degradation, but the request still gets a
+    # response (matches the chat-route fallback semantics).
+    _rf_for_strict = getattr(openai_request, "response_format", None)
+    _strict_schema = (
+        extract_json_schema_for_guided(_rf_for_strict)
+        if is_strict_json_schema(_rf_for_strict)
+        else None
+    )
+
     try:
-        output = await _wait_with_disconnect(
-            engine.chat(messages=messages, **chat_kwargs),
-            request,
-            timeout=timeout,
-        )
+        if _strict_schema and engine.supports_guided_generation:
+            try:
+                output = await _wait_with_disconnect(
+                    engine.generate_with_schema(
+                        messages=messages,
+                        json_schema=_strict_schema,
+                        **chat_kwargs,
+                    ),
+                    request,
+                    timeout=timeout,
+                )
+            except Exception as guided_err:
+                logger.warning(
+                    "Guided generation failed on /v1/responses, falling back "
+                    "to unconstrained: %s",
+                    guided_err,
+                )
+                output = await _wait_with_disconnect(
+                    engine.chat(messages=messages, **chat_kwargs),
+                    request,
+                    timeout=timeout,
+                )
+        else:
+            output = await _wait_with_disconnect(
+                engine.chat(messages=messages, **chat_kwargs),
+                request,
+                timeout=timeout,
+            )
     except HTTPException:
         raise
     except Exception as e:  # noqa: BLE001 — match other routes' error shape
@@ -336,6 +379,23 @@ async def _non_stream(
         f"Responses: {output.completion_tokens} tokens in {elapsed:.2f}s "
         f"({tokens_per_sec:.1f} tok/s)"
     )
+
+    # H-06 belt-and-braces: same post-decode validator the chat route
+    # runs for strict requests. Outlines should make this unreachable;
+    # any non-zero ``rapid_mlx_response_format_strict_violations_total``
+    # rate signals the constrained-decoding path silently degraded
+    # (e.g. the guided-fallback branch above caught a real outlines
+    # failure). We don't fail the request — the tokens were already
+    # produced — the contract violation is alertable via the counter.
+    if _strict_schema and output is not None:
+        ok, err = validate_output_against_schema(output.text or "", _strict_schema)
+        if not ok:
+            incr_strict_violation()
+            logger.warning(
+                "Strict json_schema response failed post-decode validation "
+                "on /v1/responses: %s",
+                err,
+            )
 
     engine_tool_calls = getattr(output, "tool_calls", None)
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(
@@ -1033,6 +1093,30 @@ async def _stream_responses(
                 },
             )
             tool_output_index += 1
+
+        # H-06 belt-and-braces: when the client asked for strict
+        # json_schema mode, run jsonschema.validate on the
+        # accumulated assistant text and tick the violations counter
+        # on any mismatch. The streaming /v1/responses path uses
+        # ``engine.stream_chat`` (constraint enforcement on
+        # streaming responses is suggestion-only here — the
+        # entry-point gate has already 400'd on missing [guided] —
+        # so we treat the post-decode validator as the contract
+        # observability hook. Non-zero rate on
+        # ``rapid_mlx_response_format_strict_violations_total``
+        # signals the constraint silently degraded.
+        _rf_for_strict = getattr(openai_request, "response_format", None)
+        if is_strict_json_schema(_rf_for_strict):
+            _schema = extract_json_schema_for_guided(_rf_for_strict)
+            if _schema:
+                ok, err = validate_output_against_schema(accumulated_text, _schema)
+                if not ok:
+                    incr_strict_violation()
+                    logger.warning(
+                        "Strict json_schema response failed post-decode "
+                        "validation on /v1/responses stream: %s",
+                        err,
+                    )
 
         # response.completed — terminal event. Codex treats a missing
         # one as a hard failure (it logs "stream closed before
