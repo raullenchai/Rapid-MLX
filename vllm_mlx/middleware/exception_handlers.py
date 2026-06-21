@@ -204,8 +204,8 @@ def _generic_error_response() -> JSONResponse:
 
 
 def _recursion_error_response() -> JSONResponse:
-    """The 400 envelope used when a ``RecursionError`` reaches the
-    framework boundary (D-TOOL-RECUR / D-DEEP-JSON defense-in-depth).
+    """The sanitized envelope used when a ``RecursionError`` reaches
+    the framework boundary (D-TOOL-RECUR / D-DEEP-JSON defense-in-depth).
 
     The primary defense for both bugs is structural — an iterative
     chat-template walk (see
@@ -227,27 +227,32 @@ def _recursion_error_response() -> JSONResponse:
 
     Surfacing a ``RecursionError`` as HTTP 500 with a stack trace
     fragment (the pre-fix shape) is both a DoS signal AND an info-leak
-    — the trace named ``_sanitize_tools_for_template._walk`` on every
-    parser, so an attacker could identify the function and the line.
-    This handler is the final boundary: any ``RecursionError`` that
-    reaches it gets the same sanitized 400 envelope as the body-depth
-    middleware uses, with no traceback in the body. We log the trace
-    at WARNING level so an operator can spot a new recursion site we
-    should put a structural fix on.
+    — the pre-fix trace named ``_sanitize_tools_for_template._walk``
+    on every parser, so an attacker could identify the function and
+    the line. This handler returns the SAME shape as
+    :func:`_generic_error_response` (HTTP 500 ``Internal server
+    error``) so:
+
+    * No stack trace ever reaches the client (info-leak closed).
+    * We DON'T claim "request body too deep" when the cause might
+      actually be an unrelated recursion bug elsewhere in the server
+      (codex r4 BLOCKING — a misleading 400 on a server-side bug
+      would mask the real failure mode and the client would retry).
+      The user-facing message stays neutral so an SDK keying on
+      ``error.message == "Internal server error"`` handles it the
+      same as any other unhandled server-side fault.
+    * The body-depth gate middleware still emits its own
+      ``request_body_too_deep`` 400 from the depth-cap rejection
+      path — clients DO see that more-actionable error when the
+      cause was actually a deep body.
+
+    We log the trace at WARNING level so an operator can spot a new
+    recursion site we should put a structural fix on, regardless of
+    whether the cause was body-depth-related or somewhere else.
     """
     return JSONResponse(
-        status_code=400,
-        content={
-            "error": {
-                "message": (
-                    "Request body JSON nesting depth exceeds an internal "
-                    "recursion bound (set via RAPID_MLX_MAX_BODY_DEPTH)."
-                ),
-                "type": "invalid_request_error",
-                "code": "request_body_too_deep",
-                "param": None,
-            }
-        },
+        status_code=500,
+        content={"error": {"message": "Internal server error"}},
     )
 
 

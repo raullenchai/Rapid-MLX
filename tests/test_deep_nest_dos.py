@@ -605,13 +605,23 @@ def test_body_depth_gate_catches_parser_recursion_error(monkeypatch):
 # ============================================================
 
 
-def test_recursion_error_handler_returns_sanitized_400():
-    """A ``RecursionError`` raised inside a route handler (synthetic
-    repro for any future path that bypasses both depth gates) MUST
-    surface as the canonical 400 envelope, not as HTTP 500 with a
-    stack trace. Pre-fix the trace named the recursion site
-    (``_sanitize_tools_for_template._walk``) — both an info-leak and
-    a DoS signal."""
+def test_recursion_error_handler_returns_sanitized_500_no_traceback():
+    """A ``RecursionError`` that escapes the structural gates MUST
+    surface with the SAME sanitized 500 envelope as any other
+    unhandled server-side fault — no stack trace, no recursion-site
+    name, and CRUCIALLY no false ``request_body_too_deep`` claim
+    (codex r4 BLOCKING: an unrelated recursion bug elsewhere in the
+    server would lie to the client about the cause if the handler
+    were narrower).
+
+    Pre-r4 this handler emitted a 400 ``request_body_too_deep``,
+    which was a UX downgrade for the real depth-cap path (the
+    body-depth middleware emits the same code more accurately
+    BEFORE reaching this handler) and misleading for everything
+    else. Post-r4 the handler returns ``{"error": {"message":
+    "Internal server error"}}`` — same shape as
+    :func:`_generic_error_response` — so SDKs handle it
+    consistently."""
     from vllm_mlx.middleware.exception_handlers import install_exception_handlers
 
     app = FastAPI()
@@ -630,17 +640,21 @@ def test_recursion_error_handler_returns_sanitized_400():
     try:
         client = TestClient(app, raise_server_exceptions=False)
         resp = client.post("/v1/_recursion_repro")
-        assert resp.status_code == 400, resp.text[:400]
+        # 500 with the canonical generic envelope — NOT the 400
+        # depth-cap envelope, because the cause isn't necessarily
+        # request depth (the route handler itself recursed).
+        assert resp.status_code == 500, resp.text[:400]
         body = resp.json()
-        err = body["error"]
-        assert err["type"] == "invalid_request_error"
-        assert err["code"] == "request_body_too_deep"
+        assert body == {"error": {"message": "Internal server error"}}
         # No traceback in the response body — the trace went to the
         # operator log only.
         raw = resp.text
         assert "Traceback" not in raw
         assert "_f(n" not in raw
         assert "_walk" not in raw
+        # No false "request_body_too_deep" claim on an unrelated
+        # recursion bug.
+        assert "request_body_too_deep" not in raw
     finally:
         sys.setrecursionlimit(original_limit)
 
