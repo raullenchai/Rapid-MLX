@@ -244,6 +244,87 @@ class DeepSeekV31ToolParser(ToolParser):
             return None
         return name, args
 
+    # -----------------------------------------------------------------
+    # Streaming helper — closed-V3 block recovery (codex r3 BLOCKING-2)
+    # -----------------------------------------------------------------
+    def _maybe_emit_closed_v3_blocks(
+        self, current_text: str, request: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Scan the cumulative streamed text for closed V3-shaped blocks
+        that have not yet been announced via ``_streamed_v3_ids``. If
+        any exist, emit them now as a one-shot ``tool_calls`` delta and
+        return that delta. Otherwise return ``None`` and let the legacy
+        streaming path run.
+
+        Why this lives at the top of streaming dispatch: a single
+        delta may both close a V3 block AND open a non-V3-yet block,
+        in which case the open-block sniffer would miss the closed V3
+        (it only inspects the latest body). The cumulative scan catches
+        it regardless of what the next block is doing.
+        """
+        # ``extract_tool_calls`` runs the same block-wise scanner used
+        # for non-streaming parses, so it sees all closed blocks. We
+        # use index correlation: ``_streamed_v3_ids`` records the IDs
+        # of every block we've already emitted (in order), so any
+        # parsed call past ``len(_streamed_v3_ids)`` is unannounced.
+        result = self.extract_tool_calls(current_text, request)
+        if not result.tools_called:
+            return None
+
+        # Find the V3-shaped block indices in the cumulative text so we
+        # only short-circuit for V3 blocks; V3.1 blocks continue to use
+        # the legacy delta machine for token-by-token emission.
+        is_v3_index = self._classify_block_shapes(current_text)
+
+        # Walk the parsed calls; for any index whose block is V3-shaped
+        # AND hasn't been emitted yet, queue it for emission.
+        to_emit: list[tuple[int, dict[str, Any]]] = []
+        for idx, tc in enumerate(result.tool_calls):
+            if idx >= len(is_v3_index) or not is_v3_index[idx]:
+                continue
+            if idx < len(self._streamed_v3_ids):
+                continue
+            to_emit.append((idx, tc))
+
+        if not to_emit:
+            return None
+
+        emitted: list[dict[str, Any]] = []
+        for abs_idx, tc in to_emit:
+            tc_id = tc["id"]
+            self._streamed_v3_ids.append(tc_id)
+            # Keep ``current_tool_id`` advanced past this index so the
+            # legacy machine doesn't try to re-emit the same block as
+            # V3.1 on a subsequent delta. We're a bit defensive: if the
+            # legacy path already advanced past this index (e.g. a
+            # V3.1 block sat in front of a V3 block), we don't rewind.
+            if abs_idx > self.current_tool_id:
+                self.current_tool_id = abs_idx
+            emitted.append(
+                {
+                    "index": abs_idx,
+                    "id": tc_id,
+                    "type": "function",
+                    "function": {
+                        "name": tc["name"],
+                        "arguments": tc["arguments"],
+                    },
+                }
+            )
+        return {"tool_calls": emitted}
+
+    @classmethod
+    def _classify_block_shapes(cls, model_output: str) -> list[bool]:
+        """Return ``[is_v3_per_block]`` for every CLOSED block, in
+        order. Open trailing blocks are not included — they have no
+        determined shape until ``<call_end>`` arrives.
+        """
+        out: list[bool] = []
+        v3_marker = f"{_V3_TYPE_TAG}{cls.TOOL_SEP}"
+        for body in cls._iter_block_bodies(model_output):
+            out.append(body.lstrip("\n").startswith(v3_marker))
+        return out
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:
@@ -338,102 +419,59 @@ class DeepSeekV31ToolParser(ToolParser):
             return {"content": delta_text}
 
         # ----------------------------------------------------------------
-        # V3-shape streaming short-circuit (D-DSV31 follow-on).
+        # V3-shape streaming gate (D-DSV31 follow-on).
         #
-        # The legacy streaming path captures ``name<sep>args`` from the
-        # currently-open block via a single regex — that emits
-        # ``name="function"`` mid-stream for V3 bodies because the literal
-        # ``function`` type tag *is* what arrives first. The cleanest
-        # incremental fix without rewriting the entire delta state
-        # machine: when ANY block in the current envelope is (or could
-        # become) V3-shaped, buffer silently until the block closes,
-        # then emit the fully resolved name+args as a single one-shot
-        # tool_call event via the non-streaming ``extract_tool_calls``
-        # path. Clients receive a well-formed call instead of a hot
-        # stream of garbage deltas.
+        # The legacy delta machine captures ``name<sep>args`` from the
+        # currently-open block via a single regex — that would emit
+        # ``name="function"`` mid-stream for V3 bodies because the
+        # literal ``function`` type tag *is* what arrives first.
         #
-        # Activation criteria for buffering an OPEN block:
-        #   * a ``<call_begin>`` is open (more begins than ends)
-        #   * the open body either already matches ``function<sep>`` or
-        #     is consistent with becoming V3 (body is a prefix of the V3
-        #     type-tag-plus-sep marker). The prefix-match keeps us out of
-        #     the legacy path BEFORE it bumps ``current_tool_id`` on the
-        #     first ``<call_begin>`` delta, which would otherwise desync
-        #     the close-emission below.
+        # The gate has two responsibilities, applied in order:
+        #
+        #   A. Detect V3 in any CLOSED block via the cumulative
+        #      non-streaming parser. If a V3 block has closed but
+        #      hasn't yet been announced (tracked by
+        #      ``self._streamed_v3_ids``), emit it now. This handles
+        #      the "delta closes a V3 block and also opens an empty
+        #      next block" case (codex r3 BLOCKING-2): the V3 detection
+        #      lives in the closed-block scan, not in inspection of
+        #      the latest possibly-open body.
+        #
+        #   B. For the currently-OPEN block: buffer silently only when
+        #      V3 is *confirmed* by the body starting with
+        #      ``function<｜tool▁sep｜>`` (the V3 type tag + separator).
+        #      We do NOT buffer on a mere prefix-could-become-V3 because
+        #      a V3.1 tool whose name happens to start with ``f``,
+        #      ``fun``, ``function_lookup`` etc. would otherwise be
+        #      swallowed (codex r3 BLOCKING-1) and the legacy state
+        #      machine never gets to advance ``current_tool_id``.
+        #
+        # The closed-V3-emit path runs first because it must fire even
+        # when the *latest* (possibly empty) block isn't V3-confirmed
+        # but a previously-closed block was V3.
         # ----------------------------------------------------------------
         cur_start_count = current_text.count(self.TOOL_CALL_START)
         cur_end_count = current_text.count(self.TOOL_CALL_END)
-
-        # Body of the most-recent block (may still be open).
-        latest_body = ""
-        if cur_start_count > 0:
-            tail = current_text.split(self.TOOL_CALL_START)[-1]
-            latest_body = tail.split(self.TOOL_CALL_END)[0]
-        latest_body_stripped = latest_body.lstrip("\n")
         v3_marker = f"{_V3_TYPE_TAG}{self.TOOL_SEP}"
 
-        # Confirmed V3 once the type-tag-plus-sep is in the body.
-        is_v3_confirmed = latest_body_stripped.startswith(v3_marker)
-        # Ambiguous prefix while the body has at least one character but
-        # is still a strict prefix of ``function<sep>``. We require >=1
-        # body character (codex r1 BLOCKING — every string starts with
-        # ``""`` so the empty-body case would otherwise hijack legitimate
-        # V3.1 streams that ended right after ``<call_begin>`` and
-        # haven't yet emitted a single body byte).
-        body_could_be_v3 = (
-            not is_v3_confirmed
-            and cur_end_count < cur_start_count  # block still open
-            and 0 < len(latest_body_stripped) < len(v3_marker)
-            and v3_marker.startswith(latest_body_stripped)
-        )
+        # --- A. Closed V3 block recovery ---
+        # Scan the closed blocks for V3-shaped bodies; emit any whose
+        # absolute index hasn't been streamed yet.
+        closed_v3_emit = self._maybe_emit_closed_v3_blocks(current_text, request)
+        if closed_v3_emit is not None:
+            return closed_v3_emit
 
-        if is_v3_confirmed or body_could_be_v3:
-            # Block still open → buffer silently.
-            if cur_end_count < cur_start_count:
+        # --- B. Open-block confirmed-V3 buffer ---
+        # Latest (possibly open) block body.
+        is_block_open = cur_end_count < cur_start_count
+        if is_block_open:
+            tail = current_text.split(self.TOOL_CALL_START)[-1]
+            open_body = tail.split(self.TOOL_CALL_END)[0].lstrip("\n")
+            if open_body.startswith(v3_marker):
+                # V3 confirmed in open block — silently buffer. The
+                # closed-V3 path will emit it once <call_end> lands in
+                # a later delta.
                 return None
-            # At least one block closed. Run the canonical non-streaming
-            # extract on the cumulative text and emit any closed-block
-            # tool calls we haven't announced yet. ``current_tool_id``
-            # tracks the highest already-emitted index (-1 = none).
-            prev_end_count = previous_text.count(self.TOOL_CALL_END)
-            newly_closed = cur_end_count - prev_end_count
-            if newly_closed <= 0:
-                return None
-            result = self.extract_tool_calls(current_text, request)
-            if not result.tools_called:
-                return None
-            start_idx = self.current_tool_id + 1
-            tail_calls = result.tool_calls[start_idx : start_idx + newly_closed]
-            if not tail_calls:
-                return None
-            # Stable IDs across re-parses (codex r1 BLOCKING):
-            # ``extract_tool_calls`` generates a fresh ``call_xxxx`` ID
-            # every invocation, but we re-invoke it every time a block
-            # closes — so previously-emitted blocks would get new IDs on
-            # later deltas. Cache the IDs we have already announced and
-            # only mint a new ID when the parsed list grows past what
-            # we've previously cached.
-            emitted: list[dict[str, Any]] = []
-            for i, tc in enumerate(tail_calls):
-                absolute_idx = start_idx + i
-                if absolute_idx < len(self._streamed_v3_ids):
-                    tc_id = self._streamed_v3_ids[absolute_idx]
-                else:
-                    tc_id = tc["id"]
-                    self._streamed_v3_ids.append(tc_id)
-                emitted.append(
-                    {
-                        "index": absolute_idx,
-                        "id": tc_id,
-                        "type": "function",
-                        "function": {
-                            "name": tc["name"],
-                            "arguments": tc["arguments"],
-                        },
-                    }
-                )
-            self.current_tool_id += len(tail_calls)
-            return {"tool_calls": emitted}
 
         delta_text = delta_text.replace(self.TOOL_CALLS_START, "").replace(
             self.TOOL_CALLS_END, ""
