@@ -386,16 +386,20 @@ def _recover_partial_tool_args(raw_text: str | None) -> str | None:
         args_marker_idx = text.find('"arguments"', search_start)
         if args_marker_idx == -1:
             break
-        # Find the colon that follows ``"arguments"`` (may have
-        # whitespace before/after). Scan forward up to a small
-        # bound — beyond that the marker is just prose, not a
-        # structural field.
-        colon_idx = text.find(":", args_marker_idx, args_marker_idx + 20)
-        if colon_idx == -1:
+        # codex r3 NIT: the previous fixed 20-char window for the
+        # colon rejected valid JSON like
+        # ``"arguments"    \n   :   {...}`` (lots of pretty-print
+        # whitespace). Walk past whitespace from the end of the
+        # ``"arguments"`` token and then require ``:`` — no
+        # arbitrary cap.
+        pos = args_marker_idx + len('"arguments"')
+        while pos < n and text[pos] in " \t\n\r":
+            pos += 1
+        if pos >= n or text[pos] != ":":
             search_start = args_marker_idx + len('"arguments"')
             continue
         # Skip whitespace after the colon, looking for the object opener.
-        pos = colon_idx + 1
+        pos += 1
         while pos < n and text[pos] in " \t\n\r":
             pos += 1
         if pos >= n or text[pos] != "{":
@@ -534,41 +538,94 @@ _TOOL_WIRE_STANDALONE_MARKERS = (
 )
 
 
+# Cross-family opener/closer set — used by phase 1.5 to catch the
+# qwen3-style mixed-closer leak where the model emits ``<tool_call>``
+# but closes with ``</function>`` (or some other unrelated closer).
+# Any opener-to-any-closer span gets stripped in one sweep. The list
+# is the union of opener and closer regex patterns we already track
+# in ``_TOOL_WIRE_BALANCED_PAIRS`` plus the always-orphan ones.
+#
+# This is bounded — phase 1.5 only fires when an opener appears AND
+# any closer-class marker appears later in the text. If neither
+# qualifies, the span is left for phase 2's marker-only strip.
+_CROSS_FAMILY_OPENERS = "|".join(
+    [
+        r"<tool_call>",
+        r"<function=[^>]*>",
+        r"<function>",
+        r"<｜tool▁calls▁begin｜>",
+        r"<｜tool▁call▁begin｜>",
+        r"<minimax:tool_call>",
+        r"<invoke\b[^>]*>",
+        r"<arg_key>",
+        r"<\|tool_calls_section_begin\|>",
+        r"\[TOOL_CALLS\]",
+    ]
+)
+_CROSS_FAMILY_CLOSERS = "|".join(
+    [
+        r"</tool_call>",
+        r"</function>",
+        r"</parameter>",
+        r"<｜tool▁calls▁end｜>",
+        r"<｜tool▁call▁end｜>",
+        r"</minimax:tool_call>",
+        r"</invoke>",
+        r"</arg_value>",
+        r"<\|tool_calls_section_end\|>",
+        r"\[/TOOL_CALLS\]",
+    ]
+)
+# Non-greedy ``opener…any-closer`` — catches the qwen3 ``<tool_call>``
+# + ``</function>`` cross-family leak that the strict same-family
+# pairs in phase 1 don't match.
+_CROSS_FAMILY_SPAN_RE = re.compile(
+    rf"(?:{_CROSS_FAMILY_OPENERS}).*?(?:{_CROSS_FAMILY_CLOSERS})",
+    re.DOTALL,
+)
+
+
 def _scrub_tool_wire_literals(text: str | None) -> str:
     """Strip every known parser-wire opener/closer marker from
-    ``text`` in two phases (see ``_TOOL_WIRE_BALANCED_PAIRS`` docstring
-    for rationale). Returns a whitespace-collapsed result so we don't
-    leave a void where the wire used to live.
+    ``text`` in three phases. Returns a whitespace-collapsed result
+    so we don't leave a void where the wire used to live.
+
+    Phases:
+
+      1. **Same-family balanced spans** — strip every balanced
+         ``opener…closer`` span from the same parser family
+         (``<tool_call>...</tool_call>``,
+         ``<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>``, etc.).
+      2. **Cross-family spans** — strip any-opener-to-any-closer
+         spans the model emitted with mismatched wires (the qwen3
+         ``<tool_call>{...}</function>`` shape — codex r3 BLOCKING #1).
+      3. **Standalone markers** — orphan opener or closer literals
+         that survived phases 1+2 get scrubbed as bare tokens
+         WITHOUT eating surrounding text (codex r1 BLOCKING #1
+         preserved-trailing-text invariant).
 
     Idempotent: safe to call on text that has no wire literals (the
     regex sweep is a no-op). Called by the chat route ONLY when
     ``tool_choice="required"`` synthesises (or recovers args for) a
     call from a malformed wire — i.e. when the model's text output
     contained tool-call markers the parser couldn't extract from.
-    Calling it on clean prose is harmless but wasted work; the route
-    therefore gates it on the synth path.
-
-    codex r1 BLOCKING #1: previously used ``opener.*?(?:closer|\\Z)``
-    which silently deleted from an orphan opener through EOF. The
-    two-phase design preserves any trailing prose / reasoning that
-    follows an unmatched marker, while still scrubbing the visible
-    marker bytes themselves.
     """
     if not text:
         return text or ""
     result = text
-    # Phase 1: strip every balanced opener…closer span. Non-greedy
-    # so back-to-back blocks each match independently.
+    # Phase 1: same-family balanced opener…closer spans.
     for opener_re, closer_re in _TOOL_WIRE_BALANCED_PAIRS:
-        # ``opener.pattern + lazy-anything + closer.pattern`` —
-        # build per-call so a closer literal containing regex
-        # metacharacters stays correctly escaped within the
-        # per-pair pattern.
         balanced = re.compile(opener_re.pattern + r".*?" + closer_re.pattern, re.DOTALL)
         result = balanced.sub("", result)
+    # Phase 1.5 (cross-family): catches ``<tool_call>{...}</function>``
+    # and similar mismatched-closer shapes the strict same-family
+    # pairs above don't match. Without this, the malformed body
+    # between the opener and the unrelated closer survives as
+    # ``content`` (codex r3 BLOCKING #1).
+    result = _CROSS_FAMILY_SPAN_RE.sub("", result)
     # Phase 2: strip standalone marker tokens (orphan opener OR
-    # orphan closer that survived phase 1). ONLY the marker bytes
-    # are removed; surrounding text is preserved.
+    # orphan closer that survived phases 1+1.5). ONLY the marker
+    # bytes are removed; surrounding text is preserved.
     for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
         result = marker_re.sub("", result)
     # Collapse any runs of whitespace left by the strip. Preserves
@@ -2484,16 +2541,27 @@ async def _create_chat_completion_impl(
     if tool_calls and request.tools:
         _validate_tool_call_params(tool_calls, request.tools)
 
-    # D-TOOLCHOICE-R1 T3: when the post-parse path synthesised a forced
-    # tool call from a malformed wire body, the same raw text that the
-    # parser couldn't extract from is still living in ``cleaned_text``
-    # AND in ``output.raw_text`` (which the reasoning parser will see
-    # next). Scrub both sources of parser-wire-marker literals so they
-    # don't leak as ``content`` / ``reasoning_content``. The scrub is
-    # parser-agnostic — it strips every known opener-and-body pattern,
-    # so adding a new parser doesn't reopen this leak.
+    # D-TOOLCHOICE-R1 T3: scrub wire-marker leftovers from the
+    # response text. Two trigger conditions:
+    #
+    #   (a) the post-parse path SYNTHESISED a forced tool call
+    #       (parser couldn't extract from a malformed wire body), OR
+    #   (b) the parser DID extract a call but ``tool_choice="required"``
+    #       was set AND the raw wire had cross-family / orphan markers
+    #       the parser's cleanup left behind (e.g. qwen3 emits
+    #       ``<tool_call>{json}</function>`` — hermes recovers the JSON
+    #       but the trailing ``</function>`` survives as content).
+    #
+    # Both conditions imply the model attempted a tool call and any
+    # wire literals in the output are junk by definition. The scrub
+    # is parser-agnostic so adding a new parser doesn't reopen the
+    # leak; codex r3 BLOCKING #2 caught case (b) — even the
+    # recover-args path needs the scrub.
+    _wire_scrub_active = _synth_forced_tool_call or (
+        request.tool_choice is not None and request.tools and bool(tool_calls)
+    )
     _scrubbed_raw_text: str | None = None
-    if _synth_forced_tool_call:
+    if _wire_scrub_active:
         cleaned_text = _scrub_tool_wire_literals(cleaned_text)
         _raw_for_reasoning = output.raw_text or output.text
         _scrubbed_raw_text = _scrub_tool_wire_literals(_raw_for_reasoning)

@@ -562,6 +562,28 @@ def test_t3_chat_route_recovers_args_when_possible():
     assert args == {"a": 4128, "b": 7591}, (
         f"recoverable args were not used: got {args!r}"
     )
+    # codex r3 BLOCKING #2: even on the recoverable shape, the
+    # parser-wire markers in the raw body MUST NOT leak into the
+    # user-visible fields. The recovered-args shape uses a
+    # ``<tool_call>`` opener + ``</function>`` cross-family closer,
+    # which exercises the phase-1.5 cross-family scrub specifically
+    # (the phase-1 strict same-family pair would not match).
+    content = msg.get("content") or ""
+    reasoning = msg.get("reasoning_content") or ""
+    for leak in (
+        "<tool_call>",
+        "</tool_call>",
+        "</function>",
+        "</parameter>",
+        '"name":',
+        '"arguments":',
+    ):
+        assert leak not in content, (
+            f"recoverable-args path leaked {leak!r} into content: {content!r}"
+        )
+        assert leak not in reasoning, (
+            f"recoverable-args path leaked {leak!r} into reasoning: {reasoning!r}"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -792,6 +814,79 @@ def test_codex_r2_blocking_prefers_last_within_wire_span():
 
     parsed = _json.loads(got)
     assert parsed == {"v": 2}
+
+
+def test_codex_r3_blocking_1_scrub_strips_cross_family_qwen3_leak():
+    """Codex r3 BLOCKING #1 — the qwen3 leak shape uses a
+    ``<tool_call>`` opener with a ``</function>`` closer (mismatched
+    families). The strict same-family pairs in phase 1 do not match
+    that span, so the JSON body between the two markers used to
+    survive into ``content``. Phase 1.5 (cross-family span) closes
+    the leak."""
+    leak = (
+        '<tool_call>\n{"name":"add_numbers","arguments":{"a":1,"b":2}}\n</function>\n'
+    )
+    out = _scrub_tool_wire_literals(leak)
+    # The whole span (including the JSON body) is gone — that body
+    # is the malformed tool-call attempt, not legitimate prose.
+    for leak_token in (
+        "<tool_call>",
+        "</function>",
+        '"name":',
+        '"arguments":',
+        "add_numbers",
+    ):
+        assert leak_token not in out, (
+            f"cross-family scrub left {leak_token!r} behind: {out!r}"
+        )
+
+
+def test_codex_r3_blocking_1_scrub_cross_family_preserves_pre_and_post_prose():
+    """The cross-family scrub MUST NOT eat legitimate text before
+    the opener or after the closer — only the wire span itself."""
+    leak = (
+        "Pre-wire reasoning. "
+        '<tool_call>{"name":"x","arguments":{}}</function>'
+        " Post-wire reasoning continues."
+    )
+    out = _scrub_tool_wire_literals(leak)
+    assert "<tool_call>" not in out
+    assert "</function>" not in out
+    assert "Pre-wire reasoning" in out
+    assert "Post-wire reasoning continues" in out
+
+
+def test_codex_r3_blocking_1_scrub_orphan_opener_still_preserves_tail():
+    """Cross-family scrub is non-greedy — it requires SOME closer
+    to fire. An orphan opener with no closer anywhere in the text
+    should NOT trigger phase 1.5 (regression for the r1 BLOCKING #1
+    invariant that trailing prose past an orphan opener survives)."""
+    leak = "<tool_call>\n{junk\nLegitimate trailing prose."
+    out = _scrub_tool_wire_literals(leak)
+    # Marker stripped by phase 2 (standalone).
+    assert "<tool_call>" not in out
+    # Trailing prose preserved (phase 1.5 didn't fire — no closer).
+    assert "Legitimate trailing prose" in out
+
+
+def test_codex_r3_nit_recover_handles_pretty_print_whitespace():
+    """Codex r3 NIT — the colon between ``"arguments"`` and ``{``
+    may have arbitrary whitespace (newlines, deep indents,
+    pretty-print). The previous fixed 20-char window rejected valid
+    JSON with too much whitespace; the fix walks past whitespace
+    unbounded before requiring ``:``."""
+    raw = (
+        '<tool_call>{"name": "x", "arguments"\n'
+        "        \n"
+        "                 :\n"
+        '        {"deeply": {"nested": "values"}}}</tool_call>'
+    )
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    parsed = _json.loads(got)
+    assert parsed == {"deeply": {"nested": "values"}}
 
 
 def test_codex_r2_blocking_deepseek_envelope_counts_as_wire_span():
