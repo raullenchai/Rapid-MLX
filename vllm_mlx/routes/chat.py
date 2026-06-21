@@ -2209,11 +2209,44 @@ async def stream_chat_completion(
                         processor.accumulated_reasoning + processor.accumulated_text
                     )
                 )
-                synthetic_raw = (
-                    "<think>" + processor.accumulated_reasoning
-                    if saw_open_no_close
-                    else processor.accumulated_reasoning or ""
+                # D-HARMONY-LEAK (2026-06-21): harmony-streaming mirror
+                # of the truncated-``<think>`` synthetic raw above. On
+                # gpt-oss / Harmony streaming, the engine token-routes
+                # via ``OutputRouter`` so ``output.channel="reasoning"``
+                # arrives in the postprocessor pre-split — the literal
+                # ``<|channel|>analysis<|message|>`` opener is consumed
+                # as a state transition by ``HarmonyStreamingRouter``
+                # and never lands in ``accumulated_reasoning``. The
+                # streaming counterpart of the bug: when generation
+                # cuts short before a final channel emerges (max_tokens
+                # mid-analysis OR a stop string matching mid-analysis),
+                # ``accumulated_text`` stays empty and the rescue would
+                # promote the analysis trace to ``delta.content`` —
+                # shipping byte-identical content + reasoning_content
+                # to the client. Synthesise a harmony-marked raw_text
+                # so the helper's new harmony-shape gate (analysis
+                # marker present, final marker absent, no ``<|call|>``)
+                # fires uniformly across both the streaming and non-
+                # streaming surfaces. Gated on the parser type so the
+                # synthetic only fires for Harmony — gemma-4 / qwen
+                # families still rely on their existing rescue paths.
+                rp_is_harmony = (
+                    type(rp).__name__ == "HarmonyReasoningParser" if rp else False
                 )
+                harmony_cut_short = bool(
+                    rp_is_harmony
+                    and processor.accumulated_reasoning
+                    and not processor.accumulated_text
+                )
+                if harmony_cut_short:
+                    synthetic_raw = (
+                        "<|channel|>analysis<|message|>"
+                        + processor.accumulated_reasoning
+                    )
+                elif saw_open_no_close:
+                    synthetic_raw = "<think>" + processor.accumulated_reasoning
+                else:
+                    synthetic_raw = processor.accumulated_reasoning or ""
                 # PR #715 bundle, fuzz finding C: streaming Case-4
                 # mirror of the non-streaming detection. When the
                 # parser never saw a ``<think>``/``</think>`` token

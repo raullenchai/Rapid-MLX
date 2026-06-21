@@ -703,6 +703,42 @@ def _rescue_silent_drop_from_reasoning(
         return final_content
     if finish_reason == "length" and reasoning_is_case4:
         return final_content
+    # D-HARMONY-LEAK (2026-06-21): harmony-channel analog of the
+    # truncated-``<think>`` gate above. The gpt-oss family (and any
+    # Harmony-encoding tokenizer) emits ``<|channel|>analysis<|message|>
+    # …<|end|><|channel|>final<|message|>…<|return|>`` as the wire
+    # contract for a complete reasoning-then-answer turn — the
+    # ``<|channel|>analysis<|message|>`` opener is the analysis-channel
+    # start marker and ``<|channel|>final<|message|>`` is the
+    # final-channel start marker (the user-visible answer). When
+    # generation is cut short BEFORE the final-channel opener appears
+    # (max_tokens cut mid-analysis OR ``stop:["X"]`` matched a stop-
+    # string that happens to land in the analysis body), the engine
+    # has correctly routed the analysis bytes into ``reasoning_text``
+    # and left ``content`` empty — exactly the silent-drop shape this
+    # rescue was designed to fix. But the analysis body is NOT the
+    # model's final answer, so promoting it to ``content`` ships the
+    # SAME bytes in both fields (``content == reasoning_content``
+    # mojibake) — the bug filed as D-HARMONY-LEAK. Gate the rescue
+    # on the harmony state machine: when raw_text shows an analysis-
+    # channel opener but NO final-channel opener AND no ``<|call|>``
+    # (tool call terminator), we are structurally mid-state-machine
+    # and the rescue must NOT fire. The gate is finish_reason-
+    # AGNOSTIC because both repros (max_tokens=length AND stop-string
+    # match=stop) produce the same broken shape — letting the rescue
+    # fire on either would re-leak the analysis body into ``content``.
+    # When the model DID reach the final channel (final-marker
+    # present), control already returned through the happy-path
+    # early-exit above, so no override is needed for that case. When
+    # the model emitted a commentary tool call (``<|call|>``), the
+    # ``tool_calls`` branch above already suppressed the rescue.
+    if (
+        raw_text
+        and "<|channel|>analysis<|message|>" in raw_text
+        and "<|channel|>final<|message|>" not in raw_text
+        and "<|call|>" not in raw_text
+    ):
+        return final_content
     return reasoning_text
 
 
