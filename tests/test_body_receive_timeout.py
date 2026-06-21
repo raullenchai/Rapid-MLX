@@ -699,6 +699,7 @@ def test_h14_env_var_override_reduces_timeout():
         # ServerConfig field. The CLI lives in vllm_mlx.cli; the
         # resolver runs at module-level reload time.
         import vllm_mlx.server as server_mod
+
         # The CLI's env-resolver writes to server_mod._body_receive_timeout_seconds
         # which is then pushed into the ServerConfig at request time.
         env_val = float(os.environ["RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"])
@@ -740,7 +741,10 @@ def test_h14_env_var_override_reduces_timeout():
         # And the envelope reports the smaller timeout we set.
         body_frame = next(m for m in sent if m["type"] == "http.response.body")
         payload = json.loads(body_frame["body"])
-        assert "0.1s" in payload["error"]["message"] or "0.0s" in payload["error"]["message"]
+        assert (
+            "0.1s" in payload["error"]["message"]
+            or "0.0s" in payload["error"]["message"]
+        )
     finally:
         del os.environ["RAPID_MLX_BODY_RECEIVE_TIMEOUT_SECONDS"]
 
