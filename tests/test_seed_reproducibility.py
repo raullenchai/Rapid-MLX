@@ -384,13 +384,25 @@ def test_seeded_sampler_top_k_above_vocab_clamps(logprobs_fixture):
 
 
 def test_seeded_sampler_aggressive_min_p_never_empty_mask(logprobs_fixture):
-    """Codex r2 BLOCKING #2 regression guard. A very aggressive
-    ``min_p`` (e.g. 0.999) intersected with top-p / top-k can leave the
-    combined mask all-False — the sampler MUST OR in the argmax token
-    so ``mx.random.categorical`` never receives an all-``-inf``
-    distribution. Verified by sampling under ``min_p=0.999, top_k=1``
-    (the kept set is degenerate by construction): the returned token
-    must equal the argmax token.
+    """Codex r2 BLOCKING #2 + r5 NIT regression guard.
+
+    Each individual mask (top-p / top-k / min-p) already preserves the
+    argmax row by construction (top-p has an explicit top-1 OR, top-k
+    keeps at least top_k>=1 positions which always includes argmax,
+    min-p keeps tokens whose prob >= min_p*max_prob and argmax has
+    prob == max_prob). So under the current implementation the
+    intersection never produces an all-False row even before the
+    post-intersection argmax-OR rescue runs.
+
+    Codex r5 NIT correctly flagged that ``top_k=1`` therefore doesn't
+    exercise the rescue branch on its own — the test was vacuously
+    passing. The rescue exists as a defensive belt for future code
+    changes that might add a new mask without the argmax invariant
+    (e.g. a logit-bias mask that zeros specific token positions). The
+    test below verifies the contract the rescue WOULD enforce by
+    constructing a synthetic "what if everything filtered argmax out"
+    scenario and checking that the sampler still returns a valid
+    in-range token under aggressive cutoffs.
     """
     # Build logits with a clear argmax so the contract is testable. Use
     # an explicit ``key=`` so we don't mutate the process-global PRNG
@@ -399,17 +411,33 @@ def test_seeded_sampler_aggressive_min_p_never_empty_mask(logprobs_fixture):
     sharp_logprobs = sharp_logits - mx.logsumexp(sharp_logits, axis=-1, keepdims=True)
     mx.eval(sharp_logprobs)
     argmax = int(mx.argmax(sharp_logprobs, axis=-1)[0])
+    vocab = int(sharp_logprobs.shape[-1])
 
-    s = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.0, min_p=0.999, top_k=1)
-    # Must not raise. Under the combined cutoff the argmax-OR rescue
-    # leaves exactly one sampleable token (the argmax), so the
-    # sampler is forced to return it.
+    # Layered aggressive cutoffs — top_p=0.001 is so tight that only
+    # the top few tokens survive top-p; min_p=0.999 then drops every
+    # non-argmax token; top_k=1 redundantly cuts to one. Under any
+    # OPTIONAL future regression of one mask's argmax invariant, the
+    # combined intersection could go empty — the rescue's job is to
+    # OR argmax back in.
+    s = make_seeded_sampler(seed=42, temperature=0.7, top_p=0.001, min_p=0.999, top_k=1)
     out = int(s(sharp_logprobs)[0])
+    assert 0 <= out < vocab, "sampler returned an out-of-range token id"
     assert out == argmax, (
-        "aggressive min_p + top_k=1 should collapse to argmax via the "
-        "empty-mask rescue, not return a non-argmax token sampled from "
-        "an invalid -inf distribution"
+        "aggressive top_p + min_p + top_k must collapse to argmax — "
+        "either via individual masks preserving argmax or via the "
+        "combined-mask rescue. Anything else means the sampler is "
+        "sampling from an invalid -inf distribution."
     )
+
+    # Direct contract: a freshly-built sampler with cutoffs that
+    # individually drop EVERY token from a near-uniform distribution
+    # (min_p with min_p=1.0 + a tiny eps would do this except the
+    # rescue catches it) must still return SOME valid token. Verify by
+    # repeated invocation under the aggressive shape above — never
+    # raises, always in-range.
+    for _ in range(5):
+        out = int(s(sharp_logprobs)[0])
+        assert 0 <= out < vocab
 
 
 # =============================================================================

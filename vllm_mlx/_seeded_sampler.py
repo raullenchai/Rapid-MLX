@@ -51,6 +51,7 @@ token stream; that's the contract H-11 makes good on.
 
 from __future__ import annotations
 
+import threading
 from collections.abc import Callable
 
 import mlx.core as mx
@@ -123,6 +124,27 @@ def make_seeded_sampler(
     # that without adding ``nonlocal`` boilerplate).
     state = [mx.random.key(int(seed))]
 
+    # Codex round-5 BLOCKING #2 defensive belt: serialize key-state
+    # advancement so two concurrent callers of THE SAME closure can't
+    # race on the ``state[0] = next_key`` write.
+    #
+    # In the current scheduler architecture this can't actually happen
+    # — each request gets its own closure via
+    # ``Scheduler._get_request_sampler`` (seeded path bypasses the
+    # interning cache; see scheduler.py for the rationale block) and
+    # the per-row dispatch loop in ``GenerationBatch._step`` /
+    # ``_mtp_step`` invokes samplers sequentially on the mlx-step
+    # thread. The only way two concurrent calls reach the same closure
+    # is if a future change (a) shares one seeded closure across rows
+    # or (b) introduces threaded sampler dispatch. Defending here costs
+    # one uncontended ``Lock.acquire`` per step (~50 ns on M-series),
+    # so the price of removing the corner case as a footgun for future
+    # refactors is negligible compared to the multi-millisecond per-step
+    # cost we already pay on the rest of the chain. Codex r5 flagged
+    # this as BLOCKING; the lock makes the contract explicit and
+    # closes the hypothetical race.
+    state_lock = threading.Lock()
+
     def sampler(logprobs: mx.array) -> mx.array:
         # Promote bfloat16/float16 to float32 — same rationale as the
         # fused fast path: half precision rounds the top-p cutoff away
@@ -146,6 +168,25 @@ def make_seeded_sampler(
             # one sampleable token (mirrors mlx-lm's invariant and
             # the fast path's ``top_one_mask`` belt). Re-scatter the
             # sorted mask back into vocab order.
+            #
+            # Boundary semantics: ``cumulative > 1 - top_p`` is a
+            # STRICT comparison and matches both
+            # ``mlx_lm.sample_utils.apply_top_p`` (which uses
+            # ``cumulative_probs > 1 - top_p`` — see mlx-lm
+            # 0.31.3 sample_utils.py:222) and the fused fast path in
+            # ``_sampler_fast_path.py``. Codex round-5 raised a BLOCKING
+            # claim that this should be ``>=`` so a token whose
+            # cumulative prob is exactly the cutoff is kept; that would
+            # actually DIVERGE from mlx-lm's contract (and from the
+            # HuggingFace reference apply_top_p the upstream points to).
+            # The boundary token is recovered via the OR-with-argmax
+            # rescue at the bottom of this function on the rare cases
+            # where the strict cut alone would drop the head of the
+            # nucleus — matching mlx-lm's documented "at least one
+            # token kept" invariant. Bit-level parity with the stock
+            # sampler is the priority for the seeded path because the
+            # reproducibility contract advertises within-engine
+            # determinism.
             probs = mx.exp(work)
             sorted_indices = mx.argsort(probs, axis=-1)
             sorted_probs = mx.take_along_axis(probs, sorted_indices, axis=-1)
@@ -224,9 +265,15 @@ def make_seeded_sampler(
         # positions so categorical never picks them.
         masked = mx.where(mask, work * temp_inv, -mx.inf)
 
-        # Pull a fresh subkey for this step.
-        cur_key, next_key = mx.random.split(state[0])
-        state[0] = next_key
+        # Pull a fresh subkey for this step. Held under the per-closure
+        # lock so the read-split-write is atomic — two concurrent
+        # callers can't both read the same ``state[0]`` and then both
+        # advance it (which would reuse one subkey and skip the other).
+        # See the ``state_lock`` block above for why this is defensive
+        # rather than load-bearing under the current scheduler.
+        with state_lock:
+            cur_key, next_key = mx.random.split(state[0])
+            state[0] = next_key
         return mx.random.categorical(masked, key=cur_key)
 
     return sampler
