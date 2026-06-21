@@ -171,6 +171,62 @@ class TestRepairByteLevelDecoder:
         # No mojibake markers in vocab — probe finds nothing — no repair.
         assert repair_byte_level_decoder(plain) is False
 
+    def test_repair_restores_original_decoder_when_swap_fails_verification(
+        self,
+    ) -> None:
+        """If ByteLevel swap doesn't clear the mojibake either (unknown
+        vocab shape), the original decoder must be restored — *not* left
+        as ByteLevel. Locks codex r1 BLOCKING contract."""
+        # Build a vocab where every "byte-level-looking" token actually
+        # decodes through a custom decoder that ByteLevel can't undo.
+        # We simulate this by giving the vocab a Ġ-prefixed token whose
+        # byte-level inverse still contains Ġ — patho­logical, but the
+        # contract is: we revert on failure.
+        vocab = {"<pad>": 0, "Ġevil": 1}
+        model = models.BPE(vocab=vocab, merges=[])
+        rust = Tokenizer(model)
+        rust.pre_tokenizer = pre_tokenizers.ByteLevel(add_prefix_space=False)
+        # Custom decoder that simply returns the pretty token verbatim —
+        # this is the BROKEN-on-byte-level shape we want to repair.
+        original = decoders.Sequence(
+            [
+                decoders.Replace("▁", " "),
+                decoders.ByteFallback(),
+                decoders.Fuse(),
+                decoders.Strip(" ", 1, 0),
+            ]
+        )
+        rust.decoder = original
+        tok = PreTrainedTokenizerFast(tokenizer_object=rust, pad_token="<pad>")
+
+        # Sanity: the broken decode contains Ġ.
+        assert "Ġ" in tok.decode([1], skip_special_tokens=False)
+
+        # Monkey-patch ``tokenizers.decoders.ByteLevel`` to be a no-op
+        # decoder (returns the input unchanged — still leaks Ġ) so the
+        # verification path will fail and trigger the revert branch.
+        import tokenizers.decoders as _decmod
+
+        from vllm_mlx.utils import tokenizer as _toktools
+
+        class _NoopDecoder(decoders.Decoder):
+            def decode(self, tokens: list[str]) -> str:
+                return "".join(tokens)
+
+        # Patch only inside the call so we don't leak global state.
+        real_byte_level = _decmod.ByteLevel
+        try:
+            _decmod.ByteLevel = _NoopDecoder
+            assert _toktools.repair_byte_level_decoder(tok) is False
+        finally:
+            _decmod.ByteLevel = real_byte_level
+
+        # The contract: original decoder is back in place.
+        assert tok.backend_tokenizer.decoder.__class__.__name__ == "Sequence", (
+            f"expected Sequence (original), got "
+            f"{tok.backend_tokenizer.decoder.__class__.__name__}"
+        )
+
 
 # ---------------------------------------------------------------------------
 # 2. Streaming surface: IncrementalDecoder (delta.* path)

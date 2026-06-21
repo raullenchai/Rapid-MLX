@@ -158,7 +158,11 @@ def repair_byte_level_decoder(tokenizer) -> bool:
         # Decoder is already correct.
         return False
 
-    # Decoder is broken: swap in a plain ByteLevel decoder.
+    # Decoder is broken: swap in a plain ByteLevel decoder. Save the
+    # original so we can restore it on verification failure (codex r1
+    # BLOCKING: a "revert" comment that doesn't actually revert leaves
+    # an unverified mutation in place).
+    original_decoder = backend.decoder
     try:
         from tokenizers import decoders as _decoders
 
@@ -172,27 +176,35 @@ def repair_byte_level_decoder(tokenizer) -> bool:
         return False
 
     # Verify the swap actually fixed the decode. If the model genuinely
-    # uses a non-ByteLevel pretty token (unlikely on real models), leave
-    # the original in place so we don't silently corrupt output.
+    # uses a non-ByteLevel pretty token (unlikely on real models), put
+    # the original decoder back so we don't silently corrupt output.
     try:
         verify = inner.decode([probe_id], skip_special_tokens=False)
     except Exception:
         verify = decoded
     if any(m in verify for m in _BYTE_LEVEL_MOJIBAKE_MARKERS):
+        # Restore the original decoder — if ByteLevel can't clear the
+        # mojibake either, the vocab is in a shape we don't understand
+        # and changing the decoder is a net behaviour change. Honour
+        # the "non-destructive on unknown vocab" contract by undoing
+        # the swap before returning False.
+        try:
+            backend.decoder = original_decoder
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "repair_byte_level_decoder: could not restore original "
+                "decoder on %s after failed verification: %s",
+                type(inner).__name__,
+                exc,
+            )
         logger.warning(
             "repair_byte_level_decoder: swap did not clear mojibake on %s "
-            "(probe id=%d pretty=%r decoded=%r); reverting",
+            "(probe id=%d pretty=%r decoded=%r); restored original decoder",
             type(inner).__name__,
             probe_id,
             probe_pretty,
             verify,
         )
-        # Best-effort revert is not strictly necessary — if the swap
-        # didn't help, the original decoder was producing the same
-        # mojibake, so callers are no worse off. But to honour the
-        # "non-destructive" contract on unexpected vocabs we surface the
-        # warning and leave the new decoder in place (still ByteLevel —
-        # any further regression would be visible to the same probe).
         return False
 
     logger.info(
