@@ -162,6 +162,22 @@ class EngineCore:
 
         # Create scheduler
         scheduler_config = self.config.scheduler_config or SchedulerConfig()
+        # D-METAL-CAP: propagate the engine-level ``gpu_memory_utilization``
+        # to the scheduler so its admission gate can enforce the same cap
+        # that ``mx.set_memory_limit`` only treats as a hint. Skip when the
+        # caller already wired it explicitly to a non-zero value so unit
+        # tests that craft a SchedulerConfig in isolation retain their
+        # explicit setting.
+        try:
+            if (
+                getattr(scheduler_config, "gpu_memory_utilization", 0.0) <= 0.0
+                and getattr(self.config, "gpu_memory_utilization", 0.0) > 0.0
+            ):
+                scheduler_config.gpu_memory_utilization = (
+                    self.config.gpu_memory_utilization
+                )
+        except Exception:
+            pass
         self.scheduler = Scheduler(
             model=model,
             tokenizer=tokenizer,
@@ -436,10 +452,26 @@ class EngineCore:
                             active_mem = mx.get_active_memory()
                             if active_mem > _memory_pressure_threshold:
                                 mx.clear_cache()
+                                # D-METAL-PFX: ``clear_cache`` only
+                                # drops the free-pool; live prefix-cache
+                                # entries still pin their KV slabs.
+                                # When pressure persists despite a
+                                # cache flush (the single-32k-prefill
+                                # cliff repro), evict prefix-cache
+                                # entries LRU until pressure drops or
+                                # we hit the per-tick bound. The
+                                # scheduler's
+                                # ``evict_prefix_cache_under_pressure``
+                                # is internally bounded so we cannot
+                                # thrash here.
+                                try:
+                                    self.scheduler.evict_prefix_cache_under_pressure()
+                                except Exception:
+                                    pass
                                 logger.warning(
                                     f"[Memory pressure] {active_mem / 1e9:.1f}GB > "
                                     f"{_memory_pressure_threshold / 1e9:.0f}GB threshold, "
-                                    f"forced cache clear"
+                                    f"forced cache clear + prefix-cache pressure evict"
                                 )
                         except Exception:
                             pass

@@ -210,6 +210,26 @@ class SchedulerConfig:
     # requests than ``max_num_seqs`` to exercise the queue).
     max_concurrent_requests: int = 256
 
+    # D-METAL-CAP: GPU memory utilization cap used for admission-time
+    # enforcement. ``mx.set_memory_limit`` is documented as a guideline —
+    # MLX will quietly grow PAST the limit while system RAM is
+    # available, so the user's ``--gpu-memory-utilization 0.45`` request
+    # is silently violated on big-RAM hosts (a 256 GB M3 Ultra actually
+    # grew Metal active to ~179 GB on a single 32k-prefill before macOS
+    # paged). The scheduler therefore re-enforces the cap in Python at
+    # admission and at the periodic memory-pressure check. ``0.0``
+    # disables the soft check (back-compat default; engines populate
+    # this from ``EngineConfig.gpu_memory_utilization`` via
+    # ``BatchedEngine``).
+    gpu_memory_utilization: float = 0.0
+    # D-METAL-PFX: pressure threshold above which the scheduler
+    # proactively evicts prefix-cache entries (LRU) to release Metal
+    # slabs. Expressed as a fraction of the hard cap. Default 0.9 keeps
+    # a 10% safety margin below the cap, wide enough that one large
+    # prefill on a half-empty cache will not trigger a thrash loop.
+    # See D-METAL-PFX in 0.8TODO for the regression repro.
+    metal_pressure_evict_fraction: float = 0.9
+
     # PFlash long-prompt prefill compression (#287). Disabled by default;
     # see vllm_mlx/pflash.py for the design notes and the prefix-cache
     # bypass on compressed requests.
@@ -1936,12 +1956,39 @@ class Scheduler:
         # untouched.
         self.num_requests_cancelled = 0
         self.num_requests_cancelled_via_disconnect = 0
+        # D-METAL-CAP observability. Increments once per request that
+        # ``add_request`` rejected because Metal active memory already
+        # exceeded the soft cap. Surfaced as
+        # ``rapid_mlx_metal_cap_violations_total`` so operators can see
+        # ``--gpu-memory-utilization`` is doing meaningful work
+        # (pre-fix, the cap was silently violated and there was no
+        # series to alert on).
+        self.num_metal_cap_violations = 0
+        # D-METAL-PFX observability. Increments once per prefix-cache
+        # entry that was evicted by the Metal-pressure trigger (separate
+        # series from the LRU-capacity evictions reported by the cache
+        # itself). Surfaced as
+        # ``rapid_mlx_prefix_cache_pressure_evictions_total``.
+        self.num_prefix_cache_pressure_evictions = 0
+        # D-METAL-CAP: once-per-process WARNING gate. The log noise of
+        # a sustained over-cap admit storm would otherwise drown the
+        # rest of the engine output; we want exactly one operator-
+        # visible WARNING when the cap first trips, and then rely on
+        # the Prometheus counter for ongoing visibility.
+        self._metal_cap_warning_logged = False
 
         # Memory management: periodic mx.clear_cache() to free Metal command buffers
         # Lower interval = less VRAM spike during generation but slight throughput cost
         self._step_count = 0
         self._clear_cache_interval = 32
         self._memory_log_interval = 256
+        # D-METAL-CAP / D-METAL-PFX: cached hard cap in bytes for fast
+        # admission checks. Computed lazily on first use so unit tests
+        # that build a Scheduler against a fake model with no Metal
+        # device pay zero cost. ``0`` means "no cap" (see
+        # ``gpu_memory_utilization`` doc on SchedulerConfig).
+        self._metal_cap_bytes: int = 0
+        self._metal_cap_bytes_resolved: bool = False
 
         # Prompt-boundary cache snapshot callback for the new mlx-lm 0.31+ API.
         # Built lazily once memory_aware_cache exists and reused per step.
@@ -2897,6 +2944,202 @@ class Scheduler:
             logger.info(f"[mid_prefill_cache] reconstruct EXCEPTION: {e}")
             return None
 
+    def _resolve_metal_cap_bytes(self) -> int:
+        """Compute the admission-time Metal cap in bytes (cached after first call).
+
+        D-METAL-CAP root cause: ``mx.set_memory_limit`` is documented as
+        a *guideline* — MLX will silently grow past the limit while
+        system RAM is available. On a 256 GB M3 Ultra with
+        ``--gpu-memory-utilization 0.45`` (≈ 115 GB cap) the user saw
+        Metal active grow to 179 GB on a single 32k prefill with no
+        warning. This helper materializes the same per-device cap the
+        BatchedEngine boot path uses for ``mx.set_memory_limit`` so the
+        scheduler can enforce it at admission with no race against the
+        allocator's leniency window.
+
+        Returns ``0`` when the cap should be considered disabled (the
+        SchedulerConfig default ``gpu_memory_utilization=0.0``, or the
+        Metal device probe failed). Callers MUST treat ``0`` as "do not
+        check" rather than "no headroom".
+        """
+        if self._metal_cap_bytes_resolved:
+            return self._metal_cap_bytes
+        cap = 0
+        util = float(getattr(self.config, "gpu_memory_utilization", 0.0) or 0.0)
+        if util > 0.0:
+            try:
+                if mx.metal.is_available():
+                    info = mx.device_info()
+                    base = info.get(
+                        "max_recommended_working_set_size",
+                        info.get("memory_size", 0),
+                    )
+                    if base and base > 0:
+                        cap = int(base * util)
+            except Exception:
+                cap = 0
+        self._metal_cap_bytes = cap
+        self._metal_cap_bytes_resolved = True
+        return cap
+
+    def _current_metal_active_bytes(self) -> int:
+        """Best-effort snapshot of MLX-reported Metal active memory.
+
+        Wrapped in try/except so a non-Metal host (CI, Linux GPU shim,
+        unit-test fake) doesn't take down the admission path.
+        """
+        try:
+            return int(mx.get_active_memory())
+        except Exception:
+            return 0
+
+    def _enforce_metal_cap_at_admission(self, request: Request) -> None:
+        """D-METAL-CAP: reject the request if Metal active exceeds the cap.
+
+        Runs as the second admission check in ``add_request`` —
+        immediately after the concurrent-requests cap and BEFORE any
+        tokenization / prefix-cache lookup so the rejection cost is a
+        single ``mx.get_active_memory`` syscall plus a dict lookup.
+
+        Behavior on cap violation:
+        - Increment ``num_metal_cap_violations`` counter (exposed via
+          /metrics).
+        - Log a single WARNING the first time the cap trips in this
+          process — subsequent violations rely on the Prometheus
+          counter to keep the log readable on a sustained over-cap
+          storm (#D-METAL-CAP repro showed thousands of attempted
+          admits within a single minute).
+        - Raise ``BackpressureError`` so the existing route plumbing
+          translates the failure to HTTP 503 with Retry-After.
+
+        No-op when ``gpu_memory_utilization`` is 0 (default) or the
+        Metal device probe failed — preserves the engine_core
+        soft-pressure check as the only line of defence on those
+        configurations (back-compat).
+        """
+        cap = self._resolve_metal_cap_bytes()
+        if cap <= 0:
+            return
+        active = self._current_metal_active_bytes()
+        if active < cap:
+            return
+        self.num_metal_cap_violations += 1
+        if not self._metal_cap_warning_logged:
+            self._metal_cap_warning_logged = True
+            logger.warning(
+                "[D-METAL-CAP] Metal active %.1f GB ≥ cap %.1f GB "
+                "(gpu_memory_utilization=%.2f) — rejecting new request "
+                "%s with backpressure. Further violations will be tracked "
+                "by rapid_mlx_metal_cap_violations_total only.",
+                active / 1e9,
+                cap / 1e9,
+                getattr(self.config, "gpu_memory_utilization", 0.0),
+                request.request_id[:12],
+            )
+        raise BackpressureError(
+            f"Metal active {active / 1e9:.1f}GB exceeds "
+            f"gpu_memory_utilization cap {cap / 1e9:.1f}GB "
+            f"(D-METAL-CAP); retry after pressure drops"
+        )
+
+    def evict_prefix_cache_under_pressure(self, max_evict: int = 64) -> int:
+        """D-METAL-PFX: LRU-evict prefix-cache entries while Metal pressure persists.
+
+        Designed for the periodic engine_core memory-pressure tick:
+        when Metal active climbs above ``metal_pressure_evict_fraction``
+        of the soft cap, this method walks the LRU evicting the oldest
+        prefix-cache entries until pressure drops or ``max_evict``
+        entries have been removed. After each eviction we call
+        ``mx.clear_cache()`` so the allocator actually returns slabs
+        to MLX's free pool rather than holding wired memory pinned to
+        the now-dead CacheEntry.
+
+        Returns the number of entries evicted (0 if pressure was
+        already below threshold, no cache is configured, or the cache
+        had nothing eligible for eviction). Increments
+        ``num_prefix_cache_pressure_evictions`` for each eviction so
+        operators can attribute pressure-driven eviction separately
+        from the cache's own LRU-capacity eviction in /metrics.
+
+        Implementation note: ``max_evict`` is bounded so a single
+        pressure tick cannot evict the entire prefix cache and trash
+        every in-flight hit-rate stat on a transient spike. The
+        engine_core loop calls this method every 16 steps, so a
+        sustained-pressure scenario still drains the cache within a
+        few hundred ms — fast enough to recover from the D-METAL-PFX
+        single-32k-prefill cliff that pinned ~7.7 GB worth of cache
+        entries with zero allocator-cache memory free.
+        """
+        cap = self._resolve_metal_cap_bytes()
+        if cap <= 0:
+            return 0
+        threshold = int(
+            cap * float(getattr(self.config, "metal_pressure_evict_fraction", 0.9))
+        )
+        evicted = 0
+        for _ in range(max(0, int(max_evict))):
+            active = self._current_metal_active_bytes()
+            if active < threshold:
+                break
+            if not self._evict_one_prefix_cache_entry():
+                break
+            evicted += 1
+            self.num_prefix_cache_pressure_evictions += 1
+            # Force the MLX allocator to actually return the slab now
+            # that the trie / dict no longer pins the CacheEntry. Without
+            # this, the underlying Metal allocation lingers in the
+            # free-cache list and ``get_active_memory`` does not drop on
+            # the next tick — exactly the D-METAL-PFX symptom (allocator
+            # cache stuck at 0 while active stayed pinned).
+            try:
+                mx.clear_cache()
+            except Exception:
+                pass
+        if evicted:
+            logger.info(
+                "[D-METAL-PFX] evicted %d prefix-cache entries under Metal "
+                "pressure (cap=%.1fGB threshold=%.1fGB)",
+                evicted,
+                cap / 1e9,
+                threshold / 1e9,
+            )
+        return evicted
+
+    def _evict_one_prefix_cache_entry(self) -> bool:
+        """Evict a single LRU prefix-cache entry across all cache variants.
+
+        Returns True if an entry was actually removed. Encapsulates the
+        cache-variant dispatch so ``evict_prefix_cache_under_pressure``
+        stays variant-agnostic.
+
+        The three cache variants share an LRU policy but their
+        internal data structures differ:
+        - ``memory_aware_cache``: OrderedDict-based, exposes
+          ``_evict_lru`` under its own lock.
+        - ``prefix_cache``: trie + OrderedDict LRU.
+        - ``block_aware_cache``: paged block table; out of scope for
+          the pressure trigger (blocks are released by
+          ``PagedCacheManager`` ref-counts), so we no-op.
+        """
+        if self.memory_aware_cache is not None:
+            try:
+                with self.memory_aware_cache._lock:  # noqa: SLF001 — coordinated eviction
+                    if not self.memory_aware_cache._entries:  # noqa: SLF001
+                        return False
+                    self.memory_aware_cache._evict_lru()  # noqa: SLF001
+                return True
+            except Exception:
+                return False
+        if self.prefix_cache is not None:
+            try:
+                if not getattr(self.prefix_cache, "_lru", None):
+                    return False
+                self.prefix_cache._evict_lru()  # noqa: SLF001 — coordinated eviction
+                return True
+            except Exception:
+                return False
+        return False
+
     def add_request(self, request: Request) -> None:
         """
         Add a new request to the scheduler.
@@ -2922,6 +3165,13 @@ class Scheduler:
                 f"max_concurrent_requests={cap} reached "
                 f"(currently {len(self.requests)} in-flight)"
             )
+
+        # D-METAL-CAP: enforce the gpu_memory_utilization cap that
+        # ``mx.set_memory_limit`` silently let MLX violate on big-RAM
+        # hosts. Raises ``BackpressureError`` so the existing route
+        # plumbing returns 503 + Retry-After instead of marching the
+        # allocator past the operator-configured limit.
+        self._enforce_metal_cap_at_admission(request)
 
         # Tokenize if needed
         if request.prompt_token_ids is None:
@@ -4313,6 +4563,14 @@ class Scheduler:
             "num_requests_cancelled": self.num_requests_cancelled,
             "num_requests_cancelled_via_disconnect": (
                 self.num_requests_cancelled_via_disconnect
+            ),
+            # D-METAL-CAP / D-METAL-PFX observability — pre-fix, both
+            # were silent: the cap was violated with no warning and the
+            # prefix cache pinned slabs through one 32k prefill that
+            # then cratered decode-tps for the rest of the session.
+            "num_metal_cap_violations": self.num_metal_cap_violations,
+            "num_prefix_cache_pressure_evictions": (
+                self.num_prefix_cache_pressure_evictions
             ),
         }
         # Include Metal memory stats

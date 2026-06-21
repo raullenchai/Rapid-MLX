@@ -409,6 +409,56 @@ def _render_prometheus(cfg: Any) -> str:
         )
     )
 
+    # ---- D-METAL-CAP / D-METAL-PFX observability -----------------------
+    # Both counters tick from the scheduler and are monotone for the
+    # process lifetime, so they bypass the sticky-counter accumulator
+    # (no cache.clear() path resets them).
+    #
+    # ``metal_cap_violations_total`` increments when ``add_request``
+    # rejected a new request because Metal active already crossed the
+    # ``--gpu-memory-utilization`` soft cap. Pre-fix, MLX's
+    # ``set_memory_limit`` silently let the allocator grow past the
+    # cap while system RAM remained available, and the only operator-
+    # visible signal was an eventual macOS-paging slowdown — this
+    # counter is the leading indicator that turns that silent
+    # violation into a queryable series.
+    #
+    # ``prefix_cache_pressure_evictions_total`` increments once per
+    # cache entry that the periodic engine_core memory-pressure tick
+    # evicted via ``Scheduler.evict_prefix_cache_under_pressure``. This
+    # is the headline number for the D-METAL-PFX decode-tps cliff:
+    # pre-fix the series stayed at 0 because no pressure-driven
+    # eviction existed at all (the only path was LRU-on-capacity,
+    # which on 108 entries / 7.7 GB / max_entries=100 already-at-limit
+    # never fired again — the cache trie held the slabs, the
+    # OrderedDict count was AT limit, not over it).
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_metal_cap_violations_total",
+            "counter",
+            (
+                "Requests rejected at admission because Metal active "
+                "memory already exceeded the gpu_memory_utilization "
+                "soft cap (D-METAL-CAP)."
+            ),
+            int(_coerce_number(stats.get("num_metal_cap_violations"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_prefix_cache_pressure_evictions_total",
+            "counter",
+            (
+                "Prefix-cache entries evicted by the Metal-pressure "
+                "trigger (D-METAL-PFX). Disjoint from "
+                "rapid_mlx_prefix_cache_evictions_total which counts "
+                "LRU-on-capacity evictions performed by the cache "
+                "itself."
+            ),
+            int(_coerce_number(stats.get("num_prefix_cache_pressure_evictions"))),
+        )
+    )
+
     # Prometheus requires a trailing newline.
     return "\n".join(lines) + "\n"
 

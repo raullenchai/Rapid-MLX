@@ -1276,6 +1276,16 @@ def serve_command(args):
         kv_cache_turboquant_group_size=args.kv_cache_turboquant_group_size,
         # PFlash long-prompt compression (#287)
         pflash_config=pflash_config,
+        # D-METAL-CAP: thread the user's --gpu-memory-utilization into
+        # SchedulerConfig so the admission gate enforces the same cap
+        # that ``mx.set_memory_limit`` only treats as a guideline. The
+        # CLI ↔ Config fidelity audit blocks merges where this kwarg
+        # exists on SchedulerConfig but is missing at the construction
+        # site — without this line, ``--gpu-memory-utilization 0.45``
+        # would still set the soft Metal hint but the admission-time
+        # check would stay disabled (SchedulerConfig default 0.0),
+        # silently recreating the D-METAL-CAP regression.
+        gpu_memory_utilization=args.gpu_memory_utilization,
     )
 
     print("Mode: Continuous batching (for multiple concurrent users)")
