@@ -602,44 +602,155 @@ def test_streaming_harmony_cut_short_does_not_leak_into_content_stop():
     )
 
 
-# ── Codex r1 BLOCKING #2 pin: tool-call-detected stream gate ─────────
+# ── Codex r1/r2 BLOCKING pin: tool-call-detected stream gate ─────────
 
 
-def test_streaming_synthetic_raw_excludes_tool_call_detected_state():
-    """Codex r1 BLOCKING #2: the streaming ``harmony_cut_short``
-    detection at chat.py looks for "active HarmonyReasoningParser AND
-    accumulated_reasoning non-empty AND accumulated_text empty". That
-    shape ALSO matches a tool-call-only stream where the parallel-
-    tool-calls cap dropped every commentary entry
-    (``processor.tool_calls_detected`` set on the cap-exhaust path
-    but ``fallback_tool_calls`` may arrive empty and
+def test_production_helper_skips_synthetic_raw_when_tool_calls_detected():
+    """Codex r1 BLOCKING #2 + r2 BLOCKING: the streaming chat route's
+    ``harmony_cut_short`` predicate looks for "active
+    HarmonyReasoningParser AND accumulated_reasoning non-empty AND
+    accumulated_text empty". That shape ALSO matches a tool-call-only
+    stream where the parallel-tool-calls cap dropped every commentary
+    entry (``processor.tool_calls_detected`` set on the cap-exhaust
+    path but ``fallback_tool_calls`` may arrive empty and
     ``finish_event.finish_reason`` may take a non-``"tool_calls"``
     value on the buffered-finish-gate path). Plumbing
     ``processor.tool_calls_detected`` into the harmony_cut_short
     predicate prevents misclassifying a tool-call-detected stream as
-    analysis-without-final and accidentally narrowing the helper's
-    surface for that case. Pin the predicate directly so future
-    refactors of the streaming call site preserve the gate.
+    analysis-without-final.
+
+    Codex r2 BLOCKING (PR #794) caught the earlier shape of this test
+    re-implementing the predicate locally — that hid any drift if the
+    route stopped consulting ``tool_calls_detected``. The production
+    predicate is now a module-level helper
+    ``vllm_mlx.routes.chat._is_harmony_cut_short_stream`` and the
+    route imports + invokes it directly. This test imports the SAME
+    code object, so dropping the ``tool_calls_detected`` argument
+    from the route would break this test immediately.
     """
     from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+    from vllm_mlx.routes.chat import _is_harmony_cut_short_stream
 
-    # Mirror the actual streaming-callsite predicate composition.
     rp = HarmonyReasoningParser()
-    accumulated_reasoning = "still thinking"
-    accumulated_text = ""
-
-    def _harmony_cut_short(*, tool_calls_detected: bool) -> bool:
-        rp_is_harmony = type(rp).__name__ == "HarmonyReasoningParser"
-        return bool(
-            rp_is_harmony
-            and accumulated_reasoning
-            and not accumulated_text
-            and not tool_calls_detected
-        )
-
     # No tool-call detected: gate fires (harmony cut-short → suppress).
-    assert _harmony_cut_short(tool_calls_detected=False) is True
-    # Tool-call detected (even with no fallback_tool_calls surfaced):
-    # gate does NOT fire — the stream is structurally a tool-call
-    # response, not an analysis-only truncation.
-    assert _harmony_cut_short(tool_calls_detected=True) is False
+    assert (
+        _is_harmony_cut_short_stream(
+            rp,
+            accumulated_reasoning="still thinking",
+            accumulated_text="",
+            tool_calls_detected=False,
+        )
+        is True
+    )
+    # Tool-call detected: gate does NOT fire — the stream is
+    # structurally a tool-call response, not an analysis-only
+    # truncation.
+    assert (
+        _is_harmony_cut_short_stream(
+            rp,
+            accumulated_reasoning="still thinking",
+            accumulated_text="",
+            tool_calls_detected=True,
+        )
+        is False
+    )
+    # Reasoning-parser absent (non-harmony families) — gate never fires.
+    assert (
+        _is_harmony_cut_short_stream(
+            None,
+            accumulated_reasoning="still thinking",
+            accumulated_text="",
+            tool_calls_detected=False,
+        )
+        is False
+    )
+    # Content was streamed — gate never fires (we already have the
+    # answer; rescue's happy-path early-exit handles it).
+    assert (
+        _is_harmony_cut_short_stream(
+            rp,
+            accumulated_reasoning="thought",
+            accumulated_text="The answer is 42.",
+            tool_calls_detected=False,
+        )
+        is False
+    )
+
+
+def test_streaming_route_imports_production_harmony_predicate():
+    """Codex r2 BLOCKING: belt-and-suspenders — the streaming chat
+    route's body must reference the production
+    ``_is_harmony_cut_short_stream`` symbol at the synthetic_raw
+    decision point, not duplicate its logic inline. If a future
+    refactor inlines the predicate again, this regression test
+    triggers and the codex r1/r2 fix-cycle's drift hazard is caught
+    before merge.
+    """
+    import inspect
+
+    from vllm_mlx.routes import chat as chat_module
+
+    # The stream_chat_completion function specifically must use the
+    # helper (the helper's own definition also has the symbol, but we
+    # care about the route consuming it, not just defining it).
+    stream_src = inspect.getsource(chat_module.stream_chat_completion)
+    assert "_is_harmony_cut_short_stream(" in stream_src, (
+        "stream_chat_completion must invoke the harmony cut-short "
+        "predicate via the module-level helper, not inline a "
+        "reimplementation"
+    )
+
+
+def test_streaming_route_call_site_passes_tool_calls_detected_arg():
+    """Codex r2 BLOCKING (PR #794): static-import pin that the route's
+    invocation of ``_is_harmony_cut_short_stream`` actually passes
+    ``processor.tool_calls_detected`` through, not a hard-coded
+    ``False`` or a different field. Together with the helper-level
+    unit test above (which proves the helper itself honours the
+    ``tool_calls_detected`` argument), this closes the static-drift
+    gap codex r2 flagged — the production predicate is consulted AND
+    the route feeds it the right argument.
+
+    An end-to-end TestClient drive of the cap-exhaust path requires
+    the full streaming postprocessor configuration the production
+    server runs (tool_call_parser, model_registry, channel-routed
+    capability probe), which is heavy to fake. The two-layer pin
+    (helper unit + AST inspection of the call site) is the minimal
+    discrimination that fails on either drift.
+    """
+    import ast
+    import inspect
+
+    from vllm_mlx.routes import chat as chat_module
+
+    stream_src = inspect.getsource(chat_module.stream_chat_completion)
+    tree = ast.parse(stream_src)
+
+    # Find every call to _is_harmony_cut_short_stream and confirm
+    # exactly one of the args is ``processor.tool_calls_detected``.
+    matches: list[ast.Call] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            func = node.func
+            name = (
+                func.id
+                if isinstance(func, ast.Name)
+                else (func.attr if isinstance(func, ast.Attribute) else None)
+            )
+            if name == "_is_harmony_cut_short_stream":
+                matches.append(node)
+    assert matches, "stream_chat_completion must invoke _is_harmony_cut_short_stream"
+    for call in matches:
+        passed_attrs = []
+        for arg in list(call.args) + [kw.value for kw in call.keywords]:
+            if (
+                isinstance(arg, ast.Attribute)
+                and isinstance(arg.value, ast.Name)
+                and arg.value.id == "processor"
+            ):
+                passed_attrs.append(arg.attr)
+        assert "tool_calls_detected" in passed_attrs, (
+            "D-HARMONY-LEAK r2 BLOCKING: route must pass "
+            "processor.tool_calls_detected to _is_harmony_cut_short_stream; "
+            f"call site passed processor.{passed_attrs!r}"
+        )

@@ -234,6 +234,50 @@ def _synthesize_forced_tool_call(name: str, arguments: str = "{}"):
     )
 
 
+def _is_harmony_cut_short_stream(
+    reasoning_parser,
+    accumulated_reasoning: str,
+    accumulated_text: str,
+    tool_calls_detected: bool,
+) -> bool:
+    """D-HARMONY-LEAK gate predicate, factored for direct test reuse.
+
+    Returns True when the streaming postprocessor state matches the
+    harmony "analysis without final" cut-short shape: an active
+    ``HarmonyReasoningParser`` saw reasoning tokens, no content
+    tokens have been streamed, AND no commentary tool call was
+    detected on any chunk. The streaming chat route uses this to
+    decide whether to synthesise a harmony-marked ``raw_text`` so the
+    shared rescue helper's gate fires uniformly across the streaming
+    and non-streaming surfaces.
+
+    Codex r1 BLOCKING #2 (PR #794): plumbing ``tool_calls_detected``
+    keeps a tool-call-only stream from being misclassified as
+    analysis-without-final — the cap-exhaust path in
+    ``StreamingPostProcessor._process_channel_routed`` sets
+    ``tool_calls_detected=True`` even when ``fallback_tool_calls``
+    arrives empty, and a wrongly-fired harmony gate there would not
+    suppress visible bytes but WOULD lose the channel-state signal
+    for any future caller that gates on the synthetic raw shape.
+
+    Codex r2 BLOCKING (PR #794): extracted to a module-level helper
+    so ``tests/test_harmony_finalize.py`` exercises the SAME code
+    object the streaming chat route uses, not a local re-implementation
+    of the predicate.
+    """
+    rp_is_harmony = (
+        type(reasoning_parser).__name__ == "HarmonyReasoningParser"
+        if reasoning_parser is not None
+        else False
+    )
+    return bool(
+        rp_is_harmony
+        and accumulated_reasoning
+        and not accumulated_text
+        and not tool_calls_detected
+    )
+
+
 def _engine_supports_channel_routed_tool_calls(engine) -> bool:
     """Probe whether the engine's tokenizer yields a channel-routed
     streaming path that can emit structured tool calls without a text
@@ -2248,14 +2292,11 @@ async def stream_chat_completion(
                 # would only change zero-byte output here, but
                 # honouring the explicit channel signal keeps the
                 # synthetic_raw discrimination accurate.
-                rp_is_harmony = (
-                    type(rp).__name__ == "HarmonyReasoningParser" if rp else False
-                )
-                harmony_cut_short = bool(
-                    rp_is_harmony
-                    and processor.accumulated_reasoning
-                    and not processor.accumulated_text
-                    and not processor.tool_calls_detected
+                harmony_cut_short = _is_harmony_cut_short_stream(
+                    rp,
+                    processor.accumulated_reasoning,
+                    processor.accumulated_text,
+                    processor.tool_calls_detected,
                 )
                 if harmony_cut_short:
                     synthetic_raw = (
