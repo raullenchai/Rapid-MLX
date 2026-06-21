@@ -260,10 +260,11 @@ def test_chat_streaming_without_include_usage_omits_usage_block_entirely():
     assert finish_events[0].get("usage") is None, (
         "finish chunk MUST NOT carry usage when include_usage is unset"
     )
-    any_usage = [e for e in events if e.get("usage")]
-    assert any_usage == [], (
-        f"no SSE chunk may carry a usage block when include_usage is "
-        f"unset; got {len(any_usage)} chunk(s) with usage"
+    any_usage_key = [e for e in events if "usage" in e]
+    assert any_usage_key == [], (
+        f"no SSE chunk may carry the usage KEY when include_usage is "
+        f"unset; got {len(any_usage_key)} chunk(s) with the key "
+        f"(includes regressions to ``\"usage\": null``)"
     )
 
 

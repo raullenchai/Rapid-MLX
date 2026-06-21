@@ -266,11 +266,15 @@ def test_non_guided_streaming_omits_usage_when_include_usage_unset():
     assert usage_only_events == [], (
         "no dedicated usage chunk when include_usage is unset"
     )
-    # Stronger: NO chunk anywhere may carry a usage block.
-    any_usage = [e for e in events if e.get("usage")]
-    assert any_usage == [], (
-        f"no SSE chunk may carry a usage block when include_usage is "
-        f"unset; got {len(any_usage)} chunk(s) with usage"
+    # Stronger: the ``usage`` KEY must be absent from every chunk —
+    # a regression that serializes ``"usage": null`` would slip past a
+    # truthiness check but is itself non-spec for the unset path
+    # (codex review caught the same gap in
+    # ``test_stream_include_usage_honored.py``).
+    any_usage_key = [e for e in events if "usage" in e]
+    assert any_usage_key == [], (
+        f"no SSE chunk may carry the usage KEY when include_usage is "
+        f"unset; got {len(any_usage_key)} chunk(s) with the key"
     )
 
 

@@ -317,10 +317,11 @@ def test_streaming_guided_no_duplicate_usage_when_include_usage_true():
     assert usage_only_events2 == [], (
         "no dedicated usage chunk when include_usage is unset"
     )
-    any_usage2 = [e for e in events2 if e.get("usage")]
-    assert any_usage2 == [], (
-        f"no SSE chunk may carry a usage block when include_usage is "
-        f"unset; got {len(any_usage2)} chunk(s) with usage"
+    any_usage_key2 = [e for e in events2 if "usage" in e]
+    assert any_usage_key2 == [], (
+        f"no SSE chunk may carry the usage KEY when include_usage is "
+        f"unset; got {len(any_usage_key2)} chunk(s) with the key "
+        f"(includes regressions to ``\"usage\": null``)"
     )
 
 

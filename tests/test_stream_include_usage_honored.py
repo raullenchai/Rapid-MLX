@@ -178,9 +178,13 @@ def _dedicated_usage_chunks(events: list[dict]) -> list[dict]:
 
 
 def test_chat_stream_omits_usage_when_include_usage_false():
-    """``stream_options.include_usage=false`` → no ``usage`` field on
-    any chunk, anywhere. Pre-fix the finish chunk carried a populated
-    ``usage`` block here, double-counting on aggregating clients.
+    """``stream_options.include_usage=false`` → the ``usage`` KEY must
+    be absent from every chunk (not just present-but-null). Codex
+    review caught that a truthiness check would let a regression
+    re-serialize ``"usage": null`` and still pass — explicit key
+    absence is the spec-compliant gate. Pre-fix the finish chunk
+    carried a populated ``usage`` block here, double-counting on
+    aggregating clients.
     """
     client = _make_chat_client(_PlainChatEngine())
     resp = client.post(
@@ -195,10 +199,11 @@ def test_chat_stream_omits_usage_when_include_usage_false():
     )
     assert resp.status_code == 200, resp.text
     events = _parse_sse(resp.text)
-    chunks_with_usage = [e for e in events if e.get("usage")]
-    assert chunks_with_usage == [], (
-        f"include_usage=false MUST emit zero usage chunks; got "
-        f"{len(chunks_with_usage)}: {chunks_with_usage!r}"
+    chunks_with_usage_key = [e for e in events if "usage" in e]
+    assert chunks_with_usage_key == [], (
+        f"include_usage=false MUST omit the usage KEY from every "
+        f"chunk (not just emit null); got {len(chunks_with_usage_key)} "
+        f"chunk(s) with the key: {chunks_with_usage_key!r}"
     )
 
 
@@ -206,7 +211,9 @@ def test_chat_stream_omits_usage_when_stream_options_absent():
     """``stream_options`` omitted entirely → same contract as
     ``include_usage=false`` (the OpenAI default). Pre-fix this was the
     common bug surface — most clients omit ``stream_options`` and got
-    a populated ``usage`` on the finish chunk anyway.
+    a populated ``usage`` on the finish chunk anyway. Asserts KEY
+    absence (not truthiness) so a serializer regression to
+    ``"usage": null`` would still trip the gate.
     """
     client = _make_chat_client(_PlainChatEngine())
     resp = client.post(
@@ -220,10 +227,11 @@ def test_chat_stream_omits_usage_when_stream_options_absent():
     )
     assert resp.status_code == 200, resp.text
     events = _parse_sse(resp.text)
-    chunks_with_usage = [e for e in events if e.get("usage")]
-    assert chunks_with_usage == [], (
-        f"omitted stream_options MUST emit zero usage chunks; got "
-        f"{len(chunks_with_usage)}: {chunks_with_usage!r}"
+    chunks_with_usage_key = [e for e in events if "usage" in e]
+    assert chunks_with_usage_key == [], (
+        f"omitted stream_options MUST omit the usage KEY from every "
+        f"chunk (not just emit null); got {len(chunks_with_usage_key)} "
+        f"chunk(s) with the key: {chunks_with_usage_key!r}"
     )
 
 
@@ -270,10 +278,12 @@ def test_chat_stream_emits_dedicated_usage_chunk_when_include_usage_true():
 
 def test_completions_stream_omits_usage_when_include_usage_false():
     """Sibling of the chat test: legacy ``/v1/completions`` must also
-    honor ``stream_options.include_usage=false`` and omit the field
-    from every SSE chunk. Pre-fix the schema didn't even declare
-    ``stream_options`` so the field was silently dropped — the
-    finish-chunk-build unconditionally attached usage.
+    honor ``stream_options.include_usage=false`` and omit the ``usage``
+    KEY entirely from every SSE chunk. Pre-fix the schema didn't even
+    declare ``stream_options`` so the field was silently dropped —
+    the finish-chunk-build unconditionally attached usage. Asserts
+    KEY absence (not truthiness) so a regression to ``"usage": null``
+    still trips the gate (codex review finding).
     """
     client = _make_completions_client(_PlainCompletionsEngine())
     resp = client.post(
@@ -288,17 +298,21 @@ def test_completions_stream_omits_usage_when_include_usage_false():
     )
     assert resp.status_code == 200, resp.text
     events = _parse_sse(resp.text)
-    chunks_with_usage = [e for e in events if e.get("usage")]
-    assert chunks_with_usage == [], (
-        f"completions include_usage=false MUST emit zero usage chunks; "
-        f"got {len(chunks_with_usage)}: {chunks_with_usage!r}"
+    chunks_with_usage_key = [e for e in events if "usage" in e]
+    assert chunks_with_usage_key == [], (
+        f"completions include_usage=false MUST omit the usage KEY from "
+        f"every chunk (not just emit null); got "
+        f"{len(chunks_with_usage_key)} chunk(s) with the key: "
+        f"{chunks_with_usage_key!r}"
     )
 
 
 def test_completions_stream_omits_usage_when_stream_options_absent():
     """Most common shape: bare ``/v1/completions`` streaming request
-    with no ``stream_options``. Must emit zero usage chunks per
-    OpenAI spec.
+    with no ``stream_options``. The ``usage`` KEY must be absent from
+    every chunk per OpenAI spec — asserts key absence (not truthiness)
+    so a regression to ``"usage": null`` still trips the gate
+    (codex review finding).
     """
     client = _make_completions_client(_PlainCompletionsEngine())
     resp = client.post(
@@ -312,10 +326,12 @@ def test_completions_stream_omits_usage_when_stream_options_absent():
     )
     assert resp.status_code == 200, resp.text
     events = _parse_sse(resp.text)
-    chunks_with_usage = [e for e in events if e.get("usage")]
-    assert chunks_with_usage == [], (
-        f"omitted stream_options on completions MUST emit zero usage "
-        f"chunks; got {len(chunks_with_usage)}: {chunks_with_usage!r}"
+    chunks_with_usage_key = [e for e in events if "usage" in e]
+    assert chunks_with_usage_key == [], (
+        f"omitted stream_options on completions MUST omit the usage "
+        f"KEY from every chunk (not just emit null); got "
+        f"{len(chunks_with_usage_key)} chunk(s) with the key: "
+        f"{chunks_with_usage_key!r}"
     )
 
 
