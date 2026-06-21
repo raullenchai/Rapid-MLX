@@ -450,21 +450,21 @@ class TestInFlightKVReservation:
             model=MagicMock(), tokenizer=MagicMock(), config=config
         )
 
-    def test_in_flight_reservations_counted_in_cap_check(self):
-        """3 already-admitted requests of ~25 GB each → admission
-        of a 4th request that ALONE would fit must reject because
-        the cumulative reservations push over cap."""
+    def test_waiting_reservations_counted_in_cap_check(self):
+        """3 already-admitted-but-not-stepped requests of ~25 GB each
+        → admission of a 4th request that ALONE would fit must reject
+        because the cumulative WAITING reservations push over cap."""
         sched = self._make_scheduler(kv_bytes_per_token=1_000_000)
-        # Pre-seed 3 in-flight requests of ~25 GB each (25_000 tokens)
+        # Pre-seed 3 WAITING requests of ~25 GB each (25_000 tokens)
         for i in range(3):
             prev = _make_request(rid=f"prev-{i}", tokens=25_000)
             prev.sampling_params = SamplingParams(max_tokens=1)
-            sched.requests[prev.request_id] = prev
+            sched.waiting.append(prev)
         # The NEW request alone: 25 GB
         new_req = _make_request(rid="new", tokens=25_000)
         new_req.sampling_params = SamplingParams(max_tokens=1)
         # Cap is 100 GB, active is 10 GB. Alone, new_req would fit
-        # (10 + 25 = 35 < 100). With 3 × 25 GB reserved, the cap
+        # (10 + 25 = 35 < 100). With 3 × 25 GB waiting, the cap
         # check sees 10 + 75 + 25 = 110 GB > 100 GB → reject.
         with (
             patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
@@ -474,8 +474,45 @@ class TestInFlightKVReservation:
             sched._enforce_metal_cap_at_admission(new_req)
         assert sched.num_metal_cap_violations == 1
 
-    def test_no_in_flight_reservations_does_not_block(self):
-        """Empty in-flight set → reserved_kv == 0, gate behaves
+    def test_running_reservations_excluded_to_avoid_double_count(self):
+        """Codex round 6 BLOCKING #3: requests in ``self.running``
+        have ALREADY allocated their KV (which shows up in
+        ``mx.get_active_memory()``). Including them in
+        ``_sum_in_flight_kv_bytes`` double-counts and rejects every
+        new admit after the first big request. The fix is to skip
+        ``self.running`` and only iterate ``self.waiting``."""
+        sched = self._make_scheduler(kv_bytes_per_token=1_000_000)
+        # Pre-seed 3 RUNNING requests of ~25 GB each — they would
+        # double-count active 75 GB if the bug were still live.
+        for i in range(3):
+            prev = _make_request(rid=f"prev-{i}", tokens=25_000)
+            prev.sampling_params = SamplingParams(max_tokens=1)
+            sched.running[prev.request_id] = prev
+        new_req = _make_request(rid="new", tokens=25_000)
+        new_req.sampling_params = SamplingParams(max_tokens=1)
+        # Active honestly reports the 75 GB of running KV. Adding
+        # waiting reservation (0) + new projection (25 GB) =
+        # 75 + 0 + 25 = 100, which is == cap, so it would still
+        # reject the new request — but ONLY because real Metal
+        # genuinely sits at cap, not because of double-count.
+        # Drop the new request to fit comfortably to verify the
+        # admit path on the no-double-count case:
+        small_req = _make_request(rid="small", tokens=100)
+        small_req.sampling_params = SamplingParams(max_tokens=1)
+        with (
+            patch.object(sched, "_resolve_metal_cap_bytes", return_value=100 * 10**9),
+            patch.object(sched, "_current_metal_active_bytes", return_value=75 * 10**9),
+        ):
+            # 75 active + 0 waiting + 0.1 projected = 75.1 GB << 100 GB
+            sched._enforce_metal_cap_at_admission(small_req)
+        assert sched.num_metal_cap_violations == 0, (
+            "running requests must be excluded from in-flight sum — "
+            "their KV is already in active. Double-counting was "
+            "the round 6 BLOCKING #3 regression."
+        )
+
+    def test_no_waiting_reservations_does_not_block(self):
+        """Empty waiting deque → reserved_kv == 0, gate behaves
         exactly like the round-4 single-request projection path."""
         sched = self._make_scheduler(kv_bytes_per_token=1_000_000)
         new_req = _make_request(rid="new", tokens=10_000)
@@ -495,10 +532,11 @@ class TestInFlightKVReservation:
         ``_estimate_request_kv_bytes`` which also returns 0 — keeps
         the inner loop cheap on the back-compat path."""
         sched = self._make_scheduler(kv_bytes_per_token=0)
-        # Pre-seed some requests; with per_tok=0, the sum must be 0.
+        # Pre-seed some WAITING requests; with per_tok=0, the sum
+        # must be 0.
         for i in range(5):
             req = _make_request(rid=f"req-{i}", tokens=10_000)
-            sched.requests[req.request_id] = req
+            sched.waiting.append(req)
         # Force the auto-derivation to return 0 (no .config on model)
         with patch.object(sched, "_resolve_kv_bytes_per_token", return_value=0):
             total = sched._sum_in_flight_kv_bytes()

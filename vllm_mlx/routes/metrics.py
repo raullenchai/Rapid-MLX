@@ -438,8 +438,13 @@ def _render_prometheus(cfg: Any) -> str:
             "counter",
             (
                 "Requests rejected at admission because Metal active "
-                "memory already exceeded the gpu_memory_utilization "
-                "soft cap (D-METAL-CAP)."
+                "memory + waiting-request KV reservations + the new "
+                "request's projected KV would exceed the "
+                "gpu_memory_utilization soft cap (D-METAL-CAP). "
+                "Increments on EITHER ``active >= cap`` (sustained "
+                "over-cap storm) OR ``active + reserved + projected "
+                ">= cap`` (single large prefill that would push the "
+                "allocator past cap on its own grow path)."
             ),
             int(_coerce_number(stats.get("num_metal_cap_violations"))),
         )

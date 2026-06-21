@@ -3212,7 +3212,7 @@ class Scheduler:
         return per_tok * (prompt_tokens + max_tokens)
 
     def _sum_in_flight_kv_bytes(self) -> int:
-        """Sum projected KV reservations of every in-flight request.
+        """Sum projected KV reservations of WAITING-only requests.
 
         Codex round 5 BLOCKING #1: ``mx.get_active_memory()`` only
         reflects the allocator AT THE INSTANT we read it — admitted
@@ -3223,20 +3223,28 @@ class Scheduler:
         STACK and blow the cap collectively (the multi-client repro
         path).
 
-        Iterates ``self.requests`` (which holds both waiting and
-        running). Cheap: dict iteration + arithmetic only — no Metal
-        device probe, no lock acquisition (the caller already holds
-        the scheduler lock).
+        Codex round 6 BLOCKING #3: critically, we must EXCLUDE
+        ``self.running`` requests — their KV has already been
+        allocated by the BatchGenerator and is therefore already
+        counted in ``mx.get_active_memory()``. Including them would
+        double-count and reject all new admits after even ONE
+        in-flight large request, when real Metal headroom is fine.
+        Only ``self.waiting`` (admitted but never stepped) contains
+        reservations not yet visible in ``active``.
+
+        Cheap: dict iteration + arithmetic only — no Metal device
+        probe, no lock acquisition (the caller already holds the
+        scheduler lock).
         """
         per_tok = self._resolve_kv_bytes_per_token()
         if per_tok <= 0:
             return 0
-        total = 0
         try:
-            requests = self.requests
+            waiting = self.waiting
         except AttributeError:
             return 0
-        for req in requests.values():
+        total = 0
+        for req in waiting:
             total += self._estimate_request_kv_bytes(req)
         return int(total)
 

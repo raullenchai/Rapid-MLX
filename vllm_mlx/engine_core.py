@@ -497,6 +497,15 @@ class EngineCore:
         _consecutive_step_failures = 0
         _STEP_FAILURE_BURST = 10
 
+        # Codex round 6 BLOCKING #1: idle-state pressure-evict cadence.
+        # The busy-step path runs eviction every ``_memory_check_interval``
+        # steps. The idle path (no requests in flight) needs its own
+        # wall-clock tick so prefix-cache slabs left behind by the LAST
+        # request still drain — without it, an idle server stays stuck
+        # at the old active-memory high-watermark and rejects every
+        # new admit with D-METAL-CAP backpressure.
+        _idle_pressure_evict_last = 0.0
+        _idle_pressure_evict_interval_s = 5.0
         while self._running:
             try:
                 if self.scheduler.has_requests():
@@ -523,7 +532,19 @@ class EngineCore:
                         # ``_memory_pressure_threshold`` gate above.
                         # See ``_run_pressure_evict_tick`` for the full
                         # rationale (codex round 1 BLOCKING + NIT).
-                        self._run_pressure_evict_tick()
+                        # Codex round 6 BLOCKING #2: eviction touches
+                        # cached MLX arrays + calls mx.clear_cache().
+                        # MLX streams are thread-bound (mx.new_stream
+                        # cross-thread crash gotcha), so dispatch onto
+                        # the same single ``mlx-step`` worker that runs
+                        # ``scheduler.step`` rather than executing on
+                        # the asyncio thread.
+                        if _executor is not None:
+                            await loop.run_in_executor(
+                                _executor, self._run_pressure_evict_tick
+                            )
+                        else:
+                            self._run_pressure_evict_tick()
 
                     # Fast path: distribute outputs to collectors
                     outputs = output.outputs
@@ -590,6 +611,35 @@ class EngineCore:
                     except asyncio.TimeoutError:
                         pass
                     self._idle_event.clear()
+
+                    # Codex round 6 BLOCKING #1: drive a pressure-evict
+                    # tick on the idle path so prefix-cache slabs from
+                    # the last burst drain even when no new requests
+                    # arrive. Without this, a fresh ``--gpu-memory-
+                    # utilization 0.45`` server that just finished a
+                    # 32k-prefill request stays at the high-watermark
+                    # forever and rejects the NEXT admission with
+                    # D-METAL-CAP backpressure — exactly the
+                    # ``service stays stuck`` failure mode codex
+                    # flagged in round 6.
+                    now_mono = time.monotonic()
+                    if (
+                        now_mono - _idle_pressure_evict_last
+                        >= _idle_pressure_evict_interval_s
+                    ):
+                        _idle_pressure_evict_last = now_mono
+                        if _executor is not None:
+                            try:
+                                await loop.run_in_executor(
+                                    _executor, self._run_pressure_evict_tick
+                                )
+                            except Exception:
+                                # The helper already rate-limits its
+                                # own WARNING. Don't let an evict
+                                # failure crash the engine loop.
+                                pass
+                        else:
+                            self._run_pressure_evict_tick()
 
             except asyncio.CancelledError:
                 break
