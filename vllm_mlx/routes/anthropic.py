@@ -14,6 +14,7 @@ from ..api.anthropic_adapter import (
     AnthropicOutputConfigError,
     anthropic_to_openai,
     openai_to_anthropic,
+    to_anthropic_tool_use_id,
 )
 from ..api.anthropic_models import AnthropicRequest
 from ..api.models import (
@@ -55,6 +56,7 @@ from ..service.helpers import (
     _validate_tool_call_params,
     _wait_with_disconnect,
     build_extended_sampling_kwargs,
+    count_prompt_tokens,
     enforce_context_length_for_messages,
     get_engine,
 )
@@ -209,57 +211,85 @@ def _filter_tool_calls_by_tool_choice(tool_calls, tool_choice) -> list:
     return filtered
 
 
+def _synthesize_pinned_tool_call(tool_name: str):
+    """Build a synthetic ``ToolCall`` for the pinned tool with empty
+    ``input``. F8 best-effort fallback when the model failed to comply
+    with ``tool_choice={"type":"tool","name":X}``.
+
+    Local import to avoid widening the routes/anthropic.py module-level
+    import surface — these models are pulled in lazily only on the
+    pinned-tool fallback path so the happy-path import time stays flat.
+    """
+    from ..api.models import FunctionCall, ToolCall
+
+    return ToolCall(
+        id=f"call_{uuid.uuid4().hex[:8]}",
+        type="function",
+        function=FunctionCall(name=tool_name, arguments="{}"),
+    )
+
+
 def _enforce_named_tool_choice_present(
     tool_calls,
     tool_choice,
     *,
     original_call_count: int,
-) -> None:
-    """Raise 422 when ``tool_choice`` pinned a specific tool but no
-    matching tool_call survives.
+) -> list:
+    """Return ``tool_calls`` unchanged when the named-tool contract is
+    satisfied; otherwise synthesize a single best-effort ``tool_use``
+    for the pinned tool with empty ``input={}``.
 
-    PR #763 codex round-1 BLOCKING #1: ``_filter_tool_calls_by_tool_choice``
-    correctly drops un-pinned calls, but the downstream branch in
-    ``messages_endpoint`` treats ``tool_calls=[]`` as "model returned
-    text only → ``stop_reason=end_turn``". That is the wrong contract
-    when the client pinned a specific tool: an empty post-filter list
-    means EITHER the model emitted zero tool_calls at all (model
-    defied the pin entirely and answered as plain text) OR every
-    emitted call was to the wrong tool (model called something else
-    and we dropped them all). Both states violate the forced-tool
-    contract; clients that pinned ``X`` expect a ``tool_use`` block
-    for ``X`` and a 200 ``end_turn`` text response leaves them with
-    nothing to act on. Surface the failure explicitly so the caller
-    can retry / fall back instead of silently mis-routing.
+    F8 history: PR #763 round-1 added this as a 422 "could not enforce"
+    surface — honest about local inference's lack of decoder-level
+    constraints, but breaks Anthropic SDK callers that expect a 200
+    with the pinned tool_use block (the forced-named-tool flow is a
+    common agent pattern; ``anthropic`` SDK does not retry on 422).
+    Anthropic's real backend uses an FSM constraint to GUARANTEE a
+    ``tool_use`` for the pinned tool; we don't have that, but a
+    synthesized empty-input call gives clients SOMETHING shaped like
+    the pinned tool to dispatch — closer to spec than 422.
 
-    Mirrors chat.py's ``tool_choice="required"`` no-call branch
-    (``routes/chat.py:1587``) which 422s with the same "local
-    inference cannot decoder-enforce" diagnostic. The streaming
-    branch uses the same body via an SSE ``event: error``.
+    Trade-off: the synthesized ``input={}`` may not satisfy the tool's
+    own JSON-schema (e.g. ``required: ["city"]``). Clients that
+    validate downstream will see a schema failure on THEIR side, which
+    is the right place for a small-model-couldn't-fill-args complaint.
+    The original 422 covered the symptom; the new fallback surfaces
+    the contract (you asked for X, here is X).
+
+    Mirrors chat.py's named-function path which 422s on the OpenAI
+    surface (strict spec) but the Anthropic spec is more forgiving;
+    see ``_filter_tool_calls_by_tool_choice`` for the same
+    surface-divergence rationale (H-05).
 
     ``original_call_count`` is the size of ``tool_calls`` BEFORE the
-    filter ran — we use it to disambiguate "model returned text"
-    (count == 0) from "model called the wrong tool(s) and the filter
-    emptied the list" (count > 0) in the error message.
+    filter ran. A warning logs the disambiguation between "model
+    returned text only" (count == 0) and "model called the wrong
+    tool(s) and the filter emptied the list" (count > 0) so an
+    operator debugging unexpected best-effort fallbacks can see WHICH
+    case fired.
     """
     target = _named_tool_choice_target(tool_choice)
     if not target or tool_calls:
-        return
+        return tool_calls
+    # Log the disambiguation an operator needs to debug small-model
+    # compliance issues. The wire response shape is identical either way.
     if original_call_count == 0:
-        detail = (
-            f"tool_choice pinned tool {target!r} but the model returned a text "
-            "response with no tool_calls. Local inference has no decoder-level "
-            "constraint; the system-prompt enforcement was insufficient for "
-            "this prompt. Retry with a more direct user message."
+        logger.warning(
+            "tool_choice pinned tool %r but the model returned a text "
+            "response with no tool_calls; synthesizing a best-effort "
+            "tool_use with empty input (F8 fallback).",
+            target,
         )
     else:
-        detail = (
-            f"tool_choice pinned tool {target!r} but the model emitted "
-            f"{original_call_count} call(s), none to {target!r}. Local "
-            "inference cannot decoder-enforce a specific tool; retry with a "
-            "more direct user message."
+        logger.warning(
+            "tool_choice pinned tool %r but the model emitted %d call(s), "
+            "none to %r; synthesizing a best-effort tool_use with empty "
+            "input (F8 fallback).",
+            target,
+            original_call_count,
+            target,
         )
-    raise HTTPException(status_code=422, detail=detail)
+    return [_synthesize_pinned_tool_call(target)]
 
 
 @router.post(
@@ -535,7 +565,12 @@ async def create_anthropic_message(
             tool_calls = _filter_tool_calls_by_tool_choice(
                 tool_calls or [], openai_request.tool_choice
             )
-            _enforce_named_tool_choice_present(
+            # F8: ``_enforce_named_tool_choice_present`` now returns a
+            # best-effort synthesized ``tool_use`` (rather than raising
+            # 422) when the model failed to comply with a pinned
+            # ``tool_choice``. The synthesized call has empty
+            # ``input={}`` — closer to Anthropic-spec parity than 422.
+            tool_calls = _enforce_named_tool_choice_present(
                 tool_calls,
                 openai_request.tool_choice,
                 original_call_count=original_call_count,
@@ -803,57 +838,136 @@ async def count_anthropic_tokens(request: Request):
             _validate_model_name(requested_model)
 
     engine = get_engine()
-    tokenizer = engine.tokenizer
 
-    total_tokens = 0
+    # F12: count_tokens must apply the SAME chat template + tools
+    # rendering that ``/v1/messages`` applies before tokenizing,
+    # otherwise the count under-reports by the per-turn role/turn
+    # boilerplate (``<|im_start|>user`` etc.) the real prompt carries.
+    # Pre-fix this endpoint tokenized each text segment in isolation
+    # and consistently reported ~5 fewer tokens than the matching
+    # ``/v1/messages`` ``usage.input_tokens`` (Sergei repro: delta=-5
+    # across 4 unrelated prompts).
+    #
+    # Single source of truth: build the same ``AnthropicRequest`` →
+    # ``ChatCompletionRequest`` adapter chain that ``/v1/messages``
+    # uses, then run the engine's ``build_prompt`` so the chat template
+    # renders the full conversation (system + messages + tools). The
+    # tokenizer encode that follows uses ``count_prompt_tokens`` which
+    # mirrors ``BatchedEngine.estimate_new_tokens``' BOS-aware
+    # ``add_special_tokens`` handling.
+    #
+    # Fall through to the legacy per-segment count only when the
+    # adapter rejects the body OR the engine doesn't expose
+    # ``build_prompt`` (test stubs); a meaningful-but-imperfect count
+    # beats a 500 on a route whose contract is "estimate this prompt".
+    total_tokens: int | None = None
+    # Anthropic's ``/v1/messages/count_tokens`` does NOT require
+    # ``max_tokens`` (unlike ``/v1/messages``), so callers commonly omit
+    # it when estimating cost. ``AnthropicRequest`` declares ``max_tokens``
+    # as required, so we inject a placeholder ``max_tokens=1`` purely so
+    # the schema parses — the count_tokens path doesn't read it. This
+    # keeps the single-adapter-source-of-truth contract without
+    # tightening the public count_tokens contract beyond Anthropic's spec.
+    _body_for_parse = dict(body)
+    if "max_tokens" not in _body_for_parse:
+        _body_for_parse["max_tokens"] = 1
+    try:
+        anthropic_request = AnthropicRequest(**_body_for_parse)
+    except Exception:
+        anthropic_request = None
+    if anthropic_request is not None:
+        try:
+            openai_request = anthropic_to_openai(anthropic_request)
+        except (AnthropicOutputConfigError, Exception):
+            openai_request = None
+        if openai_request is not None:
+            try:
+                _ctx_messages, _, _ = extract_multimodal_content(
+                    openai_request.messages,
+                    preserve_native_format=engine.preserve_native_tool_format,
+                )
+            except Exception:
+                _ctx_messages = None
+            build_prompt = getattr(engine, "build_prompt", None)
+            if _ctx_messages is not None and callable(build_prompt):
+                # Match the ``enable_thinking`` precedence
+                # ``/v1/messages`` uses (resolved via shared helper). On
+                # qwen3-shaped templates this adds an opening ``<think>\n``
+                # prefix to the assistant turn — the prompt actually
+                # tokenized at generation time. Pre-fix the count
+                # under-reported by exactly this prefix.
+                _cfg = get_config()
+                resolved_thinking = _resolve_enable_thinking(openai_request)
+                effective_thinking = _effective_enable_thinking(
+                    resolved_thinking, _cfg.model_path or _cfg.model_name
+                )
+                try:
+                    rendered_tools = (
+                        convert_tools_for_template(openai_request.tools)
+                        if openai_request.tools
+                        else None
+                    )
+                    prompt = build_prompt(
+                        _ctx_messages,
+                        tools=rendered_tools,
+                        enable_thinking=effective_thinking,
+                    )
+                except Exception:
+                    prompt = None
+                if isinstance(prompt, str) and prompt:
+                    total_tokens = count_prompt_tokens(engine, prompt)
 
-    # System message
-    system = body.get("system", "")
-    if isinstance(system, str) and system:
-        total_tokens += len(tokenizer.encode(system))
-    elif isinstance(system, list):
-        for block in system:
-            if isinstance(block, dict):
-                text = block.get("text", "")
-                if text:
-                    total_tokens += len(tokenizer.encode(text))
-
-    # Messages
-    for msg in body.get("messages", []):
-        content = msg.get("content", "")
-        if isinstance(content, str):
-            if content:
-                total_tokens += len(tokenizer.encode(content))
-        elif isinstance(content, list):
-            for block in content:
+    # Legacy fallback path — only fires when the adapter / template
+    # render failed. Keeps the endpoint useful on test stubs that don't
+    # expose ``build_prompt`` AND keeps the historical zero-floor
+    # behavior on adapter rejection. The delta this path leaves on the
+    # table is the chat-template overhead (~5 tokens for Qwen-shaped
+    # templates) — the same gap F12 fixes when the primary path runs.
+    if total_tokens is None:
+        tokenizer = engine.tokenizer
+        total_tokens = 0
+        system = body.get("system", "")
+        if isinstance(system, str) and system:
+            total_tokens += len(tokenizer.encode(system))
+        elif isinstance(system, list):
+            for block in system:
                 if isinstance(block, dict):
                     text = block.get("text", "")
                     if text:
                         total_tokens += len(tokenizer.encode(text))
-                    if block.get("input"):
-                        total_tokens += len(
-                            tokenizer.encode(json.dumps(block["input"]))
-                        )
-                    sub_content = block.get("content", "")
-                    if isinstance(sub_content, str) and sub_content:
-                        total_tokens += len(tokenizer.encode(sub_content))
-                    elif isinstance(sub_content, list):
-                        for item in sub_content:
-                            if isinstance(item, dict):
-                                item_text = item.get("text", "")
-                                if item_text:
-                                    total_tokens += len(tokenizer.encode(item_text))
-
-    # Tools
-    for tool in body.get("tools", []):
-        name = tool.get("name", "")
-        if name:
-            total_tokens += len(tokenizer.encode(name))
-        desc = tool.get("description", "")
-        if desc:
-            total_tokens += len(tokenizer.encode(desc))
-        if tool.get("input_schema"):
-            total_tokens += len(tokenizer.encode(json.dumps(tool["input_schema"])))
+        for msg in body.get("messages", []):
+            content = msg.get("content", "")
+            if isinstance(content, str):
+                if content:
+                    total_tokens += len(tokenizer.encode(content))
+            elif isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict):
+                        text = block.get("text", "")
+                        if text:
+                            total_tokens += len(tokenizer.encode(text))
+                        if block.get("input"):
+                            total_tokens += len(
+                                tokenizer.encode(json.dumps(block["input"]))
+                            )
+                        sub_content = block.get("content", "")
+                        if isinstance(sub_content, str) and sub_content:
+                            total_tokens += len(tokenizer.encode(sub_content))
+                        elif isinstance(sub_content, list):
+                            for item in sub_content:
+                                if isinstance(item, dict):
+                                    item_text = item.get("text", "")
+                                    if item_text:
+                                        total_tokens += len(tokenizer.encode(item_text))
+        for tool in body.get("tools", []):
+            name = tool.get("name", "")
+            if name:
+                total_tokens += len(tokenizer.encode(name))
+            desc = tool.get("description", "")
+            if desc:
+                total_tokens += len(tokenizer.encode(desc))
+            if tool.get("input_schema"):
+                total_tokens += len(tokenizer.encode(json.dumps(tool["input_schema"])))
 
     return {"input_tokens": total_tokens}
 
@@ -1771,27 +1885,29 @@ async def _stream_anthropic_messages(
     # earlier emission point or the dropped tool's content_block_start
     # will reach the wire before we know to suppress it.
     tool_choice_error: str | None = None
+    # F8: track whether we synthesized a best-effort pinned-tool call so
+    # the buffered-text-replay branch below can drop the forbidden text
+    # payload (the model wrote text instead of the pinned tool; replaying
+    # would violate the named ``tool_choice`` contract just like the
+    # pre-F8 422 path did).
+    synthesized_pinned_call = False
     original_call_count_stream = len(tool_calls or [])
     if openai_request.tool_choice:
         tool_calls = _filter_tool_calls_by_tool_choice(
             tool_calls or [], openai_request.tool_choice
         )
-        # Stream variant of ``_enforce_named_tool_choice_present``:
-        # headers are already on the wire so we can't 422 — surface
-        # the same diagnostic as an Anthropic ``event: error`` and
-        # close the stream with ``end_turn``. Mirrors how the F-220
-        # validation-failure branch below handles the same
-        # "headers-already-sent" constraint.
-        try:
-            _enforce_named_tool_choice_present(
-                tool_calls,
-                openai_request.tool_choice,
-                original_call_count=original_call_count_stream,
-            )
-        except HTTPException as exc:
-            tool_choice_error = (
-                exc.detail if isinstance(exc.detail, str) else str(exc.detail)
-            )
+        # F8: ``_enforce_named_tool_choice_present`` now returns a
+        # best-effort synthesized ``tool_use`` (rather than raising
+        # 422) when the model failed to comply with a pinned
+        # ``tool_choice``. The synthesized call has empty ``input={}``.
+        pre_enforce_len = len(tool_calls or [])
+        tool_calls = _enforce_named_tool_choice_present(
+            tool_calls,
+            openai_request.tool_choice,
+            original_call_count=original_call_count_stream,
+        )
+        # Synthesis fired iff the helper grew the list from zero to one.
+        synthesized_pinned_call = pre_enforce_len == 0 and len(tool_calls or []) == 1
 
     # F-220: enforce JSON-schema validation on the model's emitted
     # tool_call arguments. On the streaming branch, headers are already
@@ -1828,7 +1944,16 @@ async def _stream_anthropic_messages(
     # The buffer is unused when ``tool_choice`` is not a named pin —
     # in that case the chunk loop yielded directly and ``pre_filter_buffer``
     # is empty, so this block is a no-op on every non-pinned request.
-    if _buffer_for_pinned_tool and not (tool_choice_error or tool_validation_error):
+    # F8 follow-up: when synthesis fired the model emitted text instead
+    # of the pinned tool. Replaying that buffered text would put the
+    # forbidden text payload back on the wire (same family of contract
+    # violation the 422 path used to suppress); drop the buffer and let
+    # the synthesized tool_use below carry the entire content list.
+    if synthesized_pinned_call:
+        pre_filter_buffer.clear()
+    if _buffer_for_pinned_tool and not (
+        tool_choice_error or tool_validation_error or synthesized_pinned_call
+    ):
         for buffered_event in pre_filter_buffer:
             yield buffered_event
         pre_filter_buffer.clear()
@@ -1873,7 +1998,13 @@ async def _stream_anthropic_messages(
                 "index": tool_index,
                 "content_block": {
                     "type": "tool_use",
-                    "id": tc.id,
+                    # F9: rewrite OpenAI-style ``call_<hex>`` ids to
+                    # Anthropic's ``toolu_<hex>`` prefix. Streaming
+                    # branch mirrors the non-stream adapter
+                    # (``openai_to_anthropic``) so a client correlating
+                    # ``tool_use.id`` across stream + non-stream sees
+                    # the same prefix.
+                    "id": to_anthropic_tool_use_id(tc.id),
                     "name": tc.function.name,
                     "input": {},
                 },

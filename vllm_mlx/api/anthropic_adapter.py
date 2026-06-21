@@ -10,6 +10,7 @@ Handles translation of:
 
 import json
 import re
+import secrets
 import uuid
 
 from .anthropic_models import (
@@ -30,6 +31,42 @@ from .models import (
     ResponseFormatJsonSchema,
     ToolDefinition,
 )
+
+
+# F9: Anthropic's public spec uses ``id="toolu_<hex>"`` on every
+# ``tool_use`` block (and every matching ``tool_result.tool_use_id``).
+# Our underlying tool parsers all mint OpenAI-style ``call_<hex>`` IDs
+# (see the ~20 tool_parsers/*.py call sites that share the
+# ``f"call_{uuid.uuid4().hex[:8]}"`` shape) — which is the right thing
+# for the OpenAI ``/v1/chat/completions`` surface but leaks the
+# underlying conversion through the Anthropic ``/v1/messages`` envelope.
+#
+# Single source of truth: the Anthropic adapter rewrites IDs as they
+# cross the boundary. ``to_anthropic_tool_use_id`` preserves the hex
+# tail when the input already follows the ``call_<hex>`` shape so
+# call-id correlation across logs still works; otherwise it mints a
+# fresh ``toolu_<24 hex>`` id matching Anthropic's public examples.
+#
+# Cross-route consistency: ``/v1/chat/completions`` and ``/v1/responses``
+# keep returning ``call_<hex>`` (OpenAI parity). Only the Anthropic
+# adapter and route apply this rewrite.
+def to_anthropic_tool_use_id(openai_id: str | None) -> str:
+    """Convert an OpenAI-style ``call_<hex>`` id to Anthropic's
+    ``toolu_<hex>`` id (or mint a fresh one when the input is missing).
+
+    Preserves the hex tail when present so an operator can correlate
+    the same call across the OpenAI-side parser log and the
+    Anthropic-side wire response — matching the F9 single-source-of-
+    truth requirement.
+    """
+    if isinstance(openai_id, str) and openai_id.startswith("call_"):
+        return "toolu_" + openai_id[len("call_") :]
+    if isinstance(openai_id, str) and openai_id.startswith("toolu_"):
+        return openai_id
+    # Anthropic's public examples use ~24 hex chars after ``toolu_``;
+    # ``secrets.token_hex(12)`` gives 24 hex chars from a CSPRNG so
+    # we don't rely on uuid4's structure leaking into the id.
+    return f"toolu_{secrets.token_hex(12)}"
 
 
 class AnthropicOutputConfigError(ValueError):
@@ -97,6 +134,24 @@ def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
     tool_choice = None
     if request.tool_choice:
         tool_choice = _convert_tool_choice(request.tool_choice)
+
+    # F7: ``tool_choice={"type":"none"}`` means the model must NOT call
+    # a tool. Anthropic's real backend strips tool definitions from the
+    # prompt entirely when the client sets ``none``; without parity
+    # here, the chat template still injects the tools into the system
+    # prompt, the model decides to call anyway, and the partial
+    # ``<tool_call>{...}`` text leaks through to the response (Sergei
+    # repro F7 — leaked text="<tool_call>\n{\"name\": \"get_weather\"...").
+    # Drop tools at the adapter so the OpenAI-side request goes
+    # downstream with no tool definitions. This is the single source of
+    # truth — the downstream chat-route mirror (``routes/chat.py:861``)
+    # does the same on ``"none"`` for OpenAI clients, but the Anthropic
+    # route never delegates to it. Applied AFTER ``tool_choice`` is
+    # converted so the ``"none"`` signal still propagates to the
+    # OpenAI-side field for any downstream consumer that branches on
+    # it.
+    if tool_choice == "none":
+        tools = None
 
     # Translate ``output_config.format = json_schema`` (Anthropic shape,
     # upstream vLLM PR #42396) into the OpenAI ``response_format`` shape
@@ -266,7 +321,13 @@ def openai_to_anthropic(
                 content.append(
                     AnthropicResponseContentBlock(
                         type="tool_use",
-                        id=tc.id,
+                        # F9: rewrite OpenAI-style ``call_<hex>`` ids to
+                        # Anthropic's ``toolu_<hex>`` prefix. See
+                        # ``to_anthropic_tool_use_id`` for the prefix
+                        # contract; cross-route audit lives in tests
+                        # ``test_anthropic_adapter::test_tool_use_id_uses_toolu_prefix``
+                        # and the route-level streaming variant.
+                        id=to_anthropic_tool_use_id(tc.id),
                         name=tc.function.name,
                         input=tool_input,
                     )
