@@ -336,6 +336,13 @@ def test_streaming_guided_fallback_preserves_id_and_created():
     kwargs to ``stream_chat_completion``. The mock fallback stream emits
     its standard chunks; this test reassembles them and asserts every
     chunk shares one id and one created value (the outer helper's).
+
+    H-06 note: this test asserts the suggestion-only contract
+    (``strict=False``). Under ``strict=True``, the H-06 fix
+    refuses the unconstrained fallback entirely and emits a
+    canonical SSE error envelope instead — covered by
+    ``test_strict_true_streaming_guided_raises_emits_error_sse_no_fallback``
+    in ``test_response_format_json_schema_strict.py``.
     """
     engine = _GuidedEngine(raise_in_guided=True)
     client = _make_client(engine)
@@ -349,7 +356,9 @@ def test_streaming_guided_fallback_preserves_id_and_created():
             "messages": [{"role": "user", "content": "pick a color"}],
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": "Pick", "schema": _SCHEMA, "strict": True},
+                # strict=False: suggestion-only, fallback IS legal
+                # under this contract — that's what this test pins.
+                "json_schema": {"name": "Pick", "schema": _SCHEMA, "strict": False},
             },
         },
     )
@@ -374,12 +383,19 @@ def test_streaming_guided_falls_back_to_unconstrained_on_engine_failure():
     stream_chat so the request still returns a response.
 
     Fallback rationale: a failure in outlines (import error at runtime,
-    grammar compilation error on a pathological schema, etc.) should
-    degrade to unconstrained generation rather than 500. Strict-mode
-    clients can validate the response themselves; defensive servers
-    log the failure with full traceback (via logger.exception in
+    grammar compilation error on a pathological schema, etc.) under
+    ``strict=False`` (suggestion-only) should degrade to unconstrained
+    generation rather than 500. Clients in suggestion-only use cases
+    can validate the response themselves; defensive servers log the
+    failure with full traceback (via logger.exception in
     GuidedGenerator.generate_json) so the regression surfaces in ops
     visibility — see knowledge/sop_gap_guided_schema_passthrough.md.
+
+    H-06 note: ``strict=True`` is now an explicit contract — the
+    fix refuses the fallback and surfaces the breach as either a
+    502 (non-stream) or a canonical SSE error envelope (stream).
+    See ``test_response_format_json_schema_strict.py`` for those
+    contract-level pins.
     """
     engine = _GuidedEngine(raise_in_guided=True)
     client = _make_client(engine)
@@ -392,7 +408,7 @@ def test_streaming_guided_falls_back_to_unconstrained_on_engine_failure():
         "messages": [{"role": "user", "content": "pick a color"}],
         "response_format": {
             "type": "json_schema",
-            "json_schema": {"name": "Pick", "schema": _SCHEMA, "strict": True},
+            "json_schema": {"name": "Pick", "schema": _SCHEMA, "strict": False},
         },
     }
 

@@ -925,3 +925,173 @@ def extract_json_schema_for_guided(
         return None
 
     return schema
+
+
+def check_schema_validity(json_schema: dict[str, Any]) -> tuple[bool, str | None]:
+    """Validate the user-supplied schema itself as a JSON Schema document.
+
+    Codex r4 NIT #5: pre-fix, an invalid client-supplied schema
+    (e.g. ``"type": "objct"`` typo, missing required JSON Schema
+    keywords) fell into the post-decode validator's broad
+    exception path and surfaced as a 502 ``strict_schema_violation``
+    — a server-side contract breach shape — even though the
+    actual cause was client-side. This helper runs the
+    schema-itself through the appropriate ``jsonschema``
+    validator's ``check_schema`` so the route can 400 invalid
+    schemas BEFORE generation, pointing the client at their
+    malformed input.
+
+    Codex r8 NIT: the validator class is selected dynamically
+    via ``jsonschema.validators.validator_for(schema)`` so the
+    preflight uses the SAME draft the request's ``$schema``
+    keyword declared (r7 BLOCKING #1). The pre-fix hard-coded
+    ``Draft7Validator`` silently accepted 2020-12 schemas
+    because Draft-7 ignores unknown keywords like ``prefixItems``,
+    only for the post-decode validator (using the declared
+    draft) to reject them as a 502 strict_schema_violation
+    later — masking a client schema-version mismatch as a
+    server-side breach.
+
+    Returns ``(ok, error_message)``; the message is a short
+    human-readable summary the route uses in the 400 envelope.
+    """
+    # Codex r5 NIT: narrow the catch to ``jsonschema.SchemaError``
+    # (plus ``TypeError`` for non-mapping inputs that
+    # ``check_schema`` rejects with TypeError, still client-side
+    # malformed input). An environment/import failure in
+    # ``jsonschema`` is a SERVER dependency failure and must
+    # surface as 500 — telling a client "your schema is invalid:
+    # <ModuleNotFoundError>" would mislead them into rewriting
+    # a perfectly valid schema. ``jsonschema`` is a hard
+    # dependency of this project (already used by
+    # ``validate_output_against_schema``), so we let any
+    # ImportError propagate.
+    #
+    # Codex r7 BLOCKING #1: pre-fix this hard-coded ``Draft7Validator``,
+    # so a request carrying ``$schema:"...draft/2020-12..."`` would
+    # pass the preflight (Draft7 ignores unknown keywords) and then
+    # fail later inside the post-decode ``jsonschema.validate`` call
+    # as a 502 strict_schema_violation — a server-side breach shape
+    # for what was actually a client schema-version mismatch. Fix:
+    # pick the right validator class via
+    # ``jsonschema.validators.validator_for`` so the preflight
+    # uses the SAME draft the request declared, and matches the
+    # validator the post-decode path will use.
+    from jsonschema.exceptions import SchemaError
+    from jsonschema.validators import validator_for
+
+    try:
+        validator_cls = validator_for(json_schema)
+    except TypeError as exc:
+        # Non-mapping input — ``validator_for`` raises TypeError
+        # before it can even look up ``$schema``. Still client-side
+        # malformed input, route to 400.
+        return False, f"{type(exc).__name__}: {exc}"
+    try:
+        validator_cls.check_schema(json_schema)
+    except SchemaError as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    except TypeError as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    return True, None
+
+
+def validate_output_against_schema(
+    output_text: str, json_schema: dict[str, Any]
+) -> tuple[bool, str | None]:
+    """Post-decode belt-and-braces validation for strict json_schema (H-06).
+
+    Outlines-backed constrained decoding should make the output validate
+    against the schema by construction. This helper is the smoke alarm
+    that flags any case where guided decoding silently degraded
+    (e.g. an outlines version bump renames the constraint API and the
+    in-engine fallback kicked in unnoticed).
+
+    Returns ``(ok, error_message)``. ``ok=True`` means the output text
+    parsed as JSON AND :func:`jsonschema.validate` accepted it.
+    ``ok=False`` means at least one of those failed; the message is a
+    short human-readable summary the route logs at WARNING (the chat
+    route bumps the violations counter on ``ok=False`` regardless of
+    cause — schema mismatch, malformed JSON, empty text).
+
+    The validation is intentionally lenient about the JSON wrapper:
+    outlines emits raw JSON without code fences, but a future engine
+    integration that adds a fence would surface here as
+    ``invalid JSON: Expecting value`` rather than as a false-positive
+    schema violation.
+    """
+    text = (output_text or "").strip()
+    if not text:
+        return False, "empty output"
+    try:
+        parsed = json.loads(text)
+    except (json.JSONDecodeError, TypeError, ValueError) as exc:
+        return False, f"invalid JSON: {exc}"
+    try:
+        validate(instance=parsed, schema=json_schema)
+    except ValidationError as exc:
+        # ``exc.message`` is the short top-level message (e.g.
+        # ``'value' is a required property``). ``str(exc)`` would
+        # include the full validator path + offending instance, which
+        # we intentionally skip to keep log lines compact and avoid
+        # echoing model-generated content into ops dashboards.
+        return False, f"schema violation: {exc.message}"
+    except Exception as exc:
+        return False, f"validator error: {type(exc).__name__}: {exc}"
+    return True, None
+
+
+def is_strict_json_schema(
+    response_format: ResponseFormat | dict[str, Any] | None = None,
+) -> bool:
+    """Return ``True`` iff the request asks for **strict** json_schema mode.
+
+    OpenAI's structured-output spec (#openai/openai-python ChatCompletions
+    parsed helper) treats ``strict=true`` as a hard contract: the
+    generated text MUST validate against the supplied JSON schema. This
+    helper centralizes the strict-detection logic so the chat / responses
+    routes share one source of truth — H-06 pre-fix, the strict flag was
+    only consulted by ``build_json_system_prompt`` for the prompt-injection
+    fallback, never to drive an enforcement decision.
+
+    A request is "strict" iff:
+    * ``response_format.type == "json_schema"``
+    * ``response_format.json_schema.strict`` is truthy
+
+    Returns ``False`` for every other shape (``None``, ``"text"``,
+    ``"json_object"``, ``json_schema`` with ``strict=false`` or absent).
+    Mirrors the dict-vs-typed-model normalization in
+    :func:`extract_json_schema_for_guided` so both helpers agree on what
+    the caller meant.
+    """
+    if response_format is None:
+        return False
+
+    if isinstance(response_format, ResponseFormat):
+        if response_format.type != "json_schema":
+            return False
+        if response_format.json_schema is None:
+            return False
+        # Pydantic coerces ``"true"`` / ``"false"`` strings to the
+        # canonical bool, so by the time we get here ``strict`` is
+        # either ``True``, ``False``, or ``None``. Compare against
+        # the literal ``True`` so the ``None``/``False`` arms collapse
+        # to non-strict — matches the dict-arm semantics below.
+        return response_format.json_schema.strict is True
+
+    if isinstance(response_format, dict):
+        if response_format.get("type") != "json_schema":
+            return False
+        spec = response_format.get("json_schema") or {}
+        if not isinstance(spec, dict):
+            return False
+        # On the raw-dict path we deliberately require ``strict is True``
+        # rather than ``bool(strict)``: a malformed payload like
+        # ``"strict": "false"`` (string) is truthy under ``bool()`` and
+        # would silently enable enforcement on a client that intended
+        # to opt out. The Pydantic-typed arm is already strict (the
+        # field is typed ``bool | None``) so requiring identity here
+        # keeps both arms semantically aligned (codex r1 NIT).
+        return spec.get("strict") is True
+
+    return False
