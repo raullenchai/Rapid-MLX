@@ -129,14 +129,83 @@ def _deep_dict(n: int) -> dict | int:
     return obj
 
 
+def _deep_dict_bytes(n: int) -> bytes:
+    """Build the JSON encoding of a ``n``-deep ``{"a":{"a":…1}}`` body
+    WITHOUT ever materialising the nested Python object.
+
+    codex r2 BLOCKING #1/#2/#3: ``client.post(..., json=payload)``
+    routes through ``json.dumps`` and httpx's encoder both of which
+    recurse over the input tree before any byte hits the ASGI
+    transport. On a 1000-deep adversarial payload the test process
+    itself raises ``RecursionError`` and the request never reaches
+    the middleware — the test would pass for the wrong reason. The
+    bytes form is built by string concatenation in a flat loop, so
+    the depth bound stays on the heap (a single large bytes buffer)
+    and the test client ships the body verbatim to the server.
+    """
+    if n <= 0:
+        return b"1"
+    return b'{"a":' * n + b"1" + b"}" * n
+
+
+def _deep_list_bytes(n: int) -> bytes:
+    """Build the JSON encoding of a ``n``-deep ``[[[…1…]]]`` body
+    iteratively. Same rationale as :func:`_deep_dict_bytes`."""
+    if n <= 0:
+        return b"1"
+    return b"[" * n + b"1" + b"]" * n
+
+
 def _deep_tool_params(n: int) -> dict:
     """Build a ``tools[0].function.parameters`` schema nested ``n``
     levels deep — the exact D-TOOL-RECUR repro shape from the bug
-    report."""
+    report.
+
+    Only safe up to depths well under the Python recursion limit;
+    callers exercising 1000-deep payloads MUST use
+    :func:`_chat_request_with_deep_tool_bytes` to serialize without
+    recursing through ``json.dumps``."""
     inner: dict = {"type": "object"}
     for _ in range(n):
         inner = {"type": "object", "properties": {"a": inner}}
     return inner
+
+
+def _chat_request_with_deep_tool_bytes(n: int) -> bytes:
+    """Build a chat-completions request body where
+    ``tools[0].function.parameters`` is ``n`` levels deep, returning
+    the JSON bytes WITHOUT materialising the nested object in Python.
+
+    codex r2 BLOCKING #3 pin: the previous test ran the 1000-deep
+    ``parameters`` dict through ``json.dumps`` which recursed over
+    the tree and raised ``RecursionError`` in the test process,
+    masking whether the per-tool depth validator on the server
+    actually fired. We build the deep ``parameters`` schema as a
+    string fragment in a flat loop and embed it into the outer
+    chat-request JSON via byte concatenation. No Python recursion.
+    """
+    # Inner schema: ``{"type":"object","properties":{"a":<inner>}}``
+    # repeated n times around ``{"type":"object"}``. The unit
+    # fragment ``{"type":"object","properties":{"a":`` is shipped n
+    # times, then the base ``{"type":"object"}``, then ``}}`` n times
+    # (one ``}`` for the inner ``properties`` dict and one for the
+    # outer object).
+    open_frag = b'{"type":"object","properties":{"a":'
+    base = b'{"type":"object"}'
+    close = b"}}"
+    params = open_frag * n + base + close * n
+    # Outer request shape: model + messages + tools with one function
+    # whose parameters are the deep fragment above.
+    prefix = (
+        b'{"model":"test",'
+        b'"messages":[{"role":"user","content":"hi"}],'
+        b'"tools":[{"type":"function","function":{"name":"foo","parameters":'
+    )
+    suffix = b"}}]}"
+    return prefix + params + suffix
+
+
+_JSON_HEADERS = {"Content-Type": "application/json"}
 
 
 # ============================================================
@@ -156,12 +225,18 @@ def _deep_tool_params(n: int) -> dict:
 def test_d_deep_json_depth_1000_returns_400_with_canonical_envelope(path):
     """A body nested 1000 levels deep MUST be rejected with the
     canonical 400 envelope on every body-binding route — no 500, no
-    stack trace, no leaked field bytes."""
+    stack trace, no leaked field bytes.
+
+    codex r2 BLOCKING #1: we ship the body as raw JSON bytes via
+    ``content=`` so the test client's own ``json.dumps`` doesn't
+    recurse over the adversarial tree and raise ``RecursionError``
+    in the test process before any byte reaches the middleware.
+    """
     app = _build_minimal_app()
     client = TestClient(app, raise_server_exceptions=False)
-    payload = _deep_dict(1000)
+    body_bytes = _deep_dict_bytes(1000)
 
-    resp = client.post(path, json=payload)
+    resp = client.post(path, content=body_bytes, headers=_JSON_HEADERS)
     assert resp.status_code == 400, (path, resp.status_code, resp.text[:300])
     body = resp.json()
     err = body["error"]
@@ -190,13 +265,16 @@ def test_d_deep_json_depth_1000_returns_400_with_canonical_envelope(path):
 def test_d_deep_json_list_nesting_1000_returns_400(path):
     """The other bug-report repro shape — ``[[[…1…]]]`` 1000 deep —
     is also rejected with the same envelope. The depth count is
-    container-agnostic (lists and dicts each add one level)."""
+    container-agnostic (lists and dicts each add one level).
+
+    codex r2 BLOCKING #2: same bytes-form rationale as the dict-shape
+    repro above — ship raw JSON bytes via ``content=`` so the test
+    process's ``json.dumps`` doesn't recurse over the adversarial
+    list before the middleware sees it.
+    """
     app = _build_minimal_app()
     client = TestClient(app, raise_server_exceptions=False)
-    payload: list | int = 1
-    for _ in range(1000):
-        payload = [payload]
-    resp = client.post(path, json=payload)
+    resp = client.post(path, content=_deep_list_bytes(1000), headers=_JSON_HEADERS)
     assert resp.status_code == 400, (path, resp.text[:300])
     assert resp.json()["error"]["code"] == "request_body_too_deep"
 
@@ -299,20 +377,16 @@ def test_d_tool_recur_tools_depth_1000_returns_400_canonical_envelope(monkeypatc
     app = _build_minimal_app(with_pydantic_chat=True)
     client = TestClient(app, raise_server_exceptions=False)
 
-    payload = {
-        "model": "test",
-        "messages": [{"role": "user", "content": "hi"}],
-        "tools": [
-            {
-                "type": "function",
-                "function": {
-                    "name": "foo",
-                    "parameters": _deep_tool_params(1000),
-                },
-            }
-        ],
-    }
-    resp = client.post("/v1/chat/completions", json=payload)
+    # codex r2 BLOCKING #3: build the request body as raw bytes so
+    # the test process's ``json.dumps`` doesn't recurse over the
+    # 1000-deep ``tools[0].function.parameters`` dict and crash
+    # before the request reaches the per-tool validator on the
+    # server.
+    resp = client.post(
+        "/v1/chat/completions",
+        content=_chat_request_with_deep_tool_bytes(1000),
+        headers=_JSON_HEADERS,
+    )
     assert resp.status_code == 400, resp.text[:400]
     body = resp.json()
     err = body["error"]
@@ -495,8 +569,17 @@ def test_body_depth_gate_catches_parser_recursion_error(monkeypatch):
     monkeypatch.setattr(_bd, "_json", stub)
     app = _build_minimal_app()
     client = TestClient(app, raise_server_exceptions=False)
-    # Any JSON body works — the patch raises unconditionally.
-    resp = client.post("/v1/chat/completions", json={"x": 1})
+    # The byte-level heuristic in front of ``json.loads`` only forwards
+    # bodies whose bracket count COULD exceed the cap; we therefore
+    # ship a body deep enough for the heuristic to greenlight the
+    # parse step. Any sufficiently-deep JSON works — the patched
+    # parser raises unconditionally so the test asserts the middleware
+    # converts the exception into the canonical 400 envelope.
+    resp = client.post(
+        "/v1/chat/completions",
+        content=_deep_dict_bytes(200),
+        headers=_JSON_HEADERS,
+    )
     assert resp.status_code == 400, resp.text[:300]
     body = resp.json()
     assert body["error"]["code"] == "request_body_too_deep"
@@ -549,6 +632,79 @@ def test_recursion_error_handler_returns_sanitized_400():
         assert "_walk" not in raw
     finally:
         sys.setrecursionlimit(original_limit)
+
+
+# ============================================================
+# Body-depth gate: fast-path byte-level heuristic
+# ============================================================
+
+
+def test_quick_depth_heuristic_skips_shallow_bodies():
+    """The byte-level fast path MUST return ``False`` (don't bother
+    parsing) for obviously-shallow bodies, so the production hot path
+    of normal chat/completion requests never pays the
+    ``json.loads`` + tree-walk cost. A regression that broke the
+    bypass would add 50–500 µs to every legitimate request."""
+    from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
+
+    # Empty / scalar — depth 0.
+    assert _quick_depth_might_exceed(b"", 64) is False
+    assert _quick_depth_might_exceed(b'"hello"', 64) is False
+    assert _quick_depth_might_exceed(b"123", 64) is False
+
+    # Real chat-completions-shaped body (depth ~4).
+    body = b'{"model":"x","messages":[{"role":"user","content":"hi"}],"max_tokens":16}'
+    assert _quick_depth_might_exceed(body, 64) is False
+
+
+def test_quick_depth_heuristic_catches_deep_bodies():
+    """The heuristic MUST return ``True`` for any body that COULD
+    exceed the cap, so the precise check runs and the gate fires.
+    A regression that returned ``False`` here would silently let
+    deeply-nested payloads through the bypass — the exact D-DEEP-JSON
+    surface."""
+    from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
+
+    # Depth 100 dict.
+    assert _quick_depth_might_exceed(_deep_dict_bytes(100), 64) is True
+    # Depth 65 just over the boundary.
+    assert _quick_depth_might_exceed(_deep_dict_bytes(65), 64) is True
+    # Depth 64 at the boundary — bytes never exceed ``cap``, so
+    # bypass IS safe.
+    assert _quick_depth_might_exceed(_deep_dict_bytes(64), 64) is False
+
+
+def test_quick_depth_heuristic_false_positive_falls_back_to_precise():
+    """A body that LOOKS deep via the heuristic (bracket bytes inside
+    a string literal) MUST fall back to the precise parse-and-walk,
+    NOT incorrectly reject. We send a chat body whose ``content``
+    string contains ``{`` characters; the heuristic over-counts, the
+    full parse measures depth 4, gate lets it through."""
+    import os
+
+    from vllm_mlx.middleware.body_depth import _quick_depth_might_exceed
+
+    # A genuinely-shallow body whose string content happens to carry
+    # many opening braces — the heuristic SHOULD over-count and force
+    # the precise path. The precise path then correctly measures the
+    # real structural depth.
+    open_braces = b"{" * 100
+    suspicious = (
+        b'{"model":"x","messages":[{"role":"user","content":"' + open_braces + b'"}]}'
+    )
+    # Heuristic: over-counts above the cap.
+    assert _quick_depth_might_exceed(suspicious, 64) is True
+
+    # End-to-end through the middleware: the precise walk measures
+    # the real depth (4) and lets the request through.
+    os.environ.pop("RAPID_MLX_MAX_BODY_DEPTH", None)
+    app = _build_minimal_app()
+    client = TestClient(app, raise_server_exceptions=False)
+    resp = client.post(
+        "/v1/chat/completions", content=suspicious, headers=_JSON_HEADERS
+    )
+    # The body's REAL depth is 4 (default cap 64), so this MUST 200.
+    assert resp.status_code == 200, resp.text[:300]
 
 
 # ============================================================

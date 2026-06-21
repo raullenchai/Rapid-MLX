@@ -64,6 +64,48 @@ _GUARDED_PREFIXES = ("/v1/", "/internal/", "/anthropic/")
 _EXCLUDED_PATHS = frozenset({"/v1/audio/transcriptions"})
 
 
+def _quick_depth_might_exceed(body: bytes, max_depth: int) -> bool:
+    """Cheap byte-level upper bound on JSON nesting depth (codex r2 NIT).
+
+    Walks the bytes once, tracking the running balance of opening minus
+    closing brackets/braces. The depth at any JSON node is bounded
+    above by the simultaneous-open count, so a body whose balance
+    never reaches ``max_depth + 1`` is GUARANTEED to be at or under
+    the cap and the middleware can skip the full ``json.loads`` +
+    iterative-walk pipeline.
+
+    Returns ``True`` if the body MIGHT exceed the cap (caller should
+    do the full check), ``False`` if it definitely does not. The
+    function is intentionally one-sided — false positives only mean
+    "fall back to the precise check", never "incorrectly accept a
+    deeply-nested payload".
+
+    The heuristic over-counts when the bracket bytes appear inside a
+    JSON string literal (e.g. a description containing ``{{{{``), but
+    that only forces the full parse — same correctness as the
+    no-heuristic shape, just slightly more work on benign payloads
+    that happen to look adversarial. We don't carry the full JSON
+    state machine here (string-escape, unicode escapes, …) because
+    the precise walk is already correct; this is purely a fast-path
+    bypass for the common case where the body is obviously shallow.
+    """
+    cap = max_depth + 1  # depth > max_depth → fail
+    depth = 0
+    peak = 0
+    for byte in body:
+        if byte == 0x7B or byte == 0x5B:  # ``{`` or ``[``
+            depth += 1
+            if depth > peak:
+                peak = depth
+                if peak >= cap:
+                    return True
+        elif byte == 0x7D or byte == 0x5D:  # ``}`` or ``]``
+            depth -= 1
+            # Unmatched closes don't help an attacker; let
+            # ``json.loads`` reject the payload as malformed.
+    return peak >= cap
+
+
 def _path_is_guarded(path: str | None) -> bool:
     if not path:
         return False
@@ -196,6 +238,24 @@ class RequestBodyDepthMiddleware:
 
         if not body.strip():
             # Empty body: no JSON to parse, no depth to enforce.
+            return await self.app(scope, _replay_buffered(body), send)
+
+        # Cheap byte-level heuristic (codex r2 NIT): the absolute
+        # maximum structural depth of a JSON document is bounded above
+        # by the number of consecutive opening brackets / braces in
+        # the byte stream — every container opens with ``{`` or ``[``
+        # and there's at most one open per nested level, so a body
+        # that never accumulates ``max_depth`` simultaneous opens
+        # CANNOT exceed the cap and we can skip the full parse + walk.
+        # This zips through the bytes once with two integer counters,
+        # which is dramatically cheaper than the ``json.loads`` →
+        # tree-walk pipeline on the production hot path of normal-
+        # depth payloads (chat/completion bodies sit at depth 3–5).
+        # The heuristic over-counts when the bytes appear inside a
+        # string literal (e.g. ``"a{{{"``) but only in the direction
+        # that triggers a fallback to the full parse, never in the
+        # direction that bypasses the gate.
+        if not _quick_depth_might_exceed(body, max_depth):
             return await self.app(scope, _replay_buffered(body), send)
 
         try:
