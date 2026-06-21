@@ -121,6 +121,48 @@ THINK_PARSERS_WITH_BASE = [
 ]
 
 
+class TestRegisteredParsersAcceptNewSignature:
+    """Codex round-9 BLOCKING (PR #799): the Anthropic / Responses
+    route layers now call ``reasoning_parser.finalize_streaming(
+    accumulated_text, matched_stop=..., prompt_thinking_active=...,
+    finish_reason=...)``. If any registered parser kept the old
+    ``finalize_streaming(self, accumulated_text)`` signature, the
+    routes would raise ``TypeError`` at end-of-stream.
+
+    This smoke test enumerates EVERY registered reasoning parser via
+    the registry and confirms its ``finalize_streaming`` accepts the
+    three new keyword-only parameters. The base class default
+    (``finalize_streaming`` returns ``None``) is the safe fallback —
+    the test only checks signature compatibility, not semantic
+    behaviour (each parser's semantics are tested in dedicated
+    classes elsewhere).
+    """
+
+    def test_all_registered_parsers_accept_finalize_kwargs(self):
+        from vllm_mlx.reasoning import get_parser, list_parsers
+
+        for name in list_parsers():
+            parser_cls = get_parser(name)
+            parser = parser_cls()
+            if not hasattr(parser, "finalize_streaming"):
+                continue
+            # Must accept the full kwarg set without TypeError. The
+            # return value is parser-specific (None is fine) — we
+            # only assert no exception is raised.
+            try:
+                _ = parser.finalize_streaming(
+                    "",
+                    matched_stop=None,
+                    prompt_thinking_active=False,
+                    finish_reason=None,
+                )
+            except TypeError as exc:
+                pytest.fail(
+                    f"parser {name!r} ({parser_cls.__name__}) rejected "
+                    f"the codex round-8 finalize_streaming signature: {exc!r}"
+                )
+
+
 class TestBaseInvariant:
     """The shared ``_finalize_in_think_block`` invariant pins the rule
     for every ``BaseThinkingReasoningParser`` subclass.

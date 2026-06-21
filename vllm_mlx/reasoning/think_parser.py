@@ -379,30 +379,42 @@ class BaseThinkingReasoningParser(ReasoningParser):
     # only act on ``final_msg.content``, so reasoning-channel finalize
     # output is harmless.
     def _finalize_in_think_block(self, accumulated_text: str) -> bool:
-        """Return True when finalize fires while still mid-``<think>``.
+        """Return True when the accumulated text has no closing
+        ``</think>`` (or subclass-specific ``end_token``).
 
-        "Mid-think" = ``</think>`` was never observed in the accumulated
-        text. This is the load-bearing signal for the D-STOP-THINK
-        cross-cycle fix: when True AND the stream carried EXPLICIT or
-        PROMPT-INJECTED thinking evidence (literal ``<think>`` opener,
-        OR ``prompt_thinking_active`` under a truncation signal),
-        ``finalize_streaming`` MUST NOT return
-        ``DeltaMessage(content=...)`` because the bytes have already
-        been shipped as ``reasoning_content`` via the streaming deltas.
-        Returning content there would duplicate the bytes into both
-        channels.
+        NARROW SEMANTICS (codex round-9 NIT, PR #799): this predicate
+        ONLY tests for missing-closer. It does NOT itself imply that
+        the stream carried thinking evidence, nor that any
+        D-STOP-THINK suppression should fire — those are SEPARATE
+        signals (a literal ``<think>`` opener in the buffer, OR
+        ``prompt_thinking_active`` under a truncation signal). The
+        predicate's job is to be the FIRST gate: callers AND it with
+        their evidence signals before suppressing a content
+        emission.
 
-        Casual no-tag answers (no opener, no truncation signal, no
-        bare-preamble label) AND natural-EOS with an explicit opener
-        but no truncation signal are EXEMPT — Qwen3 / DeepSeek-R1
-        intentionally emit ``content`` for those paths (#569/#570/#572)
-        so the assistant turn is not silently empty. The exemptions
-        are documented in the module-level comment block above
-        (codex round-8 NIT).
+        Misuse warning: do NOT use this predicate alone to decide
+        whether to suppress a ``DeltaMessage(content=...)`` emission
+        — a plain no-tag casual answer (no opener, no truncation
+        signal) would trip it and you'd silently drop the assistant
+        turn (the #569/#570/#572 regression this PR closes from the
+        OTHER direction). Always combine with evidence:
+
+            if (self._finalize_in_think_block(text)
+                and (saw_think_opener OR
+                     (prompt_thinking_active AND
+                      (matched_stop OR finish_reason == "length"))))
+            then suppress content (route to reasoning)
+            else allow content (casual-answer rescue per #569)
+
+        See ``qwen3_parser.py`` saw-prefix and no-prefix branches for
+        the canonical caller pattern. The base class default
+        ``finalize_streaming`` returns ``None`` for ANY accumulated
+        text and is safe to inherit — the AND-of-signals logic only
+        lives in subclasses that emit corrections.
 
         Subclasses with different closer tokens override
         ``end_token``; this helper reads ``self.end_token`` so the
-        invariant holds uniformly.
+        predicate adapts uniformly.
         """
         return bool(accumulated_text) and self.end_token not in accumulated_text
 
