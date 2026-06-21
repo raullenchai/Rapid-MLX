@@ -211,6 +211,17 @@ class Gemma4ReasoningParser(ReasoningParser):
             # Between channels — treat as reasoning
             return DeltaMessage(reasoning=clean)
 
-    def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
-        """Handle end of stream — emit any remaining content."""
+    def finalize_streaming(
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+    ) -> DeltaMessage | None:
+        """Handle end of stream — emit any remaining content.
+
+        ``matched_stop`` is accepted for API symmetry with the
+        ``<think>``-family parsers (PR #799 D-STOP-THINK). Gemma4's
+        channel-grammar variant has a separate plug in
+        ``extract_reasoning`` so this finalize is a no-op.
+        """
         return None

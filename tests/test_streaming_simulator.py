@@ -362,21 +362,27 @@ class TestScenario3_NoTagModel:
         """Very long output with no tags — qwen3 has no
         NO_TAG_CONTENT_THRESHOLD so streaming keeps routing every byte
         to reasoning, and finalize flips the same bytes to content for
-        the casual-answer contract. Both channels carry the full
-        text (this is the documented no-evidence-path trade-off; the
-        D-STOP-THINK leak surface targeted by PR #799 is the
-        EXPLICIT-OPENER path).
+        the casual-answer contract.
+
+        Codex round-3 NIT (PR #799): assert PER-CHANNEL contract
+        rather than ``reasoning + content == text`` concatenation
+        (which could pass while duplicating or reordering bytes).
+        Both channels independently carry the full text — the
+        no-evidence-path documented trade-off; the D-STOP-THINK leak
+        surface targeted by PR #799 is the EXPLICIT-OPENER path.
         """
         text = "The quick brown fox. " * 20  # 420 chars
         tokens = [text[i : i + 10] for i in range(0, len(text), 10)]
         content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
         full_reasoning = "".join(reasoning)
         full_content = "".join(content)
-        # No bytes lost in EITHER channel — qwen3's casual-answer
-        # contract carries the full text through both surfaces.
+        # Per-channel contract: each channel independently equals the
+        # source text. Concatenation-based length checks were not
+        # enough — they could pass while bytes were duplicated within
+        # a single channel or reordered across channels.
         assert full_reasoning == text, (
-            f"reasoning channel lost bytes: got {len(full_reasoning)}, "
-            f"expected {len(text)}"
+            f"reasoning channel does not equal source text: "
+            f"got {len(full_reasoning)} chars, expected {len(text)}"
         )
         assert full_content == text, (
             f"content channel lost bytes: got {len(full_content)}, expected {len(text)}"

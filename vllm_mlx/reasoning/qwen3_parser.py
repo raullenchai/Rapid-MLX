@@ -236,7 +236,12 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         # Use base class implementation (handles both explicit and implicit)
         return super().extract_reasoning(model_output, enable_thinking=enable_thinking)
 
-    def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
+    def finalize_streaming(
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+    ) -> DeltaMessage | None:
         """
         Finalize streaming output.
 
@@ -346,27 +351,34 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
                 # — the bytes ALREADY shipped as reasoning during the
                 # stream loop.
                 return DeltaMessage(reasoning=cleaned)
-            # No leading ``<think>`` prefix — keep the documented
-            # bare-text-preamble fallback (#570) AND fall through to
-            # the legacy content correction for casual non-thinking
-            # answers (codex r3 BLOCKING contract on PR #572).
+            # No leading ``<think>`` prefix — Qwen3 chat template
+            # injects ``<think>\n`` into the prompt (NOT the model
+            # output) so prompt-injected mid-think streams also land
+            # here. Discriminate using ``matched_stop`` (codex r3
+            # BLOCKING on PR #799):
             #
-            # The bare-text-preamble pre-empts the content correction
-            # because a scratchpad-label opener like ``Here's a
-            # thinking process:`` IS evidence of thinking mode even
-            # without an explicit ``<think>`` token; route to
-            # ``reasoning`` to mirror the streaming behaviour for the
-            # rest of the trace.
+            # * ``matched_stop`` set → user-supplied stop string
+            #   trimmed the output. Combined with the prompt-injected
+            #   ``<think>`` semantics this IS the D-STOP-THINK leak
+            #   shape: the streaming loop shipped the bytes as
+            #   reasoning (base class Case-3 default) and a content
+            #   emission here would duplicate. Route to reasoning.
+            # * ``matched_stop`` None AND bare-preamble label present
+            #   → scratchpad opener (#570) IS think-mode evidence
+            #   even without ``<think>`` token; route to reasoning to
+            #   mirror the streaming routing.
+            # * Otherwise → casual non-thinking answer (no opener, no
+            #   user-supplied stop). The streaming Case-3 default's
+            #   reasoning routing was the conservative bet; flip the
+            #   buffered text to ``content`` so the route consumer
+            #   surfaces it as a text block (#570/#572 contract).
+            #   Without this flip the casual answer would be silently
+            #   empty on ``message.content``.
+            if matched_stop is not None:
+                # D-STOP-THINK prompt-injected mid-think shape.
+                return DeltaMessage(reasoning=cleaned)
             if _looks_like_bare_think_preamble(cleaned):
                 return DeltaMessage(reasoning=cleaned)
-            # No-evidence branch: the streaming Case-3 default
-            # routed the bytes to ``reasoning`` but the lack of any
-            # opener evidence means the consumer should flip to text.
-            # The Anthropic / Responses routes honor this by emitting
-            # ``final_msg.content`` as a fresh text block — and the
-            # D-STOP-THINK duplication cannot fire here because there
-            # was no ``<think>`` opener for the streaming router to
-            # gate on (the duplication shape requires the saw-prefix
-            # arm above).
+            # Casual non-thinking answer — flip to content.
             return DeltaMessage(content=cleaned)
         return None

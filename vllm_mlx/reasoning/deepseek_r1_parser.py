@@ -149,41 +149,48 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
 
         return result
 
-    def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
+    def finalize_streaming(
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+    ) -> DeltaMessage | None:
         """
         Finalize streaming output.
 
-        D-STOP-THINK (cycle-11 F-11-7 phi-4-mini-reasoning leak shape)
-        — codex round-N scope: the short-no-tag rescue path is the
-        CASUAL-ANSWER contract (no explicit ``<think>`` opener was
-        seen during streaming, so we have no evidence the model was
-        actually thinking). The streaming Case-3 default routed the
-        bytes to ``reasoning`` as a conservative bet; this finalize
-        correction flips them to ``content`` so the route consumer
-        can surface them as a text block.
+        Codex round-3 BLOCKING fix (PR #799 review): the prompt-
+        injected ``<think>\\n`` chat template (DeepSeek-R1 family +
+        VibeThinker subclass) means ``_saw_any_tag`` stays False even
+        when the model IS in active thinking mode. Pre-fix this
+        branch unconditionally emitted ``content`` for short no-tag
+        streams, which duplicated bytes already shipped as
+        ``reasoning`` for the prompt-injected mid-think shape.
 
-        Codex round-N BLOCKING fix (PR #799 review): the previous
-        revision of this method routed ALL no-tag rescues — including
-        the casual-answer shape — to ``reasoning``. That suppressed
-        the documented #570/#572 content-correction contract: route
-        consumers ignore ``final_msg.reasoning`` (anthropic.py:1715,
-        responses.py:907) so the casual-answer text would never reach
-        the wire. Fix: restore the legacy content emission for the
-        no-evidence rescue.
+        Discriminate using ``matched_stop`` (the engine-supplied
+        truncation signal, scheduler.py:3673):
 
-        The D-STOP-THINK duplication leak surface for DeepSeek-R1 is
-        the EXPLICIT-OPENER path (handled by the base-class default
-        ``finalize_streaming`` which returns ``None``) — when the
-        model emitted a literal ``<think>…<partial>`` and stop/length
-        cut mid-think, the streaming loop shipped the bytes as
-        reasoning AND pre-fix attempts to flip to content here would
-        have duplicated. The short-no-tag arm below does NOT fire for
-        that shape (``_saw_any_tag`` is True after the opener), so
-        the explicit-opener arm naturally falls through to the base
-        class which returns None.
+        * ``matched_stop`` set → user-supplied stop trimmed the output
+          mid-thought. Combined with the prompt-injected ``<think>``
+          semantics this IS the D-STOP-THINK leak shape: route the
+          rescue text to ``reasoning`` so the route consumer's
+          ``final_msg.content`` gate stays silent.
+        * ``matched_stop`` None → casual non-thinking answer (natural
+          EOS) or ``max_tokens`` cut without a user stop. The
+          streaming Case-3 default routed the bytes to reasoning as a
+          conservative bet; flip to ``content`` so the route consumer
+          surfaces a text block (#570/#572 contract — without this
+          flip the casual answer would be silently empty on
+          ``message.content``).
+
+        The D-STOP-THINK explicit-opener path is still handled by the
+        base class default ``finalize_streaming`` which returns None:
+        the short-no-tag arm below does NOT fire there because
+        ``_saw_any_tag`` becomes True after the literal ``<think>``.
 
         Args:
             accumulated_text: Complete accumulated text from stream.
+            matched_stop: User-supplied stop string that fired, or
+                None for natural EOS / max_tokens.
 
         Returns:
             DeltaMessage correction, or None if no correction needed.
@@ -193,14 +200,13 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             and accumulated_text
             and len(accumulated_text) < self.NO_TAG_CONTENT_THRESHOLD
         ):
-            # Short no-tag output was streamed as reasoning by the
-            # base class Case-3 default but never saw a ``<think>``
-            # opener — casual-answer contract per #570/#572. Flip to
-            # content so the route consumer surfaces a text block.
-            # The Anthropic stream duplication risk (streaming
-            # thinking_delta + finalize text_delta) is the documented
-            # trade-off — alternative is silently empty assistant
-            # turn.
+            if matched_stop is not None:
+                # Prompt-injected mid-think shape — route to reasoning
+                # to suppress D-STOP-THINK duplication.
+                return DeltaMessage(reasoning=accumulated_text)
+            # Casual no-tag answer (or max_tokens cut) — flip to
+            # content per #570/#572. Without this the casual answer
+            # would be silently empty on message.content.
             return DeltaMessage(content=accumulated_text)
         return None
 

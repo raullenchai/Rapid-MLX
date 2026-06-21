@@ -1708,8 +1708,17 @@ async def _stream_anthropic_messages(
     # was already injected mid-stream), the finalize pass still runs
     # as the safety net for normal parser-held content.
     if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
+        # D-STOP-THINK (PR #799): pass the engine-supplied
+        # ``matched_stop`` signal so parsers with prompt-injected
+        # ``<think>`` semantics (Qwen3 / DeepSeek-R1 families) can
+        # distinguish a casual non-thinking answer (matched_stop=None)
+        # from a prompt-injected mid-think truncation (matched_stop
+        # set). The former flips to content for #570/#572; the latter
+        # routes to reasoning to suppress duplication.
         final_msg = (
-            reasoning_parser.finalize_streaming(accumulated_raw)
+            reasoning_parser.finalize_streaming(
+                accumulated_raw, matched_stop=stream_matched_stop
+            )
             if hasattr(reasoning_parser, "finalize_streaming")
             else None
         )

@@ -443,6 +443,13 @@ async def _stream_responses(
 
         accumulated_text = ""
         accumulated_raw = ""
+        # D-STOP-THINK (PR #799): track the most-recently-surfaced
+        # ``matched_stop`` so the post-loop finalize_streaming call
+        # can distinguish a casual non-thinking answer (None — natural
+        # EOS) from a prompt-injected mid-think truncation (set — a
+        # user-supplied stop string trimmed the output). Mirrors the
+        # ``stream_matched_stop`` accumulator in routes/anthropic.py.
+        stream_matched_stop: str | None = None
         accumulated_structured_tool_calls: list[dict] = []
         tool_filter = StreamingToolCallFilter()
 
@@ -591,6 +598,11 @@ async def _stream_responses(
             # explicit raw accumulator.
             if delta_text:
                 accumulated_raw += delta_text
+
+            # D-STOP-THINK matched_stop accumulator (PR #799).
+            _chunk_matched_stop = getattr(output, "matched_stop", None)
+            if _chunk_matched_stop:
+                stream_matched_stop = _chunk_matched_stop
 
             if hasattr(output, "prompt_tokens") and output.prompt_tokens:
                 prompt_tokens = output.prompt_tokens
@@ -903,8 +915,14 @@ async def _stream_responses(
         # finalize pass still runs as the safety net for normal
         # parser-held content.
         if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
+            # D-STOP-THINK (PR #799): pass matched_stop so parsers
+            # with prompt-injected ``<think>`` semantics can route
+            # mid-think truncations to reasoning instead of duplicating
+            # bytes into content.
             final_msg = (
-                reasoning_parser.finalize_streaming(accumulated_raw)
+                reasoning_parser.finalize_streaming(
+                    accumulated_raw, matched_stop=stream_matched_stop
+                )
                 if hasattr(reasoning_parser, "finalize_streaming")
                 else None
             )

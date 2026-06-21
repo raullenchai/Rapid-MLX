@@ -262,6 +262,71 @@ class TestStopMidThinkNoOpener:
         )
 
 
+class TestPromptInjectedMidThinkWithMatchedStop:
+    """Codex round-3 BLOCKING fix (PR #799): the prompt-injected
+    ``<think>\\n`` chat template means the literal opener never reaches
+    the parser. ``matched_stop`` (the engine-supplied truncation
+    signal) is the only evidence we have at finalize time to
+    distinguish a casual non-thinking answer (matched_stop=None,
+    natural EOS / max_tokens cut without a user stop) from a
+    prompt-injected mid-think truncation by a user-supplied stop
+    string (matched_stop set).
+
+    Without matched_stop, the no-opener path defaulted to flipping
+    to content — which duplicated bytes for prompt-injected
+    mid-think shapes. With matched_stop, route the trace to
+    reasoning instead.
+    """
+
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [
+            ("qwen3", Qwen3ReasoningParser),
+            ("deepseek_r1", DeepSeekR1ReasoningParser),
+            ("vibethinker", VibeThinkerReasoningParser),
+        ],
+    )
+    def test_no_opener_with_matched_stop_routes_to_reasoning(self, name, parser_cls):
+        parser = parser_cls()
+        # Short no-tag trace (under deepseek_r1's 64-char threshold;
+        # vibethinker's 1024-char threshold also covers it).
+        trace = "5+7 equals 12"
+        result = parser.finalize_streaming(trace, matched_stop="STOP")
+        assert result is not None
+        assert result.content is None, (
+            f"[{name}] D-STOP-THINK regression — matched_stop indicates "
+            f"prompt-injected mid-think but finalize flipped to content: "
+            f"{result.content!r}"
+        )
+        assert result.reasoning == trace, (
+            f"[{name}] expected reasoning route for prompt-injected "
+            f"mid-think shape: {result!r}"
+        )
+
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [
+            ("qwen3", Qwen3ReasoningParser),
+            ("deepseek_r1", DeepSeekR1ReasoningParser),
+            ("vibethinker", VibeThinkerReasoningParser),
+        ],
+    )
+    def test_no_opener_without_matched_stop_flips_to_content(self, name, parser_cls):
+        """Symmetric pin: matched_stop=None (natural EOS) keeps the
+        casual-answer content flip per #570/#572. Suppressing this
+        would silently drop the assistant turn on
+        ``message.content``."""
+        parser = parser_cls()
+        trace = "5+7 equals 12"
+        result = parser.finalize_streaming(trace, matched_stop=None)
+        assert result is not None
+        assert result.content == trace, (
+            f"[{name}] #569 regression — natural-EOS casual answer "
+            f"suppressed: {result!r}"
+        )
+        assert result.reasoning is None
+
+
 class TestMaxTokensMidThink:
     """Same accumulator state as ``stop`` mid-think: the engine
     truncates the suffix when ``max_tokens`` fires. Covered separately

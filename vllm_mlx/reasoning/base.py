@@ -119,7 +119,10 @@ class ReasoningParser(ABC):
         pass
 
     def finalize_streaming(  # noqa: B027
-        self, accumulated_text: str
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
     ) -> "DeltaMessage | None":
         """
         Finalize streaming and return optional correction chunk.
@@ -130,6 +133,20 @@ class ReasoningParser(ABC):
 
         Args:
             accumulated_text: Complete accumulated text from the stream.
+            matched_stop: When non-None, indicates the engine truncated
+                the output because a user-supplied stop string matched
+                (scheduler.py:3673). This is the D-STOP-THINK
+                truncation signal: subclasses with prompt-injected
+                ``<think>`` semantics (Qwen3 / DeepSeek-R1 families
+                where the chat template wraps the prompt with
+                ``<think>\\n``) MUST treat this as evidence that the
+                model was in active thinking mode when stop fired —
+                because a casual non-thinking answer that legitimately
+                contained the user's stop string would NOT be a
+                D-STOP-THINK shape, but rather a successful early
+                termination of an actual answer. ``matched_stop=None``
+                means natural EOS / max_tokens — fall back to the
+                content-correction casual-answer contract.
 
         Returns:
             DeltaMessage correction chunk, or None if no correction needed.
