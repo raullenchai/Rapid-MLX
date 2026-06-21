@@ -2225,11 +2225,29 @@ async def stream_chat_completion(
                 # shipping byte-identical content + reasoning_content
                 # to the client. Synthesise a harmony-marked raw_text
                 # so the helper's new harmony-shape gate (analysis
-                # marker present, final marker absent, no ``<|call|>``)
-                # fires uniformly across both the streaming and non-
-                # streaming surfaces. Gated on the parser type so the
-                # synthetic only fires for Harmony — gemma-4 / qwen
-                # families still rely on their existing rescue paths.
+                # marker present, final marker absent) fires uniformly
+                # across both the streaming and non-streaming surfaces.
+                # Gated on the parser type so the synthetic only fires
+                # for Harmony — gemma-4 / qwen families still rely on
+                # their existing rescue paths.
+                #
+                # Codex r1 BLOCKING #2: the empty-content + non-empty-
+                # reasoning shape ALSO matches a tool-call-only stream
+                # where the parallel-tool-calls cap dropped every
+                # commentary entry (``tool_calls_detected=True`` set on
+                # the cap-exhaust path but ``fallback_tool_calls`` may
+                # arrive empty and ``finish_event.finish_reason`` may
+                # be something other than ``"tool_calls"`` on the
+                # router-cap path before the buffered-finish gate
+                # fires). Plumb ``processor.tool_calls_detected``
+                # through so a commentary-call stream is not
+                # misclassified as analysis-without-final and
+                # accidentally suppressed via the harmony gate —
+                # tool-call-only responses legitimately ship
+                # ``content=None`` per the OpenAI spec and the gate
+                # would only change zero-byte output here, but
+                # honouring the explicit channel signal keeps the
+                # synthetic_raw discrimination accurate.
                 rp_is_harmony = (
                     type(rp).__name__ == "HarmonyReasoningParser" if rp else False
                 )
@@ -2237,6 +2255,7 @@ async def stream_chat_completion(
                     rp_is_harmony
                     and processor.accumulated_reasoning
                     and not processor.accumulated_text
+                    and not processor.tool_calls_detected
                 )
                 if harmony_cut_short:
                     synthetic_raw = (

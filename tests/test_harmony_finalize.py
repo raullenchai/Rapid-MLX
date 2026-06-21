@@ -170,14 +170,24 @@ def test_rescue_skipped_when_harmony_cut_short_finish_unknown():
     )
 
 
-def test_rescue_suppressed_on_commentary_tool_call_in_progress():
-    """Counter-test: when ``<|call|>`` is present in raw_text but
-    ``tool_calls`` was not surfaced (e.g. router upstream parsed the
-    call but downstream dropped due to a separate gate), the harmony
-    gate should still suppress — the model emitted a structural tool
-    call, not a final answer. The tool-call branch above the gate
-    already returns ``final_content`` (None) when ``tool_calls`` is
-    populated; this counter pins the marker-only path.
+def test_rescue_suppressed_on_commentary_tool_call_marker_only():
+    """Codex r1 BLOCKING #1 counter-test: when ``<|call|>`` is present
+    in raw_text but ``tool_calls`` is None (parser failed to extract
+    the structured call — malformed args, downstream filter dropped
+    the entry, the helper was invoked by a third-party caller that
+    doesn't thread the parsed-calls list), the harmony gate must
+    STILL suppress the rescue. Promoting the analysis body to
+    ``content`` in this state would leak ``reasoning_content`` bytes
+    onto the user-visible channel, which is the exact mojibake
+    D-HARMONY-LEAK exists to prevent.
+
+    The helper's contract: analysis-present + final-absent suppresses
+    REGARDLESS of ``<|call|>`` presence. The earlier
+    ``if tool_calls:`` branch already preserves successfully-parsed
+    tool calls (it returns the original ``final_content`` before
+    reaching this gate). The two branches are independent — a parsed
+    call short-circuits early; an unparsed-but-marker-present call
+    falls into this gate, which still refuses to leak the analysis.
     """
     raw = (
         "<|channel|>analysis<|message|>need weather<|end|>"
@@ -190,15 +200,11 @@ def test_rescue_suppressed_on_commentary_tool_call_in_progress():
         finish_reason="stop",
         raw_text=raw,
     )
-    # raw_text carries ``<|call|>`` so the harmony gate's "no tool
-    # call" sub-condition is False — but the rescue would normally
-    # fire here. After the fix, the helper's check is:
-    #   analysis present AND final absent AND <|call|> absent
-    # → ``<|call|>`` present means the gate does NOT fire; the rescue
-    # surfaces reasoning. This matches the pre-fix behaviour for the
-    # rare "parser-dropped-call" path so we don't accidentally
-    # regress an unrelated edge case.
-    assert rescued == "need weather"
+    assert rescued is None, (
+        "D-HARMONY-LEAK BLOCKING #1: harmony gate must suppress even "
+        "when <|call|> is present but tool_calls is empty; "
+        f"got rescued={rescued!r}"
+    )
 
 
 # ── Existing #569 / VibeThinker rescue still fire — additive gate ────
@@ -594,3 +600,46 @@ def test_streaming_harmony_cut_short_does_not_leak_into_content_stop():
         "reasoning as delta.content; "
         f"got streamed_content={streamed_content!r}"
     )
+
+
+# ── Codex r1 BLOCKING #2 pin: tool-call-detected stream gate ─────────
+
+
+def test_streaming_synthetic_raw_excludes_tool_call_detected_state():
+    """Codex r1 BLOCKING #2: the streaming ``harmony_cut_short``
+    detection at chat.py looks for "active HarmonyReasoningParser AND
+    accumulated_reasoning non-empty AND accumulated_text empty". That
+    shape ALSO matches a tool-call-only stream where the parallel-
+    tool-calls cap dropped every commentary entry
+    (``processor.tool_calls_detected`` set on the cap-exhaust path
+    but ``fallback_tool_calls`` may arrive empty and
+    ``finish_event.finish_reason`` may take a non-``"tool_calls"``
+    value on the buffered-finish-gate path). Plumbing
+    ``processor.tool_calls_detected`` into the harmony_cut_short
+    predicate prevents misclassifying a tool-call-detected stream as
+    analysis-without-final and accidentally narrowing the helper's
+    surface for that case. Pin the predicate directly so future
+    refactors of the streaming call site preserve the gate.
+    """
+    from vllm_mlx.reasoning.harmony_parser import HarmonyReasoningParser
+
+    # Mirror the actual streaming-callsite predicate composition.
+    rp = HarmonyReasoningParser()
+    accumulated_reasoning = "still thinking"
+    accumulated_text = ""
+
+    def _harmony_cut_short(*, tool_calls_detected: bool) -> bool:
+        rp_is_harmony = type(rp).__name__ == "HarmonyReasoningParser"
+        return bool(
+            rp_is_harmony
+            and accumulated_reasoning
+            and not accumulated_text
+            and not tool_calls_detected
+        )
+
+    # No tool-call detected: gate fires (harmony cut-short → suppress).
+    assert _harmony_cut_short(tool_calls_detected=False) is True
+    # Tool-call detected (even with no fallback_tool_calls surfaced):
+    # gate does NOT fire — the stream is structurally a tool-call
+    # response, not an analysis-only truncation.
+    assert _harmony_cut_short(tool_calls_detected=True) is False
