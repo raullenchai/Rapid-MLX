@@ -309,6 +309,58 @@ class TestMalformedGraceful:
                 f"V3-anchored malformed body leaked into V3.1 split: {tc!r}"
             )
 
+    def test_literal_marker_text_before_envelope_does_not_misparse(
+        self, parser: DeepSeekV31ToolParser
+    ) -> None:
+        """codex r8 BLOCKING-1: a response that mentions
+        ``<｜tool▁call▁begin｜>`` as literal content (e.g. in a docs
+        explanation) and later happens to contain
+        ``<｜tool▁calls▁begin｜>`` MUST NOT have the literal text
+        treated as a tool call. The block scanner is bounded to the
+        outer envelope.
+        """
+        # Literal mention in plain content, then a real envelope with
+        # a real tool call.
+        prose = (
+            "Here's how DeepSeek tool calls work: "
+            f"the format uses {C_OPEN}NAME{SEP}ARGS{C_CLOSE}. For example:\n\n"
+        )
+        real_call = _envelope(_v3_block("get_weather", '{"city": "Tokyo"}'))
+        payload = prose + real_call
+
+        result = parser.extract_tool_calls(payload)
+
+        # Exactly ONE tool call (the real one inside the envelope),
+        # not multiple from the literal markers in prose.
+        assert result.tools_called
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["name"] == "get_weather"
+
+    def test_envelope_with_truncated_trailing_block_preserves_text(
+        self, parser: DeepSeekV31ToolParser
+    ) -> None:
+        """codex r8 BLOCKING-2: a response with [valid V3 block,
+        truncated trailing block] must surface the truncated text in
+        ``content`` rather than silently dropping it. Without
+        preservation the user loses the model's partial output.
+        """
+        good_block = _v3_block("get_weather", '{"city": "Tokyo"}')
+        truncated_tail = f"{C_OPEN}function{SEP}get_time\n```json\n{{"  # no close
+        payload = f"{TC_OPEN}{good_block}{truncated_tail}"
+
+        result = parser.extract_tool_calls(payload)
+
+        assert result.tools_called
+        assert len(result.tool_calls) == 1
+        assert result.tool_calls[0]["name"] == "get_weather"
+        # The truncated trailing text MUST appear somewhere in content
+        # so the caller has access to it.
+        assert result.content is not None
+        assert "get_time" in result.content, (
+            f"Truncated trailing block text dropped from content. "
+            f"content={result.content!r}"
+        )
+
     def test_v3_anchored_body_with_recoverable_partial_fence(
         self, parser: DeepSeekV31ToolParser
     ) -> None:

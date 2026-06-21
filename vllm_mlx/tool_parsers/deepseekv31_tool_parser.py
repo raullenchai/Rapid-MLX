@@ -148,35 +148,84 @@ class DeepSeekV31ToolParser(ToolParser):
     # Block-wise scanner — the structural fix for D-DSV31
     # -----------------------------------------------------------------
     @classmethod
+    def _envelope_bounds(cls, model_output: str) -> tuple[int, int] | None:
+        """Locate the outer ``<tool_calls_begin>...<tool_calls_end>``
+        envelope and return ``(inner_start, inner_end)`` pointing at
+        the substring strictly between the two markers. If the
+        envelope hasn't fully arrived (no closing marker), the inner
+        end is the length of the string — the caller can still scan
+        the partially-complete inner region for in-progress blocks.
+
+        Returns ``None`` if the outer ``<tool_calls_begin>`` is not
+        present at all.
+
+        codex r8 BLOCKING-1: block scanning MUST be bounded to the
+        outer envelope. Otherwise a response that mentions
+        ``<｜tool▁call▁begin｜>`` as literal content (e.g. quoted
+        documentation) and later happens to contain
+        ``<｜tool▁calls▁begin｜>`` could have the literal content
+        treated as a tool call.
+        """
+        outer_start = model_output.find(cls.TOOL_CALLS_START)
+        if outer_start == -1:
+            return None
+        inner_start = outer_start + len(cls.TOOL_CALLS_START)
+        outer_end = model_output.find(cls.TOOL_CALLS_END, inner_start)
+        inner_end = outer_end if outer_end != -1 else len(model_output)
+        return (inner_start, inner_end)
+
+    @classmethod
     def _iter_block_bodies(cls, model_output: str) -> list[str]:
         """Yield the body text between each ``<call_begin>`` /
-        ``<call_end>`` pair, in order.
+        ``<call_end>`` pair found INSIDE the outer
+        ``<tool_calls_begin>...<tool_calls_end>`` envelope, in order.
 
         Uses a forward-scanning state machine (find next ``<call_begin>``,
         find the *matching* ``<call_end>``) rather than a single greedy
         regex. This is what makes parallel calls parse as N entries
         instead of one over-greedy match, and what makes a truncated
         trailing block ignored rather than swallowing the rest of the
-        payload.
+        payload. The outer-envelope bound prevents literal marker text
+        in plain content from getting misparsed as tool calls
+        (codex r8 BLOCKING-1).
         """
+        bounds = cls._envelope_bounds(model_output)
+        if bounds is None:
+            return []
+        inner_start, inner_end = bounds
         bodies: list[str] = []
-        pos = 0
+        pos = inner_start
         start_len = len(cls.TOOL_CALL_START)
         end_len = len(cls.TOOL_CALL_END)
-        while True:
-            start = model_output.find(cls.TOOL_CALL_START, pos)
+        while pos < inner_end:
+            start = model_output.find(cls.TOOL_CALL_START, pos, inner_end)
             if start == -1:
                 break
             body_start = start + start_len
-            end = model_output.find(cls.TOOL_CALL_END, body_start)
+            end = model_output.find(cls.TOOL_CALL_END, body_start, inner_end)
             if end == -1:
-                # Truncated block — drop and stop (caller emits the
-                # leading text as content). Matches the "malformed →
-                # graceful no-op" contract.
+                # Truncated trailing block within the envelope — drop
+                # and stop. Matches the "malformed → graceful no-op"
+                # contract.
                 break
             bodies.append(model_output[body_start:end])
             pos = end + end_len
         return bodies
+
+    @classmethod
+    def _has_any_open_or_unparsed_block(cls, model_output: str) -> bool:
+        """True if there are ``<call_begin>`` markers inside the
+        envelope that ``_iter_block_bodies`` did NOT pair with a
+        ``<call_end>`` (truncated trailing block) — used by
+        ``extract_tool_calls`` to decide whether to preserve content
+        for callers (codex r8 BLOCKING-2).
+        """
+        bounds = cls._envelope_bounds(model_output)
+        if bounds is None:
+            return False
+        inner_start, inner_end = bounds
+        inner = model_output[inner_start:inner_end]
+        return inner.count(cls.TOOL_CALL_START) > inner.count(cls.TOOL_CALL_END)
 
     @classmethod
     def _parse_block_body(cls, body: str) -> tuple[str, str] | None:
@@ -284,13 +333,16 @@ class DeepSeekV31ToolParser(ToolParser):
             )
 
         try:
+            bodies = self._iter_block_bodies(model_output)
             tool_calls: list[dict[str, Any]] = []
-            for body in self._iter_block_bodies(model_output):
+            had_malformed = False
+            for body in bodies:
                 parsed = self._parse_block_body(body)
                 if parsed is None:
-                    # Malformed block — skip, don't poison the rest of
-                    # the envelope. Matches the "malformed → graceful"
-                    # contract exercised by the test suite.
+                    # Malformed block — skip emission but note the
+                    # presence so we can surface the model's text to
+                    # the caller below (codex r8 BLOCKING-2).
+                    had_malformed = True
                     continue
                 name, args = parsed
                 tool_calls.append(
@@ -306,10 +358,31 @@ class DeepSeekV31ToolParser(ToolParser):
                     }
                 )
 
+            # Detect truncated trailing blocks (``<call_begin>`` without
+            # a matching ``<call_end>`` inside the envelope) — these
+            # are also "malformed" for content-preservation purposes
+            # but ``_iter_block_bodies`` silently dropped them above.
+            has_truncated = self._has_any_open_or_unparsed_block(model_output)
+
             if tool_calls:
-                # Tool calls fired — content is anything strictly before
-                # the outer begin marker (V3.1 semantics).
-                content = model_output[: model_output.find(self.TOOL_CALLS_START)]
+                prefix_content = model_output[
+                    : model_output.find(self.TOOL_CALLS_START)
+                ]
+                # codex r8 BLOCKING-2: when ANY block was malformed or
+                # truncated, surface the post-envelope/raw text so the
+                # caller can decide whether to display it. Otherwise
+                # we lose model output. The "clean envelope" case
+                # (every block parsed cleanly) preserves the prefix-only
+                # content as before — V3.1 semantics.
+                if had_malformed or has_truncated:
+                    # Surface the prefix + everything from the envelope
+                    # onward (the model's raw text). This is verbose,
+                    # but the alternative (dropping it) loses data.
+                    # Callers that want only the prefix can detect the
+                    # envelope markers in ``content`` themselves.
+                    content = model_output
+                else:
+                    content = prefix_content
                 return ExtractedToolCallInformation(
                     tools_called=True,
                     tool_calls=tool_calls,
