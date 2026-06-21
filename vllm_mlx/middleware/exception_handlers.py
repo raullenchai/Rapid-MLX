@@ -254,11 +254,16 @@ def _sanitize_loc(loc: tuple) -> str:
 #
 # Detect Anthropic surfaces by request path so a single set of
 # handlers covers every error path (validation, HTTPException, JSON
-# decode, recursion, generic 500). The path check is stable: all
-# Anthropic routes live under ``/v1/messages`` (the
-# ``/v1/messages/count_tokens`` sub-route also gets the wrapper, which
-# is the same behavior Anthropic's real backend exhibits).
-_ANTHROPIC_PATH_PREFIXES: tuple[str, ...] = ("/v1/messages",)
+# decode, recursion, generic 500). Path matching is strict — an exact
+# match on the root path OR a strict sub-path match. Codex round-1
+# NIT: a bare ``startswith("/v1/messages")`` would also classify
+# unrelated paths like ``/v1/messages-foo`` or ``/v1/messagesevil`` as
+# Anthropic surfaces, so an attacker who can probe arbitrary paths
+# would receive the Anthropic envelope on 404/405s. The explicit
+# ``path == ROOT or path.startswith(ROOT + "/")`` shape rejects those
+# while still covering the legitimate ``/v1/messages/count_tokens``
+# sub-route.
+_ANTHROPIC_ROOT_PATHS: tuple[str, ...] = ("/v1/messages",)
 
 
 def _is_anthropic_path(request: Request | None) -> bool:
@@ -269,7 +274,10 @@ def _is_anthropic_path(request: Request | None) -> bool:
         path = request.url.path
     except Exception:
         return False
-    return any(path.startswith(prefix) for prefix in _ANTHROPIC_PATH_PREFIXES)
+    for root in _ANTHROPIC_ROOT_PATHS:
+        if path == root or path.startswith(root + "/"):
+            return True
+    return False
 
 
 def _wrap_for_anthropic(response: JSONResponse) -> JSONResponse:

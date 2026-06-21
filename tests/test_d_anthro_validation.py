@@ -576,6 +576,24 @@ class TestF10RoleBlockCompatibility:
         assert "wizard" in msg
         assert "not recognized" in msg
 
+    def test_unknown_role_rejected_with_string_content(self, client):
+        """Codex round-1 BLOCKING fix: the unknown-role gate must fire
+        regardless of whether ``content`` is a string or a block array.
+        Pre-fix the validator returned early on string content and
+        ``{"role":"wizard","content":"hi"}`` slipped through."""
+        response = client.client.post(
+            "/v1/messages",
+            json={
+                "model": "test-model",
+                "max_tokens": 20,
+                "messages": [{"role": "wizard", "content": "hi"}],
+            },
+        )
+        assert response.status_code == 400, response.text
+        msg = response.json()["error"]["message"]
+        assert "wizard" in msg
+        assert "not recognized" in msg
+
     def test_valid_user_text_block_accepted(self, client):
         response = client.client.post(
             "/v1/messages",
@@ -778,6 +796,61 @@ class TestEnvelopeInvariants:
             # No nested wrapper.
             err = envelope["error"]
             assert err.get("type") != "error", "double-wrap detected"
+
+    def test_path_match_does_not_classify_lookalike_paths_as_anthropic(self):
+        """Codex round-1 NIT: ``startswith("/v1/messages")`` would also
+        match ``/v1/messages-foo`` / ``/v1/messagesevil`` and wrap their
+        404/405 responses with the Anthropic envelope. Use a fresh app
+        that exposes only the lookalike paths so the classification
+        function is exercised directly (no fixture interaction with
+        the Anthropic router)."""
+        from fastapi import HTTPException
+
+        from vllm_mlx.middleware.exception_handlers import (
+            _is_anthropic_path,
+            install_exception_handlers,
+        )
+
+        app = FastAPI()
+        install_exception_handlers(app)
+
+        @app.post("/v1/messages-foo")
+        async def _lookalike():
+            raise HTTPException(status_code=400, detail="bad")
+
+        @app.post("/v1/messages/sub")
+        async def _real_sub():
+            raise HTTPException(status_code=400, detail="bad")
+
+        c = TestClient(app)
+
+        # Lookalike path — must NOT get the Anthropic wrapper.
+        resp = c.post("/v1/messages-foo")
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body.get("type") != "error", body
+        assert isinstance(body.get("error"), dict)
+
+        # Real sub-path — MUST get the Anthropic wrapper.
+        resp = c.post("/v1/messages/sub")
+        assert resp.status_code == 400
+        body = resp.json()
+        assert body.get("type") == "error", body
+
+        # Direct classifier checks.
+        class _Req:
+            class _URL:
+                pass
+
+            def __init__(self, p):
+                self.url = self._URL()
+                self.url.path = p
+
+        assert _is_anthropic_path(_Req("/v1/messages")) is True
+        assert _is_anthropic_path(_Req("/v1/messages/count_tokens")) is True
+        assert _is_anthropic_path(_Req("/v1/messages-foo")) is False
+        assert _is_anthropic_path(_Req("/v1/messagesevil")) is False
+        assert _is_anthropic_path(_Req("/v1/messages_evil")) is False
 
     def test_h17_attacker_keys_still_collapsed_under_allowlist(self, client):
         """The F1 allowlist must NOT re-open the H-17 round-2 leak.

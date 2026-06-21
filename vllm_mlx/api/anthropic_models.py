@@ -216,19 +216,25 @@ class AnthropicMessage(BaseModel):
         """D-ANTHRO-VALIDATION F10 — enforce role-block compatibility.
 
         Reject blocks that don't belong to the message's role (e.g.
-        ``thinking`` on user, ``tool_result`` on assistant). String
-        content always parses (no block types to check). Unknown roles
-        get a 400 here too (the upstream chat-route rejects them but
+        ``thinking`` on user, ``tool_result`` on assistant). Unknown
+        roles get a 400 too (the upstream chat-route rejects them but
         the Anthropic surface previously accepted any role string).
+
+        Codex round-1 BLOCKING: the unknown-role gate has to fire
+        BEFORE the string-content early return, otherwise
+        ``{"role":"wizard","content":"hi"}`` slips through. The
+        per-block-type loop is what's bypassed on string content (no
+        blocks to iterate), but the role itself still needs to be one
+        of the recognized Anthropic roles.
         """
-        if isinstance(self.content, str):
-            return self
         allowed = _ANTHROPIC_ROLE_ALLOWED_BLOCK_TYPES.get(self.role)
         if allowed is None:
             raise ValueError(
                 f"role {self.role!r} is not recognized. Allowed roles: "
                 f"{sorted(_ANTHROPIC_ROLE_ALLOWED_BLOCK_TYPES.keys())}."
             )
+        if isinstance(self.content, str):
+            return self
         for block in self.content:
             block_type = block.type
             if block_type not in allowed:
