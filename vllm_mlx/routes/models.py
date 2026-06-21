@@ -206,29 +206,58 @@ def _is_vlm(model_id: str, profile_modality: str | None) -> bool:
         return False
 
 
-def _tools_capable(profile_tool_parser: str | None) -> bool:
+def _is_served_model(model_id: str) -> bool:
+    """Return True when ``model_id`` is the (or one of the) model(s)
+    the server is currently serving.
+
+    The server-level tool parser flag (``--tool-call-parser`` or the
+    auto-detected value) applies ONLY to the model the server is
+    actually serving — it's a per-server flag, not a per-registry
+    setting. Without this guard a single configured parser would
+    paint ``"tools"`` onto every entry returned by ``/v1/models``,
+    including unrelated registry / discovery entries the parser
+    isn't wired for. Codex r4 BLOCKING on PR #804.
+
+    Multi-model serve (``model_registry``) lists every served entry;
+    membership in the registry is the served-set. Single-model serve
+    uses ``model_name`` / ``model_alias``. Both surfaces are
+    consulted because the registry is set on multi-model serve only.
+    """
+    cfg = get_config()
+    if cfg.model_registry is not None:
+        try:
+            return model_id in cfg.model_registry
+        except Exception:  # noqa: BLE001
+            return False
+    return model_id in {cfg.model_name, cfg.model_alias} - {None}
+
+
+def _tools_capable(model_id: str, profile_tool_parser: str | None) -> bool:
     """Return True when ``model_id`` exposes a tool-call surface.
 
-    Combines three signals (any of which flips ``"tools"`` on):
+    Two-tier decision:
 
-    * The alias profile carries a non-empty ``tool_call_parser``
-      (qwen, hermes, mistral, …) — set in ``aliases.json`` for the
-      tool-capable families. Authoritative for registered aliases.
-    * ``ServerConfig.tool_call_parser`` (the bridged value
-      ``_sync_config`` plumbs from the server-level global). Covers
-      raw HF paths the operator wired tools onto with a CLI flag,
-      once the config bridge has run.
-    * ``server._tool_call_parser`` (the live server global).
-      Mirrors the ``_locked_embedding_id`` fallback so the
-      capability shows up even before ``_sync_config`` has bridged
-      the value — same reason the embedding fallback exists. Codex
-      r1 BLOCKING on PR #804: pre-fix only ``cfg.tool_call_parser``
-      was checked, so a boot order that updated only the server
-      global (e.g. before the first ``_sync_config``) would silently
-      omit the ``"tools"`` capability on ``/v1/models``.
+    * **Per-entry alias signal** — the alias profile carries a
+      non-empty ``tool_call_parser`` (qwen, hermes, mistral, …) set
+      in ``aliases.json`` for the tool-capable families. This is
+      authoritative for every registered alias regardless of which
+      model the server is currently serving — discovery clients
+      use it to pre-flight tool-call support on aliases they're
+      considering switching to.
+    * **Server-global fallback** — ``ServerConfig.tool_call_parser``
+      OR ``vllm_mlx.server._tool_call_parser``. ONLY applied when
+      ``model_id`` IS the currently served model (or one of them in
+      multi-model serve). Without this gate a single configured
+      parser would paint ``"tools"`` onto every unrelated registry
+      entry — codex r4 BLOCKING on PR #804. The dual read (config +
+      server global) mirrors :func:`_locked_embedding_id`'s
+      bridge-order fallback so the capability shows up even before
+      ``_sync_config`` has plumbed the value.
     """
     if profile_tool_parser:
         return True
+    if not _is_served_model(model_id):
+        return False
     cfg = get_config()
     if getattr(cfg, "tool_call_parser", None):
         return True
@@ -281,7 +310,7 @@ def _detect_capabilities(
     caps: list[str] = ["text"]
     if _is_vlm(model_id, profile_modality):
         caps.append("vision")
-    if _tools_capable(profile_tool_parser):
+    if _tools_capable(model_id, profile_tool_parser):
         caps.append("tools")
     return caps
 

@@ -276,6 +276,86 @@ class TestToolsCapability:
             restore()
         assert "tools" in entry["capabilities"]
 
+    def test_server_global_tool_parser_does_not_leak_to_unrelated_entries(
+        self, monkeypatch
+    ):
+        """Codex r4 BLOCKING: when the server is configured with a
+        ``--tool-call-parser`` flag, the ``"tools"`` capability tag
+        must appear ONLY on the model the server is actually serving
+        — not on every entry that happens to be in the response.
+
+        The server-level tool parser is a per-server flag. Painting
+        ``"tools"`` onto unrelated registry/listed entries would
+        mislead discovery clients into pre-flighting tool support on
+        models that don't actually have it wired.
+
+        Construct a registry with two entries — one served, one
+        not — and verify only the served entry carries ``"tools"``
+        from the global fallback. Both entries have a profile with
+        a tool-call parser (qwen3 → hermes); the test pivots on the
+        UNREGISTERED served vs unregistered unserved case where the
+        server global is the ONLY signal."""
+        from fastapi import FastAPI
+
+        from vllm_mlx.config import get_config
+        from vllm_mlx.routes import models as models_route
+
+        served_unregistered = "operator/served-custom-tools-model"
+        other_unregistered = "operator/discovered-other-model"
+
+        app = FastAPI()
+        app.include_router(models_route.router)
+
+        cfg = get_config()
+        saved = {
+            k: getattr(cfg, k, None)
+            for k in (
+                "model_name",
+                "model_alias",
+                "model_registry",
+                "embedding_model_locked",
+                "tool_call_parser",
+                "api_key",
+            )
+        }
+        cfg.model_name = served_unregistered
+        cfg.model_alias = served_unregistered
+        cfg.model_registry = None
+        cfg.embedding_model_locked = None
+        cfg.tool_call_parser = None
+        cfg.api_key = None
+
+        import vllm_mlx.server as srv
+
+        saved_srv = {
+            "_embedding_model_locked": srv._embedding_model_locked,
+            "_tool_call_parser": srv._tool_call_parser,
+        }
+        srv._embedding_model_locked = None
+        srv._tool_call_parser = "hermes"
+
+        client = TestClient(app)
+        try:
+            # Probe the served id directly (in the list) and the
+            # other unregistered id via retrieve_model — both must
+            # respect the served-set gate.
+            served_entry = _fetch_entry(client, served_unregistered)
+            r = client.get(f"/v1/models/{other_unregistered}")
+        finally:
+            for k, v in saved.items():
+                setattr(cfg, k, v)
+            for k, v in saved_srv.items():
+                setattr(srv, k, v)
+
+        # Served entry carries "tools" from the server-global fallback.
+        assert "tools" in served_entry["capabilities"]
+        # The unserved/unregistered id returns 404 — the server
+        # doesn't advertise it. (If it ever did via discovery, the
+        # gate would still keep "tools" off.)
+        assert r.status_code == 404, (
+            f"non-served unregistered id should 404, got {r.status_code}"
+        )
+
     def test_tools_tag_falls_back_to_server_global(self, monkeypatch):
         """Codex r1 BLOCKING follow-up: ``_tools_capable`` must check
         ``server._tool_call_parser`` when ``ServerConfig.tool_call_parser``
