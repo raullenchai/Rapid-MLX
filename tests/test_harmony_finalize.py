@@ -543,16 +543,28 @@ def _drive_streaming_harmony(finish_reason: str) -> list[dict]:
         reset_config()
 
 
-def test_streaming_harmony_cut_short_does_not_leak_into_content_length():
+def test_streaming_harmony_cut_short_does_not_leak_into_content_length(monkeypatch):
     """SSE streaming surface, ``finish_reason=length``: the terminal
-    chunk's ``delta.content`` MUST stay empty / None when the engine
-    emitted only reasoning-channel deltas and the active parser is
-    ``HarmonyReasoningParser``. Pre-fix the rescue would promote the
-    accumulated reasoning to content, shipping byte-identical
-    content + reasoning_content. Post-fix the streaming call site's
-    harmony synthetic_raw injection makes the helper's gate fire and
-    no SSE chunk carries reasoning prose in ``delta.content``.
+    chunk's ``delta.content`` MUST NOT carry the parser-internal
+    reasoning trace when the engine emitted only reasoning-channel
+    deltas and the active parser is ``HarmonyReasoningParser``. Pre-fix
+    the rescue would promote the accumulated reasoning to content,
+    shipping byte-identical content + reasoning_content. Post-fix the
+    streaming call site's harmony synthetic_raw injection makes the
+    rescue helper's gate fire, suppressing the trace.
+
+    H-01 (2026-06-21): the strict-null contract is preserved under the
+    env opt-out (``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``). With
+    the env-default H-01 sentinel ON, the terminal chunk surfaces the
+    literal cutoff-notice string in ``delta.content`` so SDK consumers
+    see a clear "truncated, raise max_tokens" signal — that is NOT a
+    leak of the parser-internal trace, so the D-HARMONY-LEAK contract
+    (no byte-for-byte reasoning prose into content) still holds. Run
+    the assertion under the env opt-out to keep this test focused on
+    the original D-HARMONY-LEAK regression guard; the H-01 behaviour
+    has its own dedicated test in ``test_reasoning_content_null_rescue.py``.
     """
+    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
     events = _drive_streaming_harmony("length")
     assert events, "expected at least one SSE chunk"
 

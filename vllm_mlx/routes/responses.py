@@ -46,6 +46,7 @@ from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
+    _apply_reasoning_cutoff_notice,
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
@@ -328,6 +329,19 @@ async def _non_stream(
         final_content = sanitize_output(final_content)
 
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
+
+    # H-01: /v1/responses mirror of the chat-route cutoff sentinel. The
+    # Responses surface doesn't go through ``_rescue_silent_drop_from_reasoning``
+    # (no historical issue#569 silent-drop on this endpoint) but the same
+    # SDK consumers read ``output.text``/``content`` and render an empty
+    # bubble on a length-cut mid-think — so the UX sentinel applies
+    # uniformly. Helper owns the predicate set incl. the env opt-out.
+    final_content = _apply_reasoning_cutoff_notice(
+        final_content,
+        reasoning_text,
+        tool_calls,
+        finish_reason,
+    )
 
     openai_response = ChatCompletionResponse(
         model=cfg.model_name or openai_request.model,

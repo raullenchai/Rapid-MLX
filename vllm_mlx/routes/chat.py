@@ -46,6 +46,7 @@ from ..service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     _TOOL_USE_SYSTEM_SUFFIX,
     SSE_RESPONSE_HEADERS,
+    _apply_reasoning_cutoff_notice,
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
@@ -1862,6 +1863,26 @@ async def _create_chat_completion_impl(
             raw_text=output.raw_text or output.text,
             reasoning_is_case4=reasoning_is_case4,
         )
+        # H-01: when the rescue above explicitly chose NOT to promote the
+        # reasoning trace into ``content`` (truncated-``<think>`` /
+        # harmony analysis-without-final / Case-4 no-tag fallback —
+        # D-STOP-THINK + D-HARMONY-LEAK contracts), the response still
+        # ships ``content=None`` on a ``length`` finish and SDK consumers
+        # render an empty bubble. Surface a parser-independent literal
+        # sentinel as ``content`` instead, so every OpenAI SDK client
+        # sees a clear "truncated, raise max_tokens" signal. The sentinel
+        # is NEVER the reasoning text — that would re-introduce exactly
+        # the leak D-STOP-THINK / D-HARMONY-LEAK closed. Opt-out via
+        # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` for callers
+        # that already handle ``content is None`` natively. The helper
+        # itself owns ALL the predicates (env, finish_reason, content
+        # emptiness, tool-call gate) so this call site stays trivial.
+        final_content = _apply_reasoning_cutoff_notice(
+            final_content,
+            reasoning_text,
+            tool_calls,
+            finish_reason,
+        )
 
     # Build logprobs for response if requested
     choice_logprobs = None
@@ -2346,6 +2367,32 @@ async def stream_chat_completion(
                         "tool calls; surfacing %d-char reasoning trace as "
                         "content",
                         len(terminal_content),
+                    )
+            # H-01 streaming mirror: when the SSE rescue above did NOT
+            # promote reasoning into ``terminal_content`` (strict null
+            # path won — truncated ``<think>`` / harmony analysis-
+            # without-final / Case-4 no-tag), emit the literal cutoff
+            # sentinel as ONE final-chunk ``delta.content`` event so
+            # streaming SDK consumers see the same signal as their
+            # non-streaming counterparts. Per-token reasoning deltas
+            # have already been sent during the loop; this is a single
+            # extra-bytes-on-the-final-chunk event, NOT a per-token
+            # mirror of the reasoning trace (D-STOP-THINK regression
+            # guard). Gating logic matches the non-streaming call site —
+            # the helper owns it.
+            if not has_any_tool_calls and not structured_output_requested:
+                cutoff_content = _apply_reasoning_cutoff_notice(
+                    terminal_content or None,
+                    processor.accumulated_reasoning,
+                    None,
+                    finish_event.finish_reason,
+                )
+                if cutoff_content and cutoff_content != (terminal_content or None):
+                    terminal_content = cutoff_content
+                    logger.info(
+                        "[SSE-CUTOFF-H01] terminal chunk content empty + "
+                        "finish=length + reasoning present; surfacing "
+                        "cutoff sentinel as content"
                     )
             final_chunk = ChatCompletionChunk(
                 id=response_id,

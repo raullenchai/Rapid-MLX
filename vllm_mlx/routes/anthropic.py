@@ -37,6 +37,7 @@ from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
+    _apply_reasoning_cutoff_notice,
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
@@ -618,6 +619,21 @@ async def create_anthropic_message(
             finish_reason=finish_reason,
             raw_text=output.raw_text or output.text,
             reasoning_is_case4=reasoning_is_case4,
+        )
+        # H-01: Anthropic-side mirror of the chat-route cutoff sentinel.
+        # The OpenAI-shaped envelope built below is later adapted to the
+        # ``/v1/messages`` ``ContentBlock`` list — the empty-TextBlock
+        # rescue documented downstream relies on ``final_content`` being
+        # NON-empty to surface a text block. Applying the sentinel here
+        # ensures Anthropic SDK consumers see the same "truncated, raise
+        # max_tokens" signal as OpenAI consumers, gated by the same
+        # ``RAPID_MLX_REASONING_CUTOFF_NOTICE`` env var. See helper
+        # docstring for the full predicate set.
+        final_content = _apply_reasoning_cutoff_notice(
+            final_content,
+            reasoning_text,
+            tool_calls,
+            finish_reason,
         )
 
         openai_response = ChatCompletionResponse(

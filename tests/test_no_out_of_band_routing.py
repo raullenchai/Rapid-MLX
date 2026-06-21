@@ -235,6 +235,18 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_CORS_ALLOW_HEADERS",
         "RAPID_MLX_CORS_MAX_AGE",
         "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
+        # H-01 cutoff sentinel opt-out. Pure UX knob — when reasoning
+        # generation is cut short before ``</think>`` (length-finish
+        # mid-think), surface a literal sentinel string in ``content``
+        # so SDK consumers see a clear "truncated, raise max_tokens"
+        # signal. ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` reverts
+        # to strict ``content=None`` for callers (internal agents) that
+        # already handle the null shape. Never selects a model, parser,
+        # or routing tier; consumed only by
+        # ``vllm_mlx.service.helpers._cutoff_notice_enabled`` to decide
+        # whether the sentinel notice is surfaced on a single envelope
+        # field. See PR fix/h-01-reasoning-content-null-rescue.
+        "RAPID_MLX_REASONING_CUTOFF_NOTICE",
     }
 )
 

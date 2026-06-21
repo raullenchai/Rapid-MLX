@@ -13,6 +13,7 @@ import hashlib
 import inspect
 import json
 import logging
+import os
 import threading
 import uuid
 from collections.abc import AsyncIterator
@@ -752,6 +753,136 @@ def _rescue_silent_drop_from_reasoning(
     ):
         return final_content
     return reasoning_text
+
+
+# ---------------------------------------------------------------------------
+# H-01: reasoning-cutoff sentinel
+# ---------------------------------------------------------------------------
+#
+# When a reasoning model (qwen3, deepseek_r1, phi-4-mini-reasoning, glm4,
+# gemma4, vibethinker, …) is called with a low ``max_tokens`` budget and
+# generation is cut short BEFORE ``</think>`` (or the harmony final-channel
+# marker), the parser-wide rule pinned by D-STOP-THINK + D-HARMONY-LEAK is
+# "route everything to ``reasoning_content`` and leave ``content``
+# null/empty" — the in-progress thought trace is NOT the final answer, so
+# promoting it to ``content`` would ship byte-identical bytes in both
+# fields (the leak shape those PRs explicitly closed).
+#
+# The complementary UX gap (H-01): every OpenAI SDK consumer reads
+# ``choices[0].message.content`` and renders an empty bubble. SDK defaults
+# of ``max_tokens=256`` or ``max_tokens=512`` are common, so the most
+# observable failure mode of a reasoning model on a tight budget is a
+# silently empty assistant turn — clients have no signal beyond
+# ``finish_reason="length"`` (which only sophisticated consumers check).
+#
+# Policy A (this helper): when the response was cut off mid-think on a
+# ``length`` finish AND the rescue helper above already decided NOT to
+# promote reasoning into content (strict routing wins), emit a clearly-
+# marked sentinel string in ``content`` so SDK consumers see something.
+# The sentinel is a literal, parser-independent notice — NEVER the
+# parser-internal reasoning text — so it cannot re-introduce the
+# D-STOP-THINK / D-HARMONY-LEAK leak shape. ``reasoning_content`` stays
+# populated as before.
+#
+# Scope:
+#
+# * Fires ONLY on ``finish_reason="length"`` (NOT on ``"stop"`` — stop-
+#   string mid-think is D-STOP-THINK's exact case, where the strict null
+#   contract must hold and the caller can re-request to drive the model
+#   past the stop string).
+# * Fires ONLY when ``content`` is empty/None AND ``reasoning_text`` is
+#   non-empty — the silent-drop shape clients actually trip on. Happy-
+#   path (closed ``</think>answer`` split) flows untouched.
+# * Fires ONLY when no ``tool_calls`` were extracted — tool-only responses
+#   legitimately ship ``content=None`` per the OpenAI spec.
+# * Opt-out via ``RAPID_MLX_REASONING_CUTOFF_NOTICE``: any of
+#   ``"0"`` / ``"false"`` / ``"no"`` / ``"off"`` / ``"disabled"`` /
+#   ``""`` reverts to the strict-null behaviour for callers who already
+#   handle ``content is None`` (e.g. internal agents in this repo).
+#   Default is ``enabled``.
+#
+# Single source of truth — both the OpenAI ``/v1/chat/completions``
+# non-stream + stream paths AND the Anthropic ``/v1/messages`` adapter
+# call this helper so the user-visible behaviour cannot drift between
+# surfaces. (The streaming path emits the sentinel as one final-chunk
+# ``delta.content`` event, not per-token, so no token-by-token leak of
+# the sentinel string itself.)
+
+#: Literal sentinel surfaced to ``content`` when generation is cut short
+#: mid-think on ``finish_reason="length"``. Kept short and unambiguous so
+#: agentic clients can pattern-match if they want to auto-retry with a
+#: larger ``max_tokens``, but verbose enough that a human user sees a
+#: clear "this turn was truncated" signal in the bubble rather than the
+#: previous silently-empty render.
+REASONING_CUTOFF_SENTINEL = "[truncated — reasoning incomplete; raise max_tokens]"
+
+#: Env var values that DISABLE the sentinel notice (revert to strict null
+#: behaviour). Anything outside this set — including unset — leaves the
+#: sentinel enabled (the default for the user-facing UX fix).
+_CUTOFF_NOTICE_DISABLED_VALUES = frozenset({"0", "false", "no", "off", "disabled", ""})
+
+
+def _cutoff_notice_enabled() -> bool:
+    """Whether the H-01 cutoff sentinel is enabled for this process.
+
+    Reads ``RAPID_MLX_REASONING_CUTOFF_NOTICE`` on each call so test
+    harnesses can flip the env var per-request via
+    ``monkeypatch.setenv`` without restarting the process. The cost is
+    negligible (``os.environ.get`` is a dict lookup) and matches how
+    every other ``RAPID_MLX_*`` env-gated knob is read in this module.
+    """
+    raw = os.environ.get("RAPID_MLX_REASONING_CUTOFF_NOTICE")
+    if raw is None:
+        return True  # default on
+    return raw.strip().lower() not in _CUTOFF_NOTICE_DISABLED_VALUES
+
+
+def _apply_reasoning_cutoff_notice(
+    final_content: str | None,
+    reasoning_text: str | None,
+    tool_calls: list | None,
+    finish_reason: str | None,
+) -> str | None:
+    """H-01: surface a clearly-marked sentinel when generation was cut
+    short mid-think and the strict rescue path left ``content`` empty.
+
+    Runs AFTER ``_rescue_silent_drop_from_reasoning`` — its job is the
+    UX rescue for the cases the silent-drop rescue deliberately
+    SUPPRESSED (truncated ``<think>``, harmony analysis-without-final,
+    Case-4 no-tag fallback). All those cases share the same observable
+    shape: ``finish_reason="length"`` + empty content + non-empty
+    reasoning + no tool calls. The sentinel is parser-independent
+    literal text, so promoting it can NEVER re-introduce the
+    D-STOP-THINK / D-HARMONY-LEAK leak (we are NOT mirroring the
+    reasoning trace — that's the explicit anti-pattern those PRs
+    closed).
+
+    Returns ``final_content`` unchanged when:
+    * the env var disables the notice
+    * ``finish_reason`` is anything other than ``"length"`` (stop-string
+      cut mid-think hits the D-STOP-THINK regression guard — strict
+      null wins)
+    * ``final_content`` already carries a non-whitespace payload
+    * ``tool_calls`` were extracted (OpenAI-spec ``content=None`` path)
+    * ``reasoning_text`` is empty / whitespace (nothing to signal — the
+      model produced nothing semantically, which is a different bug
+      class and shouldn't get a "raise max_tokens" hint)
+
+    Otherwise returns the sentinel constant. The caller writes it into
+    ``message.content`` (non-stream) or the final SSE
+    ``delta.content`` chunk (stream).
+    """
+    if not _cutoff_notice_enabled():
+        return final_content
+    if finish_reason != "length":
+        return final_content
+    if final_content and final_content.strip():
+        return final_content
+    if tool_calls:
+        return final_content
+    if not reasoning_text or not reasoning_text.strip():
+        return final_content
+    return REASONING_CUTOFF_SENTINEL
 
 
 # OpenAI-spec closed enum for ``response_format.type``. Any value outside
