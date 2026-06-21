@@ -444,14 +444,14 @@ async def create_transcription(
         else (response_format_query if response_format_query is not None else "json")
     )
 
-    # F-D05: single audio dep probe — same envelope as
-    # ``/v1/audio/speech`` and ``/v1/audio/voices``. Fires BEFORE we
-    # spool any upload bytes so a broken ``mlx_audio`` install rejects
-    # cheaply (no temp file, no read loop). Catches both "extra not
-    # installed" and "installed-but-runtime-broken" failure modes.
-    from ..audio.probe import require_mlx_audio
+    # F-D05: STT-lane audio dep probe — same envelope as the TTS
+    # lane shares. Fires BEFORE we spool any upload bytes so a broken
+    # ``mlx_audio.stt`` install rejects cheaply (no temp file, no
+    # read loop). Codex r3 BLOCKING: probe the STT lane SPECIFICALLY
+    # so a torn TTS install doesn't 503 transcriptions and vice versa.
+    from ..audio.probe import require_mlx_audio_stt
 
-    require_mlx_audio()
+    require_mlx_audio_stt()
 
     # Resolve / validate the requested model BEFORE draining the upload.
     # Previously every failure mode (unknown alias, missing mlx-audio,
@@ -548,14 +548,17 @@ async def create_speech(
     """
     global _tts_engine
 
-    # Single audio dep probe (F-D05). Fires BEFORE the lazy TTSEngine
-    # import — if mlx_audio is missing or broken at runtime, every
-    # audio route now returns the SAME 503 envelope with the actual
-    # failure reason embedded so operators can distinguish "missing
-    # extra" from "torn install".
-    from ..audio.probe import require_mlx_audio
+    # TTS-lane audio dep probe (F-D05 + codex r3 BLOCKING). Fires
+    # BEFORE the lazy TTSEngine import — if the TTS sub-module of
+    # mlx_audio is missing or broken at runtime, both ``/v1/audio/
+    # speech`` and ``/v1/audio/voices`` return the SAME 503 envelope
+    # with the actual failure reason embedded. A torn STT lane does
+    # NOT 503 this route — the lane separation closes the codex r3
+    # regression where a broken STT install would mask TTS-usable
+    # installs as fully broken.
+    from ..audio.probe import require_mlx_audio_tts
 
-    require_mlx_audio()
+    require_mlx_audio_tts()
 
     try:
         from ..audio.tts import TTSEngine
@@ -621,11 +624,12 @@ async def list_voices(model: str = "kokoro"):
     # future refactor that hoists an ``import mlx_audio`` to the top
     # of ``audio/tts.py`` (e.g. for type hints) can't accidentally
     # bypass the shared 503 envelope by failing at the route's import
-    # statement before ``require_mlx_audio`` even runs. Codex r1
-    # BLOCKING on PR #804.
-    from ..audio.probe import require_mlx_audio
+    # statement before the probe even runs. Codex r1 BLOCKING on
+    # PR #804. Codex r3 follow-up: probe the TTS lane SPECIFICALLY so
+    # a torn STT install doesn't 503 voice listing.
+    from ..audio.probe import require_mlx_audio_tts
 
-    require_mlx_audio()
+    require_mlx_audio_tts()
 
     from ..audio.tts import CHATTERBOX_VOICES, KOKORO_VOICES
 

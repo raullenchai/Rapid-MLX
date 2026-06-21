@@ -11,19 +11,30 @@ disagreed — ``voices`` said "yes" with a full list while ``speech``
 503'd "mlx-audio not installed". Users couldn't tell whether TTS
 was actually wired up.
 
-The fix routes EVERY audio endpoint through the same probe so they
-agree. Two complementary checks:
+The fix routes EVERY audio endpoint through the same probe surface
+so they agree, but per-lane so a torn install in one lane doesn't
+503 the other. Two complementary checks per lane:
 
 1. ``importlib.util.find_spec("mlx_audio")`` — cheap presence check;
-   answers "is the top-level package even installed?".
-2. ``import mlx_audio.tts.generate as _probe`` — runtime check;
-   answers "does the package actually import cleanly?". Caches the
-   verdict so we don't pay the import on every request.
+   answers "is the top-level package even installed?". Shared across
+   lanes (cached once per process).
+2. Lane-specific late-import — for the TTS lane, probe
+   ``mlx_audio.tts.generate``; for the STT lane, probe
+   ``mlx_audio.stt.utils``. Caches per-lane verdicts so we don't
+   pay the import on every request.
+
+Lane separation rationale (codex r2 BLOCKING on PR #804): a single
+combined probe would 503 the TTS routes when only STT is broken (or
+vice versa) — a regression for TTS-only callers on installs where
+STT happens to be torn. Each route probes ONLY the lane it needs.
+The base ``find_spec("mlx_audio")`` failure (extra missing entirely)
+still 503s all three routes with the same envelope because that's
+the genuinely-shared failure mode.
 
 The probe is purely lazy — ``vllm_mlx.audio.probe`` itself never
 imports ``mlx_audio`` at module top level, so the base install
-(without the ``[audio]`` extra) can ``from vllm_mlx.audio.probe import
-require_mlx_audio`` without crashing.
+(without the ``[audio]`` extra) can ``from vllm_mlx.audio.probe
+import require_mlx_audio_tts`` without crashing.
 """
 
 from __future__ import annotations
@@ -47,115 +58,119 @@ class _Verdict:
     reason: str | None = None
 
 
-# Module-level cache. Set on first call to :func:`mlx_audio_available`
-# and re-used by every audio route. Cleared by :func:`_reset_probe_cache`
-# in tests so monkeypatched import failures take effect on the next
-# call without leaking across tests.
-_cached_verdict: _Verdict | None = None
+# Lane-keyed cache. ``"tts"`` and ``"stt"`` map to the most recent
+# verdict for each lane; the empty ``""`` key holds the result of the
+# shared ``find_spec`` presence check so the cheap "extra missing"
+# path doesn't repeat the syscall on every request.
+_cached_verdict: dict[str, _Verdict] = {}
 
 
 def _reset_probe_cache() -> None:
-    """Test hook: clear the cached verdict.
+    """Test hook: clear every cached verdict.
 
-    The audio routes call :func:`mlx_audio_available` on every request,
+    The audio routes call the lane-specific probes on every request,
     so a stale cache from a previous test (where the import succeeded)
     would mask a monkeypatched failure in the next test. Tests that
     swap ``builtins.__import__`` or otherwise simulate a broken
     ``mlx_audio`` call this helper in their fixture to force re-probe.
     """
-    global _cached_verdict
-    _cached_verdict = None
+    _cached_verdict.clear()
 
 
-def mlx_audio_available() -> _Verdict:
-    """Probe whether ``mlx_audio`` is usable.
+# Sub-modules each route actually needs to load. Split per lane so a
+# torn install in one lane doesn't 503 the other (codex r2 BLOCKING
+# on PR #804). ``find_spec("mlx_audio")`` is the shared presence
+# check; the lane-specific entries cover runtime sub-module breakage.
+_LANE_SUBMODULES: dict[str, str] = {
+    "tts": "mlx_audio.tts.generate",  # /v1/audio/speech, voices
+    "stt": "mlx_audio.stt.utils",  # /v1/audio/transcriptions
+}
 
-    Returns the same :class:`_Verdict` for every caller within a
-    single process — the import check runs at most once, then the
-    cached answer is re-used. ``find_spec`` covers the "not
-    installed" case; the late ``import mlx_audio.tts.generate``
-    covers the "installed but transitively broken" case (the failure
-    mode Diego hit on a fresh ``[vision]`` install where ``mlx-audio``
-    was pulled in as a transitive but actually breaks at runtime).
+
+def _probe_lane(lane: str) -> _Verdict:
+    """Internal: probe a single lane (``"tts"`` or ``"stt"``).
+
+    Shared first step — ``importlib.util.find_spec("mlx_audio")`` —
+    is cached under the empty-string key so the cheap presence check
+    only runs once per process. If the top-level package is missing,
+    the verdict for the lane folds back to that "extra not installed"
+    answer so callers see a uniform envelope across lanes for the
+    common case.
+
+    Sub-module probe uses bare ``__import__`` (rather than
+    ``importlib.import_module``) so a torn install is detected even
+    when an earlier successful import has already populated
+    ``sys.modules``. ``import_module`` short-circuits to the cached
+    entry; ``__import__`` re-resolves the import machinery — which is
+    what tests need to validate the broken-install path AND what
+    production needs when a runtime force-reload (plugin hot-reload,
+    config reload mid-process) cleared the cache.
+    """
+    if lane in _cached_verdict:
+        return _cached_verdict[lane]
+
+    # Shared presence check: cached separately so a TTS probe doesn't
+    # re-pay the find_spec syscall for STT.
+    if "" not in _cached_verdict:
+        import importlib.util
+
+        if importlib.util.find_spec("mlx_audio") is None:
+            _cached_verdict[""] = _Verdict(
+                ok=False, reason="mlx-audio is not installed"
+            )
+        else:
+            _cached_verdict[""] = _Verdict(ok=True, reason=None)
+    presence = _cached_verdict[""]
+    if not presence.ok:
+        _cached_verdict[lane] = presence
+        return presence
+
+    submod = _LANE_SUBMODULES.get(lane)
+    if submod is None:
+        # Programmer error — unknown lane.
+        _cached_verdict[lane] = _Verdict(
+            ok=False, reason=f"unknown audio lane {lane!r}"
+        )
+        return _cached_verdict[lane]
+    try:
+        __import__(submod)
+    except Exception as e:  # noqa: BLE001
+        _cached_verdict[lane] = _Verdict(
+            ok=False,
+            reason=(
+                f"mlx-audio {lane} import failed at runtime: "
+                f"{type(e).__name__}: {e} (probing {submod})"
+            ),
+        )
+        return _cached_verdict[lane]
+
+    _cached_verdict[lane] = _Verdict(ok=True, reason=None)
+    return _cached_verdict[lane]
+
+
+def mlx_audio_available(lane: str = "tts") -> _Verdict:
+    """Probe whether ``mlx_audio`` is usable for ``lane``.
+
+    ``lane`` is one of ``"tts"`` (default) or ``"stt"`` — selects
+    which sub-module gets the runtime late-import check. The shared
+    ``find_spec`` presence check is cached across lanes so a missing
+    extra reports a uniform envelope from every route.
 
     The route handlers consult this through
-    :func:`require_mlx_audio` so the failure surface is uniform
-    across ``/v1/audio/speech``, ``/v1/audio/voices``, and
-    ``/v1/audio/transcriptions``.
+    :func:`require_mlx_audio_tts` / :func:`require_mlx_audio_stt`
+    so the failure surface is uniform within a lane while a torn
+    STT install can no longer 503 the TTS routes.
     """
-    global _cached_verdict
-    if _cached_verdict is not None:
-        return _cached_verdict
-
-    import importlib.util
-
-    if importlib.util.find_spec("mlx_audio") is None:
-        _cached_verdict = _Verdict(
-            ok=False,
-            reason="mlx-audio is not installed",
-        )
-        return _cached_verdict
-
-    # find_spec said the top-level package is reachable. Now confirm
-    # the sub-modules actually used by the TTS/STT engines import
-    # cleanly. A torn install (e.g. a transitive dep version
-    # mismatch) shows up here — and we want the route to advertise
-    # the real ``ImportError`` reason rather than the generic
-    # "install the extra" hint that would mislead the operator.
-    #
-    # Probe BOTH ``mlx_audio.tts.generate`` (used by
-    # ``/v1/audio/speech`` + ``/v1/audio/voices``) AND
-    # ``mlx_audio.stt.utils`` (used by ``/v1/audio/transcriptions``)
-    # so the probe verdict reflects the union of the runtime imports
-    # the audio routes actually depend on. Codex r1 BLOCKING on
-    # PR #804: pre-fix only the TTS sub-module was probed, so a
-    # transcription-only ``mlx_audio`` breakage would pass the probe
-    # then 500 in the STT route with a different envelope.
-    _SUBMODULES = (
-        "mlx_audio.tts.generate",  # /v1/audio/speech, voices
-        "mlx_audio.stt.utils",  # /v1/audio/transcriptions
-    )
-    for submod in _SUBMODULES:
-        try:
-            # Use the bare ``__import__`` builtin (rather than
-            # ``importlib.import_module``) so a torn install can be
-            # detected even when an earlier successful import has
-            # already populated ``sys.modules``. ``import_module``
-            # short-circuits to the cached entry; ``__import__``
-            # re-resolves the import machinery, which is what tests
-            # need to validate the broken-install code path AND what
-            # production needs when a runtime force-reload (e.g.
-            # plugin hot-reload) cleared the cache mid-process.
-            __import__(submod)
-        except Exception as e:  # noqa: BLE001
-            _cached_verdict = _Verdict(
-                ok=False,
-                reason=(
-                    f"mlx-audio import failed at runtime: "
-                    f"{type(e).__name__}: {e} (probing {submod})"
-                ),
-            )
-            return _cached_verdict
-
-    _cached_verdict = _Verdict(ok=True, reason=None)
-    return _cached_verdict
+    return _probe_lane(lane)
 
 
-def require_mlx_audio() -> None:
-    """Raise an HTTP 503 when ``mlx_audio`` is not usable.
-
-    Centralizes the failure envelope so every audio route returns the
-    SAME body and status when the dep is missing or broken. Pre-fix
-    the speech and voices routes had divergent behavior; that's the
-    cross-endpoint inconsistency this helper closes.
+def _raise_503(verdict: _Verdict) -> None:
+    """Translate a failed :class:`_Verdict` into the HTTP 503 envelope.
 
     Imports ``HTTPException`` lazily so the base install — which
     doesn't necessarily reach the audio routes at all — doesn't pay
     the FastAPI cost just to wire the probe.
     """
-    verdict = mlx_audio_available()
-    if verdict.ok:
-        return
     from fastapi import HTTPException
 
     detail = verdict.reason or "mlx-audio is not available"
@@ -163,3 +178,37 @@ def require_mlx_audio() -> None:
         status_code=503,
         detail=(f"{detail}. Install with: pip install 'rapid-mlx[audio]'"),
     )
+
+
+def require_mlx_audio_tts() -> None:
+    """Raise an HTTP 503 when the TTS lane of ``mlx_audio`` isn't usable.
+
+    Used by ``/v1/audio/speech`` and ``/v1/audio/voices``. A torn
+    STT install does NOT trip this probe — pre-codex-r2 the
+    combined probe did, which masked TTS-usable installs as broken.
+    """
+    verdict = _probe_lane("tts")
+    if verdict.ok:
+        return
+    _raise_503(verdict)
+
+
+def require_mlx_audio_stt() -> None:
+    """Raise an HTTP 503 when the STT lane of ``mlx_audio`` isn't usable.
+
+    Used by ``/v1/audio/transcriptions``. A torn TTS install does
+    NOT trip this probe.
+    """
+    verdict = _probe_lane("stt")
+    if verdict.ok:
+        return
+    _raise_503(verdict)
+
+
+# Backwards-compat shim — earlier PR #804 commits exported
+# ``require_mlx_audio`` as a single combined probe. Kept as an alias
+# for the TTS lane so any in-flight code that imported the old name
+# still works; the TTS lane is the more common probe target (speech
+# + voices vs. transcriptions alone). Re-aliased through the
+# explicit lane name so call sites read clearly.
+require_mlx_audio = require_mlx_audio_tts

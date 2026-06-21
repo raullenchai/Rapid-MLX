@@ -316,11 +316,73 @@ class TestProbeCoversBothLanes:
 
         from vllm_mlx.audio import probe
 
-        v = probe.mlx_audio_available()
-        assert v.ok is False, "STT-only breakage must trip the probe — F2 BLOCKING."
+        v = probe.mlx_audio_available("stt")
+        assert v.ok is False, "STT-only breakage must trip the STT probe — F2 BLOCKING."
         assert "stt" in v.reason.lower(), (
             f"verdict reason should name the failing submodule, got {v.reason!r}"
         )
+
+    def test_stt_breakage_does_not_trip_tts_lane(self, monkeypatch, _reset_audio_probe):
+        """Codex r3 BLOCKING: an STT-only breakage must NOT 503 the
+        TTS routes. Lane separation closes the regression where a
+        torn STT install masked TTS-usable installs as fully broken.
+        """
+        import sys
+
+        for name in list(sys.modules):
+            if name == "mlx_audio.stt" or name.startswith("mlx_audio.stt."):
+                monkeypatch.delitem(sys.modules, name, raising=False)
+
+        _orig_import = builtins.__import__
+
+        def _broken_stt_only(name, *args, **kwargs):
+            if name == "mlx_audio.stt.utils" or name.startswith("mlx_audio.stt"):
+                raise ImportError("simulated stt breakage")
+            return _orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _broken_stt_only)
+
+        from vllm_mlx.audio import probe
+
+        # TTS lane must still work — only STT is broken.
+        v_tts = probe.mlx_audio_available("tts")
+        assert v_tts.ok is True, (
+            "Codex r3 regression: STT-only breakage tripped the TTS "
+            f"probe (verdict={v_tts}). Lane separation broken."
+        )
+        # STT lane reports the breakage.
+        v_stt = probe.mlx_audio_available("stt")
+        assert v_stt.ok is False
+        assert "stt" in v_stt.reason.lower()
+
+    def test_tts_breakage_does_not_trip_stt_lane(self, monkeypatch, _reset_audio_probe):
+        """Mirror of the previous test: TTS-only breakage must NOT
+        503 transcriptions. Lane separation works both directions."""
+        import sys
+
+        for name in list(sys.modules):
+            if name == "mlx_audio.tts" or name.startswith("mlx_audio.tts."):
+                monkeypatch.delitem(sys.modules, name, raising=False)
+
+        _orig_import = builtins.__import__
+
+        def _broken_tts_only(name, *args, **kwargs):
+            if name == "mlx_audio.tts.generate" or name.startswith("mlx_audio.tts"):
+                raise ImportError("simulated tts breakage")
+            return _orig_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _broken_tts_only)
+
+        from vllm_mlx.audio import probe
+
+        v_stt = probe.mlx_audio_available("stt")
+        assert v_stt.ok is True, (
+            "Codex r3 regression: TTS-only breakage tripped the STT "
+            f"probe (verdict={v_stt}). Lane separation broken."
+        )
+        v_tts = probe.mlx_audio_available("tts")
+        assert v_tts.ok is False
+        assert "tts" in v_tts.reason.lower()
 
     def test_probe_source_lists_both_submodules(self):
         """Source-pin so a future refactor that removes the STT
@@ -350,12 +412,13 @@ class TestProbeCaching:
         pytest.importorskip("mlx_audio")
         from vllm_mlx.audio import probe
 
-        # First call populates the cache.
-        v1 = probe.mlx_audio_available()
+        # First call populates the cache for the TTS lane.
+        v1 = probe.mlx_audio_available("tts")
         assert v1.ok is True
-        # Cache is populated.
-        assert probe._cached_verdict is not None
-        v2 = probe.mlx_audio_available()
+        # Cache is populated (per-lane dict).
+        assert probe._cached_verdict, "lane-keyed cache should be non-empty"
+        assert "tts" in probe._cached_verdict
+        v2 = probe.mlx_audio_available("tts")
         # Same object (cached, not re-computed).
         assert v1 is v2
 
