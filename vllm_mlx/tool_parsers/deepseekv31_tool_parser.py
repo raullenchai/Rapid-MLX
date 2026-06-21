@@ -123,6 +123,15 @@ class DeepSeekV31ToolParser(ToolParser):
         self.current_tool_name_sent: bool = False
         self.streamed_args_for_tool: list[str] = []
 
+        # IDs we have already emitted on the streaming V3 short-circuit
+        # path. We re-parse the cumulative text every time a block
+        # closes (so any newly-closed block is included), but we MUST
+        # NOT regenerate the IDs of blocks we have already announced —
+        # downstream clients track tool calls by ID and seeing the same
+        # block under a new ID on every subsequent delta would corrupt
+        # their state (codex r1 BLOCKING).
+        self._streamed_v3_ids: list[str] = []
+
         # V3.1 streaming regex (unchanged). V3-shaped streaming
         # arrives through the same regex because both shapes share the
         # ``NAME<sep>...`` skeleton; the V3 "function" type tag plus
@@ -294,6 +303,7 @@ class DeepSeekV31ToolParser(ToolParser):
             self.streamed_args_for_tool = []
             self.current_tool_id = -1
             self.prev_tool_call_arr = []
+            self._streamed_v3_ids = []
 
         current_token_ids = current_token_ids or []
         previous_token_ids = previous_token_ids or []
@@ -345,13 +355,16 @@ class DeepSeekV31ToolParser(ToolParser):
 
         # Confirmed V3 once the type-tag-plus-sep is in the body.
         is_v3_confirmed = latest_body_stripped.startswith(v3_marker)
-        # Ambiguous prefix while the body is shorter than ``function<sep>``
-        # and still a prefix of it. We buffer in this state because
-        # committing to either path now would force a re-emission later.
+        # Ambiguous prefix while the body has at least one character but
+        # is still a strict prefix of ``function<sep>``. We require >=1
+        # body character (codex r1 BLOCKING — every string starts with
+        # ``""`` so the empty-body case would otherwise hijack legitimate
+        # V3.1 streams that ended right after ``<call_begin>`` and
+        # haven't yet emitted a single body byte).
         body_could_be_v3 = (
             not is_v3_confirmed
             and cur_end_count < cur_start_count  # block still open
-            and len(latest_body_stripped) < len(v3_marker)
+            and 0 < len(latest_body_stripped) < len(v3_marker)
             and v3_marker.startswith(latest_body_stripped)
         )
 
@@ -361,7 +374,7 @@ class DeepSeekV31ToolParser(ToolParser):
                 return None
             # At least one block closed. Run the canonical non-streaming
             # extract on the cumulative text and emit any closed-block
-            # tool calls we haven't emitted yet. ``current_tool_id``
+            # tool calls we haven't announced yet. ``current_tool_id``
             # tracks the highest already-emitted index (-1 = none).
             prev_end_count = previous_text.count(self.TOOL_CALL_END)
             newly_closed = cur_end_count - prev_end_count
@@ -374,21 +387,34 @@ class DeepSeekV31ToolParser(ToolParser):
             tail_calls = result.tool_calls[start_idx : start_idx + newly_closed]
             if not tail_calls:
                 return None
-            self.current_tool_id += len(tail_calls)
-            return {
-                "tool_calls": [
+            # Stable IDs across re-parses (codex r1 BLOCKING):
+            # ``extract_tool_calls`` generates a fresh ``call_xxxx`` ID
+            # every invocation, but we re-invoke it every time a block
+            # closes — so previously-emitted blocks would get new IDs on
+            # later deltas. Cache the IDs we have already announced and
+            # only mint a new ID when the parsed list grows past what
+            # we've previously cached.
+            emitted: list[dict[str, Any]] = []
+            for i, tc in enumerate(tail_calls):
+                absolute_idx = start_idx + i
+                if absolute_idx < len(self._streamed_v3_ids):
+                    tc_id = self._streamed_v3_ids[absolute_idx]
+                else:
+                    tc_id = tc["id"]
+                    self._streamed_v3_ids.append(tc_id)
+                emitted.append(
                     {
-                        "index": start_idx + i,
-                        "id": tc["id"],
+                        "index": absolute_idx,
+                        "id": tc_id,
                         "type": "function",
                         "function": {
                             "name": tc["name"],
                             "arguments": tc["arguments"],
                         },
                     }
-                    for i, tc in enumerate(tail_calls)
-                ],
-            }
+                )
+            self.current_tool_id += len(tail_calls)
+            return {"tool_calls": emitted}
 
         delta_text = delta_text.replace(self.TOOL_CALLS_START, "").replace(
             self.TOOL_CALLS_END, ""

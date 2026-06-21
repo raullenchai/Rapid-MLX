@@ -369,6 +369,79 @@ class TestV3Streaming:
         assert emitted_names == ["get_weather", "get_time"]
         assert emitted_indices == [0, 1]
 
+    def test_parallel_v3_blocks_emit_distinct_ids(
+        self, parser: DeepSeekV31ToolParser
+    ) -> None:
+        """Each emitted block gets exactly one stable ID (codex r1
+        BLOCKING: the cumulative re-parse must not re-mint IDs for
+        previously emitted blocks).
+
+        We inspect the IDs in emission order — they must all be
+        distinct, and the parser's internal ID cache should record
+        exactly one ID per emitted block (no churn from re-parsing
+        the cumulative text on later deltas).
+        """
+        payload = _envelope(
+            _v3_block("get_weather", '{"city": "Tokyo"}'),
+            _v3_block("get_time", '{"tz": "UTC"}'),
+            _v3_block("search", '{"q": "x"}'),
+        )
+
+        events = self._feed(parser, payload, chunk_size=18)
+
+        ids: list[str] = []
+        for ev in events:
+            if not ev or "tool_calls" not in ev:
+                continue
+            for call in ev["tool_calls"]:
+                ids.append(call["id"])
+
+        assert len(ids) == 3
+        # Distinct IDs per block.
+        assert len(set(ids)) == 3
+        # Internal cache size matches the emitted block count — proof
+        # that we minted exactly one ID per block, not one per delta.
+        assert len(parser._streamed_v3_ids) == 3
+        # And the cache content matches what we emitted.
+        assert parser._streamed_v3_ids == ids
+
+    def test_v31_stream_empty_block_body_does_not_trigger_v3_short_circuit(
+        self, parser: DeepSeekV31ToolParser
+    ) -> None:
+        """codex r1 BLOCKING: ``"".startswith(...)`` is True for every
+        string, so without an explicit non-empty body guard the V3
+        short-circuit would hijack a V3.1 stream that ended right after
+        ``<call_begin>`` (no body byte yet) and silently swallow the
+        delta instead of letting the legacy delta state machine
+        initialize.
+
+        We replay a V3.1 payload one character at a time and confirm
+        the legacy path eventually emits a fully-streamed V3.1 call —
+        i.e. the V3 short-circuit did NOT hijack the empty-body
+        intermediate state.
+        """
+        payload = _envelope(_v31_block("get_weather", '{"city": "Paris"}'))
+
+        events = self._feed(parser, payload, chunk_size=1)
+
+        # The V3.1 streaming path emits the name event first, then
+        # arguments deltas, then nothing (V3.1's existing delta
+        # contract). What we care about for this regression: SOMETHING
+        # got emitted with name="get_weather" — the V3 short-circuit
+        # didn't swallow the whole stream.
+        names_emitted = [
+            call.get("function", {}).get("name")
+            for ev in events
+            if ev and "tool_calls" in ev
+            for call in ev["tool_calls"]
+            if call.get("function", {}).get("name")
+        ]
+        assert "get_weather" in names_emitted, (
+            f"V3.1 stream lost its name event — V3 short-circuit may "
+            f"have hijacked the empty-body intermediate state. Events: "
+            f"{events!r}"
+        )
+
 
 # --------------------------------------------------------------------
 # Argument-body passthrough contract.
