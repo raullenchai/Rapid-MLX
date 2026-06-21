@@ -472,9 +472,7 @@ class TestInFlightKVReservation:
             gpu_memory_utilization=0.5,
             metal_cap_kv_bytes_per_token=kv_bytes_per_token,
         )
-        return Scheduler(
-            model=MagicMock(), tokenizer=MagicMock(), config=config
-        )
+        return Scheduler(model=MagicMock(), tokenizer=MagicMock(), config=config)
 
     def test_waiting_reservations_counted_in_cap_check(self):
         """3 already-admitted-but-not-stepped requests of ~25 GB each
@@ -590,9 +588,7 @@ class TestDtypeInference:
         model.config.num_key_value_heads = 2
         model.config.head_dim = 64
         model.config.torch_dtype = dtype
-        return Scheduler(
-            model=model, tokenizer=MagicMock(), config=config
-        )
+        return Scheduler(model=model, tokenizer=MagicMock(), config=config)
 
     def test_fp16_uses_2_bytes(self):
         sched = self._build_sched_with_dtype("float16")
