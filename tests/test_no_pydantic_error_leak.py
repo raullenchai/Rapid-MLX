@@ -52,8 +52,6 @@ both directions:
   errors.
 """
 
-from __future__ import annotations
-
 import json
 import sys
 import types
@@ -378,6 +376,101 @@ def test_responses_no_pydantic_leak(client, case_id, msgs_body, resp_body):
     )
 
 
+# ── H-17 round-2 (codex): attacker sentinel inside a KEY name ────────
+
+
+def test_attacker_key_in_loc_is_collapsed(monkeypatch):
+    """Codex H-17 round-2 finding: the original sanitizer joined the
+    full ``loc`` tuple into the 400 message verbatim. Pydantic v2
+    puts attacker-controlled dict keys / JSON-pointer escapes / extra-
+    forbid field names directly into ``loc``, so a body like
+    ``{"tags": {"<attacker_pwned>": "x"}}`` against a schema that
+    types ``tags`` as ``dict[str, int]`` would reflect the sentinel
+    in the 400 envelope even though the value was harmless.
+
+    Wires a throwaway endpoint with a ``dict[str, int]`` field, posts
+    an attacker-controlled key, and asserts the sentinel does NOT
+    appear anywhere in the envelope while the canonical shape still
+    surfaces. Uses :func:`_build_app` so the global handler install is
+    exercised end-to-end.
+    """
+    from fastapi import Request as _FastAPIRequest
+    from pydantic import BaseModel
+
+    app, _cfg, teardown = _build_app(monkeypatch, with_handlers=True)
+    try:
+
+        class _KeyEcho(BaseModel):
+            # ``dict[str, int]`` triggers per-key validation, so a bad
+            # value bubbles the key into ``loc``.
+            tags: dict[str, int]
+
+        @app.post("/__h17_key_probe__")
+        async def _probe(req: _FastAPIRequest):
+            body = await req.json()
+            return _KeyEcho(**body)
+
+        client = TestClient(app)
+        evil_key = "<H17_KEY_SENTINEL_pwned>"
+        response = client.post(
+            "/__h17_key_probe__",
+            json={"tags": {evil_key: "not-an-int"}},
+        )
+        assert response.status_code == 400, response.text
+        assert evil_key not in response.text, (
+            f"loc echoed attacker-controlled key: {response.text!r}"
+        )
+        # Envelope shape still canonical.
+        err = response.json()["error"]
+        assert err["type"] == "invalid_request_error"
+        assert err["code"] == "invalid_request"
+        assert err["message"].startswith("Invalid request body:")
+        # Sanitized placeholder shows up in place of the dangerous key.
+        assert "<key>" in err["message"], (
+            f"expected sanitized <key> placeholder; got {err['message']!r}"
+        )
+    finally:
+        teardown()
+
+
+def test_attacker_extra_field_name_is_collapsed(monkeypatch):
+    """Sibling of the dict-key test, but for ``ConfigDict(extra=
+    "forbid")`` schemas: Pydantic puts the rejected extra-field NAME
+    into ``loc[0]``. An attacker who can pick the field name
+    (``POST {"<sentinel>": 1, ...}``) would otherwise see it echoed in
+    the 400 envelope on any forbid-extras model wired to this handler.
+    """
+    from fastapi import Request as _FastAPIRequest
+    from pydantic import BaseModel, ConfigDict
+
+    app, _cfg, teardown = _build_app(monkeypatch, with_handlers=True)
+    try:
+
+        class _Strict(BaseModel):
+            model_config = ConfigDict(extra="forbid")
+            x: int
+
+        @app.post("/__h17_extra_probe__")
+        async def _probe(req: _FastAPIRequest):
+            body = await req.json()
+            return _Strict(**body)
+
+        client = TestClient(app)
+        evil_field = "<H17_EXTRA_FIELD_pwned>"
+        response = client.post(
+            "/__h17_extra_probe__", json={"x": 1, evil_field: "anything"}
+        )
+        assert response.status_code == 400, response.text
+        assert evil_field not in response.text, (
+            f"extra-field name echoed: {response.text!r}"
+        )
+        err = response.json()["error"]
+        assert err["type"] == "invalid_request_error"
+        assert err["code"] == "invalid_request"
+    finally:
+        teardown()
+
+
 # ── Defence-in-depth: the global handler covers the raw Pydantic ─────
 # ``ValidationError`` even when no route is involved (a future endpoint
 # that builds its model manually inherits the fix automatically).
@@ -390,6 +483,7 @@ def test_global_handler_routes_raw_pydantic_validation_error(monkeypatch):
     This makes the regression structural: the fix isn't ``/v1/messages``
     + ``/v1/responses`` -specific, it's the global handler.
     """
+    from fastapi import Request as _FastAPIRequest
     from pydantic import BaseModel
 
     app, _cfg, teardown = _build_app(monkeypatch, with_handlers=True)
@@ -399,7 +493,7 @@ def test_global_handler_routes_raw_pydantic_validation_error(monkeypatch):
             field_x: int
 
         @app.post("/__h17_probe__")
-        async def _probe(req):  # noqa: ARG001
+        async def _probe(req: _FastAPIRequest):
             body = await req.json()
             # Manual construction — the same anti-pattern messages /
             # responses use. Raises pydantic.ValidationError directly.

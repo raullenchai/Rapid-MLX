@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import re
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
@@ -45,6 +46,48 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
 logger = logging.getLogger("rapid_mlx.exception_handlers")
+
+# H-17 round-2 (codex): Pydantic v2 puts attacker-controlled dict
+# keys, JSON-pointer-style indices, and (with ``extra="forbid"``)
+# arbitrary extra-field names directly into the ``loc`` tuple of every
+# error it raises. The original sanitizer joined those components
+# verbatim into the 400 envelope — so a request body like
+# ``{"metadata": {"<attacker_pwned>": 12345}}`` against any schema
+# that types ``metadata`` as ``dict[str, int]`` would bounce the
+# sentinel right back to the caller. Lock the surface down: a ``loc``
+# component is allowed through only if it's a positional list index
+# (int) or a strict Python-style identifier from the schema itself.
+# Anything else collapses to ``<key>`` so the envelope still tells the
+# caller "the error was here" without echoing the dangerous bytes.
+_SAFE_LOC_KEY = re.compile(r"\A[A-Za-z_][A-Za-z0-9_]{0,63}\Z")
+
+
+def _sanitize_loc(loc: tuple) -> str:
+    """Collapse a Pydantic ``loc`` tuple to a safe dotted path.
+
+    Drops the synthetic ``"body"`` prefix FastAPI prepends. Keeps
+    positional indices (``int``) and short Python-style identifiers
+    (≤64 chars, ``[A-Za-z_][A-Za-z0-9_]*``) — these are schema-
+    determined and safe to surface. Replaces anything else (Unicode,
+    punctuation, whitespace, oversized strings — all attacker-
+    controlled signals) with the placeholder ``<key>`` so the envelope
+    still carries enough shape to be actionable without reflecting
+    user input.
+    """
+    parts: list[str] = []
+    for raw in loc:
+        if raw == "body":
+            continue
+        if isinstance(raw, int):
+            parts.append(str(raw))
+            continue
+        if isinstance(raw, str) and _SAFE_LOC_KEY.match(raw):
+            parts.append(raw)
+            continue
+        # Attacker-supplied dict key, JSON-pointer escape, oversized
+        # extra-field name, etc. Collapse to a fixed placeholder.
+        parts.append("<key>")
+    return ".".join(parts)
 
 
 def _decode_error_response(exc: _json.JSONDecodeError) -> JSONResponse:
@@ -83,10 +126,15 @@ def _validation_error_response(
     constructs the request model manually — e.g. ``/v1/messages`` and
     ``/v1/responses``). Both expose the same ``.errors()`` shape, so a
     single sanitizer covers both code paths (H-17).
+
+    The ``loc`` is run through :func:`_sanitize_loc` so attacker-
+    controlled dict keys / extra-field names (codex H-17 round-2
+    finding) collapse to ``<key>`` instead of being echoed verbatim
+    in the 400 message.
     """
     details = []
     for err in exc.errors():
-        loc = ".".join(str(p) for p in err.get("loc", ()) if p != "body")
+        loc = _sanitize_loc(tuple(err.get("loc", ())))
         msg = err.get("msg", "validation error")
         details.append(f"{loc}: {msg}" if loc else msg)
     summary = "; ".join(details) or "Invalid request body"
