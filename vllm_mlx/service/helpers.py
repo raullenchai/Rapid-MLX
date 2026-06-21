@@ -2202,6 +2202,23 @@ def _force_abort_request(engine, request_id_holder) -> bool:
                         return
                     if accepted:
                         _record_disconnect_abort_on_scheduler(attribution_engine, rid)
+                    else:
+                        # Codex r2 NIT #3: surface the "abort coroutine
+                        # returned False" path to operators. Without
+                        # this log, a stale holder (request_id reused
+                        # or already finished by the time the
+                        # disconnect_guard fired) silently leaves the
+                        # ``via_disconnect`` sub-counter behind the
+                        # total, and the operator-facing
+                        # (total - via_disconnect) gap drifts with no
+                        # diagnostic trail. INFO-level — the sync
+                        # path also INFO-logs its rejected aborts.
+                        logger.info(
+                            "[disconnect_guard] async force-abort returned "
+                            "False for %s; via_disconnect sub-counter NOT "
+                            "advanced (stale holder / already finished?)",
+                            str(rid)[:12],
+                        )
 
                 asyncio.ensure_future(_await_and_record())
                 logger.warning(

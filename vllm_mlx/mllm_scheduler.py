@@ -542,6 +542,14 @@ class MLLMScheduler:
 
         self._detokenizer_pool.pop(request_id, None)
 
+        # M-01 codex r3 BLOCKING #2: discard the active-lifetime
+        # dedupe ledgers so request_id reuse for a NEW distinct
+        # request counts correctly. See the same block in
+        # ``Scheduler._do_abort_request`` for the full rationale.
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.discard(request_id)
+            self._disconnect_abort_ids.discard(request_id)
+
         # Do NOT write to output_queues here — this may run on the
         # executor thread where asyncio.Queue is not safe.  Mark for
         # signaling on the event loop thread via _distribute_outputs.

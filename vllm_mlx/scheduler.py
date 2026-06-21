@@ -3278,6 +3278,21 @@ class Scheduler:
         self.finished_req_ids.add(request_id)
         self._cleanup_detokenizer(request_id)
 
+        # M-01 codex r3 BLOCKING #1: the dedupe ledgers
+        # ``_cancelled_request_ids`` / ``_disconnect_abort_ids`` are
+        # ACTIVE-LIFETIME guards, not process-lifetime. Keeping the
+        # id in the ledger after ``_do_abort_request`` has actually
+        # torn down the request would silently swallow the next
+        # cancel for a NEW distinct request that happens to reuse
+        # the same ``request_id`` (e.g. integrations that hash
+        # request_ids deterministically, or a client retrying the
+        # same operation). The lock-protected discard pair below
+        # keeps the codex r1 atomicity contract — discards are
+        # idempotent and only nominally cheap.
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.discard(request_id)
+            self._disconnect_abort_ids.discard(request_id)
+
         # Flush Metal encoders after removing arrays from batch
         mx.clear_cache()
 

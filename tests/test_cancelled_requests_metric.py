@@ -169,6 +169,80 @@ def test_total_counter_is_idempotent_against_double_enqueue():
     assert scheduler.get_stats()["num_requests_cancelled"] == 1
 
 
+def test_total_counter_counts_reused_request_id_after_full_abort_cycle():
+    """Codex r3 BLOCKING #1: ``_cancelled_request_ids`` is an
+    ACTIVE-LIFETIME guard, not a process-lifetime ledger. Reusing the
+    same ``request_id`` for a NEW distinct request (after the prior
+    lifetime fully aborted AND was popped from ``self.requests``) MUST
+    increment the counter.
+
+    Pre-r3-fix the lifetime ledger persisted until ``reset()``, so
+    integrations that hash request_ids deterministically (or clients
+    that retry the same operation with a stable id) would silently
+    see their second cancel omitted from ``num_requests_cancelled``.
+    The r3 fix discards the id from BOTH dedupe ledgers inside
+    ``_do_abort_request`` so a future request with the same id
+    starts from a clean ledger.
+
+    Lifecycle: ``_do_abort_request`` clears the deduper but the text
+    scheduler keeps the ``Request`` object in ``self.requests`` until
+    a separate ``remove_finished_request`` call removes it (the
+    engine_core cleanup path). We drive that explicitly here to
+    mirror the production order — only AFTER the request is fully
+    out of the scheduler will the abort_request predicate take
+    the ``not in self.requests`` branch and require a fresh admit.
+    """
+    scheduler = _make_scheduler()
+
+    # First lifetime: admit, cancel, drain, cleanup.
+    _admit(scheduler, "req-reused")
+    assert scheduler.abort_request("req-reused") is True
+    assert scheduler.get_stats()["num_requests_cancelled"] == 1
+    scheduler._process_pending_aborts()
+    # The r3 fix: ``_cancelled_request_ids`` is empty for this id
+    # even though ``self.requests`` may still hold the finished
+    # ``Request`` object.
+    assert "req-reused" not in scheduler._cancelled_request_ids
+    # Engine-core cleanup: remove the finished request from the
+    # scheduler's request map so the next admit doesn't collide.
+    scheduler.remove_finished_request("req-reused")
+    assert "req-reused" not in scheduler.requests
+
+    # Second lifetime: distinct request, same id.
+    _admit(scheduler, "req-reused")
+    assert scheduler.abort_request("req-reused") is True
+    # MUST count again — the new request is a distinct cancel.
+    assert scheduler.get_stats()["num_requests_cancelled"] == 2
+
+
+def test_disconnect_subcounter_counts_reused_request_id_after_full_abort_cycle():
+    """Codex r3 BLOCKING #2 symmetry: the via_disconnect sub-counter
+    must also re-count a reused ``request_id`` after the prior
+    lifetime completed.
+
+    Same rationale as the total counter — keeping the id in
+    ``_disconnect_abort_ids`` past the request's lifetime would
+    silently swallow attribution for the next distinct request.
+    """
+    scheduler = _make_scheduler()
+
+    # First lifetime: full cancel cycle with disconnect attribution.
+    _admit(scheduler, "req-disc-reused")
+    scheduler.abort_request("req-disc-reused")
+    scheduler.record_disconnect_abort("req-disc-reused")
+    assert scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 1
+    scheduler._process_pending_aborts()
+    # Discarded by _do_abort_request.
+    assert "req-disc-reused" not in scheduler._disconnect_abort_ids
+    scheduler.remove_finished_request("req-disc-reused")
+
+    # Second lifetime: distinct request reusing the id.
+    _admit(scheduler, "req-disc-reused")
+    scheduler.abort_request("req-disc-reused")
+    scheduler.record_disconnect_abort("req-disc-reused")
+    assert scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 2
+
+
 def test_total_counter_dedupes_against_lifetime_ledger_not_pending_set():
     """Codex r2 BLOCKING #1: the dedupe ledger must be a lifetime
     set, not the drainable ``_pending_abort_ids``.
