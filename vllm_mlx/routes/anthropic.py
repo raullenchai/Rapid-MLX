@@ -611,6 +611,17 @@ async def create_anthropic_message(
             and cfg.reasoning_parser is not None
             and not (getattr(output, "reasoning_text", "") or "")
         )
+        # D-STOP-THINK codex round-5 BLOCKING (PR #799): compute
+        # ``prompt_thinking_active`` so the helper's Case-4 + stop +
+        # matched_stop arm can discriminate prompt-injected mid-think
+        # from a casual stop-terminated answer.
+        _tok_ns = getattr(engine, "tokenizer", None)
+        _chat_template_ns = ""
+        if _tok_ns and hasattr(_tok_ns, "chat_template"):
+            _chat_template_ns = _tok_ns.chat_template or ""
+        prompt_thinking_active_ns = _should_start_in_thinking(
+            _chat_template_ns, resolved_thinking
+        )
         final_content = _rescue_silent_drop_from_reasoning(
             final_content,
             reasoning_text,
@@ -619,6 +630,7 @@ async def create_anthropic_message(
             raw_text=output.raw_text or output.text,
             reasoning_is_case4=reasoning_is_case4,
             matched_stop=getattr(output, "matched_stop", None),
+            prompt_thinking_active=prompt_thinking_active_ns,
         )
 
         openai_response = ChatCompletionResponse(

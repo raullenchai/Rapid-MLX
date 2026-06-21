@@ -1811,6 +1811,23 @@ async def _create_chat_completion_impl(
             and cfg.reasoning_parser is not None
             and not (getattr(output, "reasoning_text", "") or "")
         )
+        # D-STOP-THINK codex round-5 BLOCKING (PR #799): compute
+        # ``prompt_thinking_active`` from the chat template +
+        # resolved enable_thinking — same predicate
+        # ``_should_start_in_thinking`` uses in anthropic.py:91 /
+        # responses.py:88. Required by the helper's
+        # Case-4 + stop + matched_stop arm to discriminate
+        # prompt-injected mid-think from a casual stop-terminated
+        # answer.
+        _chat_template_str = ""
+        _tok = getattr(engine, "tokenizer", None)
+        if _tok and hasattr(_tok, "chat_template"):
+            _chat_template_str = _tok.chat_template or ""
+        prompt_thinking_active = (
+            resolved_thinking is not False
+            and "<think>" in _chat_template_str
+            and "add_generation_prompt" in _chat_template_str
+        )
         final_content = _rescue_silent_drop_from_reasoning(
             final_content,
             reasoning_text,
@@ -1819,6 +1836,7 @@ async def _create_chat_completion_impl(
             raw_text=output.raw_text or output.text,
             reasoning_is_case4=reasoning_is_case4,
             matched_stop=getattr(output, "matched_stop", None),
+            prompt_thinking_active=prompt_thinking_active,
         )
 
     # Build logprobs for response if requested
@@ -2231,6 +2249,23 @@ async def stream_chat_completion(
                     and processor.accumulated_reasoning
                     and not processor.accumulated_text
                 )
+                # D-STOP-THINK codex round-5 BLOCKING (PR #799):
+                # compute ``prompt_thinking_active`` for the streaming
+                # rescue too — mirrors the non-streaming gate. The
+                # streaming function doesn't have ``resolved_thinking``
+                # in scope (it's a separate function from the
+                # non-streaming caller), so re-resolve here from the
+                # request.
+                _stream_resolved_thinking = _resolve_enable_thinking(request)
+                _chat_template_str_stream = ""
+                _tok_stream = getattr(engine, "tokenizer", None)
+                if _tok_stream and hasattr(_tok_stream, "chat_template"):
+                    _chat_template_str_stream = _tok_stream.chat_template or ""
+                prompt_thinking_active_stream = (
+                    _stream_resolved_thinking is not False
+                    and "<think>" in _chat_template_str_stream
+                    and "add_generation_prompt" in _chat_template_str_stream
+                )
                 rescued_content = _rescue_silent_drop_from_reasoning(
                     terminal_content or None,
                     processor.accumulated_reasoning,
@@ -2239,6 +2274,7 @@ async def stream_chat_completion(
                     raw_text=synthetic_raw,
                     reasoning_is_case4=reasoning_is_case4_stream,
                     matched_stop=getattr(finish_event, "matched_stop", None),
+                    prompt_thinking_active=prompt_thinking_active_stream,
                 )
                 # The helper returns the rescued reasoning ONLY when
                 # all four predicates pass (empty/whitespace content,

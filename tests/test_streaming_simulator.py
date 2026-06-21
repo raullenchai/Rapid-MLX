@@ -344,19 +344,28 @@ class TestScenario3_NoTagModel:
         )
 
     def test_long_no_tag_output(self):
-        """Long output (> 64 chars) with no tags."""
+        """Long output (> 64 chars) with no tags — qwen3 has no
+        NO_TAG_CONTENT_THRESHOLD so streaming routes everything to
+        reasoning and finalize flips to content (casual-answer
+        contract). Per-channel assertion (codex round-5 BLOCKING).
+        """
         text = "Here is a markdown example:\n\n# Heading\n\n- Item 1\n- Item 2\n\nDone."
         tokens = [text[i : i + 5] for i in range(0, len(text), 5)]
         content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
         full_reasoning = "".join(reasoning)
-        # Reasoning carries the full text (some prefix may go to content
-        # past the qwen3 NO_TAG_CONTENT_THRESHOLD if the parser
-        # implements one — qwen3 does not, but assert the union covers
-        # the text either way).
-        full_combined = full_reasoning + "".join(content)
-        assert "# Heading" in full_combined, f"text missing: {full_combined!r}"
-        assert "- Item 1" in full_combined
-        assert "Done." in full_combined
+        full_content = "".join(content)
+        # Per-channel contract: each channel independently equals the
+        # source text. Concatenation-based substring matches were not
+        # enough — they could pass while bytes were duplicated within
+        # a channel or partially missing outside the substring.
+        assert full_reasoning == text, (
+            f"reasoning channel does not equal source text: "
+            f"got {full_reasoning!r}, expected {text!r}"
+        )
+        assert full_content == text, (
+            f"content channel does not equal source text: "
+            f"got {full_content!r}, expected {text!r}"
+        )
 
     def test_very_long_no_tag_output(self):
         """Very long output with no tags — qwen3 has no
@@ -389,7 +398,9 @@ class TestScenario3_NoTagModel:
         )
 
     def test_no_tag_with_newlines(self):
-        """No-tag output with markdown newlines reaches the reasoning channel."""
+        """No-tag output with markdown newlines — per-channel
+        assertions (codex round-5 BLOCKING).
+        """
         tokens = [
             "# Title",
             "\n",
@@ -409,19 +420,43 @@ class TestScenario3_NoTagModel:
             "```",
             "\n",
         ]
+        expected = "".join(tokens)
         content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
-        full_combined = "".join(reasoning) + "".join(content)
-        assert "# Title\n\n" in full_combined
-        assert "- bullet 1\n- bullet 2" in full_combined
-        assert "```python\nprint('hello')\n```" in full_combined
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Per-channel: each channel independently carries the full
+        # text (qwen3 casual-answer contract — streaming routes to
+        # reasoning, finalize flips to content). Substring matches
+        # were not enough.
+        assert full_reasoning == expected, (
+            f"reasoning channel does not equal source: "
+            f"got {full_reasoning!r}, expected {expected!r}"
+        )
+        assert full_content == expected, (
+            f"content channel does not equal source: "
+            f"got {full_content!r}, expected {expected!r}"
+        )
 
     def test_no_tag_emojis(self):
-        """Emoji characters survive across the reasoning channel."""
+        """Emoji characters survive across both channels — per-channel
+        assertions (codex round-5 BLOCKING)."""
         tokens = ["Hello ", "🎉", " ", "🚀", " world!"]
+        expected = "".join(tokens)
         content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
-        full_combined = "".join(reasoning) + "".join(content)
-        assert "🎉" in full_combined
-        assert "🚀" in full_combined
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Per-channel: each channel independently carries the full
+        # text. Concatenation-based substring matches could have
+        # passed even if emoji bytes were duplicated or missing
+        # from one channel.
+        assert full_reasoning == expected, (
+            f"reasoning channel does not equal source: "
+            f"got {full_reasoning!r}, expected {expected!r}"
+        )
+        assert full_content == expected, (
+            f"content channel does not equal source: "
+            f"got {full_content!r}, expected {expected!r}"
+        )
 
 
 class TestScenario4_NewlinePreservation:
@@ -471,25 +506,77 @@ class TestScenario5_EdgeCases:
         full = "".join(chunks)
         assert full == "Just content."
 
-    def test_deepseek_no_tag_threshold(self):
-        """DeepSeek-R1 long no-tag output reaches the content channel.
+    def test_deepseek_no_tag_above_threshold_splits_strictly(self):
+        """DeepSeek-R1 ABOVE-threshold no-tag output: streaming Case-3
+        flips to content past ``NO_TAG_CONTENT_THRESHOLD`` (64 chars
+        on the base parser). Pre-threshold bytes ship as reasoning;
+        post-threshold bytes ship as content; finalize short-no-tag
+        arm does NOT fire because the threshold cap was crossed.
+        Strict split: reasoning + content == text exactly.
 
-        DeepSeek-R1's streaming Case-3 override flips to content past
-        ``NO_TAG_CONTENT_THRESHOLD`` (60 chars on the base parser).
-        The test text is 60 chars and crosses the threshold, so the
-        post-threshold bytes ship as content during the stream.
-        Pre-threshold bytes ship as reasoning AND the finalize
-        rescue surfaces via reasoning (D-STOP-THINK invariant).
+        Codex round-5 BLOCKING: assert exact channel allocation,
+        not substring/concatenation.
         """
-        text = "A regular response without thinking tags, should be content."
+        # 80 chars — comfortably above the 64-char threshold so the
+        # streaming Case-3 override fires and the finalize short-no-
+        # tag arm does NOT (NO_TAG_CONTENT_THRESHOLD check fails).
+        text = (
+            "A regular response without thinking tags. "
+            "It should be split across channels."
+        )
+        assert len(text) > 64, "test fixture must cross deepseek threshold"
         tokens = [text[i : i + 5] for i in range(0, len(text), 5)]
         content, reasoning = simulate_server_streaming_reasoning_aware(
             tokens, use_reasoning_parser="deepseek_r1"
         )
-        # All bytes must reach some channel — no chars dropped.
-        full_combined = "".join(reasoning) + "".join(content)
-        assert text in full_combined, (
-            f"DeepSeek-R1 no-tag bytes lost across channels: {full_combined!r}"
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Strict split — concatenation in correct order MUST equal
+        # the source text. There is no duplicate finalize emission
+        # because the threshold cap was crossed (the short-no-tag
+        # arm requires len < threshold).
+        assert full_reasoning + full_content == text, (
+            f"DeepSeek-R1 channel split does not reconstruct source:\n"
+            f"  reasoning={full_reasoning!r}\n  content={full_content!r}"
+        )
+        # No overlap — the prefix in reasoning must not also appear
+        # in content (regression: the codex BLOCKING shape would let
+        # a duplicate pass under the old substring-based assertion).
+        if full_reasoning and full_content:
+            assert full_reasoning not in full_content, (
+                f"reasoning bytes duplicated into content:\n"
+                f"  reasoning={full_reasoning!r}\n  content={full_content!r}"
+            )
+
+    def test_deepseek_no_tag_below_threshold_finalize_flips_to_content(self):
+        """DeepSeek-R1 BELOW-threshold no-tag output: streaming
+        routes everything to reasoning AND finalize short-no-tag arm
+        flips to content (matched_stop=None → casual-answer
+        contract). Both channels carry the full text — this is the
+        documented #570/#572 no-evidence-path trade-off.
+
+        Codex round-5 BLOCKING: assert PER-CHANNEL contract instead
+        of substring-on-concatenation.
+        """
+        text = "Short answer."  # well under 64-char threshold
+        assert len(text) < 64, "test fixture must stay under threshold"
+        tokens = [text[i : i + 5] for i in range(0, len(text), 5)]
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            tokens, use_reasoning_parser="deepseek_r1"
+        )
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Streaming Case-3 default routed every byte to reasoning.
+        assert full_reasoning == text, (
+            f"reasoning channel does not equal source: "
+            f"got {full_reasoning!r}, expected {text!r}"
+        )
+        # Finalize short-no-tag arm flipped to content per #570/#572
+        # (matched_stop default None in the simulator → casual-answer
+        # branch). Both channels carry the full text.
+        assert full_content == text, (
+            f"content channel does not equal source: "
+            f"got {full_content!r}, expected {text!r}"
         )
 
     def test_single_char_no_tag(self):

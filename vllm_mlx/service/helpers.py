@@ -588,6 +588,7 @@ def _rescue_silent_drop_from_reasoning(
     *,
     reasoning_is_case4: bool = False,
     matched_stop: str | None = None,
+    prompt_thinking_active: bool = False,
 ) -> str | None:
     """Issue #569: never silently drop an assistant turn.
 
@@ -723,26 +724,29 @@ def _rescue_silent_drop_from_reasoning(
     # fires — see scheduler.py:3673). Natural EOS finishes have
     # ``matched_stop=None``.
     #
-    # Suppression matrix (D-STOP-THINK):
+    # Suppression matrix (D-STOP-THINK), codex round-5 scope:
     #
-    # finish_reason | raw_text<think>? | reasoning_is_case4 | matched_stop | suppress?
-    # length        | yes              | *                  | *            | YES (existing)
-    # length        | no               | yes                | *            | YES (existing case4 arm)
-    # length        | no               | no                 | *            | no (#569 rescue)
-    # stop          | yes              | *                  | *            | YES (existing)
-    # stop          | no               | yes                | yes          | YES (D-STOP-THINK: prompt-injected + user stop)
-    # stop          | no               | yes                | no           | no (natural EOS in case4 — PR #715 fuzz finding C)
-    # stop          | no               | no                 | *            | no (closed think + stop in answer)
+    # finish_reason | raw_text<think>? | case4 | matched_stop | thinking | suppress?
+    # length        | yes              | *     | *            | *        | YES
+    # length        | no               | yes   | *            | *        | YES (case4 arm)
+    # length        | no               | no    | *            | *        | no  (#569 rescue)
+    # stop          | yes              | *     | *            | *        | YES
+    # stop          | no               | yes   | set          | True     | YES (D-STOP-THINK prompt-injected)
+    # stop          | no               | yes   | set          | False    | no  (casual stop-term answer)
+    # stop          | no               | yes   | None         | *        | no  (PR #715 fuzz finding C)
+    # stop          | no               | no    | *            | *        | no  (closed think + stop in answer)
     #
-    # The new Case-4 + stop + matched_stop branch closes the
-    # codex round-2 BLOCKING: when the user-supplied stop string
-    # fires mid-thought in a prompt-injected ``<think>`` stream,
-    # the engine truncates the suffix BEFORE ``</think>`` ever
-    # arrives, the parser routes the WHOLE truncated body to
-    # reasoning (Case-4), AND the rescue surface would duplicate
-    # the bytes — symmetric with the explicit-opener leak shape.
-    # Natural-EOS Case-4 (no matched_stop) still rescues so
-    # casual non-thinking answers don't silently disappear.
+    # Codex round-5 BLOCKING: the Case-4 + stop + matched_stop
+    # arm previously fired on matched_stop alone, but a casual
+    # answer like ``"The answer is STOP"`` under
+    # ``stop=["STOP"]`` ALSO has matched_stop set and is NOT
+    # chain-of-thought. Add the ``prompt_thinking_active`` AND
+    # to discriminate: only suppress when the chat template
+    # injected ``<think>`` AND ``enable_thinking`` is non-False
+    # (the same boolean ``_should_start_in_thinking`` computes
+    # for the StreamingThinkRouter). Symmetric with the
+    # parser-level ``finalize_streaming`` AND-of-signals
+    # discriminator.
     truncated_mid_think = (
         # Explicit-opener: raw_text carries unclosed ``<think>``.
         # Symmetric across stop/length (trim cause is identical).
@@ -757,11 +761,23 @@ def _rescue_silent_drop_from_reasoning(
         # truncation. Unconditional on length (no #569 false
         # positive — length means engine cut the suffix).
         or (finish_reason == "length" and reasoning_is_case4)
-        # Case-4 + stop + matched_stop: prompt-injected ``<think>``
-        # with user-supplied stop firing mid-thought. matched_stop
-        # IS the truncation signal (set by scheduler when the
-        # user's stop string trimmed the output).
-        or (finish_reason == "stop" and reasoning_is_case4 and matched_stop is not None)
+        # Case-4 + stop + matched_stop + prompt_thinking_active:
+        # codex round-5 BLOCKING — matched_stop alone with
+        # Case-4 under finish=stop is NOT enough to identify the
+        # D-STOP-THINK shape. A casual answer like ``"The answer
+        # is STOP"`` under ``stop=["STOP"]`` ALSO has matched_stop
+        # set but is NOT chain-of-thought. Require the route-
+        # supplied ``prompt_thinking_active`` boolean (chat
+        # template injected ``<think>`` AND ``enable_thinking`` is
+        # non-False) as the secondary discriminator. Symmetric
+        # with the parser-level ``finalize_streaming`` AND-of-
+        # signals contract.
+        or (
+            finish_reason == "stop"
+            and reasoning_is_case4
+            and matched_stop is not None
+            and prompt_thinking_active
+        )
     )
     if truncated_mid_think:
         return final_content

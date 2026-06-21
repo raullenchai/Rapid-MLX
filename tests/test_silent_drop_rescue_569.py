@@ -1262,15 +1262,13 @@ def test_rescue_fires_when_case4_and_finish_is_stop_natural_eos():
     )
 
 
-def test_rescue_skipped_when_case4_stop_and_user_stop_matched_prompt_injected_think():
-    """D-STOP-THINK codex round-2 BLOCKING fix: when the chat template
-    pre-injects ``<think>\\n`` into the prompt, the opener never appears
-    in raw_text, so the raw_text-evidence arm misses. The truncation
-    signal we have is ``matched_stop`` — set by the scheduler when a
-    user-supplied stop string trimmed the output (scheduler.py:3673).
-    Case-4 + ``stop`` + matched_stop is the prompt-injected
-    D-STOP-THINK leak shape; suppress the rescue so the content
-    channel doesn't duplicate the reasoning trace.
+def test_rescue_skipped_when_case4_stop_user_stop_matched_AND_prompt_thinking_active():
+    """D-STOP-THINK codex round-5 BLOCKING fix: when the chat template
+    pre-injects ``<think>\\n`` AND ``enable_thinking`` is non-False,
+    a user-supplied stop firing mid-thought is the D-STOP-THINK leak
+    shape. Require BOTH ``matched_stop`` AND ``prompt_thinking_active``
+    — matched_stop alone is ambiguous (a casual stop-terminated
+    answer ALSO has it set).
     """
     trace = "thought in progress when STOP fired"
     rescued = _rescue_silent_drop_from_reasoning(
@@ -1282,10 +1280,39 @@ def test_rescue_skipped_when_case4_stop_and_user_stop_matched_prompt_injected_th
         raw_text=trace,
         reasoning_is_case4=True,
         matched_stop="STOP",  # user-supplied stop fired mid-thought
+        prompt_thinking_active=True,  # chat template injected <think>
     )
     assert rescued is None, (
         f"D-STOP-THINK regression — rescue surfaced prompt-injected "
         f"truncated thought as content: rescued={rescued!r}"
+    )
+
+
+def test_rescue_fires_when_case4_stop_matched_stop_but_thinking_not_active():
+    """Codex round-5 BLOCKING counter-test: casual stop-terminated
+    answer (matched_stop set, prompt_thinking_active=False) must
+    still rescue per #569 — the OpenAI client must see the answer
+    on ``message.content``.
+
+    Example: ``"The answer is STOP"`` under ``stop=["STOP"]`` with
+    a non-thinking model. The engine sets matched_stop and the
+    parser may route the whole thing to reasoning (Case-4), but
+    suppressing the rescue here would silently drop the answer.
+    """
+    answer = "The answer is 12"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text=answer,
+        tool_calls=None,
+        finish_reason="stop",
+        raw_text=answer,
+        reasoning_is_case4=True,
+        matched_stop="STOP",  # user-supplied stop fired
+        prompt_thinking_active=False,  # chat template did NOT inject <think>
+    )
+    assert rescued == answer, (
+        f"#569 regression — casual stop-terminated answer suppressed: "
+        f"rescued={rescued!r}"
     )
 
 
