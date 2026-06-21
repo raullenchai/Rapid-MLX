@@ -269,73 +269,68 @@ class DeepSeekV31ToolParser(ToolParser):
         in which case the open-block sniffer would miss the closed V3
         (it only inspects the latest body). The cumulative scan catches
         it regardless of what the next block is doing.
+
+        Indexing contract (codex r5 BLOCKING): emission indices are
+        ABSOLUTE block positions in the wire envelope (every
+        ``<call_begin>...<call_end>`` pair counts, including malformed
+        ones that ``extract_tool_calls`` drops). Decoupling our
+        position counter from the parsed-call list is what protects
+        against a malformed block shifting subsequent V3 indices.
         """
-        # ``extract_tool_calls`` runs the same block-wise scanner used
-        # for non-streaming parses, so it sees all closed blocks. We
-        # use index correlation: ``_streamed_v3_ids`` records the IDs
-        # of every block we've already emitted (in order), so any
-        # parsed call past ``len(_streamed_v3_ids)`` is unannounced.
-        result = self.extract_tool_calls(current_text, request)
-        if not result.tools_called:
+        # Walk closed-block bodies in their ORIGINAL positions and
+        # parse each one inline. This is the same scanner
+        # ``extract_tool_calls`` uses, but we keep the block index
+        # stable even when ``_parse_block_body`` returns ``None`` for a
+        # malformed block — we just don't emit that block. The legacy
+        # non-streaming path is free to renumber, but a streaming
+        # parser's emission indices must match the wire positions so
+        # ``_streamed_v3_ids`` keys remain stable across deltas.
+        bodies = self._iter_block_bodies(current_text)
+        if not bodies:
             return None
 
-        # Find the V3-shaped block indices in the cumulative text so we
-        # only short-circuit for V3 blocks; V3.1 blocks continue to use
-        # the legacy delta machine for token-by-token emission.
-        is_v3_index = self._classify_block_shapes(current_text)
-
-        # Walk the parsed calls; for any index whose block is V3-shaped
-        # AND hasn't been emitted yet, queue it for emission. Emission
-        # state is tracked by ABSOLUTE block index keyed in
-        # ``_streamed_v3_ids`` — NOT by positional length — because
-        # ``_streamed_v3_ids`` records only V3 emissions and the
-        # cumulative parse interleaves V3 and V3.1 blocks (codex r4).
-        to_emit: list[tuple[int, dict[str, Any]]] = []
-        for idx, tc in enumerate(result.tool_calls):
-            if idx >= len(is_v3_index) or not is_v3_index[idx]:
+        v3_marker = f"{_V3_TYPE_TAG}{self.TOOL_SEP}"
+        to_emit: list[tuple[int, str, str]] = []
+        for abs_idx, body in enumerate(bodies):
+            if abs_idx in self._streamed_v3_ids:
                 continue
-            if idx in self._streamed_v3_ids:
+            stripped = body.lstrip("\n")
+            if not stripped.startswith(v3_marker):
+                # V3.1 (or unrecognised) — leave to legacy delta machine.
                 continue
-            to_emit.append((idx, tc))
+            parsed = self._parse_block_body(body)
+            if parsed is None:
+                # V3-anchored but malformed: don't emit and don't
+                # confuse the legacy machine either — the
+                # non-streaming finalize path will surface the raw
+                # text as content.
+                continue
+            name, args = parsed
+            to_emit.append((abs_idx, name, args))
 
         if not to_emit:
             return None
 
         emitted: list[dict[str, Any]] = []
-        for abs_idx, tc in to_emit:
-            tc_id = tc["id"]
+        for abs_idx, name, args in to_emit:
+            tc_id = f"call_{uuid.uuid4().hex[:8]}"
             self._streamed_v3_ids[abs_idx] = tc_id
-            # Keep ``current_tool_id`` advanced past this index so the
-            # legacy machine doesn't try to re-emit the same block as
-            # V3.1 on a subsequent delta. We're a bit defensive: if the
-            # legacy path already advanced past this index (e.g. a
-            # V3.1 block sat in front of a V3 block), we don't rewind.
-            if abs_idx > self.current_tool_id:
-                self.current_tool_id = abs_idx
+            # Advance ``current_tool_id`` past the just-emitted V3
+            # block (codex r5 BLOCKING: use ``max(...)`` to cover the
+            # ``abs_idx=0, current_tool_id=-1`` edge case explicitly).
+            self.current_tool_id = max(self.current_tool_id, abs_idx)
             emitted.append(
                 {
                     "index": abs_idx,
                     "id": tc_id,
                     "type": "function",
                     "function": {
-                        "name": tc["name"],
-                        "arguments": tc["arguments"],
+                        "name": name,
+                        "arguments": args,
                     },
                 }
             )
         return {"tool_calls": emitted}
-
-    @classmethod
-    def _classify_block_shapes(cls, model_output: str) -> list[bool]:
-        """Return ``[is_v3_per_block]`` for every CLOSED block, in
-        order. Open trailing blocks are not included — they have no
-        determined shape until ``<call_end>`` arrives.
-        """
-        out: list[bool] = []
-        v3_marker = f"{_V3_TYPE_TAG}{cls.TOOL_SEP}"
-        for body in cls._iter_block_bodies(model_output):
-            out.append(body.lstrip("\n").startswith(v3_marker))
-        return out
 
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None

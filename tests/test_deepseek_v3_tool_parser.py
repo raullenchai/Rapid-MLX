@@ -455,6 +455,67 @@ class TestV3Streaming:
         # the three blocks are V3 indices 0/1/2.
         assert parser._streamed_v3_ids == {0: ids[0], 1: ids[1], 2: ids[2]}
 
+    def test_malformed_block_before_v3_block_does_not_shift_indices(
+        self, parser: DeepSeekV31ToolParser
+    ) -> None:
+        """codex r5 BLOCKING-1: ``extract_tool_calls`` skips malformed
+        blocks, so correlating ``enumerate(result.tool_calls)`` with
+        block-position classification would shift V3 indices and
+        mis-key ``_streamed_v3_ids``.
+
+        We construct an envelope with [malformed, V3] and confirm the
+        V3 block is emitted exactly once at the absolute wire index
+        ``1`` — not at the parsed index ``0`` (which is what the bug
+        would produce).
+        """
+        # Block 0: malformed (no <sep>). Block 1: valid V3.
+        malformed_block = f"{C_OPEN}no_sep_here{C_CLOSE}"
+        v3_block_b = _v3_block("get_weather", '{"city": "Tokyo"}')
+        payload = f"{TC_OPEN}{malformed_block}{v3_block_b}{TC_CLOSE}"
+
+        events = self._feed(parser, payload, chunk_size=12)
+
+        v3_emissions = []
+        for ev in events:
+            if not ev or "tool_calls" not in ev:
+                continue
+            for call in ev["tool_calls"]:
+                if call.get("function", {}).get("name") == "get_weather":
+                    v3_emissions.append(call)
+
+        assert len(v3_emissions) == 1, (
+            f"V3 block emitted {len(v3_emissions)} times "
+            f"(want 1) — malformed block likely shifted indices."
+        )
+        assert v3_emissions[0]["index"] == 1, (
+            f"V3 block emitted at index {v3_emissions[0]['index']} "
+            f"(want 1) — index correlated against parsed-call list "
+            f"instead of wire-block position."
+        )
+        # And the cache is keyed by ABSOLUTE wire index (1), not by
+        # parsed-call index (0).
+        assert 1 in parser._streamed_v3_ids
+        assert 0 not in parser._streamed_v3_ids
+
+    def test_v3_block_at_index_zero_advances_current_tool_id(
+        self, parser: DeepSeekV31ToolParser
+    ) -> None:
+        """codex r5 BLOCKING-2 (edge case): when a V3 block emits at
+        absolute index 0, ``current_tool_id`` must be advanced from
+        ``-1`` to ``0`` so the legacy delta machine doesn't later
+        treat block 0 as an unadvanced V3.1 state.
+        """
+        payload = _envelope(_v3_block("get_weather", '{"city": "Tokyo"}'))
+
+        # Drive the stream all the way through.
+        self._feed(parser, payload, chunk_size=12)
+
+        assert parser.current_tool_id >= 0, (
+            f"current_tool_id={parser.current_tool_id} after a V3 "
+            f"block at index 0 closed — must have advanced from -1 to >=0."
+        )
+        assert 0 in parser._streamed_v3_ids
+
     def test_v31_then_v3_does_not_re_emit_v3_block(
         self, parser: DeepSeekV31ToolParser
     ) -> None:
