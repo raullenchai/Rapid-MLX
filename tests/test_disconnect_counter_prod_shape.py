@@ -434,9 +434,11 @@ def test_unresolved_engine_shape_logs_explicit_warning(caplog):
         _is_mllm = False
 
     # Reset the once-per-engine-type dedupe so the warning is
-    # guaranteed to fire even under repeated test runs.
+    # guaranteed to fire even under repeated test runs. Uses the
+    # same (module, qualname) key the helper consults.
+    dedupe_key = _helpers._unresolved_engine_dedupe_key(_NakedEngineForWarningTest)
     with _helpers._unresolved_engine_lock:
-        _helpers._unresolved_engine_logged.discard("_NakedEngineForWarningTest")
+        _helpers._unresolved_engine_logged.discard(dedupe_key)
 
     # Capture WARNING from whatever logger the helpers module ends up
     # bound to (rapid-mlx aliases ``vllm_mlx`` → ``rapid_mlx`` on the
@@ -463,6 +465,58 @@ def test_unresolved_engine_shape_logs_explicit_warning(caplog):
     assert "via_disconnect" in combined, combined
 
 
+def test_unresolved_engine_warning_keyed_by_module_qualname(caplog):
+    """Codex r11 NIT: the dedupe ledger MUST key on
+    ``(module, qualname)``, not the leaf class name, so two
+    different unresolved engine classes that happen to share a leaf
+    name (e.g. nested vs. top-level, or two modules each defining
+    ``BatchedEngine``) each get their own actionable warning.
+
+    Build two distinct classes with the same leaf name by
+    monkey-patching ``__qualname__`` so they share ``__name__`` but
+    differ in qualified identity. Both MUST warn.
+    """
+    import logging
+
+    from vllm_mlx.service import helpers as _helpers
+    from vllm_mlx.service.helpers import _record_disconnect_abort_on_scheduler
+
+    class _SameLeafA:
+        _is_mllm = False
+
+    class _SameLeafB:
+        _is_mllm = False
+
+    # Force a leaf-name collision so a leaf-keyed dedupe would
+    # incorrectly suppress one of the warnings.
+    _SameLeafA.__name__ = "BatchedEngineCollision"
+    _SameLeafB.__name__ = "BatchedEngineCollision"
+
+    # Reset both dedupe slots.
+    key_a = _helpers._unresolved_engine_dedupe_key(_SameLeafA)
+    key_b = _helpers._unresolved_engine_dedupe_key(_SameLeafB)
+    with _helpers._unresolved_engine_lock:
+        _helpers._unresolved_engine_logged.discard(key_a)
+        _helpers._unresolved_engine_logged.discard(key_b)
+
+    assert key_a != key_b, (
+        f"dedupe key collision: {key_a} == {key_b} — qualnames "
+        "should differ even when __name__ matches"
+    )
+
+    caplog.set_level(logging.WARNING)
+    _record_disconnect_abort_on_scheduler(_SameLeafA(), "req-a")
+    _record_disconnect_abort_on_scheduler(_SameLeafB(), "req-b")
+
+    warnings = [r for r in caplog.records if r.levelname == "WARNING"]
+    assert len(warnings) == 2, (
+        "Two unresolved engine classes with the same leaf name MUST "
+        "each get their own actionable warning, not be silenced by a "
+        f"leaf-keyed dedupe. Got {len(warnings)}: "
+        f"{[r.getMessage() for r in warnings]}"
+    )
+
+
 def test_unresolved_engine_warning_dedupes_per_engine_type(caplog):
     """Codex r10 NIT: the unresolved-engine warning is rate-limited
     to once-per-engine-type so it does not drown the log under
@@ -478,8 +532,9 @@ def test_unresolved_engine_warning_dedupes_per_engine_type(caplog):
         _is_mllm = False
 
     # Reset for a clean slate.
+    dedupe_key = _helpers._unresolved_engine_dedupe_key(_NakedEngineForDedupeTest)
     with _helpers._unresolved_engine_lock:
-        _helpers._unresolved_engine_logged.discard("_NakedEngineForDedupeTest")
+        _helpers._unresolved_engine_logged.discard(dedupe_key)
 
     caplog.set_level(logging.DEBUG)
     # First call: fires the WARNING.

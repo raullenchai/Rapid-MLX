@@ -2129,8 +2129,25 @@ def _resolve_disconnect_abort_recorder(engine):
 # need to learn") so once-per-engine-type is the right cardinality.
 # Bounded by the number of distinct engine classes in the process,
 # typically 1.
-_unresolved_engine_logged: set[str] = set()
+_unresolved_engine_logged: set[tuple[str, str]] = set()
 _unresolved_engine_lock = threading.Lock()
+
+
+def _unresolved_engine_dedupe_key(engine_cls: type) -> tuple[str, str]:
+    """Codex r11 NIT: dedupe by the fully-qualified class identity
+    so two distinct unresolved engine classes that happen to share
+    a leaf name (e.g. ``mod_a.BatchedEngine`` vs.
+    ``mod_b.BatchedEngine``) do NOT suppress each other's warning.
+    ``__qualname__`` covers nested classes; pairing with
+    ``__module__`` makes the key bijective with the class identity
+    for any sensibly-defined production class. Falling back to the
+    class object itself for stragglers (lambda-defined / no
+    qualname) would also work but a tuple is cheaper to hash and
+    easier to inspect in a heap dump.
+    """
+    module = getattr(engine_cls, "__module__", "<unknown>") or "<unknown>"
+    qualname = getattr(engine_cls, "__qualname__", engine_cls.__name__)
+    return (module, qualname)
 
 
 def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
@@ -2159,11 +2176,16 @@ def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
     try:
         recorder = _resolve_disconnect_abort_recorder(engine)
         if recorder is None:
-            engine_type = type(engine).__name__
+            engine_cls = type(engine)
+            dedupe_key = _unresolved_engine_dedupe_key(engine_cls)
+            # Display name is "module.qualname" so the operator log
+            # carries the full backend identity, not a leaf name that
+            # might collide across modules.
+            engine_display = f"{dedupe_key[0]}.{dedupe_key[1]}"
             should_warn = False
             with _unresolved_engine_lock:
-                if engine_type not in _unresolved_engine_logged:
-                    _unresolved_engine_logged.add(engine_type)
+                if dedupe_key not in _unresolved_engine_logged:
+                    _unresolved_engine_logged.add(dedupe_key)
                     should_warn = True
             if should_warn:
                 logger.warning(
@@ -2175,13 +2197,13 @@ def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
                     "_resolve_sync_scheduler_for_abort must learn the new "
                     "backend graph. Further occurrences for this engine "
                     "type will be suppressed at DEBUG.",
-                    engine_type,
+                    engine_display,
                 )
             else:
                 logger.debug(
                     "[disconnect_guard] no recorder for engine type=%s "
                     "(request_id=%s) — warning already emitted",
-                    engine_type,
+                    engine_display,
                     str(request_id)[:12] if request_id else request_id,
                 )
             return
