@@ -1105,24 +1105,26 @@ def test_rescue_skipped_on_truncated_think_when_finish_is_stop_with_matched_stop
     )
 
 
-def test_rescue_skipped_on_truncated_think_under_finish_stop_regardless_of_matched_stop():
-    """Codex round-11 BLOCKING (PR #799): REVERTS the round-7
-    natural-EOS-rescue carve-out for the explicit-opener arm.
+def test_rescue_fires_on_natural_eos_truncated_think_without_matched_stop():
+    """Codex round-12 BLOCKING counter-case (PR #799): REVERTS the
+    round-11 widening of the explicit-opener suppression arm.
 
-    The unclosed ``<think>`` in ``raw_text`` is STRONG direct
-    evidence that the trace is in-progress; surfacing the trace as
-    ``content`` re-introduces the D-STOP-THINK leak whenever an
-    engine path reports ``finish_reason="stop"`` without
-    propagating ``matched_stop`` (the streaming chat path can lose
-    ``matched_stop`` between the sampler chunk and the helper call
-    site). The raw-text evidence is the authoritative discriminator
-    — the suppression now fires regardless of ``matched_stop``.
+    The helper's contract is "never silently drop an assistant
+    turn". Round-11 widened the ``stop`` arm to suppress on
+    raw-text evidence alone (regardless of ``matched_stop``),
+    closing a D-STOP-THINK leak — but it dropped the natural-EOS
+    silent-drop rescue: a model that voluntarily ends after
+    emitting ``<think>just a thought`` (no closing ``</think>``,
+    no user stop fired) would yield an empty assistant turn,
+    exactly the silent-drop failure mode #569 exists to prevent.
 
-    The "model voluntarily ended mid-thought" #569 silent-drop
-    rescue case loses out here — that's the deliberate r11
-    trade-off: an empty assistant turn (client can detect via
-    ``finish_reason``) is a SAFER failure than a duplicated trace
-    (silently wrong on the wire).
+    Round-12 reverts to the round-7 discriminator on the ``stop``
+    arm: ``matched_stop is not None`` distinguishes
+    engine-initiated trim (D-STOP-THINK leak shape) from natural
+    EOS (in-progress thought, #569 rescue). The
+    matched_stop-propagation concern from r11 is addressed at the
+    streaming call sites instead (chat.py / responses.py /
+    anthropic.py now accumulate ``output.matched_stop`` per chunk).
     """
     raw = "<think>just a thought"
     rescued = _rescue_silent_drop_from_reasoning(
@@ -1133,10 +1135,36 @@ def test_rescue_skipped_on_truncated_think_under_finish_stop_regardless_of_match
         raw_text=raw,
         matched_stop=None,
     )
+    assert rescued == "just a thought", (
+        f"#569 regression — natural-EOS with unclosed <think> "
+        f"silently dropped instead of rescued: rescued={rescued!r}"
+    )
+
+
+def test_rescue_skipped_on_truncated_think_under_finish_stop_with_matched_stop():
+    """Counter-test for the round-12 fix: under
+    ``finish_reason="stop"`` WITH ``matched_stop`` set, the
+    explicit-opener arm fires and the rescue is suppressed
+    (D-STOP-THINK leak shape).
+
+    Together with
+    ``test_rescue_fires_on_natural_eos_truncated_think_without_matched_stop``
+    this pins the round-12 discriminator: ``matched_stop is not
+    None`` distinguishes engine-initiated trim (suppress) from
+    natural EOS (rescue).
+    """
+    raw = "<think>still thinking when stop fired"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="still thinking when stop fired",
+        tool_calls=None,
+        finish_reason="stop",
+        raw_text=raw,
+        matched_stop="STOP",
+    )
     assert rescued is None, (
-        f"codex r11 BLOCKING regression — explicit unclosed <think> "
-        f"with finish=stop should suppress regardless of matched_stop; "
-        f"got rescued={rescued!r}"
+        f"D-STOP-THINK regression — engine stop with matched_stop "
+        f"should suppress; got rescued={rescued!r}"
     )
 
 

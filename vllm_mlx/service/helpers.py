@@ -809,11 +809,35 @@ def _rescue_silent_drop_from_reasoning(
     # duplicated trace would be silently wrong on the wire.
     truncated_mid_think = (
         # Explicit-opener under length OR stop: raw_text proves
-        # an in-progress ``<think>`` was truncated. Suppress the
-        # rescue regardless of ``matched_stop`` (codex round-11
-        # BLOCKING #2).
+        # an in-progress ``<think>`` was truncated.
+        #
+        # Codex round-12 BLOCKING (PR #799): REVERTS round-11's
+        # unconditional ``stop`` arm. Round-11 widened the
+        # suppression on the ``stop`` arm to fire regardless of
+        # ``matched_stop`` because the streaming chat path can lose
+        # ``matched_stop`` between sampler and helper — but that
+        # widening dropped the #569 silent-drop rescue for a model
+        # that voluntarily ends after emitting ``<think>just a
+        # thought`` (no closing ``</think>``, no user stop fired).
+        # The helper's contract is "never silently drop an
+        # assistant turn"; a natural-EOS in-progress thought must
+        # still rescue. Fix: ``length`` stays unconditional (length
+        # is unambiguously truncation); ``stop`` requires
+        # ``matched_stop is not None`` so only engine-initiated
+        # trims suppress, natural EOS falls through to the rescue
+        # path. The matched_stop-propagation concern from r11 is
+        # addressed at the call sites (chat.py streaming now
+        # accumulates ``output.matched_stop`` per chunk, mirroring
+        # responses.py / anthropic.py).
         (
-            finish_reason in ("length", "stop")
+            finish_reason == "length"
+            and raw_text
+            and raw_text.lstrip().startswith("<think>")
+            and "</think>" not in raw_text
+        )
+        or (
+            finish_reason == "stop"
+            and matched_stop is not None
             and raw_text
             and raw_text.lstrip().startswith("<think>")
             and "</think>" not in raw_text
