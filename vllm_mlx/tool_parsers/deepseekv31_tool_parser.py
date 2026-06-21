@@ -1,13 +1,44 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-DeepSeek V3.1 tool call parser for rapid-mlx.
+DeepSeek V3 / V3.1 / R1-0528 tool call parser for rapid-mlx.
 
-Ported from vLLM upstream (vllm/tool_parsers/deepseekv31_tool_parser.py).
+Originally ported from vLLM upstream
+(vllm/tool_parsers/deepseekv31_tool_parser.py) targeting the V3.1
+"thinking-channel" body format:
 
-Format (different from V3 — no ```json``` code fence, no "function" type tag):
-  <｜tool▁calls▁begin｜>
-  <｜tool▁call▁begin｜>NAME<｜tool▁sep｜>ARGS<｜tool▁call▁end｜>
-  <｜tool▁calls▁end｜>
+    <｜tool▁calls▁begin｜>
+    <｜tool▁call▁begin｜>NAME<｜tool▁sep｜>ARGS<｜tool▁call▁end｜>
+    <｜tool▁calls▁end｜>
+
+Real-world checkpoints (incl. DeepSeek-R1-0528-Qwen3-8B, whose
+``chat_template.jinja`` was inherited from DeepSeek-V3) emit the V3
+"function-typed, JSON-fenced" body shape instead:
+
+    <｜tool▁calls▁begin｜>
+    <｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME
+    ```json
+    {ARGS}
+    ```<｜tool▁call▁end｜>
+    <｜tool▁calls▁end｜>
+
+Both shapes share the *outer* envelope (``<｜tool▁calls▁begin｜>`` /
+``<｜tool▁calls▁end｜>``) and the *block* envelope (``<｜tool▁call▁begin｜>``
+/ ``<｜tool▁call▁end｜>``) plus the ``<｜tool▁sep｜>`` separator — only the
+body inside each ``<call_begin>...<call_end>`` block differs.
+
+D-DSV31 (0.8.2 P0): the original V3.1-only regex matched
+``function<sep>NAME\\n```json\\n{...}\\n```<end>`` as
+``name="function"``, ``arguments="NAME\\n```json\\n{...}\\n```"`` — i.e.
+the type tag became the function name and the real name + fenced JSON
+became the arguments string. Downstream OpenAI clients then attempted to
+invoke a tool literally named ``function`` with garbage arguments.
+
+Fix: parse each ``<call_begin>...<call_end>`` block with explicit
+format auto-detection on the block body. The block-wise scanner walks
+the outer envelope as a state machine instead of relying on a single
+greedy regex over the full payload — that's what makes parallel /
+malformed payloads parse correctly rather than collapsing into one
+mis-shaped match.
 """
 
 import logging
@@ -29,20 +60,43 @@ def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
+# Body shape inside a single <call_begin>...<call_end> block.
+#
+# V3 (DeepSeek-V3, DeepSeek-R1-0528-Qwen3-8B, and any checkpoint whose
+# chat template inherits V3's "function-typed, JSON-fenced" tool-call
+# emission):
+#
+#     function<｜tool▁sep｜>NAME\n```json\n{...}\n```
+#
+# V3.1 (DeepSeek V3.1 thinking-channel):
+#
+#     NAME<｜tool▁sep｜>{...}
+#
+# We detect V3 by checking whether the body starts with the literal
+# ``function`` type tag *followed by* the separator (anchored, no
+# regex needed) — that's what the V3 chat template always emits and
+# what V3.1 never emits. Without that anchor a V3.1 tool literally
+# named ``function_lookup`` would be misclassified.
+_V3_TYPE_TAG = "function"
+
+
 @ToolParserManager.register_module(["deepseek_v31", "deepseek_r1_0528"])
 class DeepSeekV31ToolParser(ToolParser):
     """
-    Tool call parser for DeepSeek V3.1 and R1-0528 models.
+    Tool call parser for DeepSeek V3 / V3.1 / R1-0528 models.
 
-    Uses the same unicode special tokens as V3 but with a simpler format:
-    <｜tool▁call▁begin｜>NAME<｜tool▁sep｜>ARGS<｜tool▁call▁end｜>
-    (no "function" type prefix, no ```json``` fencing)
+    Auto-detects both wire shapes (see module docstring) — a single
+    parser covers every DeepSeek alias whose chat template emits the
+    shared ``<｜tool▁calls▁begin｜>`` envelope, regardless of whether
+    the body inside each block uses the V3 ``function<sep>NAME\\n\\`\\`\\`json
+    {...}\\`\\`\\`\\n`` shape or the V3.1 ``NAME<sep>{...}`` shape.
 
-    Used when --enable-auto-tool-choice --tool-call-parser deepseek_v31 are set.
+    Used when --enable-auto-tool-choice --tool-call-parser deepseek_v31
+    (or the V3 aliases) are set.
     """
 
     SUPPORTS_NATIVE_TOOL_FORMAT = True
-    EXPECTED_WIRE_FORMATS = ("deepseek_v31_native",)
+    EXPECTED_WIRE_FORMATS = ("deepseek_native", "deepseek_v31_native")
 
     TOOL_CALLS_START = "<｜tool▁calls▁begin｜>"
     TOOL_CALLS_END = "<｜tool▁calls▁end｜>"
@@ -50,17 +104,32 @@ class DeepSeekV31ToolParser(ToolParser):
     TOOL_CALL_END = "<｜tool▁call▁end｜>"
     TOOL_SEP = "<｜tool▁sep｜>"
 
+    # V3 body: "function<sep>NAME\n```json\n{...}\n```"
+    # The fenced JSON block is greedy-but-bounded by ``\n\`\`\``` at the end.
+    _V3_BODY_REGEX = re.compile(
+        r"^function<｜tool▁sep｜>(?P<name>.*?)\n```json\n(?P<args>.*?)\n```\s*$",
+        re.DOTALL,
+    )
+    # V3 body with a tolerant trailing fence (some checkpoints omit the
+    # newline before the closing fence, e.g. ``...}```<call_end>``).
+    _V3_BODY_REGEX_TOLERANT = re.compile(
+        r"^function<｜tool▁sep｜>(?P<name>.*?)\n```json\n(?P<args>.*?)```\s*$",
+        re.DOTALL,
+    )
+
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
 
         self.current_tool_name_sent: bool = False
         self.streamed_args_for_tool: list[str] = []
 
-        self.tool_call_regex = re.compile(
-            r"<｜tool▁call▁begin｜>(?P<function_name>.*?)<｜tool▁sep｜>"
-            r"(?P<function_arguments>.*?)<｜tool▁call▁end｜>",
-            re.DOTALL,
-        )
+        # V3.1 streaming regex (unchanged). V3-shaped streaming
+        # arrives through the same regex because both shapes share the
+        # ``NAME<sep>...`` skeleton; the V3 "function" type tag plus
+        # JSON fence become part of the staged ``arguments`` buffer
+        # mid-stream and are only resolved into the correct ``name`` /
+        # ``arguments`` split once the closing ``<call_end>`` lands and
+        # the non-streaming ``extract_tool_calls`` path runs.
         self.stream_tool_call_portion_regex = re.compile(
             r"(?P<function_name>.*)<｜tool▁sep｜>(?P<function_arguments>.*)",
             re.DOTALL,
@@ -75,6 +144,185 @@ class DeepSeekV31ToolParser(ToolParser):
         self.tool_call_start_token_id = self.vocab.get(self.TOOL_CALL_START)
         self.tool_call_end_token_id = self.vocab.get(self.TOOL_CALL_END)
 
+    # -----------------------------------------------------------------
+    # Block-wise scanner — the structural fix for D-DSV31
+    # -----------------------------------------------------------------
+    @classmethod
+    def _envelope_bounds(cls, model_output: str) -> tuple[int, int] | None:
+        """Locate the outer ``<tool_calls_begin>...<tool_calls_end>``
+        envelope and return ``(inner_start, inner_end)`` pointing at
+        the substring strictly between the two markers. If the
+        envelope hasn't fully arrived (no closing marker), the inner
+        end is the length of the string — the caller can still scan
+        the partially-complete inner region for in-progress blocks.
+
+        Returns ``None`` if the outer ``<tool_calls_begin>`` is not
+        present at all.
+
+        codex r8 BLOCKING-1: block scanning MUST be bounded to the
+        outer envelope. Otherwise a response that mentions
+        ``<｜tool▁call▁begin｜>`` as literal content (e.g. quoted
+        documentation) and later happens to contain
+        ``<｜tool▁calls▁begin｜>`` could have the literal content
+        treated as a tool call.
+        """
+        outer_start = model_output.find(cls.TOOL_CALLS_START)
+        if outer_start == -1:
+            return None
+        inner_start = outer_start + len(cls.TOOL_CALLS_START)
+        outer_end = model_output.find(cls.TOOL_CALLS_END, inner_start)
+        inner_end = outer_end if outer_end != -1 else len(model_output)
+        return (inner_start, inner_end)
+
+    @classmethod
+    def _iter_block_bodies(cls, model_output: str) -> list[str]:
+        """Yield the body text between each ``<call_begin>`` /
+        ``<call_end>`` pair found INSIDE the outer
+        ``<tool_calls_begin>...<tool_calls_end>`` envelope, in order.
+
+        Uses a forward-scanning state machine (find next ``<call_begin>``,
+        find the *matching* ``<call_end>``) rather than a single greedy
+        regex. This is what makes parallel calls parse as N entries
+        instead of one over-greedy match, and what makes a truncated
+        trailing block ignored rather than swallowing the rest of the
+        payload. The outer-envelope bound prevents literal marker text
+        in plain content from getting misparsed as tool calls
+        (codex r8 BLOCKING-1).
+        """
+        bounds = cls._envelope_bounds(model_output)
+        if bounds is None:
+            return []
+        inner_start, inner_end = bounds
+        bodies: list[str] = []
+        pos = inner_start
+        start_len = len(cls.TOOL_CALL_START)
+        end_len = len(cls.TOOL_CALL_END)
+        while pos < inner_end:
+            start = model_output.find(cls.TOOL_CALL_START, pos, inner_end)
+            if start == -1:
+                break
+            body_start = start + start_len
+            end = model_output.find(cls.TOOL_CALL_END, body_start, inner_end)
+            if end == -1:
+                # Truncated trailing block within the envelope — drop
+                # and stop. Matches the "malformed → graceful no-op"
+                # contract.
+                break
+            bodies.append(model_output[body_start:end])
+            pos = end + end_len
+        return bodies
+
+    @classmethod
+    def _has_any_open_or_unparsed_block(cls, model_output: str) -> bool:
+        """True if there are ``<call_begin>`` markers inside the
+        envelope that ``_iter_block_bodies`` did NOT pair with a
+        ``<call_end>`` (truncated trailing block) — used by
+        ``extract_tool_calls`` to decide whether to preserve content
+        for callers (codex r8 BLOCKING-2).
+        """
+        bounds = cls._envelope_bounds(model_output)
+        if bounds is None:
+            return False
+        inner_start, inner_end = bounds
+        inner = model_output[inner_start:inner_end]
+        return inner.count(cls.TOOL_CALL_START) > inner.count(cls.TOOL_CALL_END)
+
+    @classmethod
+    def _parse_block_body(cls, body: str) -> tuple[str, str] | None:
+        """Parse one ``<call_begin>...<call_end>`` body into ``(name, args)``.
+
+        Tries V3 (fenced JSON) first when the body starts with the
+        ``function<sep>`` type-tag prefix; otherwise the V3.1 (plain
+        ``NAME<sep>ARGS``) shape. Returns ``None`` if the body is not
+        parseable in the claimed shape.
+
+        Critically (codex r2 BLOCKING): a body that anchors as V3 must
+        NOT silently fall through to the V3.1 split — that path would
+        emit ``name="function"`` with the real tool name embedded in
+        ``arguments``, recreating the exact production failure mode
+        we're patching. If the V3 anchor matches but neither V3 regex
+        does, the body is malformed; we attempt one bounded recovery
+        (look for the inner JSON between ``\\`\\`\\`json`` and any
+        terminator) and return ``None`` if that fails so the caller
+        drops the block.
+        """
+        body = body.strip("\n")
+        if body.startswith(f"{_V3_TYPE_TAG}{cls.TOOL_SEP}"):
+            m = cls._V3_BODY_REGEX.match(body) or cls._V3_BODY_REGEX_TOLERANT.match(
+                body
+            )
+            if m is not None:
+                return m.group("name").strip(), m.group("args").strip()
+            # V3-anchored but neither fenced-JSON regex matched. Drop
+            # the block entirely (return ``None``) rather than trying a
+            # bounded recovery: a partial recovery can emit a tool call
+            # with truncated / non-JSON arguments (e.g. ``{"city":
+            # "Tokyo"`` with no closing brace), which would then reach
+            # downstream tool execution (codex r10 BLOCKING). The
+            # malformed block's raw text is preserved as ``content``
+            # by ``extract_tool_calls`` (codex r8 BLOCKING-2), so the
+            # caller can decide whether to display or retry.
+            return None
+
+        sep_idx = body.find(cls.TOOL_SEP)
+        if sep_idx == -1:
+            return None
+        name = body[:sep_idx].strip()
+        args = body[sep_idx + len(cls.TOOL_SEP) :].strip()
+        if not name:
+            return None
+        return name, args
+
+    # -----------------------------------------------------------------
+    # Streaming helper — V3 presence sniffer.
+    # -----------------------------------------------------------------
+    @classmethod
+    def _cumulative_has_v3_block(cls, model_output: str) -> bool:
+        """Return ``True`` if any block (open or closed) WITHIN the
+        outer ``<tool_calls_begin>`` envelope has a V3-shaped body
+        (starts with the literal ``function<｜tool▁sep｜>``
+        type-tag-plus-separator).
+
+        Called every streaming delta. Once this returns ``True``, the
+        streaming path stops emitting and defers to the postprocessor's
+        end-of-stream ``extract_tool_calls`` fallback — see the
+        streaming gate comment in ``extract_tool_calls_streaming``.
+
+        codex r9 BLOCKING-1: like ``_iter_block_bodies``, this scanner
+        MUST be bounded to ``_envelope_bounds()`` so literal marker
+        text in streamed plain content can't suppress normal V3.1
+        streaming.
+        """
+        bounds = cls._envelope_bounds(model_output)
+        if bounds is None:
+            return False
+        inner_start, inner_end = bounds
+        v3_marker = f"{_V3_TYPE_TAG}{cls.TOOL_SEP}"
+        # Scan every open/closed block body in order, but only inside
+        # the outer envelope. The open trailing body inside the
+        # envelope is the most important case because that's where
+        # the V3 type tag arrives first mid-stream.
+        pos = inner_start
+        start_len = len(cls.TOOL_CALL_START)
+        end_len = len(cls.TOOL_CALL_END)
+        while pos < inner_end:
+            start = model_output.find(cls.TOOL_CALL_START, pos, inner_end)
+            if start == -1:
+                return False
+            body_start = start + start_len
+            end = model_output.find(cls.TOOL_CALL_END, body_start, inner_end)
+            body = (
+                model_output[body_start:end]
+                if end != -1
+                else model_output[body_start:inner_end]
+            )
+            if body.lstrip("\n").startswith(v3_marker):
+                return True
+            if end == -1:
+                return False
+            pos = end + end_len
+        return False
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:
@@ -84,22 +332,70 @@ class DeepSeekV31ToolParser(ToolParser):
             )
 
         try:
-            matches = self.tool_call_regex.findall(model_output)
-            tool_calls = []
-            for func_name, func_args in matches:
+            bodies = self._iter_block_bodies(model_output)
+            tool_calls: list[dict[str, Any]] = []
+            had_malformed = False
+            for body in bodies:
+                parsed = self._parse_block_body(body)
+                if parsed is None:
+                    # Malformed block — skip emission but note the
+                    # presence so we can surface the model's text to
+                    # the caller below (codex r8 BLOCKING-2).
+                    had_malformed = True
+                    continue
+                name, args = parsed
                 tool_calls.append(
                     {
                         "id": _generate_tool_id(),
-                        "name": func_name.strip(),
-                        "arguments": func_args.strip(),
+                        "name": name,
+                        # Args body passes through verbatim. The
+                        # upstream vLLM contract is bytes-equal
+                        # passthrough — downstream JSON canonicalisation
+                        # is the caller's job (and changing the bytes
+                        # here breaks ``tests/test_upstream_regression``).
+                        "arguments": args,
                     }
                 )
 
-            content = model_output[: model_output.find(self.TOOL_CALLS_START)]
+            # Detect truncated trailing blocks (``<call_begin>`` without
+            # a matching ``<call_end>`` inside the envelope) — these
+            # are also "malformed" for content-preservation purposes
+            # but ``_iter_block_bodies`` silently dropped them above.
+            has_truncated = self._has_any_open_or_unparsed_block(model_output)
+
+            if tool_calls:
+                prefix_content = model_output[
+                    : model_output.find(self.TOOL_CALLS_START)
+                ]
+                # codex r8 BLOCKING-2: when ANY block was malformed or
+                # truncated, surface the post-envelope/raw text so the
+                # caller can decide whether to display it. Otherwise
+                # we lose model output. The "clean envelope" case
+                # (every block parsed cleanly) preserves the prefix-only
+                # content as before — V3.1 semantics.
+                if had_malformed or has_truncated:
+                    # Surface the prefix + everything from the envelope
+                    # onward (the model's raw text). This is verbose,
+                    # but the alternative (dropping it) loses data.
+                    # Callers that want only the prefix can detect the
+                    # envelope markers in ``content`` themselves.
+                    content = model_output
+                else:
+                    content = prefix_content
+                return ExtractedToolCallInformation(
+                    tools_called=True,
+                    tool_calls=tool_calls,
+                    content=content if content else None,
+                )
+
+            # Outer envelope present but nothing parsed (truncated /
+            # malformed). Pass the full model output through as content
+            # so callers see the raw text rather than silently dropping
+            # everything after ``<call_begin>``. Mirrors the V3 parser's
+            # "no match" behaviour and the test suite's malformed
+            # graceful-passthrough contract.
             return ExtractedToolCallInformation(
-                tools_called=len(tool_calls) > 0,
-                tool_calls=tool_calls,
-                content=content if content else None,
+                tools_called=False, tool_calls=[], content=model_output
             )
         except Exception:
             logger.exception("Error in extracting tool call from response.")
@@ -142,6 +438,51 @@ class DeepSeekV31ToolParser(ToolParser):
 
         if not has_tool_start:
             return {"content": delta_text}
+
+        # ----------------------------------------------------------------
+        # V3-shape streaming gate (D-DSV31 follow-on).
+        #
+        # The legacy delta machine captures ``name<sep>args`` from the
+        # currently-open block via a single regex — that would emit
+        # ``name="function"`` mid-stream for V3 bodies because the
+        # literal ``function`` type tag *is* what arrives first.
+        #
+        # Design decision: instead of trying to interleave V3 and V3.1
+        # emissions through the legacy delta machine (codex r3/r4/r5/r6
+        # discovered escalating composition bugs around malformed
+        # blocks, mixed V3/V3.1 envelopes, and delta boundaries), we
+        # SUPPRESS streaming emissions entirely once a V3-confirmed
+        # body is seen ANYWHERE in the cumulative text. The
+        # postprocessor's end-of-stream fallback path (see
+        # ``vllm_mlx/service/postprocessor.py`` "Fallback tool call
+        # detection") calls ``extract_tool_calls`` on the cumulative
+        # buffer when ``tool_calls_detected`` was never flipped — that
+        # path runs the now-fixed block-wise scanner and emits a
+        # well-formed one-shot ``tool_call`` event per block.
+        #
+        # Tradeoff: V3 streams don't see incremental token-by-token
+        # ``function.arguments`` deltas — clients receive one
+        # ``tool_call`` event per call at end-of-stream. This matches
+        # how other "wrapped" parsers (GLM-4.7, Seed-OSS) already
+        # behave for their wrapper formats and is the conservative
+        # contract until a model emerges that actually demands V3
+        # streaming. V3.1 streams are unchanged (legacy delta machine
+        # still runs).
+        #
+        # Streaming contract for mixed V3.1+V3 envelopes (codex
+        # r7/r9): NOT SUPPORTED in this parser. If a stream contains
+        # both V3.1 and V3 blocks in the same envelope, the postprocessor
+        # ``tool_calls_detected`` gate prevents the finalize-path
+        # fallback from reconciling the V3 block once an earlier V3.1
+        # block has already emitted. Released DeepSeek chat templates
+        # (V3, V3.1, R1, R1-0528) emit a SINGLE body shape per
+        # envelope so this case doesn't arise in practice. The
+        # non-streaming ``extract_tool_calls`` path handles mixed
+        # envelopes correctly (see ``test_mixed_v3_and_v31_blocks``)
+        # for completeness.
+        # ----------------------------------------------------------------
+        if self._cumulative_has_v3_block(current_text):
+            return None
 
         delta_text = delta_text.replace(self.TOOL_CALLS_START, "").replace(
             self.TOOL_CALLS_END, ""
