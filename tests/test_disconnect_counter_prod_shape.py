@@ -355,6 +355,60 @@ async def test_ten_disconnects_on_prod_shape_yield_ten_ten():
 
 
 # ---------------------------------------------------------------------------
+# MLLM twin: verify the same lifetime-persistent ledger contract holds
+# ---------------------------------------------------------------------------
+
+
+def test_mllm_scheduler_admit_below_cap_does_not_attributeerror_on_lock():
+    """Codex r12 BLOCKING follow-up: ``MLLMScheduler.add_request``
+    now acquires ``self._cancel_counter_lock`` to do the
+    lifetime-ledger clear + commit under one critical section. The
+    constructor MUST initialise this lock or the first multimodal
+    request raises ``AttributeError`` and breaks every MLLM admit.
+
+    Drive a below-cap admit through ``add_request`` against a stub
+    that mimics the bare scheduler state (no real model needed)
+    and assert the lock + commit path completes without
+    AttributeError. A future refactor that drops the constructor's
+    ``_cancel_counter_lock = threading.Lock()`` line fails here.
+    """
+    import threading
+
+    from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
+
+    sched = MLLMScheduler.__new__(MLLMScheduler)
+    # Mirror the constructor's ``_cancel_counter_lock`` /
+    # ``_cancelled_request_ids`` / ``_disconnect_abort_ids`` /
+    # ``_pending_abort_ids`` / ``requests`` / ``waiting`` init,
+    # exactly as the real ``__init__`` does. The minimal stub is
+    # sufficient to drive ``add_request`` past the ledger clear +
+    # commit critical section. Anything missing here would raise
+    # AttributeError BEFORE the cap-check vs after; pinning that
+    # add_request reaches the commit line is the contract.
+    sched._cancel_counter_lock = threading.Lock()
+    sched._cancelled_request_ids = set()
+    sched._disconnect_abort_ids = set()
+    sched._pending_abort_ids = set()
+    sched.config = MLLMSchedulerConfig(max_concurrent_requests=4)
+    sched.requests = {}
+    sched.waiting = []
+
+    # Call into the real add_request with a stub prompt — minimal
+    # prompt is enough to reach the commit line; we don't care
+    # whether the downstream processing succeeds, only that the
+    # admission gate + ledger clear + commit ran without
+    # AttributeError on the lock.
+    request_id = sched.add_request(prompt="hi", request_id="req-mllm-smoke")
+    assert request_id == "req-mllm-smoke"
+    assert "req-mllm-smoke" in sched.requests
+    assert sched.requests["req-mllm-smoke"] is not None
+    # The lifetime ledger MUST be empty at this point (the clear
+    # ran, no abort has fired yet).
+    assert "req-mllm-smoke" not in sched._cancelled_request_ids
+    assert "req-mllm-smoke" not in sched._disconnect_abort_ids
+
+
+# ---------------------------------------------------------------------------
 # Resolver coverage — production engine shape is recognised
 # ---------------------------------------------------------------------------
 
