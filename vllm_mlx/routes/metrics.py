@@ -369,6 +369,46 @@ def _render_prometheus(cfg: Any) -> str:
         )
     )
 
+    # ---- Cancellation observability (M-01) -----------------------------
+    # ``rapid_mlx_requests_processed_total`` deliberately excludes aborted
+    # requests, so when fifty clients disconnect mid-stream the operator-
+    # facing series stays at zero with no way to distinguish "model idle"
+    # from "every request bailed". The total counter below ticks once per
+    # public-API abort the scheduler accepted (deduplicated against
+    # idempotent re-enqueues via ``_pending_abort_ids``), regardless of
+    # cause — client disconnect, explicit ``/v1/requests/{id}/cancel``
+    # route, timeout, or internal abort. The sub-counter attributes the
+    # subset triggered by the disconnect_guard force-abort path so the
+    # gap (total - via_disconnect) surfaces explicit-cancel + timeout
+    # traffic for capacity planning. Both default to zero on engines
+    # that never reach M-01 (mirrors the PFlash counters' flat-line
+    # treatment) so dashboards never flip to "no data" after a deploy.
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_requests_cancelled_total",
+            "counter",
+            (
+                "Cumulative requests aborted via the scheduler abort path "
+                "(client disconnect, explicit cancel route, timeout). "
+                "Disjoint from rapid_mlx_requests_processed_total which "
+                "only counts completed requests."
+            ),
+            int(_coerce_number(stats.get("num_requests_cancelled"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_requests_cancelled_via_disconnect_total",
+            "counter",
+            (
+                "Subset of rapid_mlx_requests_cancelled_total attributed "
+                "to client disconnect (force-abort fired from the "
+                "disconnect_guard streaming-route helper)."
+            ),
+            int(_coerce_number(stats.get("num_requests_cancelled_via_disconnect"))),
+        )
+    )
+
     # Prometheus requires a trailing newline.
     return "\n".join(lines) + "\n"
 

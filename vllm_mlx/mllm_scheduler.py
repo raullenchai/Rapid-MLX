@@ -245,6 +245,14 @@ class MLLMScheduler:
         # Thread-safe set for deferred aborts (event loop → executor thread).
         # CPython GIL guarantees set.add() and set.pop() are atomic.
         self._pending_abort_ids: set[str] = set()
+        # M-01: once-per-request guard for the disconnect-cause
+        # sub-counter. Mirrors ``Scheduler._disconnect_abort_ids`` —
+        # the helper-layer ``_force_abort_request`` may fire two or
+        # three times per disconnect (disconnect branch + GeneratorExit
+        # branch + finally belt-and-suspenders) so the sub-counter
+        # needs its own de-dup set instead of leaning on
+        # ``_pending_abort_ids`` which drains every step.
+        self._disconnect_abort_ids: set[str] = set()
         # Aborted request IDs that need queue signaling (executor → event loop).
         self._aborted_queue_ids: set[str] = set()
 
@@ -261,6 +269,12 @@ class MLLMScheduler:
         self.num_requests_processed = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        # M-01: cancellation observability — mirror of the text-path
+        # scheduler counters so /metrics renders a stable series on
+        # MLLM-active engines. See ``Scheduler.__init__`` for the full
+        # rationale. Observability only — abort semantics unchanged.
+        self.num_requests_cancelled = 0
+        self.num_requests_cancelled_via_disconnect = 0
 
     def _get_stop_tokens(self) -> set[int]:
         """Get stop token IDs from tokenizer.
@@ -429,11 +443,34 @@ class MLLMScheduler:
             or request_id in self.running
             or request_id in self._pending_abort_ids
         ):
+            # M-01: count only when the id was NOT already pending —
+            # see ``Scheduler.abort_request`` for the de-dup rationale.
+            # Concurrent disconnect_guard + engine_core cleanup paths
+            # both enqueue the same id; without the gate the counter
+            # would double-count every disconnect-triggered abort.
+            already_pending = request_id in self._pending_abort_ids
             self._pending_abort_ids.add(request_id)
+            if not already_pending:
+                self.num_requests_cancelled += 1
             logger.debug(f"Enqueued abort for request {request_id}")
             return True
         logger.debug("Rejected abort for unknown MLLM request_id")
         return False
+
+    def record_disconnect_abort(self, request_id: str) -> None:
+        """M-01: attribute a previously-accepted abort to client disconnect.
+
+        Mirrors ``Scheduler.record_disconnect_abort`` so MLLM-active
+        engines surface the same ``via_disconnect`` sub-counter on
+        /metrics. See that method's docstring for the once-per-request
+        semantics and thread-safety contract.
+        """
+        try:
+            if request_id and request_id not in self._disconnect_abort_ids:
+                self._disconnect_abort_ids.add(request_id)
+                self.num_requests_cancelled_via_disconnect += 1
+        except Exception:  # pragma: no cover - belt-and-suspenders
+            pass
 
     def _process_pending_aborts(self) -> None:
         """Drain and execute pending abort requests.
@@ -1161,6 +1198,14 @@ class MLLMScheduler:
             "num_requests_processed": self.num_requests_processed,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
+            # M-01: cancellation observability — mirror of the text
+            # scheduler stats so the same /metrics renderer surfaces a
+            # flat-line zero on MLLM-active engines that never see an
+            # abort. See ``Scheduler.get_stats`` for the full rationale.
+            "num_requests_cancelled": self.num_requests_cancelled,
+            "num_requests_cancelled_via_disconnect": (
+                self.num_requests_cancelled_via_disconnect
+            ),
         }
 
         if self.batch_generator is not None:

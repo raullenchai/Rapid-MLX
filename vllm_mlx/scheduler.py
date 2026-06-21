@@ -1865,6 +1865,14 @@ class Scheduler:
         # Thread-safe set for deferred aborts (main thread → executor thread)
         # CPython GIL guarantees set.add() and `x in set` are atomic.
         self._pending_abort_ids: set[str] = set()
+        # M-01: once-per-request guard for the disconnect-cause
+        # sub-counter. ``_force_abort_request`` calls
+        # ``record_disconnect_abort`` from BOTH the disconnect branch
+        # AND the GeneratorExit branch AND the finally belt-and-
+        # suspenders; without this de-dup the sub-counter would over-
+        # count by up to 3x per disconnect. Lives on the scheduler so
+        # the lifetime matches the abort-tracking state next to it.
+        self._disconnect_abort_ids: set[str] = set()
 
         # Statistics
         self.num_requests_processed = 0
@@ -1881,6 +1889,22 @@ class Scheduler:
         # stays flat. Observability only — bypass semantics unchanged.
         self.pflash_bypass_count = 0
         self.pflash_compressed_tokens_dropped = 0
+        # Cancellation observability (M-01). ``num_requests_processed``
+        # deliberately excludes aborted requests, so operators staring at
+        # ``rapid_mlx_requests_processed_total = 0`` after fifty bailed-
+        # out clients can't tell whether the route is broken, the model
+        # is idle, or every caller is disconnecting before EOS. The total
+        # counter increments inside ``abort_request`` the moment a
+        # newly-known request_id transitions into the pending-abort set
+        # (idempotent re-enqueues do NOT double-count), so it reflects
+        # accepted public-API aborts irrespective of cause. The disconnect
+        # sub-counter is bumped separately by ``_force_abort_request`` in
+        # the disconnect-guard path via ``record_disconnect_abort`` so
+        # the (total - disconnect) gap surfaces explicit-cancel-route +
+        # timeout traffic. Both observability only — abort semantics are
+        # untouched.
+        self.num_requests_cancelled = 0
+        self.num_requests_cancelled_via_disconnect = 0
 
         # Memory management: periodic mx.clear_cache() to free Metal command buffers
         # Lower interval = less VRAM spike during generation but slight throughput cost
@@ -3081,13 +3105,50 @@ class Scheduler:
             or request_id in self.running
             or request_id in self._pending_abort_ids
         ):
+            # M-01: count only when the id was NOT already pending —
+            # ``abort_request`` is intentionally idempotent (see the
+            # last branch of the predicate above), so concurrent
+            # disconnect-guard + engine_core cleanup paths both
+            # enqueue the same id and both return True. Counting on
+            # the True return without this gate would double-count
+            # every disconnect-triggered abort. ``set.add`` is GIL-
+            # atomic and the ``in`` check just above is consistent
+            # with the immediately-following ``add`` on CPython since
+            # we never yield between them.
+            already_pending = request_id in self._pending_abort_ids
             self._pending_abort_ids.add(request_id)
+            if not already_pending:
+                self.num_requests_cancelled += 1
             logger.info(
                 f"[abort_request] {request_id[:12]} enqueued for deferred abort"
             )
             return True
         logger.info("[abort_request] unknown request_id (rejected without enqueue)")
         return False
+
+    def record_disconnect_abort(self, request_id: str) -> None:
+        """M-01: attribute a previously-accepted abort to client disconnect.
+
+        Called by ``_force_abort_request`` (service/helpers.py) AFTER
+        the sync ``abort_request`` returned True, so the total counter
+        was already bumped exactly once on the public entry-point. The
+        ``request_id`` is recorded into the dedicated
+        ``_disconnect_abort_ids`` set so concurrent
+        disconnect-guard + finally belt-and-suspenders paths (both fire
+        the helper) only attribute once per request — matching the
+        once-per-request semantics of the total counter. Safe to call
+        from any thread (set.add is GIL-atomic), never raises.
+        """
+        try:
+            if request_id and request_id not in self._disconnect_abort_ids:
+                self._disconnect_abort_ids.add(request_id)
+                self.num_requests_cancelled_via_disconnect += 1
+        except Exception:  # pragma: no cover - belt-and-suspenders
+            # Observability must never break a live disconnect path —
+            # a counter that fails to advance is preferable to one
+            # that escapes back through ``_force_abort_request`` and
+            # masks the abort in the caller's exception handler.
+            pass
 
     def _process_pending_aborts(self) -> None:
         """Drain and process pending abort requests. Called from executor thread."""
@@ -4114,6 +4175,20 @@ class Scheduler:
             # series.
             "pflash_bypass_count": self.pflash_bypass_count,
             "pflash_compressed_tokens_dropped": self.pflash_compressed_tokens_dropped,
+            # M-01: cancellation observability. ``num_requests_cancelled``
+            # is the total count of public-API aborts the scheduler
+            # accepted (one increment per unique request_id transitioning
+            # into ``_pending_abort_ids``). ``num_requests_cancelled_via_
+            # disconnect`` is the subset attributed to client disconnect
+            # via ``_force_abort_request``. Both default to zero on
+            # engines that never see traffic so /metrics stays at a
+            # flat-line series rather than an absent one. See the init
+            # comment for the rationale on why ``num_requests_processed``
+            # alone is insufficient.
+            "num_requests_cancelled": self.num_requests_cancelled,
+            "num_requests_cancelled_via_disconnect": (
+                self.num_requests_cancelled_via_disconnect
+            ),
         }
         # Include Metal memory stats
         try:
@@ -4147,6 +4222,14 @@ class Scheduler:
         """Reset the scheduler state."""
         # Drain any pending deferred aborts
         self._pending_abort_ids.clear()
+        # M-01: drop the disconnect-cause de-dup set alongside the
+        # pending-aborts set. The counters themselves
+        # (``num_requests_cancelled`` /
+        # ``num_requests_cancelled_via_disconnect``) are NOT zeroed —
+        # they're lifetime-cumulative Prometheus counters and resetting
+        # them would make /metrics report a non-monotonic step change
+        # to scrapers.
+        self._disconnect_abort_ids.clear()
 
         # Abort all requests directly (reset is synchronous)
         for request_id in list(self.requests.keys()):
