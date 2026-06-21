@@ -452,29 +452,56 @@ class EngineCore:
                             active_mem = mx.get_active_memory()
                             if active_mem > _memory_pressure_threshold:
                                 mx.clear_cache()
-                                # D-METAL-PFX: ``clear_cache`` only
-                                # drops the free-pool; live prefix-cache
-                                # entries still pin their KV slabs.
-                                # When pressure persists despite a
-                                # cache flush (the single-32k-prefill
-                                # cliff repro), evict prefix-cache
-                                # entries LRU until pressure drops or
-                                # we hit the per-tick bound. The
-                                # scheduler's
-                                # ``evict_prefix_cache_under_pressure``
-                                # is internally bounded so we cannot
-                                # thrash here.
-                                try:
-                                    self.scheduler.evict_prefix_cache_under_pressure()
-                                except Exception:
-                                    pass
                                 logger.warning(
                                     f"[Memory pressure] {active_mem / 1e9:.1f}GB > "
                                     f"{_memory_pressure_threshold / 1e9:.0f}GB threshold, "
-                                    f"forced cache clear + prefix-cache pressure evict"
+                                    f"forced cache clear"
                                 )
                         except Exception:
                             pass
+
+                        # D-METAL-PFX: pressure-driven prefix-cache
+                        # eviction must run INDEPENDENTLY of the legacy
+                        # ``_memory_pressure_threshold`` gate above.
+                        # That threshold is computed once at startup
+                        # from ``gpu_memory_utilization + 0.05`` (capped
+                        # at 0.99), while the scheduler's own
+                        # ``metal_pressure_evict_fraction`` (default
+                        # 0.9) can sit BELOW the legacy threshold —
+                        # particularly on low caps like
+                        # ``--gpu-memory-utilization 0.45`` where
+                        # 0.9 × cap is far below the legacy 0.5 ×
+                        # max_recommended check. If we only called the
+                        # scheduler tick from inside the
+                        # ``active_mem > _memory_pressure_threshold``
+                        # branch, the new D-METAL-PFX recovery loop
+                        # would never fire on exactly the configuration
+                        # the bug repro flagged (codex round 1
+                        # BLOCKING). The scheduler's own
+                        # ``evict_prefix_cache_under_pressure`` is
+                        # short-circuited when pressure is below its
+                        # threshold AND when the cap is disabled
+                        # (default), so calling it every 16 steps is
+                        # cheap on configurations that don't need it.
+                        try:
+                            self.scheduler.evict_prefix_cache_under_pressure()
+                        except Exception as evict_exc:
+                            # Codex round 1 NIT: do not silently swallow
+                            # — a broken cache variant must surface in
+                            # the engine log so operators can correlate
+                            # a stalled D-METAL-PFX series with the
+                            # underlying error. Rate-limited to once
+                            # per process (``_pressure_evict_error_logged``)
+                            # so a persistent failure doesn't flood at
+                            # 16-step cadence.
+                            if not getattr(self, "_pressure_evict_error_logged", False):
+                                self._pressure_evict_error_logged = True
+                                logger.warning(
+                                    "[D-METAL-PFX] prefix-cache pressure "
+                                    "eviction raised; further failures "
+                                    "will be suppressed: %r",
+                                    evict_exc,
+                                )
 
                     # Fast path: distribute outputs to collectors
                     outputs = output.outputs

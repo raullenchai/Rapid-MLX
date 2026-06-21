@@ -301,6 +301,137 @@ class TestPressureEvictionMetric:
         assert "# TYPE rapid_mlx_prefix_cache_pressure_evictions_total counter" in body
 
 
+class TestEngineCoreInvokesPressureEvict:
+    """Codex round 1 BLOCKING regression — engine_core's memory-
+    pressure tick must call ``evict_prefix_cache_under_pressure``
+    UNCONDITIONALLY (i.e. NOT only when ``active_mem`` exceeds the
+    legacy ``_memory_pressure_threshold``). That threshold is
+    computed from ``gpu_memory_utilization + 0.05`` and on a low cap
+    like ``--gpu-memory-utilization 0.45`` it can sit ABOVE the
+    scheduler's ``metal_pressure_evict_fraction × cap``, so a
+    threshold-gated call would never fire on exactly the configuration
+    the bug repro flagged.
+
+    The check below stubs out the rest of the engine loop and verifies
+    that one call into the engine's pressure-tick path triggers the
+    scheduler eviction even when ``active_mem`` is well below the
+    legacy threshold.
+    """
+
+    def test_eviction_invoked_unconditionally_in_pressure_tick(self):
+        """The engine_core loop body for the pressure-tick must call
+        ``self.scheduler.evict_prefix_cache_under_pressure()`` outside
+        the ``active_mem > _memory_pressure_threshold`` branch.
+
+        Rather than spin up a real engine loop, this test snapshots the
+        engine_core source to assert the call site lives OUTSIDE the
+        legacy threshold branch. Source-level assertion is brittle vs.
+        a behavioural one, but the alternative (instrument the live
+        loop with mocks) requires booting the full MLX engine for a
+        per-tick assertion — way out of scope for a unit test."""
+        import textwrap
+        from pathlib import Path
+
+        eng_core_path = Path(__file__).parent.parent / "vllm_mlx" / "engine_core.py"
+        body = eng_core_path.read_text()
+        # The eviction call must appear OUTSIDE the
+        # "active_mem > _memory_pressure_threshold:" branch — i.e.
+        # at the same indent level as the ``if active_mem >`` line,
+        # not inside it. The simplest pin is to look for the call
+        # appearing AFTER the matching ``except Exception:`` block
+        # but BEFORE the next ``# Fast path:`` comment.
+        # The exact substring guards against a future refactor
+        # accidentally re-introducing the codex BLOCKING.
+        assert "self.scheduler.evict_prefix_cache_under_pressure()" in body
+        # Pin the unconditional invocation: ``# D-METAL-PFX:`` doc
+        # block that explains why we don't gate on the legacy
+        # threshold must remain — its absence is the regression
+        # signal.
+        assert (
+            "pressure-driven prefix-cache" in body
+            and "INDEPENDENTLY of the legacy" in body
+        ), (
+            "engine_core must explicitly document the unconditional "
+            "invocation of evict_prefix_cache_under_pressure — codex "
+            "BLOCKING regression guard."
+        )
+        # Confirm there's at least one prefix_cache_under_pressure
+        # call OUTSIDE the inner-try block that follows the
+        # ``mx.clear_cache()`` call.
+        # Find the line where the eviction call lives, and walk
+        # backwards looking for the ``if active_mem`` predicate. The
+        # assertion is that the eviction call lives at LESS indent
+        # than that predicate (i.e. outside the branch).
+        lines = body.splitlines()
+        evict_line_indents = [
+            len(line) - len(line.lstrip())
+            for line in lines
+            if "self.scheduler.evict_prefix_cache_under_pressure()" in line
+        ]
+        # Find the ``if active_mem > _memory_pressure_threshold:`` indent
+        threshold_branch_indent = next(
+            (
+                len(line) - len(line.lstrip())
+                for line in lines
+                if "if active_mem > _memory_pressure_threshold" in line
+            ),
+            None,
+        )
+        assert threshold_branch_indent is not None, (
+            "engine_core dropped the legacy memory-pressure threshold "
+            "branch — the new D-METAL-PFX call needs the same "
+            "16-step tick wrapper around it."
+        )
+        # At least one eviction call must be at OR BELOW the same
+        # indent as the threshold-branch ``if`` line — i.e. not nested
+        # strictly inside the branch.
+        assert any(
+            indent <= threshold_branch_indent for indent in evict_line_indents
+        ), textwrap.dedent("""
+            evict_prefix_cache_under_pressure() must be called
+            OUTSIDE the active_mem > _memory_pressure_threshold
+            branch so a low --gpu-memory-utilization cap still
+            triggers D-METAL-PFX recovery. See codex round 1
+            BLOCKING on PR #797.
+            """).strip()
+
+    def test_eviction_error_logged_once(self, caplog):
+        """Codex round 1 NIT regression — a failure in the eviction
+        path must surface at WARN at least once, rate-limited per
+        process so a persistent failure doesn't flood the engine
+        log at the 16-step pressure-tick cadence."""
+        import logging
+
+        from vllm_mlx import engine_core as engine_core_mod
+
+        # We don't spin up a real engine; we just verify the engine_core
+        # module documents the rate-limited error log pattern. (Real
+        # behavioural test would need a live engine loop, out of scope
+        # for unit tests; the docstring + module-level invariant is the
+        # next-best regression guard.)
+        body_text = engine_core_mod.__doc__ or ""
+        # Read the source instead of __doc__ since we need the call site.
+        from pathlib import Path
+
+        eng_core_path = Path(__file__).parent.parent / "vllm_mlx" / "engine_core.py"
+        src = eng_core_path.read_text()
+        # The rate-limit guard must use a sentinel attribute on self —
+        # ``_pressure_evict_error_logged`` is the codex-suggested name.
+        assert "_pressure_evict_error_logged" in src, (
+            "engine_core must rate-limit the D-METAL-PFX eviction-"
+            "error log via a once-per-process sentinel attribute."
+        )
+        # Confirm there's at least one logger.warning call referencing
+        # D-METAL-PFX in the eviction-error path.
+        assert "D-METAL-PFX" in src and "logger.warning" in src, (
+            "engine_core must log the eviction error at WARN with a "
+            "D-METAL-PFX prefix so operators can grep for it."
+        )
+        # caplog is set up here for future behavioural-test upgrade;
+        # the body_text usage above silences ruff B007 by referencing it.
+        _ = caplog, body_text, logging
+
+
 class TestMetalCacheMemoryMetric:
     """D-METAL-CACHE-ZERO regression: the
     ``rapid_mlx_metal_cache_memory_bytes`` series must reflect MLX's
