@@ -434,12 +434,28 @@ async def _non_stream(
     # that one call. ``_wait_with_disconnect`` then handles the
     # actual await with its own timeout/disconnect semantics intact.
     if _strict_schema and engine.supports_guided_generation:
+        # Codex r5 BLOCKING: ``chat_kwargs`` is the merged
+        # ``_resolved_sampling_kwargs`` + tools/thinking flags blob.
+        # If any upstream resolver ever surfaces a ``raise_on_failure``
+        # key (e.g. a future ``extra_body`` passthrough, or an
+        # accidental sampling-param alias), the explicit
+        # ``raise_on_failure=True`` below would TypeError with
+        # "got multiple values for keyword argument" BEFORE
+        # constrained decoding ran — and the outer ``except Exception``
+        # would translate that operator-side wiring bug into a
+        # 502 ``strict_schema_violation`` (server contract-breach
+        # shape), masking the root cause from the client and from
+        # logs. Sanitize the kwargs dict here so the strict gate
+        # OWNS the value and no caller can collide with it.
+        _guided_kwargs = {
+            k: v for k, v in chat_kwargs.items() if k != "raise_on_failure"
+        }
         try:
             _guided_coro = engine.generate_with_schema(
                 messages=messages,
                 json_schema=_strict_schema,
                 raise_on_failure=True,
-                **chat_kwargs,
+                **_guided_kwargs,
             )
         except HTTPException:
             raise

@@ -2712,12 +2712,22 @@ async def stream_chat_completion_guided(
         # we would emit one giant content chunk at the end —
         # defeating SSE for clients/proxies that rely on early chunks
         # (codex Round 2 finding).
+        # Codex r5 BLOCKING parity: prevent a kwargs collision with
+        # the explicit ``raise_on_failure=True`` below. If ``kwargs``
+        # ever contained ``raise_on_failure`` it would TypeError
+        # ("got multiple values for keyword argument") before
+        # constrained decoding ran, and the outer ``except Exception``
+        # arm would mistranslate that operator-wiring bug as a
+        # guided-generation failure (silent fallback to unconstrained
+        # streaming, which IS the case strict callers cannot
+        # tolerate). Sanitize so the strict caller OWNS the value.
+        _guided_kwargs = {k: v for k, v in kwargs.items() if k != "raise_on_failure"}
         try:
             output = await engine.generate_with_schema(
                 messages=messages,
                 json_schema=json_schema,
                 raise_on_failure=True,
-                **kwargs,
+                **_guided_kwargs,
             )
         except Exception as guided_err:
             logger.warning(

@@ -943,11 +943,25 @@ def check_schema_validity(json_schema: dict[str, Any]) -> tuple[bool, str | None
     Returns ``(ok, error_message)``; the message is a short
     human-readable summary the route uses in the 400 envelope.
     """
-    try:
-        from jsonschema import Draft7Validator
+    # Codex r5 NIT: narrow the catch to ``jsonschema.SchemaError``
+    # (plus ``TypeError`` for non-mapping inputs that
+    # ``check_schema`` rejects with TypeError, still client-side
+    # malformed input). An environment/import failure in
+    # ``jsonschema`` is a SERVER dependency failure and must
+    # surface as 500 — telling a client "your schema is invalid:
+    # <ModuleNotFoundError>" would mislead them into rewriting
+    # a perfectly valid schema. ``jsonschema`` is a hard
+    # dependency of this project (already used by
+    # ``validate_output_against_schema``), so we let any
+    # ImportError propagate.
+    from jsonschema import Draft7Validator
+    from jsonschema.exceptions import SchemaError
 
+    try:
         Draft7Validator.check_schema(json_schema)
-    except Exception as exc:
+    except SchemaError as exc:
+        return False, f"{type(exc).__name__}: {exc}"
+    except TypeError as exc:
         return False, f"{type(exc).__name__}: {exc}"
     return True, None
 

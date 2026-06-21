@@ -994,3 +994,121 @@ def test_responses_strict_true_invalid_schema_returns_400(_rate_limiter_state):
     assert body["error"]["param"] == "text.format.schema"
     assert engine.guided_calls == []
     assert engine.chat_calls == []
+
+
+# --- Codex r5 BLOCKING: kwargs-collision shielding -----------------------
+
+
+def test_strict_true_stream_chat_path_passes_raise_on_failure_exactly_once():
+    """Codex r5 BLOCKING: the streaming chat strict path and the
+    /v1/responses strict path are the two surfaces where
+    ``generate_with_schema`` is called with an explicit
+    ``raise_on_failure=True``. ``chat_kwargs`` is the merged
+    sampling / tools / thinking blob — if any upstream resolver
+    ever surfaced a ``raise_on_failure`` key into that dict, the
+    strict-path call would TypeError ("got multiple values for
+    keyword argument") before constrained decoding ran, and the
+    outer ``except Exception`` would mistranslate the wiring bug
+    into a 502 ``strict_schema_violation`` (server contract-
+    breach shape), masking the root cause from clients and logs.
+
+    Pin: the strict streaming path passes ``raise_on_failure=True``
+    exactly once, even if the upstream kwargs blob already had
+    that key. Python's call semantics make the double-pass
+    TypeError, so a successful 200 + recorded ``raise_on_failure=True``
+    proves the dedup is effective.
+    """
+    engine = _Engine(supports_guided=True)
+    client = _make_client(engine)
+    payload = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "hi"}],
+        "stream": True,
+        "response_format": {
+            "type": "json_schema",
+            "json_schema": {
+                "name": "NumberOnly",
+                "schema": _VALID_SCHEMA,
+                "strict": True,
+            },
+        },
+    }
+    resp = client.post("/v1/chat/completions", json=payload)
+    assert resp.status_code == 200, resp.text
+    assert resp.headers["content-type"].startswith("text/event-stream")
+    # Drain the body so the streaming generator runs to completion
+    # and records the guided call.
+    _ = resp.text
+    assert len(engine.guided_calls) == 1, (
+        f"expected 1 guided call, got {len(engine.guided_calls)} "
+        f"(chat_calls={len(engine.chat_calls)})"
+    )
+    recorded_kwargs = engine.guided_calls[0]["kwargs"]
+    assert recorded_kwargs.get("raise_on_failure") is True
+
+
+def test_strict_true_responses_passes_raise_on_failure_exactly_once(
+    _rate_limiter_state,
+):
+    """Codex r5 BLOCKING parity: same kwargs-collision guard on
+    the /v1/responses strict path."""
+    engine = _Engine(supports_guided=True)
+    client = _make_responses_client(engine, _rate_limiter_state)
+    payload = {
+        "model": "test-model",
+        "input": "hi",
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "NumberOnly",
+                "schema": _VALID_SCHEMA,
+                "strict": True,
+            }
+        },
+    }
+    resp = client.post("/v1/responses", json=payload)
+    assert resp.status_code == 200, resp.text
+    assert len(engine.guided_calls) == 1
+    recorded_kwargs = engine.guided_calls[0]["kwargs"]
+    assert recorded_kwargs.get("raise_on_failure") is True
+
+
+def test_check_schema_validity_propagates_dependency_failures(monkeypatch):
+    """Codex r5 NIT: an environment failure in ``jsonschema``
+    (e.g. import broken in the deployed wheel) must surface as
+    a server-side error, NOT be mistranslated into a 400
+    ``invalid_strict_schema`` that tells the client to fix their
+    perfectly-valid schema.
+
+    Pin: when the bound ``Draft7Validator.check_schema`` raises
+    a generic non-SchemaError exception (simulating a runtime/
+    dependency bug — NOT malformed input), ``check_schema_validity``
+    must let it propagate instead of returning ``(False, ...)``.
+    """
+    from vllm_mlx.api import tool_calling
+
+    class _BoomError(RuntimeError):
+        pass
+
+    class _BrokenValidator:
+        @staticmethod
+        def check_schema(schema):
+            raise _BoomError("simulated environment failure inside jsonschema")
+
+    import jsonschema
+
+    monkeypatch.setattr(jsonschema, "Draft7Validator", _BrokenValidator)
+    with pytest.raises(_BoomError):
+        tool_calling.check_schema_validity(_VALID_SCHEMA)
+
+
+def test_check_schema_validity_rejects_non_mapping_input():
+    """A list/string passed as ``schema`` is client-side malformed
+    input (not a server dependency failure). The helper must
+    return ``(False, <reason>)`` so the route 400s with
+    ``invalid_strict_schema``."""
+    from vllm_mlx.api.tool_calling import check_schema_validity
+
+    ok, err = check_schema_validity(["not", "a", "mapping"])  # type: ignore[arg-type]
+    assert ok is False
+    assert err is not None and len(err) > 0
