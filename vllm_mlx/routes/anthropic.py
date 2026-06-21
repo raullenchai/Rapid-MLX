@@ -360,11 +360,15 @@ async def create_anthropic_message(
                         )
                     )
                     if _block_type in ("image", "document"):
+                        # Name the exact block type so client errors point
+                        # at the offending block, not a generic union of
+                        # everything the guard could in principle reject
+                        # (codex r1 NIT).
                         raise HTTPException(
                             status_code=400,
                             detail=(
                                 f"Model '{cfg_pre.model_name}' does not support "
-                                "image or document inputs."
+                                f"{_block_type} inputs."
                             ),
                         )
 

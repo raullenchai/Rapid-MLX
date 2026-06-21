@@ -63,10 +63,34 @@ class _TextOnlyEngine:
 
 
 class _VisionEngine(_TextOnlyEngine):
-    """Same stub but advertised as MLLM. Should accept image blocks
-    (passed through to the downstream multimodal pipeline)."""
+    """Same stub but advertised as MLLM. Should accept image blocks —
+    the route must propagate the request to the engine, not 400 on it.
+
+    Records every ``chat()`` invocation so the test can prove the
+    request actually reached the engine instead of being stopped at the
+    new capability gate (codex r1 BLOCKING: the previous "not 400"
+    check would silently pass if the route stopped delegating for some
+    other reason; recording the chat call pins the contract at the
+    route boundary, where this guard lives).
+    """
 
     is_mllm = True
+
+    def __init__(self):
+        self.chat_calls = []
+
+    async def chat(self, messages, **kwargs):
+        self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+        return GenerationOutput(
+            text="ok",
+            new_text="ok",
+            tokens=[1],
+            prompt_tokens=1,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="stop",
+            channel=None,
+        )
 
 
 def _make_client(engine, *, include_anthropic: bool = True) -> TestClient:
@@ -126,7 +150,10 @@ def test_anthropic_text_only_model_rejects_image_block():
     assert resp.status_code == 400, resp.text
     detail = resp.json()["detail"]
     assert "text-only-model" in detail
-    assert "image" in detail or "document" in detail
+    # Codex r1 NIT: the error must name the actual offending block
+    # type, not a union; "image" should appear when the offender was an
+    # image block.
+    assert "image" in detail and "document" not in detail
 
 
 def test_anthropic_text_only_model_rejects_document_block():
@@ -158,13 +185,20 @@ def test_anthropic_text_only_model_rejects_document_block():
     )
     assert resp.status_code == 400, resp.text
     detail = resp.json()["detail"]
-    assert "document" in detail
+    # Codex r1 NIT: document-only request must name "document", not
+    # "image or document".
+    assert "document" in detail and "image" not in detail
 
 
 def test_anthropic_vision_model_accepts_image_block():
-    """Sanity check: VLM-capable engine must NOT see a 400 — the route
-    must propagate the image block downstream."""
-    client = _make_client(_VisionEngine())
+    """VLM-capable engine must NOT be 400'd by the new capability gate;
+    the request must reach ``engine.chat`` so the multimodal pipeline
+    has a chance to process the image (codex r1 BLOCKING — earlier
+    version only checked the failure-mode string, which gave a false
+    sense of safety).
+    """
+    engine = _VisionEngine()
+    client = _make_client(engine)
     resp = client.post(
         "/v1/messages",
         json={
@@ -188,13 +222,21 @@ def test_anthropic_vision_model_accepts_image_block():
             ],
         },
     )
-    # We do not assert 200 strictly — downstream multimodal pipeline
-    # may itself reject the stub payload — but the route-level
-    # capability gate must NOT fire.
+    # 1) The capability gate must not fire — if anything 400s, it's
+    #    NOT this guard.
     if resp.status_code == 400:
         assert "does not support" not in resp.json().get("detail", ""), (
             "VLM-capable engine wrongly triggered the text-only media gate"
         )
+    # 2) The route must have delegated to the engine. If the route
+    #    short-circuited (e.g. silently dropped the request) the
+    #    chat_calls list stays empty — which is exactly the silent-drop
+    #    shape M-16 reported on the bug side.
+    assert engine.chat_calls, (
+        "route did not call engine.chat() — the request was silently "
+        "absorbed somewhere upstream of inference"
+    )
+    assert resp.status_code == 200, resp.text
 
 
 def test_anthropic_text_only_model_accepts_text_only_content():
