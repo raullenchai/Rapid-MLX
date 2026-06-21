@@ -526,6 +526,25 @@ def test_disconnect_sub_counter_dedupes_per_request_id():
     assert scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 1
 
 
+def test_disconnect_sub_counter_silent_on_id_never_accepted_as_cancel():
+    """Codex r7 NIT #3: ``record_disconnect_abort`` must reject ids
+    that were never accepted by ``abort_request``, so the dashboard
+    invariant ``via_disconnect_total <= cancelled_total`` holds by
+    construction even on programmer error.
+
+    Pre-r7 the method incremented the sub-counter for any non-empty
+    id, so a buggy caller could push ``via_disconnect`` above
+    ``cancelled_total``. The lifetime ledger gate catches it.
+    """
+    scheduler = _make_scheduler()
+    # No ``abort_request("req-bogus")`` call — the id was never
+    # admitted into the lifetime ledger ``_cancelled_request_ids``.
+    scheduler.record_disconnect_abort("req-bogus")
+    stats = scheduler.get_stats()
+    assert stats["num_requests_cancelled"] == 0
+    assert stats["num_requests_cancelled_via_disconnect"] == 0
+
+
 def test_disconnect_sub_counter_silent_on_empty_request_id():
     """Empty string / None ``request_id`` is a no-op, not a crash.
 
@@ -954,6 +973,55 @@ async def test_force_abort_attribution_walks_production_batched_engine_shape():
     # But the attribution MUST still have landed — that's the bug
     # we're guarding against.
     assert engine._engine.engine.scheduler.disconnect_records == ["req-prod-shape"]
+
+
+def test_attribution_resolver_honors_is_mllm_before_direct_scheduler():
+    """Codex r7 BLOCKING #2: a dual-shaped engine exposing BOTH
+    ``engine.scheduler`` (text-path leftover) AND ``_mllm_scheduler``
+    (MLLM-path active) with ``_is_mllm=True`` must attribute the
+    disconnect to the MLLM scheduler — NOT the direct
+    ``engine.scheduler``.
+
+    Pre-r7-fix the resolver checked ``engine.scheduler`` FIRST and
+    short-circuited, mis-attributing every MLLM disconnect to the
+    text scheduler. The fix honors ``_is_mllm`` first; direct
+    ``engine.scheduler`` is only consulted as a fallback when the
+    flag is absent entirely.
+    """
+    from vllm_mlx.service.helpers import _force_abort_request
+
+    class _SyncSched:
+        def __init__(self, name):
+            self.name = name
+            self.disconnect_records: list[str] = []
+
+        def abort_request(self, request_id: str) -> bool:
+            return True
+
+        def record_disconnect_abort(self, request_id: str) -> None:
+            self.disconnect_records.append(request_id)
+
+    class _DualShapedEngine:
+        """Both ``.scheduler`` (text leftover, e.g. a stale attribute
+        from a prior backend init) AND ``_mllm_scheduler`` populated;
+        the active backend is MLLM per ``_is_mllm=True``.
+        """
+
+        def __init__(self):
+            self.scheduler = _SyncSched("text-leftover")
+            self._mllm_scheduler = _SyncSched("mllm-active")
+            self._is_mllm = True
+
+        async def abort_request(self, request_id: str) -> bool:
+            return True
+
+    engine = _DualShapedEngine()
+    _force_abort_request(engine, ["req-mllm-active"])
+
+    # The MLLM scheduler MUST own the attribution.
+    assert engine._mllm_scheduler.disconnect_records == ["req-mllm-active"]
+    # The text-leftover scheduler MUST NOT be touched.
+    assert engine.scheduler.disconnect_records == []
 
 
 def test_force_abort_attribution_walks_active_backend():

@@ -3189,6 +3189,18 @@ class Scheduler:
         per call, negligible against the existing disconnect-path
         latency.
 
+        Codex r7 NIT #3: validate against ``_cancelled_request_ids``
+        BEFORE incrementing so a future caller (or a bug) that
+        records a disconnect for an id the scheduler never accepted
+        as a cancel cannot push the ``via_disconnect`` sub-counter
+        above the total. The contract is now "disconnect
+        attribution is only valid for ids the scheduler ALSO
+        accepted via ``abort_request``"; ids not in the lifetime
+        ledger silently no-op. This guarantees the dashboard
+        invariant ``via_disconnect_total <= cancelled_total`` holds
+        even on programmer error in callers that record without
+        first hitting the public abort path.
+
         Safe to call from any thread, never raises. Empty / None ids
         are no-ops.
         """
@@ -3196,6 +3208,13 @@ class Scheduler:
             if not request_id:
                 return
             with self._cancel_counter_lock:
+                # Codex r7 NIT #3: gate on the lifetime ledger so
+                # ``via_disconnect_total <= cancelled_total`` holds
+                # by construction. Callers MUST hit
+                # ``abort_request`` first; this method only
+                # attributes a previously-accepted abort.
+                if request_id not in self._cancelled_request_ids:
+                    return
                 if request_id not in self._disconnect_abort_ids:
                     self._disconnect_abort_ids.add(request_id)
                     self.num_requests_cancelled_via_disconnect += 1

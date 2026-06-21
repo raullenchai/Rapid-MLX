@@ -483,11 +483,17 @@ class MLLMScheduler:
         /metrics. See that method's docstring for the once-per-request
         semantics, lock-based atomicity contract (codex r1 BLOCKING
         #5), and thread-safety guarantees.
+
+        Codex r7 NIT #3: gate on ``_cancelled_request_ids`` so the
+        ``via_disconnect_total <= cancelled_total`` dashboard
+        invariant holds by construction even on programmer error.
         """
         try:
             if not request_id:
                 return
             with self._cancel_counter_lock:
+                if request_id not in self._cancelled_request_ids:
+                    return
                 if request_id not in self._disconnect_abort_ids:
                     self._disconnect_abort_ids.add(request_id)
                     self.num_requests_cancelled_via_disconnect += 1
@@ -538,14 +544,32 @@ class MLLMScheduler:
         if request is not None:
             request.status = RequestStatus.FINISHED_ABORTED
         self.finished_req_ids.add(request_id)
+        # M-01 codex r7 BLOCKING #1 analysis: MLLM's
+        # ``_do_abort_request`` does ``self.requests.pop`` itself
+        # (next line), so the active maps are ALREADY clean by the
+        # time we hit the dedupe-ledger discard below. Any
+        # concurrent ``abort_request`` racing through the inside-
+        # lock predicate (codex r6 fix) would observe
+        # ``request_id not in self.requests`` and return False
+        # before touching the ledger — so the discard
+        # placement here is race-safe. We keep it INSIDE
+        # ``_do_abort_request`` (rather than mirroring the text
+        # path's ``remove_finished_request`` indirection) because
+        # MLLM's lifecycle is intentionally in-line in this
+        # method, and the multiple pop sites (lines 805, 1216,
+        # 969) would otherwise need parallel discards. The
+        # text scheduler's ``remove_finished_request`` is the
+        # ONLY external-to-_do_abort_request pop boundary on
+        # that path; MLLM's analog doesn't exist as a single
+        # external entry point.
         self.requests.pop(request_id, None)
 
         self._detokenizer_pool.pop(request_id, None)
 
         # M-01 codex r3 BLOCKING #2: discard the active-lifetime
         # dedupe ledgers so request_id reuse for a NEW distinct
-        # request counts correctly. See the same block in
-        # ``Scheduler._do_abort_request`` for the full rationale.
+        # request counts correctly. Atomic against the inside-
+        # lock predicate in ``abort_request`` (codex r6 fix).
         with self._cancel_counter_lock:
             self._cancelled_request_ids.discard(request_id)
             self._disconnect_abort_ids.discard(request_id)

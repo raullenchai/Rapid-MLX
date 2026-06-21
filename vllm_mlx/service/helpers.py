@@ -2040,31 +2040,33 @@ def _resolve_disconnect_abort_recorder(engine):
     sub-counter, the total counter on the route side still defaults
     to zero).
     """
-    # 1) Direct ``engine.scheduler`` — plain engines, tests, fakes.
-    direct_scheduler = getattr(engine, "scheduler", None)
-    if direct_scheduler is not None:
-        recorder = getattr(direct_scheduler, "record_disconnect_abort", None)
-        if recorder is not None:
-            return recorder
-    # 2) Active-path gated walk on BatchedEngine.
-    is_mllm_active = bool(getattr(engine, "_is_mllm", False))
-    if is_mllm_active:
+    # M-01 codex r7 BLOCKING #2: when ``_is_mllm`` is set we MUST
+    # honor it before falling back to a direct ``engine.scheduler``
+    # — otherwise a dual-shaped engine (one that exposes
+    # ``.scheduler`` for the text path AND ``_mllm_scheduler`` for
+    # the MLLM path, depending on which backend is active) will
+    # mis-attribute disconnects to the text scheduler when the
+    # MLLM path is the live one. The check pattern is the same as
+    # the abort resolver's codex r2 BLOCKING #1 fix — active-path
+    # gate first, plain-engine fallback last.
+    is_mllm_flag = getattr(engine, "_is_mllm", None)
+    if is_mllm_flag is True:
         mllm = getattr(engine, "_mllm_scheduler", None)
         if mllm is not None:
             recorder = getattr(mllm, "record_disconnect_abort", None)
             if recorder is not None:
                 return recorder
-    else:
+    elif is_mllm_flag is False:
         inner = getattr(engine, "_engine", None)
         if inner is not None:
-            # 2a) ``engine._engine.scheduler`` — matches the abort
+            # ``engine._engine.scheduler`` — matches the abort
             # resolver shape (used by every test stub today).
             inner_sched = getattr(inner, "scheduler", None)
             if inner_sched is not None:
                 recorder = getattr(inner_sched, "record_disconnect_abort", None)
                 if recorder is not None:
                     return recorder
-            # 2b) ``engine._engine.engine.scheduler`` — the production
+            # ``engine._engine.engine.scheduler`` — the production
             # ``BatchedEngine`` over ``AsyncEngineCore`` shape. The
             # extra hop is where AsyncEngineCore wraps EngineCore.
             inner_engine = getattr(inner, "engine", None)
@@ -2074,6 +2076,15 @@ def _resolve_disconnect_abort_recorder(engine):
                     recorder = getattr(deep_sched, "record_disconnect_abort", None)
                     if recorder is not None:
                         return recorder
+    # Plain-engine fallback: only used when ``_is_mllm`` is absent
+    # (older / external engine shapes that pre-date BatchedEngine).
+    # Distinct from ``is_mllm_flag is False`` above, which means
+    # "explicitly text-active on a BatchedEngine".
+    direct_scheduler = getattr(engine, "scheduler", None)
+    if direct_scheduler is not None:
+        recorder = getattr(direct_scheduler, "record_disconnect_abort", None)
+        if recorder is not None:
+            return recorder
     return None
 
 
