@@ -318,13 +318,32 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # thought trace into ``content`` for whitespace-padded
             # explicit-opener streams — exactly the D-STOP-THINK
             # shape this branch exists to suppress.
+            #
+            # Codex round-7 BLOCKING fix (PR #799): the previous
+            # implementation discarded the whitespace prefix
+            # entirely (``stripped_text[len(self.start_token):]``
+            # threw away the bytes before ``<think>``). A response
+            # that legitimately starts with `` \n<think>...`` would
+            # lose the leading newline+space from both channels —
+            # those bytes are user-visible content that the
+            # streaming loop already shipped. Concatenate the
+            # preserved prefix back onto the cleaned trace so
+            # finalize doesn't drop user-visible bytes when it
+            # routes the saw-prefix branch to ``reasoning``.
             stripped_text = accumulated_text.lstrip()
             saw_think_prefix = stripped_text.startswith(self.start_token)
-            cleaned = (
-                stripped_text[len(self.start_token) :]
-                if saw_think_prefix
-                else accumulated_text
-            )
+            if saw_think_prefix:
+                _prefix_ws = accumulated_text[
+                    : len(accumulated_text) - len(stripped_text)
+                ]
+                _post_open = stripped_text[len(self.start_token) :]
+                # Preserve the original whitespace prefix verbatim
+                # so we don't silently drop user-visible bytes.
+                # Concatenating in the same channel keeps the
+                # parser's wire-equivalence invariant intact.
+                cleaned = _prefix_ws + _post_open
+            else:
+                cleaned = accumulated_text
             if not cleaned:
                 return None
             if saw_think_prefix:

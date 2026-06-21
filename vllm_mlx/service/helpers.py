@@ -747,11 +747,36 @@ def _rescue_silent_drop_from_reasoning(
     # for the StreamingThinkRouter). Symmetric with the
     # parser-level ``finalize_streaming`` AND-of-signals
     # discriminator.
+    # Codex round-7 BLOCKING (PR #799): the previous formulation
+    # treated EVERY ``finish_reason="stop"`` with an unclosed
+    # ``<think>`` in raw_text as truncation evidence. But ``stop``
+    # is ALSO the natural-EOS signal, so a model that voluntarily
+    # ends after emitting ``<think>just a thought`` (no closing
+    # ``</think>``, no user stop fired) is NOT truncated — the
+    # turn legitimately ended with an in-progress thought. Under
+    # the old gate, the #569 rescue would NOT fire and the user
+    # would get a silently empty assistant message. Fix: for the
+    # explicit-opener arm, require ``matched_stop is not None``
+    # under ``finish_reason="stop"`` so only ENGINE-initiated stops
+    # (user stop string fired) suppress the rescue; natural EOS
+    # falls through to the rescue path. ``finish_reason="length"``
+    # stays unconditional (length is unambiguously truncation).
     truncated_mid_think = (
-        # Explicit-opener: raw_text carries unclosed ``<think>``.
-        # Symmetric across stop/length (trim cause is identical).
+        # Explicit-opener under length: engine ran out of budget
+        # before ``</think>``. Unconditional — length is always
+        # truncation.
         (
-            bool(finish_reason in ("length", "stop"))
+            finish_reason == "length"
+            and raw_text
+            and raw_text.lstrip().startswith("<think>")
+            and "</think>" not in raw_text
+        )
+        # Explicit-opener under stop: only when a user-supplied
+        # stop string actually fired. Without ``matched_stop`` the
+        # "stop" is natural EOS and the model finished voluntarily.
+        or (
+            finish_reason == "stop"
+            and matched_stop is not None
             and raw_text
             and raw_text.lstrip().startswith("<think>")
             and "</think>" not in raw_text

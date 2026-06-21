@@ -173,6 +173,48 @@ class TestStopMidThinkExplicitOpener:
         assert result.reasoning is not None
         assert "Let me think" in result.reasoning
 
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [("qwen3", Qwen3ReasoningParser)],
+    )
+    def test_whitespace_prefix_before_think_opener_preserved(self, name, parser_cls):
+        """Codex round-7 BLOCKING fix (PR #799): the previous
+        ``stripped_text[len(self.start_token):]`` extraction discarded
+        the whitespace prefix verbatim, so a response that legitimately
+        opens with `` \\n<think>...`` lost its leading whitespace bytes
+        from BOTH channels at finalize time. The bytes were user-visible
+        — the streaming loop had already shipped them — so the parser
+        contract violated wire-equivalence on the finalize correction.
+
+        Post-fix: the leading whitespace prefix is preserved inside the
+        reasoning emission. The route consumer drops ``final_msg.reasoning``
+        from the wire anyway (only ``content`` flows downstream on
+        Anthropic / Responses) so this is purely a parser-contract
+        invariant — but it guarantees no byte is silently dropped in
+        the saw-prefix branch.
+        """
+        parser = parser_cls()
+        # Mimic the codex repro: leading newline+space before the opener.
+        prefix = " \n"
+        body = "Let me think about 5+7."
+        accumulated = f"{prefix}<think>{body}"
+        result = parser.finalize_streaming(accumulated)
+        assert result is not None
+        assert result.content is None, (
+            f"[{name}] D-STOP-THINK regression — whitespace-prefixed "
+            f"explicit opener leaked into content: {result.content!r}"
+        )
+        assert result.reasoning is not None
+        # The whitespace prefix MUST survive into the emitted reasoning
+        # payload — otherwise the parser is silently dropping user-
+        # visible bytes (codex r7 BLOCKING).
+        assert result.reasoning.startswith(prefix), (
+            f"[{name}] codex r7 BLOCKING regression — leading whitespace "
+            f"prefix dropped from saw-prefix branch: "
+            f"reasoning={result.reasoning!r}"
+        )
+        assert body in result.reasoning
+
 
 class TestStopMidThinkNoOpener:
     """``stop`` matches mid-thought WITHOUT an explicit ``<think>``
