@@ -284,6 +284,54 @@ class TestMalformedGraceful:
         assert len(result.tool_calls) == 2
         assert [c["name"] for c in result.tool_calls] == ["get_weather", "get_time"]
 
+    def test_v3_anchored_body_with_broken_fence_does_not_mis_emit_function(
+        self, parser: DeepSeekV31ToolParser
+    ) -> None:
+        """codex r2 BLOCKING: a body that anchors as V3 (starts with
+        ``function<sep>``) but doesn't contain a parseable
+        ``\\n``\\`\\`\\`json…`` fence MUST NOT fall through to the V3.1
+        ``NAME<sep>ARGS`` split.
+
+        That fallthrough would emit ``name="function"`` with the real
+        tool name embedded in ``arguments`` — i.e. recreate the exact
+        production failure mode D-DSV31 was filed for.
+        """
+        # V3 anchor, no fence at all (just ``function<sep>get_weather``
+        # then nothing JSON-ish). Must NOT emit ``name="function"``.
+        payload = (
+            f"{TC_OPEN}{C_OPEN}function{SEP}get_weather is the name{C_CLOSE}{TC_CLOSE}"
+        )
+
+        result = parser.extract_tool_calls(payload)
+
+        for tc in result.tool_calls:
+            assert tc["name"] != "function", (
+                f"V3-anchored malformed body leaked into V3.1 split: {tc!r}"
+            )
+
+    def test_v3_anchored_body_with_recoverable_partial_fence(
+        self, parser: DeepSeekV31ToolParser
+    ) -> None:
+        """V3 anchor + name + opening JSON fence + body but no closing
+        fence (truncated mid-args): the bounded recovery should pick up
+        the name and pass the body through as args, rather than
+        emitting ``name="function"``.
+        """
+        payload = (
+            f"{TC_OPEN}{C_OPEN}function{SEP}get_weather\n"
+            f'```json\n{{"city": "Tokyo"'
+            f"{C_CLOSE}{TC_CLOSE}"
+        )
+
+        result = parser.extract_tool_calls(payload)
+
+        # If we extracted anything, the name MUST be the real tool
+        # name — never the literal ``function`` type tag.
+        for tc in result.tool_calls:
+            assert tc["name"] == "get_weather", (
+                f"V3 partial-fence recovery wrong name: {tc!r}"
+            )
+
 
 # --------------------------------------------------------------------
 # Streaming — V3 short-circuit emits one well-formed tool_call event

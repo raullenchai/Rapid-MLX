@@ -192,9 +192,19 @@ class DeepSeekV31ToolParser(ToolParser):
         """Parse one ``<call_begin>...<call_end>`` body into ``(name, args)``.
 
         Tries V3 (fenced JSON) first when the body starts with the
-        ``function<sep>`` type-tag prefix; falls back to V3.1 (plain
-        ``NAME<sep>ARGS``) otherwise. Returns ``None`` if the body is
-        not parseable in either shape.
+        ``function<sep>`` type-tag prefix; otherwise the V3.1 (plain
+        ``NAME<sep>ARGS``) shape. Returns ``None`` if the body is not
+        parseable in the claimed shape.
+
+        Critically (codex r2 BLOCKING): a body that anchors as V3 must
+        NOT silently fall through to the V3.1 split — that path would
+        emit ``name="function"`` with the real tool name embedded in
+        ``arguments``, recreating the exact production failure mode
+        we're patching. If the V3 anchor matches but neither V3 regex
+        does, the body is malformed; we attempt one bounded recovery
+        (look for the inner JSON between ``\\`\\`\\`json`` and any
+        terminator) and return ``None`` if that fails so the caller
+        drops the block.
         """
         body = body.strip("\n")
         if body.startswith(f"{_V3_TYPE_TAG}{cls.TOOL_SEP}"):
@@ -203,10 +213,27 @@ class DeepSeekV31ToolParser(ToolParser):
             )
             if m is not None:
                 return m.group("name").strip(), m.group("args").strip()
-            # Body claimed V3 (``function<sep>...``) but didn't close
-            # with a JSON fence — fall through to the V3.1 shape, which
-            # also matches ``function<sep>RAW_ARGS`` and recovers a
-            # usable name+args pair even when the fence was lost.
+            # V3 anchor but malformed fence. Try one bounded recovery:
+            # the body shape is ``function<sep>NAME\n``\`\`\`json\n…``
+            # — split off the type-tag-plus-sep and look for the name
+            # terminator (``\n``\`\`\`json``). If both halves
+            # materialise we recover; otherwise the block is unparseable
+            # and we return ``None`` to drop it (NOT fall through to
+            # the V3.1 ``name=function`` mis-split).
+            v3_prefix = f"{_V3_TYPE_TAG}{cls.TOOL_SEP}"
+            tail = body[len(v3_prefix) :]
+            fence_idx = tail.find("\n```json")
+            if fence_idx <= 0:
+                return None
+            name = tail[:fence_idx].strip()
+            args_part = tail[fence_idx + len("\n```json") :].lstrip("\n")
+            # Strip any trailing ``\`\`\`` fence the model produced.
+            if args_part.endswith("```"):
+                args_part = args_part[: -len("```")].rstrip("\n")
+            args = args_part.strip()
+            if not name:
+                return None
+            return name, args
 
         sep_idx = body.find(cls.TOOL_SEP)
         if sep_idx == -1:
@@ -215,14 +242,6 @@ class DeepSeekV31ToolParser(ToolParser):
         args = body[sep_idx + len(cls.TOOL_SEP) :].strip()
         if not name:
             return None
-        # If a V3-shaped body lost its closing fence but the args body
-        # still contains ```json\n…``` markers, recover the inner JSON
-        # rather than passing the fenced wrapper as the arg string.
-        if args.startswith("```json"):
-            inner = args[len("```json") :].lstrip("\n")
-            if inner.endswith("```"):
-                inner = inner[: -len("```")].rstrip("\n")
-            args = inner.strip()
         return name, args
 
     def extract_tool_calls(
