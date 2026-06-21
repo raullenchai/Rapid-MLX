@@ -1262,7 +1262,7 @@ def test_rescue_fires_when_case4_and_finish_is_stop_natural_eos():
     )
 
 
-def test_rescue_skipped_when_case4_stop_user_stop_matched_AND_prompt_thinking_active():
+def test_rescue_skipped_when_case4_stop_user_stop_matched_and_thinking_active():
     """D-STOP-THINK codex round-5 BLOCKING fix: when the chat template
     pre-injects ``<think>\\n`` AND ``enable_thinking`` is non-False,
     a user-supplied stop firing mid-thought is the D-STOP-THINK leak

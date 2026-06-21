@@ -2007,6 +2007,20 @@ async def stream_chat_completion(
         # silently drop the tool call (#v0.6.63 onboarding sweep finding #3).
         buffered_finish: tuple | None = None
 
+        # D-STOP-THINK codex round-6 BLOCKING (PR #799):
+        # accumulate ``output.matched_stop`` from streamed chunks so the
+        # post-loop ``_rescue_silent_drop_from_reasoning`` call below sees
+        # the prompt-injected user stop string even when the SAMPLER
+        # surfaced it on a non-finish chunk (i.e. ``finish_event.matched_stop``
+        # is ``None`` but an earlier ``output`` carried the value). Mirrors
+        # the same accumulator in ``routes/responses.py:452/602``. Without
+        # this, prompt-injected stop-mid-think streams look like
+        # ``matched_stop=None`` and the silent-drop rescue would still
+        # leak the reasoning trace into ``delta.content`` — the exact
+        # D-STOP-THINK leak this PR is supposed to gate at the parser
+        # boundary.
+        stream_matched_stop: str | None = None
+
         # Stream content — PostProcessor handles reasoning/tool/sanitize.
         # ``is_streaming=True`` is consumed by DiffusionEngine to disable
         # the gemma4 wire-marker carve-out in ``skip_special_token_ids``:
@@ -2033,6 +2047,17 @@ async def stream_chat_completion(
             # don't carry the field.
             if hasattr(output, "cached_tokens") and output.cached_tokens:
                 cached_tokens = output.cached_tokens
+
+            # D-STOP-THINK codex round-6 BLOCKING accumulator (PR #799).
+            # Capture the last non-empty ``matched_stop`` we see across
+            # streamed chunks. The sampler stamps ``matched_stop`` on
+            # whichever chunk crossed the stop boundary; the buffered
+            # ``finish_event`` often arrives without it because the
+            # post-processor splits finish from data. Mirrors
+            # ``routes/responses.py:602``.
+            _chunk_matched_stop = getattr(output, "matched_stop", None)
+            if _chunk_matched_stop:
+                stream_matched_stop = _chunk_matched_stop
 
             for event in processor.process_chunk(output):
                 if event.type == "content":
@@ -2266,6 +2291,17 @@ async def stream_chat_completion(
                     and "<think>" in _chat_template_str_stream
                     and "add_generation_prompt" in _chat_template_str_stream
                 )
+                # D-STOP-THINK codex round-6 BLOCKING (PR #799):
+                # prefer the per-chunk accumulator over
+                # ``finish_event.matched_stop`` because the sampler may
+                # stamp the matched stop string on an earlier chunk that
+                # was NOT the terminal finish event. Falling back to
+                # ``finish_event.matched_stop`` preserves backward
+                # compatibility with engines that only stamp it on
+                # finish (BatchedEngine).
+                _effective_matched_stop = stream_matched_stop or getattr(
+                    finish_event, "matched_stop", None
+                )
                 rescued_content = _rescue_silent_drop_from_reasoning(
                     terminal_content or None,
                     processor.accumulated_reasoning,
@@ -2273,7 +2309,7 @@ async def stream_chat_completion(
                     finish_reason=finish_event.finish_reason,
                     raw_text=synthetic_raw,
                     reasoning_is_case4=reasoning_is_case4_stream,
-                    matched_stop=getattr(finish_event, "matched_stop", None),
+                    matched_stop=_effective_matched_stop,
                     prompt_thinking_active=prompt_thinking_active_stream,
                 )
                 # The helper returns the rescued reasoning ONLY when

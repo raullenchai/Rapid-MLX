@@ -450,6 +450,13 @@ async def _stream_responses(
         # user-supplied stop string trimmed the output). Mirrors the
         # ``stream_matched_stop`` accumulator in routes/anthropic.py.
         stream_matched_stop: str | None = None
+        # D-STOP-THINK codex round-6 BLOCKING (PR #799): track the most
+        # recently observed ``finish_reason`` so the post-loop
+        # ``finalize_streaming`` can pass it to parsers. Parsers gate
+        # on ``finish_reason="length" AND prompt_thinking_active`` to
+        # route prompt-injected ``max_tokens`` truncations to reasoning
+        # (instead of leaking them into content).
+        stream_finish_reason: str | None = None
         accumulated_structured_tool_calls: list[dict] = []
         tool_filter = StreamingToolCallFilter()
 
@@ -603,6 +610,10 @@ async def _stream_responses(
             _chunk_matched_stop = getattr(output, "matched_stop", None)
             if _chunk_matched_stop:
                 stream_matched_stop = _chunk_matched_stop
+            # D-STOP-THINK finish_reason accumulator (codex round-6, PR #799).
+            _chunk_finish_reason = getattr(output, "finish_reason", None)
+            if _chunk_finish_reason:
+                stream_finish_reason = _chunk_finish_reason
 
             if hasattr(output, "prompt_tokens") and output.prompt_tokens:
                 prompt_tokens = output.prompt_tokens
@@ -927,6 +938,7 @@ async def _stream_responses(
                     accumulated_raw,
                     matched_stop=stream_matched_stop,
                     prompt_thinking_active=_starts_thinking,
+                    finish_reason=stream_finish_reason,
                 )
                 if hasattr(reasoning_parser, "finalize_streaming")
                 else None

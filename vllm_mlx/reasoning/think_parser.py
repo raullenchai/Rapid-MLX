@@ -381,6 +381,7 @@ class BaseThinkingReasoningParser(ReasoningParser):
         *,
         matched_stop: str | None = None,
         prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
     ) -> "DeltaMessage | None":
         """Default base-class finalize: no correction.
 
@@ -390,11 +391,12 @@ class BaseThinkingReasoningParser(ReasoningParser):
         correction (Qwen3's bare-text preamble surfacing, etc.) MUST
         gate their content emission on ``not self._finalize_in_think_block``.
 
-        The base class default ignores the ``matched_stop`` and
-        ``prompt_thinking_active`` signals because the no-correction
-        return is safe either way. Subclasses (Qwen3 / DeepSeek-R1)
-        use the AND of those two signals to discriminate
-        prompt-injected mid-think from casual no-tag answers.
+        The base class default ignores the ``matched_stop``,
+        ``prompt_thinking_active`` and ``finish_reason`` signals because
+        the no-correction return is safe either way. Subclasses (Qwen3 /
+        DeepSeek-R1) use the AND of those signals to discriminate
+        prompt-injected mid-think (stop OR max_tokens) from casual
+        no-tag answers.
         """
         return None
 

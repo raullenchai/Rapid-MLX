@@ -339,32 +339,116 @@ class TestPromptInjectedMidThinkDiscriminator:
             ("vibethinker", VibeThinkerReasoningParser),
         ],
     )
-    def test_no_matched_stop_flips_to_content_regardless_of_thinking(
+    def test_natural_eos_flips_to_content_regardless_of_thinking(
         self, name, parser_cls
     ):
-        """Natural-EOS or max_tokens cut (matched_stop=None) → flip
-        to content per #570/#572 regardless of thinking signal. The
-        D-STOP-THINK shape requires BOTH matched_stop AND active
-        thinking — without matched_stop we don't have the
-        truncation signal."""
+        """Natural-EOS (matched_stop=None, finish_reason="stop" or
+        missing) → flip to content per #570/#572 regardless of thinking
+        signal. The D-STOP-THINK shape requires BOTH matched_stop AND
+        active thinking — without matched_stop we don't have the
+        truncation signal.
+
+        Note this branch is the COMPLEMENT of the max_tokens-mid-think
+        case (covered separately in
+        ``test_length_finish_with_thinking_routes_to_reasoning``): we
+        explicitly model natural EOS by passing
+        ``finish_reason=None`` / ``"stop"`` with ``matched_stop=None``
+        so the parser cannot mistake this for a budget cut.
+        """
         parser = parser_cls()
         trace = "5+7 equals 12"
-        # Even with thinking active, natural-EOS still flips to
-        # content (the bytes that streamed as reasoning were
-        # speculative — the model finished cleanly so they were the
-        # actual answer).
+        # Natural EOS: model finished cleanly. Bytes that streamed
+        # as reasoning were the actual answer (parser misclassified
+        # them as reasoning under Case-1 / short-no-tag), so flip
+        # to content. This holds REGARDLESS of thinking signal —
+        # only matched_stop OR finish_reason="length" combined with
+        # thinking active trigger the D-STOP-THINK reasoning route.
         for thinking in (False, True):
-            result = parser.finalize_streaming(
-                trace, matched_stop=None, prompt_thinking_active=thinking
-            )
-            assert result is not None, (
-                f"[{name}] thinking={thinking}: no rescue emitted"
-            )
-            assert result.content == trace, (
-                f"[{name}] thinking={thinking}: #569 regression — "
-                f"natural-EOS answer suppressed: {result!r}"
-            )
-            assert result.reasoning is None
+            for finish in (None, "stop"):
+                result = parser.finalize_streaming(
+                    trace,
+                    matched_stop=None,
+                    prompt_thinking_active=thinking,
+                    finish_reason=finish,
+                )
+                assert result is not None, (
+                    f"[{name}] thinking={thinking} finish={finish!r}: no rescue emitted"
+                )
+                assert result.content == trace, (
+                    f"[{name}] thinking={thinking} finish={finish!r}: "
+                    f"#569 regression — natural-EOS answer "
+                    f"suppressed: {result!r}"
+                )
+                assert result.reasoning is None
+
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [
+            ("qwen3", Qwen3ReasoningParser),
+            ("deepseek_r1", DeepSeekR1ReasoningParser),
+            ("vibethinker", VibeThinkerReasoningParser),
+        ],
+    )
+    def test_length_finish_with_thinking_routes_to_reasoning(self, name, parser_cls):
+        """D-STOP-THINK codex round-6 BLOCKING (PR #799):
+        ``max_tokens`` cut mid-think with prompt-injected ``<think>``
+        is the SAME accumulator shape as stop-mid-think — the parser
+        routed every byte to reasoning (Case-1 ``start_in_prev`` /
+        short-no-tag) and the streaming loop already shipped them as
+        ``reasoning_content``. Finalize MUST route to reasoning to
+        suppress the same duplication the matched_stop branch closes.
+
+        Without this, the bare-text-no-evidence flip in the parser's
+        no-prefix branch would emit ``DeltaMessage(content=trace)`` and
+        the route consumer would append the trace as a NEW text block —
+        the exact D-STOP-THINK leak this PR closes for the stop case
+        would silently regress for the budget-cut case.
+        """
+        parser = parser_cls()
+        trace = "5+7 equals 12"
+        result = parser.finalize_streaming(
+            trace,
+            matched_stop=None,
+            prompt_thinking_active=True,
+            finish_reason="length",
+        )
+        assert result is not None, (
+            f"[{name}] max_tokens-mid-think: no correction emitted"
+        )
+        assert result.content is None, (
+            f"[{name}] D-STOP-THINK round-6 regression — "
+            f"max_tokens-mid-think duplicated into content: "
+            f"{result.content!r}"
+        )
+        assert result.reasoning == trace
+
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [
+            ("qwen3", Qwen3ReasoningParser),
+            ("deepseek_r1", DeepSeekR1ReasoningParser),
+            ("vibethinker", VibeThinkerReasoningParser),
+        ],
+    )
+    def test_length_finish_without_thinking_flips_to_content(self, name, parser_cls):
+        """Counter-case: ``finish_reason="length"`` with thinking NOT
+        active is just a non-thinking model truncated mid-answer.
+        Flip to content per #569 — the bytes are an incomplete answer,
+        not an interrupted thought trace."""
+        parser = parser_cls()
+        trace = "The answer is 12"
+        result = parser.finalize_streaming(
+            trace,
+            matched_stop=None,
+            prompt_thinking_active=False,
+            finish_reason="length",
+        )
+        assert result is not None
+        assert result.content == trace, (
+            f"[{name}] non-thinking length-cut: regression — "
+            f"answer suppressed: {result!r}"
+        )
+        assert result.reasoning is None
 
 
 class TestMaxTokensMidThink:

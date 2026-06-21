@@ -124,6 +124,7 @@ class ReasoningParser(ABC):
         *,
         matched_stop: str | None = None,
         prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
     ) -> "DeltaMessage | None":
         """
         Finalize streaming and return optional correction chunk.
@@ -155,6 +156,15 @@ class ReasoningParser(ABC):
                 reasoning) from "model is answering casually, the
                 stop string is part of the literal answer" (flip to
                 content).
+            finish_reason: D-STOP-THINK codex round-6 BLOCKING (PR #799).
+                When ``"length"`` AND ``prompt_thinking_active=True``,
+                this is the ``max_tokens``-cut analogue of stop-mid-think:
+                the model was thinking via the injected template and the
+                budget ran out before ``</think>`` was emitted. Subclasses
+                MUST route the accumulated bytes to ``reasoning`` (not
+                ``content``) under this condition — otherwise the same
+                reasoning trace leaks into both channels, exactly the
+                D-STOP-THINK bug this PR closes.
 
         Returns:
             DeltaMessage correction chunk, or None if no correction needed.

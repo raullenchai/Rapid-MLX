@@ -155,6 +155,7 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         *,
         matched_stop: str | None = None,
         prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
     ) -> DeltaMessage | None:
         """
         Finalize streaming output.
@@ -165,15 +166,19 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         ``stop=["STOP"]`` ALSO has matched_stop set but is not
         chain-of-thought.
 
-        Use the AND of ``matched_stop`` (engine-supplied truncation
-        signal, scheduler.py:3673) AND ``prompt_thinking_active``
-        (route-supplied "chat template injected ``<think>`` AND
-        ``enable_thinking`` is non-False" signal — same boolean
-        ``_should_start_in_thinking`` computes in
-        anthropic.py:91) to discriminate:
+        Codex round-6 BLOCKING fix (PR #799 review): ``max_tokens`` cuts
+        mid-think share the same accumulator state as stop-mid-think,
+        so ``finish_reason="length" AND prompt_thinking_active`` is the
+        third D-STOP-THINK signal — without it, the no-tag short answer
+        arm would flip to content even though the model was thinking via
+        the injected template.
 
-        * matched_stop set AND prompt_thinking_active → D-STOP-THINK
-          prompt-injected mid-think shape → route to reasoning.
+        Discriminator (AND of route-supplied signals):
+
+        * ``finish_reason="length"`` AND prompt_thinking_active →
+          D-STOP-THINK max_tokens-cut shape → route to reasoning.
+        * ``matched_stop`` set AND prompt_thinking_active → D-STOP-THINK
+          stop-cut shape → route to reasoning.
         * Otherwise → casual answer (or no-evidence path) → flip to
           content per #570/#572 so the route consumer surfaces a
           text block.
@@ -190,6 +195,9 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             prompt_thinking_active: True when the chat template
                 injected ``<think>`` AND ``enable_thinking`` is non-
                 False — i.e. the model was actually in thinking mode.
+            finish_reason: Engine finish reason for this turn. Used to
+                disambiguate max_tokens cuts (``"length"``) from natural
+                EOS (``"stop"``) when ``matched_stop`` is None.
 
         Returns:
             DeltaMessage correction, or None if no correction needed.
@@ -199,6 +207,10 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             and accumulated_text
             and len(accumulated_text) < self.NO_TAG_CONTENT_THRESHOLD
         ):
+            if finish_reason == "length" and prompt_thinking_active:
+                # Prompt-injected mid-think + max_tokens cut — route to
+                # reasoning to suppress D-STOP-THINK duplication.
+                return DeltaMessage(reasoning=accumulated_text)
             if matched_stop is not None and prompt_thinking_active:
                 # Prompt-injected mid-think shape — route to reasoning
                 # to suppress D-STOP-THINK duplication.

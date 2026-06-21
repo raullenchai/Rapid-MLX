@@ -242,6 +242,7 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         *,
         matched_stop: str | None = None,
         prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
     ) -> DeltaMessage | None:
         """
         Finalize streaming output.
@@ -371,17 +372,32 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             #
             # Decision matrix for the no-prefix branch:
             #
-            # matched_stop | prompt_thinking_active | bare_preamble | route
-            # ─────────────┼────────────────────────┼───────────────┼─────────
-            # set          | True                   | *             | reasoning (D-STOP-THINK)
-            # set          | False                  | *             | content  (casual stop-terminated answer)
-            # None         | *                      | True          | reasoning (#570 label)
-            # None         | *                      | False         | content  (#570/#572 casual)
+            # finish_reason | matched_stop | prompt_thinking_active | bare_preamble | route
+            # ──────────────┼──────────────┼────────────────────────┼───────────────┼─────────
+            # "length"      | *            | True                   | *             | reasoning (D-STOP-THINK / max_tokens)
+            # "stop"        | set          | True                   | *             | reasoning (D-STOP-THINK / stop)
+            # "stop"        | set          | False                  | *             | content  (casual stop-terminated answer)
+            # *             | None         | *                      | True          | reasoning (#570 label)
+            # *             | None         | *                      | False         | content  (#570/#572 casual)
             #
             # The route layer's truthful signal (``enable_thinking`` +
             # template inspection) is the only reliable discriminator
             # — the parser can't otherwise tell a thought trace from
             # a casual answer at finalize time.
+            #
+            # Codex round-6 BLOCKING on PR #799: ``max_tokens`` mid-think
+            # has the SAME accumulator state as stop-mid-think (parser
+            # routed all bytes to reasoning via base Case-1 ``start_in_prev``,
+            # streaming loop already shipped the bytes as ``reasoning_content``)
+            # so it MUST route to reasoning too, otherwise the same trace
+            # leaks into ``content`` via the bare-text-no-evidence flip.
+            # ``finish_reason="length"`` is the disambiguating signal:
+            # together with ``prompt_thinking_active=True`` it tells the
+            # parser "this is the max_tokens analogue of D-STOP-THINK".
+            if finish_reason == "length" and prompt_thinking_active:
+                # max_tokens cut a prompt-injected thinking stream — route
+                # to reasoning to suppress duplication.
+                return DeltaMessage(reasoning=cleaned)
             if matched_stop is not None and prompt_thinking_active:
                 # D-STOP-THINK prompt-injected mid-think shape: route
                 # to reasoning to suppress duplication with bytes
