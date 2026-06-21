@@ -1,0 +1,598 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Regression tests for D-TOOLCHOICE-R1+QWEN3 (0.8.3 hotfix).
+
+Three tightly-related tool-calling failures surfaced on 0.8.3 dogfood:
+
+* **T1** — DeepSeek-R1 distill with ``tool_choice="auto"`` would fabricate
+  prose like ``"The current temperature in Tokyo is 24°C"`` without ever
+  emitting a tool call. The pre-existing tool-use system suffix asked the
+  model to call a tool but did NOT forbid printing fake tool results when
+  it decided not to.
+* **T2** — DeepSeek-R1 distill with ``tool_choice="required"`` returned
+  ``tool_calls[0].arguments == "{}"`` even when the user prompt clearly
+  carried the required string parameter. Root cause: the
+  ``_forced_tool_call_prefix`` allowlist only contained ``hermes``, so
+  the ``deepseek_v31`` / ``deepseek_r1_0528`` parsers fell through to
+  the post-parse synthesis fallback (which defaulted ``"{}"``).
+* **T3** — qwen3 + ``tool_choice="required"`` emitted malformed JSON
+  inside a literal ``<tool_call>`` envelope (e.g. ``"arguments": 4128,
+  7591}``). The hermes parser couldn't extract it, the post-parse path
+  synthesised a call with empty args, AND the raw ``<tool_call>...``
+  text leaked into BOTH ``content`` and ``reasoning_content``.
+
+The fix is structural, not three ad-hoc patches:
+
+1. ``_TOOL_USE_SYSTEM_SUFFIX`` now explicitly forbids fabricating tool
+   output when no tool call is made (T1).
+2. ``_forced_tool_call_prefix`` recognises ``deepseek_v31`` /
+   ``deepseek_r1_0528`` and injects the V3.1 envelope
+   ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>NAME<｜tool▁sep｜>``
+   so the model continues with real arguments instead of relying on the
+   empty-args synthesis fallback (T2).
+3. ``_synthesize_forced_tool_call`` now accepts ``raw_text`` and runs a
+   bounded ``_recover_partial_tool_args`` scan before defaulting to
+   ``"{}"``. Wire-marker literals from the failed-parse text are
+   scrubbed from ``cleaned_text`` (and the raw text the reasoning
+   parser sees) via ``_scrub_tool_wire_literals`` so the leak in T3
+   doesn't survive into either user-visible field.
+
+The tests below exercise each layer end-to-end through the real chat
+route — no parallel re-implementation of the post-parse pipeline that
+can silently drift from production.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from vllm_mlx.config import reset_config
+from vllm_mlx.engine.base import GenerationOutput
+from vllm_mlx.routes.chat import (
+    _forced_tool_call_prefix,
+    _recover_partial_tool_args,
+    _scrub_tool_wire_literals,
+    _synthesize_forced_tool_call,
+)
+from vllm_mlx.routes.chat import router as chat_router
+from vllm_mlx.service.helpers import (
+    _TOOL_USE_REQUIRED_SUFFIX,
+    _TOOL_USE_SYSTEM_SUFFIX,
+)
+from vllm_mlx.tool_parsers.deepseekv31_tool_parser import DeepSeekV31ToolParser
+from vllm_mlx.tool_parsers.hermes_tool_parser import HermesToolParser
+
+# ──────────────────────────────────────────────────────────────────
+# Test harness — recording mock engine + client builder
+# ──────────────────────────────────────────────────────────────────
+
+
+class _RecordingEngine:
+    """Mock engine that captures kwargs and returns a configurable
+    ``GenerationOutput``. Mirrors the harness used by
+    ``test_chat_route_tool_choice_enforcement.py`` so test patterns stay
+    consistent across files.
+    """
+
+    preserve_native_tool_format = False
+    is_mllm = False
+    supports_guided_generation = False
+    tokenizer = None
+    supports_tool_calls = True
+
+    def __init__(self, text: str = "ok", raw_text: str | None = None):
+        self.last_chat_kwargs: dict[str, Any] | None = None
+        self.last_messages: Any = None
+        self._text = text
+        self._raw_text = raw_text if raw_text is not None else text
+
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        return "PROMPT"
+
+    async def chat(self, messages, **kwargs):
+        self.last_messages = messages
+        self.last_chat_kwargs = kwargs
+        return GenerationOutput(
+            text=self._text,
+            raw_text=self._raw_text,
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="stop",
+        )
+
+
+def _make_client(
+    engine: _RecordingEngine, tool_call_parser: str | None = "hermes"
+) -> TestClient:
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = tool_call_parser
+    app = FastAPI()
+    app.include_router(chat_router)
+    return TestClient(app)
+
+
+_SOLO_TOOL = [
+    {
+        "type": "function",
+        "function": {
+            "name": "add_numbers",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "a": {"type": "integer"},
+                    "b": {"type": "integer"},
+                },
+                "required": ["a", "b"],
+            },
+        },
+    },
+]
+
+
+_WEATHER_TOOL = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string"},
+                    "units": {"type": "string", "enum": ["c", "f"]},
+                },
+                "required": ["city"],
+            },
+        },
+    },
+]
+
+
+# ──────────────────────────────────────────────────────────────────
+# T1 — tool_choice="auto" must not let prose fabricate tool output
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_t1_auto_suffix_forbids_fake_tool_output():
+    """``_TOOL_USE_SYSTEM_SUFFIX`` is the auto-mode prompt. The 0.8.3
+    bug was that it asked the model to "use a tool immediately" but
+    did NOT block the failure mode where the model emits a fake tool
+    result (``"The current temperature in Tokyo is 24°C"``). The new
+    suffix carries an explicit no-fabrication clause."""
+    # The clause must explicitly forbid fabricating tool output AND
+    # specifically the prose shapes Theo's evidence captured.
+    s = _TOOL_USE_SYSTEM_SUFFIX
+    assert "fabricate" in s.lower()
+    # No-fake-API clause names the most common hallucination shapes.
+    assert "Tool returned:" in s
+    assert "Tool output:" in s
+    assert "fake JSON" in s.lower() or "fake api" in s.lower()
+
+
+def test_t1_auto_suffix_is_injected_for_auto_mode():
+    """End-to-end through the chat route: ``tool_choice="auto"`` must
+    inject the strengthened suffix so even when the parser sees prose
+    (no tool call envelope), the no-fabrication clause was in front of
+    the model. Asserts the suffix is part of the rendered system
+    message — the actual model behaviour is exercised by the smoke
+    section of the PR body."""
+    engine = _RecordingEngine(text="some answer", raw_text="some answer")
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": _WEATHER_TOOL,
+            "tool_choice": "auto",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    # System suffix was injected into the prompt — verify by looking
+    # at the messages the engine received.
+    assert engine.last_messages is not None
+    sys_msgs = [m for m in engine.last_messages if m.get("role") == "system"]
+    assert sys_msgs, "tool_choice='auto' must inject a system suffix"
+    sys_text = " ".join(m.get("content", "") for m in sys_msgs)
+    assert "fabricate" in sys_text.lower(), (
+        f"auto-mode system suffix must forbid fabricating tool output; "
+        f"got: {sys_text[-300:]!r}"
+    )
+
+
+def test_t1_required_suffix_unchanged():
+    """The "required" suffix is separate from the "auto" suffix —
+    only the auto-mode suffix needed the no-fabrication clause (the
+    required suffix already says "a text-only response is INVALID").
+    Pin that the required suffix wording isn't accidentally weakened."""
+    assert "MUST call" in _TOOL_USE_REQUIRED_SUFFIX
+    assert "INVALID" in _TOOL_USE_REQUIRED_SUFFIX
+
+
+# ──────────────────────────────────────────────────────────────────
+# T2 — tool_choice="required" + deepseek_v31 must inject a wire prefix
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_t2_forced_prefix_deepseek_v31_inserts_envelope():
+    """The V3.1 wire shape is ``<｜tool▁calls▁begin｜>``
+    ``<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}``
+    ``<｜tool▁call▁end｜><｜tool▁calls▁end｜>``. The forced prefix
+    inserts everything up to the JSON body so the model continues with
+    real arguments."""
+    out = _forced_tool_call_prefix("deepseek_v31", "get_weather")
+    assert out is not None
+    assert "<｜tool▁calls▁begin｜>" in out
+    assert "<｜tool▁call▁begin｜>" in out
+    assert "get_weather" in out
+    assert out.endswith("<｜tool▁sep｜>")
+
+
+def test_t2_forced_prefix_deepseek_r1_0528_alias():
+    """``deepseek_r1_0528`` is the second alias the same parser
+    registers under. It must produce the same prefix as
+    ``deepseek_v31`` so DeepSeek-R1 distills (which load under either
+    alias depending on config) get consistent forcing."""
+    a = _forced_tool_call_prefix("deepseek_v31", "x")
+    b = _forced_tool_call_prefix("deepseek_r1_0528", "x")
+    assert a == b
+    assert a is not None
+
+
+def test_t2_forced_prefix_deepseek_v1_still_returns_none():
+    """The V1 ``deepseek`` parser has a different body shape and
+    shares only the outer markers. We intentionally did NOT add it to
+    the allowlist — leaving it on the synthesis fallback is safer than
+    risking a wrong wire."""
+    assert _forced_tool_call_prefix("deepseek", "x") is None
+    assert _forced_tool_call_prefix("deepseek_v3", "x") is None
+
+
+def test_t2_deepseek_v31_parser_consumes_assembled_envelope():
+    """End-to-end shape check: when the model continues from the
+    injected prefix and emits ``{"city":"Tokyo"}<｜tool▁call▁end｜>``
+    ``<｜tool▁calls▁end｜>``, the parser MUST extract a non-empty
+    ``arguments`` string — that's the entire point of injecting the
+    prefix.
+    """
+    prefix = _forced_tool_call_prefix("deepseek_v31", "get_weather")
+    assert prefix is not None
+    # Simulate the model's continuation past the injected prefix.
+    full = (
+        prefix + '{"city":"Tokyo","units":"c"}<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+    )
+    parser = DeepSeekV31ToolParser(tokenizer=None)
+    parser.reset()
+    result = parser.extract_tool_calls(full, None)
+    assert result.tools_called
+    assert result.tool_calls[0]["name"] == "get_weather"
+    import json as _json
+
+    args = _json.loads(result.tool_calls[0]["arguments"])
+    assert args == {"city": "Tokyo", "units": "c"}, (
+        f"deepseek_v31 forced prefix did not produce real arguments; got {args!r}"
+    )
+
+
+def test_t2_chat_route_wires_deepseek_v31_prefix_to_engine():
+    """Through the FULL chat route: ``tool_choice="required"`` + single
+    tool + ``deepseek_v31`` parser must ship a ``forced_assistant_prefix``
+    in the engine kwargs. Without it, T2 fails the same way as 0.8.3."""
+    engine = _RecordingEngine()
+    client = _make_client(engine, tool_call_parser="deepseek_v31")
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "weather in Tokyo in celsius?"}],
+            "tools": _WEATHER_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 32,
+        },
+    )
+    # The mock engine returns text="ok" so the route's post-parse path
+    # will then synthesise a call (no real model in the loop). Either
+    # the prefix wire-up worked (we'll see the prefix in kwargs) or
+    # the suffix fell through to the synthesis path; the structural
+    # invariant is the prefix is shipped to the engine.
+    assert resp.status_code in (200, 422), resp.text
+    assert engine.last_chat_kwargs is not None
+    prefix_kw = engine.last_chat_kwargs.get("forced_assistant_prefix")
+    assert prefix_kw is not None, (
+        "deepseek_v31 + tool_choice=required + 1 tool must inject a "
+        "forced_assistant_prefix into engine kwargs (T2 fix)"
+    )
+    assert "<｜tool▁call▁begin｜>" in prefix_kw
+    assert "get_weather" in prefix_kw
+
+
+# ──────────────────────────────────────────────────────────────────
+# T3 — qwen3 tool_choice="required" wire-leak + arg recovery
+# ──────────────────────────────────────────────────────────────────
+
+
+# The exact malformed wire shape Theo captured on qwen3.5-4b-4bit:
+# the model emits invalid JSON (``"arguments": 4128, 7591`` — bare
+# positional integers instead of an object body) inside a
+# ``<tool_call>`` envelope, then closes with stray ``</parameter>`` /
+# ``</function>`` tags.
+_QWEN3_MALFORMED_BODY = (
+    "<tool_call>\n"
+    '{"name": "add_numbers", "arguments": 4128, 7591}\n'
+    "</parameter>\n"
+    "</function>\n"
+    "</tool_call>"
+)
+
+
+_QWEN3_BODY_WITH_RECOVERABLE_ARGS = (
+    "<tool_call>\n"
+    '{"name": "add_numbers", "arguments": {"a": 4128, "b": 7591}}\n'
+    # Missing </tool_call> — parser's strict pattern fails to match
+    "</function>"
+)
+
+
+def test_t3_hermes_parser_alone_cannot_extract_malformed_body():
+    """Establishes the prerequisite for the fix: with the malformed
+    JSON body the hermes parser CANNOT extract a tool call. The fix
+    has to handle this case at the chat-route level — adding more
+    regexes to the parser would risk false positives on prose."""
+    parser = HermesToolParser(tokenizer=None)
+    parser.reset()
+    r = parser.extract_tool_calls(_QWEN3_MALFORMED_BODY, None)
+    assert not r.tools_called
+    # And the leak: the parser's content output IS the raw wire.
+    assert "<tool_call>" in (r.content or "")
+
+
+def test_t3_scrub_wire_literals_removes_qwen3_leak():
+    """``_scrub_tool_wire_literals`` is the parser-agnostic cleanup
+    that strips wire-opener literals when the post-parse path
+    synthesises a forced call. After scrubbing, none of the literal
+    wire markers must remain in the text."""
+    out = _scrub_tool_wire_literals(_QWEN3_MALFORMED_BODY)
+    for leak in (
+        "<tool_call>",
+        "</tool_call>",
+        "<function>",
+        "</function>",
+        "</parameter>",
+    ):
+        assert leak not in out, (
+            f"_scrub_tool_wire_literals left {leak!r} behind: {out!r}"
+        )
+
+
+def test_t3_scrub_wire_literals_idempotent_on_clean_prose():
+    """The scrubber must be a no-op on text that contains no wire
+    markers. Otherwise it would corrupt the auto/non-forced paths
+    where prose is the legitimate model output."""
+    prose = "The sky is blue. Here is a sentence about birds."
+    assert _scrub_tool_wire_literals(prose) == prose
+
+
+def test_t3_scrub_handles_deepseek_v31_leak():
+    """The scrubber is parser-agnostic. A leaked DeepSeek envelope
+    (e.g. truncated tool-call begin without a matching end) must also
+    be stripped."""
+    leak = "prefix <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>x<｜tool▁sep｜>{}"
+    out = _scrub_tool_wire_literals(leak)
+    assert "<｜tool▁calls▁begin｜>" not in out
+    assert "<｜tool▁call▁begin｜>" not in out
+    assert "prefix" in out
+
+
+def test_t3_scrub_handles_nemotron_and_glm_and_mistral_leaks():
+    """Confidence sweep — every parser wire we documented in the
+    scrub allowlist must be cleared."""
+    cases = [
+        "<function=foo>arg=1</function>",
+        "<arg_key>k</arg_value>",
+        "<minimax:tool_call>foo</minimax:tool_call>",
+        "<invoke name='x'>body</invoke>",
+        "[TOOL_CALLS]{}[/TOOL_CALLS]",
+        "<|tool_calls_section_begin|>x<|tool_calls_section_end|>",
+    ]
+    for c in cases:
+        out = _scrub_tool_wire_literals(c)
+        # The wire opener bytes must NOT survive.
+        for opener in (
+            "<function=",
+            "<arg_key>",
+            "<minimax:tool_call>",
+            "<invoke",
+            "[TOOL_CALLS]",
+            "<|tool_calls_section_begin|>",
+        ):
+            assert opener not in out, f"{opener!r} survived scrub of {c!r}: {out!r}"
+
+
+def test_t3_recover_partial_args_from_balanced_object():
+    """When the raw text contains ``"arguments": {...}`` with a
+    balanced JSON object body, the recovery routine extracts that
+    object verbatim (canonicalised). This is the qwen3 "real call,
+    bad wrapper" case from the evidence variation."""
+    raw = (
+        "garbage <tool_call>\n"
+        '{"name": "add_numbers", "arguments": {"a": 4128, "b": 7591}}\n'
+        "</function> trailing prose"
+    )
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    parsed = _json.loads(got)
+    assert parsed == {"a": 4128, "b": 7591}
+
+
+def test_t3_recover_partial_args_returns_none_on_qwen3_malformed():
+    """The original Theo-evidence qwen3 shape has
+    ``"arguments": 4128, 7591`` — NOT a JSON object. The recovery
+    routine must return ``None`` so the caller falls back to ``"{}"``;
+    coercing two bare integers into named params would require
+    schema-side guessing that is out of scope."""
+    assert _recover_partial_tool_args(_QWEN3_MALFORMED_BODY) is None
+
+
+def test_t3_recover_partial_args_returns_none_on_clean_prose():
+    """Defensive: prose with no ``"arguments":`` literal yields
+    ``None``."""
+    assert _recover_partial_tool_args("just some answer") is None
+    assert _recover_partial_tool_args("") is None
+    assert _recover_partial_tool_args(None) is None
+
+
+def test_t3_synthesize_uses_recovered_args_when_available():
+    """The high-level synth helper prefers recovered args over the
+    ``"{}"`` default. With a recoverable body the call's arguments
+    must NOT be the empty default."""
+    raw_with_args = '<tool_call>{"name":"add_numbers","arguments":{"a":1,"b":2}}'
+    tc = _synthesize_forced_tool_call("add_numbers", raw_text=raw_with_args)
+    import json as _json
+
+    assert _json.loads(tc.function.arguments) == {"a": 1, "b": 2}
+
+
+def test_t3_synthesize_falls_back_to_empty_when_unrecoverable():
+    """When recovery returns ``None``, the helper falls back to the
+    caller-provided default (``"{}"`` by default). Pin the
+    backward-compat contract — pre-0.8.3 behaviour."""
+    tc = _synthesize_forced_tool_call("add_numbers", raw_text=_QWEN3_MALFORMED_BODY)
+    assert tc.function.arguments == "{}"
+
+
+def test_t3_chat_route_strips_wire_leak_from_content_and_reasoning():
+    """End-to-end through the FULL chat route: when the model emits
+    the qwen3 malformed wire AND the request is ``tool_choice=required``,
+    the response MUST have:
+
+      - ``tool_calls`` populated with the forced name
+      - ``content`` clean of ``<tool_call>`` and ``</function>`` leaks
+      - ``reasoning_content`` (if any) also clean of those leaks
+    """
+
+    class _QwenMalformedEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=_QWEN3_MALFORMED_BODY, raw_text=_QWEN3_MALFORMED_BODY)
+
+    engine = _QwenMalformedEngine()
+    client = _make_client(engine, tool_call_parser="hermes")
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is 4128 + 7591?"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    msg = body["choices"][0]["message"]
+    # Tool call is present (forced synth)
+    assert msg.get("tool_calls"), (
+        f"tool_choice=required must produce tool_calls; got msg={msg!r}"
+    )
+    assert msg["tool_calls"][0]["function"]["name"] == "add_numbers"
+    # Content is leak-free — the original ``<tool_call>...`` text
+    # must NOT survive into the user-visible content channel.
+    content = msg.get("content") or ""
+    for leak in ("<tool_call>", "</tool_call>", "</function>", "</parameter>"):
+        assert leak not in content, (
+            f"T3 leak: {leak!r} survived in content: {content!r}"
+        )
+    # And the reasoning content (if any) is also leak-free.
+    reasoning = msg.get("reasoning_content") or ""
+    for leak in ("<tool_call>", "</tool_call>", "</function>", "</parameter>"):
+        assert leak not in reasoning, (
+            f"T3 leak: {leak!r} survived in reasoning_content: {reasoning!r}"
+        )
+
+
+def test_t3_chat_route_recovers_args_when_possible():
+    """When the model emits a recoverable arguments object inside an
+    unclosed envelope, the synth call's arguments must reflect the
+    recovered values, not ``"{}"``."""
+
+    class _QwenRecoverableEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(
+                text=_QWEN3_BODY_WITH_RECOVERABLE_ARGS,
+                raw_text=_QWEN3_BODY_WITH_RECOVERABLE_ARGS,
+            )
+
+    engine = _QwenRecoverableEngine()
+    client = _make_client(engine, tool_call_parser="hermes")
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is 4128 + 7591?"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    msg = body["choices"][0]["message"]
+    assert msg.get("tool_calls")
+    import json as _json
+
+    args = _json.loads(msg["tool_calls"][0]["function"]["arguments"])
+    # The model's intended args ARE recoverable from the body — verify
+    # the synth used them instead of defaulting to {}.
+    assert args == {"a": 4128, "b": 7591}, (
+        f"recoverable args were not used: got {args!r}"
+    )
+
+
+# ──────────────────────────────────────────────────────────────────
+# Regression: pre-existing happy paths must not regress
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_pre_existing_hermes_prefix_unchanged():
+    """``_forced_tool_call_prefix("hermes", ...)`` must keep emitting
+    the same JSON-body shape it did before — pinned in
+    ``test_chat_route_forced_tool_prefix.py`` but also asserted here
+    so a future refactor doesn't silently change the wire format."""
+    out = _forced_tool_call_prefix("hermes", "get_weather")
+    assert out is not None
+    assert out.startswith("<tool_call>")
+    assert '"name": "get_weather"' in out
+    assert out.endswith('"arguments": ')
+
+
+def test_pre_existing_unknown_parser_still_none():
+    """Defensive — unknown parsers still get ``None``."""
+    assert _forced_tool_call_prefix(None, "fn") is None
+    assert _forced_tool_call_prefix("future_parser", "fn") is None
+
+
+@pytest.mark.parametrize(
+    "parser_name",
+    [
+        "llama",
+        "kimi",
+        "glm47",
+        "minimax",
+        "mistral",
+        "harmony",
+        "gemma4",
+    ],
+)
+def test_pre_existing_non_allowlisted_parsers_still_none(parser_name: str):
+    """Channel-routed and other-shape parsers still fall through —
+    the T2 fix is additive."""
+    assert _forced_tool_call_prefix(parser_name, "fn") is None

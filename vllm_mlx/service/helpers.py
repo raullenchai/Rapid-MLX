@@ -1248,7 +1248,19 @@ _TOOL_USE_SYSTEM_SUFFIX = (
     "a reasonable default exists. Do NOT explain what you will do — just do it. "
     "Be direct and concise in your responses. "
     "Do NOT think out loud or show your reasoning process. "
-    "Give direct answers only — no preamble like 'The user asks...' or 'Let me think...'."
+    "Give direct answers only — no preamble like 'The user asks...' or 'Let me think...'. "
+    # D-TOOLCHOICE-R1 T1: DeepSeek-R1 distills (and other reasoning
+    # models) under ``tool_choice="auto"`` will happily HALLUCINATE
+    # the result of a tool they were never told existed — emit
+    # ``"The current temperature in Tokyo is 24°C"`` while the only
+    # weather data they have is whatever the user typed. The
+    # earlier "use a tool immediately" clause does not cover this:
+    # the model can interpret "use a tool" as "include a tool-shaped
+    # answer". This clause is a HARD floor: if you didn't actually
+    # call a tool, you must not claim a tool result.
+    "If you do NOT call a tool, do NOT fabricate the contents of any tool's response — "
+    "answer only from what you actually know. Do NOT print fake JSON, fake API responses, "
+    "or sentences that begin with 'Tool returned:' / 'Tool output:' / 'The API returned'."
 )
 
 # Tool-use system prompt for ``tool_choice="required"`` (#468). Strict

@@ -199,13 +199,217 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
         # corrupt the wire envelope or inject extra fields. Codex r4
         # BLOCKING — direct f-string interpolation was vulnerable.
         return f'<tool_call>\n{{"name": {json.dumps(function_name)}, "arguments": '
+    # D-TOOLCHOICE-R1 T2: DeepSeek-R1 distill + ``deepseek_v31`` /
+    # ``deepseek_r1_0528`` parsers share the V3.1 wire shape
+    # ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜><｜tool▁calls▁end｜>``.
+    # Pre 0.8.3, this family fell through to ``None`` here — so
+    # ``tool_choice="required"`` with a single tool only ever produced
+    # the post-parse ``_synthesize_forced_tool_call`` fallback (empty
+    # ``arguments="{}"``). With the prefix in place, the model picks up
+    # inside the envelope and emits real arguments that
+    # ``extract_tool_calls`` parses cleanly (verified by
+    # ``DeepSeekV31ToolParser.extract_tool_calls`` on the assembled
+    # ``<...begin>name<sep>{...}<...end>...end>`` payload).
+    #
+    # The two registered aliases (``deepseek_v31``, ``deepseek_r1_0528``)
+    # share one parser class; both get the same prefix. ``deepseek``
+    # (V1) is intentionally NOT listed — that parser's envelope is
+    # different and shares the marker tokens, but the body shape is
+    # not auto-detected (see ``deepseek_tool_parser.py``).
+    _verified_deepseek_v31_parsers = {
+        "deepseek_v31",
+        "deepseek_r1_0528",
+    }
+    if parser_name in _verified_deepseek_v31_parsers:
+        # V3.1 body: ``NAME<sep>{json}``. The model continues with the
+        # arguments object and closer. ``function_name`` is interpolated
+        # raw — these are DeepSeek special tokens, not JSON, and the
+        # name is already validated against ``request.tools`` upstream
+        # (the ``_target`` / ``_solo_name`` lookups in chat.py). The
+        # name does NOT pass through ``json.dumps`` because the V3.1
+        # body is not JSON-bodied here — it is a plain ``NAME<sep>``
+        # split. A function name containing ``<｜tool▁sep｜>`` would
+        # corrupt the wire, but such a name is malformed (the chat
+        # template would already fail to render it). Validated against
+        # ``DeepSeekV31ToolParser.extract_tool_calls`` body parser.
+        return (
+            f"<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>{function_name}<｜tool▁sep｜>"
+        )
     # Channel-routed (harmony / gemma4) and parsers whose wire shape
     # we have NOT audited: no prefix injection. The post-parse
     # synthesis path remains as a fallback (``_synthesize_forced_tool_call``).
     return None
 
 
-def _synthesize_forced_tool_call(name: str, arguments: str = "{}"):
+def _recover_partial_tool_args(raw_text: str | None) -> str | None:
+    """Best-effort recovery of a JSON arguments object from a malformed
+    model response under ``tool_choice="required"``.
+
+    Designed for the D-TOOLCHOICE-R1 T3 case: qwen3 + tool_choice=
+    required emits something like ::
+
+        <tool_call>
+        {"name": "add_numbers", "arguments": 4128, 7591}
+        </parameter>
+        </function>
+        </tool_call>
+
+    where the parser's strict pattern fails (``arguments`` is not a
+    JSON object) so the chat route synthesises a call with empty
+    ``"{}"`` arguments. The empty-args result is uselessly opaque for
+    the client — but the raw text itself often contains enough signal
+    to reconstruct *something* better than ``"{}"``. Two recovery
+    routes are tried, both bounded so a hostile or genuinely
+    unparseable response degrades safely back to ``None``:
+
+    1. **Strict object body.** If the raw text contains a literal
+       ``"arguments":`` followed by a balanced JSON object, return
+       that object's text. This handles the common case where the
+       model emitted valid JSON but failed an outer wrapper (closing
+       tag missing, wrong wrapper element).
+
+    2. **No structural recovery possible.** Return ``None``. The
+       caller falls back to the existing ``"{}"`` default.
+
+    Intentionally narrow: we do NOT try to coerce the malformed
+    qwen3 shape ``"arguments": 4128, 7591`` into a positional-args
+    interpretation — there is no schema-agnostic way to map two bare
+    integers to named parameters without guessing. The fallback to
+    ``"{}"`` plus a downstream ``_validate_tool_call_params`` warning
+    is the right contract for that case (the client retries with a
+    clearer prompt or a named-function ``tool_choice``).
+    """
+    if not raw_text:
+        return None
+    text = raw_text
+    args_marker_idx = text.find('"arguments"')
+    if args_marker_idx == -1:
+        return None
+    # Find the colon that follows ``"arguments"`` (may have whitespace
+    # before/after). Scan forward up to a small bound — beyond that the
+    # marker is just prose, not a structural field.
+    colon_idx = text.find(":", args_marker_idx, args_marker_idx + 20)
+    if colon_idx == -1:
+        return None
+    # Skip whitespace after the colon, looking for the object opener.
+    pos = colon_idx + 1
+    n = len(text)
+    while pos < n and text[pos] in " \t\n\r":
+        pos += 1
+    if pos >= n or text[pos] != "{":
+        return None
+    # Balanced-brace scan: walk until depth returns to 0, respecting
+    # JSON string boundaries (so a ``"}"`` literal inside an arg value
+    # doesn't close the object early). Cap at 8 KiB so a malformed
+    # giant payload doesn't burn CPU.
+    depth = 0
+    in_string = False
+    escape = False
+    obj_start = pos
+    obj_end = -1
+    scan_end = min(n, obj_start + 8192)
+    while pos < scan_end:
+        ch = text[pos]
+        if escape:
+            escape = False
+        elif in_string:
+            if ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+        else:
+            if ch == '"':
+                in_string = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    obj_end = pos + 1
+                    break
+        pos += 1
+    if obj_end == -1:
+        return None
+    candidate = text[obj_start:obj_end]
+    try:
+        parsed = json.loads(candidate)
+    except (json.JSONDecodeError, ValueError):
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    # Canonicalise — strip any incidental whitespace / trailing junk
+    # so downstream ``_validate_tool_call_params`` sees a clean JSON
+    # object byte-for-byte.
+    return json.dumps(parsed, ensure_ascii=False)
+
+
+# Parser-wire literal markers that MUST be scrubbed from ``content`` /
+# ``reasoning_content`` when ``tool_choice="required"`` synthesises a
+# call to recover from a malformed model emission (D-TOOLCHOICE-R1 T3).
+# Without this scrub, the model's failed tool-call attempt — literal
+# ``<tool_call>...`` text the parser couldn't extract — leaks into
+# both user-visible fields.
+#
+# The list intentionally covers EVERY wire-opener we know about across
+# tool parsers (hermes / qwen3coder / nemotron / deepseek / glm /
+# minimax / mistral / kimi / llama / harmony / gemma4 / xlam /
+# functionary / granite / seed_oss / vibethinker named-XML). Adding a
+# parser is a one-line addition; a parser whose wire is already
+# textually clean (no opener literal) is a no-op here.
+_TOOL_WIRE_SCRUB_PATTERNS = (
+    # Hermes / qwen3 JSON-bodied wire
+    re.compile(r"<tool_call>.*?(?:</tool_call>|\Z)", re.DOTALL),
+    re.compile(r"<tool_call\b[^>]*>.*?(?:</tool_call>|\Z)", re.DOTALL),
+    # Nemotron + bare ``<function=NAME>...`` wire (also picks up the
+    # qwen3 malformed body's trailing ``</parameter></function>``)
+    re.compile(r"<function=[^>]*>.*?(?:</function>|\Z)", re.DOTALL),
+    re.compile(r"<function>.*?(?:</function>|\Z)", re.DOTALL),
+    re.compile(r"</?parameter[^>]*>"),
+    # DeepSeek V3 / V3.1 / R1-0528
+    re.compile(r"<｜tool▁calls▁begin｜>.*?(?:<｜tool▁calls▁end｜>|\Z)", re.DOTALL),
+    re.compile(r"<｜tool▁call▁begin｜>.*?(?:<｜tool▁call▁end｜>|\Z)", re.DOTALL),
+    # GLM-4 / GLM-4.7 wrapper
+    re.compile(r"<arg_key>.*?(?:</arg_value>|\Z)", re.DOTALL),
+    # Minimax
+    re.compile(r"<minimax:tool_call>.*?(?:</minimax:tool_call>|\Z)", re.DOTALL),
+    re.compile(r"<invoke\b[^>]*>.*?(?:</invoke>|\Z)", re.DOTALL),
+    # Llama python-tag and Kimi section markers
+    re.compile(r"<\|python_tag\|>.*?(?=$|\n\n)", re.DOTALL),
+    re.compile(
+        r"<\|tool_calls_section_begin\|>.*?(?:<\|tool_calls_section_end\|>|\Z)",
+        re.DOTALL,
+    ),
+    # Mistral
+    re.compile(r"\[TOOL_CALLS\].*?(?:\[/TOOL_CALLS\]|\Z)", re.DOTALL),
+)
+
+
+def _scrub_tool_wire_literals(text: str | None) -> str:
+    """Strip every known parser-wire opener-and-body pattern from
+    ``text``. Returns a whitespace-collapsed result so we don't leave
+    a void where the wire used to live.
+
+    Idempotent: safe to call on text that has no wire literals (the
+    regex sweep is a no-op). Called by the chat route ONLY when
+    ``tool_choice="required"`` synthesises (or recovers args for) a
+    call from a malformed wire — i.e. when the model's text output
+    contained tool-call markers the parser couldn't extract from.
+    Calling it on clean prose is harmless but wasted work; the route
+    therefore gates it on the synth path.
+    """
+    if not text:
+        return text or ""
+    result = text
+    for pattern in _TOOL_WIRE_SCRUB_PATTERNS:
+        result = pattern.sub("", result)
+    # Collapse any runs of whitespace left by the strip. Preserves
+    # single-space separation between surrounding prose words.
+    return re.sub(r"\s+", " ", result).strip()
+
+
+def _synthesize_forced_tool_call(
+    name: str, arguments: str = "{}", *, raw_text: str | None = None
+):
     """Build a single ``ToolCall`` for a forced ``tool_choice`` whose
     text parser surfaced no calls (#571).
 
@@ -222,23 +426,35 @@ def _synthesize_forced_tool_call(name: str, arguments: str = "{}"):
     client forces a tool call, the response MUST carry one. To restore
     symmetry we synthesise a tool_call server-side when the target tool
     is unambiguous (named-function, or ``"required"`` with a single
-    tool). Arguments default to ``"{}"`` because we have no signal
-    about what the model intended to pass; downstream
-    ``_validate_tool_call_params`` logs a warning when required
-    parameters are missing, mirroring the diagnostic surface clients
-    already see for model-generated calls with bad arguments. The
-    contract guarantee is "a tool_call is present", not "the arguments
-    are correct".
+    tool).
+
+    D-TOOLCHOICE-R1 T3: pre 0.8.3, ``arguments`` defaulted to ``"{}"``
+    unconditionally. When the model actually emitted a JSON object
+    body the strict parser couldn't extract from (qwen3 malformed
+    inner shape, model leaking unclosed tags, etc.) the empty-args
+    fallback shipped a uselessly opaque call. ``raw_text`` is now
+    consulted first: if it contains a recoverable ``"arguments": {...}``
+    object we use THAT instead of ``"{}"``. Downstream
+    ``_validate_tool_call_params`` still gates schema compliance; the
+    contract guarantee is "a tool_call is present", and now also "the
+    arguments are as close to what the model intended as we can
+    structurally recover".
     """
     # Lazy import — ToolCall / FunctionCall live alongside the request
     # model in ``api.models``. The lazy form keeps the synthesis path
     # scoped to forced-choice requests; the common case pays nothing.
     from ..api.models import FunctionCall, ToolCall
 
+    # Try the partial-recovery path first; only fall back to the
+    # caller-provided default (``"{}"`` or an upstream override) when
+    # the raw text yields nothing structurally parseable.
+    recovered = _recover_partial_tool_args(raw_text)
+    final_args = recovered if recovered is not None else arguments
+
     return ToolCall(
         id=f"call_{uuid.uuid4().hex[:8]}",
         type="function",
-        function=FunctionCall(name=name, arguments=arguments),
+        function=FunctionCall(name=name, arguments=final_args),
     )
 
 
@@ -1968,6 +2184,18 @@ async def _create_chat_completion_impl(
     # hatch, matching pre-#571 wording for that diagnostic.
     # Streaming path is best-effort prompt-injection only; once SSE
     # chunks are out we can't 422 mid-flight.
+    # D-TOOLCHOICE-R1 T3: track whether the post-parse path synthesised
+    # a forced-tool-choice call. When it did, the model's text output
+    # contained parser-wire markers the strict parser couldn't extract
+    # from (qwen3 emitted malformed JSON inside ``<tool_call>``,
+    # deepseek_v31 emitted a body that failed both V3 and V3.1 shapes,
+    # etc.). The raw text WILL still leak literal ``<tool_call>...``
+    # markup into ``content`` and ``reasoning_content`` unless we
+    # scrub it — the parser didn't strip those bytes because it
+    # couldn't recognise the block as a tool call. Setting this flag
+    # routes ``cleaned_text`` through ``_scrub_tool_wire_literals``
+    # before the downstream reasoning-parser pass.
+    _synth_forced_tool_call = False
     if request.tool_choice is not None and request.tools:
         if request.tool_choice == "required" and not tool_calls:
             if len(request.tools) == 1:
@@ -1976,11 +2204,18 @@ async def _create_chat_completion_impl(
                     logger.warning(
                         "tool_choice='required' on a parser-only path produced "
                         "no tool_calls; synthesising a call to the sole "
-                        "available tool %r with empty arguments to honor the "
-                        "OpenAI tool_call-guaranteed contract (#571).",
+                        "available tool %r (recovering arguments from raw "
+                        "text where possible) to honor the OpenAI tool_call-"
+                        "guaranteed contract (#571).",
                         _solo_name,
                     )
-                    tool_calls = [_synthesize_forced_tool_call(_solo_name)]
+                    tool_calls = [
+                        _synthesize_forced_tool_call(
+                            _solo_name,
+                            raw_text=output.raw_text or output.text,
+                        )
+                    ]
+                    _synth_forced_tool_call = True
             if not tool_calls:
                 raise HTTPException(
                     status_code=422,
@@ -2038,12 +2273,18 @@ async def _create_chat_completion_impl(
                 if not _names and _target_is_submitted:
                     logger.warning(
                         "tool_choice pinned function %r on a parser-only path "
-                        "produced no tool_calls; synthesising a call with "
-                        "empty arguments to honor the OpenAI tool_call-"
-                        "guaranteed contract (#571).",
+                        "produced no tool_calls; synthesising a call (recovering "
+                        "arguments from raw text where possible) to honor the "
+                        "OpenAI tool_call-guaranteed contract (#571).",
                         _target,
                     )
-                    tool_calls = [_synthesize_forced_tool_call(_target)]
+                    tool_calls = [
+                        _synthesize_forced_tool_call(
+                            _target,
+                            raw_text=output.raw_text or output.text,
+                        )
+                    ]
+                    _synth_forced_tool_call = True
                 elif not _names and not _target_is_submitted:
                     # Codex R1 BLOCKING (#675): named tool_choice points
                     # at a function that is not in ``request.tools`` —
@@ -2074,6 +2315,20 @@ async def _create_chat_completion_impl(
     if tool_calls and request.tools:
         _validate_tool_call_params(tool_calls, request.tools)
 
+    # D-TOOLCHOICE-R1 T3: when the post-parse path synthesised a forced
+    # tool call from a malformed wire body, the same raw text that the
+    # parser couldn't extract from is still living in ``cleaned_text``
+    # AND in ``output.raw_text`` (which the reasoning parser will see
+    # next). Scrub both sources of parser-wire-marker literals so they
+    # don't leak as ``content`` / ``reasoning_content``. The scrub is
+    # parser-agnostic — it strips every known opener-and-body pattern,
+    # so adding a new parser doesn't reopen this leak.
+    _scrubbed_raw_text: str | None = None
+    if _synth_forced_tool_call:
+        cleaned_text = _scrub_tool_wire_literals(cleaned_text)
+        _raw_for_reasoning = output.raw_text or output.text
+        _scrubbed_raw_text = _scrub_tool_wire_literals(_raw_for_reasoning)
+
     # Extract reasoning content. extract_reasoning() is stateless (pure regex
     # on full text), so the singleton is safe here unlike the streaming variant.
     # The tool_calls vs no-tool_calls split is encapsulated in
@@ -2081,7 +2336,9 @@ async def _create_chat_completion_impl(
     # the same orchestration without re-implementing it.
     cleaned_text_before_helper = cleaned_text
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
-        raw_text=output.raw_text or output.text,
+        raw_text=_scrubbed_raw_text
+        if _scrubbed_raw_text is not None
+        else (output.raw_text or output.text),
         cleaned_text=cleaned_text,
         tool_calls=tool_calls,
         reasoning_parser=cfg.reasoning_parser,
