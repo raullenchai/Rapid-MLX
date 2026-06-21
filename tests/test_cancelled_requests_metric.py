@@ -170,27 +170,23 @@ def test_total_counter_is_idempotent_against_double_enqueue():
 
 
 def test_total_counter_counts_reused_request_id_after_full_abort_cycle():
-    """Codex r3 BLOCKING #1: ``_cancelled_request_ids`` is an
-    ACTIVE-LIFETIME guard, not a process-lifetime ledger. Reusing the
-    same ``request_id`` for a NEW distinct request (after the prior
-    lifetime fully aborted AND was popped from ``self.requests``) MUST
-    increment the counter.
+    """``_cancelled_request_ids`` is an ACTIVE-LIFETIME guard, not a
+    process-lifetime ledger. Reusing the same ``request_id`` for a
+    NEW distinct request (after the prior lifetime fully aborted)
+    MUST increment the counter.
 
-    Pre-r3-fix the lifetime ledger persisted until ``reset()``, so
-    integrations that hash request_ids deterministically (or clients
-    that retry the same operation with a stable id) would silently
-    see their second cancel omitted from ``num_requests_cancelled``.
-    The r3 fix discards the id from BOTH dedupe ledgers inside
-    ``_do_abort_request`` so a future request with the same id
-    starts from a clean ledger.
-
-    Lifecycle: ``_do_abort_request`` clears the deduper but the text
-    scheduler keeps the ``Request`` object in ``self.requests`` until
-    a separate ``remove_finished_request`` call removes it (the
-    engine_core cleanup path). We drive that explicitly here to
-    mirror the production order — only AFTER the request is fully
-    out of the scheduler will the abort_request predicate take
-    the ``not in self.requests`` branch and require a fresh admit.
+    D-M01-2X (0.8.2 dogfood) update: the lifetime boundary that
+    clears the dedupe ledger moved from ``remove_finished_request``
+    to ``add_request``. The OLD boundary opened a multi-branch race
+    where the disconnect_guard's three force-abort fires (or the
+    deferred async-fallback coroutine) could re-enter
+    ``scheduler.abort_request`` AFTER ``_cleanup_request`` had
+    wiped the ledger but BEFORE ``_pending_abort_ids`` drained,
+    double-counting the same lifetime. Three PyPI 0.8.2 personas
+    independently reported the 2x over-count fingerprint. Moving
+    the clear to fresh-admit preserves the reuse semantics (this
+    test) while keeping the ledger lifetime-persistent across the
+    abort+cleanup window.
     """
     scheduler = _make_scheduler()
 
@@ -199,21 +195,27 @@ def test_total_counter_counts_reused_request_id_after_full_abort_cycle():
     assert scheduler.abort_request("req-reused") is True
     assert scheduler.get_stats()["num_requests_cancelled"] == 1
     scheduler._process_pending_aborts()
-    # Codex r4 fix: the dedupe ledger MUST stay populated until the
-    # request actually leaves ``self.requests``. Otherwise a
-    # redundant ``abort_request`` arriving while the request is
-    # mid-cleanup would observe ``in self.requests`` AND an empty
-    # ledger and double-count the same lifetime.
+    # Dedupe ledger stays populated past _do_abort_request — that's
+    # the long-standing codex r4 invariant.
     assert "req-reused" in scheduler._cancelled_request_ids
-    # Engine-core cleanup: remove the finished request from the
-    # scheduler's request map; the discard of the dedupe ledger
-    # happens HERE per codex r4.
+    # Engine-core cleanup pops self.requests but the dedupe ledger
+    # now persists past remove_finished_request (D-M01-2X fix). The
+    # ledger is the lifetime-cumulative dedupe; clearing it inside
+    # ``remove_finished_request`` was what opened the 0.8.2 dogfood
+    # race surface.
     scheduler.remove_finished_request("req-reused")
     assert "req-reused" not in scheduler.requests
-    assert "req-reused" not in scheduler._cancelled_request_ids
+    assert "req-reused" in scheduler._cancelled_request_ids, (
+        "ledger MUST persist past remove_finished_request — see "
+        "Scheduler.remove_finished_request docstring for the race"
+    )
 
-    # Second lifetime: distinct request, same id.
+    # Second lifetime: distinct request, same id. Fresh add_request
+    # clears the ledger entry for this id under the same lock that
+    # abort_request re-validates against, so the new lifetime
+    # starts from a clean dedupe state.
     _admit(scheduler, "req-reused")
+    assert "req-reused" not in scheduler._cancelled_request_ids
     assert scheduler.abort_request("req-reused") is True
     # MUST count again — the new request is a distinct cancel.
     assert scheduler.get_stats()["num_requests_cancelled"] == 2
@@ -298,27 +300,19 @@ def test_abort_request_revalidates_membership_under_lock():
     assert scheduler.get_stats()["num_requests_cancelled"] == 0
 
 
-def test_remove_finished_request_pops_and_discards_atomically():
-    """Codex r5 BLOCKING: ``remove_finished_request`` must perform
-    the ``self.requests.pop`` AND the dedupe-ledger discards
-    inside a single critical section so a concurrent
-    ``abort_request`` cannot observe ``request_id in self.requests``
-    AND an empty ledger.
+def test_remove_finished_request_pops_under_lock():
+    """``remove_finished_request`` must perform the
+    ``self.requests.pop`` inside the cancellation lock so concurrent
+    ``abort_request`` callers see a consistent transition (id either
+    fully resident or fully gone).
 
-    Pre-r5-fix the discards happened under the lock but the pop
-    was outside, opening a window where a racing thread saw:
-      * ``request_id in self.requests``  (pop hadn't run yet)
-      * ``request_id not in _cancelled_request_ids`` (discard
-        already cleared it)
-    → double-count of the same request lifetime.
-
-    Test approach: monkeypatch ``self.requests.pop`` to verify the
-    lock is HELD across both ``pop`` and ``discard``. We can't
-    reliably exercise the race via real threads (the window is
-    microseconds), so we assert the ordering contract by tracking
-    when each operation runs relative to the lock state. A
-    regression that moves either operation out of the critical
-    section flips one of the assertions.
+    D-M01-2X (0.8.2 dogfood) update: the dedupe-ledger discard moved
+    OUT of this method — it's now lifetime-persistent and cleared
+    at fresh ``add_request``. See
+    ``Scheduler.remove_finished_request`` docstring for the
+    multi-branch race repro. The pop staying under the lock is
+    still the codex r5 atomicity contract — only the discard
+    moved.
     """
     scheduler = _make_scheduler()
     _admit(scheduler, "req-atomic-cleanup")
@@ -328,11 +322,6 @@ def test_remove_finished_request_pops_and_discards_atomically():
     assert "req-atomic-cleanup" in scheduler._cancelled_request_ids
     assert "req-atomic-cleanup" in scheduler.requests
 
-    # Wrap ``self.requests`` and ``_cancelled_request_ids`` with
-    # observers that snapshot the lock state at each mutation.
-    # Can't monkeypatch ``dict.pop`` / ``set.discard`` directly
-    # (they're slot-defined read-only), so we replace the whole
-    # container with a subclass.
     lock = scheduler._cancel_counter_lock
 
     class _DictObserver(dict):
@@ -344,32 +333,19 @@ def test_remove_finished_request_pops_and_discards_atomically():
             self.pop_lock_states.append(lock.locked())
             return super().pop(*args, **kwargs)
 
-    class _SetObserver(set):
-        def __init__(self, src):
-            super().__init__(src)
-            self.discard_lock_states: list[bool] = []
-
-        def discard(self, *args, **kwargs):
-            self.discard_lock_states.append(lock.locked())
-            return super().discard(*args, **kwargs)
-
     scheduler.requests = _DictObserver(scheduler.requests)
-    scheduler._cancelled_request_ids = _SetObserver(scheduler._cancelled_request_ids)
-    scheduler._disconnect_abort_ids = _SetObserver(scheduler._disconnect_abort_ids)
 
     scheduler.remove_finished_request("req-atomic-cleanup")
 
-    # Both operations must have observed the lock held — that's
-    # the codex r5 contract.
+    # The pop must have observed the lock held — codex r5 atomicity.
     assert scheduler.requests.pop_lock_states == [True], (
         scheduler.requests.pop_lock_states
     )
-    assert scheduler._cancelled_request_ids.discard_lock_states == [True], (
-        scheduler._cancelled_request_ids.discard_lock_states
-    )
-    # Sanity: the actual cleanup happened.
+    # Sanity: the actual cleanup happened on the request map.
     assert "req-atomic-cleanup" not in scheduler.requests
-    assert "req-atomic-cleanup" not in scheduler._cancelled_request_ids
+    # D-M01-2X: ledger is lifetime-persistent, NOT cleared by
+    # remove_finished_request.
+    assert "req-atomic-cleanup" in scheduler._cancelled_request_ids
 
 
 def test_total_counter_does_not_double_count_redundant_abort_pre_cleanup():
@@ -404,13 +380,15 @@ def test_total_counter_does_not_double_count_redundant_abort_pre_cleanup():
 
 
 def test_disconnect_subcounter_counts_reused_request_id_after_full_abort_cycle():
-    """Codex r3 BLOCKING #2 symmetry: the via_disconnect sub-counter
-    must also re-count a reused ``request_id`` after the prior
-    lifetime completed.
+    """The via_disconnect sub-counter must re-count a reused
+    ``request_id`` after the prior lifetime completed (symmetry
+    with the total counter).
 
-    Same rationale as the total counter — keeping the id in
-    ``_disconnect_abort_ids`` past the request's lifetime would
-    silently swallow attribution for the next distinct request.
+    D-M01-2X (0.8.2 dogfood) update: the dedupe-clear boundary moved
+    from ``remove_finished_request`` to ``add_request``. The ledger
+    now persists past cleanup (plugging the multi-branch race) and
+    is wiped on fresh admit (preserving the reuse semantics this
+    test pins).
     """
     scheduler = _make_scheduler()
 
@@ -420,13 +398,16 @@ def test_disconnect_subcounter_counts_reused_request_id_after_full_abort_cycle()
     scheduler.record_disconnect_abort("req-disc-reused")
     assert scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 1
     scheduler._process_pending_aborts()
-    # Codex r4: still in ledger until remove_finished_request.
     assert "req-disc-reused" in scheduler._disconnect_abort_ids
     scheduler.remove_finished_request("req-disc-reused")
-    assert "req-disc-reused" not in scheduler._disconnect_abort_ids
+    # D-M01-2X: ledger persists past cleanup.
+    assert "req-disc-reused" in scheduler._disconnect_abort_ids
 
-    # Second lifetime: distinct request reusing the id.
+    # Second lifetime: distinct request reusing the id. Fresh admit
+    # wipes the dedupe ledgers for that id, so the new lifetime
+    # starts clean and the sub-counter advances.
     _admit(scheduler, "req-disc-reused")
+    assert "req-disc-reused" not in scheduler._disconnect_abort_ids
     scheduler.abort_request("req-disc-reused")
     scheduler.record_disconnect_abort("req-disc-reused")
     assert scheduler.get_stats()["num_requests_cancelled_via_disconnect"] == 2

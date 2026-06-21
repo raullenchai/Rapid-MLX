@@ -402,6 +402,17 @@ class MLLMScheduler:
                 f"(currently {len(self.requests)} in-flight)"
             )
 
+        # D-M01-2X (0.8.2 dogfood) follow-up: mirror the text-path
+        # ``Scheduler.add_request`` ledger clear. The cancellation
+        # dedupe ledgers are now lifetime-persistent across
+        # ``_do_abort_request`` to plug the disconnect_guard
+        # multi-branch race; clearing them at fresh admit (after
+        # admission control passes) preserves the request_id-reuse
+        # counting semantics.
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.discard(request_id)
+            self._disconnect_abort_ids.discard(request_id)
+
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
@@ -545,23 +556,22 @@ class MLLMScheduler:
             request.status = RequestStatus.FINISHED_ABORTED
         self.finished_req_ids.add(request_id)
 
-        # M-01 codex r8 BLOCKING #2: pop ``self.requests`` AND
-        # discard the cancellation lifetime ledgers under the SAME
-        # critical section. Pre-r8 the pop ran outside the lock,
-        # leaving a window where a concurrent ``abort_request``
-        # acquiring the lock could observe inconsistent state
-        # across ``self.requests`` / ``request_id_to_uid`` /
-        # ``running`` / ``_pending_abort_ids``. With both inside
-        # the lock, any concurrent abort-path predicate (codex r6
-        # fix: also inside the lock) sees a consistent
-        # transition — either everything pre-cleanup or
-        # everything post-cleanup. Detokenizer pool pop also
-        # joins the section for symmetric ordering.
+        # D-M01-2X + D-M01-DEAD (0.8.2 dogfood): do NOT discard the
+        # dedupe ledgers — keep them lifetime-persistent. Mirrors
+        # the same fix applied to ``Scheduler.remove_finished_request``
+        # in the text path. See that docstring for the full repro of
+        # the disconnect_guard multi-branch fire race that wiping
+        # these ledgers opens up. The MLLM path has the SAME race
+        # surface (disconnect_guard fires from up to three branches,
+        # each may invoke ``abort_request`` against the MLLM
+        # scheduler) — so keeping the ledger persistent here is
+        # required for the dashboard invariant
+        # ``via_disconnect_total <= cancelled_total`` and the
+        # "exactly one tick per abort" contract that three personas
+        # independently observed broken on PyPI 0.8.2.
         with self._cancel_counter_lock:
             self.requests.pop(request_id, None)
             self._detokenizer_pool.pop(request_id, None)
-            self._cancelled_request_ids.discard(request_id)
-            self._disconnect_abort_ids.discard(request_id)
 
         # Do NOT write to output_queues here — this may run on the
         # executor thread where asyncio.Queue is not safe.  Mark for

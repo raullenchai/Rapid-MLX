@@ -1989,11 +1989,42 @@ def _resolve_sync_scheduler_for_abort(engine):
     else:
         inner = getattr(engine, "_engine", None)
         if inner is not None:
+            # ``engine._engine.scheduler`` — synthetic test-stub shape
+            # where AsyncEngineCore-like is stubbed with a direct
+            # ``.scheduler`` attribute. Kept for back-compat with the
+            # existing pre-D-M01 test corpus.
             inner_sched = getattr(inner, "scheduler", None)
             if inner_sched is not None:
                 abort = getattr(inner_sched, "abort_request", None)
                 if abort is not None and not asyncio.iscoroutinefunction(abort):
                     return abort
+            # D-M01-DEAD (0.8.2 dogfood): the PRODUCTION ``rapid-mlx
+            # serve`` shape is ``BatchedEngine._engine`` →
+            # ``AsyncEngineCore.engine`` → ``EngineCore.scheduler``.
+            # ``AsyncEngineCore`` does NOT expose ``.scheduler``
+            # directly — its scheduler lives behind ``self.engine``
+            # which is an ``EngineCore``. Without this extra hop the
+            # sync resolver returns ``None`` on every real production
+            # engine and ``_force_abort_request`` falls into the
+            # async fallback. That fallback awaits
+            # ``EngineCore.abort_request`` which interleaves
+            # ``scheduler.abort_request`` + ``_cleanup_request``
+            # (which wipes the lifetime ledger), racing the
+            # attribution helper and causing the 2x over-count +
+            # flat-zero via_disconnect sub-counter that three
+            # 0.8.2 personas independently reported.
+            #
+            # Mirror the same deep-path walk
+            # ``_resolve_disconnect_abort_recorder`` already does so
+            # the sync abort and the attribution call resolve to the
+            # SAME ``Scheduler`` instance on every backend shape.
+            inner_engine = getattr(inner, "engine", None)
+            if inner_engine is not None:
+                deep_sched = getattr(inner_engine, "scheduler", None)
+                if deep_sched is not None:
+                    abort = getattr(deep_sched, "abort_request", None)
+                    if abort is not None and not asyncio.iscoroutinefunction(abort):
+                        return abort
     return None
 
 
@@ -2098,11 +2129,35 @@ def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
     moment the sync entry returns True, so failure of this attribution
     helper at worst leaves the (total - disconnect) gap one larger
     than reality — never breaks the abort itself.
+
+    D-M01-DEAD (0.8.2 dogfood): the previous implementation silently
+    no-op'd when ``_resolve_disconnect_abort_recorder`` returned
+    ``None``. That swallow-with-no-log let PR #783 ship without
+    catching that the production ``BatchedEngine`` over
+    ``AsyncEngineCore`` shape exposed no recorder — three personas
+    independently observed flat-zero ``via_disconnect_total`` on
+    PyPI 0.8.2. The explicit WARNING below ensures the next
+    engine-shape change cannot silently regress the sub-counter
+    again: an operator will see the unresolved-engine warning in
+    logs the moment any abort path hits a shape neither resolver
+    recognises.
     """
     try:
         recorder = _resolve_disconnect_abort_recorder(engine)
-        if recorder is not None:
-            recorder(request_id)
+        if recorder is None:
+            logger.warning(
+                "[disconnect_guard] no record_disconnect_abort recorder "
+                "found on engine type=%s — via_disconnect sub-counter "
+                "WILL NOT advance for %s. This indicates an unrecognised "
+                "engine shape; the resolvers in "
+                "_resolve_disconnect_abort_recorder + "
+                "_resolve_sync_scheduler_for_abort must learn the new "
+                "backend graph.",
+                type(engine).__name__,
+                str(request_id)[:12] if request_id else request_id,
+            )
+            return
+        recorder(request_id)
     except Exception:  # pragma: no cover - belt-and-suspenders
         logger.warning(
             "[disconnect_guard] record_disconnect_abort raised; "

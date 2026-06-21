@@ -2923,6 +2923,26 @@ class Scheduler:
                 f"(currently {len(self.requests)} in-flight)"
             )
 
+        # D-M01-2X (0.8.2 dogfood) follow-up: the cancellation dedupe
+        # ledgers are LIFETIME-PERSISTENT to plug the
+        # disconnect_guard multi-branch race (see
+        # ``remove_finished_request`` docstring for the repro). To
+        # preserve request_id-reuse counting semantics (a fresh
+        # admit with a previously-cancelled id legitimately starts
+        # a new lifetime that SHOULD be counted on cancel), we
+        # explicitly clear that id from BOTH ledgers right after
+        # admission control passes — under the same lock that
+        # ``abort_request`` re-validates against, so a concurrent
+        # late abort for the prior lifetime can't observe an
+        # inconsistent transition. Without this, deterministic
+        # integrations that reuse request_ids would silently see
+        # their second cancel omitted from the counter. Placed
+        # AFTER the admission gate so capped admits do not wipe
+        # the prior lifetime's ledger.
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.discard(request.request_id)
+            self._disconnect_abort_ids.discard(request.request_id)
+
         # Tokenize if needed
         if request.prompt_token_ids is None:
             if isinstance(request.prompt, str):
@@ -4178,40 +4198,72 @@ class Scheduler:
     def remove_finished_request(self, request_id: str) -> Request | None:
         """Remove a finished request from tracking.
 
-        M-01 codex r4 BLOCKING #1 + codex r5 BLOCKING: this is the
-        canonical request-leaves-scheduler boundary, so the
-        cancellation dedupe ledgers (``_cancelled_request_ids`` /
-        ``_disconnect_abort_ids``) are also discarded here. Before
-        this method runs, a redundant ``abort_request`` for the
-        same id would still pass the
-        ``request_id in self.requests`` predicate — so the ledger
-        must stay populated to prevent double-counting that
-        redundant enqueue. After this method runs, ``request_id``
-        is no longer admit-able via the abort-path predicate, so
-        the only way a future ``abort_request(rid)`` can hit
-        ``True`` is through a fresh ``add_request`` (a distinct
-        lifetime), which is exactly when the counter SHOULD tick
-        again.
+        D-M01-2X + D-M01-DEAD (0.8.2 dogfood): this method MUST
+        NOT discard ``_cancelled_request_ids`` /
+        ``_disconnect_abort_ids``. Those are LIFETIME ledgers — the
+        ``__init__`` comment block explicitly documents them as
+        "every id that has ever advanced the counter stays in it
+        for the process lifetime" with memory bounded by cancel
+        traffic.
 
-        Codex r5 BLOCKING: the ``self.requests.pop`` AND the
-        ledger discards MUST happen under a single critical
-        section. Otherwise the window between "ledger discarded"
-        and "request popped" is a race where a concurrent
-        ``abort_request`` observes ``request_id in self.requests``
-        (still True) AND an empty ledger (because we just cleared
-        it) and double-counts the same lifetime. The pop is moved
-        INSIDE the lock and runs BEFORE the discard so any
-        concurrent ``abort_request`` either sees the id still in
-        ``self.requests`` AND in the ledger (no double-count, the
-        dedupe gate catches it) OR sees the id not in
-        ``self.requests`` (returns False per F-151).
+        Why the prior discard was a regression
+        --------------------------------------
+        On the production ``BatchedEngine`` over ``AsyncEngineCore``
+        shape, an aborted request follows this sequence:
 
-        Discards are idempotent — re-entry is safe.
+          1. ``stream_outputs.finally`` (or the deferred
+             ``_await_and_record`` coroutine) calls
+             ``scheduler.abort_request(rid)`` → adds to
+             ``_cancelled_request_ids``, increments
+             ``num_requests_cancelled``, queues into
+             ``_pending_abort_ids``. Returns True.
+          2. ``EngineCore._cleanup_request`` calls THIS method →
+             previously discarded both ledgers. ``_pending_abort_ids``
+             still contains the id (it's drained on the executor
+             thread by ``_process_pending_aborts``).
+          3. The other branch's ``scheduler.abort_request(rid)``
+             (the disconnect_guard fires from up to three places,
+             the async-fallback coroutine adds a fourth)
+             re-enters the public abort. The membership predicate
+             ``request_id in self._pending_abort_ids`` still
+             evaluates True, so the abort is accepted. The
+             ``already_counted`` read on the WIPED
+             ``_cancelled_request_ids`` returns False, and the
+             counter increments AGAIN — the 2x over-count.
+          4. ``record_disconnect_abort`` then runs through the gate
+             ``request_id not in self._cancelled_request_ids`` —
+             which AGAIN reads from the wiped ledger and silently
+             returns. ``via_disconnect_total`` stays flat-zero
+             through every real disconnect — D-M01-DEAD.
+
+        The fix: leave the ledgers populated for the process
+        lifetime. Membership in ``_cancelled_request_ids`` is now
+        a true "this id has already advanced the counter once"
+        marker that survives ``_cleanup_request`` AND any number
+        of redundant abort calls from the disconnect_guard's
+        multi-branch fire pattern. The only paths that clear them
+        are ``reset()`` / ``deep_reset()`` — see the codex r8
+        BLOCKING #1 comment block in ``reset()`` for why those
+        clear AFTER the abort loop.
+
+        Memory: one ~36-byte uuid per cancel, same scale as
+        ``finished_req_ids`` (which also persists across
+        ``_cleanup_request``). The PR #783 docstring claim that
+        "the only way a future ``abort_request(rid)`` can hit
+        True is through a fresh ``add_request``" was wrong: the
+        ``_pending_abort_ids`` membership branch passes True for
+        the entire window between abort enqueue and
+        executor-thread drain, opening exactly this race.
+
+        Returns the popped Request (or None if already gone).
         """
+        # Pop under the lock so a concurrent ``abort_request`` either
+        # observes the id present in ``self.requests`` (admits, hits
+        # the lifetime ledger, dedupes — no double count) or absent
+        # AND with all admission predicates ruling it out (returns
+        # False per F-151). The ledgers stay populated indefinitely.
         with self._cancel_counter_lock:
             popped = self.requests.pop(request_id, None)
-            self._cancelled_request_ids.discard(request_id)
-            self._disconnect_abort_ids.discard(request_id)
         return popped
 
     def get_running_requests_info(self) -> list[dict[str, Any]]:
