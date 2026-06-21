@@ -587,6 +587,7 @@ def _rescue_silent_drop_from_reasoning(
     raw_text: str | None = None,
     *,
     reasoning_is_case4: bool = False,
+    matched_stop: str | None = None,
 ) -> str | None:
     """Issue #569: never silently drop an assistant turn.
 
@@ -710,39 +711,58 @@ def _rescue_silent_drop_from_reasoning(
     # with ``stop=["STOP"]`` on qwen3-0.6b-4bit). Six parser
     # families confirmed.
     #
-    # Symmetric fix (D-STOP-THINK), scoped per codex round-N
-    # review: extend the suppression to BOTH ``stop`` and
-    # ``length`` for the unclosed-``<think>`` arm (the trim cause
-    # is structurally identical — mid-think suffix removed —
-    # only the reported ``finish_reason`` differs).
+    # Codex round-2 BLOCKING on PR #799: the prompt-injected
+    # ``<think>`` case (chat template wraps the prompt with
+    # ``<think>\n`` so the opener never appears in raw_text) means
+    # Case-4 + ``stop`` with a user-supplied stop string firing
+    # mid-thought can ALSO produce the D-STOP-THINK leak shape —
+    # but ``raw_text`` won't carry the opener for the
+    # raw_text-evidence arm to fire. The truncation signal we
+    # actually have for this shape is ``matched_stop != None``
+    # (set by the scheduler when a user-supplied stop string
+    # fires — see scheduler.py:3673). Natural EOS finishes have
+    # ``matched_stop=None``.
     #
-    # The Case-4 arm stays ``length``-ONLY because Case-4 by
-    # itself is NOT direct truncation evidence: VibeThinker's
-    # no-think prompts can legitimately produce a Case-4 stream
-    # that finishes naturally with ``finish_reason="stop"``
-    # (EOS), and pre-fix those rescues correctly surfaced the
-    # reasoning trace as ``content`` (PR #715 fuzz finding C).
-    # Suppressing them on ``stop`` would silently drop the
-    # assistant turn — the exact #569 regression this helper
-    # exists to prevent. The Case-4-with-``stop`` D-STOP-THINK
-    # leak shape only fires when the stop string actually
-    # matched inside ``<think>`` (a user-supplied stop string),
-    # and in that shape ``raw_text`` carries the unclosed
-    # ``<think>`` opener — picked up by the existing
-    # opener-evidence arm above. Case-4 + ``stop`` with no
-    # opener evidence is the natural-EOS path and still gets
-    # rescued.
+    # Suppression matrix (D-STOP-THINK):
     #
-    # Other ``stop`` cases (model emitted a closed
-    # ``<think>…</think>`` then generated the stop string in its
-    # answer) still get rescued — the unclosed-opener arm picks
-    # out the mid-think shape specifically.
+    # finish_reason | raw_text<think>? | reasoning_is_case4 | matched_stop | suppress?
+    # length        | yes              | *                  | *            | YES (existing)
+    # length        | no               | yes                | *            | YES (existing case4 arm)
+    # length        | no               | no                 | *            | no (#569 rescue)
+    # stop          | yes              | *                  | *            | YES (existing)
+    # stop          | no               | yes                | yes          | YES (D-STOP-THINK: prompt-injected + user stop)
+    # stop          | no               | yes                | no           | no (natural EOS in case4 — PR #715 fuzz finding C)
+    # stop          | no               | no                 | *            | no (closed think + stop in answer)
+    #
+    # The new Case-4 + stop + matched_stop branch closes the
+    # codex round-2 BLOCKING: when the user-supplied stop string
+    # fires mid-thought in a prompt-injected ``<think>`` stream,
+    # the engine truncates the suffix BEFORE ``</think>`` ever
+    # arrives, the parser routes the WHOLE truncated body to
+    # reasoning (Case-4), AND the rescue surface would duplicate
+    # the bytes — symmetric with the explicit-opener leak shape.
+    # Natural-EOS Case-4 (no matched_stop) still rescues so
+    # casual non-thinking answers don't silently disappear.
     truncated_mid_think = (
-        bool(finish_reason in ("length", "stop"))
-        and raw_text
-        and raw_text.lstrip().startswith("<think>")
-        and "</think>" not in raw_text
-    ) or (finish_reason == "length" and reasoning_is_case4)
+        # Explicit-opener: raw_text carries unclosed ``<think>``.
+        # Symmetric across stop/length (trim cause is identical).
+        (
+            bool(finish_reason in ("length", "stop"))
+            and raw_text
+            and raw_text.lstrip().startswith("<think>")
+            and "</think>" not in raw_text
+        )
+        # Case-4 + length: parser routed whole body to reasoning
+        # (helper-Case-4 signal) and finish_reason=length means
+        # truncation. Unconditional on length (no #569 false
+        # positive — length means engine cut the suffix).
+        or (finish_reason == "length" and reasoning_is_case4)
+        # Case-4 + stop + matched_stop: prompt-injected ``<think>``
+        # with user-supplied stop firing mid-thought. matched_stop
+        # IS the truncation signal (set by scheduler when the
+        # user's stop string trimmed the output).
+        or (finish_reason == "stop" and reasoning_is_case4 and matched_stop is not None)
+    )
     if truncated_mid_think:
         return final_content
     return reasoning_text

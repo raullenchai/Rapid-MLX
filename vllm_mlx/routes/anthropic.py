@@ -618,6 +618,7 @@ async def create_anthropic_message(
             finish_reason=finish_reason,
             raw_text=output.raw_text or output.text,
             reasoning_is_case4=reasoning_is_case4,
+            matched_stop=getattr(output, "matched_stop", None),
         )
 
         openai_response = ChatCompletionResponse(

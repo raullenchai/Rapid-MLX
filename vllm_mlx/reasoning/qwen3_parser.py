@@ -299,9 +299,22 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # No close tag — strip the template-injected ``<think>``
             # prefix if present so the correction text matches what was
             # streamed.
-            saw_think_prefix = accumulated_text.startswith(self.start_token)
+            #
+            # Codex round-2 BLOCKING fix (PR #799): use
+            # ``lstrip().startswith`` instead of ``startswith`` so
+            # leading whitespace before ``<think>`` (e.g. the
+            # template-injected ``<think>\n`` with leading newline
+            # padding, or a model emission like ``  <think>``) is
+            # recognised as an explicit-opener stream. The previous
+            # ``startswith`` form silently fell through to the
+            # no-evidence content-correction branch, leaking the
+            # thought trace into ``content`` for whitespace-padded
+            # explicit-opener streams — exactly the D-STOP-THINK
+            # shape this branch exists to suppress.
+            stripped_text = accumulated_text.lstrip()
+            saw_think_prefix = stripped_text.startswith(self.start_token)
             cleaned = (
-                accumulated_text[len(self.start_token) :]
+                stripped_text[len(self.start_token) :]
                 if saw_think_prefix
                 else accumulated_text
             )

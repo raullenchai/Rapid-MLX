@@ -1818,6 +1818,7 @@ async def _create_chat_completion_impl(
             finish_reason=finish_reason,
             raw_text=output.raw_text or output.text,
             reasoning_is_case4=reasoning_is_case4,
+            matched_stop=getattr(output, "matched_stop", None),
         )
 
     # Build logprobs for response if requested
@@ -2237,6 +2238,7 @@ async def stream_chat_completion(
                     finish_reason=finish_event.finish_reason,
                     raw_text=synthetic_raw,
                     reasoning_is_case4=reasoning_is_case4_stream,
+                    matched_stop=getattr(finish_event, "matched_stop", None),
                 )
                 # The helper returns the rescued reasoning ONLY when
                 # all four predicates pass (empty/whitespace content,

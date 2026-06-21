@@ -142,6 +142,37 @@ class TestStopMidThinkExplicitOpener:
             f"text channel.\n  thinking={thinking!r}\n  text={text!r}"
         )
 
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [("qwen3", Qwen3ReasoningParser)],
+    )
+    def test_whitespace_prefix_before_think_opener_recognised(self, name, parser_cls):
+        """Codex round-2 BLOCKING fix (PR #799): the qwen3 finalize
+        path used ``startswith(self.start_token)`` to detect the
+        explicit opener, which missed valid streams with leading
+        whitespace before ``<think>`` (e.g. the template-injected
+        ``<think>\\n`` with leading newline padding, or a model
+        emission like ``  <think>``). The whitespace-padded stream
+        fell through to the no-evidence content correction —
+        leaking the thought trace into ``content``.
+
+        Post-fix: ``lstrip().startswith`` recognises the opener
+        regardless of leading whitespace; the rescue then surfaces
+        via reasoning so the D-STOP-THINK invariant holds.
+        """
+        parser = parser_cls()
+        # Leading whitespace before the opener — the template-
+        # injected case.
+        accumulated = "\n  <think>Let me think about 5+7."
+        result = parser.finalize_streaming(accumulated)
+        assert result is not None
+        assert result.content is None, (
+            f"[{name}] codex r2 BLOCKING regression — whitespace-prefixed "
+            f"explicit opener leaked into content: {result.content!r}"
+        )
+        assert result.reasoning is not None
+        assert "Let me think" in result.reasoning
+
 
 class TestStopMidThinkNoOpener:
     """``stop`` matches mid-thought WITHOUT an explicit ``<think>``
