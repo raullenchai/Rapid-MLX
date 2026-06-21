@@ -396,6 +396,19 @@ class DeepSeekV31ToolParser(ToolParser):
         # contract until a model emerges that actually demands V3
         # streaming. V3.1 streams are unchanged (legacy delta machine
         # still runs).
+        #
+        # Known limitation (codex r7): a *mixed* V3.1+V3 envelope —
+        # where the legacy machine streams a V3.1 block FIRST (setting
+        # ``tool_calls_detected = True`` on the postprocessor) BEFORE
+        # the V3 block opens — would lose the V3 block, because the
+        # postprocessor's finalize fallback gates on
+        # ``not tool_calls_detected``. This is a postprocessor
+        # contract limitation, not something a parser-only fix can
+        # address. Mixed envelopes are not produced by any released
+        # DeepSeek checkpoint; the chat templates for both V3 and
+        # V3.1 emit a single body shape per envelope. See
+        # ``test_mixed_v3_and_v31_blocks`` for the NON-streaming
+        # (correct) behaviour on mixed payloads.
         # ----------------------------------------------------------------
         if self._cumulative_has_v3_block(current_text):
             return None

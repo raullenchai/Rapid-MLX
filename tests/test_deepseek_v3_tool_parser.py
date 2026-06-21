@@ -423,17 +423,22 @@ class TestV3Streaming:
         assert len(result.tool_calls) == 2
         assert [c["name"] for c in result.tool_calls] == ["get_weather", "get_time"]
 
-    def test_v31_then_v3_v3_part_does_not_stream_v31_part_does(
+    def test_mixed_v31_then_v3_stream_no_function_leak(
         self, parser: DeepSeekV31ToolParser
     ) -> None:
-        """Mixed envelope [V3.1, V3]: once V3 is detected in cumulative
-        text, the suppression engages and streaming returns ``None``.
-        The V3.1 block before V3 will have already been streamed by the
-        legacy delta machine (its emissions happen before V3 arrives).
-        Finalize then re-parses the cumulative text and emits both —
-        the postprocessor reconciles via ``tool_calls_detected`` (out
-        of scope for this parser-level test). We assert: no V3-shape
-        ``name="function"`` deltas reach the wire from streaming.
+        """Mixed envelope [V3.1, V3]: documented known limitation
+        (parser docstring, codex r7) — the postprocessor's finalize
+        fallback gates on ``not tool_calls_detected``, so a V3.1 block
+        streamed first would prevent finalize from reconciling the
+        suppressed V3 block. Mixed envelopes don't occur in practice
+        on released DeepSeek checkpoints (each chat template emits a
+        single body shape per envelope).
+
+        What we DO require: even in a mixed-envelope stream, the V3
+        block must not leak ``name="function"`` mid-stream. The
+        suppression engages the moment the V3 anchor arrives, so any
+        legacy-machine emission for the V3 block is short-circuited
+        before the type tag becomes the streamed name.
         """
         payload = _envelope(
             _v31_block("first_call", '{"a": 1}'),
@@ -449,6 +454,17 @@ class TestV3Streaming:
                 assert call.get("function", {}).get("name") != "function", (
                     f"V3 type-tag leaked into a streaming name: {call!r}"
                 )
+
+        # Non-streaming extract on the same payload still produces
+        # both calls correctly — the parser itself isn't lossy on
+        # mixed envelopes; the limitation lives in the streaming +
+        # postprocessor contract.
+        result = parser.extract_tool_calls(payload)
+        assert len(result.tool_calls) == 2
+        assert [c["name"] for c in result.tool_calls] == [
+            "first_call",
+            "second_call",
+        ]
 
     def test_v31_tool_named_with_function_prefix_streams_normally(
         self, parser: DeepSeekV31ToolParser
