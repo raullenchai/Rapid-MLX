@@ -215,3 +215,67 @@ def test_extract_tool_calls_no_recovery_on_natural_chat():
     res = parser.extract_tool_calls(text, request)
     assert res.tools_called is False
     assert res.content == text
+
+
+# ---------------------------------------------------------------------------
+# codex pr_validate round-2 regression — additional guards
+# ---------------------------------------------------------------------------
+
+
+def test_prose_required_args_split_across_two_sentences():
+    """Round-2 BLOCKING-2: ``call add with a=13. b=29.`` had only
+    ``a=13`` in the first clipped sentence; recovery must walk to
+    the next sentence boundary (within PROSE_WINDOW_BYTES) before
+    declaring "required missing"."""
+    prose = "call add with a=13. b=29."
+    out = _try_prose_recover_tool_call(prose, [ADD_TOOL])
+    assert out is not None
+    assert out["name"] == "add"
+    assert json.loads(out["arguments"]) == {"a": 13, "b": 29}
+
+
+def test_prose_name_does_not_match_suffix():
+    """Round-2 NIT: a tool named ``add`` must NOT match ``foo_add``
+    or ``my-add`` (leading negative lookbehind ``(?<![\\w-])``)."""
+    prose = "I called foo_add earlier with a=13 and b=29."
+    out = _try_prose_recover_tool_call(prose, [ADD_TOOL])
+    assert out is None
+    # And a real ``add`` mention with hyphenated lookbehind also blocked.
+    prose2 = "Use my-add helper with a=13 and b=29."
+    out2 = _try_prose_recover_tool_call(prose2, [ADD_TOOL])
+    assert out2 is None
+
+
+def test_prose_far_later_sentence_still_rejected():
+    """The bounded-window walk must NOT enlarge so far that an
+    unrelated multi-sentence ramble after the tool mention is
+    silently turned into a tool call."""
+    # ``add`` mention, then a LONG (>300 char) unrelated paragraph,
+    # then args far past the window cap. Should NOT recover.
+    prose = (
+        "I considered the `add` tool. "
+        + ("Long unrelated discussion about the weather. " * 8)
+        + "Eventually a=42 and b=99."
+    )
+    out = _try_prose_recover_tool_call(prose, [ADD_TOOL])
+    assert out is None
+
+
+def test_prose_only_schema_declared_keys_kept():
+    """Round-1 BLOCKING-2: schema-undeclared keys in prose
+    (``result=42``) must be dropped from recovered arguments."""
+    prose = "call add with a=13, b=29, result=42."
+    out = _try_prose_recover_tool_call(prose, [ADD_TOOL])
+    assert out is not None
+    args = json.loads(out["arguments"])
+    assert args == {"a": 13, "b": 29}
+    assert "result" not in args
+
+
+def test_prose_case_sensitive_name_match():
+    """Round-1 NIT-5: function names are case-sensitive per OpenAI
+    spec — a model writing ``ADD`` when the registered tool is
+    ``add`` is NOT a confident call."""
+    prose = "I should call ADD with a=13 and b=29."
+    out = _try_prose_recover_tool_call(prose, [ADD_TOOL])
+    assert out is None

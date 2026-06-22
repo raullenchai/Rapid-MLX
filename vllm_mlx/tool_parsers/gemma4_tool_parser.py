@@ -230,8 +230,12 @@ def _try_prose_recover_tool_call(
         # case-sensitive identifiers, so a model writing ``ADD`` when
         # the registered tool is ``add`` is NOT a confident call.
         # (codex pr_validate NIT-5)
+        # Leading negative lookbehind ``(?<![\w-])``: prevent a tool
+        # named ``add`` from matching suffixes like ``foo_add`` or
+        # ``my-add`` if their identifier text happens to sit near
+        # unrelated ``a=`` / ``b=`` prose. (codex round-2 NIT.)
         name_re = re.compile(
-            r"(?:`|\"|')?" + re.escape(name) + r"(?:`|\"|')?\b",
+            r"(?<![\w-])(?:`|\"|')?" + re.escape(name) + r"(?:`|\"|')?\b",
         )
         matches = list(name_re.finditer(text))
         if not matches:
@@ -246,7 +250,7 @@ def _try_prose_recover_tool_call(
             props = params.get("properties")
             if isinstance(props, dict):
                 allowed_keys = {
-                    k for k in props.keys() if isinstance(k, str)
+                    k for k in props if isinstance(k, str)
                 }
         for match in matches:
             candidates.append(
@@ -268,36 +272,25 @@ def _try_prose_recover_tool_call(
     # mentions an unrelated ``a=…`` many sentences later.
     PROSE_WINDOW_BYTES = 300
 
-    for name_start, fn, name, required, allowed_keys in candidates:
-        # Search a BOUNDED window after the name mention, clipped at
-        # the first sentence-end (period/question/exclamation followed
-        # by whitespace) or PROSE_WINDOW_BYTES, whichever is smaller.
-        # Forward-only scanning preserves the "call X with args"
-        # ordering AND avoids dragging in unrelated key=value pairs.
-        window_end = min(len(text), name_start + PROSE_WINDOW_BYTES)
-        window = text[name_start:window_end]
-        # Clip at first sentence boundary if one exists in the window.
-        # This handles "call add with a=13 and b=29. Earlier I noted
-        # result=42." — we keep only the first sentence so the
-        # ``result=42`` from a later sentence does not leak into the
-        # recovered call.
-        sentence_match = re.search(r"[.!?](?:\s|$)", window)
-        if sentence_match is not None:
-            # Include the punctuation so "a=29." still captures the 29.
-            window = window[: sentence_match.end()]
+    # Helper — scan ``window`` for declared key=value pairs, dropping
+    # the tool name itself and any key not in ``allowed_keys`` (when
+    # the schema declares properties). Returns the recovered
+    # ``{key: value}`` dict for THIS window.
+    def _scan_window(window: str, name: str, allowed_keys: set[str] | None):
         found: dict[str, Any] = {}
         for kv in GEMMA4_PROSE_KV_PATTERN.finditer(window):
             key = kv.group(1)
             value = _coerce_prose_value(kv.groups()[1:])
             # Skip captures whose "key" is actually the tool name
-            # itself (``name=add``) — that's the name mention, not an
-            # argument assignment.
+            # itself (``name=add``) — that's the name mention, not
+            # an argument assignment.
             if key.lower() == name.lower():
                 continue
             # Drop keys not declared in the tool schema. (codex
-            # pr_validate BLOCKING-2: strict tool servers reject
+            # pr_validate r1 BLOCKING-2: strict tool servers reject
             # unknown args, so silently filter here rather than
-            # forward `result=42` from `call add with a=13, result=42`.)
+            # forward `result=42` from `call add with a=13,
+            # result=42`.)
             if allowed_keys is not None and key not in allowed_keys:
                 continue
             # First mention wins: a prose like "a=13" then later
@@ -306,13 +299,60 @@ def _try_prose_recover_tool_call(
             # intent (the prose is the model's reasoning, so the
             # earliest commitment is the most reliable).
             found.setdefault(key, value)
+        return found
+
+    for name_start, fn, name, required, allowed_keys in candidates:
+        # Search a BOUNDED window after the name mention, capped at
+        # PROSE_WINDOW_BYTES. Forward-only scanning preserves the
+        # "call X with args" ordering AND avoids dragging in
+        # unrelated key=value pairs far from the call site.
+        window_end = min(len(text), name_start + PROSE_WINDOW_BYTES)
+        bounded = text[name_start:window_end]
+
+        # Walk sentence boundaries within the bounded window. Start
+        # with the first sentence; if required args are still missing
+        # AND we are still under PROSE_WINDOW_BYTES, extend to the
+        # next sentence boundary, up to a small max-sentence cap.
+        # This handles the codex round-2 BLOCKING case
+        # ``call add with a=13. b=29.``: the first sentence has only
+        # ``a=13`` and we need to peek into the next sentence to find
+        # ``b=29``. Capping at 3 sentences keeps the conservative
+        # behaviour: "..mentioned add. Long unrelated paragraph.
+        # ...a=42, b=99." still won't recover because the boundary
+        # walk stops well before the later sentence.
+        MAX_SENTENCES = 3
+        sentence_ends = [
+            m.end() for m in re.finditer(r"[.!?](?:\s|$)", bounded)
+        ]
+        # Always include the full bounded window as the final
+        # fallback so a single-sentence prose without trailing
+        # punctuation (``call add with a=13 and b=29``) still works.
+        if not sentence_ends or sentence_ends[-1] < len(bounded):
+            sentence_ends.append(len(bounded))
+        # Cap.
+        sentence_ends = sentence_ends[:MAX_SENTENCES]
+
+        found: dict[str, Any] = {}
+        for window_end_idx in sentence_ends:
+            window = bounded[:window_end_idx]
+            found = _scan_window(window, name, allowed_keys)
+            # If all required args have been collected — accept now.
+            if required and all(r in found for r in required):
+                break
+            # If no required args (schema doesn't declare any) and we
+            # found at least one key — accept (the prose did commit
+            # to a key=value, that's enough for a free-form tool).
+            if not required and found:
+                break
+
         if required and not all(r in found for r in required):
-            # Required params missing — not a confident recovery on
-            # THIS mention. Continue to later mentions (e.g. the
-            # canonical "using the `add` tool. I should call the
-            # `add` tool with a=13 and b=29." has TWO `add` mentions;
-            # the second one has the args, so we skip the first and
-            # succeed on the second).
+            # Required params missing across ALL sentence-expansion
+            # attempts — not a confident recovery on THIS mention.
+            # Continue to later mentions (e.g. the canonical "using
+            # the `add` tool. I should call the `add` tool with
+            # a=13 and b=29." has TWO `add` mentions; the second one
+            # has the args, so we skip the first and succeed on the
+            # second).
             continue
         if not found:
             continue

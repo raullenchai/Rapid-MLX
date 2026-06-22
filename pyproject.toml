@@ -251,6 +251,10 @@ ignore = [
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]
+# Pytest parametrize convention: the Pydantic *class* is passed as
+# ``Model`` so the test body reads naturally (``Model(model="x", ...)``);
+# renaming would lose readability across many tests.
+"tests/test_param_validation_r5e.py" = ["N803"]
 
 [tool.mypy]
 python_version = "3.10"
