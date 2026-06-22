@@ -220,7 +220,16 @@ class AudioBodyLimitMiddleware:
     means.
     """
 
-    _GUARDED_PATHS: tuple[str, ...] = ("/v1/audio/transcriptions",)
+    _GUARDED_PATHS: tuple[str, ...] = (
+        "/v1/audio/transcriptions",
+        # F-K-TRANSLATIONS-MISSING: the translations route mirrors the
+        # transcriptions multipart contract — multipart parsing happens
+        # the same way, so the body cap must guard both paths. Without
+        # this entry an attacker could send a 1 GB ``.wav`` to
+        # ``/v1/audio/translations`` and exhaust the worker before the
+        # streaming cap inside the handler kicks in.
+        "/v1/audio/translations",
+    )
 
     def __init__(self, app):
         self.app = app
@@ -383,6 +392,143 @@ async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
         tmp.write(chunk)
 
 
+async def _run_stt_request(
+    file: UploadFile,
+    model: str,
+    language: str | None,
+    response_format: str,
+    task: str,
+):
+    """Shared STT pipeline used by both ``/v1/audio/transcriptions`` and
+    ``/v1/audio/translations``.
+
+    The two OpenAI endpoints have IDENTICAL multipart contracts — the
+    only difference is the destination language: transcriptions keeps
+    the source language (``task="transcribe"``), translations forces
+    English output (``task="translate"``). Factoring the body into a
+    helper keeps the size/probe/resolve/cleanup/envelope wiring in one
+    place so a future fix to either path lands on both.
+
+    F-K-TRANSLATIONS-MISSING: previously only the transcriptions route
+    existed; ``/v1/audio/translations`` 404'd. Mirror the route via
+    this helper and pass ``task="translate"`` so Whisper emits English.
+
+    NOTE: callers are responsible for invoking ``require_mlx_audio_stt()``
+    BEFORE this helper so the F-D05 source-grep regression guard
+    (``test_audio_probe_consistency.py``) sees the probe call inside
+    each route function body. Defense-in-depth: the helper also gates
+    on the model alias resolver, which raises 4xx before any model
+    load, so a missing probe call still fails closed — just not with
+    the uniform 503 envelope the probe emits.
+    """
+    global _stt_engine
+
+    # Resolve / validate the requested model BEFORE draining the upload.
+    # Previously every failure mode (unknown alias, missing mlx-audio,
+    # bad audio bytes) collapsed into a 500 "could not open/decode
+    # file" because ``STTEngine.load`` for a bogus name raised generic
+    # ``Exception`` caught by the catch-all below. Move the alias check
+    # up front so unknown ``model`` form fields fail fast with a 404
+    # "model_not_found_error" and never trigger a model load (F-165).
+    model_name = _resolve_stt_model(model)
+
+    tmp_path: str | None = None
+    try:
+        # SECURITY: Stream the upload to a bounded temp file *before* doing
+        # anything expensive. Even a client that lies about / omits
+        # Content-Length cannot force model load or import — they will hit
+        # the streaming cap inside _stream_upload_to_tempfile() and get a
+        # 413 long before the STTEngine block below runs.
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
+            tmp_path = tmp.name
+            await _stream_upload_to_tempfile(file, tmp)
+
+        from ..audio.stt import STTEngine
+
+        if _stt_engine is None or _stt_engine.model_name != model_name:
+            _stt_engine = STTEngine(model_name)
+            _stt_engine.load()
+
+        result = _stt_engine.transcribe(tmp_path, language=language, task=task)
+
+        if response_format == "text":
+            return result.text
+
+        return {
+            "text": result.text,
+            "language": result.language,
+            "duration": result.duration,
+        }
+
+    except ImportError:
+        raise HTTPException(
+            status_code=503,
+            detail="mlx-audio not installed. Install with: pip install mlx-audio",
+        )
+    except HTTPException:
+        # Preserve our own status codes (e.g. 413 for oversized uploads,
+        # 404 for unknown STT alias) instead of downgrading them to 500
+        # via the catch-all below.
+        raise
+    except Exception as e:
+        # Full traceback goes to the operator log; the client sees a
+        # generic message so we don't leak filesystem paths or
+        # mlx-audio internals (mirrors the global server handler).
+        logger.exception("STT %s failed: %s", task, e)
+        # F-K-WHISPER-500: when mlx_audio reports a structural
+        # backend defect (missing processor wiring, broken model state)
+        # surface 503 ``backend_unavailable`` instead of the generic
+        # 500 ``transcription_failed``. The former tells clients the
+        # backend is unhealthy and they should fall back to another
+        # model; the latter implies the audio file was the problem.
+        msg = str(e)
+        if "Processor not found" in msg or "_processor" in msg:
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "error": {
+                        "message": (
+                            "Whisper backend is unhealthy: the configured "
+                            f"model `{model_name}` could not load a "
+                            "tokenizer/processor. Try `parakeet` or "
+                            "`parakeet-v3` for the STT lane on this install, "
+                            "or pin a Whisper variant whose mlx-community "
+                            "repo ships processor files."
+                        ),
+                        "type": "backend_unavailable_error",
+                        "code": "backend_unavailable",
+                        "param": "model",
+                    }
+                },
+            )
+        code = "transcription_failed" if task == "transcribe" else "translation_failed"
+        raise HTTPException(
+            status_code=500,
+            detail={
+                "error": {
+                    "message": (
+                        "Audio transcription failed"
+                        if task == "transcribe"
+                        else "Audio translation failed"
+                    ),
+                    "type": "api_error",
+                    "code": code,
+                    "param": None,
+                }
+            },
+        )
+    finally:
+        if tmp_path is not None:
+            try:
+                os.unlink(tmp_path)
+            except FileNotFoundError:
+                pass
+            except OSError as cleanup_err:
+                logger.warning(
+                    "Failed to unlink temp audio file %s: %s", tmp_path, cleanup_err
+                )
+
+
 @router.post("/v1/audio/transcriptions", dependencies=[Depends(verify_api_key)])
 async def create_transcription(
     file: UploadFile,
@@ -427,8 +573,6 @@ async def create_transcription(
     The 25 MB ceiling matches OpenAI's Whisper API and bounds the
     worst-case STT inference cost.
     """
-    global _stt_engine
-
     # Form wins over query when both are present (form is the OpenAI
     # contract; query is the pre-F-165 internal contract we're keeping
     # for back-compat). Defaults match the original signature.
@@ -447,85 +591,81 @@ async def create_transcription(
     # F-D05: STT-lane audio dep probe — same envelope as the TTS
     # lane shares. Fires BEFORE we spool any upload bytes so a broken
     # ``mlx_audio.stt`` install rejects cheaply (no temp file, no
-    # read loop). Codex r3 BLOCKING: probe the STT lane SPECIFICALLY
-    # so a torn TTS install doesn't 503 transcriptions and vice versa.
+    # read loop). Probed here (not inside ``_run_stt_request``) so
+    # the source-grep guard in test_audio_probe_consistency.py sees
+    # the ``require_mlx_audio`` call directly inside the route body.
     from ..audio.probe import require_mlx_audio_stt
 
     require_mlx_audio_stt()
 
-    # Resolve / validate the requested model BEFORE draining the upload.
-    # Previously every failure mode (unknown alias, missing mlx-audio,
-    # bad audio bytes) collapsed into a 500 "could not open/decode
-    # file" because ``STTEngine.load`` for a bogus name raised generic
-    # ``Exception`` caught by the catch-all below. Move the alias check
-    # up front so unknown ``model`` form fields fail fast with a 404
-    # "model_not_found_error" and never trigger a model load (F-165).
-    model_name = _resolve_stt_model(model)
+    return await _run_stt_request(
+        file=file,
+        model=model,
+        language=language,
+        response_format=response_format,
+        task="transcribe",
+    )
 
-    tmp_path: str | None = None
-    try:
-        # SECURITY: Stream the upload to a bounded temp file *before* doing
-        # anything expensive. Even a client that lies about / omits
-        # Content-Length cannot force model load or import — they will hit
-        # the streaming cap inside _stream_upload_to_tempfile() and get a
-        # 413 long before the STTEngine block below runs.
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".wav") as tmp:
-            tmp_path = tmp.name
-            await _stream_upload_to_tempfile(file, tmp)
 
-        from ..audio.stt import STTEngine
+@router.post("/v1/audio/translations", dependencies=[Depends(verify_api_key)])
+async def create_translation(
+    file: UploadFile,
+    # OpenAI's translations endpoint mirrors transcriptions but
+    # OMITS the ``language`` field — the destination language is
+    # always English. We still accept it on the form for clients
+    # that share request-shaping code with transcriptions; it gets
+    # ignored downstream because Whisper's ``translate`` task
+    # always emits English regardless of the source-language hint.
+    # F-K-TRANSLATIONS-MISSING.
+    model_form: str | None = Form(None, alias="model"),
+    response_format_form: str | None = Form(None, alias="response_format"),
+    model_query: str | None = Query(None, alias="model"),
+    response_format_query: str | None = Query(None, alias="response_format"),
+):
+    """Translate audio to English (OpenAI Whisper API compatible).
 
-        if _stt_engine is None or _stt_engine.model_name != model_name:
-            _stt_engine = STTEngine(model_name)
-            _stt_engine.load()
+    F-K-TRANSLATIONS-MISSING: pre-fix this route was absent and
+    OpenAI-SDK clients calling ``client.audio.translations.create(...)``
+    saw a 404. Spec parity requires both transcriptions (source-
+    language output) and translations (always-English output) — the
+    only wire difference is that translations omits ``language`` from
+    the form body. The underlying mlx-audio path is identical: Whisper
+    accepts ``task="translate"`` which forces English emission.
 
-        result = _stt_engine.transcribe(tmp_path, language=language)
+    Parakeet aliases (``parakeet``, ``parakeet-v3``) are accepted to
+    keep the model-validation envelope consistent with transcriptions,
+    but the STT engine ignores the task flag for non-Whisper engines
+    so the response will be source-language (typically English for
+    Parakeet's training set). That's the closest correct behavior we
+    can offer without a separate translation model; the client can
+    still verify by passing ``model="whisper-large-v3"``.
+    """
+    model = (
+        model_form
+        if model_form is not None
+        else (model_query if model_query is not None else "whisper-large-v3")
+    )
+    response_format = (
+        response_format_form
+        if response_format_form is not None
+        else (response_format_query if response_format_query is not None else "json")
+    )
 
-        if response_format == "text":
-            return result.text
+    # F-D05: STT-lane audio dep probe (kept inside the route body so
+    # the source-grep regression guard in
+    # test_audio_probe_consistency.py picks it up — both the
+    # transcriptions and translations routes share the STT lane).
+    from ..audio.probe import require_mlx_audio_stt
 
-        return {
-            "text": result.text,
-            "language": result.language,
-            "duration": result.duration,
-        }
+    require_mlx_audio_stt()
 
-    except ImportError:
-        raise HTTPException(
-            status_code=503,
-            detail="mlx-audio not installed. Install with: pip install mlx-audio",
-        )
-    except HTTPException:
-        # Preserve our own status codes (e.g. 413 for oversized uploads,
-        # 404 for unknown STT alias) instead of downgrading them to 500
-        # via the catch-all below.
-        raise
-    except Exception as e:
-        # Full traceback goes to the operator log; the client sees a
-        # generic message so we don't leak filesystem paths or
-        # mlx-audio internals (mirrors the global server handler).
-        logger.exception("Transcription failed: %s", e)
-        raise HTTPException(
-            status_code=500,
-            detail={
-                "error": {
-                    "message": "Audio transcription failed",
-                    "type": "api_error",
-                    "code": "transcription_failed",
-                    "param": None,
-                }
-            },
-        )
-    finally:
-        if tmp_path is not None:
-            try:
-                os.unlink(tmp_path)
-            except FileNotFoundError:
-                pass
-            except OSError as cleanup_err:
-                logger.warning(
-                    "Failed to unlink temp audio file %s: %s", tmp_path, cleanup_err
-                )
+    return await _run_stt_request(
+        file=file,
+        model=model,
+        language=None,
+        response_format=response_format,
+        task="translate",
+    )
 
 
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
@@ -556,7 +696,7 @@ async def create_speech(
     # NOT 503 this route — the lane separation closes the codex r3
     # regression where a broken STT install would mask TTS-usable
     # installs as fully broken.
-    from ..audio.probe import require_mlx_audio_tts
+    from ..audio.probe import require_kokoro_runtime, require_mlx_audio_tts
 
     require_mlx_audio_tts()
 
@@ -572,6 +712,16 @@ async def create_speech(
             "voxcpm": "mlx-community/VoxCPM1.5",
         }
         model_name = model_map.get(model, model)
+
+        # F-K-KOKORO-MISAKI: Kokoro pulls ``misaki`` lazily inside
+        # ``KokoroPipeline``; the TTS-lane probe above can't catch
+        # the missing extra because ``mlx_audio.tts.generate``
+        # imports cleanly without it. Gate the missing-extra at
+        # this boundary so the request 503s with a clean envelope
+        # BEFORE any weight load (mlx-community/Kokoro-82M-bf16 is
+        # ~300 MB) or pipeline construction kicks off.
+        if "kokoro" in model_name.lower():
+            require_kokoro_runtime()
 
         if _tts_engine is None or _tts_engine.model_name != model_name:
             _tts_engine = TTSEngine(model_name)

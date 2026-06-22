@@ -76,7 +76,12 @@ class _FakeSTTEngine:
     def load(self) -> None:
         self.loaded = True
 
-    def transcribe(self, path: str, language: str | None = None) -> _FakeResult:
+    def transcribe(
+        self, path: str, language: str | None = None, **kwargs
+    ) -> _FakeResult:
+        # **kwargs absorbs new keyword arguments the route adds over
+        # time (e.g. ``task`` for F-K-TRANSLATIONS-MISSING) without
+        # forcing every consumer of this fake to update in lockstep.
         self.transcribed_paths.append(path)
         return _FakeResult()
 

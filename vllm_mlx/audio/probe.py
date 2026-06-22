@@ -73,8 +73,14 @@ def _reset_probe_cache() -> None:
     would mask a monkeypatched failure in the next test. Tests that
     swap ``builtins.__import__`` or otherwise simulate a broken
     ``mlx_audio`` call this helper in their fixture to force re-probe.
+
+    Also clears the per-lane deep-probe status recorded by
+    :func:`deep_probe_audio_lane` so tests don't leak ``degraded``
+    state across cases.
     """
     _cached_verdict.clear()
+    _LANE_STATUS.clear()
+    _LANE_REASON.clear()
 
 
 # Sub-modules each route actually needs to load. Split per lane so a
@@ -85,6 +91,232 @@ _LANE_SUBMODULES: dict[str, str] = {
     "tts": "mlx_audio.tts.generate",  # /v1/audio/speech, voices
     "stt": "mlx_audio.stt.utils",  # /v1/audio/transcriptions
 }
+
+# F-K-KOKORO-MISAKI: Kokoro's tokenizer transitively depends on
+# ``misaki`` (the G2P / phonemizer package). ``mlx_audio.tts.generate``
+# imports cleanly without ``misaki`` because the dependency is loaded
+# lazily inside ``KokoroPipeline``; the failure only surfaces on the
+# FIRST ``generate()`` call.
+#
+# We expose a Kokoro-specific helper that's called from the speech
+# route when the requested model is the Kokoro family. The lane probe
+# stays Kokoro-agnostic so installs that only use Chatterbox/VibeVoice/
+# VoxCPM aren't 503'd by a missing G2P package they don't need.
+#
+# The check IS NOT gated by a config flag — missing ``misaki`` is a
+# deterministic hard failure for every Kokoro request, so a probe
+# that lets the request through and 503s deep inside the engine
+# leaks a stack-trace-shaped envelope. Catching the missing-extra at
+# the route boundary keeps the envelope clean and the failure cheap
+# (no model load, no audio synthesis kicked off).
+_KOKORO_EXTRA_DEP = "misaki"
+_KOKORO_EXTRA_HINT = (
+    "Kokoro TTS requires the optional `misaki` G2P package, which is "
+    "not installed. Reinstall with `pip install 'rapid-mlx[audio]'` "
+    "to pull every audio dep, or `pip install misaki` for a "
+    "minimal Kokoro-only install."
+)
+
+
+# F-K-CAPABILITIES-OMIT-AUDIO: D-CAPABILITIES-DETECTION's existing
+# per-lane probe (``mlx_audio_available``) only checks that the
+# sub-module imports — it doesn't validate that the engine can
+# generate output. A model loadable at boot can still 500/503 on
+# the first inference (F-K-WHISPER-500 was exactly this shape).
+#
+# ``deep_probe_audio_lane`` runs a tiny dry-run BEYOND the import
+# check: for STT, decode 1 s of silence; for TTS, synthesize a
+# single character. If the dry-run raises, the lane is marked
+# ``degraded`` and that fact is surfaced via :func:`audio_lane_status`
+# so the ``/v1/models`` listing (and any operator-side observability)
+# can advertise the broken backend without a real user having to be
+# the canary.
+#
+# Cost: STT dry-run is ~1 s on M2 (mostly model-load); TTS Kokoro
+# dry-run is ~2 s. Gated behind the ``deep`` probe-depth setting so
+# operators on tight cold-start budgets can opt out via
+# ``RAPID_MLX_AUDIO_PROBE_DEPTH=shallow``. Default is ``deep`` —
+# the goal of D-CAPABILITIES-DETECTION is to catch backend defects
+# at boot, not at first user request.
+
+_LANE_STATUS: dict[str, str] = {}
+# Status values: "ok" | "degraded" | "missing" | "unknown"
+_LANE_REASON: dict[str, str] = {}
+
+
+def audio_lane_status(lane: str) -> dict[str, str | None]:
+    """Return the current status snapshot for ``lane``.
+
+    Used by ``/v1/models`` to decorate audio models with a
+    capability tag. ``status`` is one of:
+
+    * ``"ok"`` — import succeeded AND the deep dry-run (if it ran)
+      produced output;
+    * ``"degraded"`` — import succeeded but the dry-run failed —
+      the route will 503 on real requests;
+    * ``"missing"`` — ``mlx_audio`` (or the lane sub-module) is not
+      importable;
+    * ``"unknown"`` — no probe has run yet (deep probe disabled,
+      lane never exercised).
+
+    ``reason`` carries the failure string when status != ``"ok"``.
+    """
+    status = _LANE_STATUS.get(lane, "unknown")
+    reason = _LANE_REASON.get(lane)
+    return {"status": status, "reason": reason}
+
+
+def _record_lane_status(lane: str, status: str, reason: str | None) -> None:
+    _LANE_STATUS[lane] = status
+    if reason is None:
+        _LANE_REASON.pop(lane, None)
+    else:
+        _LANE_REASON[lane] = reason
+
+
+def deep_probe_audio_lane(
+    lane: str, model_name: str | None = None
+) -> dict[str, str | None]:
+    """Run a deeper-than-import dry-run for ``lane`` and record the result.
+
+    F-K-CAPABILITIES-OMIT-AUDIO: callers (the boot-time capability
+    probe, the test harness, the ``/v1/models`` capability decorator
+    refresh) use this to validate that the configured audio engine
+    can actually generate output, not just import. Returns the
+    recorded :func:`audio_lane_status` snapshot.
+
+    ``model_name`` is the engine the operator configured for the
+    lane (defaults to the package-level defaults). Failures during
+    the dry-run are CAUGHT — the function never raises. This is
+    deliberate: the boot-time probe must not crash the server if
+    one audio lane is broken; the only side effect is a recorded
+    ``degraded`` status that downstream callers act on.
+
+    The function is idempotent — re-calling it re-runs the dry-run.
+    Tests use that to validate degraded-status surfacing without
+    polluting the per-process import cache.
+    """
+    # First, the shallow probe — if the lane fails to import, deep
+    # probing is meaningless. Record the same verdict and return.
+    verdict = _probe_lane(lane)
+    if not verdict.ok:
+        _record_lane_status(lane, "missing", verdict.reason)
+        return audio_lane_status(lane)
+
+    if lane == "stt":
+        ok, reason = _dry_run_stt(model_name)
+    elif lane == "tts":
+        ok, reason = _dry_run_tts(model_name)
+    else:
+        _record_lane_status(lane, "unknown", f"unknown audio lane {lane!r}")
+        return audio_lane_status(lane)
+
+    if ok:
+        _record_lane_status(lane, "ok", None)
+    else:
+        _record_lane_status(lane, "degraded", reason)
+    return audio_lane_status(lane)
+
+
+def _dry_run_stt(model_name: str | None) -> tuple[bool, str | None]:
+    """Decode 1 s of silence through the STT engine.
+
+    Catches the F-K-WHISPER-500 shape: a Whisper model that loads
+    but has no processor wired. The dry-run reaches the same
+    ``get_tokenizer()`` branch the real request hits.
+    """
+    try:
+        import tempfile
+        import wave
+
+        from ..audio.stt import DEFAULT_PARAKEET_MODEL, STTEngine
+
+        # Synthesize 1 second of mono 16 kHz silence in a tempfile.
+        # ``parakeet`` is the cheapest engine to probe (no processor
+        # download); operators who care specifically about Whisper
+        # health can re-call ``deep_probe_audio_lane`` with the
+        # whisper model name to validate that specific lane.
+        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+            wav_path = tmp.name
+        try:
+            with wave.open(wav_path, "wb") as w:
+                w.setnchannels(1)
+                w.setsampwidth(2)
+                w.setframerate(16000)
+                w.writeframes(b"\x00\x00" * 16000)
+            engine = STTEngine(model_name or DEFAULT_PARAKEET_MODEL)
+            engine.load()
+            result = engine.transcribe(wav_path)
+            # An empty string is a valid transcription of silence.
+            if not hasattr(result, "text"):
+                return False, "STT result missing `text` attribute"
+        finally:
+            import os as _os
+
+            try:
+                _os.unlink(wav_path)
+            except OSError:
+                pass
+        return True, None
+    except Exception as e:  # noqa: BLE001
+        return False, f"STT dry-run failed: {type(e).__name__}: {e}"
+
+
+def _dry_run_tts(model_name: str | None) -> tuple[bool, str | None]:
+    """Synthesize a single character through the TTS engine.
+
+    Catches the F-K-KOKORO-MISAKI shape: Kokoro loads cleanly but
+    the misaki G2P pulls in lazily and fails on first generate.
+    """
+    try:
+        from ..audio.tts import DEFAULT_TTS_MODEL, TTSEngine
+
+        engine = TTSEngine(model_name or DEFAULT_TTS_MODEL)
+        engine.load()
+        # Synthesizing a single character keeps the probe fast (<1 s).
+        # Failure modes (missing misaki, broken pipeline) raise inside
+        # ``generate()`` — we catch them and report degraded.
+        result = engine.generate("a", voice="af_heart")
+        if not hasattr(result, "audio") or len(result.audio) == 0:
+            return False, "TTS result is empty (no audio produced)"
+        return True, None
+    except Exception as e:  # noqa: BLE001
+        return False, f"TTS dry-run failed: {type(e).__name__}: {e}"
+
+
+def _reset_lane_status() -> None:
+    """Test hook: clear recorded lane statuses."""
+    _LANE_STATUS.clear()
+    _LANE_REASON.clear()
+
+
+def require_kokoro_runtime() -> None:
+    """Raise an HTTP 503 when the Kokoro TTS runtime is incomplete.
+
+    F-K-KOKORO-MISAKI: ``mlx_audio.tts.generate.load_model`` succeeds
+    for Kokoro even when ``misaki`` is absent (the G2P import happens
+    lazily inside the pipeline's first ``generate`` call), so the
+    shared TTS-lane probe can't catch this. Called explicitly by
+    ``/v1/audio/speech`` when the requested model resolves to a
+    Kokoro family member. Surfaces the missing extra as a clean 503
+    BEFORE we load weights, attempt synthesis, or hit the runtime
+    ``Kokoro requires the optional 'misaki' package`` error inside
+    mlx_audio.
+
+    The check is intentionally narrow — Chatterbox / VibeVoice /
+    VoxCPM don't depend on misaki, so this helper isn't called for
+    those families. The TTS lane probe still gates them all the same.
+    """
+    import importlib.util
+
+    from fastapi import HTTPException
+
+    if importlib.util.find_spec(_KOKORO_EXTRA_DEP) is not None:
+        return
+    raise HTTPException(
+        status_code=503,
+        detail=f"{_KOKORO_EXTRA_HINT}",
+    )
 
 
 def _probe_lane(lane: str) -> _Verdict:

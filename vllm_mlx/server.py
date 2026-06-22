@@ -408,6 +408,38 @@ async def lifespan(app: FastAPI):
     if mcp_config:
         await init_mcp(mcp_config)
 
+    # F-K-CAPABILITIES-OMIT-AUDIO: run a deep audio-lane dry-run so
+    # the per-lane status surfaces on ``/v1/models`` capability tags
+    # BEFORE the first user request lands on a degraded backend. The
+    # existing shallow probe only checks ``mlx_audio`` importability;
+    # a model that loads but can't generate output (F-K-WHISPER-500
+    # shape) still passed the shallow probe and 500'd at first use.
+    #
+    # Off by default to keep cold-start fast for text-only deploys —
+    # turn on via ``RAPID_MLX_AUDIO_DEEP_PROBE=1`` when running an
+    # audio-serving build. The dry-run is non-fatal: any failure is
+    # caught inside ``deep_probe_audio_lane`` and recorded as
+    # ``degraded``; the lifespan completes regardless so a torn
+    # audio backend doesn't block server boot.
+    _audio_deep_probe = os.environ.get("RAPID_MLX_AUDIO_DEEP_PROBE", "").strip()
+    if _audio_deep_probe and _audio_deep_probe not in ("0", "false", "no"):
+        try:
+            import importlib.util as _audio_ilu
+
+            if _audio_ilu.find_spec("mlx_audio") is not None:
+                from .audio.probe import deep_probe_audio_lane as _deep_probe
+
+                logger.info("Running deep audio probe (STT + TTS dry-run)...")
+                _stt_status = _deep_probe("stt")
+                _tts_status = _deep_probe("tts")
+                logger.info(
+                    "Audio lane status — stt=%s, tts=%s",
+                    _stt_status.get("status"),
+                    _tts_status.get("status"),
+                )
+        except Exception as _audio_err:  # noqa: BLE001
+            logger.warning("Deep audio probe failed (non-fatal): %s", _audio_err)
+
     # All slow startup work done. Flip the readiness flag so /health/ready
     # starts returning 200. Anything that races a request before this point
     # would otherwise hit a not-yet-warmed engine.

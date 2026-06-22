@@ -1903,6 +1903,19 @@ class ModelInfo(BaseModel):
     # lie the desktop happily believed. Empty list (rather than
     # ``None``) means "we've thought about it; nothing applies".
     capabilities: list[str] = Field(default_factory=list)
+    # F-K-CAPABILITIES-OMIT-AUDIO: per-lane audio backend status
+    # surfaced when the deep audio probe has been run
+    # (``RAPID_MLX_AUDIO_DEEP_PROBE=1``). ``None`` means the deep
+    # probe never ran on this server, so we can't make any claim
+    # about lane health beyond what ``capabilities`` already says.
+    # ``{"stt": "ok", "tts": "degraded", ...}`` callers can read to
+    # surface a "backend degraded" UX before sending a real audio
+    # request. ``"degraded"`` means the lane imported cleanly but
+    # the dry-run inference raised (F-K-WHISPER-500-shape failure —
+    # a Whisper model whose processor never attached, a Kokoro
+    # install missing ``misaki``, etc.). Values:
+    # ``"ok"``, ``"degraded"``, ``"missing"``, ``"unknown"``.
+    audio_lanes: dict[str, str] | None = None
 
 
 class ModelsResponse(BaseModel):

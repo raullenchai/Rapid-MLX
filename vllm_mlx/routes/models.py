@@ -330,6 +330,41 @@ def _reported_modality_for_embedding(locked_id: str) -> str:
     return "text"
 
 
+def _audio_lane_snapshot() -> dict[str, str] | None:
+    """Return the current per-lane audio status, or ``None`` when no
+    deep probe has run.
+
+    F-K-CAPABILITIES-OMIT-AUDIO: surfaces the recorded outcome of
+    :func:`vllm_mlx.audio.probe.deep_probe_audio_lane` on every
+    ``ModelInfo`` returned by ``/v1/models``. Pre-fix, audio lane
+    health was invisible — a Whisper backend that 500'd on every
+    request still advertised the same ``capabilities`` list as a
+    healthy one. Now a degraded lane shows up as
+    ``audio_lanes: {"stt": "degraded", ...}`` so dashboards / the
+    desktop can warn before sending real traffic.
+
+    The function is intentionally tolerant: any failure resolving
+    the probe module (e.g. ``[audio]`` extra not installed, so the
+    probe module isn't even reachable) returns ``None`` rather than
+    raising. ``/v1/models`` MUST stay 200 even when the audio probe
+    is broken.
+    """
+    try:
+        from ..audio import probe as _audio_probe
+    except Exception:  # noqa: BLE001
+        return None
+    snapshot: dict[str, str] = {}
+    for lane in ("stt", "tts"):
+        try:
+            entry = _audio_probe.audio_lane_status(lane)
+        except Exception:  # noqa: BLE001
+            continue
+        status = entry.get("status") if isinstance(entry, dict) else None
+        if status and status != "unknown":
+            snapshot[lane] = status
+    return snapshot or None
+
+
 def _build_model_info(model_id: str) -> ModelInfo:
     """Construct a ``ModelInfo`` for ``model_id``, filling vendor
     extension fields from the alias registry when the id resolves.
@@ -351,6 +386,13 @@ def _build_model_info(model_id: str) -> ModelInfo:
     # failures fall through to ``None`` and the client uses its own
     # per-family fallback. See ``_resolve_context_window`` docstring.
     context_window = _resolve_context_window(model_id)
+    # F-K-CAPABILITIES-OMIT-AUDIO: per-lane audio status snapshot, or
+    # ``None`` when the deep probe never ran (e.g.
+    # ``RAPID_MLX_AUDIO_DEEP_PROBE`` unset). Identical value is
+    # attached to every entry — the listing's role is to advertise
+    # SERVER-WIDE backend health, not per-model audio capability
+    # (which would require a separate dry-run per audio alias).
+    audio_lanes = _audio_lane_snapshot()
 
     locked = _locked_embedding_id()
     if locked is not None and model_id == locked:
@@ -367,6 +409,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
                 modality=_reported_modality_for_embedding(locked),
                 capabilities=["embedding"],
                 context_window=context_window,
+                audio_lanes=audio_lanes,
             )
         sampling = (
             dict(profile.recommended_sampling)
@@ -383,6 +426,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             modality=_reported_modality_for_embedding(locked),
             capabilities=["embedding"],
             context_window=context_window,
+            audio_lanes=audio_lanes,
         )
 
     if profile is None:
@@ -404,6 +448,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
                     modality="image",
                     capabilities=capabilities,
                     context_window=context_window,
+                    audio_lanes=audio_lanes,
                 )
         except Exception:  # noqa: BLE001
             pass
@@ -411,6 +456,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
             id=model_id,
             capabilities=capabilities,
             context_window=context_window,
+            audio_lanes=audio_lanes,
         )
     # ``recommended_sampling`` lives on the dataclass as a tuple of
     # ``(key, value)`` pairs (frozen-dataclass requirement); convert
@@ -438,6 +484,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         modality=_reported_modality(model_id, profile.modality),
         capabilities=capabilities,
         context_window=context_window,
+        audio_lanes=audio_lanes,
     )
 
 
