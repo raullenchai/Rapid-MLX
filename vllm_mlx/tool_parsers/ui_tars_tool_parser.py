@@ -655,9 +655,14 @@ def _spec_key_for(verb: str, model_key: str) -> str:
             return "start_point"
         if model_key == "end_box":
             return "end_point"
-        if model_key == "point":
-            return "start_point"
-        return model_key  # ``start_point`` / ``end_point`` pass through.
+        # Codex r3 NIT: do NOT silently rename a lone ``point=`` on a
+        # two-point verb (``drag``, ``select``) to ``start_point``.
+        # That would turn a malformed ``drag(point='...')`` (missing
+        # the end target) into a valid-looking partial drag, masking
+        # an upstream validation opportunity. Preserve ``point`` so
+        # the downstream consumer can detect the malformed shape and
+        # surface a clear error.
+        return model_key  # ``start_point`` / ``end_point`` / ``point`` pass through.
     # Unknown verb: emit whatever the model said.
     return model_key
 
@@ -802,12 +807,23 @@ class UiTarsToolParser(ToolParser):
         ``content`` so the OpenAI spec contract — "no tool_calls on
         tool_choice=none" — holds.
         """
-        if not model_output or "Action:" not in model_output:
+        # Codex r3 BLOCKING #2: ``_is_tool_choice_none`` check MUST
+        # run BEFORE the ``"Action:" not in model_output`` early
+        # return — otherwise a case-variant ``action:`` (lowercase)
+        # or a malformed marker the early-return branch already
+        # accepts as "no tool calls" would skip the no-tools
+        # contract and slip through the original semantics rather
+        # than explicitly enforcing it. Promote the C-07 short-
+        # circuit to the FIRST decision so the contract holds for
+        # every shape of model output.
+        if _is_tool_choice_none(request):
             return ExtractedToolCallInformation(
-                tools_called=False, tool_calls=[], content=model_output
+                tools_called=False,
+                tool_calls=[],
+                content=model_output or "",
             )
 
-        if _is_tool_choice_none(request):
+        if not model_output or "Action:" not in model_output:
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=model_output
             )

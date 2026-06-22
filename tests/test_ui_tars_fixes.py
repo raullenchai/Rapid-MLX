@@ -600,6 +600,70 @@ class TestLaneInjectionParity:
         assert oai_out[0]["content"] == UI_TARS_COMPUTER_USE_SYSTEM_PROMPT
         assert oai_out[1] == {"role": "system", "content": "Be concise."}
 
+    def test_chat_route_actually_invokes_helper(self):
+        # Codex r3 BLOCKING #1: the helper-layer parity asserts above
+        # can't catch a route that STOPPED calling the helper. Pin
+        # the wiring by inspecting the route module source for the
+        # call. Source-grep is brittle vs imports moving, but the
+        # alternative — driving the full route with a stub engine
+        # — pulls the entire MLX runtime into the unit-test path
+        # which is structurally infeasible on a non-Apple-Silicon
+        # CI runner. Source-grep is the cheapest gate that fails
+        # loud if either route accidentally drops the inject.
+        import inspect
+
+        from vllm_mlx.routes import chat as chat_route
+
+        src = inspect.getsource(chat_route)
+        # The route MUST import the helper and call it on the
+        # ``messages`` list. We don't pin the exact import shape
+        # (``from … import`` vs ``import …``) — just that the
+        # symbol name appears in source.
+        assert "maybe_inject_ui_tars_system_prompt" in src, (
+            "routes/chat.py must call maybe_inject_ui_tars_system_prompt"
+            " — dogfood C-05 regression"
+        )
+
+    def test_anthropic_route_actually_invokes_helper(self):
+        # Symmetric pin for the Anthropic lane (dogfood F-R2-04
+        # lane-parity fix).
+        import inspect
+
+        from vllm_mlx.routes import anthropic as anthropic_route
+
+        src = inspect.getsource(anthropic_route)
+        assert "maybe_inject_ui_tars_system_prompt" in src, (
+            "routes/anthropic.py must call"
+            " maybe_inject_ui_tars_system_prompt — dogfood F-R2-04"
+            " regression"
+        )
+
+    def test_chat_route_invokes_helper_with_request_tool_choice(self):
+        # Stronger pin: the chat route must pass BOTH
+        # ``tool_call_parser`` AND ``tool_choice`` to the helper —
+        # otherwise the ``tool_choice="none"`` skip (C-07) would
+        # silently regress without the helper-side guard catching
+        # it.
+        import inspect
+
+        from vllm_mlx.routes import chat as chat_route
+
+        src = inspect.getsource(chat_route)
+        # Look for the call shape — the source has a multi-line
+        # invocation. We tolerate whitespace by checking for the
+        # named kwargs on adjacent lines.
+        assert "tool_call_parser=cfg.tool_call_parser" in src
+        assert "tool_choice=tc" in src
+
+    def test_anthropic_route_invokes_helper_with_request_tool_choice(self):
+        import inspect
+
+        from vllm_mlx.routes import anthropic as anthropic_route
+
+        src = inspect.getsource(anthropic_route)
+        assert "tool_call_parser=" in src
+        assert "tool_choice=openai_request.tool_choice" in src
+
     def test_inject_parity_skips_on_tool_choice_none(self):
         # ``tool_choice="none"`` short-circuit fires identically on
         # both lanes — neither gets a UI-TARS sysprompt, so the
