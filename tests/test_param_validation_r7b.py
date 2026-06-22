@@ -245,6 +245,115 @@ class TestResponseFormatStrictOuterLevel:
 
 
 # ---------------------------------------------------------------------------
+# R7-B codex MED follow-up: non-bool strict rejected at PARSE time
+# ---------------------------------------------------------------------------
+
+
+class TestResponseFormatStrictNonBoolRejectedAtParse:
+    """Codex r7-B MED: ``ResponseFormat.strict`` and
+    ``ResponseFormatJsonSchema.strict`` must reject non-bool wire forms
+    at parse time, on BOTH the typed-model arm and the bare-dict arm
+    of the ``ResponseFormat | dict`` union.
+
+    Pre-fix the typed arm declared ``strict: bool | None`` (Pydantic v2
+    in default lax mode coerces ``"true"`` → ``True``), and
+    ``_validate_response_format_raw`` did not inspect ``strict`` at
+    all — so ``{"strict":"true",...}`` slipped through the dict arm
+    silently and ``is_strict_json_schema`` (which uses identity
+    ``is True``) returned False, downgrading the request to
+    unconstrained generation.
+    """
+
+    _SCHEMA = {"type": "object", "properties": {"x": {"type": "string"}}}
+
+    @pytest.mark.parametrize(
+        "bad_strict",
+        ["true", "false", "yes", "no", 1, 0, [], {}],
+    )
+    def test_typed_outer_strict_non_bool_rejected(self, bad_strict):
+        """Typed arm: ``StrictBool`` raises at parse time."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ResponseFormat(
+                type="json_schema",
+                strict=bad_strict,
+                json_schema={"name": "p", "schema": self._SCHEMA},
+            )
+
+    @pytest.mark.parametrize("bad_strict", ["true", "false", 1, 0, [], {}])
+    def test_typed_inner_strict_non_bool_rejected(self, bad_strict):
+        """Typed inner ``ResponseFormatJsonSchema.strict`` is ``StrictBool``
+        too — same rejection."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ResponseFormat(
+                type="json_schema",
+                json_schema={
+                    "name": "p",
+                    "strict": bad_strict,
+                    "schema": self._SCHEMA,
+                },
+            )
+
+    @pytest.mark.parametrize("bad_strict", ["true", "false", "yes", 1, 0, [], {}])
+    def test_chat_request_outer_strict_non_bool_rejected(self, bad_strict):
+        """End-to-end via ``ChatCompletionRequest`` — the dict-arm
+        validator closes the union escape hatch so the same wire form
+        that the typed arm rejects also 400's the dict arm."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ChatCompletionRequest(
+                model="x",
+                messages=_user_msg(),
+                response_format={
+                    "type": "json_schema",
+                    "strict": bad_strict,
+                    "json_schema": {"name": "p", "schema": self._SCHEMA},
+                },
+            )
+
+    @pytest.mark.parametrize("bad_strict", ["true", "false", "yes", 1, 0, [], {}])
+    def test_chat_request_inner_strict_non_bool_rejected(self, bad_strict):
+        """End-to-end via ``ChatCompletionRequest`` — nested
+        ``json_schema.strict`` rejected on the dict arm too."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError):
+            ChatCompletionRequest(
+                model="x",
+                messages=_user_msg(),
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "p",
+                        "strict": bad_strict,
+                        "schema": self._SCHEMA,
+                    },
+                },
+            )
+
+    def test_typed_outer_strict_true_still_accepted(self):
+        """Sanity: ``strict=True`` (proper bool) still passes."""
+        rf = ResponseFormat(
+            type="json_schema",
+            strict=True,
+            json_schema={"name": "p", "schema": self._SCHEMA},
+        )
+        assert rf.strict is True
+
+    def test_typed_outer_strict_false_still_accepted(self):
+        rf = ResponseFormat(
+            type="json_schema",
+            strict=False,
+            json_schema={"name": "p", "schema": self._SCHEMA},
+        )
+        assert rf.strict is False
+
+
+# ---------------------------------------------------------------------------
 # R7-M3: shared >= 1 gate on max_tokens / max_output_tokens / max_completion_tokens
 # ---------------------------------------------------------------------------
 

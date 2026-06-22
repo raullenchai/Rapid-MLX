@@ -969,7 +969,13 @@ class ResponseFormatJsonSchema(BaseModel):
     name: str
     description: str | None = None
     schema_: dict = Field(alias="schema")  # JSON Schema specification
-    strict: bool | None = False
+    # R7-B codex MED follow-up: ``StrictBool`` so non-bool wire forms
+    # like ``"strict":"true"`` are rejected at parse time instead of
+    # being coerced or silently treated as falsey by downstream
+    # ``is_strict_json_schema``. Paired with the explicit dict-arm
+    # check in ``_validate_response_format_raw`` so the bare-dict
+    # union arm can't bypass either.
+    strict: StrictBool | None = False
 
     class Config:
         populate_by_name = True
@@ -1039,6 +1045,21 @@ def _validate_response_format_raw(value):
         raise ValueError(
             "response_format.type must be 'text', 'json_object', or 'json_schema'"
         )
+    # R7-B codex MED follow-up: ``strict`` is a strict boolean on BOTH
+    # nesting positions. Pre-fix, ``{"type":"json_schema","strict":"true",
+    # "json_schema":{...}}`` and the nested form
+    # ``{"json_schema":{"strict":"true",...}}`` fell through the
+    # bare-dict union arm with no strict check — ``is_strict_json_schema``
+    # then treated the truthy string as falsey and the ``[guided]`` gate
+    # silently downgraded the request to unconstrained generation. The
+    # typed arm uses ``StrictBool`` so the same wire forms parse-fail
+    # there; mirror the same wire-form rejection on the dict arm so the
+    # ``ResponseFormat | dict`` union has no escape hatch.
+    if "strict" in value and not isinstance(value["strict"], bool):
+        raise ValueError(
+            "response_format.strict must be a boolean "
+            f"(got {type(value['strict']).__name__})"
+        )
     if rf_type == "json_schema":
         json_schema_field = value.get("json_schema")
         if not json_schema_field:
@@ -1048,6 +1069,13 @@ def _validate_response_format_raw(value):
             )
         if not isinstance(json_schema_field, dict):
             raise ValueError("response_format.json_schema must be an object")
+        if "strict" in json_schema_field and not isinstance(
+            json_schema_field["strict"], bool
+        ):
+            raise ValueError(
+                "response_format.json_schema.strict must be a boolean "
+                f"(got {type(json_schema_field['strict']).__name__})"
+            )
         # Mirror the typed ``ResponseFormatJsonSchema.name: str``
         # required field on the dict arm — codex round-1 BLOCKING
         # follow-up. The bare-dict union arm would otherwise swallow
@@ -1121,7 +1149,11 @@ class ResponseFormat(BaseModel):
     # absent default; the dict-arm validator mirrors this so an
     # outer-level ``"strict":"true"`` (string) is rejected with a
     # clean 422 too.
-    strict: bool | None = None
+    # R7-B codex MED follow-up: ``StrictBool`` rejects non-bool wire
+    # forms at parse time on the typed arm; the dict arm is closed by
+    # the explicit ``strict``-shape check in
+    # ``_validate_response_format_raw`` below.
+    strict: StrictBool | None = None
 
 
 # =============================================================================
