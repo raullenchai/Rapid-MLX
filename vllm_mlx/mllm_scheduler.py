@@ -747,7 +747,7 @@ class MLLMScheduler:
             finish_reason = response.finish_reason
             stop_trimmed = False
             stop_params = [s for s in request.stop if s] if request.stop else []
-            if finish_reason != "stop" and stop_params:
+            if stop_params:
                 if (
                     not had_detok
                     and request.stop_text_len == 0
