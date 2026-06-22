@@ -53,6 +53,7 @@ from ..api.utils import (
     StreamingThinkRouter,
     StreamingToolCallFilter,
     clean_output_text,
+    extract_json_from_response,
     extract_multimodal_content,
     sanitize_output,
     strip_special_tokens,
@@ -924,6 +925,23 @@ async def _non_stream(
     if cleaned_text:
         final_content = strip_thinking_tags(clean_output_text(cleaned_text))
         final_content = sanitize_output(final_content)
+        # R7-M4 (Vlad r7 — 0.8.8 sweep): mirror the chat-route fence-strip
+        # so a model that wraps a ``json_object`` / ``json_schema`` body
+        # in a ```json ... ``` markdown fence has the fence peeled off
+        # BEFORE the body is handed to the Responses adapter. Pre-R7
+        # the chat surface ran ``extract_json_from_response`` after
+        # ``response_format`` was set (chat.py L2076) but the Responses
+        # surface called ``engine.chat()`` directly and skipped the
+        # post-processor entirely, so the same model + prompt produced
+        # a clean JSON body on /v1/chat/completions but a fenced body
+        # on /v1/responses — a cross-route inconsistency the r7 sweep
+        # surfaced as M-02 fence-strip not covering this route.
+        # Defensive: only strips when a JSON-structure response_format
+        # was requested (parity with chat.py); plain text responses are
+        # untouched.
+        rf = getattr(openai_request, "response_format", None)
+        if rf is not None and final_content:
+            final_content = extract_json_from_response(final_content)
 
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
 

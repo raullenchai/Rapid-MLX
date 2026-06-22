@@ -1054,9 +1054,26 @@ def is_strict_json_schema(
     only consulted by ``build_json_system_prompt`` for the prompt-injection
     fallback, never to drive an enforcement decision.
 
-    A request is "strict" iff:
-    * ``response_format.type == "json_schema"``
-    * ``response_format.json_schema.strict`` is truthy
+    A request is "strict" iff ``response_format.type == "json_schema"``
+    AND either of:
+    * ``response_format.json_schema.strict`` is the literal ``True``
+      (OpenAI canonical nesting — Python SDK + REST docs).
+    * ``response_format.strict`` is the literal ``True`` (the OFF-SPEC
+      "outer-level strict" wire form — see R7-H5 rationale below).
+
+    R7-H5 (Vlad r7 — 0.8.8 sweep): the OpenAI Responses API exposes
+    ``text.format = {"type":"json_schema","strict":true,"name":"...",
+    "schema":{...}}`` — the strict flag is a SIBLING of ``type``. When
+    that same client points at the legacy chat endpoint and sends
+    ``response_format = {"type":"json_schema","strict":true,
+    "json_schema":{"schema":{...}}}`` (outer-level strict), the pre-R7
+    detector only inspected the nested ``json_schema.strict`` slot and
+    returned False — the request HTTP-200'd with no guided-decoding
+    enforcement (``[guided]`` extra not required, strict contract
+    silently downgraded). Per Vlad: "the guard must be on the JSON-
+    schema CONSTRAINT detection, not on a particular key." Recognizing
+    EITHER nesting position closes the bypass on both surfaces with
+    one validator — no whack-a-mole per route.
 
     Returns ``False`` for every other shape (``None``, ``"text"``,
     ``"json_object"``, ``json_schema`` with ``strict=false`` or absent).
@@ -1070,6 +1087,13 @@ def is_strict_json_schema(
     if isinstance(response_format, ResponseFormat):
         if response_format.type != "json_schema":
             return False
+        # R7-H5: ResponseFormat now carries an outer-level ``strict``
+        # field so the off-spec wire shape (sibling of ``type``, the
+        # Responses-API ``text.format.strict`` nesting) reaches us
+        # without being silently dropped. Either nesting position
+        # being ``True`` means the strict contract was requested.
+        if response_format.strict is True:
+            return True
         if response_format.json_schema is None:
             return False
         # Pydantic coerces ``"true"`` / ``"false"`` strings to the
@@ -1082,6 +1106,14 @@ def is_strict_json_schema(
     if isinstance(response_format, dict):
         if response_format.get("type") != "json_schema":
             return False
+        # R7-H5: detect outer-level ``strict=true`` first — this is the
+        # off-spec form Vlad's r7 sweep surfaced. On the raw-dict path
+        # we deliberately require ``strict is True`` rather than
+        # ``bool(strict)``: a malformed payload like ``"strict":"false"``
+        # (string) is truthy under ``bool()`` and would silently enable
+        # enforcement on a client that intended to opt out.
+        if response_format.get("strict") is True:
+            return True
         spec = response_format.get("json_schema") or {}
         if not isinstance(spec, dict):
             return False

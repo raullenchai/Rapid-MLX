@@ -20,7 +20,9 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import (
     _TOP_K_SENTINEL_CAP,
+    StreamOptions,
     _validate_nonnegative_int,
+    _validate_positive_int,
     _validate_seed,
 )
 
@@ -91,6 +93,22 @@ class ResponsesRequest(BaseModel):
     parallel_tool_calls: bool | None = None
     reasoning: dict | None = None  # {"effort": "low|medium|high", "summary": ...}
     stream: bool = False
+    # R7-H4: OpenAI streaming-spec parity — Responses API also accepts
+    # ``stream_options.include_usage`` per OpenAI SDK ``stream_options``
+    # shape. Pre-R7-H4 the field was undeclared on this surface, so
+    # Pydantic silently dropped any value the client sent; that gave
+    # ``stream_options={"include_usage":"yes"}`` an HTTP-200 free pass
+    # while the chat / completions surfaces (which DO declare the field
+    # via ``StreamOptions`` with a ``StrictBool``) correctly 422'd.
+    # Declaring it here with the SAME shared ``StreamOptions`` model
+    # routes the strict-bool gate through the same validator so the
+    # contract is uniform across all four routes (chat / completions /
+    # messages / responses). The Responses route does not currently
+    # emit a trailing-usage SSE chunk — the field is accepted-but-
+    # ignored on this surface (parity with ``previous_response_id`` /
+    # ``store`` / ``include`` etc.); the strict-bool gate is the
+    # load-bearing piece for the r7 sweep.
+    stream_options: StreamOptions | None = None
     store: bool | None = None
     include: list[str] | None = None
     service_tier: str | None = None
@@ -167,6 +185,18 @@ class ResponsesRequest(BaseModel):
         return _validate_nonnegative_int(
             v, max_value=_TOP_K_SENTINEL_CAP, field_name="top_k"
         )
+
+    # R7-M3: shared ``>= 1`` gate on ``max_output_tokens``. Pre-R7-M3
+    # ``max_output_tokens=-5`` HTTP-200'd on /v1/responses with
+    # ``status="incomplete"`` — silent-correctness hazard same shape
+    # as ``seed=-1`` (which DOES 400). The chat route had its own
+    # hand-rolled ``max_tokens < 1`` check; the schema-level
+    # validator means /v1/responses / /v1/completions / /v1/messages
+    # all share one contract now.
+    @field_validator("max_output_tokens", mode="before")
+    @classmethod
+    def _validate_max_output_tokens(cls, v) -> int | None:
+        return _validate_positive_int(v, field_name="max_output_tokens")
 
     @model_validator(mode="before")
     @classmethod

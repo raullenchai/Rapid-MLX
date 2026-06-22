@@ -14,10 +14,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import (
     _TOP_K_SENTINEL_CAP,
+    StreamOptions,
     _enforce_max_generation_tokens_ceiling,
     _scrub_nonfinite_sampling_raw,
     _validate_finite_in_range,
     _validate_nonnegative_int,
+    _validate_positive_int,
 )
 
 # =============================================================================
@@ -357,6 +359,20 @@ class AnthropicRequest(BaseModel):
     messages: list[AnthropicMessage] = Field(..., min_length=1)
     system: str | list[dict] | None = None
     max_tokens: int  # Required in Anthropic API
+    # R7-H4: cross-route parity — Anthropic clients sometimes forward
+    # the OpenAI ``stream_options.include_usage`` field (the
+    # Anthropic-compat shim is a drop-in for OpenAI SDKs that use the
+    # Anthropic SDK's transport). Pre-R7-H4 the field was undeclared
+    # so Pydantic silently dropped any value; that gave
+    # ``stream_options={"include_usage":"yes"}`` an HTTP-200 free
+    # pass while the chat / completions surfaces correctly 422'd.
+    # Declaring with the shared ``StreamOptions`` model routes the
+    # strict-bool gate through one validator. The Anthropic route
+    # does not emit a trailing-usage SSE chunk on its own
+    # ``message_delta`` shape (usage is in-band); the field is
+    # accepted-but-ignored, parity with ``metadata``. The strict-
+    # bool gate is the load-bearing piece for the r7 sweep.
+    stream_options: StreamOptions | None = None
     # H-10: Anthropic spec narrows ``temperature`` to ``[0, 1]`` (the
     # OpenAI ``[0, 2]`` range is a different surface). Pre-H-10 this
     # field had no Field bound AND no finite check — a NaN ``temperature``
@@ -437,6 +453,30 @@ class AnthropicRequest(BaseModel):
         return _validate_nonnegative_int(
             v, max_value=_TOP_K_SENTINEL_CAP, field_name="top_k"
         )
+
+    # R7-M3: shared ``>= 1`` gate on the (required) ``max_tokens``
+    # field. Pre-R7-M3 the Anthropic schema typed it ``int`` (no
+    # ``ge=`` bound) so wire values like ``-5`` slipped through to
+    # the engine, which produced one token and stopped — silent-
+    # correctness hazard same shape as ``seed=-1``. The Anthropic
+    # public API rejects ``max_tokens <= 0`` (400
+    # ``invalid_request_error``) so this matches the upstream
+    # contract. The downstream ``_enforce_max_generation_tokens_ceiling``
+    # model_validator already covers the upper-bound gate when
+    # ``RAPID_MLX_MAX_GENERATION_TOKENS`` is set.
+    @field_validator("max_tokens", mode="before")
+    @classmethod
+    def _validate_max_tokens(cls, v) -> int:
+        out = _validate_positive_int(v, field_name="max_tokens")
+        # Anthropic spec: ``max_tokens`` is REQUIRED. ``None`` is not
+        # a legal wire form (the field is declared as a bare ``int``).
+        # ``_validate_positive_int`` permits ``None`` for parity with
+        # the optional-field cases (chat / completions), but on this
+        # surface we must keep that out of the typed slot so Pydantic
+        # surfaces the standard "field required" error if absent.
+        if out is None:
+            raise ValueError("max_tokens is required on /v1/messages")
+        return out
 
     # M-03 (#742 follow-up): the Anthropic Messages spec only accepts
     # four ``tool_choice.type`` values — ``auto``, ``any``, ``tool``,
