@@ -344,15 +344,7 @@ async def create_response(request: Request):
         try:
             openai_request = responses_to_openai(responses_request)
         except ValueError as e:
-            err_msg = str(e)
-            if (
-                "content block" in err_msg
-                or "input_text." in err_msg
-                or "output_text." in err_msg
-                or "input_image." in err_msg
-            ):
-                raise HTTPException(status_code=400, detail=err_msg)
-            raise
+            raise HTTPException(status_code=400, detail=str(e))
 
         # H-06: ``text.format`` with strict json_schema on /v1/responses
         # was suggestion-only — the route went straight to

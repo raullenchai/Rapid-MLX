@@ -377,6 +377,10 @@ class TestResponsesNonStream:
                 "input_text.text must be a non-empty string",
             ),
             ({"type": "output_text"}, "output_text.text is required"),
+            (
+                {"type": "input_audio", "input_audio": {"data": "base64data"}},
+                "Unsupported Responses content block type",
+            ),
         ],
     )
     def test_malformed_text_content_block_returns_400_not_empty_prompt(
