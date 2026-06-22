@@ -140,7 +140,13 @@ async def test_add_request_cancellation_aborts_after_executor_completes():
         # thread.
         deadline = _time.monotonic() + 2.0
         while _time.monotonic() < deadline:
-            if executor_returned_at and abort_called_at:
+            if (
+                executor_returned_at
+                and abort_called_at
+                and not eng._output_collectors
+                and not eng._finished_events
+                and not eng._stream_states
+            ):
                 break
             await asyncio.sleep(0.01)
 

@@ -490,6 +490,8 @@ async def create_response(request: Request):
         # streaming clients can't bypass by setting ``stream: true``.
         try:
             _ctx_messages = _prepare_messages_for_engine(engine, openai_request)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
         except Exception:
             _ctx_messages = None
         if _ctx_messages is not None:

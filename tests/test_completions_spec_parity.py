@@ -511,6 +511,21 @@ class TestLogprobsEngineCapability:
 
         assert _engine_supports_completion_logprobs(_Engine()) is False
 
+    def test_async_callable_capability_is_unsupported(self):
+        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+
+        class _Engine:
+            tokenizer = object()
+
+            async def supports_completion_logprobs(self):
+                return True
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+        assert _engine_supports_completion_logprobs(_Engine()) is False
+
     def test_bound_stream_generate_supports_base_capability(self):
         from vllm_mlx.engine.base import BaseEngine
 
