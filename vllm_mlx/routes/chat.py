@@ -490,7 +490,9 @@ def _recover_partial_tool_args(
         # canonical wire shape ``{"name":"X","arguments":{...}}``
         # always has ``"name"`` BEFORE ``"arguments"``.
         next_args_idx = text.find('"arguments"', idx + len('"arguments"'))
-        next_closer_idx = _next_wire_span_closer(idx) if span_start is not None else None
+        next_closer_idx = (
+            _next_wire_span_closer(idx) if span_start is not None else None
+        )
         forward_bound = n
         if next_args_idx != -1:
             forward_bound = min(forward_bound, next_args_idx)
@@ -2921,10 +2923,7 @@ async def _create_chat_completion_impl(
             and request.tools
             and bool(tool_calls)
             and _contains_tool_wire_literal(text)
-            and (
-                _contains_structural_tool_wire_leak(text)
-                or _raw_has_structural_wire
-            )
+            and (_contains_structural_tool_wire_leak(text) or _raw_has_structural_wire)
         )
 
     _wire_scrub_active = _should_scrub_visible_wire(cleaned_text)

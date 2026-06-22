@@ -1139,8 +1139,7 @@ def test_codex_r8_no_opener_name_pair_does_not_cross_from_prose():
     """Without a wire opener, name pairing stays inside the local JSON object."""
 
     raw = (
-        'Earlier prose says "name":"target". '
-        '{"arguments":{"city":"Tokyo"}}</function>'
+        'Earlier prose says "name":"target". {"arguments":{"city":"Tokyo"}}</function>'
     )
     assert _recover_partial_tool_args(raw, expected_name="target") is None
 
