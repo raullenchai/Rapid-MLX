@@ -960,13 +960,19 @@ async def _create_chat_completion_impl(
             else:
                 m.role = "system"
 
-    # Dogfood C-05 fix: auto-prepend the canonical UI-TARS Computer-Use
-    # action-API system prompt for the ``ui_tars`` parser family. PR
-    # #812 wired the parser by alias regex but never injected the
-    # sysprompt the model is post-trained on — so the parser silently
-    # no-op'd on raw output. The helper is idempotent (skips when the
-    # user already pasted the sysprompt) and honors ``tool_choice=
-    # "none"`` (skips so the model emits plain prose — dogfood C-07).
+    # Dogfood C-05 / r5-B C-09 fix: auto-prepend the canonical UI-TARS
+    # Computer-Use action-API system prompt for the ``ui_tars`` parser
+    # family — **tool-coupled** (only when the request actually
+    # declares a Computer-Use tool). PR #812 wired the parser by alias
+    # regex but never injected the sysprompt the model is post-trained
+    # on; the C-05 fix then injected on every UI-TARS request, which
+    # broke plain-text and JSON-mode prompts (F-R1-L: ``2+2`` came
+    # back as a phantom click). r5-B threads ``tools=request.tools``
+    # through so the helper's tool-coupled gate decides: NO computer
+    # tool → no injection → model answers in prose / JSON. The helper
+    # is also idempotent (skips when the user already pasted the
+    # sysprompt) and honors ``tool_choice="none"`` (skips so the
+    # model emits plain prose — dogfood C-07).
     from ..tool_parsers.ui_tars_tool_parser import (
         maybe_inject_ui_tars_system_prompt as _maybe_inject_ui_tars_sysprompt,
     )
@@ -975,6 +981,7 @@ async def _create_chat_completion_impl(
         messages,
         tool_call_parser=cfg.tool_call_parser,
         tool_choice=tc,
+        tools=request.tools,
     )
 
     # Auto-inject system prompt suffix for tool use and/or reasoning control.
