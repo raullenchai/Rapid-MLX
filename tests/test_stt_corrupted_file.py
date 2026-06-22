@@ -308,6 +308,31 @@ def _wav_bytes() -> bytes:
     return buf.getvalue()
 
 
+class TestAudioModuleImports:
+    """Codex r3 false-positive guard: the sanitiser uses ``re.compile``,
+    and codex (which only sees the diff) repeatedly flagged this as a
+    missing import. ``re`` IS imported at module top (line 6, untouched
+    by r6-C), but a future refactor could drop it. This test catches
+    that case at CI time so a broken module never reaches the server.
+    """
+
+    def test_audio_route_module_imports_cleanly(self):
+        """Importing the module must succeed — proves ``re``
+        (and every other required import) is wired."""
+        import importlib
+
+        # Force a fresh import in case a prior test imported it; if a
+        # future refactor breaks the import chain (e.g. by deleting
+        # ``import re``), ``importlib.reload`` raises NameError /
+        # ModuleNotFoundError and this test fails loudly.
+        import vllm_mlx.routes.audio as audio_route
+
+        importlib.reload(audio_route)
+        # Spot-check the sanitiser is callable and the regex compiled.
+        assert callable(audio_route._sanitize_decode_reason)
+        assert audio_route._PATH_LIKE_RE.search("/tmp/foo.wav") is not None
+
+
 class TestDecodeErrorEnvelopeSanitisation:
     """Codex r2 BLOCKING: the 400 decode envelope must NOT leak server
     filesystem paths in the message. Librosa/soundfile/ffmpeg often
