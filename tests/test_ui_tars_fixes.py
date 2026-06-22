@@ -152,6 +152,30 @@ class TestSysPromptAutoWire:
         )
         assert out == messages
 
+    def test_inject_matches_message_object_shape(self):
+        # Codex r1 BLOCKING #1: when ``messages`` is a list of
+        # pydantic Message objects (defensive — production code
+        # paths normalize to dicts via ``extract_multimodal_content``,
+        # but some test paths and future surfaces may not), the
+        # helper must NOT prepend a plain dict that would produce a
+        # mixed-shape list downstream. Mirror the object shape via
+        # ``model_copy(update=...)`` when available.
+        from vllm_mlx.api.models import Message
+
+        msgs = [Message(role="user", content="Click.")]
+        out = maybe_inject_ui_tars_system_prompt(
+            msgs, tool_call_parser="ui_tars", tool_choice="auto"
+        )
+        assert len(out) == 2
+        # Inserted message is a Message object (same shape as the
+        # original list entries), NOT a plain dict.
+        assert isinstance(out[0], Message)
+        assert out[0].role == "system"
+        assert out[0].content == UI_TARS_COMPUTER_USE_SYSTEM_PROMPT
+        # Original user message preserved.
+        assert isinstance(out[1], Message)
+        assert out[1].role == "user"
+
     def test_anthropic_shape_system_content_blocks_detected(self):
         # System message with Anthropic-style content blocks must
         # also flow through the detector — otherwise the
@@ -294,6 +318,26 @@ class TestParserKeyNormalization:
             "start_point": [1, 2],
             "end_point": [3, 4],
         }
+
+    def test_single_point_verb_with_end_box_collapses_to_point(self):
+        # Codex r1 BLOCKING #2: a defensively-emitted ``end_box`` on a
+        # single-point verb (model variance; rare but observed) MUST
+        # collapse to the spec ``point`` key — never leak the
+        # two-point-only ``end_point`` key on a single-point verb.
+        args = _normalize_action("click", {"end_box": "(100,200)"})
+        assert args == {"action": "click", "point": [100, 200]}
+        assert "end_point" not in args
+        assert "end_box" not in args
+
+    def test_single_point_verb_first_write_wins(self):
+        # If the model emits BOTH ``point`` and ``start_box`` on a
+        # single-point verb, the first-write-wins semantics keep
+        # the dict-iteration-first kwarg and drop the duplicate.
+        args = _normalize_action(
+            "click",
+            {"point": "(50,60)", "start_box": "(70,80)"},
+        )
+        assert args == {"action": "click", "point": [50, 60]}
 
     def test_box_sentinel_renamed_per_verb(self):
         # UI-TARS-1.5 sentinel-token form: ``start_box='<|box_start|>
@@ -456,36 +500,78 @@ class TestStreamingThoughtHoldback:
 # ---------------------------------------------------------------------------
 
 
-class TestLaneParserEmitParity:
-    """The parser is shared by OAI and Anthropic lanes. As long as both
-    routes feed it the SAME messages (achieved by the shared
-    ``maybe_inject_ui_tars_system_prompt`` helper), the emitted
-    arguments are identical.
+class TestLaneInjectionParity:
+    """Dogfood F-R2-04 root-cause: pre-fix the OAI and Anthropic lanes
+    received DIFFERENT prompts (only the OAI lane saw a UI-TARS
+    sysprompt — and only when the test client pasted it themselves),
+    so the model emitted different coords across surfaces.
 
-    The end-to-end coord-parity assertion (different image embed paths
-    producing different model coords) is exercised by the dogfood
-    replay; here we verify the parser layer alone is lane-agnostic.
+    The fix is the SHARED ``maybe_inject_ui_tars_system_prompt``
+    helper wired into both ``routes/chat.py`` AND
+    ``routes/anthropic.py``. So long as both routes feed the helper
+    the same UI-TARS-bound request, the prompts they pass to the
+    engine are byte-identical AT the sysprompt level.
+
+    Codex r1 NIT #3: the prior draft of this test ran the same
+    parser instance twice on the same raw bytes — which can't
+    catch a route/adapter regression, only a parser-state
+    regression. Replace with a helper-layer test that proves both
+    routes prepend byte-identical sysprompts; end-to-end image-
+    embed parity is out of unit scope (needs a live MLX engine
+    running the actual checkpoint, covered by the dogfood replay).
     """
 
-    def setup_method(self) -> None:
-        self.p = UiTarsToolParser()
+    def test_both_lanes_get_identical_sysprompt(self):
+        # Simulate the two route paths' first call: both routes
+        # produce the SAME extracted-message dict shape via the
+        # shared ``extract_multimodal_content`` upstream. The
+        # helper produces the SAME prepended messages,
+        # byte-for-byte, on both calls.
+        user_msg = {"role": "user", "content": "Click the search button."}
+        oai_inputs = [user_msg]
+        anth_inputs = [user_msg]
+        oai_out = maybe_inject_ui_tars_system_prompt(
+            oai_inputs, tool_call_parser="ui_tars", tool_choice="auto"
+        )
+        anth_out = maybe_inject_ui_tars_system_prompt(
+            anth_inputs, tool_call_parser="ui_tars", tool_choice="auto"
+        )
+        assert oai_out == anth_out
+        assert oai_out[0]["role"] == "system"
+        assert oai_out[0]["content"] == UI_TARS_COMPUTER_USE_SYSTEM_PROMPT
 
-    def test_same_raw_output_emits_same_tool_call_on_both_lanes(self):
-        raw = (
-            "Thought: Want to click the search button.\n"
-            "Action: click(start_box='(128,128)')"
+    def test_inject_parity_under_user_sysprompt(self):
+        # Operator extends with a custom system message: same
+        # injection on both lanes — auto-injected sysprompt FIRST,
+        # user system PRESERVED, no double-injection.
+        msgs = [
+            {"role": "system", "content": "Be concise."},
+            {"role": "user", "content": "Click."},
+        ]
+        oai_out = maybe_inject_ui_tars_system_prompt(
+            list(msgs), tool_call_parser="ui_tars", tool_choice="auto"
         )
-        # Two parser invocations represent the two lane paths; both
-        # go through the same code path. Verifying that the bytes
-        # emitted are byte-identical.
-        oai_result = self.p.extract_tool_calls(raw)
-        anth_result = self.p.extract_tool_calls(raw)
-        assert (
-            oai_result.tool_calls[0]["arguments"]
-            == anth_result.tool_calls[0]["arguments"]
+        anth_out = maybe_inject_ui_tars_system_prompt(
+            list(msgs), tool_call_parser="ui_tars", tool_choice="auto"
         )
-        args = _decode_args(oai_result.tool_calls[0])
-        assert args == {"action": "click", "point": [128, 128]}
+        assert oai_out == anth_out
+        # Three messages: auto-injected + user system + user.
+        assert len(oai_out) == 3
+        assert oai_out[0]["content"] == UI_TARS_COMPUTER_USE_SYSTEM_PROMPT
+        assert oai_out[1] == {"role": "system", "content": "Be concise."}
+
+    def test_inject_parity_skips_on_tool_choice_none(self):
+        # ``tool_choice="none"`` short-circuit fires identically on
+        # both lanes — neither gets a UI-TARS sysprompt, so the
+        # model emits plain prose with no Action: lines.
+        msgs = [{"role": "user", "content": "What time is it?"}]
+        oai_out = maybe_inject_ui_tars_system_prompt(
+            list(msgs), tool_call_parser="ui_tars", tool_choice="none"
+        )
+        anth_out = maybe_inject_ui_tars_system_prompt(
+            list(msgs), tool_call_parser="ui_tars", tool_choice="none"
+        )
+        assert oai_out == anth_out == msgs
 
 
 # ---------------------------------------------------------------------------

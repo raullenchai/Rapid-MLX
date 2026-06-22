@@ -172,11 +172,34 @@ def maybe_inject_ui_tars_system_prompt(
     if has_ui_tars_system_prompt(messages):
         return messages
 
-    sys_msg = {"role": "system", "content": UI_TARS_COMPUTER_USE_SYSTEM_PROMPT}
-    # Find the FIRST non-system slot — auto-injected sysprompt lands
-    # BEFORE any user-supplied system message so it primes the model
-    # FIRST and the user's content extends (rather than overrides) the
-    # action-API contract. If no system is present, insert at index 0.
+    # Codex r1 BLOCKING #1: build the inserted message in the SAME
+    # shape as the existing list so we don't produce a mixed
+    # ``dict``/Message-object collection downstream. Production code
+    # path always normalizes ``messages`` to dicts before reaching
+    # this helper (``extract_multimodal_content`` returns dicts on
+    # both lanes), but the developer→system normalization in
+    # ``routes/chat.py`` has a defensive object-handling branch —
+    # we mirror that defense here. ``model_copy`` is preferred over
+    # type construction so a pydantic subclass (custom Message
+    # variant) round-trips its own type.
+    sys_msg: Any
+    if messages and not isinstance(messages[0], dict):
+        first = messages[0]
+        first_copy = getattr(first, "model_copy", None)
+        if callable(first_copy):
+            sys_msg = first_copy(
+                update={"role": "system", "content": UI_TARS_COMPUTER_USE_SYSTEM_PROMPT}
+            )
+        else:
+            sys_msg = {
+                "role": "system",
+                "content": UI_TARS_COMPUTER_USE_SYSTEM_PROMPT,
+            }
+    else:
+        sys_msg = {"role": "system", "content": UI_TARS_COMPUTER_USE_SYSTEM_PROMPT}
+    # Auto-injected sysprompt lands at index 0 so it primes the model
+    # FIRST and any user-supplied system message extends (rather than
+    # overrides) the action-API contract.
     return [sys_msg, *messages]
 
 
@@ -587,15 +610,16 @@ def _spec_key_for(verb: str, model_key: str) -> str:
       won't get its kwargs silently renamed).
     """
     if verb in _SINGLE_POINT_VERBS:
-        if model_key in ("start_box", "start_point"):
-            return "point"
-        if model_key in ("end_box", "end_point"):
-            # Unusual but possible: model emitted both. Don't
-            # collide with an already-renamed ``point`` — drop the
-            # ``end_*`` for single-point verbs. The caller filters
-            # this case (preserves first-write-wins semantics).
-            return "end_point"
-        return model_key  # ``point`` passes through.
+        # Codex r1 BLOCKING #2: single-point verbs ALWAYS emit the
+        # spec ``point`` key. The earlier draft mapped
+        # ``end_box``/``end_point`` to ``end_point`` for single-point
+        # verbs — but the spec says single-point verbs MUST NOT carry
+        # a two-point key. Coalesce every coord kwarg to ``point``;
+        # the caller's first-write-wins guard then keeps the most
+        # informative value (model rarely emits both, but if it does
+        # the FIRST kwarg in dict-iteration order wins — typically
+        # ``point`` > ``start_box`` > ``end_box``).
+        return "point"
     if verb in _TWO_POINT_VERBS:
         if model_key == "start_box":
             return "start_point"
