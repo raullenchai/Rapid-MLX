@@ -147,7 +147,8 @@ class BaseEngine(ABC):
         strings. Expose that as an engine capability so routes do not
         probe for optional methods with `hasattr(engine, ...)`.
         """
-        return self.tokenizer is not None
+        stream_generate = getattr(type(self), "stream_generate", None)
+        return self.tokenizer is not None and callable(stream_generate)
 
     def generate_warmup(self) -> None:  # noqa: B027 — intentional no-op default
         """Run a minimal generation to compile Metal shaders.

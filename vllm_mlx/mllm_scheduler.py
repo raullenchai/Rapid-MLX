@@ -798,6 +798,7 @@ class MLLMScheduler:
                         # same surface as the text path.
                         output.matched_stop = stop_str
                         request.output_text = streamed_so_far[:idx]
+                        output.output_text = request.output_text
                         stop_trimmed = True
                         # Emit only the valid prefix before the stop marker
                         # in new_text so streaming clients don't lose content.

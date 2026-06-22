@@ -54,15 +54,30 @@ def test_non_thinking_request_does_not_get_implicit_headroom():
     assert _resolve_max_tokens(None, enable_thinking=False) == 128
 
 
-def test_all_text_generation_routes_use_shared_max_tokens_resolver():
+def _function_calls_resolver(fn) -> bool:
+    tree = ast.parse(inspect.getsource(fn))
+    return any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "_resolve_max_tokens"
+        for node in ast.walk(tree)
+    )
+
+
+def test_all_text_generation_handlers_use_shared_max_tokens_resolver():
     from vllm_mlx.routes import anthropic, chat, completions, responses
 
-    for module in (anthropic, chat, completions, responses):
-        tree = ast.parse(inspect.getsource(module))
-        calls_resolver = any(
-            isinstance(node, ast.Call)
-            and isinstance(node.func, ast.Name)
-            and node.func.id == "_resolve_max_tokens"
-            for node in ast.walk(tree)
+    handlers = (
+        chat._create_chat_completion_impl,
+        completions.create_completion,
+        completions.stream_completion,
+        responses.create_response,
+        responses._non_stream,
+        responses._stream_responses,
+        anthropic.create_anthropic_message,
+        anthropic._stream_anthropic_messages,
+    )
+    for handler in handlers:
+        assert _function_calls_resolver(handler), (
+            f"{handler.__module__}.{handler.__name__} does not call _resolve_max_tokens"
         )
-        assert calls_resolver, f"{module.__name__} does not call _resolve_max_tokens"
