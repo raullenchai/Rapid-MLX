@@ -373,7 +373,7 @@ class TestResponsesToOpenai:
         with pytest.raises(ValueError, match=match):
             responses_to_openai(req)
 
-    def test_empty_string_message_content_does_not_become_empty_prompt(self):
+    def test_empty_string_message_content_is_preserved(self):
         req = ResponsesRequest.model_construct(
             model="gpt-5",
             input=[
@@ -385,10 +385,10 @@ class TestResponsesToOpenai:
             ],
         )
 
-        with pytest.raises(
-            ValueError, match="input_text.text must be a non-empty string"
-        ):
-            responses_to_openai(req)
+        chat = responses_to_openai(req)
+
+        assert chat.messages[0].role == "user"
+        assert chat.messages[0].content == ""
 
     @pytest.mark.parametrize(
         ("content_item", "match"),

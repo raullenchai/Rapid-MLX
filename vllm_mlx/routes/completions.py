@@ -53,7 +53,11 @@ def _engine_supports_completion_logprobs(engine) -> bool:
         if callable(capability):
             try:
                 value = capability()
-            except Exception:
+            except Exception as exc:
+                logger.debug(
+                    "supports_completion_logprobs capability probe failed: %s",
+                    exc,
+                )
                 return False
             if inspect.isawaitable(value):
                 close = getattr(value, "close", None)

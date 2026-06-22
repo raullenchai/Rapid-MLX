@@ -671,9 +671,15 @@ def _message_item_to_chat(item: ResponsesInputItem) -> Message:
     content = item.content
 
     if isinstance(content, str):
-        chat_content = [
-            normalize_responses_content_part({"type": "input_text", "text": content})
-        ]
+        chat_content = (
+            ""
+            if content == ""
+            else [
+                normalize_responses_content_part(
+                    {"type": "input_text", "text": content}
+                )
+            ]
+        )
     elif content is None:
         raise ValueError("Responses message content is required")
     else:

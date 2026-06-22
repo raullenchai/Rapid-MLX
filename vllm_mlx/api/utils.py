@@ -1017,6 +1017,8 @@ def _validate_content_part_payload(item: dict) -> None:
         if item_type in {"input_text", "output_text"} and "text" not in item:
             raise ValueError(f"{item_type}.text is required")
         text = item.get("text")
+        if item_type == "text" and text is None:
+            return
         if not isinstance(text, str):
             if item_type in {"input_text", "output_text"}:
                 raise ValueError(
