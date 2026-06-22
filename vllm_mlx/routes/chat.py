@@ -412,7 +412,7 @@ def _recover_partial_tool_args(
             if pos > op_pos:
                 op_pos = pos
         if op_pos < 0:
-            return False
+            return None
         cl_pos = -1
         for closer in _WIRE_SPAN_CLOSERS:
             pos = prefix.rfind(closer)
@@ -480,15 +480,17 @@ def _recover_partial_tool_args(
             backward_bound = span_start
         else:
             prev_args_end = text.rfind('"arguments"', 0, idx)
-            backward_bound = (
+            object_start = text.rfind("{", 0, idx)
+            fallback_bound = (
                 prev_args_end + len('"arguments"') if prev_args_end != -1 else 0
             )
+            backward_bound = max(fallback_bound, object_start)
         # Forward bound: the next "arguments" marker or 256 bytes
         # forward. We cap forward TIGHTER than backward because the
         # canonical wire shape ``{"name":"X","arguments":{...}}``
         # always has ``"name"`` BEFORE ``"arguments"``.
         next_args_idx = text.find('"arguments"', idx + len('"arguments"'))
-        next_closer_idx = _next_wire_span_closer(idx)
+        next_closer_idx = _next_wire_span_closer(idx) if span_start is not None else None
         forward_bound = n
         if next_args_idx != -1:
             forward_bound = min(forward_bound, next_args_idx)
@@ -657,6 +659,10 @@ _TOOL_WIRE_BALANCED_PAIRS = (
         re.compile(r"\[/TOOL_CALLS\]", re.DOTALL),
     ),
 )
+_TOOL_WIRE_BALANCED_SPAN_RES = tuple(
+    re.compile(opener_re.pattern + r".*?" + closer_re.pattern, re.DOTALL)
+    for opener_re, closer_re in _TOOL_WIRE_BALANCED_PAIRS
+)
 
 
 # Standalone marker tokens that must be stripped even when their
@@ -778,8 +784,8 @@ def _contains_structural_tool_wire_leak(text: str | None) -> bool:
     """
     if not text:
         return False
-    for opener_re, closer_re in _TOOL_WIRE_BALANCED_PAIRS:
-        if re.search(opener_re.pattern + r".*?" + closer_re.pattern, text, re.DOTALL):
+    for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
+        if balanced_re.search(text):
             return True
     if _CROSS_FAMILY_SPAN_RE.search(text):
         return True
