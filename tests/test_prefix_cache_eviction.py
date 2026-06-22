@@ -387,7 +387,9 @@ def test_get_stats_surfaces_evictions(monkeypatch):
 
     # Insert past the cap so evictions fire.
     for i in range(5):
-        cache.store(list(range(i * 100, i * 100 + 64)), _make_cache_entry(3 * 1024 * 1024))
+        cache.store(
+            list(range(i * 100, i * 100 + 64)), _make_cache_entry(3 * 1024 * 1024)
+        )
 
     stats = cache.get_stats()
     assert "evictions" in stats

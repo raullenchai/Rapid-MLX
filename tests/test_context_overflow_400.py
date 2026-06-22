@@ -102,9 +102,7 @@ class _StubEngine:
         raise AssertionError("engine.chat must not be reached on the 400 path")
 
     async def stream_chat(self, *args, **kwargs):  # noqa: ARG002
-        raise AssertionError(
-            "engine.stream_chat must not be reached on the 400 path"
-        )
+        raise AssertionError("engine.stream_chat must not be reached on the 400 path")
 
 
 def _make_app(routes: list[Any]) -> TestClient:

@@ -3383,8 +3383,13 @@ class Scheduler:
         Returns ``0`` when no memory-aware cache is configured or it
         reports a non-positive max — callers treat ``0`` as "do not
         check on this path" and the legacy Metal-cap path still runs.
+
+        ``getattr`` (not direct attribute access) on ``self`` makes the
+        helper robust against partially initialised / older Scheduler
+        instances missing the ``memory_aware_cache`` attribute (codex
+        round-1 NIT on the R6-H6 patch).
         """
-        cache = self.memory_aware_cache
+        cache = getattr(self, "memory_aware_cache", None)
         if cache is None:
             return 0
         # ``_max_memory`` is the bytes budget compute_memory_limit()
@@ -3403,8 +3408,13 @@ class Scheduler:
         Returns ``0`` when no memory-aware cache is configured so
         callers short-circuit cleanly on engines that route through
         the block-aware / trie-based variants instead.
+
+        ``getattr`` on ``self`` for the same defensive reason as
+        :meth:`_cache_self_pressure_threshold_bytes` — a partially
+        initialised Scheduler must NOT 500 the engine-loop pressure
+        tick on attribute lookup.
         """
-        cache = self.memory_aware_cache
+        cache = getattr(self, "memory_aware_cache", None)
         if cache is None:
             return 0
         return int(getattr(cache, "_current_memory", 0) or 0)
@@ -3457,16 +3467,26 @@ class Scheduler:
         fraction = self._resolve_pressure_evict_fraction()
         metal_threshold = int(metal_cap * fraction) if metal_cap > 0 else 0
         evicted = 0
+        # Track which trigger fired at least once during this tick so
+        # the closing log line attributes the eviction wave to the
+        # actual cause rather than defaulting to "Metal" whenever the
+        # cap is merely configured (codex round-1 NIT on the R6-H6
+        # patch). Both flags can be true on the same tick if pressure
+        # crosses both thresholds simultaneously.
+        triggered_metal = False
+        triggered_cache_self = False
         for _ in range(max(0, int(max_evict))):
             should_evict = False
             if metal_threshold > 0:
                 active = self._current_metal_active_bytes()
                 if active >= metal_threshold:
                     should_evict = True
+                    triggered_metal = True
             if not should_evict and cache_self_threshold > 0:
                 current_cache = self._cache_self_pressure_current_bytes()
                 if current_cache >= cache_self_threshold:
                     should_evict = True
+                    triggered_cache_self = True
             if not should_evict:
                 break
             if not self._evict_one_prefix_cache_entry():
@@ -3500,7 +3520,20 @@ class Scheduler:
             # cache-state-vs-metric in sync on failure.
             mx.clear_cache()
         if evicted:
-            trigger = "Metal" if metal_threshold > 0 else "cache-self"
+            if triggered_metal and triggered_cache_self:
+                trigger = "Metal+cache-self"
+            elif triggered_metal:
+                trigger = "Metal"
+            elif triggered_cache_self:
+                trigger = "cache-self"
+            else:
+                # Belt-and-suspenders: ``evicted > 0`` only happens
+                # after at least one ``should_evict = True``, so this
+                # branch is unreachable. Keeping the explicit fallback
+                # rather than asserting so a future refactor that
+                # changes the loop structure doesn't crash the engine
+                # loop on a log-only side effect.
+                trigger = "unknown"
             logger.info(
                 "[prefix-pressure-evict] evicted %d entries under %s pressure "
                 "(metal_cap=%.1fGB, cache_max=%.1fGB)",
