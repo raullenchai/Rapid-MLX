@@ -52,6 +52,7 @@ from fastapi.testclient import TestClient
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
 from vllm_mlx.routes.chat import (
+    _contains_tool_wire_literal,
     _forced_tool_call_prefix,
     _recover_partial_tool_args,
     _scrub_tool_wire_literals,
@@ -1060,3 +1061,152 @@ def test_codex_r2_blocking_deepseek_envelope_counts_as_wire_span():
     assert got is not None
     parsed = _json.loads(got)
     assert parsed == {"city": "Tokyo", "units": "c"}
+
+
+# -----------------------------------------------------------------------
+# codex r6 BLOCKING #1 — gate scrub on actual wire-leak detection
+# -----------------------------------------------------------------------
+
+
+def test_codex_r6_blocking_1_contains_wire_literal_detects_each_family():
+    """Every marker registered in ``_TOOL_WIRE_STANDALONE_MARKERS`` must
+    be recognised by ``_contains_tool_wire_literal``. The detector
+    must NOT false-positive on plain prose (even prose with angle
+    brackets or square brackets that look superficially similar).
+    """
+    leaky = [
+        "OK <tool_call>",
+        "OK </tool_call>",
+        "OK <function=foo>",
+        "OK </function>",
+        "OK <｜tool▁calls▁begin｜>",
+        "OK <｜tool▁sep｜>",
+        "OK [TOOL_CALLS]",
+        "OK <|python_tag|>",
+    ]
+    for s in leaky:
+        assert _contains_tool_wire_literal(s), f"missed leak in {s!r}"
+    clean = [
+        "",
+        None,
+        "The weather in Tokyo is sunny.",
+        "Use angle brackets like <p> for HTML.",
+        "Lists in markdown look like [foo](bar).",
+    ]
+    for s in clean:
+        assert not _contains_tool_wire_literal(s), f"false leak on {s!r}"
+
+
+def test_codex_r6_blocking_1_forced_choice_with_clean_text_does_not_scrub():
+    """A successful forced/required tool call whose ``cleaned_text``
+    is plain prose must keep its content unmodified. Pre-fix, the
+    scrub gate fired on every successful forced call regardless of
+    whether the parser left wire markers behind.
+
+    Static check on the chat-route source — the gate now AND-includes
+    ``_contains_tool_wire_literal(cleaned_text)`` so that no leak ⇒
+    no scrub.
+    """
+    import inspect
+
+    import vllm_mlx.routes.chat as _chat_mod
+
+    src = inspect.getsource(_chat_mod)
+    # The gate predicate must include the leak detector.
+    assert "_contains_tool_wire_literal(cleaned_text)" in src, (
+        "scrub gate must check for actual wire leak — codex r6 BLOCKING #1"
+    )
+
+    # And the helper itself must report "no leak" on plain prose.
+    assert not _contains_tool_wire_literal("Tool called successfully.")
+
+
+def test_codex_r6_blocking_1_forced_choice_with_wire_leak_still_scrubs():
+    """When the parser-extracted call leaves wire markers in
+    ``cleaned_text`` (qwen3 cross-family leak), the scrub MUST still
+    fire so the user-visible content doesn't carry junk.
+    """
+    leaky = "The result is OK. <tool_call>{}</function>"
+    assert _contains_tool_wire_literal(leaky)
+    cleaned = _scrub_tool_wire_literals(leaky)
+    # The wire body is stripped; surrounding prose is preserved.
+    assert "<tool_call>" not in cleaned
+    assert "</function>" not in cleaned
+    assert "The result is OK." in cleaned
+
+
+# -----------------------------------------------------------------------
+# codex r6 BLOCKING #2 — don't scrub raw_text before reasoning extract
+# -----------------------------------------------------------------------
+
+
+def test_codex_r6_blocking_2_raw_text_not_mutated_before_reasoning():
+    """The chat route must NOT pre-scrub ``output.raw_text`` before
+    handing it to the reasoning parser. Pretty-printed reasoning may
+    legitimately contain wire-marker-shaped tokens (e.g. when
+    discussing tool wire formats), and rewriting those before
+    extraction truncates / collapses reasoning content.
+
+    Static check on the route source — the call site must pass
+    ``output.raw_text or output.text`` UNMODIFIED to
+    ``_finalize_content_and_reasoning``.
+    """
+    import inspect
+
+    import vllm_mlx.routes.chat as _chat_mod
+
+    src = inspect.getsource(_chat_mod)
+    # The fix moved the raw_text= argument to the un-scrubbed path.
+    # We assert the un-scrubbed expression is wired in, and that the
+    # pre-fix ``_scrubbed_raw_text`` ternary is gone.
+    assert "_scrubbed_raw_text" not in src, (
+        "raw_text scrub path must not survive — codex r6 BLOCKING #2"
+    )
+    assert "raw_text=output.raw_text or output.text" in src
+
+
+# -----------------------------------------------------------------------
+# codex r6 NIT — wire-span lookback bounded by nearest opener/closer
+# -----------------------------------------------------------------------
+
+
+def test_codex_r6_nit_wire_span_lookback_unbounded_by_distance():
+    """A verbose wire body whose opener sits >256 bytes before the
+    ``"arguments"`` marker must still count as in-span, so a later
+    prose ``"arguments"`` example cannot beat it.
+    """
+    # 600+ bytes of metadata between opener and "arguments":.
+    metadata = "x" * 600
+    raw = (
+        f"<tool_call>name=get_weather\n{metadata}\n"
+        '"arguments": {"city":"Tokyo"}</tool_call>\n'
+        'Then prose example: "arguments": {"city":"WRONG"}.'
+    )
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    parsed = _json.loads(got)
+    # The in-span (real) call MUST win over the later prose example,
+    # despite the opener sitting well past the previous 256-byte
+    # lookback boundary.
+    assert parsed == {"city": "Tokyo"}
+
+
+def test_codex_r6_nit_wire_span_lookback_respects_intervening_closer():
+    """If a closer sits between the most recent opener and ``idx``,
+    ``idx`` is NOT in the span — the bounded lookback must respect
+    structural close events instead of just looking for any opener.
+    """
+    raw = (
+        '<tool_call>{"name":"a","arguments":{"x":1}}</tool_call>\n'
+        'Then a leading prose "arguments": {"x":99} (NOT in span).\n'
+        '<tool_call>{"name":"b","arguments":{"x":2}}</tool_call>'
+    )
+    # Two in-span candidates; recovery picks the LAST in-span one.
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    parsed = _json.loads(got)
+    assert parsed == {"x": 2}

@@ -382,16 +382,53 @@ def _recover_partial_tool_args(
             pos += 1
         return None
 
+    # Closer counterparts (used to bound the wire-span lookback so
+    # pretty-printed / verbose wire bodies aren't misclassified as
+    # outside-wire just because their opener sits >256 bytes back).
+    # codex r6 NIT: a fixed 256-byte lookback caused valid
+    # wrapped calls with verbose metadata before ``"arguments":`` to
+    # lose priority to a later prose example. We now bound the search
+    # by the nearest known closer instead — if no closer sits between
+    # the most recent opener and ``idx``, ``idx`` IS inside the span,
+    # regardless of how far back the opener is.
+    _WIRE_SPAN_CLOSERS = (
+        "</tool_call>",
+        "</function>",
+        "<｜tool▁calls▁end｜>",
+        "<｜tool▁call▁end｜>",
+        "[/TOOL_CALLS]",
+        "<|tool_calls_section_end|>",
+        "</minimax:tool_call>",
+        "</invoke>",
+        "</arg_value>",
+    )
+
     def _position_in_wire_span(idx: int) -> bool:
         """Is ``idx`` inside (or immediately after) a known tool-wire
         opener? We don't require a balanced closer — the qwen3 leak
-        shape often has no clean closer."""
-        # Look backward up to 256 bytes for any wire opener whose
-        # span could plausibly include ``idx``. The bound keeps the
-        # check O(1).
-        window_start = max(0, idx - 256)
-        window = text[window_start:idx]
-        return any(opener in window for opener in _WIRE_SPAN_OPENERS)
+        shape often has no clean closer.
+
+        codex r6 NIT: bound the search by the nearest known
+        opener/closer occurrence rather than a fixed lookback. We
+        find the LATEST opener at position ``op_pos < idx`` and the
+        LATEST closer at position ``cl_pos < idx``; ``idx`` is in
+        the span iff ``op_pos`` exists AND ``op_pos > cl_pos``
+        (so the most recent opener was not yet closed before ``idx``).
+        """
+        prefix = text[:idx]
+        op_pos = -1
+        for opener in _WIRE_SPAN_OPENERS:
+            pos = prefix.rfind(opener)
+            if pos > op_pos:
+                op_pos = pos
+        if op_pos < 0:
+            return False
+        cl_pos = -1
+        for closer in _WIRE_SPAN_CLOSERS:
+            pos = prefix.rfind(closer)
+            if pos > cl_pos:
+                cl_pos = pos
+        return op_pos > cl_pos
 
     def _name_pairs_with(idx: int, expected: str) -> bool:
         """Does a ``"name": "<expected>"`` (or ``"name":"<expected>"``)
@@ -676,6 +713,32 @@ _CROSS_FAMILY_SPAN_RE = re.compile(
     rf"(?:{_CROSS_FAMILY_OPENERS}).*?(?:{_CROSS_FAMILY_CLOSERS})",
     re.DOTALL,
 )
+
+
+# codex r6 BLOCKING #1 — leak detector. Used to tighten the
+# forced/required scrub gate so that we only scrub when the
+# parser's ``cleaned_text`` ACTUALLY contains wire-marker literals.
+# A successful forced call whose ``cleaned_text`` is e.g. ``"OK"``
+# does not get its content rewritten, which protects legitimate
+# assistant prose that happens to mention ``<tool_call>`` etc.
+#
+# The detector is intentionally a cheap substring/regex sweep —
+# it returns True on the FIRST match of any wire marker we know
+# about. If new parser wires are added, they only need to be
+# registered in ``_TOOL_WIRE_STANDALONE_MARKERS`` for the detector
+# to pick them up (same source-of-truth as the scrub itself).
+def _contains_tool_wire_literal(text: str | None) -> bool:
+    """Return True iff ``text`` contains any known tool-wire marker
+    (opener, closer, separator). Used by the chat route to decide
+    whether the forced/required scrub gate should fire on a
+    parser-extracted (non-synth) tool call.
+    """
+    if not text:
+        return False
+    for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+        if marker_re.search(text):
+            return True
+    return False
 
 
 def _scrub_tool_wire_literals(text: str | None) -> str:
@@ -2665,18 +2728,45 @@ async def _create_chat_completion_impl(
     #     same forcing semantics.
     # ``"auto"`` and ``"none"`` keep the prior pre-0.8.3 behaviour —
     # cleaned_text is the parser's authoritative output.
+    # codex r6 BLOCKING #1: gate scrub on the presence of an actual
+    # wire-marker leak in ``cleaned_text``, not on every successful
+    # forced/required call. A clean parser-extracted call whose
+    # ``cleaned_text`` is plain prose (even prose that legitimately
+    # discusses ``<tool_call>``) keeps its content unmodified —
+    # which it MUST, because the scrub is destructive (rewrites the
+    # user-visible field).
+    #
+    # The two firing conditions become:
+    #   (a) synth path took over (parser couldn't extract a call from
+    #       the malformed wire — we KNOW the body is junk by
+    #       construction), OR
+    #   (b) parser DID extract a call, ``tool_choice`` is forced
+    #       AND ``cleaned_text`` still contains a wire-marker literal
+    #       (parser left junk behind — qwen3 cross-family closer,
+    #       orphan opener, etc.).
+    # In every other case the scrub stays off.
     _is_forced_choice = request.tool_choice == "required" or (
         isinstance(request.tool_choice, dict)
         and request.tool_choice.get("type") == "function"
     )
     _wire_scrub_active = _synth_forced_tool_call or (
-        _is_forced_choice and request.tools and bool(tool_calls)
+        _is_forced_choice
+        and request.tools
+        and bool(tool_calls)
+        and _contains_tool_wire_literal(cleaned_text)
     )
-    _scrubbed_raw_text: str | None = None
+    # codex r6 BLOCKING #2: scrub the user-visible ``cleaned_text``
+    # only. Do NOT mutate ``raw_text`` before it reaches the reasoning
+    # parser — pretty-printed reasoning bodies may legitimately
+    # contain wire-shaped tokens (e.g. when the reasoning describes
+    # the tool wire format), and rewriting them ahead of extraction
+    # truncates / collapses reasoning content. The reasoning parser
+    # operates on the original ``output.raw_text`` and only its
+    # post-extraction visible output is candidate for re-scrubbing
+    # (handled by ``_finalize_content_and_reasoning`` returning
+    # ``cleaned_text`` that we never mutate after this block).
     if _wire_scrub_active:
         cleaned_text = _scrub_tool_wire_literals(cleaned_text)
-        _raw_for_reasoning = output.raw_text or output.text
-        _scrubbed_raw_text = _scrub_tool_wire_literals(_raw_for_reasoning)
 
     # Extract reasoning content. extract_reasoning() is stateless (pure regex
     # on full text), so the singleton is safe here unlike the streaming variant.
@@ -2685,9 +2775,12 @@ async def _create_chat_completion_impl(
     # the same orchestration without re-implementing it.
     cleaned_text_before_helper = cleaned_text
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
-        raw_text=_scrubbed_raw_text
-        if _scrubbed_raw_text is not None
-        else (output.raw_text or output.text),
+        # codex r6 BLOCKING #2: pass the ORIGINAL raw text so the
+        # reasoning parser sees the bytes the engine actually emitted.
+        # Any wire-literal scrub above only touched user-visible
+        # ``cleaned_text`` — reasoning extraction operates on the
+        # untouched ``raw_text``.
+        raw_text=output.raw_text or output.text,
         cleaned_text=cleaned_text,
         tool_calls=tool_calls,
         reasoning_parser=cfg.reasoning_parser,
