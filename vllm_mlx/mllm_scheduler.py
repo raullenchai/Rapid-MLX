@@ -840,8 +840,12 @@ class MLLMScheduler:
                     # existing tail and wait for a real text segment.
                     pass
             else:
-                request.output_text += new_text
-                output.output_text = request.output_text
+                if finish_reason != "stop":
+                    request.output_text += new_text
+                    output.output_text = request.output_text
+                else:
+                    output.new_text = ""
+                    output.output_text = request.output_text
 
             # Check if finished
             if finish_reason is not None:
@@ -869,7 +873,7 @@ class MLLMScheduler:
                 # finalize streaming detokenizer for full output.
                 # Use explicit flag instead of string truthiness — empty string
                 # is a valid trimmed result (stop at position 0).
-                if stop_trimmed:
+                if stop_trimmed or finish_reason == "stop":
                     output.output_text = request.output_text
                 else:
                     detok = self._detokenizer_pool.get(request_id)

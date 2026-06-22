@@ -239,41 +239,17 @@ def _enforce_named_tool_choice_present(
 ) -> tuple[list, bool, str | None]:
     """Return ``(tool_calls, synthesized, error)``.
 
-    The first element is the (possibly synthesized) tool-call list:
-    unchanged when the named-tool contract is satisfied, or a list
-    containing a single synthesized best-effort ``tool_use`` for the
-    pinned tool with empty ``input={}`` when the model failed to
-    comply. The second element is an explicit boolean signal — True
-    iff this call synthesized a placeholder. Callers use the signal
-    to (a) skip JSON-schema validation on the synthesized empty
-    ``input`` (which would otherwise 400 on tools with ``required``
-    fields, codex r1 BLOCKING #1) and (b) drop the streaming
-    buffered-text replay (the model emitted forbidden text instead
-    of the pinned tool, codex r1 BLOCKING #2 — inferring from list
-    lengths can misclassify a legitimate single-call from a filtered
-    list).
-
-    F8 history: PR #763 round-1 added this as a 422 "could not enforce"
-    surface — honest about local inference's lack of decoder-level
-    constraints, but breaks Anthropic SDK callers that expect a 200
-    with the pinned tool_use block (the forced-named-tool flow is a
-    common agent pattern; ``anthropic`` SDK does not retry on 422).
-    Anthropic's real backend uses an FSM constraint to GUARANTEE a
-    ``tool_use`` for the pinned tool; we don't have that, but a
-    synthesized empty-input call gives clients SOMETHING shaped like
-    the pinned tool to dispatch — closer to spec than 422.
-
-    Mirrors chat.py's named-function path which 422s on the OpenAI
-    surface (strict spec) but the Anthropic spec is more forgiving;
-    see ``_filter_tool_calls_by_tool_choice`` for the same
-    surface-divergence rationale (H-05).
+    The first element is unchanged when the named-tool contract is
+    satisfied. When the model emits text only or only wrong-tool calls,
+    the function returns the filtered empty list plus an error string so
+    callers can surface 422/non-stream or an SSE error instead of
+    silently returning text for a pinned tool request.
 
     ``original_call_count`` is the size of ``tool_calls`` BEFORE the
     filter ran. A warning logs the disambiguation between "model
     returned text only" (count == 0) and "model called the wrong
     tool(s) and the filter emptied the list" (count > 0) so an
-    operator debugging unexpected best-effort fallbacks can see WHICH
-    case fired.
+    operator debugging contract failures can see WHICH case fired.
     """
     target = _named_tool_choice_target(tool_choice)
     if not target or tool_calls:
