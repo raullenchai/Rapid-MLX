@@ -1120,6 +1120,67 @@ def _resolve_model_name(request_model: str | None) -> str:
     return request_model
 
 
+def _aliases_match(a: str, b: str) -> bool:
+    """Return True when ``a`` and ``b`` refer to the same model.
+
+    Both sides run through the shared ``resolve_model()`` alias registry
+    so that the short alias (``embeddinggemma-300m-6bit``) and the full
+    HF id (``mlx-community/embeddinggemma-300m-6bit``) compare equal —
+    same one-source-of-truth rule used at boot time.
+
+    Used by ``/v1/embeddings`` + ``/v1/audio/*`` request handlers to
+    accept either form the client happens to send. Pre-fix the routes
+    did literal string equality against ``cfg.embedding_model_locked``
+    (set to the resolved HF path at boot), so a client that legitimately
+    sent the short alias listed in ``/v1/models`` ate a 400.
+    """
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    from ..model_aliases import resolve_model
+
+    try:
+        return resolve_model(a) == resolve_model(b)
+    except Exception:  # noqa: BLE001 — registry I/O must never 500 the route
+        return False
+
+
+def _resolve_request_alias_or_default(
+    request_model: str | None, locked: str | None
+) -> str | None:
+    """Map a request-supplied ``model`` field to the server-locked id.
+
+    Single source of truth for the OpenAI-canonical ``"default"``
+    placeholder + alias-aware comparison used by every
+    request-time route (``/v1/embeddings``, ``/v1/audio/*``,
+    ``/v1/chat/completions``-style routes that don't run the full
+    registry probe).
+
+    Resolution rules:
+
+    * ``request_model`` is ``None`` / ``""`` / ``"default"`` → return
+      ``locked`` verbatim. The OpenAI SDK + LangChain + LlamaIndex
+      all default to ``"default"`` when the caller hasn't picked a
+      specific model id; rejecting it breaks drop-in compatibility.
+    * ``request_model`` resolves (via ``resolve_model``) to the same
+      id as ``locked`` → return ``locked``. Accepts both the short
+      alias and the full HF path so the user-facing ``--<flag>``
+      value, the ``/v1/models`` listing, and the request body don't
+      have to be byte-for-byte identical to match.
+    * Otherwise → return ``None``. Caller decides the rejection
+      envelope (404 vs 400) because the canonical shape differs
+      between embeddings and audio routes (#805 envelope rules).
+    """
+    if locked is None:
+        return None
+    if not request_model or request_model == "default":
+        return locked
+    if _aliases_match(request_model, locked):
+        return locked
+    return None
+
+
 def _resolve_max_tokens(
     request_value: int | None, enable_thinking: bool | None = None
 ) -> int:

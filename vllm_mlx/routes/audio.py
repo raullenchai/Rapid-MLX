@@ -98,6 +98,14 @@ def _is_valid_repo_component(comp: str) -> bool:
     return True
 
 
+#: Default STT alias used both when the ``model`` form/query field is
+#: omitted and when the caller passes the OpenAI-canonical ``"default"``
+#: placeholder. Mirrors the ``/v1/chat/completions`` rule that maps
+#: ``"default"`` to the boot-time CLI model — STT has no boot-time
+#: model bound, so the route default is the closest equivalent.
+DEFAULT_STT_ALIAS = "whisper-large-v3"
+
+
 def _resolve_stt_model(model: str) -> str:
     """Resolve an OpenAI-style STT model alias to the MLX repo path.
 
@@ -110,6 +118,13 @@ def _resolve_stt_model(model: str) -> str:
     Pass-through is intentionally restrictive — any string with a ``/``
     is treated as a HuggingFace-style repo id. Bare names without a
     slash that aren't in ``STT_MODEL_ALIASES`` are rejected up front.
+
+    R-03: ``"default"`` is the OpenAI-spec placeholder LangChain /
+    LlamaIndex / openai-python emit when the caller hasn't picked a
+    specific model id. Map it to :data:`DEFAULT_STT_ALIAS` so drop-in
+    OpenAI-SDK code works against ``/v1/audio/transcriptions`` —
+    rejecting ``"default"`` here breaks every OpenAI tutorial without
+    a manual ``model=`` argument.
     """
     if not isinstance(model, str) or not model:
         raise HTTPException(
@@ -123,6 +138,8 @@ def _resolve_stt_model(model: str) -> str:
                 }
             },
         )
+    if model == "default":
+        return STT_MODEL_ALIASES[DEFAULT_STT_ALIAS]
     if model in STT_MODEL_ALIASES:
         return STT_MODEL_ALIASES[model]
 
@@ -571,6 +588,14 @@ async def create_speech(
             "vibevoice": "mlx-community/VibeVoice-Realtime-0.5B-4bit",
             "voxcpm": "mlx-community/VoxCPM1.5",
         }
+        # R-03: ``"default"`` is the OpenAI-spec placeholder LangChain /
+        # LlamaIndex / openai-python emit when the caller hasn't picked
+        # a specific model id. Map it to the same alias as omitting the
+        # field entirely (``kokoro`` — the route signature's default
+        # value) so drop-in OpenAI-SDK code works without a manual
+        # ``model=`` override.
+        if model == "default":
+            model = "kokoro"
         model_name = model_map.get(model, model)
 
         if _tts_engine is None or _tts_engine.model_name != model_name:

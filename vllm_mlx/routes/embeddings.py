@@ -65,21 +65,48 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
         )
 
     try:
-        model_name = request.model
+        # R-03 / R-04: route the user-supplied ``model`` field through
+        # the same alias/sentinel resolver every other request handler
+        # uses. Pre-fix the route did a byte-equality match against
+        # ``cfg.embedding_model_locked`` (the resolved HF path), so:
+        #
+        # * ``model="default"`` (the OpenAI-spec placeholder LangChain /
+        #   LlamaIndex / openai-python default to when the caller hasn't
+        #   picked a specific model id) was rejected with a misleading
+        #   "restart the server" 400.
+        # * The short alias the user CLI-passed (and that ``/v1/models``
+        #   advertised pre-#805's HF-id reshape) was also rejected even
+        #   though it resolves to the locked id.
+        #
+        # The resolver returns the locked id verbatim on hit (or None on
+        # miss). The wire ``model`` echoed back stays the locked id so
+        # the response shape matches ``/v1/models`` for cache-key
+        # consistency on the client side.
+        from ..service.helpers import _resolve_request_alias_or_default
 
-        if (
-            cfg.embedding_model_locked is not None
-            and model_name != cfg.embedding_model_locked
-        ):
+        resolved = _resolve_request_alias_or_default(
+            request.model, cfg.embedding_model_locked
+        )
+        if resolved is None:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    f"Embedding model '{model_name}' is not available. "
-                    f"This server was started with --embedding-model {cfg.embedding_model_locked}. "
-                    f"Only '{cfg.embedding_model_locked}' can be used for embeddings. "
-                    f"Restart the server with a different --embedding-model to use '{model_name}'."
-                ),
+                detail={
+                    "error": {
+                        "message": (
+                            f"Embedding model '{request.model}' is not available. "
+                            f"This server was started with --embedding-model "
+                            f"{cfg.embedding_model_locked}. Only "
+                            f"'{cfg.embedding_model_locked}' can be used for "
+                            f"embeddings. Restart the server with a different "
+                            f"--embedding-model to use '{request.model}'."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "model_not_found",
+                        "param": "model",
+                    }
+                },
             )
+        model_name = resolved
 
         load_embedding_model(model_name, lock=False, reuse_existing=True)
 

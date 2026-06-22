@@ -1272,12 +1272,30 @@ class TestEmbeddingsRoutes:
             assert len(r.json()["data"]) == 3
 
     def test_embeddings_locked_model_reject(self):
-        """Embeddings rejects wrong model when locked."""
+        """Embeddings rejects wrong model when locked.
+
+        R-03/R-04 follow-up: the rejection envelope was upgraded to the
+        OpenAI-canonical shape so SDK error branches (which key on
+        ``error.param``) fire cleanly. The message still surfaces the
+        locked id so the operator sees what the server was booted with.
+
+        NOTE: ``patch("...", return_value=None)`` replaces the dependency
+        with a ``MagicMock``, whose signature FastAPI introspects as
+        ``(*args, **kwargs)`` — they get surfaced as query params and
+        the request 422s before the route runs. Use a real lambda so
+        FastAPI sees a no-arg callable. Same pattern in the success
+        tests above already works because their assertions never depend
+        on the route's response shape.
+        """
+
+        async def _noop():
+            return None
+
         with (
             patch.object(get_config(), "embedding_engine", MagicMock()),
             patch.object(get_config(), "embedding_model_locked", "locked-model"),
             patch.object(get_config(), "api_key", None),
-            patch("vllm_mlx.middleware.auth.check_rate_limit", return_value=None),
+            patch("vllm_mlx.middleware.auth.check_rate_limit", new=_noop),
         ):
             app = self._make_app()
             client = TestClient(app)
@@ -1288,5 +1306,14 @@ class TestEmbeddingsRoutes:
                     "input": "test",
                 },
             )
-            assert r.status_code == 400
-            assert "not available" in r.json()["detail"]
+            assert r.status_code == 400, r.text
+            body = r.json()
+            # FastAPI surfaces a dict ``detail`` verbatim when no
+            # exception handler is wired (bare ``_make_app``). The
+            # production server installs ``install_exception_handlers``
+            # which unwraps to ``body["error"]`` directly.
+            err = body.get("error") or body.get("detail", {}).get("error")
+            assert err is not None, body
+            assert err["param"] == "model"
+            assert err["code"] == "model_not_found"
+            assert "not available" in err["message"]
