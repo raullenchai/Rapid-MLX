@@ -654,22 +654,19 @@ async def _non_stream(
 
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
 
-    # H-01: /v1/responses mirror of the chat-route cutoff sentinel.
-    #
-    # Codex r1 NIT (PR #802): the Responses surface intentionally does
-    # NOT run ``_rescue_silent_drop_from_reasoning`` (this endpoint
-    # never carried the issue#569 silent-drop pre-history, and the
-    # adapter shape makes the rescue's #569 promotion semantically
-    # ambiguous), so the predicate set this helper sees on Responses
-    # is broader than on chat/anthropic — ANY length-finished response
-    # with empty content + non-empty reasoning + no tool calls trips
-    # the sentinel, NOT specifically "rescue-suppressed promotion".
-    # That broader scope is OK here: the same UX gap (SDK consumers
-    # see empty bubbles) is exactly what the sentinel fixes, and on
-    # this surface there is no ``_rescue_silent_drop_from_reasoning``
-    # call that could have produced the empty shape for a different
-    # reason. Helper owns the env opt-out + finish-reason gate so
-    # back-compat is preserved.
+    # R-01 (was H-01): /v1/responses mirror of the opt-in cutoff
+    # sentinel. Default-off — the Responses envelope already reports
+    # ``status="incomplete"`` and
+    # ``usage.output_tokens_details.reasoning_tokens``, so SDK consumers
+    # have an unambiguous structured truncation signal without any
+    # synthetic ``output_text`` block. When the env knob
+    # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1`` is set, the helper restores
+    # the legacy literal-text cue for callers who want it. The Responses
+    # surface intentionally does NOT run
+    # ``_rescue_silent_drop_from_reasoning`` (this endpoint never
+    # carried the issue#569 silent-drop pre-history), so the helper sees
+    # a broader predicate set here than on chat/anthropic — that scope
+    # is fine because the helper itself owns all the gates.
     final_content = _apply_reasoning_cutoff_notice(
         final_content,
         reasoning_text,

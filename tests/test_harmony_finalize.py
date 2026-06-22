@@ -553,16 +553,18 @@ def test_streaming_harmony_cut_short_does_not_leak_into_content_length(monkeypat
     streaming call site's harmony synthetic_raw injection makes the
     rescue helper's gate fire, suppressing the trace.
 
-    H-01 (2026-06-21): the strict-null contract is preserved under the
-    env opt-out (``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``). With
-    the env-default H-01 sentinel ON, the terminal chunk surfaces the
-    literal cutoff-notice string in ``delta.content`` so SDK consumers
-    see a clear "truncated, raise max_tokens" signal — that is NOT a
-    leak of the parser-internal trace, so the D-HARMONY-LEAK contract
-    (no byte-for-byte reasoning prose into content) still holds. Run
-    the assertion under the env opt-out to keep this test focused on
-    the original D-HARMONY-LEAK regression guard; the H-01 behaviour
-    has its own dedicated test in ``test_reasoning_content_null_rescue.py``.
+    R-01 (2026-06-21, was H-01): the strict-null contract is the
+    default. The cutoff sentinel is opt-IN via
+    ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1``; with the env var unset (or
+    any non-enable value), the terminal chunk ships
+    ``delta.content=None`` and the D-HARMONY-LEAK contract (no
+    byte-for-byte reasoning prose into content) holds trivially. The
+    explicit ``setenv("disabled")`` below is kept as a belt-and-braces
+    pin against a future env flip — anything outside the documented
+    enable set keeps the sentinel off. The sentinel opt-in behaviour
+    has its own dedicated tests in
+    ``test_reasoning_content_null_rescue.py`` and
+    ``test_truncation_no_synthetic_text.py``.
     """
     monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
     events = _drive_streaming_harmony("length")

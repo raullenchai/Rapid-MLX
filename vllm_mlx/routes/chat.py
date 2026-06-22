@@ -2096,20 +2096,16 @@ async def _create_chat_completion_impl(
             raw_text=output.raw_text or output.text,
             reasoning_is_case4=reasoning_is_case4,
         )
-        # H-01: when the rescue above explicitly chose NOT to promote the
-        # reasoning trace into ``content`` (truncated-``<think>`` /
-        # harmony analysis-without-final / Case-4 no-tag fallback —
-        # D-STOP-THINK + D-HARMONY-LEAK contracts), the response still
-        # ships ``content=None`` on a ``length`` finish and SDK consumers
-        # render an empty bubble. Surface a parser-independent literal
-        # sentinel as ``content`` instead, so every OpenAI SDK client
-        # sees a clear "truncated, raise max_tokens" signal. The sentinel
-        # is NEVER the reasoning text — that would re-introduce exactly
-        # the leak D-STOP-THINK / D-HARMONY-LEAK closed. Opt-out via
-        # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` for callers
-        # that already handle ``content is None`` natively. The helper
-        # itself owns ALL the predicates (env, finish_reason, content
-        # emptiness, tool-call gate) so this call site stays trivial.
+        # R-01 (was H-01): opt-IN cutoff sentinel. By default the helper
+        # is a no-op — the structured truncation signal
+        # (``finish_reason="length"`` + ``reasoning_content`` populated)
+        # is enough for SDK consumers, and synthesizing a literal text
+        # block the model never produced is harmful injection. Callers
+        # who DO want the legacy literal-text cue can opt back in via
+        # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1``. The helper itself owns
+        # ALL the predicates (env opt-in, finish_reason, content
+        # emptiness, tool-call gate, reasoning presence) so this call
+        # site stays trivial.
         final_content = _apply_reasoning_cutoff_notice(
             final_content,
             reasoning_text,
@@ -2601,18 +2597,20 @@ async def stream_chat_completion(
                         "content",
                         len(terminal_content),
                     )
-            # H-01 streaming mirror: when the SSE rescue above did NOT
-            # promote reasoning into ``terminal_content`` (strict null
-            # path won — truncated ``<think>`` / harmony analysis-
-            # without-final / Case-4 no-tag), emit the literal cutoff
-            # sentinel as ONE final-chunk ``delta.content`` event so
-            # streaming SDK consumers see the same signal as their
-            # non-streaming counterparts. Per-token reasoning deltas
-            # have already been sent during the loop; this is a single
+            # R-01 (was H-01) streaming mirror: helper is opt-IN. When
+            # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1`` AND the SSE rescue
+            # above did NOT promote reasoning into ``terminal_content``
+            # (strict null path won — truncated ``<think>`` / harmony
+            # analysis-without-final / Case-4 no-tag), emit the literal
+            # cutoff sentinel as ONE final-chunk ``delta.content`` event
+            # so streaming SDK consumers see the same signal as their
+            # non-streaming counterparts. Per-token reasoning deltas have
+            # already been sent during the loop; this is a single
             # extra-bytes-on-the-final-chunk event, NOT a per-token
             # mirror of the reasoning trace (D-STOP-THINK regression
-            # guard). Gating logic matches the non-streaming call site —
-            # the helper owns it.
+            # guard). Default-off: no event is emitted unless the env
+            # knob is set. Gating logic matches the non-streaming call
+            # site — the helper owns it.
             if not has_any_tool_calls and not structured_output_requested:
                 cutoff_content = _apply_reasoning_cutoff_notice(
                     terminal_content or None,

@@ -235,17 +235,20 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_CORS_ALLOW_HEADERS",
         "RAPID_MLX_CORS_MAX_AGE",
         "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
-        # H-01 cutoff sentinel opt-out. Pure UX knob — when reasoning
-        # generation is cut short before ``</think>`` (length-finish
-        # mid-think), surface a literal sentinel string in ``content``
-        # so SDK consumers see a clear "truncated, raise max_tokens"
-        # signal. ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` reverts
-        # to strict ``content=None`` for callers (internal agents) that
-        # already handle the null shape. Never selects a model, parser,
-        # or routing tier; consumed only by
+        # R-01 (was H-01) cutoff sentinel opt-IN. Pure UX knob — default
+        # OFF after the R-01 dogfood reversal: every transport already
+        # carries an unambiguous structured truncation signal
+        # (``finish_reason="length"`` / ``status="incomplete"`` /
+        # ``stop_reason="max_tokens"``), so synthesizing a literal text
+        # block the model never produced is treated as harmful
+        # injection. Callers who DO want the legacy literal-text cue
+        # can re-enable it on a single envelope field via
+        # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1`` (or
+        # ``true`` / ``on`` / ``yes`` / ``enabled``). Never selects a
+        # model, parser, or routing tier; consumed only by
         # ``vllm_mlx.service.helpers._cutoff_notice_enabled`` to decide
-        # whether the sentinel notice is surfaced on a single envelope
-        # field. See PR fix/h-01-reasoning-content-null-rescue.
+        # whether the sentinel notice is surfaced. See PR
+        # fix/r01-truncated-injection-cross-route.
         "RAPID_MLX_REASONING_CUTOFF_NOTICE",
     }
 )

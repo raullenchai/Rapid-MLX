@@ -756,7 +756,7 @@ def _rescue_silent_drop_from_reasoning(
 
 
 # ---------------------------------------------------------------------------
-# H-01: reasoning-cutoff sentinel
+# H-01 / R-01: reasoning-cutoff sentinel (opt-in)
 # ---------------------------------------------------------------------------
 #
 # When a reasoning model (qwen3, deepseek_r1, phi-4-mini-reasoning, glm4,
@@ -768,73 +768,86 @@ def _rescue_silent_drop_from_reasoning(
 # promoting it to ``content`` would ship byte-identical bytes in both
 # fields (the leak shape those PRs explicitly closed).
 #
-# The complementary UX gap (H-01): every OpenAI SDK consumer reads
-# ``choices[0].message.content`` and renders an empty bubble. SDK defaults
-# of ``max_tokens=256`` or ``max_tokens=512`` are common, so the most
-# observable failure mode of a reasoning model on a tight budget is a
-# silently empty assistant turn — clients have no signal beyond
-# ``finish_reason="length"`` (which only sophisticated consumers check).
+# History: H-01 (PR #802, 2026-06-21) introduced an opt-OUT sentinel that
+# was injected into ``content`` by default to give SDK consumers a literal
+# "truncated, raise max_tokens" cue instead of an empty bubble.
 #
-# Policy A (this helper): when the response was cut off mid-think on a
-# ``length`` finish AND the rescue helper above already decided NOT to
-# promote reasoning into content (strict routing wins), emit a clearly-
-# marked sentinel string in ``content`` so SDK consumers see something.
-# The sentinel is a literal, parser-independent notice — NEVER the
-# parser-internal reasoning text — so it cannot re-introduce the
-# D-STOP-THINK / D-HARMONY-LEAK leak shape. ``reasoning_content`` stays
-# populated as before.
+# R-01 (0.8.5 dogfood, this commit): operator policy reverses the default.
+# Synthesizing a placeholder text block that the model never produced is
+# treated as harmful injection — every transport already carries an
+# unambiguous truncation signal:
 #
-# Scope:
+#   * /v1/chat/completions  → ``finish_reason="length"``
+#   * /v1/responses         → ``status="incomplete"`` +
+#                              ``output_tokens_details.reasoning_tokens``
+#   * /v1/messages          → ``stop_reason="max_tokens"`` +
+#                              ``thinking`` content block
 #
-# * Fires ONLY on ``finish_reason="length"`` (NOT on ``"stop"`` — stop-
-#   string mid-think is D-STOP-THINK's exact case, where the strict null
-#   contract must hold and the caller can re-request to drive the model
-#   past the stop string).
+# Clients that DO want the legacy literal-text cue (e.g. chat UIs that do
+# not render the structured truncation fields) can re-enable the sentinel
+# on a single envelope field via ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1``
+# (or ``true`` / ``on`` / ``yes`` / ``enabled``). The helper is preserved
+# as a single source of truth so the OpenAI chat lane, the Responses lane,
+# and the Anthropic adapter cannot drift apart.
+#
+# Scope (unchanged across the flip):
+#
+# * Fires ONLY when the env var explicitly enables the notice.
+# * Fires ONLY on ``finish_reason="length"`` (NOT on ``"stop"`` —
+#   stop-string mid-think is D-STOP-THINK's exact case, where the strict
+#   null contract must hold and the caller can re-request to drive the
+#   model past the stop string).
 # * Fires ONLY when ``content`` is empty/None AND ``reasoning_text`` is
 #   non-empty — the silent-drop shape clients actually trip on. Happy-
 #   path (closed ``</think>answer`` split) flows untouched.
 # * Fires ONLY when no ``tool_calls`` were extracted — tool-only responses
 #   legitimately ship ``content=None`` per the OpenAI spec.
-# * Opt-out via ``RAPID_MLX_REASONING_CUTOFF_NOTICE``: any of
-#   ``"0"`` / ``"false"`` / ``"no"`` / ``"off"`` / ``"disabled"`` /
-#   ``""`` reverts to the strict-null behaviour for callers who already
-#   handle ``content is None`` (e.g. internal agents in this repo).
-#   Default is ``enabled``.
 #
 # Single source of truth — both the OpenAI ``/v1/chat/completions``
 # non-stream + stream paths AND the Anthropic ``/v1/messages`` adapter
-# call this helper so the user-visible behaviour cannot drift between
-# surfaces. (The streaming path emits the sentinel as one final-chunk
-# ``delta.content`` event, not per-token, so no token-by-token leak of
-# the sentinel string itself.)
+# AND the ``/v1/responses`` adapter call this helper, so the user-visible
+# behaviour cannot drift between surfaces. (The streaming path, when the
+# env knob is on, emits the sentinel as one final-chunk ``delta.content``
+# event, not per-token, so no token-by-token leak of the sentinel string
+# itself.)
 
-#: Literal sentinel surfaced to ``content`` when generation is cut short
-#: mid-think on ``finish_reason="length"``. Kept short and unambiguous so
-#: agentic clients can pattern-match if they want to auto-retry with a
-#: larger ``max_tokens``, but verbose enough that a human user sees a
-#: clear "this turn was truncated" signal in the bubble rather than the
-#: previous silently-empty render.
+#: Literal sentinel surfaced to ``content`` when the env-opt-in is set AND
+#: generation is cut short mid-think on ``finish_reason="length"``. Kept
+#: short and unambiguous so agentic clients can pattern-match if they
+#: want to auto-retry with a larger ``max_tokens``.
 REASONING_CUTOFF_SENTINEL = "[truncated — reasoning incomplete; raise max_tokens]"
 
-#: Env var values that DISABLE the sentinel notice (revert to strict null
-#: behaviour). Anything outside this set — including unset — leaves the
-#: sentinel enabled (the default for the user-facing UX fix).
-_CUTOFF_NOTICE_DISABLED_VALUES = frozenset({"0", "false", "no", "off", "disabled", ""})
+#: Env var values that EXPLICITLY ENABLE the sentinel notice (R-01 flip:
+#: default is now OFF). Anything outside this set — including unset —
+#: keeps the strict-null behaviour (no synthetic text injection).
+_CUTOFF_NOTICE_ENABLED_VALUES = frozenset({"1", "true", "on", "yes", "enabled"})
 
 
 def _cutoff_notice_enabled() -> bool:
-    """Whether the H-01 cutoff sentinel is enabled for this process.
+    """Whether the cutoff sentinel is enabled for this process.
 
-    Reads ``RAPID_MLX_REASONING_CUTOFF_NOTICE`` on each call so test
-    harnesses can flip the env var per-request via
-    ``monkeypatch.setenv`` without restarting the process. The cost is
-    negligible (``os.environ.get`` is a dict lookup) and matches how
-    every other ``RAPID_MLX_*`` env-gated knob is read in this module.
+    R-01 flip: default is OFF. The structured truncation signal carried by
+    every transport (``finish_reason="length"`` /
+    ``status="incomplete"`` / ``stop_reason="max_tokens"``) is the
+    canonical truncation cue. The literal sentinel is opt-in via
+    ``RAPID_MLX_REASONING_CUTOFF_NOTICE``.
+
+    Reads the env var on each call so test harnesses can flip the gate
+    per-request via ``monkeypatch.setenv`` without restarting the
+    process. The cost is negligible (``os.environ.get`` is a dict
+    lookup) and matches how every other ``RAPID_MLX_*`` env-gated knob
+    is read in this module.
+
+    Accepted enable values (case-insensitive, surrounding whitespace
+    stripped): ``"1"`` / ``"true"`` / ``"on"`` / ``"yes"`` /
+    ``"enabled"``. Anything else — including unset, the empty string,
+    ``"0"``, ``"false"``, ``"no"``, ``"off"``, ``"disabled"``, or any
+    arbitrary unrecognised value — leaves the sentinel disabled.
     """
     raw = os.environ.get("RAPID_MLX_REASONING_CUTOFF_NOTICE")
     if raw is None:
-        return True  # default on
-    return raw.strip().lower() not in _CUTOFF_NOTICE_DISABLED_VALUES
+        return False  # R-01: default OFF
+    return raw.strip().lower() in _CUTOFF_NOTICE_ENABLED_VALUES
 
 
 def _apply_reasoning_cutoff_notice(
