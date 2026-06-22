@@ -96,6 +96,23 @@ class AliasProfile:
     tool_call_parser: str | None = None
     reasoning_parser: str | None = None
     is_hybrid: bool = False
+    # r6-A R6-C1: when an aliases.json entry explicitly declares
+    # ``is_hybrid``, the runtime ArraysCache probe in
+    # ``model_auto_config.enrich_model_config`` MUST NOT override the
+    # declared value. Without this flag, the probe one-way-promotes
+    # ``is_hybrid`` to ``True`` for any model whose ``make_cache()``
+    # returns linear-attention layers — which is exactly what dense
+    # Qwen3.5 / Qwen3.6 weights do (model_type=qwen3_5 uses
+    # GatedDeltaNet), forcing the alias-level routing decision (hybrid
+    # throttle + prefix-boundary snapshot) back on even after the JSON
+    # marked the model as non-hybrid. That re-promotion is what
+    # wedges ``rapid-mlx serve qwen3.5-4b-4bit`` on metal::malloc with a
+    # 499000 byte limit; ``--no-hybrid`` was the only workaround.
+    #
+    # Default ``False`` keeps the existing safety-net behaviour for
+    # legacy aliases that haven't opted into the explicit contract —
+    # those still pick up the probe's hybrid promotion as before.
+    is_hybrid_explicit: bool = False
     # MoE / sparse-expert architecture (A3B, A10B, A17B Qwen3.5/3.6 variants,
     # plus future Mixtral/Granite-MoE families). Tracked separately from
     # ``is_hybrid`` because the two attributes gate different downstream
@@ -221,6 +238,12 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "tool_call_parser",
             "reasoning_parser",
             "is_hybrid",
+            # r6-A R6-C1: pin the JSON-declared is_hybrid value so the
+            # runtime ArraysCache probe in
+            # ``enrich_model_config`` cannot one-way-flip it to True.
+            # See AliasProfile.is_hybrid_explicit for the full
+            # rationale.
+            "is_hybrid_explicit",
             "is_moe",
             "supports_spec_decode",
             "default_max_tokens",
@@ -434,6 +457,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         tool_call_parser=value.get("tool_call_parser"),
         reasoning_parser=value.get("reasoning_parser"),
         is_hybrid=_strict_bool("is_hybrid", False),
+        is_hybrid_explicit=_strict_bool("is_hybrid_explicit", False),
         is_moe=_strict_bool("is_moe", False),
         supports_spec_decode=_strict_bool("supports_spec_decode", True),
         default_max_tokens=value.get("default_max_tokens"),

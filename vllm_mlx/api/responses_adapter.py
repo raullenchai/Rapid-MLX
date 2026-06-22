@@ -294,6 +294,13 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
         # model author's curated defaults.
         temperature=request.temperature,
         top_p=request.top_p,
+        # r6-A R6-H8: forward ``top_k`` so the Responses lane honours the
+        # request-time sampling override. The schema-layer
+        # ``_validate_nonnegative_int`` cap already 400'd pathological
+        # values upstream; here we just thread the validated value
+        # through to the sampler kwargs (matching ``seed`` /
+        # ``reasoning_max_tokens`` parity).
+        top_k=request.top_k,
         max_tokens=request.max_output_tokens,
         stream=request.stream,
         tools=tools,

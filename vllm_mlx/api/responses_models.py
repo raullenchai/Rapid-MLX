@@ -18,7 +18,11 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .models import _validate_seed
+from .models import (
+    _TOP_K_SENTINEL_CAP,
+    _validate_nonnegative_int,
+    _validate_seed,
+)
 
 # =============================================================================
 # Request Models
@@ -137,11 +141,32 @@ class ResponsesRequest(BaseModel):
     # downstream in ``make_seeded_sampler`` (parity with the chat /
     # legacy completion surfaces).
     seed: int | None = None
+    # r6-A R6-H8: ``top_k`` upper-bound gate on the Responses surface.
+    # r5-E B-7 (PR #824) landed the shared ``_validate_nonnegative_int``
+    # validator + ``_TOP_K_SENTINEL_CAP = 1 << 20`` ceiling on
+    # ChatCompletionRequest and CompletionRequest, but Responses never
+    # declared the field at all — Pydantic silently dropped any
+    # ``top_k`` the client sent (e.g. ``999999999``) and the route then
+    # generated with the engine's default sampler. From the SDK
+    # consumer's perspective the value was silently accepted (HTTP 200
+    # with no validation error), which is the exact silent-correctness
+    # hazard r5-E exists to close. Mirroring the chat/completion schema
+    # here (single shared validator, single shared ceiling) keeps the
+    # three OpenAI-surface lanes (chat / responses / legacy completions)
+    # under one contract — no copy-pasted thresholds to drift.
+    top_k: int | None = None
 
     @field_validator("seed", mode="before")
     @classmethod
     def _validate_seed_field(cls, v) -> int | None:
         return _validate_seed(v)
+
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def _validate_top_k(cls, v) -> int | None:
+        return _validate_nonnegative_int(
+            v, max_value=_TOP_K_SENTINEL_CAP, field_name="top_k"
+        )
 
     @model_validator(mode="before")
     @classmethod

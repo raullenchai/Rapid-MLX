@@ -642,12 +642,14 @@ class TestModelsRoutes:
             assert body["id"] == "qwen3.5-4b-4bit"
             assert body["object"] == "model"
             # Vendor-extension fields surfaced from AliasProfile.
-            # The qwen3.5-4b-4bit alias is_hybrid=True per aliases.json
-            # (verified by Round-1 autoresearch sweep, 2026-06-14).
-            assert body["is_hybrid"] is True, (
-                "is_hybrid must be surfaced so the desktop knows to render the "
-                "'Show reasoning' toggle for hybrid models"
-            )
+            # r6-A R6-C1: qwen3.5-4b-4bit alias was flipped to
+            # is_hybrid=False (the metal::malloc wedge surface). The
+            # extension still surfaces so rapid-desktop's catalog
+            # pre-fetch sees the explicit value; the desktop's "Show
+            # reasoning" toggle gates on ``reasoning_parser`` presence
+            # which remains "qwen3" for this alias regardless of the
+            # routing decision.
+            assert body["is_hybrid"] is False
             # Parser pair surfaced for diagnostics.
             assert body["tool_call_parser"] == "hermes"
             assert body["reasoning_parser"] == "qwen3"
@@ -761,7 +763,10 @@ class TestModelsRoutes:
             assert alias_entry is not None, (
                 "qwen3.5-4b-4bit must appear in the list endpoint"
             )
-            assert alias_entry["is_hybrid"] is True
+            # r6-A R6-C1: qwen3.5-4b-4bit alias flipped to non-hybrid
+            # (see ``test_retrieve_known_alias_populates_extensions``
+            # for the rationale block).
+            assert alias_entry["is_hybrid"] is False
             assert alias_entry["reasoning_parser"] == "qwen3"
         finally:
             self._restore(orig)
