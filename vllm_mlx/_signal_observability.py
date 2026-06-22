@@ -6,11 +6,15 @@ the difference between
 
   * a SIGKILL (no handler can run; nothing in the log; the *absence* of
     these stack dumps is itself a signal that the death was un-catchable),
-  * a SIGTERM/SIGHUP/SIGABRT (handler logs the signal name + every alive
-    thread's stack BEFORE the existing shutdown machinery runs), and
-  * a C-level segfault inside MLX / Metal (``faulthandler.enable()`` writes
-    a Python traceback to stderr from the signal handler before the
-    interpreter dies).
+  * a SIGTERM/SIGHUP (Python-level ``signal.signal`` chain logs the
+    signal name + every alive thread's stack BEFORE the existing
+    shutdown machinery runs), and
+  * a C-level segfault or abort inside MLX / Metal
+    (``faulthandler.enable()`` writes a Python traceback to stderr for
+    SIGSEGV / SIGBUS / SIGILL / SIGFPE / SIGABRT directly from the
+    C-level signal handler before the interpreter dies — see the note
+    in ``_OBSERVED_SIGNALS`` for why we don't double-install on
+    SIGABRT).
 
 This was lifted out of ``server.py`` because:
 
@@ -140,25 +144,25 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
     except Exception:  # pragma: no cover — defensive
         pass
 
-    # Chain to whatever was registered before us so the graceful
-    # shutdown path still runs (uvicorn installs a SIGTERM handler that
-    # initiates ``Server.shutdown`` — losing that would convert every
-    # SIGTERM into a SIGKILL-equivalent for the lifespan hook).
+    # Chain to whatever was registered before us so the original
+    # disposition is preserved end-to-end:
+    #   * callable prior (uvicorn's ``handle_exit`` etc.) → call it so
+    #     graceful shutdown still runs;
+    #   * SIG_DFL → restore default + ``signal.raise_signal`` so the
+    #     kernel-level terminate-by-default fires (this is correct
+    #     because if the prior was SIG_DFL, no shutdown driver was
+    #     listening — termination IS the original behaviour, and we've
+    #     already added the observability via the WARNING + stack dump
+    #     above);
+    #   * SIG_IGN → return; ignore-by-default IS the original behaviour.
     #
-    # Codex r1 BLOCKING #1: we install ONLY when ``prior`` is callable
-    # (see ``install_signal_observability``), so this branch is the only
-    # one that can fire in practice. The ``SIG_DFL`` / ``SIG_IGN``
-    # branches are kept as defensive fall-throughs but DO NOT re-raise
-    # the signal — re-installing ``SIG_DFL`` and ``raise_signal``-ing
-    # would converted an observable signal into an immediate process
-    # kill that races any FastAPI/uvicorn shutdown machinery the
-    # operator might bring up out-of-band (e.g. embedded ASGI servers
-    # that wire their own shutdown later in startup). Keeping the
-    # original disposition's terminate behaviour requires no action
-    # from us: ``signal.signal`` returns ``SIG_DFL``/``SIG_IGN`` as
-    # the prior only when the kernel-side disposition was unchanged,
-    # and the *previous* time the signal arrives the OS will redeliver
-    # under the original (now-restored-by-uvicorn-or-FastAPI) handler.
+    # Codex r2 BLOCKING #1: an earlier round of this PR skipped the
+    # install entirely when the prior was non-callable, which meant the
+    # operator's SIGHUP (default disposition is ``SIG_DFL`` because
+    # uvicorn does not capture SIGHUP) was never observed in production
+    # — exactly the silent-death shape C-04 was trying to fix. Always
+    # install, and make the SIG_DFL branch preserve termination via
+    # ``raise_signal`` after restoring the default handler.
     prior = _prior_handlers.get(signum)
     if callable(prior):
         try:
@@ -167,27 +171,46 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
             logger.debug(
                 "prior signal handler for %s raised during chain", name, exc_info=True
             )
-    # SIG_DFL / SIG_IGN: do nothing further; we've already logged + dumped
-    # stacks. The operator now has the receipt evidence the C-04 recon
-    # was missing, and downstream shutdown drivers (uvicorn,
-    # FastAPI lifespan) own the actual termination semantics.
+    elif prior == signal.SIG_DFL:
+        # Restore the default disposition and re-deliver the signal so
+        # the kernel-level terminate behaviour fires. ``signal.signal``
+        # is async-signal-safe in CPython's signal module; the
+        # ``raise_signal`` call lands on the now-restored SIG_DFL
+        # handler and terminates the process the same way it would
+        # have without our hook — just AFTER we've logged + dumped.
+        try:
+            signal.signal(signum, signal.SIG_DFL)
+            signal.raise_signal(signum)
+        except Exception:  # pragma: no cover — defensive
+            pass
+    # SIG_IGN means "ignore" — do nothing (the original disposition was
+    # ignore, and we've already logged the receipt).
 
 
 def install_signal_observability(
     *,
     observed_signals: tuple[int, ...] | None = None,
 ) -> bool:
-    """Install ``faulthandler`` + a chained signal handler for SIGTERM /
-    SIGHUP / SIGABRT.
+    """Install ``faulthandler`` + a chained signal handler for SIGTERM
+    and SIGHUP. SIGABRT is intentionally NOT chained — see
+    ``_OBSERVED_SIGNALS``; faulthandler's C-level handler owns that
+    path because it's async-signal-safe and our Python-level
+    ``_on_signal`` (which calls ``logging``) is not.
 
-    Returns ``True`` if installed (or was already installed), ``False``
-    if installation was skipped because we're off the main thread.
+    Returns ``True`` if at least one handler was installed (or all
+    handlers were already installed), ``False`` if installation was
+    skipped because we're off the main thread or because every
+    ``signal.signal`` call raised on this platform. Subsequent calls
+    after a returning-``False`` attempt are NOT latched off — the
+    install retries fresh.
 
     Parameters
     ----------
     observed_signals
-        Override the default ``(SIGTERM, SIGHUP, SIGABRT)`` set. Tests
-        pass a narrower tuple to avoid clobbering pytest's own handlers.
+        Override the default ``(SIGTERM, SIGHUP)`` set (see
+        ``_OBSERVED_SIGNALS`` for why SIGABRT is intentionally not in
+        this list). Tests pass a narrower tuple (e.g.
+        ``(SIGUSR1,)``) to avoid clobbering pytest's own handlers.
 
     The function is **idempotent** — repeated calls after the first
     succeed and become no-ops. This matters because the FastAPI lifespan
@@ -237,40 +260,16 @@ def install_signal_observability(
             observed_signals if observed_signals is not None else _OBSERVED_SIGNALS
         )
 
+        # Codex r2 BLOCKING #2: latch ONLY after at least one handler
+        # was successfully installed. If every install raised (the
+        # all-ValueError path on a platform that rejects every observed
+        # signal), an early call would otherwise permanently disable
+        # later installation attempts in the same process — e.g. a
+        # uvicorn-managed lifespan that fires the install after a
+        # later config-reload would also be skipped because
+        # ``_installed`` was True from the failed first attempt.
+        installed_any = False
         for sig in signals_to_install:
-            # Codex r1 BLOCKING #1 follow-on: peek at the current
-            # handler BEFORE installing ours, so we can skip the
-            # signals where no graceful-shutdown driver is already in
-            # place. ``signal.getsignal`` returns the same Python-level
-            # callable / ``SIG_DFL`` / ``SIG_IGN`` value that
-            # ``signal.signal`` would return as the prior. If the
-            # current handler isn't a Python callable, replacing it
-            # with our observability hook would silently swallow the
-            # signal — operator gets a log line but the process never
-            # terminates (because our chain explicitly does NOT
-            # re-raise on the ``SIG_DFL`` branch — see ``_on_signal``).
-            # Preserve the original disposition by NOT installing in
-            # that case; the operator loses the receipt evidence but
-            # keeps the kernel-level terminate-or-ignore semantics
-            # they expected.
-            try:
-                current = signal.getsignal(sig)
-            except (OSError, ValueError) as exc:
-                logger.debug(
-                    "could not query current handler for %s: %r",
-                    _signal_name(sig),
-                    exc,
-                )
-                continue
-            if not callable(current):
-                logger.debug(
-                    "skipping rapid-mlx handler for %s: prior=%r is not"
-                    " a Python callable; preserving kernel-level"
-                    " disposition to avoid changing shutdown semantics",
-                    _signal_name(sig),
-                    current,
-                )
-                continue
             try:
                 prior = signal.signal(sig, _on_signal)
             except (OSError, ValueError) as exc:
@@ -283,11 +282,20 @@ def install_signal_observability(
                 )
                 continue
             _prior_handlers[sig] = prior
+            installed_any = True
             logger.debug(
                 "rapid-mlx signal handler installed for %s (prior=%r)",
                 _signal_name(sig),
                 prior,
             )
+
+        # Only latch when something actually got installed. A no-op
+        # install (every signal rejected on this platform) returns
+        # False so a future call from a different entry point gets to
+        # try again. faulthandler.enable() above is idempotent and
+        # doesn't need re-running.
+        if not installed_any:
+            return False
 
         _installed = True
         return True

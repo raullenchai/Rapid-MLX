@@ -87,31 +87,88 @@ def test_signal_chain_calls_prior_handler():
         so._reset_for_tests()
 
 
-def test_install_skipped_when_prior_is_sig_dfl():
-    """Codex r1 BLOCKING #1 follow-up: we must NOT install our handler
-    when the current handler is ``SIG_DFL`` / ``SIG_IGN``. Doing so
-    would silently swallow the signal because our ``_on_signal`` chain
-    deliberately does NOT re-raise on non-callable priors (re-raising
-    would change shutdown semantics from "observable graceful shutdown"
-    to "immediate default termination"). The defensive answer is to
-    preserve the original kernel-level disposition by skipping the
-    install entirely for that signal.
+def test_install_chains_to_sig_dfl_via_restore_and_raise():
+    """Codex r2 BLOCKING #1 follow-up: when the prior handler is
+    ``SIG_DFL``, the chain must restore the default disposition and
+    re-raise via ``signal.raise_signal`` so the kernel-level
+    terminate-by-default fires after the WARNING + stack dump. Without
+    this, SIGHUP — whose default disposition under uvicorn is SIG_DFL
+    because uvicorn only captures SIGINT/SIGTERM — would be silently
+    swallowed in production despite the install (the exact silent-death
+    shape C-04 is trying to make observable).
+
+    We exercise the mechanism on SIGUSR1 (the prior is SIG_DFL by
+    default, but its default action is "terminate" same as SIGHUP, so
+    we use it as a safe proxy that won't disturb the test runner's
+    SIGTERM / SIGHUP handlers).
     """
     from vllm_mlx import _signal_observability as so
 
     so._reset_for_tests()
 
-    # Force SIG_DFL as the current handler.
-    prior_usr1 = signal.signal(signal.SIGUSR1, signal.SIG_DFL)
-    try:
-        so.install_signal_observability(observed_signals=(signal.SIGUSR1,))
-        # We installed faulthandler unconditionally, but the per-signal
-        # chain skipped this signal — no entry in the prior-handler map.
-        assert signal.SIGUSR1 not in so._get_installed_handlers()
-        # The current handler is still SIG_DFL (we didn't overwrite it).
+    # Use a subprocess so the actual termination fires in isolation
+    # without killing the pytest runner. The subprocess installs our
+    # observability over a fresh SIG_DFL prior, then sends itself
+    # SIGUSR1 — the chain should log + dump + terminate.
+    program = textwrap.dedent(
+        """
+        import faulthandler, logging, os, signal, sys, time
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
+                            format="%(levelname)s %(name)s: %(message)s")
+        # Confirm we start from SIG_DFL.
         assert signal.getsignal(signal.SIGUSR1) == signal.SIG_DFL
+        from vllm_mlx._signal_observability import install_signal_observability
+        assert install_signal_observability(observed_signals=(signal.SIGUSR1,)) is True
+        sys.stdout.write("READY\\n"); sys.stdout.flush()
+        os.kill(os.getpid(), signal.SIGUSR1)
+        # Give the signal time to deliver + chain. If we reach the
+        # ``os._exit(99)`` below the chain swallowed the signal — that's
+        # the failure mode this test is pinning.
+        time.sleep(2.0)
+        os._exit(99)
+        """
+    ).strip()
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", program],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        ready = proc.stdout.readline()
+        assert ready.strip() == "READY", ready
+        stdout, stderr = proc.communicate(timeout=10)
     finally:
-        signal.signal(signal.SIGUSR1, prior_usr1)
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+    assert "received signal SIGUSR1" in stderr, stderr
+    # Default disposition for SIGUSR1 is terminate (signed exit). The
+    # ``os._exit(99)`` line MUST NOT be reached — if it is, the chain
+    # silently swallowed the signal and r2 BLOCKING #1 has regressed.
+    assert proc.returncode != 99, (
+        f"chain swallowed the signal — process exited via os._exit(99) "
+        f"instead of being terminated by SIG_DFL re-raise; stderr={stderr!r}"
+    )
+
+
+def test_install_returns_false_when_no_signals_could_be_installed():
+    """Codex r2 BLOCKING #2: the latch must NOT fire on a no-op install.
+    If every ``signal.signal`` call rejected (empty list, or all
+    platform-rejected signals), a later legitimate install from a
+    different entry point must still succeed."""
+    from vllm_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+    try:
+        # Empty signal set → installed_any stays False.
+        result = so.install_signal_observability(observed_signals=())
+        assert result is False
+        # The latch was NOT set — a follow-on install can still proceed.
+        assert so._installed is False
+    finally:
         so._reset_for_tests()
 
 
@@ -212,26 +269,36 @@ def test_subprocess_sigterm_emits_warning_and_stack_dump():
     assert "Thread" in stderr or "Current thread" in stderr, stderr
 
 
-def test_subprocess_sighup_emits_warning_and_stack_dump():
-    """SIGHUP is the canonical "parent shell hung up" signal — the
-    Marcus/Karim persona logs in the C-04 recon all ended right after a
-    request returned, which matches an interactive shell tab being
-    closed (SIGHUP delivered to the process group). Verify the same
-    observability shape lands for SIGHUP too."""
+def test_subprocess_sighup_default_disposition_emits_warning_and_terminates():
+    """Codex r2 BLOCKING #3: SIGHUP's default disposition under uvicorn
+    is ``SIG_DFL`` because uvicorn only installs handlers for
+    SIGINT/SIGTERM (``HANDLED_SIGNALS``). This is the production
+    SIGHUP path, and it has to work end-to-end: log the receipt + dump
+    stacks + still terminate (so the operator's ``kill -SIGHUP <pid>``
+    still works as expected).
+
+    A previous round of this test installed a callable
+    ``_exit_handler`` BEFORE calling ``install_signal_observability``,
+    which bypassed the SIG_DFL chain entirely. This version
+    deliberately does NOT install a prior so we exercise the real
+    default-disposition path that production sees.
+    """
     program = textwrap.dedent(
         """
         import logging, os, signal, sys, time
         logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
                             format="%(levelname)s %(name)s: %(message)s")
-        def _exit_handler(signum, frame):
-            sys.stderr.flush()
-            os._exit(0)
-        signal.signal(signal.SIGHUP, _exit_handler)
+        # Confirm we start from SIG_DFL — this is the production
+        # baseline for SIGHUP under uvicorn.
+        assert signal.getsignal(signal.SIGHUP) == signal.SIG_DFL
         from vllm_mlx._signal_observability import install_signal_observability
-        install_signal_observability()
+        assert install_signal_observability() is True
         sys.stdout.write("READY\\n"); sys.stdout.flush()
+        # If the chain swallows the signal we'll fall through to
+        # os._exit(99) and the test will detect that via returncode.
         for _ in range(50):
             time.sleep(0.1)
+        os._exit(99)
         """
     ).strip()
 
@@ -251,5 +318,14 @@ def test_subprocess_sighup_emits_warning_and_stack_dump():
             proc.kill()
             proc.communicate()
 
+    # WARNING marker must land before termination.
     assert "received signal SIGHUP" in stderr, stderr
+    # faulthandler.dump_traceback shape.
     assert "Thread" in stderr or "Current thread" in stderr, stderr
+    # The chain MUST have re-raised under SIG_DFL → terminate, NOT
+    # swallowed the signal. If we hit os._exit(99) below the signal,
+    # the SIG_DFL re-raise branch in _on_signal regressed.
+    assert proc.returncode != 99, (
+        f"SIGHUP was swallowed — chain failed to re-raise under SIG_DFL"
+        f" so the process kept running; stderr={stderr!r}"
+    )
