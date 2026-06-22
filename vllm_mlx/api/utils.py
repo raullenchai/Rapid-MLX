@@ -1095,10 +1095,14 @@ def normalize_responses_content_part(item) -> dict:
     if item_type == "input_image":
         image_url = data.get("image_url")
         if isinstance(image_url, dict):
-            url = _require_string(image_url.get("url"), "input_image.image_url.url")
+            normalized_image_url = dict(image_url)
+            _require_string(
+                normalized_image_url.get("url"), "input_image.image_url.url"
+            )
         else:
             url = _require_string(image_url, "input_image.image_url")
-        return {"type": "image_url", "image_url": {"url": url}}
+            normalized_image_url = {"url": url}
+        return {"type": "image_url", "image_url": normalized_image_url}
     raise ValueError(f"Unsupported Responses content block type: {item_type!r}")
 
 

@@ -288,6 +288,32 @@ class TestResponsesToOpenai:
         assert content[1].type == "image_url"
         assert content[1].image_url.url == "data:image/png;base64,abc"
 
+    def test_input_image_preserves_image_url_options(self):
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem.model_construct(
+                    type="message",
+                    role="user",
+                    content=[
+                        {
+                            "type": "input_image",
+                            "image_url": {
+                                "url": "data:image/png;base64,abc",
+                                "detail": "high",
+                            },
+                        },
+                    ],
+                )
+            ],
+        )
+
+        chat = responses_to_openai(req)
+
+        image_url = chat.messages[0].content[0].image_url
+        assert image_url.url == "data:image/png;base64,abc"
+        assert image_url.detail == "high"
+
     def test_malformed_responses_content_block_does_not_become_empty_prompt(self):
         req = ResponsesRequest(
             model="gpt-5",
