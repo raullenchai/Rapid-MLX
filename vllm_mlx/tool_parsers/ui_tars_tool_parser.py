@@ -906,18 +906,26 @@ def _trailing_action_prefix_len(text: str) -> int:
     tool-parser side of the hand-off so a leak that snuck past the
     reasoning parser's gate (e.g. via the postprocessor's fast-path
     short-circuit on ``<``/``[``-free deltas) is still suppressed.
+
+    Codex r4 BLOCKING — pre-fix, an early-return ``if _ACTION_TOKEN in
+    text: return 0`` disabled trailing-prefix holdback for the entire
+    buffer once any full ``Action:`` appeared anywhere earlier. Shapes
+    like ``["Action: is required.\\nAc", "tion: wait()"]`` or
+    ``["Action: wait() Ac", "tion: click(...)"]`` then leaked the
+    trailing ``"Ac"`` as content BEFORE the structured ``tool_calls``
+    flush. The fix evaluates only the TAIL overlap — a full ``Action:``
+    earlier in the buffer (whether completed or prose) must not
+    suppress holding a later trailing strict prefix.
     """
     if not text:
         return 0
-    # If the full token is already present anywhere in the buffer,
-    # the strict-prefix check is moot — the streaming consumer should
-    # handle the completed-action accounting and emit the residual.
-    if _ACTION_TOKEN in text:
-        return 0
     # Longest non-empty suffix of ``text`` that matches a strict prefix
     # of ``_ACTION_TOKEN``. We scan from longest-to-shortest so that a
-    # single delta containing ``"....Acti"`` returns 4, not 1.
-    max_overlap = len(_ACTION_TOKEN) - 1  # 6 bytes (we already excluded full token)
+    # single delta containing ``"....Acti"`` returns 4, not 1. The
+    # candidate cannot be the full token itself (handled by the
+    # completed-action / signature-gate paths upstream); we cap at
+    # ``len(_ACTION_TOKEN) - 1``.
+    max_overlap = len(_ACTION_TOKEN) - 1  # 6 bytes (strict prefix only)
     for k in range(min(max_overlap, len(text)), 0, -1):
         candidate = text[-k:]
         if not _ACTION_TOKEN.startswith(candidate):

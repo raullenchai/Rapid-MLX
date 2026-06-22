@@ -24,7 +24,8 @@ from .base import DeltaMessage, ReasoningParser
 #   1. "Thought: ...\nAction: ..."         (default UI-TARS Computer-Use prompt)
 #   2. "Reflection: ...\nAction_Summary: ...\nAction: ..."  (1.5 reflective shape)
 #   3. "Action_Summary: ...\nAction: ..."  (1.5 minimal-reflection shape)
-#   4. "Thought: ...\n\n<plain-chat answer>" (plain chat lane — R6-M1)
+#   4. "Thought: ...\n\n<plain-chat answer>" (plain chat lane, blank-line boundary — R6-M1)
+#   4b. "Thought: <single-line>$"          (plain chat lane, EOS-only — R6-M1)
 #   5. "<think>...</think><plain-chat answer>"  (generic think-tag fallback — R6-M1)
 #
 # R6-M1 fix (Aki R1, 2026-06-21): pre-fix the regex required ``(?=\s*Action:)``
@@ -41,10 +42,19 @@ from .base import DeltaMessage, ReasoningParser
 # Boundary semantics:
 # - For shape #1/#2/#3 (Action lane): the rest-after-preamble is consumed
 #   by the tool parser as ``content``.
-# - For shape #4 (plain Thought boundary): the boundary is the first blank
-#   line (``\n\s*\n``) OR end-of-string. Allowing end-of-string handles
-#   the case where the model never emitted a follow-up answer — the entire
-#   buffer is reasoning, ``content`` is empty.
+# - For shape #4 (plain Thought, blank-line boundary): the boundary is the
+#   first ``\n\s*\n`` — bytes before are reasoning, bytes after are content.
+# - For shape #4b (plain Thought, EOS only): when the model emitted a
+#   single-line ``Thought:`` and nothing else (no follow-up answer), the
+#   entire buffer is reasoning. Codex r4 MEDIUM — pre-fix this branch
+#   was ``\s*\Z`` with ``re.DOTALL``, which lazy-matched up to EOS even
+#   when the body spanned multiple lines of plain prose (e.g.
+#   ``"Thought: I should answer directly.\nThe answer is 4."`` was
+#   classified as 100 % reasoning, dropping the model's answer). The
+#   restricted body ``[^\n]*?`` bans embedded newlines so the EOS branch
+#   only fires for genuinely single-line truncated thoughts; multi-line
+#   plain prose without a blank-line boundary falls through to "no
+#   preamble" and the whole text is routed to content.
 # - For shape #5 (think-tag): the boundary is the literal ``</think>``.
 #
 # Non-greedy bodies prevent a runaway thought trace from swallowing
@@ -58,11 +68,15 @@ _PREAMBLE_RE = re.compile(
     r"|(?:Reflection:\s*(?:.*?)\s*Action_Summary:\s*(?:.*?))"
     r"|(?:Action_Summary:\s*(?:.*?))"
     r")(?=\s*Action:)"
-    # 4 — plain-chat ``Thought:`` boundary: blank line OR end-of-string.
-    # ``Action:`` would have matched shape #1 already; reaching here
-    # means the model's ``Thought:`` is followed by prose, not a
-    # Computer-Use action.
-    r"|(?:Thought:\s*(?:.*?))(?=\s*\n\s*\n|\s*\Z)"
+    # 4 — plain-chat ``Thought:`` with blank-line boundary. The bytes
+    # before the blank line are reasoning; bytes after are content.
+    r"|(?:Thought:\s*(?:.*?))(?=\s*\n\s*\n)"
+    # 4b — plain-chat ``Thought:`` ending at EOS with NO embedded
+    # newline. Single-line truncated thoughts (e.g. ``"Thought: I'm
+    # uncertain."``) surface as reasoning. Multi-line plain prose
+    # WITHOUT a blank-line boundary falls through to no-match —
+    # ``extract_reasoning`` then routes the entire buffer to content.
+    r"|(?:Thought:[^\n]*?)(?=\s*\Z)"
     # 5 — generic ``<think>...</think>`` tag. The tag itself is part of
     # the matched preamble; the post-match content (``model_output[m.end():]``)
     # is the user-facing answer.

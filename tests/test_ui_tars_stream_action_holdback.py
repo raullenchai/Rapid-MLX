@@ -615,3 +615,117 @@ class TestCodexR3HasPendingSemantics:
     def test_open_paren_no_close_pending(self, parser):
         # Existing contract — verb+paren commit but no close.
         assert parser.has_pending_tool_call("Action: click(") is True
+
+
+class TestCodexR4TrailingPrefixIsolated:
+    """Codex r4 BLOCKING: ``_trailing_action_prefix_len`` used to
+    short-circuit with ``if _ACTION_TOKEN in text: return 0``, which
+    disabled trailing-prefix holdback for the entire buffer once any
+    full ``Action:`` token appeared earlier. That re-opened R6-C3 for
+    streams that mix prior prose/completed actions with a new split
+    action opener — the trailing strict prefix leaked as content
+    BEFORE the structured ``tool_calls`` flush.
+
+    Fix: evaluate only the tail overlap; earlier ``Action:`` tokens
+    (completed or prose) must not suppress holding a later trailing
+    strict prefix.
+    """
+
+    def test_prose_action_then_split_real_action_holds_prefix(self, parser):
+        # Codex r4 BLOCKING repro #1: ``["Action: is required.\nAc",
+        # "tion: wait()"]``. The trailing ``Ac`` must be held on
+        # delta 1 so chunk 2's ``tion: wait()`` resolves into the
+        # structured tool_call without ``Ac`` leaking as content.
+        parser.reset()
+        chunks = ["Action: is required.\nAc", "tion: wait()"]
+        content_parts: list[str] = []
+        tool_calls: list[dict] = []
+        previous = ""
+        for delta in chunks:
+            current = previous + delta
+            result = parser.extract_tool_calls_streaming(
+                previous_text=previous,
+                current_text=current,
+                delta_text=delta,
+                request=None,
+            )
+            if result and result.get("content"):
+                content_parts.append(result["content"])
+            if result and result.get("tool_calls"):
+                tool_calls.extend(result["tool_calls"])
+            previous = current
+        final_content = "".join(content_parts)
+        # The trailing ``Ac`` must NOT have leaked between deltas
+        # — on chunk 1 the streaming parser should hold the strict
+        # prefix; on chunk 2 the real action resolves.
+        assert final_content == "Action: is required.\n", (
+            f"unexpected content: {final_content!r}"
+        )
+        assert len(tool_calls) == 1
+        assert '"action": "wait"' in tool_calls[0]["function"]["arguments"]
+
+    def test_completed_action_then_split_real_action_holds_prefix(self, parser):
+        # Codex r4 BLOCKING repro #2: ``["Action: wait() Ac",
+        # "tion: click(point='<point>10 20</point>')"]``. The prior
+        # completed action must not disable trailing-prefix holdback —
+        # ``Ac`` is held until chunk 2 resolves it into the real
+        # second tool_call.
+        parser.reset()
+        chunks = [
+            "Action: wait() Ac",
+            "tion: click(point='<point>10 20</point>')",
+        ]
+        content_parts: list[str] = []
+        tool_calls: list[dict] = []
+        previous = ""
+        for delta in chunks:
+            current = previous + delta
+            result = parser.extract_tool_calls_streaming(
+                previous_text=previous,
+                current_text=current,
+                delta_text=delta,
+                request=None,
+            )
+            if result and result.get("content"):
+                content_parts.append(result["content"])
+            if result and result.get("tool_calls"):
+                tool_calls.extend(result["tool_calls"])
+            previous = current
+        final_content = "".join(content_parts)
+        # ``Ac`` must not appear; only the inter-action whitespace
+        # surfaces as content.
+        assert "Ac" not in final_content, f"trailing Ac leaked: {final_content!r}"
+        assert final_content == " ", f"unexpected content: {final_content!r}"
+        assert len(tool_calls) == 2
+        assert '"action": "wait"' in tool_calls[0]["function"]["arguments"]
+        assert '"action": "click"' in tool_calls[1]["function"]["arguments"]
+
+    def test_trailing_prefix_helper_does_not_short_circuit_on_earlier_token(self):
+        # Direct unit-level check of the fix — verify
+        # ``_trailing_action_prefix_len`` ignores earlier full tokens
+        # and only inspects the tail.
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            _trailing_action_prefix_len,
+        )
+
+        # Earlier completed action — trailing ``Ac`` still held.
+        assert _trailing_action_prefix_len("Action: wait() Ac") == 2
+        # Earlier prose ``Action:`` — trailing ``Acti`` still held.
+        assert _trailing_action_prefix_len("Action: is required.\nActi") == 4
+        # No trailing strict prefix — returns 0 even with earlier token.
+        assert _trailing_action_prefix_len("Action: wait() done") == 0
+
+    def test_trailing_prefix_with_no_earlier_token_still_works(self):
+        # Pre-existing behavior preserved for the simple case.
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            _trailing_action_prefix_len,
+        )
+
+        assert _trailing_action_prefix_len("hello\nAc") == 2
+        assert _trailing_action_prefix_len("hello\nAction") == 6
+        # Word-boundary gate still active: 'A' AFTER a word char (no
+        # whitespace separation) isn't a candidate-opener.
+        assert _trailing_action_prefix_len("PlanA") == 0
+        # 'A' after a non-word char IS a candidate-opener — same word-
+        # boundary semantics the streaming parser uses for ``\bAction:``.
+        assert _trailing_action_prefix_len("Plan A") == 1
