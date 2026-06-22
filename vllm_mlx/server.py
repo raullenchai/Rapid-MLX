@@ -595,6 +595,21 @@ from .middleware.body_size import install_request_body_limit_middleware  # noqa:
 
 install_request_body_limit_middleware(app)
 
+# R8-H6: ASGI fast-path for ``GET /healthz`` + ``GET /livez``. Installed
+# AFTER the body-size + body-depth + audio middlewares so it sits
+# OUTERMOST among those three (Starlette stacks user middleware in
+# reverse install order — last install runs first per request). CORS
+# (installed later from ``cli.configure_cors_from_env``) ends up
+# OUTSIDE the fast-path; that's fine — Starlette's CORSMiddleware is a
+# no-op when the request carries no ``Origin`` header (the slice
+# k8s/supervisord/Docker probes are in), so the fast-path still wins
+# the p99 budget for those callers. Browser cross-origin hits with
+# ``Origin`` fall through to the normal stack so CORS attaches its
+# ACAO header.
+from .middleware.probe_fastpath import install_probe_fastpath_middleware  # noqa: E402
+
+install_probe_fastpath_middleware(app)
+
 # CORS configuration — configurable via --cors-origins CLI flag and the
 # ``RAPID_MLX_CORS_*`` env-var family (F-090 / F-091). The previous default
 # registered CORSMiddleware with ``allow_origins=["*"]`` and

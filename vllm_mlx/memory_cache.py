@@ -45,6 +45,42 @@ _MIN_MEMORY_BYTES = 100 * _BYTES_PER_MB  # Minimum 100MB
 _MAX_ENTRIES_FALLBACK = 50  # Fallback if memory detection fails
 
 
+def _fsync_dir(path: str) -> None:
+    """Flush directory metadata to disk.
+
+    R8-M7: the persist commit phase relies on ``os.rename`` being
+    atomic relative to a subsequent crash. POSIX guarantees
+    rename-atomicity at the metadata level, but the contents of the
+    files INSIDE the staging dir (entry safetensors + index.json) may
+    still be buffered in the kernel page cache when the rename
+    commits. Without ``fsync`` on the directory, a power loss / OOM
+    kill / kernel panic between the rename and the periodic flush
+    can leave the renamed dir pointing at empty / partial files —
+    observed on Linux ext4 with ``data=writeback`` mount option;
+    macOS APFS is more conservative but the fsync is still a
+    correctness invariant.
+
+    POSIX-only; on Windows there is no equivalent directory fsync
+    (the filesystem journals dir metadata differently) and we
+    silently no-op. The caller catches OSError, so an unsupported
+    platform doesn't break the save.
+
+    Implementation detail: open with ``O_RDONLY`` because ``O_DIRECTORY``
+    is not available on every platform (and Python's ``os.open`` does
+    accept opening a dir RDONLY on POSIX). ``os.fsync`` on the
+    returned fd is what flushes the dir's metadata journal entry.
+    """
+    if not hasattr(os, "O_DIRECTORY") and os.name == "nt":
+        # Windows: no directory-fsync equivalent. The recovery path
+        # in load_from_disk is the fall-back; skip silently.
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _adapt_should_abort(predicate):
     """Adapt a ``should_abort`` predicate to the one-arg contract.
 
@@ -1604,22 +1640,115 @@ class MemoryAwarePrefixCache:
             )
             return False
 
+        # R8-M7 (dogfood-089 Talia r1/r2): the commit phase is the
+        # narrow window where a SIGTERM-driven shutdown can leave
+        # ``cache_dir`` absent + ``.new/`` orphaned + load_from_disk
+        # then fails to recover because the load was never called
+        # (e.g. SIGKILL hit before next boot's lifespan, or the next
+        # boot raced its own save-to-disk and pre-cleaned ``.new``).
+        # Wrap the two-rename swap in a try/except that, on ANY
+        # failure mid-commit, attempts a self-recovery promotion of
+        # ``.new`` to ``cache_dir`` so the on-disk state is never
+        # left in the "cache_dir missing, .new present, .old present"
+        # window for longer than this method's own scope. Without
+        # this, a transient OSError between the two renames (e.g.
+        # PermissionError from a fs-event-driven antivirus touching
+        # cache_dir mid-rename, observed on macOS Spotlight rebuilds)
+        # would silently lose the just-saved snapshot the next time
+        # save_to_disk runs and pre-cleans ``.new`` + ``.old``.
+        #
+        # The fsync on the staging dir before the rename forces the
+        # index.json + entry files' metadata into the journal so the
+        # rename commits the right contents. Without it, a kernel
+        # crash between the rename and the periodic fs flush can
+        # leave the renamed dir referencing not-yet-written contents
+        # (observed on Linux ext4 with ``data=writeback``; macOS APFS
+        # is more conservative but the fsync is still a correctness
+        # invariant). We fsync the dir, not individual files, because
+        # the entry-file write already returns from
+        # ``mx.save_safetensors`` only after the kernel queues the
+        # write — and the dir fsync covers the index.json + the
+        # entries' rename-into-place metadata.
+        try:
+            _fsync_dir(new_dir)
+        except OSError as fsync_err:
+            # fsync failures on the staging dir are a soft signal —
+            # log + proceed. The rename below may still work; if it
+            # doesn't, the recovery branch picks up the pieces.
+            logger.debug(
+                f"[cache_persist] fsync({new_dir}) failed: {fsync_err}; "
+                "continuing with rename"
+            )
+
         # Atomic-ish directory swap. If we crash between the two renames,
         # load_from_disk's recovery path (see below) handles it.
-        if os.path.exists(cache_dir):
-            os.rename(cache_dir, old_dir)
-        os.rename(new_dir, cache_dir)
+        rename_committed = False
+        try:
+            if os.path.exists(cache_dir):
+                os.rename(cache_dir, old_dir)
+            os.rename(new_dir, cache_dir)
+            rename_committed = True
+        except OSError as rename_err:
+            # R8-M7: one of the two renames raised. Attempt
+            # in-process recovery so the next load_from_disk
+            # — which may not happen for hours if the operator
+            # doesn't reboot — doesn't have to. Three cases:
+            #   * cache_dir absent, .new present (rename 2 failed
+            #     before cache_dir was created): retry rename 2.
+            #   * cache_dir absent, .old present, .new present
+            #     (rename 1 succeeded, rename 2 failed): same retry,
+            #     and clean .old if rename 2 then succeeds.
+            #   * cache_dir present, .new present (rename 1 failed):
+            #     keep cache_dir, drop .new (already-committed
+            #     snapshot is the safer choice; the next save
+            #     attempt will rebuild .new from current state).
+            logger.warning(
+                f"[cache_persist] commit-phase rename raised "
+                f"({rename_err}); attempting in-process recovery"
+            )
+            if not os.path.exists(cache_dir) and os.path.exists(new_dir):
+                try:
+                    os.rename(new_dir, cache_dir)
+                    rename_committed = True
+                    logger.warning(
+                        "[cache_persist] recovered: .new -> cache_dir"
+                    )
+                except OSError as retry_err:
+                    logger.error(
+                        f"[cache_persist] recovery rename failed "
+                        f"({retry_err}); cache_dir absent, .new orphan "
+                        f"— next load_from_disk will promote .new"
+                    )
+            elif os.path.exists(cache_dir) and os.path.exists(new_dir):
+                # cache_dir survived rename 1 failure; keep it and
+                # drop the staging dir so a future save doesn't
+                # pre-clean a still-meaningful .new.
+                shutil.rmtree(new_dir, ignore_errors=True)
+                logger.warning(
+                    "[cache_persist] kept existing cache_dir, dropped "
+                    "stale .new from failed rename"
+                )
+
+        # Drop the now-redundant .old. Errors here are non-fatal:
+        # next save's pre-clean will catch anything we miss.
         if os.path.exists(old_dir):
             shutil.rmtree(old_dir, ignore_errors=True)
 
         dt = _time.monotonic() - t0
         tail = " (partial — shutdown deadline hit)" if aborted_early else ""
-        logger.info(
-            f"[cache_persist] SAVED {saved}/{total_entries} entries "
-            f"to {cache_dir} in {dt:.1f}s "
-            f"({self._current_memory / _BYTES_PER_MB:.0f}MB total){tail}"
-        )
-        return saved > 0
+        if rename_committed:
+            logger.info(
+                f"[cache_persist] SAVED {saved}/{total_entries} entries "
+                f"to {cache_dir} in {dt:.1f}s "
+                f"({self._current_memory / _BYTES_PER_MB:.0f}MB total){tail}"
+            )
+        else:
+            logger.warning(
+                f"[cache_persist] partial commit after {dt:.1f}s — "
+                f"{saved}/{total_entries} entries written but rename "
+                f"did not complete; load_from_disk recovery required"
+            )
+        return saved > 0 and rename_committed
 
     def load_from_disk(self, cache_dir: str) -> int:
         """Load cache entries from disk.

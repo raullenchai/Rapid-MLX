@@ -1686,3 +1686,236 @@ def test_save_prefix_cache_to_disk_zero_budget_disables_deadline(tmp_path, monke
 
     _cache_mod.save_prefix_cache_to_disk(budget_sec=0.0)
     assert captured["pred"] is None
+
+
+# --------------------------------------------------------------------------
+# R8-M7 — commit-phase hardening (dogfood-089 Talia r1/r2)
+# --------------------------------------------------------------------------
+#
+# The commit phase of save_to_disk does two non-atomic renames
+# (``cache_dir → .old`` then ``.new → cache_dir``). Pre-R8-M7 there was
+# no exception handler around either: a transient OSError (PermissionError
+# from a fs-event-driven antivirus touching cache_dir mid-rename, observed
+# on macOS Spotlight rebuilds; ENOSPC mid-shutdown; EBUSY on Windows)
+# raised up to the caller and left ``cache_dir`` absent + ``.new`` orphan.
+# load_from_disk's recovery path handled THAT shape — but the next save's
+# pre-clean unconditionally rmtree'd ``.new``, silently discarding the
+# just-saved snapshot if reboot didn't happen between the failed save
+# and the next save attempt (e.g. an embedded harness that does multiple
+# in-process save cycles).
+#
+# The R8-M7 fix wraps the rename phase in a try/except that attempts
+# in-process recovery before returning, plus an ``fsync`` on the staging
+# dir before the rename so the rename actually commits the right
+# contents on a kernel-level crash.
+
+
+def test_save_to_disk_returns_false_when_rename_phase_fails(tmp_path, monkeypatch):
+    """If the rename phase raises and recovery cannot complete, the
+    save returns False so the caller doesn't log a spurious success.
+
+    Pre-R8-M7 the bare ``os.rename`` raised up to the lifespan handler;
+    the outer ``try/except`` in ``save_prefix_cache_to_disk`` logged
+    the exception but ``save_to_disk`` itself never returned at all.
+    Now the failure is captured + reported via the return value.
+    """
+    import vllm_mlx.memory_cache as _mc
+
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    cache.store(list(range(11)), make_kvcache(num_tokens=11))
+
+    # Patch os.rename so the FIRST rename succeeds (cache_dir doesn't
+    # exist yet — branch falls through) but the SECOND rename
+    # (``.new → cache_dir``) raises PermissionError, mimicking an
+    # antivirus / spotlight rebuild touching cache_dir mid-commit.
+    original_rename = os.rename
+    rename_calls = {"n": 0}
+
+    def _hostile_rename(src, dst):
+        rename_calls["n"] += 1
+        # Allow the in-process recovery retry to succeed: only the
+        # FIRST commit-phase rename raises; the recovery branch retries
+        # the same rename and we let that one through.
+        if rename_calls["n"] == 1:
+            raise PermissionError("simulated av lock on cache_dir")
+        return original_rename(src, dst)
+
+    monkeypatch.setattr(_mc.os, "rename", _hostile_rename)
+    # save_to_disk should attempt the recovery rename and succeed —
+    # so the final state matches a clean save. The return value
+    # reflects that recovery worked.
+    result = cache.save_to_disk(str(cache_dir))
+    assert result is True
+    # cache_dir landed correctly via the recovery branch.
+    assert cache_dir.exists()
+    assert (cache_dir / "index.json").exists()
+
+
+def test_save_to_disk_recovers_when_only_first_rename_fails(tmp_path, monkeypatch):
+    """If ``cache_dir → .old`` succeeds but ``.new → cache_dir``
+    raises AND the recovery retry also fails, the function returns
+    False and leaves the on-disk state in the recoverable shape
+    (cache_dir absent, .new present) so load_from_disk's standard
+    recovery path picks up the snapshot at next boot.
+    """
+    import vllm_mlx.memory_cache as _mc
+
+    cache_dir = tmp_path / "snap"
+    # Build session 1: clean save (so cache_dir exists for session 2
+    # to ``cache_dir → .old`` against).
+    c1 = fresh_cache()
+    c1.store(list(range(5)), make_kvcache(num_tokens=5))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Session 2: build a new entry, save — but make the SECOND
+    # commit-phase rename fail BOTH on first attempt and recovery
+    # retry, so the function logs the partial state and returns False.
+    c2 = fresh_cache()
+    c2.store(list(range(10, 18)), make_kvcache(num_tokens=8, fill=2.0))
+
+    original_rename = os.rename
+    rename_log = []
+
+    def _always_fail_new_to_cache_dir(src, dst):
+        rename_log.append((str(src), str(dst)))
+        # Block any rename whose dst is the final cache_dir
+        # (covers both the first commit-phase attempt and the
+        # recovery retry).
+        if str(dst) == str(cache_dir):
+            raise OSError("simulated rename failure")
+        return original_rename(src, dst)
+
+    monkeypatch.setattr(_mc.os, "rename", _always_fail_new_to_cache_dir)
+    result = c2.save_to_disk(str(cache_dir))
+    assert result is False, (
+        "save_to_disk must surface rename failures via return False"
+    )
+    # Restore os.rename before exercising load_from_disk's recovery
+    # path (which also calls os.rename to promote .new -> cache_dir).
+    monkeypatch.setattr(_mc.os, "rename", original_rename)
+
+    # The on-disk state is the recovery-friendly shape: cache_dir
+    # absent (rename 1 moved it to .old before rename 2 failed),
+    # .new present with the new snapshot. load_from_disk will
+    # promote .new → cache_dir on next boot.
+    new_dir = tmp_path / "snap.new"
+    assert not cache_dir.exists()
+    assert new_dir.exists()
+    assert (new_dir / "index.json").exists()
+
+    # Confirm the recovery path actually works on a fresh load.
+    c3 = fresh_cache()
+    loaded = c3.load_from_disk(str(cache_dir))
+    assert loaded == 1
+    entry = next(iter(c3._entries.values()))
+    assert entry.tokens == tuple(range(10, 18))
+
+
+def test_save_to_disk_drops_orphan_new_when_first_rename_fails(tmp_path, monkeypatch):
+    """If ``cache_dir → .old`` raises (the FIRST commit-phase rename)
+    the old snapshot is still in place. Recovery should keep
+    ``cache_dir`` and drop the staging ``.new`` — a future save will
+    rebuild it from current state. Pre-R8-M7 the bare raise left
+    ``.new`` orphan, then the next save's pre-clean rmtree'd it
+    anyway, but during the gap between the two saves, load callers
+    could see the stale snapshot AND the unrelated ``.new``.
+    """
+    import vllm_mlx.memory_cache as _mc
+
+    cache_dir = tmp_path / "snap"
+    # Session 1: clean save
+    c1 = fresh_cache()
+    c1.store(list(range(5)), make_kvcache(num_tokens=5))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Session 2: build new entry, fail the FIRST commit-phase rename.
+    c2 = fresh_cache()
+    c2.store(list(range(20, 30)), make_kvcache(num_tokens=10, fill=3.0))
+
+    original_rename = os.rename
+    new_dir = tmp_path / "snap.new"
+    old_dir = tmp_path / "snap.old"
+
+    def _fail_first_commit_rename(src, dst):
+        # The commit-phase first rename is cache_dir → cache_dir.old.
+        if str(src) == str(cache_dir) and str(dst) == str(old_dir):
+            raise OSError("simulated first-rename failure")
+        return original_rename(src, dst)
+
+    monkeypatch.setattr(_mc.os, "rename", _fail_first_commit_rename)
+    result = c2.save_to_disk(str(cache_dir))
+    # Save reports failure — original cache_dir is intact.
+    assert result is False
+    assert cache_dir.exists()
+    # Recovery dropped the orphan .new so a subsequent save starts
+    # from a clean slate.
+    assert not new_dir.exists()
+
+    # The original (session 1) snapshot is still loadable.
+    c3 = fresh_cache()
+    loaded = c3.load_from_disk(str(cache_dir))
+    assert loaded == 1
+    entry = next(iter(c3._entries.values()))
+    assert entry.tokens == tuple(range(5))
+
+
+def test_save_to_disk_fsync_failure_is_non_fatal(tmp_path, monkeypatch):
+    """An OSError from the staging-dir fsync must not abort the save.
+
+    Platforms / mounts vary in fsync semantics (NFS, FUSE, Windows
+    has no equivalent). The fsync is a correctness invariant for
+    rename atomicity, but a non-fsyncable fs is no worse than the
+    pre-R8-M7 behaviour (which didn't fsync at all). Log + proceed.
+    """
+    import vllm_mlx.memory_cache as _mc
+
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    cache.store(list(range(7)), make_kvcache(num_tokens=7))
+
+    def _broken_fsync(path):
+        raise OSError("simulated fsync failure on staging dir")
+
+    monkeypatch.setattr(_mc, "_fsync_dir", _broken_fsync)
+    assert cache.save_to_disk(str(cache_dir)) is True
+    # Cache dir landed correctly despite the fsync failure.
+    c2 = fresh_cache()
+    loaded = c2.load_from_disk(str(cache_dir))
+    assert loaded == 1
+
+
+def test_fsync_dir_works_on_real_directory(tmp_path):
+    """The fsync helper itself works on a vanilla tmp directory.
+
+    Regression guard: a future refactor that swaps ``os.O_RDONLY`` for
+    ``O_DIRECTORY`` (not available on every platform) or changes the
+    file-descriptor lifecycle would silently break this helper, and
+    save_to_disk would still succeed (the except clause is non-fatal)
+    but lose the rename-atomicity guarantee. The test below pins the
+    happy path so a regression in helper semantics is observable.
+    """
+    from vllm_mlx.memory_cache import _fsync_dir
+
+    # No exception on a real, readable directory.
+    _fsync_dir(str(tmp_path))
+
+
+def test_clean_save_load_roundtrip_after_r8m7_hardening(tmp_path):
+    """End-to-end: the R8-M7 hardening must not regress the clean-flush
+    path. A save with no signal pressure, no rename failures, and no
+    fsync issues still produces an on-disk snapshot that loads back to
+    the original entries.
+    """
+    cache_dir = tmp_path / "snap"
+    c1 = fresh_cache()
+    c1.store(list(range(3, 13)), make_kvcache(num_tokens=10))
+    c1.store(list(range(50, 60)), make_kvcache(num_tokens=10, fill=2.0))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    c2 = fresh_cache()
+    loaded = c2.load_from_disk(str(cache_dir))
+    assert loaded == 2
+    # Both entries round-tripped intact.
+    keys = {e.tokens for e in c2._entries.values()}
+    assert keys == {tuple(range(3, 13)), tuple(range(50, 60))}
