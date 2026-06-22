@@ -781,7 +781,8 @@ class MLLMScheduler:
                     stop_window = request.stop_tail + new_text
                     match: tuple[int, str] | None = None
                     for stop_str in stop_params:
-                        local_idx = stop_window.find(stop_str)
+                        search_from = max(0, len(request.stop_tail) - len(stop_str) + 1)
+                        local_idx = stop_window.find(stop_str, search_from)
                         if local_idx != -1:
                             global_idx = window_base + local_idx
                             if match is None or global_idx < match[0]:
@@ -808,12 +809,23 @@ class MLLMScheduler:
                         ]
                     else:
                         request.stop_text = streamed_so_far
-                        safe_upto = max(0, len(request.stop_text) - keep)
+                        if finish_reason is not None:
+                            safe_upto = len(request.stop_text)
+                        else:
+                            safe_upto = max(0, len(request.stop_text) - keep)
                         output.new_text = request.stop_text[
                             request.stop_text_len : safe_upto
                         ]
                         request.stop_text_len = safe_upto
-                        request.stop_tail = request.stop_text[-keep:] if keep else ""
+                        request.stop_tail = (
+                            (
+                                ""
+                                if finish_reason is not None
+                                else request.stop_text[-keep:]
+                            )
+                            if keep
+                            else ""
+                        )
                         request.output_text = request.stop_text[:safe_upto]
                         output.output_text = request.output_text
                 elif stop_params:
