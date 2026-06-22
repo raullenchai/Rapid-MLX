@@ -448,3 +448,106 @@ def require_mlx_audio_stt() -> None:
 # + voices vs. transcriptions alone). Re-aliased through the
 # explicit lane name so call sites read clearly.
 require_mlx_audio = require_mlx_audio_tts
+
+
+# ---------------------------------------------------------------------------
+# R6-H4: CLI-side boot guard for audio model aliases.
+#
+# Mirrors the r5-C ``require_mlx_vlm_or_exit`` shape (PR #822) that fires
+# from ``vllm_mlx.cli.serve_command`` when the operator asks the server to
+# serve a vision alias on a base install missing the ``[vision]`` extra.
+# Audio aliases (``kokoro``, ``whisper-large-v3``, ``parakeet``, ...) had
+# no equivalent guard — ``rapid-mlx serve kokoro`` on a fresh
+# ``pip install rapid-mlx`` would boot, print the startup banner, and
+# only crash on the FIRST audio request (a 503 envelope from the
+# in-route probe). That looked like "successful boot, broken
+# inference" instead of the obvious "you need the [audio] extra".
+#
+# The fix probes ``mlx_audio`` at boot whenever the model alias hits
+# the audio family and exits cleanly (rc=2, conventional argparse
+# usage-error code) with the same install-hint copy the route's 503
+# uses — so the operator sees the same actionable line whether they
+# tripped the guard at boot or at first request.
+# ---------------------------------------------------------------------------
+
+#: Canonical install-hint copy — shared with the route probes via
+#: :func:`_raise_503` so a torn install reports the same one-liner
+#: whether the operator hit it at boot or mid-request.
+AUDIO_EXTRA_INSTALL_HINT = "Install with: pip install 'rapid-mlx[audio]'"
+
+
+# Known audio alias surface — kept narrow on purpose. The list is
+# deliberately a substring match — any ``whisper``/``parakeet``/
+# ``kokoro``/``chatterbox``/``vibevoice``/``voxcpm`` alias counts,
+# INCLUDING HF-style ids that embed the engine name
+# (``mlx-community/Kokoro-82M-bf16``, ``mlx-community/whisper-large-v3-mlx``)
+# — those are the canonical pass-through cases the STT/TTS routes
+# accept, so the boot guard MUST recognise them as audio too. Codex
+# review NIT: the previous comment claimed HF ids "fell through"; the
+# code (and test ``test_is_audio_model_alias_recognises_common_aliases``)
+# disagree — they ARE matched, and intentionally so.
+#
+# Bare strings that don't contain any of these tokens fall through
+# unchanged — the boot guard is silent for text/vision/embedding
+# aliases.
+_AUDIO_ALIAS_TOKENS: tuple[str, ...] = (
+    "whisper",
+    "parakeet",
+    "kokoro",
+    "chatterbox",
+    "vibevoice",
+    "voxcpm",
+)
+
+
+def is_audio_model_alias(model_name: str | None) -> bool:
+    """Return True iff ``model_name`` looks like an audio alias.
+
+    Substring match against :data:`_AUDIO_ALIAS_TOKENS` so the guard
+    fires for the common aliases (``kokoro``, ``whisper-large-v3``,
+    ``parakeet``), their quantised siblings (``kokoro-4bit``), and
+    HF-style ids that contain the engine token
+    (``mlx-community/Kokoro-82M-bf16``). The match is case-insensitive
+    so capitalised HF repo names (``Kokoro``, ``Whisper``) trip it the
+    same way the lowercase aliases do.
+
+    A non-string / empty value short-circuits to False so the boot
+    guard never crashes the CLI on a missing ``args.model`` (the
+    serve command rejects that case earlier with its own error).
+    """
+    if not isinstance(model_name, str) or not model_name:
+        return False
+    lc = model_name.lower()
+    return any(tok in lc for tok in _AUDIO_ALIAS_TOKENS)
+
+
+def require_audio_or_exit(model_name: str) -> None:
+    """CLI-side boot guard: bail out cleanly when an audio alias is
+    served on an install missing the ``[audio]`` extra.
+
+    Mirrors :func:`vllm_mlx.models.mllm.require_mlx_vlm_or_exit` and
+    :func:`vllm_mlx.embedding.require_mlx_embeddings_or_exit` — probe
+    ``importlib.util.find_spec("mlx_audio")`` so we only answer "no"
+    for the specific case the install hint is meant to address
+    (top-level package missing). A broken transitive dependency raising
+    deep inside the package would surface as a real exception via the
+    in-route probe instead, not get masked behind the install hint.
+
+    Exits ``2`` (argparse usage-error code) with the canonical install
+    hint on stderr. ``vllm_mlx.cli.serve_command`` calls this after
+    embedding + vision guards so a single ``rapid-mlx serve`` command
+    that requests audio-only sees the audio hint, not the (irrelevant)
+    embedding/vision one.
+    """
+    import importlib.util
+    import sys
+
+    if importlib.util.find_spec("mlx_audio") is not None:
+        return
+    print(
+        f"error: model {model_name!r} is an audio alias and requires the "
+        f"optional `mlx-audio` dependency (shipped with the [audio] "
+        f"extra).\n" + AUDIO_EXTRA_INSTALL_HINT,
+        file=sys.stderr,
+    )
+    sys.exit(2)

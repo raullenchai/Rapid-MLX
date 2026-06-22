@@ -907,6 +907,28 @@ def serve_command(args):
 
             require_mlx_vlm_or_exit(args.model)
 
+    # R6-H4 (Eva 0.8.7 dogfood): same boot-guard shape for audio aliases.
+    # ``mlx-audio`` lives behind the ``[audio]`` extra; pre-fix
+    # ``rapid-mlx serve kokoro`` (or whisper/parakeet/chatterbox/...) on
+    # a base install printed the startup banner, opened the port, and
+    # only crashed on the first audio request (the in-route lane probe).
+    # That looked like "successful boot, broken inference" instead of
+    # the obvious "you need the [audio] extra". Probe at flag-parse
+    # time so the operator sees an actionable hint with rc=2 before
+    # any download / banner output, mirroring r5-C's UI-TARS guard.
+    #
+    # Recognition is alias-substring based (``whisper``, ``parakeet``,
+    # ``kokoro``, ``chatterbox``, ``vibevoice``, ``voxcpm``) so the
+    # quantised variants (``kokoro-4bit``) and HF-style ids
+    # (``mlx-community/Kokoro-82M-bf16``) trip it the same way bare
+    # aliases do. A model name that doesn't match an audio token falls
+    # through unchanged — text/vision/embedding models never see this
+    # probe.
+    from .audio.probe import is_audio_model_alias, require_audio_or_exit
+
+    if is_audio_model_alias(getattr(args, "model", None)):
+        require_audio_or_exit(args.model)
+
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors
     # RAPID_MLX_DISABLE_VERSION_CHECK, CI=1, and non-TTY stdin. Cached
