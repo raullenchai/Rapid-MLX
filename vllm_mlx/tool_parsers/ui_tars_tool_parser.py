@@ -157,21 +157,116 @@ _UI_TARS_SYSPROMPT_MARKERS: tuple[str, ...] = (
 )
 
 
+def request_declares_computer_tool(tools: Any) -> bool:
+    """Return True iff ``tools`` declares the Computer-Use ``computer`` tool.
+
+    Dogfood r5-B C-09 root cause: sysprompt injection used to be
+    **lane-coupled** — every ``/v1/chat/completions`` request hitting a
+    UI-TARS-aliased model got the Computer-Use action-API system prompt
+    prepended, even when the request had NO ``tools`` array. The model
+    then dutifully emitted ``Action: click(point=...)`` for a "what is
+    2+2?" prompt, the parser surfaced a phantom ``computer`` tool_call,
+    and ``content`` came back ``null`` (F-R1-L). JSON mode broke the
+    same way (F-R1-M: ``content="[]"``).
+
+    The architectural fix is to make injection **tool-coupled**: the
+    canonical UI-TARS sysprompt is only injected when the request
+    actually declares a Computer-Use tool. Detector input is
+    deliberately polymorphic (matches both ``ChatCompletionRequest``
+    dict form and Anthropic / Responses-flat lists):
+
+      * ``None`` / empty list → False (caller wants plain prose).
+      * A list of pydantic ``ToolDefinition`` objects with
+        ``function.name == "computer"`` → True (OpenAI chat shape).
+      * A list of dicts ``{"function":{"name":"computer"}}`` → True
+        (raw chat-completions tools array).
+      * A list of dicts ``{"type":"computer_20251022", ...}`` → True
+        (Responses-flat Computer-Use tool; mapped to ``computer`` in
+        ``responses_adapter._convert_tools``).
+      * A list of Anthropic-flat dicts ``{"name":"computer", ...}``
+        (the ``/v1/messages`` tools shape) → True.
+      * Anything else → False.
+
+    Why ``"computer"`` specifically: the canonical UI-TARS function
+    name (see ``COMPUTER_TOOL_NAME`` above) is the singleton name every
+    UI-TARS lane emits. Custom user-supplied function tools named
+    something else (``"search_screen"``, ``"summarize"``, …) do NOT
+    trigger Computer-Use injection — those are vanilla function tools
+    and should round-trip through the model untouched by the action-API
+    contract.
+    """
+    if not tools:
+        return False
+    try:
+        iterator = iter(tools)
+    except TypeError:
+        return False
+    for t in iterator:
+        # Pydantic ``ToolDefinition`` carries ``.function`` (dict on
+        # OpenAI chat shape) plus ``.type``. Anthropic / Responses-flat
+        # tools are plain dicts. Defensive: accept both.
+        ttype = None
+        name = None
+        if isinstance(t, dict):
+            ttype = t.get("type")
+            # OpenAI-nested shape ``{"type":"function","function":{"name":...}}``
+            fn = t.get("function")
+            if isinstance(fn, dict):
+                name = fn.get("name")
+            # Anthropic / Responses-flat ``{"name":...}``
+            if not name:
+                name = t.get("name")
+        else:
+            ttype = getattr(t, "type", None)
+            fn = getattr(t, "function", None)
+            if isinstance(fn, dict):
+                name = fn.get("name")
+            elif fn is not None:
+                name = getattr(fn, "name", None)
+            if not name:
+                name = getattr(t, "name", None)
+        # Computer-Use input shape (Responses-flat ``computer_20251022``)
+        # is canonical Computer-Use regardless of name. The adapter
+        # rewrites ``name`` to ``"computer"`` downstream — match by
+        # ``type`` here so the detector doesn't need to know about the
+        # adapter's rewrite ordering.
+        if ttype == "computer_20251022":
+            return True
+        if isinstance(name, str) and name == COMPUTER_TOOL_NAME:
+            return True
+    return False
+
+
 def maybe_inject_ui_tars_system_prompt(
     messages: list,
     *,
     tool_call_parser: str | None,
     tool_choice: Any = None,
+    tools: Any = None,
 ) -> list:
     """Auto-prepend the canonical UI-TARS sysprompt to ``messages`` when needed.
 
-    Dogfood C-05 fix: PR #812 auto-wired the ``ui_tars`` parser to the
-    UI-TARS alias family but the chat-completions / messages routes
-    never injected the canonical action-API system prompt. The parser
-    then silently no-op'd on raw model output because the model never
-    saw the ``## Output Format`` / ``## Action Space`` contract it was
-    post-trained on. This helper closes the gap: every UI-TARS request
-    (parser == ``"ui_tars"``) gets the canonical sysprompt prepended.
+    Dogfood r5-B (C-09 / C-10 / C-11 / R-09) root cause: the prior
+    contract was **lane-coupled** — every ``/v1/chat/completions``
+    request hitting a UI-TARS-aliased model got the Computer-Use
+    action-API sysprompt prepended, even when the request had no
+    ``tools`` array at all. ``"what is 2+2?"`` came back as a phantom
+    click; JSON mode degraded to ``"[]"``; ``/v1/responses`` was the
+    mirror image (never injected → never emitted ``computer_call``).
+
+    The architectural fix is **tool-coupled injection**: a single
+    decision tree (this helper) reused by all 3 lanes — chat /
+    messages / responses — that says "inject only when this UI-TARS
+    request actually declares a Computer-Use tool." The signal lives
+    in ``tools`` (per :func:`request_declares_computer_tool`), not in
+    the route name. Three lanes, one rule::
+
+        should_inject = (
+            is_ui_tars_parser(parser)
+            and tool_choice != "none"
+            and request_declares_computer_tool(tools)
+            and not has_ui_tars_system_prompt(messages)
+        )
 
     Operator design choice: auto-injected sysprompt wins; a user-
     supplied ``system`` message is preserved as-is and APPENDED after
@@ -188,7 +283,13 @@ def maybe_inject_ui_tars_system_prompt(
        the parser would then surface as a tool_call — violating
        OpenAI spec for ``tool_choice="none"``. Skipping the inject
        collapses the model into plain prose mode.
-    3. The user already pasted (a variant of) the canonical
+    3. ``tools`` does NOT declare a Computer-Use tool (r5-B C-09): the
+       request isn't asking for actions — don't prime the model to
+       emit them. This is the architectural fix that resolves F-R1-L
+       (phantom clicks on "what is 2+2"), F-R1-M (JSON mode returning
+       ``"[]"``), and via the same gate firing on ``/v1/responses``,
+       F-R2-D / F-R2-I (cross-lane parity).
+    4. The user already pasted (a variant of) the canonical
        sysprompt — ``has_ui_tars_system_prompt`` returns True. We
        respect the operator's preferred wording verbatim.
 
@@ -203,6 +304,11 @@ def maybe_inject_ui_tars_system_prompt(
     if tool_choice == "none" or _is_tool_choice_none(
         tool_choice if isinstance(tool_choice, dict) else None
     ):
+        return messages
+    # r5-B C-09: tool-coupled gate. NO Computer-Use tool declared →
+    # caller wants plain prose / JSON / custom function call — skip
+    # the action-API sysprompt entirely.
+    if not request_declares_computer_tool(tools):
         return messages
     if has_ui_tars_system_prompt(messages):
         return messages
