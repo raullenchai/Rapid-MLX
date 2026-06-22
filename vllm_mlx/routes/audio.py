@@ -1181,6 +1181,23 @@ async def create_translation(
 TTS_MODEL_ALIASES: dict[str, str] = {
     "kokoro": "mlx-community/Kokoro-82M-bf16",
     "kokoro-4bit": "mlx-community/Kokoro-82M-4bit",
+    # R8-H4 (Bo 0.8.9 dogfood): the brief's canonical full alias
+    # ``kokoro-82m-8bit`` (and its 4bit / bf16 siblings) previously
+    # bypassed the resolver — ``_resolve_tts_model`` fell through to
+    # passthrough, mlx-audio queried ``huggingface.co/api/models/
+    # kokoro-82m-8bit`` and 404'd. The short ``kokoro`` alias worked
+    # because it WAS in the table; the full form was not. Map every
+    # documented Kokoro full alias to the same canonical HF repo as
+    # ``kokoro`` so the resolver returns the identical path for both
+    # the short and full names. ``kokoro-82m-8bit`` falls back to the
+    # bf16 build (mlx-community ships no 8bit Kokoro repo today); the
+    # alias exists so future ops who type the brief's literal name
+    # see a working engine instead of an opaque HF 404. The lowercase
+    # match here mirrors the lowercase the alias-substring boot guard
+    # uses (``is_audio_model_alias``).
+    "kokoro-82m-bf16": "mlx-community/Kokoro-82M-bf16",
+    "kokoro-82m-4bit": "mlx-community/Kokoro-82M-4bit",
+    "kokoro-82m-8bit": "mlx-community/Kokoro-82M-bf16",
     "chatterbox": "mlx-community/chatterbox-turbo-fp16",
     "chatterbox-4bit": "mlx-community/chatterbox-turbo-4bit",
     "vibevoice": "mlx-community/VibeVoice-Realtime-0.5B-4bit",
@@ -1191,6 +1208,32 @@ TTS_MODEL_ALIASES: dict[str, str] = {
 #: ``DEFAULT_STT_ALIAS`` rule on the STT side — drop-in OpenAI-SDK code
 #: that omits ``model=`` lands here.
 DEFAULT_TTS_ALIAS = "kokoro"
+
+
+# R8-H5 (Bo 0.8.9 dogfood): canonical IANA Content-Type per
+# ``response_format``. Pre-fix the route inlined ``f"audio/{format}"``
+# which both mislabeled the body (every non-wav format was actually
+# WAV bytes — see ``TTSEngine.to_bytes`` for the encoder fix) AND
+# emitted non-canonical types: ``audio/opus`` instead of ``audio/ogg``
+# (Opus's IANA type is ``audio/ogg`` because the wire bytes are an
+# OGG container with the Opus codec), ``audio/mp3`` instead of the
+# IANA-canonical ``audio/mpeg``. The table below pairs each format
+# with the type that matches what the encoder actually produces so
+# browsers and ffmpeg agree on the container.
+#
+# Tied to :data:`vllm_mlx.api.models._TTS_ALLOWED_RESPONSE_FORMATS` —
+# every key here MUST be in the allowed set so a request that passes
+# the request-model validator always finds a Content-Type entry. The
+# unit test ``test_audio_r8_a_bundle.py::TestTTSContentType`` pins
+# both directions.
+_TTS_CONTENT_TYPES: dict[str, str] = {
+    "wav": "audio/wav",
+    "flac": "audio/flac",
+    "ogg": "audio/ogg",
+    "opus": "audio/ogg",
+    "mp3": "audio/mpeg",
+    "pcm": "audio/pcm",
+}
 
 
 def _resolve_tts_model(model: str | None) -> str:
@@ -1206,10 +1249,53 @@ def _resolve_tts_model(model: str | None) -> str:
       the client is opting in to). Pre-fix the handler accepted the
       same shape inline; promotion to a helper keeps the contract
       identical without re-implementing the rule.
+
+    R8-H4 (Bo 0.8.9 dogfood): lookup is case-insensitive so the
+    brief's literal ``"kokoro-82m-8bit"`` and the SDK-style
+    ``"Kokoro-82M-8bit"`` land on the same HF repo as the lowercase
+    short form. HF repo ids (anything containing ``/``) keep their
+    case verbatim — the case-insensitive lookup only fires for the
+    short alias table, never for passthrough.
     """
     if not model or model == "default":
         return TTS_MODEL_ALIASES[DEFAULT_TTS_ALIAS]
-    return TTS_MODEL_ALIASES.get(model, model)
+    return TTS_MODEL_ALIASES.get(model.lower(), model)
+
+
+def _allowed_voices_for(model_name: str) -> list[str]:
+    """Return the voice set the route should accept for ``model_name``.
+
+    R8-M4 (Bo 0.8.9 dogfood): pre-fix the route handed ``voice``
+    straight to ``mlx_audio.load_safetensors`` which 500'd on the
+    missing safetensors file. The pre-flight check fires post alias
+    resolution so the rule is "voice valid for whichever model the
+    resolver picked", not "voice valid for the literal user-supplied
+    name" — that way both ``kokoro`` and the full HF id
+    ``mlx-community/Kokoro-82M-bf16`` honour the same voice list.
+
+    The detection mirrors :func:`vllm_mlx.audio.tts.TTSEngine._detect_family`
+    so the answers stay aligned: a single substring switch ensures the
+    route AND the engine agree on which family a name belongs to, so
+    a future engine added to the registry is wired into voice
+    validation by editing one helper, not two.
+    """
+    # Lazy import: ``vllm_mlx.audio.tts`` transitively pulls ``numpy``
+    # which the API-only test runners don't install. Same lazy pattern
+    # the route uses elsewhere.
+    from ..audio.tts import CHATTERBOX_VOICES, KOKORO_VOICES
+
+    name_lower = model_name.lower()
+    if "kokoro" in name_lower:
+        return list(KOKORO_VOICES)
+    if "chatterbox" in name_lower:
+        return list(CHATTERBOX_VOICES)
+    # Unknown family — accept ``"default"`` (the catch-all the engine
+    # falls back to in :meth:`TTSEngine.get_voices`) so callers
+    # passing a HF id we don't have a voice list for can still drive
+    # the engine. Rejecting here would prematurely close the door on
+    # third-party engines mlx-audio supports but rapid-mlx doesn't
+    # ship metadata for.
+    return ["default"]
 
 
 @router.post("/v1/audio/speech", dependencies=[Depends(verify_api_key)])
@@ -1266,7 +1352,7 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
     response_format = request.response_format
 
     try:
-        from ..audio.tts import TTSEngine
+        from ..audio.tts import TTSEngine, UnsupportedAudioFormatError
 
         # R7-H3 follow-up: alias resolution lives in a shared helper
         # (see ``_resolve_tts_model``) so the bare alias / ``"default"``
@@ -1274,6 +1360,37 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # the future land in :data:`TTS_MODEL_ALIASES` once, not in the
         # handler body.
         model_name = _resolve_tts_model(model)
+
+        # R8-M4 (Bo 0.8.9 dogfood): validate ``voice`` against the
+        # model's known voice set BEFORE we load weights. Pre-fix an
+        # unknown name (drop-in OpenAI SDK code sending ``alloy`` /
+        # ``nova`` / typo'd ``af_hart``) fell through to
+        # ``mlx_audio.load_safetensors`` which 500'd on the missing
+        # ``voices/<name>.safetensors`` file. The 500 envelope hid the
+        # actual cause from the operator log AND from the caller. The
+        # check fires post-resolution so a HF passthrough id (``mlx-
+        # community/Kokoro-82M-bf16``) honours the same voice set as
+        # the ``kokoro`` short alias — both go through the same model
+        # family check.
+        valid_voices = _allowed_voices_for(model_name)
+        if voice not in valid_voices:
+            preview = ", ".join(valid_voices[:8])
+            if len(valid_voices) > 8:
+                preview = f"{preview}, ..."
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            f"voice {voice!r} not recognized for model "
+                            f"{model_name!r}. Available: {preview}."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "invalid_voice",
+                        "param": "voice",
+                    }
+                },
+            )
 
         # F-K-KOKORO-MISAKI: Kokoro pulls ``misaki`` lazily inside
         # ``KokoroPipeline``; the TTS-lane probe above can't catch
@@ -1290,10 +1407,35 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
             _tts_engine.load()
 
         audio = _tts_engine.generate(input_text, voice=voice, speed=speed)
-        audio_bytes = _tts_engine.to_bytes(audio, format=response_format)
+        try:
+            audio_bytes = _tts_engine.to_bytes(audio, format=response_format)
+        except UnsupportedAudioFormatError as e:
+            # R8-H5 (Bo 0.8.9 dogfood): the encoder couldn't produce the
+            # requested format (no codec / unknown name). Surface a 400
+            # ``invalid_request_error`` with ``param="response_format"``
+            # and the list of formats this build DOES support so the
+            # caller can retry with a known-good value. Pre-fix the
+            # route returned 200 with mislabeled WAV bytes.
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": str(e),
+                        "type": "invalid_request_error",
+                        "code": "invalid_response_format",
+                        "param": "response_format",
+                    }
+                },
+            )
 
-        content_type = (
-            "audio/wav" if response_format == "wav" else f"audio/{response_format}"
+        # R8-H5: pick a Content-Type that actually matches the produced
+        # bytes. Pre-fix the route blindly built ``audio/{format}``,
+        # which both mislabelled the body (every non-wav format was
+        # WAV) AND emitted non-canonical types (``audio/opus`` instead
+        # of ``audio/ogg``). The mapping below pairs each
+        # ``response_format`` with the IANA-canonical container type.
+        content_type = _TTS_CONTENT_TYPES.get(
+            response_format.lower(), "application/octet-stream"
         )
         return Response(content=audio_bytes, media_type=content_type)
 

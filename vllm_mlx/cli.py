@@ -5852,16 +5852,44 @@ Examples:
             args._original_alias = args.model
             args.model = resolved
         elif "/" not in args.model and not os.path.exists(args.model):
-            # Not an alias, not a HuggingFace org/name path, not a local
-            # directory — fail fast with suggestions instead of letting the
-            # request hit HuggingFace and 404 with a 30-line stack trace.
-            print(
-                f"\n  Error: '{args.model}' is not a known alias or HuggingFace path."
-            )
-            _print_unknown_model_help(
-                args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
-            )
-            sys.exit(1)
+            # R8-M5 (Bo 0.8.9 dogfood): short audio aliases (``kokoro``,
+            # ``whisper``, ``parakeet``, ``chatterbox``, ``vibevoice``,
+            # ``voxcpm``) and their full-form siblings (``kokoro-82m-
+            # 8bit``) are NOT in ``aliases.json`` — the resolver returns
+            # them unchanged, then this fail-fast branch trips with
+            # "is not a known alias or HuggingFace path" BEFORE
+            # ``serve_command`` can run the audio boot guard. On a
+            # fresh ``pip install rapid-mlx`` (no ``[audio]`` extra)
+            # that means the operator sees a generic "unknown alias"
+            # instead of the actionable "install rapid-mlx[audio]"
+            # hint, and on a healthy install with ``[audio]`` the
+            # short alias resolves at request time inside the audio
+            # routes (``TTS_MODEL_ALIASES`` / ``STT_MODEL_ALIASES``)
+            # but the CLI exits before serve_command ever runs.
+            #
+            # Skip the fail-fast for audio aliases so:
+            #   - missing-extra installs reach the audio boot guard
+            #     in ``serve_command`` (rc=2 + install hint).
+            #   - healthy installs reach the audio routes' alias
+            #     resolution and serve correctly.
+            # The substring check matches the same alias surface the
+            # serve-command boot guard uses (``_AUDIO_ALIAS_TOKENS``)
+            # so a name that trips one trips the other — no risk of a
+            # text/vision alias accidentally bypassing the fail-fast.
+            from .audio.probe import is_audio_model_alias
+
+            if not is_audio_model_alias(args.model):
+                # Not an alias, not a HuggingFace org/name path, not a
+                # local directory, not an audio alias — fail fast with
+                # suggestions instead of letting the request hit
+                # HuggingFace and 404 with a 30-line stack trace.
+                print(
+                    f"\n  Error: '{args.model}' is not a known alias or HuggingFace path."
+                )
+                _print_unknown_model_help(
+                    args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
+                )
+                sys.exit(1)
         # Round 16 codex catch: record the resolved (or already-canonical)
         # model so ``session_end`` can report what this invocation loaded.
         # ``normalize_model_path`` inside the emit helper redacts local

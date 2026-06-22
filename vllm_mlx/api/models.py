@@ -2224,6 +2224,30 @@ class AudioTranscriptionResponse(BaseModel):
     segments: list[dict] | None = None
 
 
+# R8-H5 (Bo 0.8.9 dogfood): the set of TTS ``response_format`` values
+# the route can actually produce. Centralised here so the Pydantic
+# validator AND the runtime encoder share one source of truth — any
+# format added to :data:`vllm_mlx.routes.audio._TTS_CONTENT_TYPES`
+# MUST be added here, otherwise the request would 400 before reaching
+# the encoder. Pre-fix the route accepted any string verbatim and
+# silently returned RIFF/WAV bytes labelled as the requested type;
+# rejecting unknown values up front means clients get an actionable
+# 400 with the supported set instead of a mislabeled body.
+_TTS_ALLOWED_RESPONSE_FORMATS: tuple[str, ...] = (
+    "wav",
+    "mp3",
+    "flac",
+    "ogg",
+    "opus",
+    "pcm",
+    # Note: ``aac`` is intentionally absent — libsndfile does not ship
+    # an AAC encoder in any wheel we depend on. The route's encoder
+    # also rejects ``aac`` (raises ``UnsupportedAudioFormatError``);
+    # listing it here too would let a request through that then 500s
+    # at the encoder boundary.
+)
+
+
 class AudioSpeechRequest(BaseModel):
     """Request for text-to-speech (OpenAI ``/v1/audio/speech`` compatible).
 
@@ -2241,6 +2265,14 @@ class AudioSpeechRequest(BaseModel):
     registered with the envelope handler so the Pydantic validation
     error surfaces as ``{"error": {"type": "invalid_request_error",
     "param": "input", ...}}`` instead of the FastAPI 422 default.
+
+    R8-M4 / R8-H5 (Bo 0.8.9 dogfood): ``voice`` and ``response_format``
+    are validated up front against the known set so an invalid value
+    surfaces as a 400 ``invalid_request_error`` with the relevant
+    ``param=`` BEFORE the engine loads weights. Pre-fix ``voice``
+    fell through to ``mlx_audio.load_safetensors`` which 500'd on the
+    missing voice file, and ``response_format`` was accepted as any
+    string then silently mislabeled WAV bytes.
     """
 
     model: str = "kokoro"
@@ -2269,6 +2301,40 @@ class AudioSpeechRequest(BaseModel):
         if not v.strip():
             raise ValueError("input must be a non-empty, non-blank string")
         return v
+
+    @field_validator("voice")
+    @classmethod
+    def _voice_must_be_non_blank(cls, v: str) -> str:
+        # R8-M4 (Bo 0.8.9 dogfood): pre-fix ``voice=""`` fell through
+        # to ``mlx_audio.load_safetensors("voices/.safetensors")`` which
+        # 500'd with a stack trace. The model-aware list check happens
+        # in the route handler (we don't know which model family is in
+        # use here); the blank-string rejection is a cheap structural
+        # check that catches the most common client bug — sending an
+        # empty default — before we hit the model-aware validator.
+        if not v or not v.strip():
+            raise ValueError("voice must be a non-empty, non-blank string")
+        return v
+
+    @field_validator("response_format")
+    @classmethod
+    def _response_format_must_be_known(cls, v: str) -> str:
+        # R8-H5 (Bo 0.8.9 dogfood): pre-fix every string was accepted
+        # and ``Content-Type: audio/{format}`` echoed back, masking
+        # the fact that the encoder produced WAV bytes regardless.
+        # Reject unknown values here so a typo ("wave" → "wav") OR an
+        # unsupported codec ("aac") returns a clean 400 envelope
+        # before the engine loads weights. The allowed set mirrors the
+        # route's ``_TTS_CONTENT_TYPES`` table (one source of truth);
+        # adding a format requires editing both, which a unit test
+        # pins.
+        if v is None:
+            return "wav"
+        lower = v.lower()
+        if lower not in _TTS_ALLOWED_RESPONSE_FORMATS:
+            supported = ", ".join(_TTS_ALLOWED_RESPONSE_FORMATS)
+            raise ValueError(f"response_format must be one of: {supported}; got {v!r}")
+        return lower
 
 
 class AudioSeparationRequest(BaseModel):
