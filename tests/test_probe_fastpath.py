@@ -551,6 +551,53 @@ class TestFastPathServesRequest:
         assert captured[0]["status"] == 200
         assert json.loads(captured[1]["body"]) == {"status": "alive"}
 
+    def test_fastpath_origin_check_is_case_insensitive(self):
+        """Codex r3 BLOCKING #1: an ASGI server / harness that ships
+        ``b"Origin"`` (capital) instead of the spec-mandated lowercase
+        must still trigger the CORS fall-through. Pre-fix the
+        comparison ``name == b"origin"`` missed the capital case and
+        would have served the fast-path 200 to a cross-origin browser
+        request — silently bypassing CORS.
+        """
+        inner_calls: list[dict] = []
+
+        async def _inner(scope, receive, send):
+            inner_calls.append(scope)
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 200,
+                    "headers": [(b"content-type", b"application/json")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b"{}"})
+
+        mw = ProbeFastPathMiddleware(_inner)
+
+        async def _send(msg):
+            pass
+
+        async def _receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        # Try every plausible casing a non-conforming ASGI adapter
+        # might ship.
+        for header_name in (b"origin", b"Origin", b"ORIGIN", b"OrIgIn"):
+            inner_calls.clear()
+            scope = {
+                "type": "http",
+                "method": "GET",
+                "path": "/healthz",
+                "raw_path": b"/healthz",
+                "headers": [(header_name, b"https://browser.example")],
+                "query_string": b"",
+            }
+            asyncio.run(mw(scope, _receive, _send))
+            assert len(inner_calls) == 1, (
+                f"Origin header cased {header_name!r} must trigger CORS "
+                f"fall-through; got {len(inner_calls)} inner-app calls"
+            )
+
     def test_fastpath_delegates_to_inner_app_on_origin_header(self):
         """A request with Origin must fall through so the (outer) CORS
         middleware can attach ACAO. Pin this by recording inner-app
