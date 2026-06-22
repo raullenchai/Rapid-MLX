@@ -97,8 +97,7 @@ class Gemma4ReasoningParser(ReasoningParser):
                         prior_reasoning = "".join(parts)
             trailing_reasoning = after.strip() or None
             merged_reasoning = (
-                "\n".join(p for p in (prior_reasoning, trailing_reasoning) if p)
-                or None
+                "\n".join(p for p in (prior_reasoning, trailing_reasoning) if p) or None
             )
             return merged_reasoning, None
 
@@ -257,8 +256,37 @@ class Gemma4ReasoningParser(ReasoningParser):
         """
         if not accumulated_text:
             return False
+        # Codex r1 BLOCKING on PR #825: the pre-fix ``rfind`` gate
+        # mis-fired on a legitimate answer that mentions the literal
+        # ``<|channel>thought`` substring inside an already-opened
+        # content/final channel — ``rfind`` lands on the literal
+        # substring inside the answer, the tail is short, and the
+        # closer-not-found check spuriously returns True. The
+        # extracted ``cleaned_text`` path also tripped the gate
+        # because the upstream content opener had already been
+        # stripped by ``extract_reasoning`` before the route probed
+        # the buffer.
+        #
+        # Systematic fix — three conservative guards:
+        # 1. Buffer must START (modulo whitespace) with
+        #    ``<|channel>thought``. This is the only shape where the
+        #    EOS-was-mid-think interpretation is unambiguous,
+        #    matching the minimax ``lstrip().startswith("<think>")``
+        #    guard and the ``_sweep_residual_think_tags`` scope from
+        #    PR #722 codex r3.
+        # 2. No ``<|channel>content`` / ``<|channel>final`` opener
+        #    appears — once content opens, any further
+        #    ``<|channel>thought`` bytes are literal answer text in
+        #    Gemma 4's single-round grammar.
+        # 3. No ``<channel|>`` close after the (only) opener.
+        if not accumulated_text.lstrip().startswith("<|channel>thought"):
+            return False
+        if (
+            "<|channel>content" in accumulated_text
+            or "<|channel>final" in accumulated_text
+        ):
+            return False
         last_open = accumulated_text.rfind("<|channel>thought")
         if last_open < 0:
             return False
-        # Any close marker AFTER the latest opener?
         return "<channel|>" not in accumulated_text[last_open:]

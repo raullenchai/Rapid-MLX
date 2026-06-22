@@ -153,7 +153,15 @@ class MiniMaxReasoningParser(ReasoningParser):
             # the parser returned ``(None, model_output)`` — leaking
             # the scratchpad (with the ``<think>`` tag bytes) into
             # ``content``. Strip the opener and route to reasoning.
-            if "<think>" in model_output:
+            #
+            # Codex r1 BLOCKING on PR #825: bare ``"<think>" in``
+            # mis-fires on legitimate answers that mention the
+            # literal substring (e.g. "The model uses <think> tags
+            # for reasoning"). Gate to the true mid-think shape —
+            # the buffer must START (modulo whitespace) with the
+            # opener — matching the conservative scope of
+            # ``_sweep_residual_think_tags`` from PR #722 codex r3.
+            if model_output.lstrip().startswith("<think>"):
                 _, _, after = model_output.partition("<think>")
                 reasoning = after.strip() or None
                 return reasoning, None
@@ -314,7 +322,16 @@ class MiniMaxReasoningParser(ReasoningParser):
         """
         if not accumulated_text:
             return False
-        return "<think>" in accumulated_text and "</think>" not in accumulated_text
+        # Codex r1 BLOCKING on PR #825: bare ``"<think>" in`` mis-fires
+        # on legitimate answers that mention the literal substring
+        # (e.g. "The model uses <think> tags for reasoning"). Gate
+        # to the true mid-think shape — the buffer must START (modulo
+        # whitespace) with the opener — matching the same conservative
+        # guard now in ``extract_reasoning`` and the
+        # ``_sweep_residual_think_tags`` scope from PR #722 codex r3.
+        if not accumulated_text.lstrip().startswith("<think>"):
+            return False
+        return "</think>" not in accumulated_text
 
     def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
         """
