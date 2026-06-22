@@ -82,9 +82,7 @@ def test_mlx_vlm_available_returns_false_when_missing(monkeypatch):
     assert mlx_vlm_available() is False
 
 
-def test_require_mlx_vlm_or_exit_prints_hint_and_exits(
-    monkeypatch, capsys
-):
+def test_require_mlx_vlm_or_exit_prints_hint_and_exits(monkeypatch, capsys):
     """R-10 fix: boot guard must emit the actionable install hint to
     stderr and ``sys.exit(2)`` — same shape as
     :func:`require_mlx_embeddings_or_exit`."""
@@ -105,9 +103,9 @@ def test_require_mlx_vlm_or_exit_prints_hint_and_exits(
     assert "ui-tars-1.5-7b-4bit" in err, (
         f"hint must name the offending model id, got: {err!r}"
     )
-    assert "rapid-mlx[vision]" in err or "rapid-mlx[vision]" in err.replace(
-        "'", ""
-    ), f"hint must name the [vision] extra install path, got: {err!r}"
+    assert "rapid-mlx[vision]" in err or "rapid-mlx[vision]" in err.replace("'", ""), (
+        f"hint must name the [vision] extra install path, got: {err!r}"
+    )
     assert "mlx-vlm" in err, f"hint must name the dep, got: {err!r}"
 
 
@@ -117,9 +115,7 @@ def test_require_mlx_vlm_or_exit_is_noop_when_installed(monkeypatch):
     from vllm_mlx.models.mllm import require_mlx_vlm_or_exit
 
     # Force the probe to report True without touching sys.modules.
-    monkeypatch.setattr(
-        "vllm_mlx.models.mllm.mlx_vlm_available", lambda: True
-    )
+    monkeypatch.setattr("vllm_mlx.models.mllm.mlx_vlm_available", lambda: True)
 
     # Must not raise SystemExit.
     require_mlx_vlm_or_exit("ui-tars-1.5-7b-4bit")
@@ -157,9 +153,7 @@ def test_vision_extra_pulls_in_mlx_vlm():
 
     from pathlib import Path
 
-    pyproject_path = (
-        Path(__file__).resolve().parent.parent / "pyproject.toml"
-    )
+    pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
     data = tomllib.loads(pyproject_path.read_text())
 
     extras = data["project"]["optional-dependencies"]

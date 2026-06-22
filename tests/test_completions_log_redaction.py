@@ -69,18 +69,10 @@ def client_with_completions_route(monkeypatch):
         "enforce_context_length_for_prompt",
         lambda *a, **kw: None,
     )
-    monkeypatch.setattr(
-        completions_mod, "_validate_model_name", lambda _m: None
-    )
-    monkeypatch.setattr(
-        completions_mod, "_resolve_model_name", lambda m: m
-    )
-    monkeypatch.setattr(
-        completions_mod, "_resolve_max_tokens", lambda m: m or 16
-    )
-    monkeypatch.setattr(
-        completions_mod, "_resolve_temperature", lambda t: t
-    )
+    monkeypatch.setattr(completions_mod, "_validate_model_name", lambda _m: None)
+    monkeypatch.setattr(completions_mod, "_resolve_model_name", lambda m: m)
+    monkeypatch.setattr(completions_mod, "_resolve_max_tokens", lambda m: m or 16)
+    monkeypatch.setattr(completions_mod, "_resolve_temperature", lambda t: t)
     monkeypatch.setattr(completions_mod, "_resolve_top_p", lambda p: p)
     monkeypatch.setattr(
         completions_mod, "build_extended_sampling_kwargs", lambda _r: {}
@@ -93,10 +85,9 @@ def client_with_completions_route(monkeypatch):
 
     # No-op auth + rate limit so the request reaches the body of the
     # handler without hitting either middleware.
-    with patch(
-        "vllm_mlx.middleware.auth.verify_api_key", new=lambda *a, **kw: None
-    ), patch(
-        "vllm_mlx.middleware.auth.check_rate_limit", new=lambda *a, **kw: None
+    with (
+        patch("vllm_mlx.middleware.auth.verify_api_key", new=lambda *a, **kw: None),
+        patch("vllm_mlx.middleware.auth.check_rate_limit", new=lambda *a, **kw: None),
     ):
         app = FastAPI()
         app.include_router(completions_mod.router)
@@ -107,9 +98,7 @@ def _records_at_or_above(caplog, level: int) -> list[logging.LogRecord]:
     return [r for r in caplog.records if r.levelno >= level]
 
 
-def test_info_log_does_not_leak_prompt_body(
-    client_with_completions_route, caplog
-):
+def test_info_log_does_not_leak_prompt_body(client_with_completions_route, caplog):
     """R-05 repro: send a prompt containing a 'secret' sentinel,
     assert it does NOT appear in any INFO-or-higher log record."""
     # Capture every level so we can also positively assert the DEBUG
@@ -137,9 +126,7 @@ def test_info_log_does_not_leak_prompt_body(
     )
 
 
-def test_info_log_carries_metadata_only(
-    client_with_completions_route, caplog
-):
+def test_info_log_carries_metadata_only(client_with_completions_route, caplog):
     """INFO line must still surface request metadata (model id, token
     counts, sampling) so operators can debug without reading bodies."""
     caplog.set_level(logging.INFO)
@@ -157,8 +144,7 @@ def test_info_log_carries_metadata_only(
     info_msgs = [
         r.getMessage()
         for r in caplog.records
-        if r.levelno == logging.INFO
-        and r.name.endswith("routes.completions")
+        if r.levelno == logging.INFO and r.name.endswith("routes.completions")
     ]
     request_lines = [m for m in info_msgs if "[REQUEST]" in m]
     assert request_lines, f"no [REQUEST] log line found in {info_msgs!r}"
@@ -173,9 +159,7 @@ def test_info_log_carries_metadata_only(
     assert SENTINEL not in line
 
 
-def test_debug_log_carries_redacted_preview(
-    client_with_completions_route, caplog
-):
+def test_debug_log_carries_redacted_preview(client_with_completions_route, caplog):
     """The body preview moved from INFO to DEBUG. Operators who flip
     the log level to DEBUG still get a 300-char preview for local
     debugging — but it's behind an explicit opt-in, not the production
@@ -198,8 +182,7 @@ def test_debug_log_carries_redacted_preview(
     debug_msgs = [
         r.getMessage()
         for r in caplog.records
-        if r.levelno == logging.DEBUG
-        and r.name.endswith("routes.completions")
+        if r.levelno == logging.DEBUG and r.name.endswith("routes.completions")
     ]
     preview_lines = [m for m in debug_msgs if "prompt preview" in m]
     assert preview_lines, (
