@@ -270,7 +270,9 @@ class StreamingPostProcessor:
         else:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
         if self.tool_parser:
-            self.tool_parser.reset()
+            reset_parser = getattr(self.tool_parser, "reset", None)
+            if callable(reset_parser):
+                reset_parser()
 
         # State
         self.accumulated_text = ""

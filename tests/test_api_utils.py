@@ -919,6 +919,17 @@ class TestContentToText:
 
 
 class TestValidateContentBlocksForCapabilities:
+    def test_text_block_requires_non_empty_text(self):
+        messages = [{"role": "user", "content": [{"type": "text"}]}]
+
+        with pytest.raises(ValueError, match="content\\[\\]\\.text"):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="chat-model",
+                allow_image=False,
+                allow_video=False,
+            )
+
     def test_input_audio_requires_format_even_when_audio_allowed(self):
         messages = [
             {

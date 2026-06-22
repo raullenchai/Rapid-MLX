@@ -1007,9 +1007,9 @@ def _validate_content_part_payload(item: dict) -> None:
     item_type = item["type"]
     if item_type == "text":
         text = item.get("text")
-        if text is not None and not isinstance(text, str):
+        if not isinstance(text, str) or text == "":
             raise ValueError(
-                f"content[].text must be a string (got {type(text).__name__})"
+                f"content[].text must be a non-empty string (got {type(text).__name__})"
             )
     elif item_type == "image_url":
         _extract_object_url(item, "image_url")

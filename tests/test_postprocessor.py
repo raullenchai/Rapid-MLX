@@ -292,6 +292,14 @@ class TestStreamingPostProcessorToolCalls:
 
         assert parser.has_pending_tool_call('different prefix {"name": "search"')
 
+    def test_init_accepts_injected_tool_parser_without_reset(self):
+        parser = MagicMock()
+        del parser.reset
+
+        cfg = _make_cfg(tool_parser_instance=parser)
+
+        StreamingPostProcessor(cfg)
+
     def test_tool_markup_suppresses_content(self):
         """Content is suppressed while inside tool markup."""
         tool_parser = self._make_tool_parser()
