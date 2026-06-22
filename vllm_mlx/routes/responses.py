@@ -19,7 +19,7 @@ import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Mapping
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -549,11 +549,7 @@ def _prepare_messages_for_engine(
     if getattr(engine, "is_mllm", False):
         messages = []
         for msg in openai_request.messages:
-            if hasattr(msg, "model_dump"):
-                messages.append(msg.model_dump(exclude_none=True))
-            else:
-                raw = dict(msg)
-                messages.append({k: v for k, v in raw.items() if v is not None})
+            messages.append(_message_to_engine_dict(msg))
         for message in messages:
             content = message.get("content")
             if isinstance(content, list):
@@ -573,6 +569,26 @@ def _prepare_messages_for_engine(
         preserve_native_format=engine.preserve_native_tool_format,
     )
     return messages
+
+
+def _message_to_engine_dict(msg) -> dict:
+    if hasattr(msg, "model_dump"):
+        return msg.model_dump(exclude_none=True)
+    if isinstance(msg, Mapping):
+        raw = msg
+    else:
+        raw = {
+            key: getattr(msg, key, None)
+            for key in (
+                "role",
+                "content",
+                "tool_calls",
+                "tool_call_id",
+                "name",
+            )
+            if hasattr(msg, key)
+        }
+    return {k: v for k, v in raw.items() if v is not None}
 
 
 async def _non_stream(

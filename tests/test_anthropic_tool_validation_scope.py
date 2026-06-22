@@ -509,18 +509,9 @@ def test_validator_multiple_calls_bad_one_raises_about_bad_one_only():
 
 def test_pinned_tool_model_emits_no_tool_calls_returns_422():
     """F8 (D-ANTHRO-SPEC-POLISH): ``tool_choice={type:tool,name:X}``
-    + model returns text only → 200 with a best-effort synthesized
-    ``tool_use`` block for the pinned tool with empty ``input={}``.
-
-    Previously this returned 422; that was honest about local
-    inference lacking decoder-level constraint, but the Anthropic
-    SDK doesn't retry on 422 so forced-named-tool flows hit
-    unrecoverable failure on small models. Anthropic's real backend
-    decoder-enforces the pin; we synthesize a best-effort approximation
-    that satisfies the response shape (you asked for X, here is X).
-    Schema-level "this synthesized input doesn't satisfy `required`"
-    complaints belong on the client's downstream dispatch path, not
-    here.
+    + model returns text only → 422 instead of silently returning text
+    or synthesizing a fake ``tool_use``. Rapid-MLX cannot decoder-enforce
+    the pinned named-tool contract, so violating it must be explicit.
     """
     engine = _MultiCallEngine(None, text="I can't help with weather right now.")
     client = _make_client(engine)

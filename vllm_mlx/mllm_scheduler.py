@@ -746,11 +746,10 @@ class MLLMScheduler:
 
             finish_reason = response.finish_reason
             stop_trimmed = False
-            if finish_reason != "stop" and request.stop:
-                stop_params = [s for s in request.stop if s]
+            stop_params = [s for s in request.stop if s] if request.stop else []
+            if finish_reason != "stop" and stop_params:
                 if (
-                    stop_params
-                    and not had_detok
+                    not had_detok
                     and request.stop_text_len == 0
                     and not request.stop_tail
                     and len(request.output_tokens) > 1
@@ -840,12 +839,15 @@ class MLLMScheduler:
                     # holding an incomplete byte sequence. Preserve the
                     # existing tail and wait for a real text segment.
                     pass
+            else:
+                request.output_text += new_text
+                output.output_text = request.output_text
 
             # Check if finished
             if finish_reason is not None:
                 if (
                     not stop_trimmed
-                    and request.stop
+                    and stop_params
                     and request.stop_text
                     and request.stop_text_len < len(request.stop_text)
                 ):

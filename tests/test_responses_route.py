@@ -338,6 +338,37 @@ class TestResponsesNonStream:
         assert [part["type"] for part in content] == ["text", "image_url"]
         assert content[1]["image_url"]["url"] == "data:image/png;base64,abc"
 
+    def test_mllm_message_prepare_accepts_object_style_messages(self):
+        """Responses MLLM path must handle the object-style messages accepted
+        by the text path instead of assuming every message is dict-convertible.
+        """
+        from vllm_mlx.routes.responses import _prepare_messages_for_engine
+
+        msg = SimpleNamespace(
+            role="user",
+            content=[
+                {"type": "input_text", "text": "Describe this"},
+                {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+            ],
+        )
+        request = SimpleNamespace(messages=[msg])
+        engine = SimpleNamespace(is_mllm=True, preserve_native_tool_format=False)
+
+        sent = _prepare_messages_for_engine(engine, request)
+
+        assert sent == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc"},
+                    },
+                ],
+            }
+        ]
+
     def test_input_image_rejected_on_text_only_engine(self, responses_client):
         client = responses_client.client
         engine = responses_client.engine
