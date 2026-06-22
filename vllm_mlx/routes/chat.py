@@ -85,6 +85,7 @@ from ..service.helpers import (
 )
 
 logger = logging.getLogger(__name__)
+_SAFE_DEEPSEEK_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 router = APIRouter()
 
@@ -235,15 +236,8 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
         # defense-in-depth. Hitting any marker returns ``None`` (clean
         # degradation to the post-parse synthesis fallback) rather
         # than emitting a corrupt prefix.
-        for _marker in (
-            "<｜tool▁calls▁begin｜>",
-            "<｜tool▁calls▁end｜>",
-            "<｜tool▁call▁begin｜>",
-            "<｜tool▁call▁end｜>",
-            "<｜tool▁sep｜>",
-        ):
-            if _marker in function_name:
-                return None
+        if not _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(function_name):
+            return None
         return (
             f"<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>{function_name}<｜tool▁sep｜>"
         )
@@ -892,22 +886,30 @@ def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
     # when the separator-adjacent JSON payload is scrubbed below.
     deepseek_begin = "<｜tool▁call▁begin｜>"
     deepseek_sep = "<｜tool▁sep｜>"
+    search_pos = 0
     while True:
-        begin = result.find(deepseek_begin)
+        begin = result.find(deepseek_begin, search_pos)
         if begin == -1:
             break
         sep = result.find(deepseek_sep, begin + len(deepseek_begin))
         if sep == -1:
-            break
+            search_pos = begin + len(deepseek_begin)
+            continue
+        next_begin = result.find(deepseek_begin, begin + len(deepseek_begin), sep)
+        if next_begin != -1:
+            search_pos = next_begin
+            continue
         payload_bounds = _payload_object_after_marker(
             result,
             sep + len(deepseek_sep),
             min(len(result), sep + len(deepseek_sep) + 2048),
         )
         if payload_bounds is None:
-            break
+            search_pos = begin + len(deepseek_begin)
+            continue
         _, object_end = payload_bounds
         result = result[:begin] + result[object_end:]
+        search_pos = begin
     for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
         result = balanced_re.sub(
             lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
@@ -917,25 +919,29 @@ def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
         lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
         result,
     )
-    for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
-        pieces: list[str] = []
-        last = 0
-        for match in marker_re.finditer(result):
-            window_end = min(len(result), match.end() + 2048)
-            pieces.append(result[last : match.start()])
-            payload_bounds = _payload_object_after_marker(
-                result, match.end(), window_end
-            )
-            if payload_bounds is not None:
-                _, object_end = payload_bounds
-                last = object_end
-                continue
-            else:
+    for _ in range(4):
+        changed = False
+        for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+            pieces: list[str] = []
+            last = 0
+            for match in marker_re.finditer(result):
+                window_end = min(len(result), match.end() + 2048)
+                pieces.append(result[last : match.start()])
+                payload_bounds = _payload_object_after_marker(
+                    result, match.end(), window_end
+                )
+                if payload_bounds is not None:
+                    _, object_end = payload_bounds
+                    last = object_end
+                    changed = True
+                    continue
                 pieces.append(match.group(0))
-            last = match.end()
-        if pieces:
-            pieces.append(result[last:])
-            result = "".join(pieces)
+                last = match.end()
+            if pieces:
+                pieces.append(result[last:])
+                result = "".join(pieces)
+        if not changed:
+            break
     if _is_tool_wire_marker_only(result):
         result = _scrub_tool_wire_literals(result)
     return re.sub(r"\s+", " ", result).strip()
@@ -2939,13 +2945,18 @@ async def _create_chat_completion_impl(
         _raw_text_for_reasoning
     )
 
-    def _should_scrub_visible_wire(text: str | None) -> bool:
+    def _should_scrub_visible_wire(
+        text: str | None, *, allow_raw_context: bool = True
+    ) -> bool:
         return (
             _is_forced_choice
             and request.tools
             and bool(tool_calls)
             and _contains_tool_wire_literal(text)
-            and (_contains_structural_tool_wire_leak(text) or _raw_has_structural_wire)
+            and (
+                _contains_structural_tool_wire_leak(text)
+                or (allow_raw_context and _raw_has_structural_wire)
+            )
         )
 
     _wire_scrub_active = _should_scrub_visible_wire(cleaned_text)
@@ -3003,9 +3014,12 @@ async def _create_chat_completion_impl(
         # any caller that hasn't been threaded yet.
         finish_reason=getattr(output, "finish_reason", None),
     )
-    if _should_scrub_visible_wire(cleaned_text):
+    if _should_scrub_visible_wire(cleaned_text, allow_raw_context=False):
         cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
-    if _should_scrub_visible_wire(reasoning_text) and reasoning_text:
+    if (
+        _should_scrub_visible_wire(reasoning_text, allow_raw_context=False)
+        and reasoning_text
+    ):
         reasoning_text = _scrub_visible_tool_wire_leaks(reasoning_text)
 
     # Process response_format if specified (after reasoning parser cleaned the text)

@@ -240,6 +240,20 @@ def test_t2_forced_prefix_deepseek_v31_inserts_envelope():
     assert out.endswith("<｜tool▁sep｜>")
 
 
+def test_t2_forced_prefix_deepseek_rejects_unsafe_tool_names():
+    """DeepSeek non-JSON envelope only supports conservative tool names."""
+
+    for name in (
+        "bad name",
+        "bad\nname",
+        'bad"quote',
+        "bad.name",
+        "x" * 65,
+        "bad<tool_call>",
+    ):
+        assert _forced_tool_call_prefix("deepseek_v31", name) is None
+
+
 def test_t2_forced_prefix_deepseek_r1_0528_alias():
     """``deepseek_r1_0528`` is the second alias the same parser
     registers under. It must produce the same prefix as
@@ -1278,6 +1292,19 @@ def test_codex_r12_visible_scrub_removes_unclosed_deepseek_prefix_payload():
     assert "get_weather" not in out
     assert '"arguments"' not in out
     assert "prefix" in out
+    assert "suffix" in out
+
+
+def test_codex_r13_visible_scrub_skips_broken_deepseek_begin_then_scrubs_payload():
+    """A harmless earlier begin marker must not block a later payload fragment."""
+
+    out = _scrub_visible_tool_wire_leaks(
+        "prefix <｜tool▁call▁begin｜>broken "
+        '<｜tool▁call▁begin｜>get_weather<｜tool▁sep｜>{"arguments":{"city":"Tokyo"}} suffix'
+    )
+    assert "broken" in out
+    assert "get_weather" not in out
+    assert '"arguments"' not in out
     assert "suffix" in out
 
 
