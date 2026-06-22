@@ -537,15 +537,21 @@ class TestEmbeddingModelAliasResolution:
     ``mlx_embeddings.load()`` call happens."""
 
     def test_resolve_model_round_trips_a_known_alias(self):
-        """The alias registry includes embedding aliases (see
-        aliases.json). ``resolve_model('embeddinggemma-300m-6bit')``
-        must return the mlx-community HF path — otherwise the cli
-        wiring has no anchor."""
+        """Codex r5 BLOCKING: this PR ships
+        ``embeddinggemma-300m-6bit`` and ``embeddinggemma-300m-8bit``
+        in ``aliases.json`` precisely so the CLI's ``resolve_model``
+        path round-trips them. Pin the contract unconditionally — a
+        future drop of either entry must turn this test red.
+        """
         from vllm_mlx.model_aliases import resolve_model
 
         assert (
             resolve_model("embeddinggemma-300m-6bit")
             == "mlx-community/embeddinggemma-300m-6bit"
+        )
+        assert (
+            resolve_model("embeddinggemma-300m-8bit")
+            == "mlx-community/embeddinggemma-300m-8bit"
         )
 
     def test_resolve_model_passes_through_hf_path(self):
