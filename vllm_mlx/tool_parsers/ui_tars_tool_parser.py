@@ -197,7 +197,12 @@ def maybe_inject_ui_tars_system_prompt(
     """
     if tool_call_parser != "ui_tars":
         return messages
-    if tool_choice == "none":
+    # Codex r5 NIT #2: accept both raw string and request-dict shapes.
+    # _is_tool_choice_none handles the request-dict path; mirror its
+    # string-arm here so both call shapes converge on the same check.
+    if tool_choice == "none" or _is_tool_choice_none(
+        tool_choice if isinstance(tool_choice, dict) else None
+    ):
         return messages
     if has_ui_tars_system_prompt(messages):
         return messages

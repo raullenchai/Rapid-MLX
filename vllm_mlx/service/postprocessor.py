@@ -2679,6 +2679,11 @@ class StreamingPostProcessor:
                 )
                 final_msg = None
             if final_msg is not None:
+                final_reasoning = getattr(final_msg, "reasoning", None)
+                if isinstance(final_reasoning, str) and final_reasoning:
+                    events.append(
+                        StreamEvent(type="reasoning", reasoning=final_reasoning)
+                    )
                 final_content = getattr(final_msg, "content", None)
                 if isinstance(final_content, str) and final_content:
                     events.append(StreamEvent(type="content", content=final_content))
