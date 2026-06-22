@@ -1016,11 +1016,21 @@ def _extract_object_url(item: dict, field_name: str) -> str:
 def _validate_content_part_payload(item: dict) -> None:
     item_type = item["type"]
     if item_type in TEXT_CONTENT_TYPES:
+        if item_type in {"input_text", "output_text"} and "text" not in item:
+            raise ValueError(f"{item_type}.text is required")
         text = item.get("text")
-        if not isinstance(text, str) or text == "":
+        if not isinstance(text, str):
+            if item_type in {"input_text", "output_text"}:
+                raise ValueError(
+                    f"{item_type}.text must be a string (got {type(text).__name__})"
+                )
             raise ValueError(
                 f"content[].text must be a non-empty string (got {type(text).__name__})"
             )
+        if text == "":
+            if item_type in {"input_text", "output_text"}:
+                raise ValueError(f"{item_type}.text must be a non-empty string")
+            raise ValueError("content[].text must be a non-empty string (got str)")
     elif item_type == "image_url":
         _extract_object_url(item, "image_url")
     elif item_type == "input_image":

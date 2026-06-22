@@ -242,8 +242,8 @@ def _enforce_named_tool_choice_present(
     The first element is unchanged when the named-tool contract is
     satisfied. When the model emits text only or only wrong-tool calls,
     the function returns the filtered empty list plus an error string so
-    callers can surface 422/non-stream or an SSE error instead of
-    silently returning text for a pinned tool request.
+    callers can surface 422 instead of silently returning text for a
+    pinned tool request.
 
     ``original_call_count`` is the size of ``tool_calls`` BEFORE the
     filter ran. A warning logs the disambiguation between "model
@@ -259,15 +259,14 @@ def _enforce_named_tool_choice_present(
     if original_call_count == 0:
         logger.warning(
             "tool_choice pinned tool %r but the model returned a text "
-            "response with no tool_calls; synthesizing a best-effort "
-            "tool_use with empty input (F8 fallback).",
+            "response with no tool_calls; returning a tool_choice contract "
+            "error.",
             target,
         )
     else:
         logger.warning(
             "tool_choice pinned tool %r but the model emitted %d call(s), "
-            "none to %r; synthesizing a best-effort tool_use with empty "
-            "input (F8 fallback).",
+            "none to %r; returning a tool_choice contract error.",
             target,
             original_call_count,
             target,
@@ -276,6 +275,46 @@ def _enforce_named_tool_choice_present(
         [],
         False,
         f"tool_choice pinned tool {target!r} but the model did not emit that tool",
+    )
+
+
+def _extract_sse_error_message(body: str) -> str | None:
+    for event in body.split("\n\n"):
+        if "event: error" not in event:
+            continue
+        data = "\n".join(
+            line.removeprefix("data: ").strip()
+            for line in event.splitlines()
+            if line.startswith("data: ")
+        )
+        if not data:
+            continue
+        try:
+            payload = json.loads(data)
+        except json.JSONDecodeError:
+            continue
+        error = payload.get("error") if isinstance(payload, dict) else None
+        message = error.get("message") if isinstance(error, dict) else None
+        if isinstance(message, str):
+            return message
+    return None
+
+
+async def _buffer_named_tool_choice_stream(stream: AsyncIterator[str]) -> Response:
+    chunks: list[str] = []
+    async for chunk in stream:
+        if isinstance(chunk, bytes):
+            chunks.append(chunk.decode())
+        else:
+            chunks.append(chunk)
+    body = "".join(chunks)
+    error_message = _extract_sse_error_message(body)
+    if error_message and "tool_choice" in error_message:
+        raise HTTPException(status_code=422, detail=error_message)
+    return Response(
+        content=body,
+        media_type="text/event-stream",
+        headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
     )
 
 
@@ -731,22 +770,25 @@ async def create_anthropic_message(
             # reads it and force-calls scheduler.abort_request on
             # client disconnect.
             _anth_rid_holder: list[str | None] = [None]
-            return StreamingResponse(
-                _disconnect_guard(
-                    _stream_anthropic_messages(
-                        engine,
-                        openai_request,
-                        anthropic_request,
-                        request_id_holder=_anth_rid_holder,
-                        prompt_tokens_estimate=_ctx_prompt_tokens,
-                        prepared_messages=messages,
-                        prepared_images=images,
-                        prepared_videos=videos,
-                    ),
-                    request,
-                    engine=engine,
+            stream = _disconnect_guard(
+                _stream_anthropic_messages(
+                    engine,
+                    openai_request,
+                    anthropic_request,
                     request_id_holder=_anth_rid_holder,
+                    prompt_tokens_estimate=_ctx_prompt_tokens,
+                    prepared_messages=messages,
+                    prepared_images=images,
+                    prepared_videos=videos,
                 ),
+                request,
+                engine=engine,
+                request_id_holder=_anth_rid_holder,
+            )
+            if _named_tool_choice_target(openai_request.tool_choice):
+                return await _buffer_named_tool_choice_stream(stream)
+            return StreamingResponse(
+                stream,
                 media_type="text/event-stream",
                 # ``SSE_RESPONSE_HEADERS`` (Cache-Control no-cache/no-transform +
                 # X-Accel-Buffering: no) keeps anti-buffering parity with the
@@ -2621,26 +2663,18 @@ async def _stream_anthropic_messages(
     # earlier emission point or the dropped tool's content_block_start
     # will reach the wire before we know to suppress it.
     tool_choice_error: str | None = None
-    # F8: track whether we synthesized a best-effort pinned-tool call so
-    # the buffered-text-replay branch below can drop the forbidden text
-    # payload (the model wrote text instead of the pinned tool; replaying
-    # would violate the named ``tool_choice`` contract just like the
-    # pre-F8 422 path did). Explicit signal from the helper avoids the
-    # codex r1 BLOCKING #2 misclassification — a legitimate single-call
-    # surviving the filter would otherwise be mis-flagged as synthesis
-    # purely from list-length heuristics.
+    # The helper's boolean is retained for the Anthropic ``any`` fallback
+    # below; named pinned-tool failures now return an error instead of a
+    # synthesized placeholder so the route can surface 422 consistently.
     synthesized_pinned_call = False
     original_call_count_stream = len(tool_calls or [])
     if openai_request.tool_choice:
         tool_calls = _filter_tool_calls_by_tool_choice(
             tool_calls or [], openai_request.tool_choice
         )
-        # F8: ``_enforce_named_tool_choice_present`` now returns
-        # ``(tool_calls, synthesized)`` — best-effort synthesizes a
-        # placeholder ``tool_use`` (rather than raising 422) when the
-        # model failed to comply with a pinned ``tool_choice``. The
-        # explicit ``synthesized`` signal is the source of truth for
-        # the buffered-text-drop branch below.
+        # Named pinned-tool failures are contract errors. The streaming
+        # HTTP wrapper buffers named-tool streams so this becomes an HTTP
+        # 422 before a successful SSE response is returned.
         (
             tool_calls,
             synthesized_pinned_call,

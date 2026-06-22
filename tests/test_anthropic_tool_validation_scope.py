@@ -556,18 +556,13 @@ def test_pinned_tool_model_emits_only_wrong_tool_returns_422():
     assert "get_weather" in response.json()["detail"]
 
 
-def test_pinned_tool_streaming_no_calls_emits_synthesized_tool_use():
+def test_pinned_tool_streaming_no_calls_returns_422():
     """F8 streaming variant: pinned tool, model returned text only →
-    no SSE ``event: error``; the buffered text is dropped (forbidden
-    payload — violates the pinned ``tool_choice`` contract) and the
-    synthesized best-effort ``tool_use`` for the pinned tool is
-    emitted instead.
+    HTTP 422 before a successful SSE stream is returned.
 
     PR #771 round-2 BLOCKING #1 invariant remains in force: the
     chunk loop's text deltas must NEVER reach the wire when the
-    contract was defied. The forbidden-payload guard now coexists
-    with the F8 200-best-effort fallback (rather than an SSE error
-    event).
+    contract was defied.
     """
     distinctive_text = "ANTHROPIC_TEXT_LEAK_CANARY_xyzzy"
     engine = _MultiCallEngine(None, text=distinctive_text)
@@ -582,9 +577,8 @@ def test_pinned_tool_streaming_no_calls_emits_synthesized_tool_use():
         ),
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 422, response.text
     raw = response.text
-    assert "event: error" in raw, raw
     assert "tool_choice" in raw
     # No fabricated tool_use for the pinned tool is emitted.
     assert '"type": "tool_use"' not in raw, raw
@@ -607,10 +601,10 @@ def test_pinned_tool_streaming_no_calls_emits_synthesized_tool_use():
     )
 
 
-def test_pinned_tool_streaming_only_wrong_tool_emits_synthesized_tool_use():
+def test_pinned_tool_streaming_only_wrong_tool_returns_422():
     """F8 streaming variant: pinned tool, model fires only the wrong
-    tool → 200 with a synthesized ``tool_use`` for the pinned tool;
-    the un-pinned call never reaches the wire (filter dropped it).
+    tool → HTTP 422; the un-pinned call never reaches the wire
+    (filter dropped it).
 
     Locks PR #763 round-1 BLOCKING #2 invariant under F8: the stream
     must NOT have shipped any ``tool_use`` content_block_start for
@@ -630,9 +624,8 @@ def test_pinned_tool_streaming_only_wrong_tool_emits_synthesized_tool_use():
         ),
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 422, response.text
     raw = response.text
-    assert "event: error" in raw, raw
     assert "tool_choice" in raw
     assert '"type": "tool_use"' not in raw, raw
     # The un-pinned tool name MUST NOT appear anywhere — the filter
@@ -725,17 +718,12 @@ def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
     assert err is None
 
 
-def test_enforce_named_tool_choice_present_synthesizes_when_pinned_call_missing():
+def test_enforce_named_tool_choice_present_errors_when_pinned_call_missing():
     """F8 (D-ANTHRO-SPEC-POLISH): when the pinned tool call is missing,
-    the helper synthesizes a single best-effort ``ToolCall`` for the
-    pinned tool with empty JSON arguments AND returns
-    ``synthesized=True``. The explicit signal lets callers skip
-    schema validation on the placeholder ``input={}`` and drop the
-    streaming buffered-text replay (codex r1 BLOCKING #1 and #2).
-
-    Single source of truth: same synthesis runs on both the
-    non-stream and stream branches via shared helper, so the response
-    shape is identical across routes.
+    the helper returns an error instead of synthesizing a placeholder
+    ``tool_use``. Single source of truth: non-stream and stream branches
+    both use this helper, then surface HTTP 422 for named-tool contract
+    failures.
     """
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
@@ -749,12 +737,11 @@ def test_enforce_named_tool_choice_present_synthesizes_when_pinned_call_missing(
     assert "get_weather" in err
 
 
-def test_enforce_named_tool_choice_present_synthesizes_when_only_wrong_tool_emitted():
+def test_enforce_named_tool_choice_present_errors_when_only_wrong_tool_emitted():
     """F8 disambiguation: the model emitted only WRONG-tool calls
-    (filter dropped them all). Synthesis still fires (synthesized=True),
-    with the ``original_call_count > 0`` branch logging a different
-    warning for operator debugging. Wire shape is identical to the
-    no-calls case.
+    (filter dropped them all). The helper returns an error and uses
+    ``original_call_count > 0`` only to log a different warning for
+    operator debugging. Wire shape is identical to the no-calls case.
     """
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
