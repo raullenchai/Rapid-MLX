@@ -959,7 +959,7 @@ def decode_inline_tool_call_arguments(messages: list[dict]) -> None:
 # =============================================================================
 
 TEXT_CONTENT_TYPES = {"text"}
-IMAGE_CONTENT_TYPES = {"image_url", "image"}
+IMAGE_CONTENT_TYPES = {"image_url", "image", "input_image"}
 VIDEO_CONTENT_TYPES = {"video", "video_url"}
 AUDIO_CONTENT_TYPES = {"audio_url", "audio", "input_audio"}
 MEDIA_CONTENT_TYPES = IMAGE_CONTENT_TYPES | VIDEO_CONTENT_TYPES | AUDIO_CONTENT_TYPES
@@ -1013,6 +1013,12 @@ def _validate_content_part_payload(item: dict) -> None:
             )
     elif item_type == "image_url":
         _extract_object_url(item, "image_url")
+    elif item_type == "input_image":
+        image_url = item.get("image_url")
+        if isinstance(image_url, dict):
+            _require_string(image_url.get("url"), "input_image.image_url.url")
+        else:
+            _require_string(image_url, "input_image.image_url")
     elif item_type == "image":
         _require_string(item.get("image", item.get("url")), "image")
     elif item_type == "video":
