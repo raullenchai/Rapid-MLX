@@ -58,4 +58,3 @@ def test_all_text_generation_routes_use_shared_max_tokens_resolver():
 
     for module in (anthropic, chat, completions, responses):
         assert "_resolve_max_tokens(" in inspect.getsource(module)
-

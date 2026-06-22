@@ -868,8 +868,9 @@ def serve_command(args):
     import os
     import sys
 
-    _max_tokens_is_explicit = args.max_tokens is not None
-    if args.max_tokens is None:
+    _arg_max_tokens = getattr(args, "max_tokens", None)
+    _max_tokens_is_explicit = _arg_max_tokens is not None
+    if _arg_max_tokens is None:
         args.max_tokens = 32768
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST

@@ -148,6 +148,15 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # ``rapid-mlx share`` local-port override for the spawned serve
         # subprocess. UX knob; not consulted by the engine or scheduler.
         "RAPID_MLX_SHARE_PORT",
+        # Operator request-shape safety cap for nested tool schemas.
+        # Bounds validation recursion only; never chooses model/routing.
+        "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH",
+        # Operator request-shape safety cap for nested JSON bodies.
+        # Bounds validation recursion only; never chooses model/routing.
+        "RAPID_MLX_MAX_BODY_DEPTH",
+        # Operator ceiling for accepted generation token budgets.
+        # Request validation policy only; never chooses model/routing.
+        "RAPID_MLX_MAX_GENERATION_TOKENS",
         # ``rapid-mlx share`` one-click chat-link override. Picks which
         # frontend URL the banner advertises (defaults to
         # https://chat.rapidmlx.com). Pure UX knob; consulted only by

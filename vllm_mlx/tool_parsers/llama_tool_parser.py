@@ -255,10 +255,7 @@ class LlamaToolParser(ToolParser):
         cached_tail = getattr(self, "_pending_safe_tail", "")
         if cached_len and len(text) >= cached_len:
             tail_len = len(cached_tail)
-            if (
-                tail_len == 0
-                or text[cached_len - tail_len : cached_len] == cached_tail
-            ):
+            if tail_len == 0 or text[cached_len - tail_len : cached_len] == cached_tail:
                 scan_from = max(0, cached_len - self._PENDING_CACHE_TAIL)
                 suffix = text[scan_from:]
                 if "{" not in suffix and "<" not in suffix:

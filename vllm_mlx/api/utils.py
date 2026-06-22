@@ -974,9 +974,7 @@ def _content_part_to_dict(item) -> dict:
         item = {k: v for k, v in item.dict().items() if v is not None}
 
     if not isinstance(item, dict):
-        raise ValueError(
-            f"content blocks must be objects (got {type(item).__name__})"
-        )
+        raise ValueError(f"content blocks must be objects (got {type(item).__name__})")
     item_type = item.get("type")
     if not isinstance(item_type, str) or not item_type:
         raise ValueError("content block is missing required string field 'type'")
@@ -988,8 +986,7 @@ def _content_part_to_dict(item) -> dict:
 def _require_string(value, field_name: str) -> str:
     if not isinstance(value, str) or value == "":
         raise ValueError(
-            f"{field_name} must be a non-empty string "
-            f"(got {type(value).__name__})"
+            f"{field_name} must be a non-empty string (got {type(value).__name__})"
         )
     return value
 
@@ -1027,9 +1024,7 @@ def _validate_content_part_payload(item: dict) -> None:
     elif item_type == "input_audio":
         value = item.get("input_audio")
         if not isinstance(value, dict):
-            raise ValueError(
-                "input_audio must be an object with required field 'data'"
-            )
+            raise ValueError("input_audio must be an object with required field 'data'")
         _require_string(value.get("data"), "input_audio.data")
 
 
@@ -1078,8 +1073,7 @@ def normalize_responses_content_part(item) -> dict:
     data = item.model_dump(exclude_none=True) if hasattr(item, "model_dump") else item
     if not isinstance(data, dict):
         raise ValueError(
-            f"Responses content blocks must be objects "
-            f"(got {type(data).__name__})"
+            f"Responses content blocks must be objects (got {type(data).__name__})"
         )
     item_type = data.get("type")
     if item_type in ("input_text", "output_text"):

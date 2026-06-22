@@ -197,9 +197,7 @@ class TestNoFalsePositives:
         result = parser.extract_tool_calls("")
         assert not result.tools_called
 
-    def test_plain_long_prefix_pending_fast_path_skips_json_scan(
-        self, monkeypatch
-    ):
+    def test_plain_long_prefix_pending_fast_path_skips_json_scan(self, monkeypatch):
         """Plain cumulative prose must stay on the parser-owned fast path.
 
         ``has_pending_tool_call`` is invoked for every streaming prefix.
@@ -213,9 +211,7 @@ class TestNoFalsePositives:
         def fail_json_scan(*_args, **_kwargs):
             raise AssertionError("plain text should not enter JSON scanner")
 
-        monkeypatch.setattr(
-            llama_mod, "_find_top_level_json_object", fail_json_scan
-        )
+        monkeypatch.setattr(llama_mod, "_find_top_level_json_object", fail_json_scan)
 
         text = ""
         for _ in range(128):

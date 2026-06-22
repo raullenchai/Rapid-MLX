@@ -182,7 +182,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # 501. Lift to the top so both branches are covered.
         _want_logprobs = request.logprobs is not None
         if _want_logprobs and (
-            not hasattr(engine, "stream_generate")
+            not callable(getattr(engine, "stream_generate", None))
             or getattr(engine, "tokenizer", None) is None
         ):
             raise HTTPException(
