@@ -34,9 +34,14 @@ in-flight requests, persists the prefix cache, and emits the
 ``Application shutdown complete.`` banner the dogfood logs were missing.
 
 NOTE on threading: ``signal.signal`` MUST be called from the main thread
-(POSIX restriction enforced by CPython). The install helper raises a
-clear ``RuntimeError`` if invoked off the main thread instead of failing
-silently with a confusing ``ValueError: signal only works in main thread``.
+(POSIX restriction enforced by CPython). The install helper detects
+the off-main-thread case and returns ``False`` (with a DEBUG log line)
+rather than letting the underlying ``ValueError: signal only works in
+main thread`` propagate. The server boot proceeds — the operator
+simply doesn't get the enhanced observability for that lifespan. Codex
+r7 NIT #4: the prior docstring incorrectly said this branch raised
+``RuntimeError``; the actual implementation has always been
+non-raising.
 """
 
 from __future__ import annotations
@@ -82,13 +87,13 @@ _OBSERVED_SIGNALS: tuple[int, ...] = tuple(
 )
 
 
-# Idempotency latch. Lifespan startup can fire more than once in
-# in-process test harnesses (the FastAPI lifespan is driven from
-# ``TestClient`` setup as well as ``uvicorn.run``), and re-registering
-# the handler chain would stack our handler on top of ITSELF — every
-# subsequent SIGTERM would dump traceback N times. Latch in module-scope
-# so the install is exactly-once per process.
-_installed = False
+# Module-level lock around the install path. Lifespan startup can fire
+# more than once in in-process test harnesses (the FastAPI lifespan is
+# driven from ``TestClient`` setup as well as ``uvicorn.run``); without
+# the lock two parallel installs on the same signal could race and
+# leave ``_prior_handlers`` storing the wrong prior. Per-signal
+# idempotency is enforced inline by the ``sig in _prior_handlers``
+# check in ``install_signal_observability`` (codex r7 NIT #3).
 _install_lock = threading.Lock()
 
 # Saved prior handlers so we can chain to them. Keyed by signal number.
@@ -232,12 +237,7 @@ def install_signal_observability(
     crashing the server boot — the operator simply doesn't get the
     enhanced observability, but the server still starts.
     """
-    global _installed
-
     with _install_lock:
-        if _installed:
-            return True
-
         # CPython enforces "signal only works in main thread of the main
         # interpreter". Check explicitly so the failure mode is a clear
         # log line rather than a buried ValueError partway through.
@@ -268,16 +268,24 @@ def install_signal_observability(
             observed_signals if observed_signals is not None else _OBSERVED_SIGNALS
         )
 
-        # Codex r2 BLOCKING #2: latch ONLY after at least one handler
-        # was successfully installed. If every install raised (the
-        # all-ValueError path on a platform that rejects every observed
-        # signal), an early call would otherwise permanently disable
-        # later installation attempts in the same process — e.g. a
-        # uvicorn-managed lifespan that fires the install after a
-        # later config-reload would also be skipped because
-        # ``_installed`` was True from the failed first attempt.
+        # Codex r7 NIT #3: track installed signals per-signum instead of
+        # a single global latch. Otherwise an early test/custom install
+        # for a narrow tuple (e.g. ``(SIGUSR1,)``) latches the function
+        # off, and a later production install for the default
+        # ``(SIGTERM, SIGHUP)`` returns True without actually
+        # registering those handlers. Now: install any requested
+        # signal that isn't already in ``_prior_handlers``, and return
+        # True iff at least one signal in the requested set is
+        # installed at the end (either freshly here, or because a
+        # prior call already had it).
         installed_any = False
         for sig in signals_to_install:
+            if sig in _prior_handlers:
+                # Already installed by a previous call. Counts toward
+                # the "True if at least one" bool but we don't
+                # re-register (would stack the handler).
+                installed_any = True
+                continue
             try:
                 prior = signal.signal(sig, _on_signal)
             except (OSError, ValueError) as exc:
@@ -297,26 +305,17 @@ def install_signal_observability(
                 prior,
             )
 
-        # Only latch when something actually got installed. A no-op
-        # install (every signal rejected on this platform) returns
-        # False so a future call from a different entry point gets to
-        # try again. faulthandler.enable() above is idempotent and
-        # doesn't need re-running.
-        if not installed_any:
-            return False
-
-        _installed = True
-        return True
+        return installed_any
 
 
 def _reset_for_tests() -> None:
-    """Internal test helper: restore prior handlers and clear the latch.
+    """Internal test helper: restore prior handlers and clear the
+    per-signal map.
 
     Production code MUST NOT call this. The signal-observability test
     module uses it to install/uninstall the handler set within a single
     pytest process without leaking handlers to the next test.
     """
-    global _installed
     with _install_lock:
         for sig, prior in list(_prior_handlers.items()):
             try:
@@ -324,7 +323,6 @@ def _reset_for_tests() -> None:
             except (OSError, ValueError):
                 pass
         _prior_handlers.clear()
-        _installed = False
 
 
 def _get_installed_handlers() -> dict[int, object]:
