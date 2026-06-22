@@ -141,13 +141,28 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         )
 
         # --- Detailed request logging ---
-        prompt_preview = prompts[0][:200] if prompts else "(empty)"
+        # R-05 (PyPI 0.8.6 dogfood, liang-r2 L2-001): INFO-level logs
+        # MUST NOT carry user prompt content. Pre-fix this line emitted
+        # ``prompt_preview="my secret password is hunter2"`` straight to
+        # the INFO stream — anyone with log-aggregator read access could
+        # harvest credentials. The chat / anthropic / responses lanes
+        # already split metadata (counts) at INFO and the content
+        # preview at DEBUG; legacy completions just skipped the parity.
+        # Match the chat lane: INFO carries counts only, DEBUG carries
+        # a 300-char preview behind the operator-controlled log-level
+        # dial. (Server's default level is INFO, so the preview no
+        # longer reaches production log aggregators without an explicit
+        # opt-in.)
+        n_prompts = len(prompts)
         prompt_len = sum(len(p) for p in prompts)
         logger.info(
             f"[REQUEST] POST /v1/completions stream={request.stream} "
-            f"max_tokens={request.max_tokens} temp={request.temperature} "
-            f"prompt_chars={prompt_len} prompt_preview={prompt_preview!r}"
+            f"model={request.model!r} max_tokens={request.max_tokens} "
+            f"temp={request.temperature} n_prompts={n_prompts} "
+            f"prompt_chars={prompt_len}"
         )
+        prompt_preview = prompts[0][:300] if prompts else "(empty)"
+        logger.debug(f"[REQUEST] prompt preview: {prompt_preview!r}")
 
         # Context-length pre-check — same DoS gate the chat/anthropic/
         # responses routes enforce. Raw-prompt API skips chat templating

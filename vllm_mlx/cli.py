@@ -888,6 +888,25 @@ def serve_command(args):
 
         require_mlx_embeddings_or_exit()
 
+    # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
+    # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
+    # extra, but ``rapid-mlx serve ui-tars-1.5-7b-4bit`` on a fresh
+    # ``pip install rapid-mlx`` previously fell into the engine load
+    # path BEFORE the missing-dep error surfaced (deep ImportError
+    # after weight download + alias resolution). Probe here so the
+    # operator sees an actionable hint before the long download starts.
+    # Honors ``--mllm`` force-on AND the alias-name / HF-path probe
+    # used downstream by ``pflash.validate_model_support``. The
+    # ``--no-mllm`` escape hatch (force_text in load_model) bypasses
+    # this guard, matching the engine-side semantics.
+    if not getattr(args, "no_mllm", False):
+        from .api.utils import is_mllm_model as _boot_is_mllm
+
+        if getattr(args, "mllm", False) or _boot_is_mllm(args.model):
+            from .models.mllm import require_mlx_vlm_or_exit
+
+            require_mlx_vlm_or_exit(args.model)
+
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors
     # RAPID_MLX_DISABLE_VERSION_CHECK, CI=1, and non-TTY stdin. Cached
