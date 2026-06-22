@@ -141,6 +141,25 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
         ),
     ),
+    # UI-TARS (ByteDance) — Qwen2-VL / Qwen2.5-VL based GUI-agent VLM.
+    # Wire format is the literal ``Action: verb(kwargs)`` Computer-Use
+    # shape (see vllm_mlx.tool_parsers.ui_tars_tool_parser). MUST come
+    # BEFORE any generic Qwen2/Qwen2.5 pattern would otherwise match —
+    # full HF paths like ``mlx-community/UI-TARS-7B-DPO-4bit`` should
+    # resolve here, not to the generic Qwen3 fallback.
+    (
+        re.compile(r"ui[-_]?tars", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="ui_tars",
+            reasoning_parser="ui_tars",
+            is_hybrid=False,
+            # UI-TARS uses Qwen2-VL/Qwen2.5-VL mrope; spec decode hasn't
+            # been benched on the VLM variant. Keep off until verified
+            # to avoid silent quality regressions (mirrors the gemma 3n
+            # / phi-3.5 conservative defaults).
+            supports_spec_decode=False,
+        ),
+    ),
     # Qwopus (Qwen3.5 distilled with Claude Opus reasoning) — hybrid base
     (
         re.compile(r"qwopus", re.IGNORECASE),

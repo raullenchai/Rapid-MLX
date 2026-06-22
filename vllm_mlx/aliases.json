@@ -1005,5 +1005,95 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false
+  },
+  "ui-tars-1.5-7b-4bit": {
+    "hf_path": "mlx-community/UI-TARS-1.5-7B-4bit",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-1.5-7b-6bit": {
+    "hf_path": "mlx-community/UI-TARS-1.5-7B-6bit",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-1.5-7b-8bit": {
+    "hf_path": "mlx-community/UI-TARS-1.5-7B-8bit",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-7b-dpo-4bit": {
+    "hf_path": "mlx-community/UI-TARS-7B-DPO-4bit",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-7b-dpo-6bit": {
+    "hf_path": "mlx-community/UI-TARS-7B-DPO-6bit",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-7b-dpo-8bit": {
+    "hf_path": "mlx-community/UI-TARS-7B-DPO-8bit",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-7b-sft-4bit": {
+    "hf_path": "mlx-community/UI-TARS-7B-SFT-4bit",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-7b-sft-8bit": {
+    "hf_path": "mlx-community/UI-TARS-7B-SFT-8bit",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
+  },
+  "ui-tars-72b-dpo-4bit": {
+    "hf_path": "mlx-community/UI-TARS-72B-DPO-4bit",
+    "tool_call_parser": "ui_tars",
+    "reasoning_parser": "ui_tars",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false,
+    "suffix_decoding_tier": "unknown"
   }
 }
