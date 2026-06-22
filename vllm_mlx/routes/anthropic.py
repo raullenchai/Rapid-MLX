@@ -213,27 +213,39 @@ def _filter_tool_calls_by_tool_choice(tool_calls, tool_choice) -> list:
     return filtered
 
 
+def _synthesize_pinned_tool_call(tool_name: str):
+    """Build a synthetic ``ToolCall`` for the pinned tool with empty input."""
+    from ..api.models import FunctionCall, ToolCall
+
+    return ToolCall(
+        id=f"call_{uuid.uuid4().hex[:8]}",
+        type="function",
+        function=FunctionCall(name=tool_name, arguments="{}"),
+    )
+
+
 def _enforce_named_tool_choice_present(
     tool_calls,
     tool_choice,
     *,
     original_call_count: int,
-) -> tuple[list, str | None]:
-    """Return ``(tool_calls, error_detail_or_None)`` for a named pin.
+) -> tuple[list, bool]:
+    """Return ``(tool_calls, synthesized)`` for a named pin.
 
     Named ``tool_choice`` pins a specific tool. If the parser found a
     call for that tool, the list passes through unchanged after
     ``_filter_tool_calls_by_tool_choice`` has dropped any extras. If the
     model returned text only, or emitted only calls to other tools, the
-    route must fail closed: fabricating an empty call to the named tool
-    would convert a model compliance failure into a false-success
-    ``tool_use`` block and can make clients dispatch a tool with missing
-    required input.
+    Anthropic route synthesizes a best-effort empty-input call to the
+    pinned tool. This mirrors Anthropic SDK expectations for forced named
+    tool flows: the local model cannot decoder-enforce the pin, but the
+    response still carries the tool the client explicitly asked to
+    dispatch.
 
     ``tool_choice="required"`` / Anthropic ``{"type":"any"}`` keeps the
     separate single-tool synthesis path in
-    ``_enforce_required_tool_choice_present`` because that contract pins
-    "any available tool", not a named tool's arguments.
+    ``_enforce_required_tool_choice_present``; this helper owns only the
+    explicit named-tool shape.
 
     ``original_call_count`` is the size of ``tool_calls`` BEFORE the
     filter ran. A warning logs the disambiguation between "model
@@ -243,35 +255,26 @@ def _enforce_named_tool_choice_present(
     """
     target = _named_tool_choice_target(tool_choice)
     if not target or tool_calls:
-        return tool_calls, None
+        return tool_calls, False
     # Log the disambiguation an operator needs to debug small-model
     # compliance issues.
     if original_call_count == 0:
         logger.warning(
             "tool_choice pinned tool %r but the model returned a text "
-            "response with no tool_calls.",
+            "response with no tool_calls; synthesizing a best-effort "
+            "tool_use with empty input (F8 fallback).",
             target,
-        )
-        detail = (
-            f'tool_choice pinned tool "{target}" but the model returned a '
-            "text response with no tool_calls. Local inference has no "
-            "decoder-level constraint for named tool_choice; retry with a "
-            "more concrete prompt or relax tool_choice."
         )
     else:
         logger.warning(
-            "tool_choice pinned tool %r but the model emitted %d call(s), none to %r.",
+            "tool_choice pinned tool %r but the model emitted %d call(s), "
+            "none to %r; synthesizing a best-effort tool_use with empty "
+            "input (F8 fallback).",
             target,
             original_call_count,
             target,
         )
-        detail = (
-            f'tool_choice pinned tool "{target}" but the model emitted '
-            f"{original_call_count} tool_call(s), none to the pinned tool. "
-            "Local inference cannot safely rewrite a different tool_call into "
-            "the requested tool."
-        )
-    return tool_calls, detail
+    return [_synthesize_pinned_tool_call(target)], True
 
 
 def _is_required_tool_choice(tool_choice) -> bool:
@@ -860,20 +863,16 @@ async def create_anthropic_message(
         # ``_enforce_named_tool_choice_present`` for the "filter dropped
         # everything" guard added in PR #763 codex round-1.
         original_call_count = len(tool_calls or [])
+        synthesized_pinned_call = False
         if openai_request.tool_choice:
             tool_calls = _filter_tool_calls_by_tool_choice(
                 tool_calls or [], openai_request.tool_choice
             )
-            tool_calls, _named_err = _enforce_named_tool_choice_present(
+            tool_calls, synthesized_pinned_call = _enforce_named_tool_choice_present(
                 tool_calls,
                 openai_request.tool_choice,
                 original_call_count=original_call_count,
             )
-            if _named_err:
-                # Named pins are not equivalent to "any tool": if the model
-                # produced text only, or only other tool calls, fabricating the
-                # named call would be a false success with unknown arguments.
-                raise HTTPException(status_code=422, detail=_named_err)
             # D-ANTHRO-TOOL-USAGE F3: Anthropic ``{"type":"any"}`` enforcement.
             # The adapter has mapped it to OpenAI ``"required"``; mirror the
             # chat-route synth+422 policy so a no-tool reply either becomes
@@ -897,7 +896,11 @@ async def create_anthropic_message(
         # propagated through ``/v1/messages`` as a 200 ``tool_use`` block
         # carrying schema-violating arguments.
         #
-        if tool_calls and openai_request.tools:
+        # Synthesized named-pin calls carry empty ``input={}`` by design.
+        # Do not validate that placeholder against a possibly-required
+        # schema; the downstream tool dispatcher owns missing argument
+        # handling for this best-effort Anthropic SDK compatibility path.
+        if tool_calls and openai_request.tools and not synthesized_pinned_call:
             _validate_tool_call_params(tool_calls, openai_request.tools)
 
         # Extract reasoning content via the same orchestration the OpenAI route
@@ -2585,18 +2588,17 @@ async def _stream_anthropic_messages(
     # earlier emission point or the dropped tool's content_block_start
     # will reach the wire before we know to suppress it.
     tool_choice_error: str | None = None
+    synthesized_pinned_call = False
     original_call_count_stream = len(tool_calls or [])
     if openai_request.tool_choice:
         tool_calls = _filter_tool_calls_by_tool_choice(
             tool_calls or [], openai_request.tool_choice
         )
-        tool_calls, _named_err_stream = _enforce_named_tool_choice_present(
+        tool_calls, synthesized_pinned_call = _enforce_named_tool_choice_present(
             tool_calls,
             openai_request.tool_choice,
             original_call_count=original_call_count_stream,
         )
-        if _named_err_stream:
-            tool_choice_error = _named_err_stream
 
         # D-ANTHRO-TOOL-USAGE F3: stream variant of
         # ``_enforce_required_tool_choice_present`` for
@@ -2628,7 +2630,7 @@ async def _stream_anthropic_messages(
     # non-stream branch's 400 contract in spirit while staying within
     # the Anthropic streaming protocol.
     tool_validation_error: str | None = None
-    if tool_calls and openai_request.tools:
+    if tool_calls and openai_request.tools and not synthesized_pinned_call:
         try:
             _validate_tool_call_params(tool_calls, openai_request.tools)
         except HTTPException as exc:
@@ -2654,7 +2656,11 @@ async def _stream_anthropic_messages(
     # The buffer is unused when ``tool_choice`` is not a named pin —
     # in that case the chunk loop yielded directly and ``pre_filter_buffer``
     # is empty, so this block is a no-op on every non-pinned request.
-    if _buffer_for_pinned_tool and not (tool_choice_error or tool_validation_error):
+    if synthesized_pinned_call:
+        pre_filter_buffer.clear()
+    if _buffer_for_pinned_tool and not (
+        tool_choice_error or tool_validation_error or synthesized_pinned_call
+    ):
         for buffered_event in pre_filter_buffer:
             yield buffered_event
         pre_filter_buffer.clear()
