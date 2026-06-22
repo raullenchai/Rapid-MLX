@@ -127,6 +127,29 @@ class MLLMRequest:
     num_output_tokens: int = 0
 
 
+def _find_stop_match_in_new_window(
+    text: str, new_text_start_len: int, stop_params: list[str]
+) -> tuple[int, str] | None:
+    """Find stops that overlap the newly searchable suffix of ``text``."""
+    if not stop_params:
+        return None
+    max_stop_len = max(len(s) for s in stop_params)
+    keep = max(0, max_stop_len - 1)
+    window_base = max(0, new_text_start_len - keep)
+    stop_window = text[window_base:]
+    match: tuple[int, str] | None = None
+    for stop_str in stop_params:
+        if not stop_str:
+            continue
+        search_from = max(0, new_text_start_len - window_base - len(stop_str) + 1)
+        local_idx = stop_window.find(stop_str, search_from)
+        if local_idx != -1:
+            global_idx = window_base + local_idx
+            if match is None or global_idx < match[0]:
+                match = (global_idx, stop_str)
+    return match
+
+
 @dataclass
 class MLLMSchedulerOutput:
     """
@@ -785,21 +808,9 @@ class MLLMScheduler:
                     keep = max(0, max_stop_len - 1)
                     previous_seen_len = len(request.stop_text)
                     streamed_so_far = request.stop_text + new_text
-                    # Only the prior suffix can participate in a new
-                    # cross-token stop match. This keeps the common
-                    # per-token path bounded by len(new_text)+max_stop_len.
-                    window_base = max(0, previous_seen_len - keep)
-                    stop_window = request.stop_text[window_base:] + new_text
-                    match: tuple[int, str] | None = None
-                    for stop_str in stop_params:
-                        search_from = max(
-                            0, previous_seen_len - window_base - len(stop_str) + 1
-                        )
-                        local_idx = stop_window.find(stop_str, search_from)
-                        if local_idx != -1:
-                            global_idx = window_base + local_idx
-                            if match is None or global_idx < match[0]:
-                                match = (global_idx, stop_str)
+                    match = _find_stop_match_in_new_window(
+                        streamed_so_far, previous_seen_len, stop_params
+                    )
                     if match is not None:
                         idx, stop_str = match
                         finish_reason = "stop"
@@ -864,22 +875,23 @@ class MLLMScheduler:
                     and request.stop_text
                     and request.stop_text_len < len(request.stop_text)
                 ):
-                    for stop_str in stop_params:
-                        idx = request.stop_text.find(stop_str)
-                        if idx != -1:
-                            finish_reason = "stop"
-                            output_finish_reason = finish_reason
-                            visible_text = request.stop_text[:idx]
-                            output_new_text = visible_text[
-                                request.stop_text_len : len(visible_text)
-                            ]
-                            request.output_text = visible_text
-                            output_output_text = visible_text
-                            request.stop_text_len = len(request.stop_text)
-                            request.stop_tail = ""
-                            output_matched_stop = stop_str
-                            stop_trimmed = True
-                            break
+                    match = _find_stop_match_in_new_window(
+                        request.stop_text, request.stop_text_len, stop_params
+                    )
+                    if match is not None:
+                        idx, stop_str = match
+                        finish_reason = "stop"
+                        output_finish_reason = finish_reason
+                        visible_text = request.stop_text[:idx]
+                        output_new_text = visible_text[
+                            request.stop_text_len : len(visible_text)
+                        ]
+                        request.output_text = visible_text
+                        output_output_text = visible_text
+                        request.stop_text_len = len(request.stop_text)
+                        request.stop_tail = ""
+                        output_matched_stop = stop_str
+                        stop_trimmed = True
                 if (
                     not stop_trimmed
                     and stop_params

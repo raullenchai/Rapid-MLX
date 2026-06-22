@@ -1017,7 +1017,7 @@ def _validate_content_part_payload(item: dict) -> None:
         if item_type in {"input_text", "output_text"} and "text" not in item:
             raise ValueError(f"{item_type}.text is required")
         text = item.get("text")
-        if item_type == "text" and text is None:
+        if item_type == "text" and "text" not in item:
             return
         if not isinstance(text, str):
             if item_type in {"input_text", "output_text"}:
@@ -1099,7 +1099,11 @@ def validate_content_blocks_for_capabilities(
                 continue
 
             if item_type in AUDIO_CONTENT_TYPES:
-                detail = "audio inputs"
+                detail = (
+                    "audio inputs in this shape; only input_audio is supported"
+                    if allow_audio
+                    else "audio inputs"
+                )
             elif item_type in IMAGE_CONTENT_TYPES:
                 detail = "image inputs"
             elif item_type in VIDEO_CONTENT_TYPES:

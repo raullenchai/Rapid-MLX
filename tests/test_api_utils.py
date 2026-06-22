@@ -998,6 +998,17 @@ class TestValidateContentBlocksForCapabilities:
             allow_video=False,
         )
 
+    def test_chat_text_block_rejects_explicit_null_text(self):
+        messages = [{"role": "user", "content": [{"type": "text", "text": None}]}]
+
+        with pytest.raises(ValueError, match="content\\[\\]\\.text must be"):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="chat-model",
+                allow_image=False,
+                allow_video=False,
+            )
+
     def test_responses_text_blocks_are_valid_text_content(self):
         messages = [
             {
@@ -1069,7 +1080,7 @@ class TestValidateContentBlocksForCapabilities:
     def test_audio_url_and_audio_rejected_even_when_audio_allowed(self, content_part):
         messages = [{"role": "user", "content": [content_part]}]
 
-        with pytest.raises(ValueError, match="does not support audio inputs"):
+        with pytest.raises(ValueError, match="only input_audio is supported"):
             validate_content_blocks_for_capabilities(
                 messages,
                 model_name="audio-model",
