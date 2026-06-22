@@ -127,13 +127,14 @@ def _enforce_responses_tool_choice(
 
     Synthesis rules (parity with chat.py ~L1880):
       * ``"required"`` + exactly one tool → synthesise a call to it
+      * ``"required"`` + multiple tools + no model call → 422 with the
+        same diagnostic chat.py uses (codex r1 BLOCKING #1 on PR #817).
+        Silently degrading to ``auto`` would let a multi-tool ``required``
+        request return zero tool_calls and break the contract this PR
+        claims to restore.
       * ``{"type":"function","name":X}`` + X in submitted tools →
         synthesise a call to X
-      * Otherwise: return ``tool_calls`` unchanged. The post-parse 422
-        branch from chat.py is intentionally NOT mirrored here — the
-        Responses surface caller would see a confusing 422 mid-flight,
-        and the chat-completions lane's own gate already covers the
-        contract from the underlying engine path.
+      * ``auto`` / ``none`` / unrecognised shapes → pass through.
     """
     from ..routes.chat import _synthesize_forced_tool_call
 
@@ -157,7 +158,31 @@ def _enforce_responses_tool_choice(
                     name,
                 )
                 return [_synthesize_forced_tool_call(name)]
-        return tool_calls
+        # Multi-tool ``required`` with no model call — local inference
+        # cannot guess which of N tools the user intended. Chat.py
+        # raises 422 in the same situation (~L1891-1902); mirror that
+        # so the Responses surface does not silently violate the
+        # tool_call-guaranteed contract.
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "error": {
+                    "message": (
+                        'tool_choice="required" but the model returned a '
+                        "text response with no tool_calls. Local "
+                        "inference has no decoder-level constraint; the "
+                        "system-prompt enforcement was insufficient for "
+                        "this prompt. Retry with a more concrete user "
+                        "message or use tool_choice="
+                        '{"type":"function","name":...} to pin a '
+                        "specific tool."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "tool_choice_required_unfulfilled",
+                    "param": "tool_choice",
+                }
+            },
+        )
     if isinstance(tc, dict) and tc.get("type") == "function":
         target = tc.get("name") or (tc.get("function") or {}).get("name")
         if not target:
@@ -991,6 +1016,33 @@ async def _stream_responses(
         accumulated_structured_tool_calls: list[dict] = []
         tool_filter = StreamingToolCallFilter()
 
+        # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
+        # forces a tool_choice (``required`` or named-function), the
+        # message item MUST NOT be emitted if synthesis fires after
+        # generation — otherwise the client sees both an
+        # ``output_text`` message AND a synthesised tool_call, which
+        # violates the OpenAI Responses ``tool_call-guaranteed``
+        # contract. Solution: buffer text deltas in ``deferred_text``
+        # under forced-choice mode; at end-of-stream, decide to either
+        # flush them (model produced a real tool_call so synthesis won't
+        # fire) or drop them (synthesis will fire — message item is
+        # suppressed entirely). For non-forced choice, the legacy
+        # streaming path is preserved (lazy message-item open on first
+        # delta).
+        _forced_tc = responses_request.tool_choice
+        _forced_choice_active = (
+            openai_request.tools is not None
+            and openai_request.tools
+            and (
+                _forced_tc == "required"
+                or (
+                    isinstance(_forced_tc, dict)
+                    and _forced_tc.get("type") == "function"
+                )
+            )
+        )
+        deferred_text: list[str] = []
+
         _tokenizer = engine.tokenizer
         _chat_template = ""
         if _tokenizer and hasattr(_tokenizer, "chat_template"):
@@ -1137,9 +1189,18 @@ async def _stream_responses(
             ]
 
         async def _emit_text_delta(delta: str) -> AsyncIterator[str]:
-            """Yield the message item-added event (lazily) + a text delta."""
+            """Yield the message item-added event (lazily) + a text delta.
+
+            Under forced-choice mode (Yuki F6 codex r1 BLOCKING #2), the
+            delta is BUFFERED in ``deferred_text`` instead of being
+            yielded — final flush decision happens after the engine
+            stream completes and we know whether synthesis is needed.
+            """
             nonlocal accumulated_text
             if not delta:
+                return
+            if _forced_choice_active:
+                deferred_text.append(delta)
                 return
             if not message_open:
                 for ev in await _open_message_item():
@@ -1153,6 +1214,44 @@ async def _stream_responses(
                     "output_index": message_output_index,
                     "content_index": 0,
                     "delta": delta,
+                },
+            )
+
+        async def _flush_deferred_text_if_no_synthesis(
+            will_synthesise: bool,
+        ) -> AsyncIterator[str]:
+            """Forced-choice deferred-text resolution (codex r1 BLOCKING #2).
+
+            Called after the model finished and we know whether
+            ``_enforce_responses_tool_choice`` will synthesise. If
+            synthesis WILL fire, the deferred text is dropped (and the
+            message item never opens — no spurious assistant content
+            ships before the tool_call). If synthesis won't fire (the
+            model returned a real tool_call, or no forced choice was
+            set), the buffered deltas are emitted as a single
+            ``output_text.delta`` so the client still sees the
+            assistant's actual text content.
+            """
+            nonlocal accumulated_text
+            if will_synthesise or not deferred_text:
+                deferred_text.clear()
+                return
+            joined = "".join(deferred_text)
+            deferred_text.clear()
+            if not joined:
+                return
+            if not message_open:
+                for ev in await _open_message_item():
+                    yield ev
+            accumulated_text += joined
+            yield _sse(
+                "response.output_text.delta",
+                {
+                    "type": "response.output_text.delta",
+                    "item_id": message_item_id,
+                    "output_index": message_output_index,
+                    "content_index": 0,
+                    "delta": joined,
                 },
             )
 
@@ -1493,6 +1592,43 @@ async def _stream_responses(
                     async for ev in _emit_text_delta(content):
                         yield ev
 
+        # Parse tool_calls FIRST so the forced-choice deferred-text
+        # resolution (Yuki F6 codex r1 BLOCKING #2) can decide whether
+        # the message item should open at all.
+        # Pass `accumulated_raw` (pre-filter model output) not
+        # `accumulated_text` (post-filter user-visible text) — tool_filter
+        # rightly suppresses `<tool_call>...</tool_call>` XML from
+        # `accumulated_text`, but the post-loop parser needs that XML
+        # to extract structured tool_calls. Without this swap, the
+        # text-parser path returned zero tool_calls and Codex's agent
+        # loop silently terminated with no items emitted.
+        _, parsed_tool_calls = _parse_tool_calls_with_parser(
+            accumulated_raw,
+            openai_request,
+            structured_tool_calls=accumulated_structured_tool_calls or None,
+        )
+
+        # Yuki F6 (0.8.5 dogfood): mirror the non-stream synthesis so
+        # ``tool_choice="required"`` / named-function always produce a
+        # ``response.output_item.added`` event of type ``function_call``
+        # (or ``computer_call`` for Computer-Use), honouring the
+        # OpenAI ``tool_call guaranteed`` contract on the streaming
+        # surface too. Raises 422 for multi-tool ``required`` with no
+        # model call (parity with chat.py).
+        tool_calls = _enforce_responses_tool_choice(
+            parsed_tool_calls, responses_request, openai_request
+        )
+        # Codex r1 BLOCKING #2 (PR #817): under forced choice the
+        # ``deferred_text`` buffer holds text deltas we held back. Flush
+        # them ONLY if synthesis won't fire — i.e. the model produced
+        # a real tool_call, so the assistant's prose is legitimate
+        # context. When synthesis WILL fire (model only emitted text),
+        # drop the deferred text so the client doesn't see both a
+        # message AND a synthesised tool_call.
+        _synthesis_fired = bool(tool_calls) and not parsed_tool_calls
+        async for ev in _flush_deferred_text_if_no_synthesis(_synthesis_fired):
+            yield ev
+
         # Close the message item if we ever opened it.
         if message_open:
             # Yuki F8 (0.8.5 dogfood): emit ``response.output_text.done``
@@ -1546,30 +1682,6 @@ async def _stream_responses(
                     },
                 },
             )
-
-        # Emit function_call items for every tool call we saw.
-        # Pass `accumulated_raw` (pre-filter model output) not
-        # `accumulated_text` (post-filter user-visible text) — tool_filter
-        # rightly suppresses `<tool_call>...</tool_call>` XML from
-        # `accumulated_text`, but the post-loop parser needs that XML
-        # to extract structured tool_calls. Without this swap, the
-        # text-parser path returned zero tool_calls and Codex's agent
-        # loop silently terminated with no items emitted.
-        _, tool_calls = _parse_tool_calls_with_parser(
-            accumulated_raw,
-            openai_request,
-            structured_tool_calls=accumulated_structured_tool_calls or None,
-        )
-
-        # Yuki F6 (0.8.5 dogfood): mirror the non-stream synthesis so
-        # ``tool_choice="required"`` / named-function always produce a
-        # ``response.output_item.added`` event of type ``function_call``
-        # (or ``computer_call`` for Computer-Use), honouring the
-        # OpenAI ``tool_call guaranteed`` contract on the streaming
-        # surface too.
-        tool_calls = _enforce_responses_tool_choice(
-            tool_calls, responses_request, openai_request
-        )
 
         # Ana C-06 (0.8.5 dogfood): when the request used Computer-Use,
         # translate ``function.name == "computer"`` tool_calls into the

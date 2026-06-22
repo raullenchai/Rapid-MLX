@@ -478,6 +478,108 @@ class TestF6ToolChoiceEnforcement:
         body = resp.json()
         assert not [o for o in body["output"] if o["type"] == "function_call"]
 
+    def test_required_with_multiple_tools_no_call_returns_422(
+        self, make_responses_client
+    ):
+        """Codex r1 BLOCKING #1 (PR #817): with multiple submitted
+        tools, ``required`` can't pick a target deterministically. The
+        route 422s (parity with chat.py) instead of silently violating
+        the contract.
+        """
+        state = make_responses_client(text="text-only", tool_calls=None)
+
+        resp = state.client.post(
+            "/v1/responses",
+            json=_payload(
+                tools=[
+                    self._PING_TOOL,
+                    {"type": "function", "name": "pong", "parameters": {}},
+                ],
+                tool_choice="required",
+            ),
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422, resp.text
+        body = resp.json()
+        assert "tool_choice_required_unfulfilled" in str(body)
+
+    def test_required_streaming_with_synthesis_suppresses_message_item(
+        self, make_responses_client
+    ):
+        """Codex r1 BLOCKING #2 (PR #817): when the streaming model
+        emits text under forced choice AND no tool_call, the message
+        item must NOT be emitted (the synthesised tool_call is the
+        only legitimate output for the contract). Pre-fix the client
+        saw BOTH ``response.output_text.delta`` for the model's prose
+        AND a synthesised ``function_call`` — violating the
+        tool_call-guaranteed contract.
+        """
+        state = make_responses_client(text="Hello from rapid", tool_calls=None)
+
+        with state.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_payload(
+                stream=True,
+                tools=[self._PING_TOOL],
+                tool_choice="required",
+            ),
+            headers=_AUTH,
+        ) as resp:
+            assert resp.status_code == 200
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        names = [n for (n, _) in events]
+
+        # No text deltas should reach the client.
+        assert "response.output_text.delta" not in names, names
+        # Function-call item IS emitted via the synthesis path.
+        assert any(
+            d.get("item", {}).get("type") == "function_call"
+            for (n, d) in events
+            if n == "response.output_item.added"
+        ), events
+
+    def test_required_streaming_with_real_tool_call_keeps_text(
+        self, make_responses_client
+    ):
+        """When the model produces a real tool_call AND text under
+        forced choice, the buffered text is flushed (no synthesis
+        fires, so the assistant's prose stays as legitimate context).
+        """
+        state = make_responses_client(
+            text="Hello from rapid",
+            tool_calls=[
+                _make_function_call(
+                    "ping", json.dumps({"msg": "hi"}), call_id="call_real"
+                )
+            ],
+            finish_reason="tool_calls",
+        )
+
+        with state.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_payload(
+                stream=True,
+                tools=[self._PING_TOOL],
+                tool_choice="required",
+            ),
+            headers=_AUTH,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        names = [n for (n, _) in events]
+
+        # Text delta flushed because the model produced a real call.
+        assert "response.output_text.delta" in names, names
+        # And the real call is shipped.
+        assert any(
+            d.get("item", {}).get("type") == "function_call"
+            for (n, d) in events
+            if n == "response.output_item.added"
+        ), events
+
 
 # ---------------------------------------------------------------------------
 # Ana C-06 — Computer-Use (UI-TARS) reachability via /v1/responses

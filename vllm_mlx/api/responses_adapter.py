@@ -510,12 +510,16 @@ def _parse_computer_action(arguments: str) -> dict:
     remaining kwargs verbatim so a downstream Computer-Use runtime
     can dispatch on ``action.type``.
 
-    Defensive: invalid JSON or non-dict arguments degrade to a
-    ``{"type": "unknown", "raw": "..."}`` envelope rather than 500 —
-    the caller is otherwise blind to the parser failure.
+    Defensive: invalid JSON, non-dict arguments, AND empty / missing
+    arguments all degrade to a ``{"type": "unknown", "raw": "..."}``
+    envelope. Returning ``{}`` would produce a ``computer_call.action``
+    without a ``type`` field — harder for SDK dispatchers than the
+    sentinel shape (codex r1 NIT on PR #817).
     """
+    if not arguments:
+        return {"type": "unknown", "raw": arguments}
     try:
-        parsed = json.loads(arguments) if arguments else {}
+        parsed = json.loads(arguments)
     except (ValueError, TypeError):
         return {"type": "unknown", "raw": arguments}
     if not isinstance(parsed, dict):
@@ -523,6 +527,10 @@ def _parse_computer_action(arguments: str) -> dict:
     out = dict(parsed)
     if "action" in out and "type" not in out:
         out["type"] = out.pop("action")
+    # Even with valid JSON, a missing verb is still ambiguous — fall
+    # back to the sentinel so the dispatcher can detect the gap.
+    if "type" not in out:
+        return {"type": "unknown", "raw": arguments}
     return out
 
 
