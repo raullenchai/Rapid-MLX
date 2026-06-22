@@ -1078,9 +1078,66 @@ class MLLMScheduler:
             while self._running:
                 try:
                     if self.has_requests():
-                        output = await loop.run_in_executor(
-                            self._step_executor, self._step_no_queue
-                        )
+                        # MEMORY guideline (knowledge/gotchas.md):
+                        # "asyncio Future cancel does NOT stop executor
+                        # thread — use ``executor.submit`` +
+                        # ``cf.cancelled()`` gate, not ``run_in_executor``".
+                        #
+                        # The prior shape was
+                        # ``await loop.run_in_executor(self._step_executor,
+                        # self._step_no_queue)``. On loop cancellation
+                        # (``self._running`` flipped or task cancelled
+                        # during shutdown) the asyncio-side Future flipped
+                        # to CANCELLED immediately but the executor thread
+                        # kept running ``_step_no_queue`` against
+                        # ``BatchGenerator`` state that the shutdown path
+                        # then races to tear down — exactly the
+                        # "Aborting orphaned MLLM request" / mllm-step
+                        # zombie shape Ana flagged in the C-04 recon
+                        # (R3 in /tmp/dogfood-085/c04-recon.md).
+                        #
+                        # Mirror the proven pattern from
+                        # ``engine_core.py:855``: hold the underlying
+                        # ``concurrent.futures.Future`` directly, await it
+                        # via ``asyncio.wrap_future``, and gate any
+                        # post-cancel cleanup on ``cf.cancelled()`` so we
+                        # only ever consume an ``output`` that actually
+                        # came back from the executor thread.
+                        cf = self._step_executor.submit(self._step_no_queue)
+                        try:
+                            output = await asyncio.wrap_future(cf, loop=loop)
+                        except asyncio.CancelledError:
+                            # The asyncio side is cancelled; the executor
+                            # may already be running (or completed).
+                            # ``asyncio.wrap_future`` will have called
+                            # ``cf.cancel()`` — succeeds only if the work
+                            # had not started yet. If the work DID start,
+                            # let it run to completion silently so it
+                            # doesn't race the shutdown teardown of
+                            # ``BatchGenerator``/``self._step_executor``.
+                            # We deliberately do NOT call
+                            # ``cf.result()`` here because the outer
+                            # ``finally`` will ``shutdown(wait=False)``
+                            # the executor and the in-flight step's
+                            # output is no longer useful.
+                            if not cf.cancelled():
+
+                                def _drain_step_result(_future: Any) -> None:
+                                    # Surface any executor-side exception
+                                    # at DEBUG so silent errors during
+                                    # shutdown still leave a trail without
+                                    # spamming the log on normal cancel.
+                                    try:
+                                        _future.result()
+                                    except BaseException as _exc:  # noqa: BLE001
+                                        logger.debug(
+                                            "MLLM step exception during"
+                                            " cancellation drain: %r",
+                                            _exc,
+                                        )
+
+                                cf.add_done_callback(_drain_step_result)
+                            raise
 
                         # Distribute outputs to queues ON the event loop thread
                         # (asyncio.Queue is not thread-safe).

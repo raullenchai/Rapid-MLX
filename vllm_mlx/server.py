@@ -313,6 +313,24 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager
 
+    # Install process-death observability BEFORE any executor is created
+    # so faulthandler can dump per-thread Python stacks for SIGSEGV from
+    # MLX/Metal C extensions as well as the SIGTERM/SIGHUP/SIGABRT chain
+    # for clean external shutdown. Mirrors C-04 recon §3.R1 + §3.R2
+    # (``/tmp/dogfood-085/c04-recon.md``) — three persona logs from the
+    # 0.8.5 dogfood ran exclusively in the "process disappeared between
+    # two stdout writes" shape with no traceback, no shutdown banner,
+    # no crash report. Without this hook the operator cannot tell
+    # SIGKILL (un-catchable) from SIGTERM (catchable but currently
+    # invisible) from a Metal segfault. The install is idempotent + safe
+    # off the main thread (returns False rather than raising), so
+    # re-entry from test harnesses and embedded-uvicorn contexts is
+    # tolerated. The handler CHAINS into uvicorn's prior SIGTERM handler
+    # so graceful shutdown semantics are unchanged.
+    from ._signal_observability import install_signal_observability
+
+    install_signal_observability()
+
     # GC control: raise thresholds to reduce GC frequency with large models
     if _gc_control:
         gc.set_threshold(100_000, 50, 50)
