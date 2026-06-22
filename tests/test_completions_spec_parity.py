@@ -58,6 +58,12 @@ def _build_completions_app(patch_cfg, monkeypatch, *, engine_factory=None):
     app.include_router(comp_route.router)
 
     engine = engine_factory() if engine_factory else MagicMock()
+    cap = getattr(engine, "supports_completion_logprobs", None)
+    if not isinstance(cap, bool):
+        engine.supports_completion_logprobs = (
+            callable(getattr(engine, "stream_generate", None))
+            and getattr(engine, "tokenizer", None) is not None
+        )
     patch_cfg(
         engine=engine,
         model_name="stub-model",
@@ -484,6 +490,7 @@ class TestLogprobsEngineCapability:
         def _factory():
             class _NoStreamEngine:
                 tokenizer = object()
+                supports_completion_logprobs = False
 
                 async def generate(self, *_a, **_kw):
                     return _StubGenerationOutput()

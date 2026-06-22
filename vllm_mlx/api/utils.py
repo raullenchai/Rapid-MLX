@@ -993,6 +993,8 @@ def _require_string(value, field_name: str) -> str:
 
 def _extract_object_url(item: dict, field_name: str) -> str:
     value = item.get(field_name)
+    if isinstance(value, str):
+        return _require_string(value, field_name)
     if not isinstance(value, dict):
         raise ValueError(
             f"{field_name} must be an object with required field 'url' "

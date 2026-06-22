@@ -7,6 +7,7 @@ chat, responses, Anthropic, and completions routes.
 
 from __future__ import annotations
 
+import ast
 import inspect
 
 
@@ -57,4 +58,11 @@ def test_all_text_generation_routes_use_shared_max_tokens_resolver():
     from vllm_mlx.routes import anthropic, chat, completions, responses
 
     for module in (anthropic, chat, completions, responses):
-        assert "_resolve_max_tokens(" in inspect.getsource(module)
+        tree = ast.parse(inspect.getsource(module))
+        calls_resolver = any(
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_resolve_max_tokens"
+            for node in ast.walk(tree)
+        )
+        assert calls_resolver, f"{module.__name__} does not call _resolve_max_tokens"
