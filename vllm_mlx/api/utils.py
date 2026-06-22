@@ -958,7 +958,7 @@ def decode_inline_tool_call_arguments(messages: list[dict]) -> None:
 # Multimodal Content Extraction
 # =============================================================================
 
-TEXT_CONTENT_TYPES = {"text"}
+TEXT_CONTENT_TYPES = {"text", "input_text", "output_text"}
 IMAGE_CONTENT_TYPES = {"image_url", "image", "input_image"}
 VIDEO_CONTENT_TYPES = {"video", "video_url"}
 AUDIO_CONTENT_TYPES = {"audio_url", "audio", "input_audio"}
@@ -1015,7 +1015,7 @@ def _extract_object_url(item: dict, field_name: str) -> str:
 
 def _validate_content_part_payload(item: dict) -> None:
     item_type = item["type"]
-    if item_type == "text":
+    if item_type in TEXT_CONTENT_TYPES:
         text = item.get("text")
         if not isinstance(text, str) or text == "":
             raise ValueError(

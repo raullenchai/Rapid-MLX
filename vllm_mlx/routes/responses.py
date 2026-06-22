@@ -560,13 +560,13 @@ def _prepare_messages_for_engine(
                     else part
                     for part in content
                 ]
-        if engine.preserve_native_tool_format:
+        if getattr(engine, "preserve_native_tool_format", False):
             decode_inline_tool_call_arguments(messages)
         return messages
 
     messages, _images, _videos = extract_multimodal_content(
         openai_request.messages,
-        preserve_native_format=engine.preserve_native_tool_format,
+        preserve_native_format=getattr(engine, "preserve_native_tool_format", False),
     )
     return messages
 

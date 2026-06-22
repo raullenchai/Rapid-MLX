@@ -352,7 +352,7 @@ class TestResponsesNonStream:
             ],
         )
         request = SimpleNamespace(messages=[msg])
-        engine = SimpleNamespace(is_mllm=True, preserve_native_tool_format=False)
+        engine = SimpleNamespace(is_mllm=True)
 
         sent = _prepare_messages_for_engine(engine, request)
 
@@ -368,6 +368,15 @@ class TestResponsesNonStream:
                 ],
             }
         ]
+
+    def test_message_prepare_defaults_missing_native_tool_flag(self):
+        from vllm_mlx.routes.responses import _prepare_messages_for_engine
+
+        request = SimpleNamespace(messages=[{"role": "user", "content": "hi"}])
+
+        assert _prepare_messages_for_engine(
+            SimpleNamespace(is_mllm=False), request
+        ) == [{"role": "user", "content": "hi"}]
 
     def test_input_image_rejected_on_text_only_engine(self, responses_client):
         client = responses_client.client

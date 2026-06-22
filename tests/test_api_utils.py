@@ -938,6 +938,24 @@ class TestValidateContentBlocksForCapabilities:
                 allow_video=False,
             )
 
+    def test_responses_text_blocks_are_valid_text_content(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "question"},
+                    {"type": "output_text", "text": "prior answer"},
+                ],
+            }
+        ]
+
+        validate_content_blocks_for_capabilities(
+            messages,
+            model_name="chat-model",
+            allow_image=False,
+            allow_video=False,
+        )
+
     def test_input_audio_requires_format_even_when_audio_allowed(self):
         messages = [
             {
