@@ -966,6 +966,10 @@ async def create_anthropic_message(
             # the OpenAI-side request, so it propagates uniformly across
             # all three API surfaces.
             reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
+            # r5-D shared finalize-on-truncation plug — see chat.py
+            # for the rationale. Forwarded so the Anthropic surface
+            # gets the same gemma4 / glm4 / minimax fixes.
+            finish_reason=getattr(output, "finish_reason", None),
         )
 
         final_content = None

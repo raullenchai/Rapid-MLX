@@ -24,7 +24,7 @@ Usage:
             ...
 """
 
-from .base import DeltaMessage, ReasoningParser
+from .base import DeltaMessage, ReasoningParser, finalize_truncation
 from .think_parser import BaseThinkingReasoningParser
 
 # Parser registry
@@ -119,4 +119,6 @@ __all__ = [
     "register_parser",
     "get_parser",
     "list_parsers",
+    # r5-D shared finalize-on-truncation helper
+    "finalize_truncation",
 ]

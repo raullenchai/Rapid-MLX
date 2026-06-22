@@ -207,17 +207,22 @@ def test_rescue_noop_when_tool_calls_empty_list():
 # ── Integration: parser-level repro of the truncated thought ─────────
 
 
-def test_gemma4_parser_returns_no_reasoning_on_unterminated_thought():
-    """Pins the upstream surface: the Gemma 4 reasoning parser's
-    ``extract_reasoning`` returns ``(None, raw_text_with_marker)``
-    when the thought channel never closed. This is what feeds the
-    silent-drop path — the parser bails, the route then drops content.
+def test_gemma4_parser_returns_reasoning_on_unterminated_thought():
+    """Pins the post-r5-D contract: the Gemma 4 reasoning parser's
+    ``extract_reasoning`` returns ``(reasoning_buffer, None)`` when
+    the thought channel never closed. The shared finalize-on-
+    truncation helper (``vllm_mlx.reasoning.finalize_truncation``)
+    routes the unclosed buffer to ``reasoning_content`` instead of
+    leaking it into ``content`` (the F-DGF-V080-B-7 dup-into-both-
+    fields repro).
 
-    The parser behavior itself is correct (it can't infer where a
-    missing close marker SHOULD have been); the route-layer rescue
-    is what protects clients from the consequence. This test pins
-    the parser's behavior so future parser changes don't silently
-    bypass the rescue's reason for existing.
+    Pre-r5-D the parser fell through to the "no thinking tags —
+    all content" branch and the route then either duplicated the
+    bytes into both fields (when the engine OutputRouter also
+    populated ``engine_reasoning_text``) OR surfaced the raw
+    scratchpad as the assistant's answer. The fix is parser-side
+    so every caller benefits, not just the non-streaming chat
+    route.
     """
     p = Gemma4ReasoningParser()
     truncated = (
@@ -225,14 +230,13 @@ def test_gemma4_parser_returns_no_reasoning_on_unterminated_thought():
         "I should call get_weather with city=SF. But first let me check"
     )
     reasoning, content = p.extract_reasoning(truncated)
-    assert reasoning is None, (
-        "parser must not pretend it extracted reasoning from an "
-        f"unterminated thought; got {reasoning!r}"
+    # r5-D: the unclosed thought buffer routes to reasoning,
+    # NOT content.
+    assert reasoning is not None and "Let me think" in reasoning
+    assert content is None, (
+        "post-r5-D: gemma4 must NOT leak the unclosed thought into "
+        f"content; got {content!r}"
     )
-    # Content is the raw text (markers preserved). The route's
-    # ``clean_output_text`` + ``strip_thinking_tags`` will collapse
-    # this; the rescue handles the resulting empty content.
-    assert content is not None and "Let me think" in content
 
 
 # ── Integration: full _finalize + rescue chain on engine-routed input ──

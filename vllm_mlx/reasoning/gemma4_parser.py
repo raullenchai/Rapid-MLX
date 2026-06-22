@@ -51,6 +51,56 @@ class Gemma4ReasoningParser(ReasoningParser):
         if not model_output:
             return None, model_output
 
+        # r5-D finalize-on-truncation (F-DGF-V080-B-7): when the model
+        # is cut mid-thought by ``finish_reason="length"`` the closing
+        # ``<channel|>`` sentinel never arrives, so ``_THOUGHT_BLOCK``
+        # (which only matches CLOSED blocks) misses the in-progress
+        # buffer entirely. Pre-fix the "no thinking tags — all content"
+        # fall-through returned the raw scratchpad as ``content`` AND
+        # — when the engine's token-level OutputRouter ALSO populated
+        # ``engine_reasoning_text`` from the same bytes — the route
+        # then duplicated those bytes into ``reasoning_content`` for
+        # the desktop client (identical 132/128/512-char repro).
+        #
+        # Detect via ``is_open_in_think`` (shared finalize-on-truncation
+        # contract — see ``base.finalize_truncation``) and route the
+        # post-opener body as reasoning instead. Strip the opener
+        # marker bytes so the reasoning surface is clean.
+        if self.is_open_in_think(model_output):
+            last_open = model_output.rfind("<|channel>thought")
+            before = model_output[:last_open]
+            after = model_output[last_open + len("<|channel>thought") :]
+            # Strip the leading newline that follows the opener.
+            after = after.lstrip("\n")
+            # When ``before`` contains a prior CLOSED ``thought`` block
+            # (multi-block truncation shape), surface that as reasoning
+            # too so we don't lose the earlier reasoning round; then
+            # concatenate the trailing unclosed buffer. When ``before``
+            # is empty (the common single-block truncation shape) this
+            # collapses to ``(after, None)``. ``content`` is None on
+            # truncation — the buffer was inside the think tag at EOS,
+            # never the user-visible answer.
+            prior_reasoning: str | None = None
+            if before:
+                prior_thought_blocks = _THOUGHT_BLOCK.findall(before)
+                if prior_thought_blocks:
+                    parts = []
+                    for block in prior_thought_blocks:
+                        inner = (
+                            block.replace("<|channel>thought\n", "")
+                            .replace("<channel|>", "")
+                            .strip()
+                        )
+                        if inner:
+                            parts.append(inner)
+                    if parts:
+                        prior_reasoning = "".join(parts)
+            trailing_reasoning = after.strip() or None
+            merged_reasoning = (
+                "\n".join(p for p in (prior_reasoning, trailing_reasoning) if p) or None
+            )
+            return merged_reasoning, None
+
         # Extract thought blocks as reasoning
         thought_blocks = _THOUGHT_BLOCK.findall(model_output)
         if not thought_blocks:
@@ -176,3 +226,67 @@ class Gemma4ReasoningParser(ReasoningParser):
     def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
         """Handle end of stream — emit any remaining content."""
         return None
+
+    def is_open_in_think(self, accumulated_text: str) -> bool:
+        """r5-D — gemma4 unclosed-thought-channel detection.
+
+        Gemma 4's channel grammar opens with ``<|channel>thought\\n``
+        and closes the channel with ``<channel|>``. When
+        ``finish_reason="length"`` truncates before the closer arrives
+        (max_tokens cut mid-thought), the non-streaming first-pass
+        ``extract_reasoning`` runs ``_THOUGHT_BLOCK.findall`` which
+        only matches CLOSED thought blocks, finds nothing, and falls
+        through to the "all content" branch — leaking the raw
+        scratchpad bytes into ``content`` and (when the engine's
+        token-level OutputRouter has ALSO populated
+        ``engine_reasoning_text``) duplicating the same bytes into
+        both ``content`` and ``reasoning_content`` for the desktop
+        client (the F-DGF-V080-B-7 132/128/512-char identical-dup
+        repro).
+
+        Open-in-think signal:
+
+        * Saw an opener (``<|channel>thought``) AND
+        * No closer (``<channel|>``) appears AFTER the latest opener.
+
+        Multi-block resilience: ``rfind`` on the opener and ``find``
+        past that position handles both single-block and multi-block
+        truncation shapes (closed thought → content channel → second
+        thought opener with no closer still reads open-in-think).
+        """
+        if not accumulated_text:
+            return False
+        # Codex r1 BLOCKING on PR #825: the pre-fix ``rfind`` gate
+        # mis-fired on a legitimate answer that mentions the literal
+        # ``<|channel>thought`` substring inside an already-opened
+        # content/final channel — ``rfind`` lands on the literal
+        # substring inside the answer, the tail is short, and the
+        # closer-not-found check spuriously returns True. The
+        # extracted ``cleaned_text`` path also tripped the gate
+        # because the upstream content opener had already been
+        # stripped by ``extract_reasoning`` before the route probed
+        # the buffer.
+        #
+        # Systematic fix — three conservative guards:
+        # 1. Buffer must START (modulo whitespace) with
+        #    ``<|channel>thought``. This is the only shape where the
+        #    EOS-was-mid-think interpretation is unambiguous,
+        #    matching the minimax ``lstrip().startswith("<think>")``
+        #    guard and the ``_sweep_residual_think_tags`` scope from
+        #    PR #722 codex r3.
+        # 2. No ``<|channel>content`` / ``<|channel>final`` opener
+        #    appears — once content opens, any further
+        #    ``<|channel>thought`` bytes are literal answer text in
+        #    Gemma 4's single-round grammar.
+        # 3. No ``<channel|>`` close after the (only) opener.
+        if not accumulated_text.lstrip().startswith("<|channel>thought"):
+            return False
+        if (
+            "<|channel>content" in accumulated_text
+            or "<|channel>final" in accumulated_text
+        ):
+            return False
+        last_open = accumulated_text.rfind("<|channel>thought")
+        if last_open < 0:
+            return False
+        return "<channel|>" not in accumulated_text[last_open:]
