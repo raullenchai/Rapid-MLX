@@ -509,3 +509,109 @@ class TestCodexR2FlushHeldContent:
         # ``Action:`` followed by definitely-non-signature prose was
         # already released mid-stream — flush returns empty.
         assert parser.flush_held_content("Action: is required.") == ""
+
+
+# ---------------------------------------------------------------------------
+# Codex r3 BLOCKING — held prefix + new action in same delta
+# ---------------------------------------------------------------------------
+
+
+class TestCodexR3HeldPrefixPlusNewAction:
+    """Codex r3 BLOCKING: when a held trailing prefix later disambiguates
+    in the SAME chunk that also completes a real action, the resolved
+    prose-prefix MUST be emitted as content alongside the structured
+    ``tool_calls`` event. Pre-fix, the new-action branch only walked
+    the delta-window (``delta_start_in_current`` cursor) and never
+    folded in the previously-held bytes — ``["Ac", "me Action: wait()"]``
+    lost the ``"Ac"`` entirely.
+
+    Fix: the residual walk now starts from ``prev_safe_end`` (the
+    cursor up to which prior calls have already emitted) and ends at
+    ``cur_safe_end`` (the new safe-emit boundary), folding the
+    prev-held bytes into the content slice between the prior emit
+    and the first new action.
+    """
+
+    def test_held_prefix_released_alongside_new_action(self, parser):
+        # The codex repro shape: "Ac" held, then "me " disambiguates
+        # to plain prose AND "Action: wait()" completes a tool call
+        # all in the same second chunk.
+        events, content, tool_calls = _drive_stream(parser, ["Ac", "me Action: wait()"])
+        assert content == "Acme ", (
+            f"Held 'Ac' was dropped when new action fired: events={events!r}"
+        )
+        assert len(tool_calls) == 1
+        assert tool_calls[0]["function"]["name"] == "computer"
+        assert '"action": "wait"' in tool_calls[0]["function"]["arguments"]
+
+    def test_held_prefix_with_action_in_third_delta(self, parser):
+        # Multi-step: held "Ac" → resolved "Acme " → real action.
+        events, content, tool_calls = _drive_stream(
+            parser, ["Ac", "me ", "Action: wait()"]
+        )
+        assert content == "Acme "
+        assert len(tool_calls) == 1
+
+    def test_held_prefix_resolves_via_real_action_token(self, parser):
+        # Held "Ac" actually IS the start of a real Action: token.
+        # No prose to release — all held bytes get folded into the
+        # tool_call's span.
+        events, content, tool_calls = _drive_stream(parser, ["Ac", "tion: wait()"])
+        assert content == ""
+        assert len(tool_calls) == 1
+        assert '"action": "wait"' in tool_calls[0]["function"]["arguments"]
+
+    def test_prev_held_prose_action_followed_by_real_action(self, parser):
+        # Prev buffer had a prose-Action; new delta adds a real one.
+        # The prose-Action bytes should already have flushed as content
+        # on the first delta (because the signature was provably
+        # incomplete), and the second delta only flushes the new
+        # action.
+        events, content, tool_calls = _drive_stream(
+            parser, ["Action: is required.\n", "Action: wait()"]
+        )
+        assert content == "Action: is required.\n"
+        assert len(tool_calls) == 1
+
+
+# ---------------------------------------------------------------------------
+# Codex r3 HIGH — has_pending_tool_call no longer reports prose as pending
+# ---------------------------------------------------------------------------
+
+
+class TestCodexR3HasPendingSemantics:
+    """Codex r3 HIGH: ``has_pending_tool_call`` used to return True for
+    every bare ``Action:`` in the buffer, even when the post-``Action:``
+    tail was provably non-signature prose. The streaming parser
+    already releases those bytes via ``_safe_emit_end`` (so it wasn't a
+    data-loss bug after the r2 fix), but the public helper's contract
+    was stale — the postprocessor's fast-path stayed on the slow
+    route unnecessarily.
+
+    Fix: case 2 of ``has_pending_tool_call`` now also runs
+    ``_action_signature_could_complete`` and only reports True when
+    the bare ``Action:`` could still become a real action signature.
+    """
+
+    def test_prose_action_not_pending(self, parser):
+        # Codex r3 HIGH repro: provably-non-signature prose.
+        assert parser.has_pending_tool_call("Action: is required.") is False
+        assert parser.has_pending_tool_call("Action: !") is False
+        assert parser.has_pending_tool_call("Action: 42 items") is False
+
+    def test_real_in_flight_action_still_pending(self, parser):
+        # Bare ``Action:`` whose signature COULD complete — held.
+        assert parser.has_pending_tool_call("Action:") is True
+        assert parser.has_pending_tool_call("Action: ") is True
+        assert parser.has_pending_tool_call("Action: cli") is True
+        # Verb fully written but no paren yet — held.
+        assert parser.has_pending_tool_call("Action: click") is True
+
+    def test_completed_action_not_pending(self, parser):
+        # Existing contract preserved — completed action means
+        # the tool_call has fired already.
+        assert parser.has_pending_tool_call("Action: wait()") is False
+
+    def test_open_paren_no_close_pending(self, parser):
+        # Existing contract — verb+paren commit but no close.
+        assert parser.has_pending_tool_call("Action: click(") is True

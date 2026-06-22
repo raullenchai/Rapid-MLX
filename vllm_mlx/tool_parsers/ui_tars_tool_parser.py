@@ -1425,37 +1425,37 @@ class UiTarsToolParser(ToolParser):
                 }
             )
 
-        # codex r2 BLOCKING #1: a single delta can contain a completed
-        # action plus trailing/leading non-action text — e.g. delta
-        # ``Action: wait() done`` where `` done`` is regular content the
-        # model emitted after the action. Without explicit handling, the
-        # original implementation only returned ``{"tool_calls": ...}``
-        # and the trailing bytes were silently dropped from the response.
+        # codex r2 BLOCKING #1 + codex r3 BLOCKING — a single delta can
+        # contain a completed action plus trailing/leading non-action
+        # text — e.g. delta ``Action: wait() done`` where `` done`` is
+        # regular content the model emitted after the action. AND a
+        # delta can complete an action AFTER a prior delta that held
+        # candidate-opener bytes which the new chunk now disambiguates
+        # to plain content. e.g. ``["Ac", "me Action: wait()"]`` — the
+        # ``"Ac"`` was held on delta 1, but on delta 2 the trailing
+        # ``"me "`` resolves it to ``"Acme "`` before the real
+        # ``Action: wait()`` fires. Without joining the prev-held
+        # bytes into the residual emit, ``"Ac"`` is dropped permanently.
         #
-        # Recover those bytes by computing the residual portion of THIS
-        # delta that falls outside any newly completed action span. We
-        # operate on offsets into ``current_text`` and clip to the slice
-        # that this specific delta contributed.
-        delta_start_in_current = len(previous_text)
+        # Recover the residual content by walking from the
+        # PREV_SAFE_END boundary (the cursor up to which prior calls
+        # have already emitted) rather than from ``delta_start_in_current``.
+        # The residual window is the union of:
+        #   1. ``current_text[prev_safe_end:earliest_action.start]`` —
+        #      the bytes between prior emits and the first new action.
+        #   2. ``current_text[action.end : next_action.start]`` for
+        #      each gap between consecutive actions.
+        #   3. ``current_text[last_action.end : cur_safe_end]`` — the
+        #      bytes between the last new action and the current
+        #      safe-emit boundary (anything past is still held).
         residual_pieces: list[str] = []
-        cursor = delta_start_in_current
+        cursor = prev_safe_end
         for start, end, _verb, _kwargs in new_actions:
-            # Bytes from the prior cursor up to the action's start that
-            # fall inside this delta's window are residual content.
             if start > cursor:
-                # Clip to [delta_start_in_current, len(current_text))
-                piece_start = max(cursor, delta_start_in_current)
-                piece_end = min(start, len(current_text))
-                if piece_end > piece_start:
-                    residual_pieces.append(current_text[piece_start:piece_end])
+                residual_pieces.append(current_text[cursor:start])
             cursor = end
-        # Trailing bytes after the last newly completed action that fall
-        # inside this delta's window.
-        if cursor < len(current_text):
-            piece_start = max(cursor, delta_start_in_current)
-            piece_end = len(current_text)
-            if piece_end > piece_start:
-                residual_pieces.append(current_text[piece_start:piece_end])
+        if cursor < cur_safe_end:
+            residual_pieces.append(current_text[cursor:cur_safe_end])
 
         residual = "".join(residual_pieces)
         result: dict[str, Any] = {"tool_calls": tool_calls}
@@ -1498,23 +1498,26 @@ class UiTarsToolParser(ToolParser):
         # still return False here — the streaming consumer will surface
         # the completed tool_call on the next delta-resolving step; we
         # don't claim "pending" for an already-resolved action.
-        line_starts: list[int] = []
+        line_starts: set[int] = set()
         for m in _ACTION_LINE.finditer(text):
-            line_starts.append(m.start())
+            line_starts.add(m.start())
             close = _find_balanced_close(text, m.end())
             if close == -1:
                 return True
         # Case 2: bare ``Action:`` token whose verb / open-paren hasn't
-        # arrived yet (i.e. an ``Action:`` occurrence that is NOT the
-        # head of any matched ``_ACTION_LINE``). The classic dogfood
-        # leak shape is ``"Action: type"`` where the ``(`` is in a
-        # pending decode step — the postprocessor's fast-path used
-        # to short-circuit the delta as plain ``content`` because
-        # ``_ACTION_LINE.search`` requires the open paren. Holding
-        # the buffer keeps the bare prefix bytes off the wire until
-        # the verb + body resolve on subsequent deltas.
+        # arrived yet AND the signature could still complete (codex
+        # r3 HIGH — pre-fix, ANY bare ``Action:`` was reported as
+        # pending, including the prose case ``"Action: is required."``
+        # that ``_action_signature_could_complete`` rules out. The
+        # streaming parser releases those bytes anyway via
+        # ``_safe_emit_end``, but the public ``has_pending_tool_call``
+        # helper's semantic was stale and kept the postprocessor on
+        # the slow path. Tighten the signature check here so the
+        # fast-path can short-circuit non-action prose.).
         for pm in _ACTION_PREFIX.finditer(text):
-            if pm.start() not in line_starts:
+            if pm.start() in line_starts:
+                continue
+            if _action_signature_could_complete(text, pm.end()):
                 return True
         # Case 3: trailing strict-prefix of ``Action:`` at the buffer
         # tail (e.g. ``"...end.\\nAc"``). Holding back keeps the
