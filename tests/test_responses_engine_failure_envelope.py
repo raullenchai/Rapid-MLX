@@ -116,6 +116,40 @@ class _HealthyEngine:
         )
 
 
+class _ImmediateStopEngine:
+    """Engine shim mimicking the legitimate "immediate stop" turn:
+    zero output_tokens, no text — but ``finish_reason="stop"`` (the
+    very first sampled token was an EOS / a stop sequence and was
+    suppressed from the decoded text). This is NOT an engine abort
+    and the guard must NOT fire — distinguishes the R6-C2 narrowed
+    gate (``finish_reason="length"``) from the prior broader
+    predicate that would have mis-classified this case as failed.
+    """
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        return _GenerationOutput(
+            text="",
+            prompt_tokens=5,
+            completion_tokens=0,
+            finish_reason="stop",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="",
+            new_text="",
+            prompt_tokens=5,
+            completion_tokens=0,
+            finish_reason="stop",
+            finished=True,
+        )
+
+
 _IMPORTED = (
     "vllm_mlx.config",
     "vllm_mlx.config.server_config",
@@ -224,6 +258,13 @@ def healthy_client(monkeypatch):
     holder.cleanup()
 
 
+@pytest.fixture
+def immediate_stop_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ImmediateStopEngine)
+    yield holder
+    holder.cleanup()
+
+
 HEADERS = {"Authorization": "Bearer test-secret"}
 PAYLOAD = {"model": "test-model", "input": "Hi"}
 
@@ -309,6 +350,30 @@ class TestResponsesNonStreamFailureEnvelope:
         assert "error" not in body, body
         assert body["usage"]["output_tokens"] >= 1, body
 
+    def test_immediate_stop_does_not_trip_failure_guard(self, immediate_stop_client):
+        """Codex r1 IMPORTANT — narrowed-guard contract.
+
+        A turn that legitimately produces no text and zero completion
+        tokens with ``finish_reason="stop"`` (immediate EOS / stop
+        sequence on the very first sampled token, sampled-and-suppressed
+        from ``output.text``) must NOT trip the failure guard. The R6-C2
+        guard fires only when ``finish_reason="length"`` because the
+        engine wedges this PR closes (metal::malloc 499000 on the
+        hybrid dense Qwen3.5 path) emit that abort signature. Catching
+        a ``stop`` here would silently break legitimate stop-sequence
+        / EOS-first turns.
+        """
+        resp = immediate_stop_client.client.post(
+            "/v1/responses", json=PAYLOAD, headers=HEADERS
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body["status"] != "failed", (
+            f"R6-C2 guard incorrectly fired on a legitimate stop-reason "
+            f"zero-token turn: {body}"
+        )
+        assert "error" not in body, body
+
 
 # =============================================================================
 # Stream — engine wedge → response.failed instead of response.completed
@@ -370,3 +435,27 @@ class TestResponsesStreamFailureEnvelope:
         names = [n for n, _ in _parse_sse(body)]
         assert "response.completed" in names, names
         assert "response.failed" not in names, names
+
+    def test_immediate_stop_stream_does_not_trip_failure_guard(
+        self, immediate_stop_client
+    ):
+        """Codex r1 IMPORTANT (stream mirror): a zero-token
+        ``finish_reason="stop"`` stream (immediate EOS / stop-sequence
+        on the first sampled token) must close with
+        ``response.completed``, NOT ``response.failed``. The narrowed
+        R6-C2 guard gates on ``finish_reason="length"``."""
+        with immediate_stop_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        names = [n for n, _ in _parse_sse(body)]
+        assert "response.completed" in names, (
+            f"stop-reason stream missing response.completed terminal — events: {names}"
+        )
+        assert "response.failed" not in names, (
+            f"R6-C2 stream guard incorrectly fired on a legitimate "
+            f"stop-reason zero-token stream: {names}"
+        )

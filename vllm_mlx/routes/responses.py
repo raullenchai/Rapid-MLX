@@ -760,10 +760,11 @@ async def _non_stream(
         return Response(status_code=499)
 
     # r6-A R6-C2: detect a degenerate engine output — no text, no
-    # reasoning, no tool_calls, zero output_tokens — and surface it as
-    # a Responses ``status="failed"`` envelope with a populated
-    # ``error`` block instead of the silent
-    # ``200 + status="incomplete" + usage=0/0/0`` shape pre-fix.
+    # reasoning, no tool_calls, zero output_tokens, AND
+    # ``finish_reason="length"`` — and surface it as a Responses
+    # ``status="failed"`` envelope with a populated ``error`` block
+    # instead of the silent ``200 + status="incomplete" + usage=0/0/0``
+    # shape pre-fix.
     #
     # Why this is needed: the engine reports ``finish_reason="length"``
     # when the runtime aborts a request before it produced its first
@@ -779,25 +780,33 @@ async def _non_stream(
     # Responses spec contract (``error`` is the documented field for the
     # failed state) and gives clients a clear distinction.
     #
-    # Heuristic gate (conservative — only fires when EVERY user-visible
-    # output channel is empty):
+    # Heuristic gate (codex r1 IMPORTANT — narrowed): the guard now
+    # ALSO requires ``finish_reason="length"``. The original predicate
+    # ("zero completion + no user-visible output channels") would have
+    # mis-classified legitimate immediate-stop / zero-budget /
+    # stop-sequence turns where the scheduler reports
+    # ``finish_reason="stop"`` (e.g. the very first sampled token was
+    # an EOS or matched a stop_sequence and was suppressed from
+    # ``output.text``). Restricting the gate to ``length`` keeps it
+    # focused on the runtime-abort signature the R6-C1 wedge produces:
+    #   - ``finish_reason="length"`` AND
     #   - no assistant text (``output.text`` empty after strip)
     #   - no reasoning text on the engine output
     #   - no structured tool_calls surfaced by the engine
-    #   - ``completion_tokens == 0`` (the abort fired before any tokens
-    #     materialized; a budget=1 reply with one token still has
-    #     completion_tokens > 0 and passes the gate)
-    # That gate cannot misfire on a legitimate "model returned an empty
-    # string with budget>0" turn because the engine still credits the
-    # completion token(s) that were generated, even if the decoded text
-    # is empty (e.g. EOS-only). Returning ``status="failed"`` here is
-    # the analogue of the streaming path's ``response.failed`` event
-    # (line ~1865) for non-streaming clients.
+    #   - ``completion_tokens == 0``
+    # Returning ``status="failed"`` here is the analogue of the
+    # streaming path's ``response.failed`` event (line ~1865) for
+    # non-streaming clients.
     _has_text = bool((output.text or "").strip())
     _has_reasoning = bool((getattr(output, "reasoning_text", "") or "").strip())
     _has_tool_calls = bool(getattr(output, "tool_calls", None))
     _zero_completion = (output.completion_tokens or 0) == 0
-    if _zero_completion and not (_has_text or _has_reasoning or _has_tool_calls):
+    _engine_aborted_signature = getattr(output, "finish_reason", None) == "length"
+    if (
+        _engine_aborted_signature
+        and _zero_completion
+        and not (_has_text or _has_reasoning or _has_tool_calls)
+    ):
         logger.warning(
             "Responses: engine produced no output (no text/reasoning/tool_calls "
             "and completion_tokens=0); surfacing as status=failed envelope "
@@ -1195,6 +1204,13 @@ async def _stream_responses(
         accumulated_text = ""
         accumulated_raw = ""
         accumulated_structured_tool_calls: list[dict] = []
+        # r6-A R6-C2 codex r1 IMPORTANT: track the last engine-reported
+        # ``finish_reason`` so the post-loop degenerate-output guard can
+        # narrow itself to the ``"length"`` abort signature instead of
+        # firing on every empty / zero-token stream (which would also
+        # cover legitimate immediate-stop / zero-budget /
+        # stop-sequence turns whose ``finish_reason`` is ``"stop"``).
+        last_finish_reason: str | None = None
         tool_filter = StreamingToolCallFilter()
 
         # Yuki F6 codex r1 BLOCKING #2 (PR #817): when the request
@@ -1457,6 +1473,12 @@ async def _stream_responses(
                 completion_tokens = output.completion_tokens
             if hasattr(output, "cached_tokens") and output.cached_tokens:
                 cached_tokens = output.cached_tokens
+            # r6-A R6-C2: capture the most-recent ``finish_reason`` from
+            # the engine stream so the post-loop degenerate-output guard
+            # can narrow itself to the ``"length"`` abort signature.
+            _frx = getattr(output, "finish_reason", None)
+            if _frx is not None:
+                last_finish_reason = _frx
 
             engine_tool_calls = getattr(output, "tool_calls", None) or []
             if engine_tool_calls:
@@ -1934,7 +1956,8 @@ async def _stream_responses(
         # r6-A R6-C2: streaming-path mirror of the non-stream
         # degenerate-output guard. When the stream emits no user-visible
         # content (no accumulated text, no tool_calls) AND the engine
-        # credited zero completion tokens, the underlying engine almost
+        # credited zero completion tokens AND the engine reported
+        # ``finish_reason="length"``, the underlying engine almost
         # certainly aborted before producing its first token (e.g. a
         # ``metal::malloc`` Resource-limit wedge — the R6-C1 sibling).
         # Pre-fix, the path terminated with ``response.completed`` +
@@ -1947,7 +1970,17 @@ async def _stream_responses(
         # for errored streams (mirror of the spec ``response.failed``
         # event the late-stream tool_choice-unfulfilled path already
         # emits at line ~1718).
-        if completion_tokens == 0 and not (accumulated_text or tool_calls):
+        #
+        # Codex r1 IMPORTANT (narrowed): require
+        # ``last_finish_reason == "length"`` so the guard doesn't fire
+        # on legitimate immediate-stop / zero-budget / stop-sequence
+        # streams (those report ``"stop"``). Matches the non-stream
+        # guard's narrowing.
+        if (
+            last_finish_reason == "length"
+            and completion_tokens == 0
+            and not (accumulated_text or tool_calls)
+        ):
             logger.warning(
                 "Responses (stream): engine produced no output "
                 "(accumulated_text empty, no tool_calls, completion_tokens=0); "

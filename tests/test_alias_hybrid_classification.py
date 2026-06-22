@@ -35,7 +35,11 @@ from __future__ import annotations
 import pytest
 
 from vllm_mlx.model_aliases import list_profiles
-from vllm_mlx.model_auto_config import detect_model_config
+from vllm_mlx.model_auto_config import (
+    ModelConfig,
+    detect_model_config,
+    enrich_model_config,
+)
 
 # Dense Qwen3.5 — these are the variants Sasha's repro wedged on.
 DENSE_QWEN35_ALIASES = (
@@ -201,6 +205,84 @@ def test_moe_marker_qwen35_36_path_resolves_to_hybrid(hf_path: str) -> None:
 # hf_path that does NOT include an A3B / A10B / MoE marker. Catches
 # accidental misclassification in the opposite direction.
 # =============================================================================
+
+
+# =============================================================================
+# Runtime probe — the gate that closes the boot-time R6-C1 regression path
+# =============================================================================
+
+
+def test_enrich_respects_is_hybrid_explicit_against_arrays_cache() -> None:
+    """r6-A R6-C1 boot-path guard (codex r1 IMPORTANT).
+
+    ``enrich_model_config``'s runtime probe sees ``ArraysCache`` layers
+    on every dense Qwen3.5 / Qwen3.6 weight (``make_cache()`` returns
+    the linear-attention cache type for ``model_type=qwen3_5``
+    regardless of MoE-ness). Pre-fix, the probe one-way-flipped
+    ``is_hybrid=True`` on any such model — silently undoing the JSON
+    declaration that flagged the alias as non-hybrid. This guard pins
+    the suppression contract: when the resolved ``ModelConfig`` carries
+    ``is_hybrid_explicit=True``, the probe MUST leave ``is_hybrid``
+    alone (only ``supports_spec_decode`` is forced off, which is a
+    separate safety contract — spec decode is unsafe on
+    linear-attention weights regardless of the routing decision).
+    """
+    from mlx_lm.models.cache import ArraysCache
+
+    class HybridCacheModel:
+        def make_cache(self):
+            return [ArraysCache(size=1)]
+
+    # Caller flagged the model as explicitly non-hybrid (the R6-C1 alias
+    # contract). ``supports_spec_decode`` is also flipped on so we can
+    # observe the probe forcing it off (the orthogonal safety gate).
+    cfg_in = ModelConfig(
+        is_hybrid=False,
+        is_hybrid_explicit=True,
+        supports_spec_decode=True,
+    )
+    cfg_out = enrich_model_config(cfg_in, HybridCacheModel())
+
+    assert cfg_out.is_hybrid is False, (
+        "enrich_model_config promoted is_hybrid=True even though "
+        "is_hybrid_explicit=True was set — the R6-C1 boot-path "
+        "regression has re-opened."
+    )
+    assert cfg_out.is_hybrid_explicit is True, (
+        "is_hybrid_explicit must round-trip through enrich (replace())"
+    )
+    assert cfg_out.supports_spec_decode is False, (
+        "supports_spec_decode must be forced off when ArraysCache is "
+        "present, regardless of the routing decision (orthogonal "
+        "safety contract — spec decode is unsafe on linear-attention "
+        "weights)."
+    )
+
+
+def test_enrich_promotes_when_explicit_flag_unset() -> None:
+    """Counterpart to ``test_enrich_respects_is_hybrid_explicit_*``: a
+    caller that didn't set the explicit flag MUST still see the runtime
+    probe promote ``is_hybrid=True``. The suppression is opt-in, not a
+    blanket disable — legacy callers / brand-new HF paths without an
+    alias profile rely on the safety-net promotion."""
+    from mlx_lm.models.cache import ArraysCache
+
+    class HybridCacheModel:
+        def make_cache(self):
+            return [ArraysCache(size=1)]
+
+    cfg_in = ModelConfig(
+        is_hybrid=False,
+        is_hybrid_explicit=False,  # legacy / non-aliased path
+        supports_spec_decode=True,
+    )
+    cfg_out = enrich_model_config(cfg_in, HybridCacheModel())
+
+    assert cfg_out.is_hybrid is True, (
+        "Probe should promote is_hybrid=True for ArraysCache models "
+        "when the explicit flag is unset (legacy safety net)."
+    )
+    assert cfg_out.supports_spec_decode is False
 
 
 @pytest.mark.parametrize("alias", DENSE_QWEN35_ALIASES + DENSE_QWEN36_ALIASES)
