@@ -207,28 +207,22 @@ def test_rescue_noop_when_tool_calls_empty_list():
 # ── Integration: parser-level repro of the truncated thought ─────────
 
 
-def test_gemma4_parser_routes_unterminated_thought_to_reasoning():
-    """D-STOP-THINK (cross-cycle, cycle-6 F-CORR-2): the Gemma 4
-    parser now detects the unterminated ``<|channel>thought`` opener
-    and routes the body to ``reasoning`` instead of leaking the
-    entire thought trace into ``content`` with the literal channel
-    marker preserved.
+def test_gemma4_parser_returns_reasoning_on_unterminated_thought():
+    """Pins the post-r5-D contract: the Gemma 4 reasoning parser's
+    ``extract_reasoning`` returns ``(reasoning_buffer, None)`` when
+    the thought channel never closed. The shared finalize-on-
+    truncation helper (``vllm_mlx.reasoning.finalize_truncation``)
+    routes the unclosed buffer to ``reasoning_content`` instead of
+    leaking it into ``content`` (the F-DGF-V080-B-7 dup-into-both-
+    fields repro).
 
-    Pre-fix, ``extract_reasoning`` returned
-    ``(None, "<|channel>thought\\n<full trace>")`` on the no-closer
-    branch and the route's ``clean_output_text`` / ``strip_thinking_tags``
-    pipeline did not fully strip the trace. The downstream
-    silent-drop rescue masked the user-facing leak by promoting
-    reasoning_text → content, but ``content`` AND the reasoning
-    channel still ended up holding overlapping bytes on stuck-mid-
-    thought outputs.
-
-    Post-fix: reasoning carries the trace; content holds only the
-    pre-opener prefix (typically empty). The silent-drop rescue
-    still fires when content is empty AND reasoning is populated —
-    its predicate is unchanged. Cross-cycle invariant for the
-    D-STOP-THINK bundle is honoured (no byte duplication into
-    user-visible content channel).
+    Pre-r5-D the parser fell through to the "no thinking tags —
+    all content" branch and the route then either duplicated the
+    bytes into both fields (when the engine OutputRouter also
+    populated ``engine_reasoning_text``) OR surfaced the raw
+    scratchpad as the assistant's answer. The fix is parser-side
+    so every caller benefits, not just the non-streaming chat
+    route.
     """
     p = Gemma4ReasoningParser()
     truncated = (
@@ -236,13 +230,12 @@ def test_gemma4_parser_routes_unterminated_thought_to_reasoning():
         "I should call get_weather with city=SF. But first let me check"
     )
     reasoning, content = p.extract_reasoning(truncated)
-    assert reasoning is not None and "Let me think" in reasoning, (
-        f"unterminated thought must route to reasoning; got reasoning={reasoning!r}"
-    )
-    # Content holds only the (empty) pre-opener prefix — the trace
-    # bytes are no longer leaked.
-    assert not content or "Let me think" not in content, (
-        f"thought trace bytes must not leak into content; got content={content!r}"
+    # r5-D: the unclosed thought buffer routes to reasoning,
+    # NOT content.
+    assert reasoning is not None and "Let me think" in reasoning
+    assert content is None, (
+        "post-r5-D: gemma4 must NOT leak the unclosed thought into "
+        f"content; got {content!r}"
     )
 
 

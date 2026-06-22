@@ -48,6 +48,10 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "tool_call_parser",
         "reasoning_parser",
         "is_hybrid",
+        # r6-A R6-C1: explicit-pin flag that suppresses the runtime
+        # ArraysCache → is_hybrid=True auto-promotion. See
+        # ``AliasProfile.is_hybrid_explicit``.
+        "is_hybrid_explicit",
         "is_moe",
         "supports_spec_decode",
         "default_max_tokens",

@@ -162,6 +162,36 @@ class EngineCore:
 
         # Create scheduler
         scheduler_config = self.config.scheduler_config or SchedulerConfig()
+        # D-METAL-CAP: propagate the engine-level ``gpu_memory_utilization``
+        # to the scheduler so its admission gate can enforce the same cap
+        # that ``mx.set_memory_limit`` only treats as a hint. Skip when the
+        # caller already wired it explicitly to a non-zero value so unit
+        # tests that craft a SchedulerConfig in isolation retain their
+        # explicit setting.
+        #
+        # Codex round 3 NIT #3: narrow the exception filter to
+        # ``AttributeError``/``TypeError`` — a bare ``except Exception``
+        # would silently swallow ANY failure here (including a
+        # ``RuntimeError`` from a frozen-dataclass subclass) and the
+        # operator would be left with a disabled admission gate despite
+        # the CLI flag being set. Logging at WARN gives an actionable
+        # signal; the engine still starts so a malformed scheduler-
+        # config layer can't take down the server.
+        try:
+            if (
+                getattr(scheduler_config, "gpu_memory_utilization", 0.0) <= 0.0
+                and getattr(self.config, "gpu_memory_utilization", 0.0) > 0.0
+            ):
+                scheduler_config.gpu_memory_utilization = (
+                    self.config.gpu_memory_utilization
+                )
+        except (AttributeError, TypeError) as e:
+            logger.warning(
+                "[D-METAL-CAP] could not propagate gpu_memory_utilization "
+                "into scheduler_config (%s); admission cap will stay "
+                "disabled even though CLI flag is set",
+                e,
+            )
         self.scheduler = Scheduler(
             model=model,
             tokenizer=tokenizer,
@@ -373,6 +403,50 @@ class EngineCore:
         """Check if engine is running."""
         return self._running
 
+    def _run_pressure_evict_tick(self) -> None:
+        """D-METAL-PFX: drive the scheduler pressure-eviction loop once.
+
+        Extracted from ``_engine_loop`` so the codex round 2 BLOCKING
+        behavioural test can drive the exact error-handling path
+        without spinning up a full asyncio engine loop.
+
+        Why this is its own helper:
+        - Called every 16 steps from the asyncio engine loop's
+          memory-pressure tick INDEPENDENTLY of the legacy
+          ``active_mem > _memory_pressure_threshold`` gate. That
+          gate is computed once at startup from
+          ``gpu_memory_utilization + 0.05`` (capped at 0.99) and on a
+          low cap like ``--gpu-memory-utilization 0.45`` it can sit
+          ABOVE the scheduler's own ``metal_pressure_evict_fraction ×
+          cap`` — gating on it would prevent D-METAL-PFX recovery on
+          exactly the configuration the bug repro flagged (codex
+          round 1 BLOCKING).
+        - ``Scheduler.evict_prefix_cache_under_pressure`` is itself
+          short-circuited when pressure is below its threshold AND
+          when the cap is disabled (default ``gpu_memory_utilization
+          = 0.0``), so calling this every 16 steps costs one
+          ``mx.get_active_memory()`` and one dict lookup on
+          configurations that don't need it.
+        - Exceptions from the eviction path (codex round 2 BLOCKING
+          #1: e.g. ``memory_aware_cache._evict_lru`` raising under a
+          subtle lock-state bug) MUST surface in the engine log so
+          operators can correlate a stalled D-METAL-PFX series with
+          the underlying error. Rate-limited via the
+          ``_pressure_evict_error_logged`` sentinel so a persistent
+          failure doesn't flood at 16-step cadence.
+        """
+        try:
+            self.scheduler.evict_prefix_cache_under_pressure()
+        except Exception as evict_exc:
+            if not getattr(self, "_pressure_evict_error_logged", False):
+                self._pressure_evict_error_logged = True
+                logger.warning(
+                    "[D-METAL-PFX] prefix-cache pressure "
+                    "eviction raised; further failures "
+                    "will be suppressed: %r",
+                    evict_exc,
+                )
+
     async def _engine_loop(self) -> None:
         """Main engine loop."""
         # The single mlx-step worker thread is created in start() so that
@@ -423,6 +497,15 @@ class EngineCore:
         _consecutive_step_failures = 0
         _STEP_FAILURE_BURST = 10
 
+        # Codex round 6 BLOCKING #1: idle-state pressure-evict cadence.
+        # The busy-step path runs eviction every ``_memory_check_interval``
+        # steps. The idle path (no requests in flight) needs its own
+        # wall-clock tick so prefix-cache slabs left behind by the LAST
+        # request still drain — without it, an idle server stays stuck
+        # at the old active-memory high-watermark and rejects every
+        # new admit with D-METAL-CAP backpressure.
+        _idle_pressure_evict_last = 0.0
+        _idle_pressure_evict_interval_s = 5.0
         while self._running:
             try:
                 if self.scheduler.has_requests():
@@ -443,6 +526,25 @@ class EngineCore:
                                 )
                         except Exception:
                             pass
+
+                        # D-METAL-PFX: pressure-driven prefix-cache
+                        # eviction must run INDEPENDENTLY of the legacy
+                        # ``_memory_pressure_threshold`` gate above.
+                        # See ``_run_pressure_evict_tick`` for the full
+                        # rationale (codex round 1 BLOCKING + NIT).
+                        # Codex round 6 BLOCKING #2: eviction touches
+                        # cached MLX arrays + calls mx.clear_cache().
+                        # MLX streams are thread-bound (mx.new_stream
+                        # cross-thread crash gotcha), so dispatch onto
+                        # the same single ``mlx-step`` worker that runs
+                        # ``scheduler.step`` rather than executing on
+                        # the asyncio thread.
+                        if _executor is not None:
+                            await loop.run_in_executor(
+                                _executor, self._run_pressure_evict_tick
+                            )
+                        else:
+                            self._run_pressure_evict_tick()
 
                     # Fast path: distribute outputs to collectors
                     outputs = output.outputs
@@ -509,6 +611,35 @@ class EngineCore:
                     except asyncio.TimeoutError:
                         pass
                     self._idle_event.clear()
+
+                    # Codex round 6 BLOCKING #1: drive a pressure-evict
+                    # tick on the idle path so prefix-cache slabs from
+                    # the last burst drain even when no new requests
+                    # arrive. Without this, a fresh ``--gpu-memory-
+                    # utilization 0.45`` server that just finished a
+                    # 32k-prefill request stays at the high-watermark
+                    # forever and rejects the NEXT admission with
+                    # D-METAL-CAP backpressure — exactly the
+                    # ``service stays stuck`` failure mode codex
+                    # flagged in round 6.
+                    now_mono = time.monotonic()
+                    if (
+                        now_mono - _idle_pressure_evict_last
+                        >= _idle_pressure_evict_interval_s
+                    ):
+                        _idle_pressure_evict_last = now_mono
+                        if _executor is not None:
+                            try:
+                                await loop.run_in_executor(
+                                    _executor, self._run_pressure_evict_tick
+                                )
+                            except Exception:
+                                # The helper already rate-limits its
+                                # own WARNING. Don't let an evict
+                                # failure crash the engine loop.
+                                pass
+                        else:
+                            self._run_pressure_evict_tick()
 
             except asyncio.CancelledError:
                 break

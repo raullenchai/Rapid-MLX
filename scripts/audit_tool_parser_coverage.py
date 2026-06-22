@@ -92,6 +92,14 @@ MATRIX_EXEMPT: dict[str, str] = {
     "functionary": "TODO: add Functionary-medium model to golden_models",
     "xlam": "TODO: add xLAM model to golden_models",
     "seed_oss": "TODO: add Seed-OSS model to golden_models",
+    # UI-TARS (ByteDance) — GUI-agent VLM. Adding a real golden_models
+    # entry requires running a Qwen2-VL / Qwen2.5-VL backbone in the
+    # pr_validate matrix (mlx-vlm path, not the plain mlx-lm path the
+    # other matrix entries use). Track as TODO until vision-VLM matrix
+    # support lands.
+    "ui_tars": "TODO: add UI-TARS-1.5-7B-4bit to golden_models once the VLM matrix supports mlx-vlm-backed Computer-Use models",
+    "ui-tars": "alias of ui_tars (kebab-case spelling)",
+    "uitars": "alias of ui_tars (no-separator spelling)",
 }
 
 

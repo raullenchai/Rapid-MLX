@@ -629,6 +629,17 @@ MLLM_PATTERNS = [
     "InternVL",  # InternVL
     "deepseek-vl",
     "DeepSeek-VL",  # DeepSeek-VL
+    # UI-TARS (ByteDance) — Qwen2-VL / Qwen2.5-VL based GUI-agent VLM.
+    # The model id ``UI-TARS-…`` does not match the generic ``-VL-`` pattern
+    # (the VL part is in the underlying architecture, not the public name),
+    # so list it explicitly. Without this entry, ``is_mllm_model`` returns
+    # False on full HF paths like ``mlx-community/UI-TARS-1.5-7B-4bit``
+    # and the engine boots the text-only path, breaking the screenshot+
+    # instruction contract every UI-TARS deployment needs.
+    "UI-TARS",
+    "ui-tars",
+    "UI_TARS",
+    "ui_tars",
 ]
 
 

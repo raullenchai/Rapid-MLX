@@ -269,6 +269,127 @@ def _print_unknown_model_help(name: str, *, full_path_example: str) -> None:
     print(f"  or pass a full path like: {full_path_example}")
 
 
+def _embedding_not_found_exception_classes() -> tuple[type[BaseException], ...]:
+    """Return the concrete exception classes the embedding loader raises
+    for a missing model.
+
+    pr_validate codex r1 NIT: matching ``"not found"`` as a substring of
+    the exception text was too loose — a future ``ValueError("config
+    field 'x' not found in tensor map")`` from a corrupt model could be
+    mis-translated as the alias/HF-id hint, masking the real bug. Bind
+    to the actual classes so the wrap-path only fires on the
+    well-defined not-found shape.
+
+    Lazy import so the base install (no ``[embeddings]`` extra, no
+    ``huggingface_hub`` shadow) stays free of these imports until the
+    code path actually runs. Missing classes are silently skipped — the
+    caller's tuple-based ``except`` accepts an empty tuple as a no-op,
+    so a sparse environment falls back to "re-raise everything", which
+    is the safe default.
+    """
+    classes: list[type[BaseException]] = [FileNotFoundError]
+    try:  # mlx_embeddings — installed via the [embeddings] extra
+        from mlx_embeddings.utils import ModelNotFoundError
+
+        classes.append(ModelNotFoundError)
+    except Exception:  # pragma: no cover — defensive
+        pass
+    try:  # huggingface_hub — transitive of mlx_embeddings
+        from huggingface_hub.errors import (
+            EntryNotFoundError,
+            RepositoryNotFoundError,
+        )
+
+        classes.append(RepositoryNotFoundError)
+        classes.append(EntryNotFoundError)
+    except Exception:  # pragma: no cover — defensive
+        pass
+    return tuple(classes)
+
+
+def _resolve_embedding_alias(name: str) -> tuple[str, bool]:
+    """Resolve a ``--embedding-model`` alias through the shared registry.
+
+    D-EMBED-ALIAS: Sarah F-S2-1 — the positional chat-model arg goes
+    through ``resolve_model`` at the CLI dispatch (cli.py ~5660), but
+    the ``--embedding-model`` flag was passed verbatim to
+    ``mlx_embeddings.load`` and crashed with ``ModelNotFoundError`` on
+    any alias.
+
+    Returns ``(resolved, did_resolve)``. ``did_resolve`` is True when
+    the registry actually mapped ``name`` to a different HF path —
+    used by the caller to log the alias hop.
+    """
+    from .model_aliases import resolve_model
+
+    resolved = resolve_model(name)
+    return resolved, resolved != name
+
+
+def _load_embedding_model_or_exit(args, load_fn) -> None:
+    """Pre-load ``--embedding-model`` with the H-08 install guard and
+    the D-EMBED-ALIAS alias-resolution + clean error-wrapping path.
+
+    Lifted out of ``serve_command`` so the dispatch sequence can be
+    unit-tested without booting the full engine — the pr_validate
+    codex r0 BLOCKING #1 noted that the in-test exercising the
+    behaviour at module scope didn't actually invoke the CLI path,
+    so a regression that removed the alias resolution would pass.
+    Calling this helper directly gives the test surgical coverage.
+
+    ``args`` mirrors the ``argparse.Namespace`` shape — only
+    ``embedding_model`` is read and (on alias hit) mutated.
+    ``load_fn`` is the embedding-loader callable
+    (``vllm_mlx.server.load_embedding_model``) — passed in so tests
+    can mock it without monkeypatching the server module.
+
+    Failure modes that exit cleanly:
+
+    * Missing ``[embeddings]`` extra → ``sys.exit(2)`` with install
+      hint (H-08, ``require_mlx_embeddings_or_exit``).
+    * Loader raises ``ModelNotFoundError`` / ``RepositoryNotFoundError``
+      / ``FileNotFoundError`` → ``sys.exit(1)`` with an actionable
+      hint pointing at the alias registry and the canonical HF id
+      format. Any OTHER ``Exception`` re-raises so unrelated bugs
+      surface with their real trace.
+    """
+    from .embedding import require_mlx_embeddings_or_exit
+
+    require_mlx_embeddings_or_exit()
+
+    original_embed = args.embedding_model
+    resolved_embed, did_resolve = _resolve_embedding_alias(original_embed)
+    if did_resolve:
+        print(f"  Embedding alias: {original_embed} → {resolved_embed}")
+        args.embedding_model = resolved_embed
+    print(f"Pre-loading embedding model: {args.embedding_model}")
+    # Bind to the concrete not-found classes the loader can raise
+    # (mlx_embeddings.utils.ModelNotFoundError +
+    # huggingface_hub.errors.RepositoryNotFoundError/EntryNotFoundError
+    # + stdlib FileNotFoundError for the local-path branch). Any OTHER
+    # exception class falls through unchanged so unrelated bugs (corrupt
+    # safetensors mid-load, Metal OOM, schema mismatch) surface with
+    # their real trace — pr_validate codex r1 NIT closure (the prior
+    # ``"not found"`` substring match was too loose).
+    not_found_exc_classes = _embedding_not_found_exception_classes()
+    try:
+        load_fn(args.embedding_model, lock=True)
+    except not_found_exc_classes as exc:
+        print(
+            f"\n  Error: --embedding-model '{original_embed}' could not "
+            f"be loaded ({type(exc).__name__}: {exc})."
+        )
+        print(
+            "  Tip: use a registered embedding alias (see "
+            "``rapid-mlx ls`` for the list — e.g. "
+            "``embeddinggemma-300m-6bit``) or pass the full "
+            "HuggingFace id (e.g. "
+            "``mlx-community/embeddinggemma-300m-6bit``).\n"
+        )
+        sys.exit(1)
+    print(f"Embedding model loaded: {args.embedding_model}")
+
+
 def _check_disk_space(model_name: str, force: bool = False) -> None:
     """Verify there's enough disk space to download the model.
 
@@ -747,6 +868,67 @@ def serve_command(args):
     import os
     import sys
 
+    # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
+    # fire first thing in ``serve_command`` — before
+    # ``prompt_upgrade_if_available`` (which may exit 0 on user
+    # decline), before ``_ensure_model_downloaded`` (which can take
+    # minutes on a cold cache), and well before the startup banner
+    # gets printed. Pre-fix the check lived deeper in the function so
+    # the operator saw the alias-resolved log line, the startup banner,
+    # the feature list, AND the model id BEFORE the
+    # "requires the [embeddings] extra" error and ``sys.exit(2)``,
+    # which read as a successful boot followed by a mysterious failure
+    # — Diego logged this as a warning-and-fall-through bug because
+    # the banner masked the actual exit. Hoisting the probe to the
+    # very top of ``serve_command`` puts the error first, with no
+    # banner output before it. ``mlx_embeddings`` import stays lazy so
+    # the base install (no ``[embeddings]`` extra) keeps booting.
+    if getattr(args, "embedding_model", None):
+        from .embedding import require_mlx_embeddings_or_exit
+
+        require_mlx_embeddings_or_exit()
+
+    # R-10 (PyPI 0.8.6 dogfood): same boot-guard shape for vision /
+    # multimodal aliases. ``mlx-vlm`` lives behind the ``[vision]``
+    # extra, but ``rapid-mlx serve ui-tars-1.5-7b-4bit`` on a fresh
+    # ``pip install rapid-mlx`` previously fell into the engine load
+    # path BEFORE the missing-dep error surfaced (deep ImportError
+    # after weight download + alias resolution). Probe here so the
+    # operator sees an actionable hint before the long download starts.
+    # Honors ``--mllm`` force-on AND the alias-name / HF-path probe
+    # used downstream by ``pflash.validate_model_support``. The
+    # ``--no-mllm`` escape hatch (force_text in load_model) bypasses
+    # this guard, matching the engine-side semantics.
+    if not getattr(args, "no_mllm", False):
+        from .api.utils import is_mllm_model as _boot_is_mllm
+
+        if getattr(args, "mllm", False) or _boot_is_mllm(args.model):
+            from .models.mllm import require_mlx_vlm_or_exit
+
+            require_mlx_vlm_or_exit(args.model)
+
+    # R6-H4 (Eva 0.8.7 dogfood): same boot-guard shape for audio aliases.
+    # ``mlx-audio`` lives behind the ``[audio]`` extra; pre-fix
+    # ``rapid-mlx serve kokoro`` (or whisper/parakeet/chatterbox/...) on
+    # a base install printed the startup banner, opened the port, and
+    # only crashed on the first audio request (the in-route lane probe).
+    # That looked like "successful boot, broken inference" instead of
+    # the obvious "you need the [audio] extra". Probe at flag-parse
+    # time so the operator sees an actionable hint with rc=2 before
+    # any download / banner output, mirroring r5-C's UI-TARS guard.
+    #
+    # Recognition is alias-substring based (``whisper``, ``parakeet``,
+    # ``kokoro``, ``chatterbox``, ``vibevoice``, ``voxcpm``) so the
+    # quantised variants (``kokoro-4bit``) and HF-style ids
+    # (``mlx-community/Kokoro-82M-bf16``) trip it the same way bare
+    # aliases do. A model name that doesn't match an audio token falls
+    # through unchanged — text/vision/embedding models never see this
+    # probe.
+    from .audio.probe import is_audio_model_alias, require_audio_or_exit
+
+    if is_audio_model_alias(getattr(args, "model", None)):
+        require_audio_or_exit(args.model)
+
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors
     # RAPID_MLX_DISABLE_VERSION_CHECK, CI=1, and non-TTY stdin. Cached
@@ -1184,11 +1366,20 @@ def serve_command(args):
         print(f"MCP config: {args.mcp_config}")
         os.environ["RAPID_MLX_MCP_CONFIG"] = args.mcp_config
 
-    # Pre-load embedding model if specified
+    # Pre-load embedding model if specified.
+    #
+    # H-08 install guard + D-EMBED-ALIAS alias-resolution + clean
+    # ModelNotFoundError wrapping all live in the shared helper so the
+    # standalone ``python -m vllm_mlx.server`` entry behaves identically.
+    # See :func:`_load_embedding_model_or_exit` for the full contract;
+    # F-H08-INCOMPLETE / D-CAPABILITIES already pre-flighted
+    # ``require_mlx_embeddings_or_exit`` at the top of ``serve_command``
+    # but the helper re-probes defensively so any caller that
+    # synthesizes an ``args`` namespace and jumps into the load path
+    # still gets the install-hint exit instead of a raw
+    # ``ModuleNotFoundError``.
     if args.embedding_model:
-        print(f"Pre-loading embedding model: {args.embedding_model}")
-        server.load_embedding_model(args.embedding_model, lock=True)
-        print(f"Embedding model loaded: {args.embedding_model}")
+        _load_embedding_model_or_exit(args, server.load_embedding_model)
 
     # Warn about deprecated flags
     if getattr(args, "simple_engine", False):
@@ -1276,6 +1467,16 @@ def serve_command(args):
         kv_cache_turboquant_group_size=args.kv_cache_turboquant_group_size,
         # PFlash long-prompt compression (#287)
         pflash_config=pflash_config,
+        # D-METAL-CAP: thread the user's --gpu-memory-utilization into
+        # SchedulerConfig so the admission gate enforces the same cap
+        # that ``mx.set_memory_limit`` only treats as a guideline. The
+        # CLI ↔ Config fidelity audit blocks merges where this kwarg
+        # exists on SchedulerConfig but is missing at the construction
+        # site — without this line, ``--gpu-memory-utilization 0.45``
+        # would still set the soft Metal hint but the admission-time
+        # check would stay disabled (SchedulerConfig default 0.0),
+        # silently recreating the D-METAL-CAP regression.
+        gpu_memory_utilization=args.gpu_memory_utilization,
     )
 
     print("Mode: Continuous batching (for multiple concurrent users)")
@@ -4967,7 +5168,11 @@ Examples:
         "--embedding-model",
         type=str,
         default=None,
-        help="Pre-load an embedding model at startup (e.g. mlx-community/embeddinggemma-300m-6bit)",
+        help=(
+            "Pre-load an embedding model at startup (e.g. "
+            "mlx-community/embeddinggemma-300m-6bit). Requires the "
+            "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+        ),
     )
     # PFlash long-prompt prefill compression (#287). Off by default; see
     # vllm_mlx/pflash.py for the design and the prefix-cache bypass.
@@ -5647,16 +5852,44 @@ Examples:
             args._original_alias = args.model
             args.model = resolved
         elif "/" not in args.model and not os.path.exists(args.model):
-            # Not an alias, not a HuggingFace org/name path, not a local
-            # directory — fail fast with suggestions instead of letting the
-            # request hit HuggingFace and 404 with a 30-line stack trace.
-            print(
-                f"\n  Error: '{args.model}' is not a known alias or HuggingFace path."
-            )
-            _print_unknown_model_help(
-                args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
-            )
-            sys.exit(1)
+            # R8-M5 (Bo 0.8.9 dogfood): short audio aliases (``kokoro``,
+            # ``whisper``, ``parakeet``, ``chatterbox``, ``vibevoice``,
+            # ``voxcpm``) and their full-form siblings (``kokoro-82m-
+            # 8bit``) are NOT in ``aliases.json`` — the resolver returns
+            # them unchanged, then this fail-fast branch trips with
+            # "is not a known alias or HuggingFace path" BEFORE
+            # ``serve_command`` can run the audio boot guard. On a
+            # fresh ``pip install rapid-mlx`` (no ``[audio]`` extra)
+            # that means the operator sees a generic "unknown alias"
+            # instead of the actionable "install rapid-mlx[audio]"
+            # hint, and on a healthy install with ``[audio]`` the
+            # short alias resolves at request time inside the audio
+            # routes (``TTS_MODEL_ALIASES`` / ``STT_MODEL_ALIASES``)
+            # but the CLI exits before serve_command ever runs.
+            #
+            # Skip the fail-fast for audio aliases so:
+            #   - missing-extra installs reach the audio boot guard
+            #     in ``serve_command`` (rc=2 + install hint).
+            #   - healthy installs reach the audio routes' alias
+            #     resolution and serve correctly.
+            # The substring check matches the same alias surface the
+            # serve-command boot guard uses (``_AUDIO_ALIAS_TOKENS``)
+            # so a name that trips one trips the other — no risk of a
+            # text/vision alias accidentally bypassing the fail-fast.
+            from .audio.probe import is_audio_model_alias
+
+            if not is_audio_model_alias(args.model):
+                # Not an alias, not a HuggingFace org/name path, not a
+                # local directory, not an audio alias — fail fast with
+                # suggestions instead of letting the request hit
+                # HuggingFace and 404 with a 30-line stack trace.
+                print(
+                    f"\n  Error: '{args.model}' is not a known alias or HuggingFace path."
+                )
+                _print_unknown_model_help(
+                    args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
+                )
+                sys.exit(1)
         # Round 16 codex catch: record the resolved (or already-canonical)
         # model so ``session_end`` can report what this invocation loaded.
         # ``normalize_model_path`` inside the emit helper redacts local

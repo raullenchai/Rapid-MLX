@@ -369,31 +369,146 @@ def _baseline_sanitize_messages(messages):
     return fallback
 
 
+def _walk_tools_iter(tools, transform):
+    """Iteratively walk a tool definition tree, applying ``transform`` to
+    every string leaf and returning a structurally-identical deep copy.
+
+    Both :func:`_baseline_sanitize_tools` and
+    :func:`_sanitize_tools_for_template` previously used an inner ``_walk``
+    that recursed on ``dict`` / ``list`` / ``tuple`` containers. That
+    shape ate one Python frame per level of JSON nesting and crashed
+    with ``RecursionError`` (HTTP 500) on a client-supplied
+    ``tools[].function.parameters`` payload nested ~1000 deep
+    (D-TOOL-RECUR; ~10–30 KB JSON, well under the body-size cap).
+    Because the crash propagated out as an unhandled ``RecursionError``
+    on every loaded model (parser-agnostic), it was an unauthenticated
+    DoS surface.
+
+    An iterative walk with an explicit work stack puts the depth bound
+    on the heap instead of the C stack, so the same payload finishes
+    in O(N) time and O(N) memory without touching the Python recursion
+    limit. The body-depth guard (see ``RAPID_MLX_MAX_BODY_DEPTH``) and
+    the per-tool depth validator (see ``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``)
+    upstream of this walk reject payloads whose nesting is large
+    enough to be a memory-pressure concern in the first place; this
+    iterative walk is the structural defense-in-depth so a payload
+    that somehow slips past the guards still cannot crash the worker.
+
+    ``transform`` is applied to every ``str`` leaf. Containers are
+    deep-copied; ``tuple`` containers are preserved as tuples. Non-
+    string scalars (``int``/``float``/``bool``/``None``) pass through
+    unchanged — same contract as the previous recursive form.
+    """
+    # The work stack carries ``(parent_container, key_or_index, source_node,
+    # depth)`` tuples. We allocate the result container up-front when
+    # ``source_node`` is a container, push its children to the stack, and
+    # let later iterations fill in the children slots in the result. For
+    # tuples we accumulate a list buffer and convert in a second pass at
+    # the end — see :func:`_finalize_tuple_buffers` for why the
+    # second pass MUST run leaves-first (codex r1 BLOCKING #1).
+    if isinstance(tools, str):
+        return transform(tools)
+    if not isinstance(tools, (dict, list, tuple)):
+        return tools
+
+    # ``root_holder`` is a single-slot container so the worker loop can
+    # assign the root result via the same ``parent[key] = ...`` shape it
+    # uses for every other node, without a special-case branch.
+    root_holder: list = [None]
+    # Stack entries: (parent, key, source, depth)
+    stack: list = [(root_holder, 0, tools, 0)]
+    # Track tuple buffers with their depth in the result tree so the
+    # second pass can convert leaves-first. Each entry is
+    # ``(depth, parent, key, list_buf)``. Sort by depth DESC at close
+    # so the innermost buf becomes a tuple BEFORE the parent buf is
+    # materialised, otherwise the parent tuple captures the (stale)
+    # list reference and the inner tuple replacement is lost.
+    tuple_buffers: list = []
+
+    while stack:
+        parent, key, src, depth = stack.pop()
+        if isinstance(src, str):
+            parent[key] = transform(src)
+        elif isinstance(src, dict):
+            new_dict: dict = {}
+            parent[key] = new_dict
+            for k, v in src.items():
+                if isinstance(v, str):
+                    new_dict[k] = transform(v)
+                elif isinstance(v, (dict, list, tuple)):
+                    new_dict[k] = None  # placeholder filled below
+                    stack.append((new_dict, k, v, depth + 1))
+                else:
+                    new_dict[k] = v
+        elif isinstance(src, list):
+            new_list: list = [None] * len(src)
+            parent[key] = new_list
+            for i, v in enumerate(src):
+                if isinstance(v, str):
+                    new_list[i] = transform(v)
+                elif isinstance(v, (dict, list, tuple)):
+                    stack.append((new_list, i, v, depth + 1))
+                else:
+                    new_list[i] = v
+        elif isinstance(src, tuple):
+            # Allocate a list buffer; the parent slot temporarily holds
+            # this list. The final-pass converter (post-order, by
+            # descending depth) replaces ``parent[key]`` with
+            # ``tuple(buf)`` only AFTER every child tuple beneath it
+            # has already been converted in place inside ``buf``.
+            buf: list = [None] * len(src)
+            parent[key] = buf
+            tuple_buffers.append((depth, parent, key, buf))
+            for i, v in enumerate(src):
+                if isinstance(v, str):
+                    buf[i] = transform(v)
+                elif isinstance(v, (dict, list, tuple)):
+                    stack.append((buf, i, v, depth + 1))
+                else:
+                    buf[i] = v
+        else:
+            parent[key] = src
+
+    # Convert tuple buffers back into tuples LEAVES-FIRST (deepest
+    # depth processed first). codex r1 BLOCKING #1: insertion order
+    # is push order, which for a DFS stack is parent-before-child.
+    # If we materialise the outer tuple FIRST, the freshly-created
+    # ``tuple(buf_outer)`` captures the inner buf as a LIST reference;
+    # the subsequent ``buf_outer[i] = tuple(buf_inner)`` mutates the
+    # list buffer but the outer tuple (immutable) still points at the
+    # original list object, so the returned outer tuple contains a
+    # list where the test expects a tuple. Sorting by ``-depth`` (or
+    # equivalently the highest-depth-first descending sort) guarantees
+    # the inner buf has already been replaced with its tuple form
+    # INSIDE ``buf_outer`` before we materialise the outer tuple.
+    tuple_buffers.sort(key=lambda entry: entry[0], reverse=True)
+    for _depth, parent, key, buf in tuple_buffers:
+        parent[key] = tuple(buf)
+
+    return root_holder[0]
+
+
 def _baseline_sanitize_tools(tools):
     """Fail-closed fallback for ``_sanitize_tools_for_template``.
 
     Walks the tool definition tree with the literal baseline marker
     set when the tokenizer-registry-aware sanitiser raises — same
     rationale as ``_baseline_sanitize_messages`` (codex r7 BLOCKING).
+
+    Implemented on top of :func:`_walk_tools_iter` (iterative, explicit
+    work-stack) so a client-supplied tool tree nested ~1000 levels deep
+    cannot hit Python's recursion limit and crash the worker with HTTP
+    500 (D-TOOL-RECUR). The iterative walk is the structural fix; the
+    request-time depth validator in :func:`_validate_tool_schema_depth`
+    (``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``) rejects deep payloads earlier
+    with a sanitized 400.
     """
     if not tools:
         return tools
     baseline_pattern = _build_marker_pattern(set(_CHAT_TEMPLATE_ROLE_MARKERS))
     if baseline_pattern is None:
         return tools
-
-    def _walk(obj):
-        if isinstance(obj, str):
-            return _neutralize_in_string(obj, baseline_pattern)
-        if isinstance(obj, dict):
-            return {k: _walk(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_walk(v) for v in obj]
-        if isinstance(obj, tuple):
-            return tuple(_walk(v) for v in obj)
-        return obj
-
-    return _walk(tools)
+    return _walk_tools_iter(tools, lambda s: _neutralize_in_string(s, baseline_pattern))
 
 
 def _sanitize_tools_for_template(tools, template_applicator):
@@ -407,10 +522,19 @@ def _sanitize_tools_for_template(tools, template_applicator):
     client-controlled tool description containing ``<|im_start|>...``
     re-opened the bypass for tool-using requests. Codex r5 P1.
 
-    The neutralisation is recursive over the tool definition tree —
+    The neutralisation walks the tool definition tree iteratively —
     every string leaf is run through ``_neutralize_in_string``. Lists
     and dicts are walked structurally; non-string scalars pass
     through unchanged.
+
+    The walk uses :func:`_walk_tools_iter` (explicit work-stack)
+    instead of the previous recursive descent so a client-supplied
+    schema nested ~1000 levels deep cannot crash the worker with
+    HTTP 500 on Python's recursion-limit (D-TOOL-RECUR). The
+    request-time depth validator at
+    :data:`MAX_TOOL_SCHEMA_DEPTH_ENV` rejects deeper payloads with a
+    sanitized 400 before reaching this sanitiser — this iterative
+    form is the structural defense-in-depth.
     """
     if not tools:
         return tools
@@ -418,19 +542,7 @@ def _sanitize_tools_for_template(tools, template_applicator):
     pattern = _build_marker_pattern(markers)
     if pattern is None:
         return tools
-
-    def _walk(obj):
-        if isinstance(obj, str):
-            return _neutralize_in_string(obj, pattern)
-        if isinstance(obj, dict):
-            return {k: _walk(v) for k, v in obj.items()}
-        if isinstance(obj, list):
-            return [_walk(v) for v in obj]
-        if isinstance(obj, tuple):
-            return tuple(_walk(v) for v in obj)
-        return obj
-
-    return _walk(tools)
+    return _walk_tools_iter(tools, lambda s: _neutralize_in_string(s, pattern))
 
 
 def _build_tool_injection_text(tools: list[dict]) -> str:

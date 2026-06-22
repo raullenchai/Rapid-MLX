@@ -190,6 +190,17 @@ PARITY_FIXTURES: list = [
         ),
         [("read_file", {"path": "/etc/hostname"})],
     ),
+    # ui_tars — Computer-Use action line. Stream / non-stream paths both
+    # MUST recover the canonical (name="computer", args={action, point})
+    # tuple. The streaming finalize path runs the same _iter_actions
+    # scanner as the non-stream path, so coverage is the same shape —
+    # this fixture guards against a future regression where they diverge.
+    (
+        "ui_tars",
+        "ui_tars_action",
+        "Thought: Click search.\nAction: click(point='<point>200 300</point>')",
+        [("computer", {"action": "click", "point": [200, 300]})],
+    ),
 ]
 
 
@@ -240,6 +251,8 @@ _PARITY_COVERAGE_EXEMPT: dict[str, str] = {
     "qwen3": "alias of qwen",
     "qwen3_coder": "alias of hermes",
     "nous": "alias of hermes",
+    "ui-tars": "alias of ui_tars (kebab-case spelling)",
+    "uitars": "alias of ui_tars (no-separator spelling)",
     "auto": "router, not a wire-format parser",
     "generic": "router, not a wire-format parser",
 }

@@ -14,11 +14,17 @@ client).
 """
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
-from .models import _validate_seed
+from .models import (
+    _TOP_K_SENTINEL_CAP,
+    StreamOptions,
+    _validate_nonnegative_int,
+    _validate_positive_int,
+    _validate_seed,
+)
 
 # =============================================================================
 # Request Models
@@ -87,6 +93,22 @@ class ResponsesRequest(BaseModel):
     parallel_tool_calls: bool | None = None
     reasoning: dict | None = None  # {"effort": "low|medium|high", "summary": ...}
     stream: bool = False
+    # R7-H4: OpenAI streaming-spec parity — Responses API also accepts
+    # ``stream_options.include_usage`` per OpenAI SDK ``stream_options``
+    # shape. Pre-R7-H4 the field was undeclared on this surface, so
+    # Pydantic silently dropped any value the client sent; that gave
+    # ``stream_options={"include_usage":"yes"}`` an HTTP-200 free pass
+    # while the chat / completions surfaces (which DO declare the field
+    # via ``StreamOptions`` with a ``StrictBool``) correctly 422'd.
+    # Declaring it here with the SAME shared ``StreamOptions`` model
+    # routes the strict-bool gate through the same validator so the
+    # contract is uniform across all four routes (chat / completions /
+    # messages / responses). The Responses route does not currently
+    # emit a trailing-usage SSE chunk — the field is accepted-but-
+    # ignored on this surface (parity with ``previous_response_id`` /
+    # ``store`` / ``include`` etc.); the strict-bool gate is the
+    # load-bearing piece for the r7 sweep.
+    stream_options: StreamOptions | None = None
     store: bool | None = None
     include: list[str] | None = None
     service_tier: str | None = None
@@ -97,6 +119,19 @@ class ResponsesRequest(BaseModel):
     max_output_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
+    # Yuki R6 (0.8.5 dogfood): OpenAI Responses spec defines
+    # ``truncation`` as ``"auto" | "disabled"``. rapid-mlx accepts and
+    # echoes the requested value back on the response envelope; the
+    # engine-level truncation behaviour is a no-op in this release (the
+    # context-length gate already rejects oversized prompts upstream).
+    # NOTE: implement actual auto-truncation in a follow-up — operator
+    # preference (0.8 dogfood r4) is to echo + no-op so migrating
+    # clients don't see a silent drop while the implementation lands.
+    #
+    # Codex r3 NIT (PR #817): ``Literal[...]`` so typos like
+    # ``"enabled"`` produce a Pydantic 400 instead of silently
+    # round-tripping as if they were valid.
+    truncation: Literal["auto", "disabled"] | None = None
     # Per-request cap on reasoning tokens — see ``ChatCompletionRequest``
     # for the full semantic. ``None`` = no cap. Validated >= 1 by the
     # post-init validator below; the Responses route forwards this to
@@ -124,11 +159,44 @@ class ResponsesRequest(BaseModel):
     # downstream in ``make_seeded_sampler`` (parity with the chat /
     # legacy completion surfaces).
     seed: int | None = None
+    # r6-A R6-H8: ``top_k`` upper-bound gate on the Responses surface.
+    # r5-E B-7 (PR #824) landed the shared ``_validate_nonnegative_int``
+    # validator + ``_TOP_K_SENTINEL_CAP = 1 << 20`` ceiling on
+    # ChatCompletionRequest and CompletionRequest, but Responses never
+    # declared the field at all — Pydantic silently dropped any
+    # ``top_k`` the client sent (e.g. ``999999999``) and the route then
+    # generated with the engine's default sampler. From the SDK
+    # consumer's perspective the value was silently accepted (HTTP 200
+    # with no validation error), which is the exact silent-correctness
+    # hazard r5-E exists to close. Mirroring the chat/completion schema
+    # here (single shared validator, single shared ceiling) keeps the
+    # three OpenAI-surface lanes (chat / responses / legacy completions)
+    # under one contract — no copy-pasted thresholds to drift.
+    top_k: int | None = None
 
     @field_validator("seed", mode="before")
     @classmethod
     def _validate_seed_field(cls, v) -> int | None:
         return _validate_seed(v)
+
+    @field_validator("top_k", mode="before")
+    @classmethod
+    def _validate_top_k(cls, v) -> int | None:
+        return _validate_nonnegative_int(
+            v, max_value=_TOP_K_SENTINEL_CAP, field_name="top_k"
+        )
+
+    # R7-M3: shared ``>= 1`` gate on ``max_output_tokens``. Pre-R7-M3
+    # ``max_output_tokens=-5`` HTTP-200'd on /v1/responses with
+    # ``status="incomplete"`` — silent-correctness hazard same shape
+    # as ``seed=-1`` (which DOES 400). The chat route had its own
+    # hand-rolled ``max_tokens < 1`` check; the schema-level
+    # validator means /v1/responses / /v1/completions / /v1/messages
+    # all share one contract now.
+    @field_validator("max_output_tokens", mode="before")
+    @classmethod
+    def _validate_max_output_tokens(cls, v) -> int | None:
+        return _validate_positive_int(v, field_name="max_output_tokens")
 
     @model_validator(mode="before")
     @classmethod
@@ -159,6 +227,27 @@ class ResponsesRequest(BaseModel):
             )
         return data
 
+    @model_validator(mode="after")
+    def _validate_input_nonempty(self) -> "ResponsesRequest":
+        """D-ANTHRO-VALIDATION F11 sibling — reject an empty ``input``.
+
+        ``input=[]`` (and ``input=""``) pre-fix slipped past the schema
+        and the downstream adapter then crashed dereferencing an empty
+        list / running a no-token prompt through the engine. Anthropic-
+        parity surface: same shape rejected at the schema layer with a
+        clear 400 instead of a 500.
+        """
+        if isinstance(self.input, str):
+            if self.input == "":
+                raise ValueError(
+                    "`input` must be a non-empty string or a non-empty "
+                    "list of input items."
+                )
+        elif isinstance(self.input, list):
+            if len(self.input) == 0:
+                raise ValueError("`input` must be a non-empty list of input items.")
+        return self
+
 
 # =============================================================================
 # Response Models
@@ -188,12 +277,19 @@ class ResponsesOutputContent(BaseModel):
 class ResponsesOutputItem(BaseModel):
     """An item in the ``output`` array of a non-streaming response.
 
-    Two shapes the shim emits:
+    Four shapes the shim emits:
     - ``message`` — assistant text reply, content array of output_text
     - ``function_call`` — one per tool call the model produced
+    - ``reasoning`` — top-level reasoning summary (Yuki F4 / R10);
+      emitted alongside ``message`` when the model produced reasoning
+      (cross-lane parity with /v1/chat/completions ``message.reasoning_content``).
+    - ``computer_call`` — UI-TARS / Computer-Use action call (Ana C-06);
+      emitted instead of ``function_call`` when the request supplied
+      ``tools=[{type:"computer_20251022", ...}]`` and the underlying
+      parser surfaced a ``computer``-tool call.
     """
 
-    type: str  # "message" | "function_call"
+    type: str  # "message" | "function_call" | "reasoning" | "computer_call"
     id: str
     status: str = "completed"
     # message
@@ -203,6 +299,18 @@ class ResponsesOutputItem(BaseModel):
     call_id: str | None = None
     name: str | None = None
     arguments: str | None = None
+    # reasoning — OpenAI Responses spec, output[i].type=="reasoning":
+    #   {"type":"reasoning","id":"rs_...","summary":[{"type":"summary_text","text":"..."}]}
+    # ``encrypted_content`` is omitted unless include=["reasoning.encrypted_content"]
+    # is requested AND the backend produces one. rapid-mlx is stateless,
+    # so the field is always absent today.
+    summary: list[dict] | None = None
+    encrypted_content: str | None = None
+    # computer_call — Computer-Use action shape, populated by translating
+    # the UI-TARS tool_call (``name="computer"``, JSON arguments) into the
+    # OpenAI ``computer_call`` envelope.
+    action: dict | None = None
+    pending_safety_checks: list[dict] | None = None
 
 
 class ResponsesResponse(BaseModel):
@@ -222,3 +330,13 @@ class ResponsesResponse(BaseModel):
     metadata: dict | None = None
     instructions: str | None = None
     previous_response_id: str | None = None
+    # Yuki R6 / R7 (0.8.5 dogfood): the OpenAI Responses spec exposes
+    # ``truncation`` and ``service_tier`` as response-envelope fields.
+    # ``truncation`` is echoed (today no-op'd at the engine level — see
+    # ``ResponsesRequest`` docstring), ``service_tier`` is echoed as
+    # the requested value so clients see the contract round-trip. Both
+    # default to ``None`` so non-strict SDKs that ignore them keep
+    # working. ``truncation`` is ``Literal`` so the request-side
+    # validator's contract carries over to the response shape too.
+    truncation: Literal["auto", "disabled"] | None = None
+    service_tier: str | None = None

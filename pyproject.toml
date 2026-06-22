@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "rapid-mlx"
-version = "0.8.2"
+version = "0.8.10"
 description = "Rapid-MLX — AI inference for Apple Silicon. Drop-in OpenAI API, 2-4x faster than Ollama."
 readme = "README.md"
 license = {text = "Apache-2.0"}
@@ -151,7 +151,19 @@ guided = [
 ]
 # Audio dependencies for TTS/STT (mlx-audio)
 audio = [
-    "mlx-audio>=0.2.9",
+    # R7-H3 (Bo 0.8.8 dogfood): pin BELOW 0.4.4. The 0.4.4 release
+    # regressed ``mlx_audio.tts.models.kokoro.istftnet.SineGen`` so the
+    # internal interpolation step produces an off-by-one length mismatch
+    # versus the noise tensor — every Kokoro request ends with
+    # ``[broadcast_shapes] Shapes (1,36600,1) and (1,36900,9) cannot be
+    # broadcast`` deep inside the istftnet generator. The rapid-mlx
+    # route's catch-all collapsed that into the opaque ``No audio
+    # generated`` 500 (the chunk loop swallowed the upstream raise).
+    # 0.4.3 (and earlier) does NOT have the regression — the same
+    # request returns a 73 KB WAV. Cap the upper bound until upstream
+    # ships a fix so every fresh ``pip install rapid-mlx[audio]``
+    # works out of the box.
+    "mlx-audio>=0.2.9,<0.4.4",
     "sounddevice>=0.4.0",
     "soundfile>=0.12.0",
     "scipy>=1.10.0",
@@ -161,7 +173,33 @@ audio = [
     "spacy>=3.7.0",
     "num2words>=0.5.0",
     "loguru>=0.7.0",
-    "phonemizer>=3.2.0",
+    # R6-H1 (Eva 0.8.7 dogfood): Kokoro TTS imports ``misaki.espeak`` which
+    # calls ``EspeakWrapper.set_data_path(...)`` (the legacy 3.2-era API).
+    # Two things need to line up for that call to succeed on a fresh
+    # ``pip install rapid-mlx[audio]``:
+    #
+    #   1. ``espeakng-loader`` provides the bundled libespeak-ng binary
+    #      and ``espeak-ng-data/`` directory misaki passes to
+    #      ``set_data_path``. Without it, the import crashes inside
+    #      ``misaki/espeak.py`` with ``ModuleNotFoundError`` before any
+    #      TTS request reaches the engine.
+    #   2. ``phonemizer-fork`` (NOT vanilla ``phonemizer``) is the only
+    #      package that still exposes ``EspeakWrapper.set_data_path``.
+    #      Vanilla ``phonemizer>=3.3.0`` removed it in favour of a
+    #      property-only ``data_path`` accessor — so the legacy API
+    #      misaki uses raises ``AttributeError: type object
+    #      'EspeakWrapper' has no attribute 'set_data_path'`` and the
+    #      Kokoro TTS route 500s on first request.
+    #
+    # Pin ``phonemizer-fork`` BEFORE the vanilla ``phonemizer`` line and
+    # drop the vanilla pin — pip installs the first one wins and they
+    # claim the same import name, so leaving both in produces a
+    # non-deterministic resolution depending on resolver order.
+    # ``test_audio_extras_lockin.py`` asserts both packages are
+    # importable and that ``EspeakWrapper.set_data_path`` exists so we
+    # catch a future drift back to vanilla phonemizer in CI.
+    "espeakng-loader>=0.2.0",
+    "phonemizer-fork>=3.3.0",
     # Additional multilingual dependencies
     "ordered_set>=4.1.0",    # Required for Chinese TTS
     "cn2an>=0.5.0",          # Chinese number conversion
@@ -251,6 +289,11 @@ ignore = [
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]
+# Pytest parametrize convention: the Pydantic *class* is passed as
+# ``Model`` so the test body reads naturally (``Model(model="x", ...)``);
+# renaming would lose readability across many tests.
+"tests/test_param_validation_r5e.py" = ["N803"]
+"tests/test_param_validation_r7b.py" = ["N803"]
 
 [tool.mypy]
 python_version = "3.10"

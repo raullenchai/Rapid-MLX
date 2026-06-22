@@ -141,13 +141,28 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         )
 
         # --- Detailed request logging ---
-        prompt_preview = prompts[0][:200] if prompts else "(empty)"
+        # R-05 (PyPI 0.8.6 dogfood, liang-r2 L2-001): INFO-level logs
+        # MUST NOT carry user prompt content. Pre-fix this line emitted
+        # ``prompt_preview="my secret password is hunter2"`` straight to
+        # the INFO stream — anyone with log-aggregator read access could
+        # harvest credentials. The chat / anthropic / responses lanes
+        # already split metadata (counts) at INFO and the content
+        # preview at DEBUG; legacy completions just skipped the parity.
+        # Match the chat lane: INFO carries counts only, DEBUG carries
+        # a 300-char preview behind the operator-controlled log-level
+        # dial. (Server's default level is INFO, so the preview no
+        # longer reaches production log aggregators without an explicit
+        # opt-in.)
+        n_prompts = len(prompts)
         prompt_len = sum(len(p) for p in prompts)
         logger.info(
             f"[REQUEST] POST /v1/completions stream={request.stream} "
-            f"max_tokens={request.max_tokens} temp={request.temperature} "
-            f"prompt_chars={prompt_len} prompt_preview={prompt_preview!r}"
+            f"model={request.model!r} max_tokens={request.max_tokens} "
+            f"temp={request.temperature} n_prompts={n_prompts} "
+            f"prompt_chars={prompt_len}"
         )
+        prompt_preview = prompts[0][:300] if prompts else "(empty)"
+        logger.debug(f"[REQUEST] prompt preview: {prompt_preview!r}")
 
         # Context-length pre-check — same DoS gate the chat/anthropic/
         # responses routes enforce. Raw-prompt API skips chat templating
@@ -166,9 +181,9 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # disconnects after the first chunk instead of a controlled
         # 501. Lift to the top so both branches are covered.
         _want_logprobs = request.logprobs is not None
+        _stream_generate = getattr(engine, "stream_generate", None)
         if _want_logprobs and (
-            not hasattr(engine, "stream_generate")
-            or getattr(engine, "tokenizer", None) is None
+            not callable(_stream_generate) or getattr(engine, "tokenizer", None) is None
         ):
             raise HTTPException(
                 status_code=501,
@@ -513,6 +528,14 @@ async def stream_completion(
     effective_top_k = max(1, top_k_logprobs)  # see non-stream branch
     text_offset_cursor = 0  # echo+logprobs is rejected upstream
 
+    # D-SSE-USAGE: capture the engine-reported usage from the final
+    # ``GenerationOutput`` so the dedicated trailing usage chunk (only
+    # emitted when ``stream_options.include_usage=true``) can read it
+    # AFTER the per-token loop has finished. Pre-fix this code attached
+    # usage to the finish chunk unconditionally — see comment further
+    # down at the chunk-build site.
+    _final_usage = None
+
     async for output in engine.stream_generate(
         prompt=prompt,
         max_tokens=_resolve_max_tokens(request.max_tokens),
@@ -573,8 +596,36 @@ async def stream_completion(
             "model": model_name,
             "choices": [choice],
         }
+        # D-SSE-USAGE: capture usage from the engine but DO NOT attach
+        # it to this finish chunk — the OpenAI streaming spec says
+        # ``usage`` is opt-in via ``stream_options.include_usage=true``
+        # and, when opted in, MUST appear ONLY on a dedicated trailing
+        # chunk with empty ``choices``. Pre-fix this branch ALWAYS
+        # attached usage to the finish chunk, double-counting on
+        # aggregating clients (LangChain / AI-SDK / vercel-ai-stream).
         if output.finished:
-            data["usage"] = get_usage(output).model_dump(exclude_none=True)
+            _final_usage = get_usage(output)
         yield f"data: {json.dumps(data)}\n\n"
+
+    # Dedicated trailing usage chunk (OpenAI spec — empty ``choices``,
+    # populated ``usage``). Only emitted when the caller opted in via
+    # ``stream_options.include_usage=true``; otherwise the field is
+    # omitted from the wire entirely. Mirrors the trailing usage chunk
+    # on ``/v1/chat/completions`` so SDK shape is identical across
+    # both endpoints.
+    if (
+        _final_usage is not None
+        and request.stream_options is not None
+        and request.stream_options.include_usage
+    ):
+        usage_data = {
+            "id": completion_id,
+            "object": "text_completion",
+            "created": created_ts,
+            "model": model_name,
+            "choices": [],
+            "usage": _final_usage.model_dump(exclude_none=True),
+        }
+        yield f"data: {json.dumps(usage_data)}\n\n"
 
     yield "data: [DONE]\n\n"

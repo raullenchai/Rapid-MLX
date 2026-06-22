@@ -24,7 +24,7 @@ Usage:
             ...
 """
 
-from .base import DeltaMessage, ReasoningParser
+from .base import DeltaMessage, ReasoningParser, finalize_truncation
 from .think_parser import BaseThinkingReasoningParser
 
 # Parser registry
@@ -85,6 +85,7 @@ def _register_builtin_parsers():
     from .harmony_parser import HarmonyReasoningParser
     from .minimax_parser import MiniMaxReasoningParser
     from .qwen3_parser import Qwen3ReasoningParser
+    from .ui_tars_parser import UiTarsReasoningParser
 
     register_parser("gemma4", Gemma4ReasoningParser)
     register_parser("qwen3", Qwen3ReasoningParser)
@@ -98,6 +99,11 @@ def _register_builtin_parsers():
     register_parser("gpt_oss", GptOssReasoningParser)
     register_parser("harmony", HarmonyReasoningParser)
     register_parser("minimax", MiniMaxReasoningParser)
+    # ``ui_tars`` — UI-TARS Thought:/Reflection: preamble splitter (no
+    # ``<think>`` tags; labels are literal). Auto-wired by the ``ui-tars*``
+    # regex in ``model_auto_config`` and by the alias entries in
+    # ``aliases.json``.
+    register_parser("ui_tars", UiTarsReasoningParser)
 
 
 # Register built-in parsers on module load
@@ -113,4 +119,6 @@ __all__ = [
     "register_parser",
     "get_parser",
     "list_parsers",
+    # r5-D shared finalize-on-truncation helper
+    "finalize_truncation",
 ]

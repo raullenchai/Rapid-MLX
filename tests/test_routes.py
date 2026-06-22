@@ -642,12 +642,14 @@ class TestModelsRoutes:
             assert body["id"] == "qwen3.5-4b-4bit"
             assert body["object"] == "model"
             # Vendor-extension fields surfaced from AliasProfile.
-            # The qwen3.5-4b-4bit alias is_hybrid=True per aliases.json
-            # (verified by Round-1 autoresearch sweep, 2026-06-14).
-            assert body["is_hybrid"] is True, (
-                "is_hybrid must be surfaced so the desktop knows to render the "
-                "'Show reasoning' toggle for hybrid models"
-            )
+            # r6-A R6-C1: qwen3.5-4b-4bit alias was flipped to
+            # is_hybrid=False (the metal::malloc wedge surface). The
+            # extension still surfaces so rapid-desktop's catalog
+            # pre-fetch sees the explicit value; the desktop's "Show
+            # reasoning" toggle gates on ``reasoning_parser`` presence
+            # which remains "qwen3" for this alias regardless of the
+            # routing decision.
+            assert body["is_hybrid"] is False
             # Parser pair surfaced for diagnostics.
             assert body["tool_call_parser"] == "hermes"
             assert body["reasoning_parser"] == "qwen3"
@@ -761,7 +763,10 @@ class TestModelsRoutes:
             assert alias_entry is not None, (
                 "qwen3.5-4b-4bit must appear in the list endpoint"
             )
-            assert alias_entry["is_hybrid"] is True
+            # r6-A R6-C1: qwen3.5-4b-4bit alias flipped to non-hybrid
+            # (see ``test_retrieve_known_alias_populates_extensions``
+            # for the rationale block).
+            assert alias_entry["is_hybrid"] is False
             assert alias_entry["reasoning_parser"] == "qwen3"
         finally:
             self._restore(orig)
@@ -872,6 +877,232 @@ class TestModelsRoutes:
             r = client.get("/v1/models/diffusion-gemma-26b-4bit")
             assert r.status_code == 200
             assert r.json()["modality"] == "text-diffusion"
+        finally:
+            self._restore(orig)
+
+    # ----- Issue #363: context_window on /v1/models -----
+
+    def _engine_with_context(self, max_pos: int):
+        """Build a minimal engine stub whose ``get_model_max_context``
+        chain resolves to ``max_pos``. Mirrors the lookup priority in
+        ``service.helpers.get_model_max_context``: ``engine._model.args
+        .max_position_embeddings`` is the first probe, so populating it
+        is enough to drive the resolver deterministically without
+        spinning up MLX weights.
+        """
+        engine = MagicMock()
+        args = MagicMock()
+        args.max_position_embeddings = max_pos
+        # Block the text_config nested fallback so the test pins the
+        # primary path; otherwise MagicMock's auto-attr would expose a
+        # truthy mock there and the helper would prefer the nested
+        # branch on the second call.
+        args.text_config = None
+        model = MagicMock()
+        model.args = args
+        model.config = None
+        engine._model = model
+        engine.tokenizer = None
+        return engine
+
+    def test_context_window_present_for_loaded_alias(self):
+        """Issue #363 primary fix: when an engine is loaded for the
+        served alias, ``/v1/models`` MUST emit ``context_window`` so
+        rapid-desktop's PR #318 ``max_tokens`` slider auto-scaler
+        sees the cap the server will actually enforce. Pre-fix the
+        field was absent from the response payload entirely and the
+        desktop fell through to a per-family hard-coded heuristic
+        that drifted out of sync with every long-context release.
+        """
+        engine = self._engine_with_context(32768)
+        orig = self._set_config(
+            model_registry=None,
+            model_name="mlx-community/Qwen3.5-4B-MLX-4bit",
+            model_alias="qwen3.5-4b-4bit",
+            engine=engine,
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models/qwen3.5-4b-4bit")
+            assert r.status_code == 200
+            body = r.json()
+            assert "context_window" in body, (
+                "Issue #363: context_window must be present on the wire "
+                "even when the resolver returns None — pre-fix the field "
+                "was absent entirely and the desktop consumer had no "
+                "signal to even attempt fallback"
+            )
+            assert body["context_window"] == 32768, (
+                f"context_window should reflect the loaded engine's "
+                f"max_position_embeddings (32768), got {body['context_window']!r}"
+            )
+        finally:
+            self._restore(orig)
+
+    def test_context_window_present_on_list_endpoint(self):
+        """Issue #363 LIST counterpart — the field must surface on the
+        bulk endpoint too (where the desktop catalog actually
+        pre-fetches on startup). A per-id-only fix would force a
+        second N+1 round-trip per alias.
+        """
+        engine = self._engine_with_context(262144)
+        orig = self._set_config(
+            model_registry=None,
+            model_name="mlx-community/Qwen3.6-35B-A3B-Instruct-MLX-4bit",
+            model_alias="qwen3.6-35b-4bit",
+            engine=engine,
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models")
+            assert r.status_code == 200
+            entries = r.json()["data"]
+            alias_entry = next(
+                (e for e in entries if e["id"] == "qwen3.6-35b-4bit"), None
+            )
+            assert alias_entry is not None
+            assert alias_entry["context_window"] == 262144
+            # Spot-check the canonical hf-path entry inherits the same
+            # context window — both ids share the loaded engine.
+            hf_entry = next(
+                (
+                    e
+                    for e in entries
+                    if e["id"] == "mlx-community/Qwen3.6-35B-A3B-Instruct-MLX-4bit"
+                ),
+                None,
+            )
+            assert hf_entry is not None
+            assert hf_entry["context_window"] == 262144
+        finally:
+            self._restore(orig)
+
+    def test_context_window_present_for_three_alias_families(self):
+        """Issue #363 cross-family pin: the resolver must work for the
+        three alias families covered by the desktop's PR #318
+        consumer — qwen3 (32K class), qwen3.6 (long-context class),
+        and a gemma alias (128K class). Pins the contract that the
+        field is populated as a positive int across the spectrum, not
+        a one-off that only fires for one family.
+        """
+        cases = (
+            ("qwen3.5-4b-4bit", "mlx-community/Qwen3.5-4B-MLX-4bit", 40960),
+            (
+                "qwen3.6-35b-4bit",
+                "mlx-community/Qwen3.6-35B-A3B-Instruct-MLX-4bit",
+                262144,
+            ),
+            ("gemma-4-12b-4bit", "mlx-community/gemma-4-12B-it-4bit", 131072),
+        )
+        for alias, hf_path, ctx in cases:
+            engine = self._engine_with_context(ctx)
+            orig = self._set_config(
+                model_registry=None,
+                model_name=hf_path,
+                model_alias=alias,
+                engine=engine,
+                api_key=None,
+            )
+            try:
+                client = TestClient(self._make_app())
+                r = client.get(f"/v1/models/{alias}")
+                assert r.status_code == 200
+                body = r.json()
+                assert body["context_window"] == ctx, (
+                    f"{alias}: expected context_window={ctx}, got {body['context_window']!r}"
+                )
+                assert isinstance(body["context_window"], int)
+                assert body["context_window"] > 0
+            finally:
+                self._restore(orig)
+
+    def test_context_window_null_when_no_engine_loaded(self):
+        """When no engine is loaded for an alias (cold listing, or an
+        unregistered operator id), the field MUST appear as JSON
+        ``null`` rather than being omitted. Clients can then fall
+        back to their per-family heuristic without ambiguity about
+        whether the server-side fix landed.
+        """
+        orig = self._set_config(
+            model_registry=None,
+            model_name="qwen3.5-4b-4bit",
+            model_alias=None,
+            engine=None,
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models/qwen3.5-4b-4bit")
+            assert r.status_code == 200
+            body = r.json()
+            assert "context_window" in body
+            assert body["context_window"] is None
+        finally:
+            self._restore(orig)
+
+    def test_context_window_suppresses_dos_sentinel(self):
+        """``service.helpers.get_model_max_context`` returns its DoS
+        sentinel (~4 Mi) when no usable cap can be probed. That
+        number is intentionally large for the request-time DoS guard
+        — but it's NOT a real context window and the client must not
+        advertise it as one. The resolver suppresses any value at or
+        above the sentinel floor so the desktop falls back to its
+        per-family heuristic instead.
+        """
+        # Inject an engine whose model exposes NO usable attribute —
+        # ``get_model_max_context`` then returns ``_FALLBACK_MAX_CONTEXT_TOKENS``.
+        engine = MagicMock()
+        engine._model = MagicMock(spec=[])
+        engine.tokenizer = None
+        orig = self._set_config(
+            model_registry=None,
+            model_name="qwen3.5-4b-4bit",
+            model_alias=None,
+            engine=engine,
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models/qwen3.5-4b-4bit")
+            assert r.status_code == 200
+            body = r.json()
+            assert "context_window" in body
+            assert body["context_window"] is None, (
+                "DoS sentinel from get_model_max_context must not leak "
+                "onto the wire as a real context window"
+            )
+        finally:
+            self._restore(orig)
+
+    def test_context_window_probe_failure_does_not_500(self):
+        """A probe that raises mid-resolution (e.g. tokenizer attribute
+        access raises) must NOT 500 the listing endpoint — the field
+        falls through to ``None`` and the request still completes.
+        Pins the defensive ``except`` around the helper call.
+        """
+        engine = MagicMock()
+        # ``getattr(engine, "_model", ...)`` will return this — when
+        # the helper then probes ``.args`` we make it raise.
+        broken_model = MagicMock()
+        type(broken_model).args = property(
+            lambda self: (_ for _ in ()).throw(RuntimeError("synthetic"))
+        )
+        engine._model = broken_model
+        orig = self._set_config(
+            model_registry=None,
+            model_name="qwen3.5-4b-4bit",
+            model_alias=None,
+            engine=engine,
+            api_key=None,
+        )
+        try:
+            client = TestClient(self._make_app())
+            r = client.get("/v1/models/qwen3.5-4b-4bit")
+            assert r.status_code == 200
+            body = r.json()
+            assert body.get("context_window") is None
         finally:
             self._restore(orig)
 
@@ -994,7 +1225,10 @@ class TestEmbeddingsRoutes:
 
         with (
             patch.object(get_config(), "embedding_engine", mock_emb_engine),
-            patch.object(get_config(), "embedding_model_locked", None),
+            # H-09 route guard requires an embedding model to be
+            # configured before accepting requests; match the test's
+            # request model so we exercise the success path.
+            patch.object(get_config(), "embedding_model_locked", "test-embed"),
             patch("vllm_mlx.server.load_embedding_model"),
             patch.object(get_config(), "api_key", None),
             patch("vllm_mlx.middleware.auth.check_rate_limit", return_value=None),
@@ -1022,7 +1256,10 @@ class TestEmbeddingsRoutes:
 
         with (
             patch.object(get_config(), "embedding_engine", mock_emb_engine),
-            patch.object(get_config(), "embedding_model_locked", None),
+            # H-09: configure the lock so the route accepts the
+            # ``model="test-embed"`` POST instead of 400ing under the
+            # new guard.
+            patch.object(get_config(), "embedding_model_locked", "test-embed"),
             patch("vllm_mlx.server.load_embedding_model"),
             patch.object(get_config(), "api_key", None),
             patch("vllm_mlx.middleware.auth.check_rate_limit", return_value=None),
@@ -1040,12 +1277,30 @@ class TestEmbeddingsRoutes:
             assert len(r.json()["data"]) == 3
 
     def test_embeddings_locked_model_reject(self):
-        """Embeddings rejects wrong model when locked."""
+        """Embeddings rejects wrong model when locked.
+
+        R-03/R-04 follow-up: the rejection envelope was upgraded to the
+        OpenAI-canonical shape so SDK error branches (which key on
+        ``error.param``) fire cleanly. The message still surfaces the
+        locked id so the operator sees what the server was booted with.
+
+        NOTE: ``patch("...", return_value=None)`` replaces the dependency
+        with a ``MagicMock``, whose signature FastAPI introspects as
+        ``(*args, **kwargs)`` — they get surfaced as query params and
+        the request 422s before the route runs. Use a real lambda so
+        FastAPI sees a no-arg callable. Same pattern in the success
+        tests above already works because their assertions never depend
+        on the route's response shape.
+        """
+
+        async def _noop():
+            return None
+
         with (
             patch.object(get_config(), "embedding_engine", MagicMock()),
             patch.object(get_config(), "embedding_model_locked", "locked-model"),
             patch.object(get_config(), "api_key", None),
-            patch("vllm_mlx.middleware.auth.check_rate_limit", return_value=None),
+            patch("vllm_mlx.middleware.auth.check_rate_limit", new=_noop),
         ):
             app = self._make_app()
             client = TestClient(app)
@@ -1056,5 +1311,14 @@ class TestEmbeddingsRoutes:
                     "input": "test",
                 },
             )
-            assert r.status_code == 400
-            assert "not available" in r.json()["detail"]
+            assert r.status_code == 400, r.text
+            body = r.json()
+            # FastAPI surfaces a dict ``detail`` verbatim when no
+            # exception handler is wired (bare ``_make_app``). The
+            # production server installs ``install_exception_handlers``
+            # which unwraps to ``body["error"]`` directly.
+            err = body.get("error") or body.get("detail", {}).get("error")
+            assert err is not None, body
+            assert err["param"] == "model"
+            assert err["code"] == "model_not_found"
+            assert "not available" in err["message"]

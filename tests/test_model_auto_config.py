@@ -438,12 +438,18 @@ class TestCapabilityGates:
     @pytest.mark.parametrize(
         "model_path",
         [
-            "mlx-community/Qwen3.5-9B-4bit",
+            # MoE Qwen3.5 — A3B / A10B / generic MoE markers stay hybrid.
             "mlx-community/Qwen3.5-122B-A10B-8bit",
-            "/Users/x/.lmstudio/models/Qwen3.5-4B-MLX-4bit",
+            "mlx-community/Qwen3.5-35B-A3B-4bit",
         ],
     )
-    def test_qwen35_hybrid(self, model_path):
+    def test_qwen35_moe_hybrid(self, model_path):
+        """r6-A R6-C1: only the A3B / A10B / MoE Qwen3.5 variants stamp
+        as hybrid in the auto-derivation regex. The dense 4B/9B/27B
+        siblings now fall through to the non-hybrid generic Qwen3
+        fallback — see ``test_qwen35_dense_not_hybrid`` for the
+        complementary guard, and ``aliases.json`` for the matching
+        per-alias declaration."""
         cfg = detect_model_config(model_path)
         assert cfg is not None
         assert cfg.is_hybrid is True
@@ -452,16 +458,54 @@ class TestCapabilityGates:
     @pytest.mark.parametrize(
         "model_path",
         [
-            "mlx-community/Qwen3.6-27B-4bit",
-            "unsloth/Qwen3.6-27B-MLX-8bit",
+            # Dense Qwen3.5 — the wedge surface. Must NOT be hybrid.
+            "mlx-community/Qwen3.5-9B-4bit",
+            "/Users/x/.lmstudio/models/Qwen3.5-4B-MLX-4bit",
+            "mlx-community/Qwen3.5-27B-4bit",
+        ],
+    )
+    def test_qwen35_dense_not_hybrid(self, model_path):
+        """r6-A R6-C1: dense Qwen3.5 paths (no MoE marker) must NOT pick
+        up ``is_hybrid=True`` from the auto-derivation regex. Pre-fix,
+        the bare ``qwen3\\.5`` regex stamped every match as hybrid which
+        wedged the runtime on metal::malloc 499000."""
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.is_hybrid is False, (
+            f"{model_path} resolved to is_hybrid=True — the regex is still "
+            f"stamping dense paths."
+        )
+
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            # MoE Qwen3.6 — A3B markers stay hybrid.
             "mlx-community/Qwen3.6-35B-A3B-4bit",
         ],
     )
-    def test_qwen36_hybrid(self, model_path):
+    def test_qwen36_moe_hybrid(self, model_path):
+        """Same MoE-marker contract as the Qwen3.5 siblings — see
+        ``test_qwen35_moe_hybrid``."""
         cfg = detect_model_config(model_path)
         assert cfg is not None
         assert cfg.is_hybrid is True
         assert cfg.supports_spec_decode is False
+
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            # Dense Qwen3.6 — must NOT be hybrid post-r6-A.
+            "mlx-community/Qwen3.6-27B-4bit",
+            "unsloth/Qwen3.6-27B-MLX-8bit",
+        ],
+    )
+    def test_qwen36_dense_not_hybrid(self, model_path):
+        """r6-A R6-C1 sibling — same wedge story on the Qwen3.6 dense
+        27B variants. The MoE-marker gate keeps them off the hybrid
+        path."""
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.is_hybrid is False
 
     @pytest.mark.parametrize(
         "model_path",
@@ -619,8 +663,12 @@ class TestVisibility:
         assert "reasoning=qwen3" in line
 
     def test_summary_for_hybrid(self):
-        cfg = detect_model_config("mlx-community/Qwen3.5-4B-MLX-4bit")
-        line = format_profile_summary("mlx-community/Qwen3.5-4B-MLX-4bit", cfg)
+        # r6-A R6-C1: use the A3B MoE Qwen3.5 path — dense ``Qwen3.5-4B``
+        # is no longer hybrid (it was the wedge surface). MoE variants
+        # remain on the hybrid path and still exercise the
+        # ``throttle ON`` / ``spec decode OFF`` summary output.
+        cfg = detect_model_config("mlx-community/Qwen3.5-35B-A3B-4bit")
+        line = format_profile_summary("mlx-community/Qwen3.5-35B-A3B-4bit", cfg)
         assert "hybrid" in line
         assert "throttle ON" in line
         assert "spec decode OFF" in line
@@ -645,8 +693,10 @@ class TestVisibility:
         )
 
     def test_table_for_hybrid_shows_disabled_spec(self):
-        cfg = detect_model_config("mlx-community/Qwen3.5-4B-MLX-4bit")
-        table = format_profile_table("mlx-community/Qwen3.5-4B-MLX-4bit", cfg)
+        # r6-A R6-C1: use the A3B MoE Qwen3.5 path — see
+        # ``test_summary_for_hybrid`` for the dense-vs-MoE rationale.
+        cfg = detect_model_config("mlx-community/Qwen3.5-35B-A3B-4bit")
+        table = format_profile_table("mlx-community/Qwen3.5-35B-A3B-4bit", cfg)
         assert "✗ disabled (hybrid arch)" in table
         assert "✓ 200ms gap" in table
 
@@ -672,8 +722,26 @@ class TestGetProfile:
     """``get_profile()`` is the public one-shot API."""
 
     def test_get_profile_without_model(self):
-        cfg = get_profile("mlx-community/Qwen3.5-4B-MLX-4bit")
+        # r6-A R6-C1: ``Qwen3.5-4B-MLX-4bit`` is now non-hybrid (the
+        # wedge surface). Use the A3B MoE variant so this guard
+        # continues exercising the hybrid-arch ``supports_spec_decode``
+        # gate; ``test_dense_qwen35_get_profile_not_hybrid`` covers the
+        # complementary contract on the dense path.
+        cfg = get_profile("mlx-community/Qwen3.5-35B-A3B-4bit")
         assert cfg.is_hybrid is True
+        assert cfg.supports_spec_decode is False
+
+    def test_dense_qwen35_get_profile_not_hybrid(self):
+        """r6-A R6-C1 complementary guard: ``get_profile`` on a dense
+        Qwen3.5 path must return ``is_hybrid=False`` — the alias
+        profile pins it via ``is_hybrid_explicit=True`` and the
+        regex fallback respects the MoE-marker gate."""
+        cfg = get_profile("mlx-community/Qwen3.5-4B-MLX-4bit")
+        assert cfg.is_hybrid is False
+        # supports_spec_decode is forced off because the underlying
+        # qwen3_5 architecture still uses linear-attention layers and
+        # spec decode isn't safe — but the routing decision (hybrid
+        # throttle + prefix-boundary snapshot) is off.
         assert cfg.supports_spec_decode is False
 
     def test_get_profile_unknown_returns_defaults(self):

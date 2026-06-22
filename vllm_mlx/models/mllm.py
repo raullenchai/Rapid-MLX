@@ -18,6 +18,7 @@ import base64
 import logging
 import math
 import os
+import sys
 import tempfile
 import threading
 from collections.abc import Iterator
@@ -33,17 +34,69 @@ from vllm_mlx.mllm_cache import MLLMPrefixCacheManager
 logger = logging.getLogger(__name__)
 
 
+VLM_EXTRA_INSTALL_HINT = (
+    "Install it with:\n"
+    "    pip install 'rapid-mlx[vision]'\n"
+    "or directly:\n"
+    "    pip install 'mlx-vlm>=0.6.3'"
+)
+
+
+def mlx_vlm_available() -> bool:
+    """Return True iff the optional ``mlx-vlm`` package can be imported.
+
+    Mirrors :func:`vllm_mlx.embedding.mlx_embeddings_available` so the
+    cli-side ``--mllm`` / vision-alias boot guard
+    (:func:`require_mlx_vlm_or_exit`) can probe presence without
+    actually importing the dependency at module top-level. ``mlx-vlm``
+    lives behind the ``[vision]`` extra; a plain
+    ``pip install rapid-mlx`` will not have it.
+    """
+    import importlib.util
+
+    return importlib.util.find_spec("mlx_vlm") is not None
+
+
+def require_mlx_vlm_or_exit(model_name: str) -> None:
+    """CLI-side boot guard for vision/multimodal aliases.
+
+    R-10 (PyPI 0.8.6 dogfood): a first-time ``pip install rapid-mlx``
+    user running ``rapid-mlx serve ui-tars-1.5-7b-4bit`` got a deep,
+    confusing ImportError mid-load because ``mlx-vlm`` lives behind the
+    ``[vision]`` extra. The existing :func:`_require_mlx_vlm` raises an
+    actionable ``ImportError`` only after the alias has been resolved,
+    weights downloaded, and the engine handed control to the MLLM
+    code path — minutes of wall-clock noise before the actionable
+    message. Probe at flag-parse / serve_command entry instead and
+    exit ``2`` (argparse usage-error code) with the same install hint
+    on stderr — matches :func:`require_mlx_embeddings_or_exit` shape.
+    """
+    if mlx_vlm_available():
+        return
+    print(
+        f"error: model {model_name!r} is a vision/multimodal alias and "
+        f"requires the optional `mlx-vlm` dependency (shipped with the "
+        f"[vision] extra).\n" + VLM_EXTRA_INSTALL_HINT,
+        file=sys.stderr,
+    )
+    sys.exit(2)
+
+
 def _require_mlx_vlm() -> None:
-    """Verify mlx-vlm is installed; raise actionable error if not."""
+    """Verify mlx-vlm is installed; raise actionable error if not.
+
+    Engine-side last-line-of-defence: ``rapid-mlx serve`` is supposed
+    to short-circuit at :func:`require_mlx_vlm_or_exit` before this
+    runs, but library callers (``MLXMultimodalLM`` used directly,
+    benchmark/eval harnesses) still need an actionable error if they
+    skipped the CLI guard.
+    """
     try:
         import mlx_vlm  # noqa: F401
     except ImportError as e:
         raise ImportError(
-            "Vision/multimodal models require the optional `mlx-vlm` dependency.\n"
-            "Install it with:\n"
-            "    pip install 'rapid-mlx[vision]'\n"
-            "or directly:\n"
-            "    pip install 'mlx-vlm>=0.4.4'"
+            "Vision/multimodal models require the optional `mlx-vlm` "
+            "dependency.\n" + VLM_EXTRA_INSTALL_HINT
         ) from e
 
 
@@ -766,6 +819,7 @@ class MLXMultimodalLM:
             # for the full rationale.
             from ..utils.tokenizer import (
                 augment_eos_token_ids_from_generation_config,
+                repair_byte_level_decoder,
             )
 
             tok = (
@@ -774,6 +828,11 @@ class MLXMultimodalLM:
                 else self.processor
             )
             augment_eos_token_ids_from_generation_config(tok, self.model_name)
+            # D-DETOK-BPE: some VLM processors (Qwen3-VL distills, etc.)
+            # carry the same broken SentencePiece-decoder-on-byte-level-BPE
+            # mis-configuration as text-only DeepSeek-R1; patch the live
+            # backend decoder so streaming + non-stream emit clean UTF-8.
+            repair_byte_level_decoder(tok)
 
             self._loaded = True
             self._video_native = hasattr(
