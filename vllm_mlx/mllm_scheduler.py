@@ -701,27 +701,26 @@ class MLLMScheduler:
             request.num_output_tokens = len(request.output_tokens)
 
             # Decode the new token using streaming detokenizer (UTF-8 safe).
-            # Skip stop tokens — they are not content.
+            # Even backend stop-finished responses can carry emit-worthy text
+            # in the final token; stop-string holdback below decides what is
+            # safe to release.
             had_detok = request_id in self._detokenizer_pool
-            if response.finish_reason == "stop":
-                new_text = ""
-            else:
-                if not had_detok:
-                    if hasattr(tokenizer, "detokenizer"):
-                        detok = tokenizer.detokenizer
-                    else:
-                        detok = NaiveStreamingDetokenizer(tokenizer)
-                    detok.reset()
-                    self._detokenizer_pool[request_id] = detok
-                detok = self._detokenizer_pool[request_id]
-                detok.add_token(response.token)
-                new_text = detok.last_segment
-                if not isinstance(new_text, str):
-                    # Unit-test mocks may not implement the streaming
-                    # detokenizer contract. Production detokenizers
-                    # return str; this fallback keeps legacy tests and
-                    # defensive adapters on the same stop path.
-                    new_text = tokenizer.decode([response.token])
+            if not had_detok:
+                if hasattr(tokenizer, "detokenizer"):
+                    detok = tokenizer.detokenizer
+                else:
+                    detok = NaiveStreamingDetokenizer(tokenizer)
+                detok.reset()
+                self._detokenizer_pool[request_id] = detok
+            detok = self._detokenizer_pool[request_id]
+            detok.add_token(response.token)
+            new_text = detok.last_segment
+            if not isinstance(new_text, str):
+                # Unit-test mocks may not implement the streaming
+                # detokenizer contract. Production detokenizers
+                # return str; this fallback keeps legacy tests and
+                # defensive adapters on the same stop path.
+                new_text = tokenizer.decode([response.token])
 
             # output_token_ids is a live reference (not a defensive copy):
             # consumers read it synchronously; the per-decode list() was O(n).

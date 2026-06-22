@@ -54,8 +54,8 @@ def _engine_supports_completion_logprobs(engine) -> bool:
                 if callable(close):
                     close()
                 return False
-            return bool(value)
-        return bool(capability)
+            return value if isinstance(value, bool) else False
+        return capability if isinstance(capability, bool) else False
     return getattr(engine, "tokenizer", None) is not None and callable(
         getattr(engine, "stream_generate", None)
     )

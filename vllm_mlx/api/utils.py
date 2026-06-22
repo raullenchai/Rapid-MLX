@@ -964,6 +964,16 @@ VIDEO_CONTENT_TYPES = {"video", "video_url"}
 AUDIO_CONTENT_TYPES = {"audio_url", "audio", "input_audio"}
 MEDIA_CONTENT_TYPES = IMAGE_CONTENT_TYPES | VIDEO_CONTENT_TYPES | AUDIO_CONTENT_TYPES
 KNOWN_CONTENT_TYPES = TEXT_CONTENT_TYPES | MEDIA_CONTENT_TYPES
+SUPPORTED_INPUT_AUDIO_FORMATS = {
+    "wav",
+    "mp3",
+    "flac",
+    "ogg",
+    "opus",
+    "pcm",
+    "m4a",
+    "webm",
+}
 
 
 def _content_part_to_dict(item) -> dict:
@@ -1036,7 +1046,14 @@ def _validate_content_part_payload(item: dict) -> None:
                 "input_audio must be an object with required fields 'data' and 'format'"
             )
         _require_string(value.get("data"), "input_audio.data")
-        _require_string(value.get("format"), "input_audio.format")
+        audio_format = _require_string(
+            value.get("format"), "input_audio.format"
+        ).lower()
+        if audio_format not in SUPPORTED_INPUT_AUDIO_FORMATS:
+            raise ValueError(
+                "input_audio.format must be one of "
+                f"{sorted(SUPPORTED_INPUT_AUDIO_FORMATS)}"
+            )
 
 
 def validate_content_blocks_for_capabilities(

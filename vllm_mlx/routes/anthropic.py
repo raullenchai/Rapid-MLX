@@ -237,7 +237,7 @@ def _enforce_named_tool_choice_present(
     *,
     original_call_count: int,
 ) -> tuple[list, bool, str | None]:
-    """Return ``(tool_calls, synthesized)``.
+    """Return ``(tool_calls, synthesized, error)``.
 
     The first element is the (possibly synthesized) tool-call list:
     unchanged when the named-tool contract is satisfied, or a list
