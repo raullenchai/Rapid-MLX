@@ -55,7 +55,6 @@ from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
     request_declares_computer_tool,
 )
 
-
 # ---------------------------------------------------------------------------
 # Tool-shape detector (request_declares_computer_tool)
 # ---------------------------------------------------------------------------
