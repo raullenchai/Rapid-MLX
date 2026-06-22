@@ -1613,11 +1613,46 @@ async def _stream_responses(
         # ``response.output_item.added`` event of type ``function_call``
         # (or ``computer_call`` for Computer-Use), honouring the
         # OpenAI ``tool_call guaranteed`` contract on the streaming
-        # surface too. Raises 422 for multi-tool ``required`` with no
-        # model call (parity with chat.py).
-        tool_calls = _enforce_responses_tool_choice(
-            parsed_tool_calls, responses_request, openai_request
-        )
+        # surface too. Codex r2 BLOCKING (PR #817): the non-stream
+        # path raises 422 for multi-tool ``required`` with no model
+        # call, but we cannot raise mid-stream after SSE headers
+        # are out — emit a ``response.failed`` event with the same
+        # error envelope instead so the client sees a clean shutdown
+        # signal.
+        try:
+            tool_calls = _enforce_responses_tool_choice(
+                parsed_tool_calls, responses_request, openai_request
+            )
+        except HTTPException as forced_choice_err:
+            # Drop any deferred buffered text — the request failed
+            # under forced choice, the deferred prose has no
+            # legitimate destination on the wire.
+            deferred_text.clear()
+            err_detail = forced_choice_err.detail
+            if isinstance(err_detail, dict):
+                err_envelope = err_detail.get("error", {})
+                err_code = err_envelope.get("code", "tool_choice_unfulfilled")
+                err_msg = err_envelope.get(
+                    "message", "tool_choice could not be fulfilled"
+                )
+            else:
+                err_code = "tool_choice_unfulfilled"
+                err_msg = str(err_detail)
+            yield _sse(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "id": response_id,
+                        "status": "failed",
+                        "error": {
+                            "code": err_code,
+                            "message": err_msg,
+                        },
+                    },
+                },
+            )
+            return
         # Codex r1 BLOCKING #2 (PR #817): under forced choice the
         # ``deferred_text`` buffer holds text deltas we held back. Flush
         # them ONLY if synthesis won't fire — i.e. the model produced

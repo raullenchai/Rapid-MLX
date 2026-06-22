@@ -540,6 +540,39 @@ class TestF6ToolChoiceEnforcement:
             if n == "response.output_item.added"
         ), events
 
+    def test_required_streaming_multi_tool_unfulfilled_emits_response_failed(
+        self, make_responses_client
+    ):
+        """Codex r2 BLOCKING (PR #817): the non-stream path 422s for
+        multi-tool ``required`` with no model call, but the streaming
+        path cannot raise mid-stream — the SSE headers are already
+        committed. Emit a ``response.failed`` event with the same
+        error code/message so clients see a clean shutdown.
+        """
+        state = make_responses_client(text="text-only", tool_calls=None)
+
+        with state.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_payload(
+                stream=True,
+                tools=[
+                    self._PING_TOOL,
+                    {"type": "function", "name": "pong", "parameters": {}},
+                ],
+                tool_choice="required",
+            ),
+            headers=_AUTH,
+        ) as resp:
+            assert resp.status_code == 200, resp.text
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        failed = [d for (n, d) in events if n == "response.failed"]
+        assert failed, [n for (n, _) in events]
+        assert failed[0]["response"]["error"]["code"] == (
+            "tool_choice_required_unfulfilled"
+        )
+
     def test_required_streaming_with_real_tool_call_keeps_text(
         self, make_responses_client
     ):
