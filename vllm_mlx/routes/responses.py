@@ -497,9 +497,7 @@ async def create_response(request: Request):
         # anthropic routes enforce. Runs BEFORE the stream branch so
         # streaming clients can't bypass by setting ``stream: true``.
         try:
-            _ctx_messages = _prepare_messages_for_context_check(
-                engine, openai_request
-            )
+            _ctx_messages = _prepare_messages_for_context_check(engine, openai_request)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception:

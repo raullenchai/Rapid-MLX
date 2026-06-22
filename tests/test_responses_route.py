@@ -378,9 +378,7 @@ class TestResponsesNonStream:
         )
 
         assert response.status_code == 200, response.text
-        assert captured["messages"] == [
-            {"role": "user", "content": "Describe this"}
-        ]
+        assert captured["messages"] == [{"role": "user", "content": "Describe this"}]
         sent = engine.calls[-1].messages
         assert sent[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,abc"
 
