@@ -24,6 +24,7 @@ re-introduces vanilla ``phonemizer``), so the regression can't ship.
 from __future__ import annotations
 
 import importlib.util
+import re
 from pathlib import Path
 
 import pytest
@@ -36,12 +37,12 @@ PYPROJECT_PATH = Path(__file__).resolve().parent.parent / "pyproject.toml"
 
 
 def _read_audio_extra_block() -> list[str]:
-    """Return the raw lines of the ``[audio]`` extra block.
+    """Return the raw lines of the ``[audio]`` extra block (including
+    comments and whitespace, as they appear in pyproject.toml).
 
-    Walk pyproject.toml line-by-line rather than parsing TOML — the
-    parsed list loses comments / formatting, but the lines view is
-    enough for substring assertions and works even on the Python 3.10
-    runners that don't ship ``tomllib``.
+    Walk the file line-by-line rather than parsing TOML — the parsed
+    list loses comments / formatting, and ``tomllib`` is stdlib only
+    on Python ≥3.11 (the CI matrix still runs 3.10).
     """
     text = PYPROJECT_PATH.read_text()
     lines = text.splitlines()
@@ -64,17 +65,58 @@ def _read_audio_extra_block() -> list[str]:
     return out
 
 
+def _parsed_dependency_names() -> set[str]:
+    """Return the set of bare package names declared in ``[audio]``.
+
+    Codex r2 BLOCKING: the previous lockin used substring match
+    against the entire block (comments included), so a future PR that
+    deleted the actual ``"espeakng-loader>=0.2.0"`` line while leaving
+    the explanatory comment intact would keep the test green. Parse
+    each line: strip comments, drop blank lines, strip quotes/commas/
+    whitespace, then split off the version specifier so we get just
+    the package name. Returns a set of lowercased package names — the
+    assertion is against the actual installed dep, not the surrounding
+    documentation.
+    """
+    # PEP 508 separators that terminate the package name token.
+    # ``re`` keeps the split cheap and language-correct (vs hand-coding
+    # the precedence of >= / [ / ; / @).
+    name_split_re = re.compile(r"[<>=!~\[;@\s]")
+    out: set[str] = set()
+    for raw in _read_audio_extra_block():
+        # Strip inline comment first, then strip trailing comma and
+        # surrounding whitespace + quotes. Empty or pure-comment lines
+        # collapse to empty and are skipped.
+        no_comment = raw.split("#", 1)[0]
+        cleaned = no_comment.strip().rstrip(",").strip().strip('"').strip("'")
+        if not cleaned:
+            continue
+        # First token before any version specifier IS the package name.
+        name = name_split_re.split(cleaned, 1)[0].strip().lower()
+        if name:
+            out.add(name)
+    return out
+
+
 def test_audio_extra_pins_espeakng_loader() -> None:
-    """``espeakng-loader`` must be in ``[audio]`` — misaki imports it."""
-    block = _read_audio_extra_block()
-    joined = "\n".join(block)
-    assert "espeakng-loader" in joined, (
+    """``espeakng-loader`` must be in ``[audio]`` — misaki imports it.
+
+    Codex r2 BLOCKING: assert against the PARSED dependency name set,
+    not raw block text. Comments that mention ``espeakng-loader`` in
+    English prose (e.g. the rationale comment above the actual pin)
+    would otherwise let the assertion stay green even after the dep
+    line is deleted.
+    """
+    names = _parsed_dependency_names()
+    assert "espeakng-loader" in names, (
         "R6-H1: `[audio]` extra is missing `espeakng-loader`. "
-        "Without it, `misaki/espeak.py` crashes on import with "
-        "`ModuleNotFoundError: No module named 'espeakng_loader'` "
-        "the first time `/v1/audio/speech` is hit with a Kokoro alias. "
-        "Re-add the pin to `pyproject.toml [project.optional-dependencies] "
-        "audio` (Eva 0.8.7 dogfood lock-in)."
+        f"Parsed dep names: {sorted(names)}. "
+        "Without `espeakng-loader`, `misaki/espeak.py` crashes on "
+        "import with `ModuleNotFoundError: No module named "
+        "'espeakng_loader'` the first time `/v1/audio/speech` is hit "
+        "with a Kokoro alias. Re-add the pin to "
+        "`pyproject.toml [project.optional-dependencies] audio` "
+        "(Eva 0.8.7 dogfood lock-in)."
     )
 
 
@@ -84,11 +126,15 @@ def test_audio_extra_pins_phonemizer_fork() -> None:
     Vanilla ``phonemizer>=3.3`` removed ``EspeakWrapper.set_data_path``,
     which is the API misaki uses. The fork keeps the classmethod
     around so Kokoro TTS works on a clean install.
+
+    Codex r2 BLOCKING: assert against the parsed dependency name set.
+    Documentation that names ``phonemizer-fork`` in prose must not
+    spoof the existence of the pin.
     """
-    block = _read_audio_extra_block()
-    joined = "\n".join(block)
-    assert "phonemizer-fork" in joined, (
+    names = _parsed_dependency_names()
+    assert "phonemizer-fork" in names, (
         "R6-H1: `[audio]` extra is missing `phonemizer-fork`. "
+        f"Parsed dep names: {sorted(names)}. "
         "Vanilla `phonemizer>=3.3` removed `EspeakWrapper.set_data_path`, "
         "which misaki still calls. Add `phonemizer-fork>=3.3.0` to the "
         "extra. (Eva 0.8.7 dogfood lock-in)"
@@ -102,24 +148,22 @@ def test_audio_extra_does_not_pin_vanilla_phonemizer() -> None:
     leaving both in produces non-deterministic resolution depending on
     pip's resolver order. Drop the vanilla pin entirely — the fork
     supersedes it.
+
+    Codex r2 BLOCKING: assert against parsed names so a comment that
+    happens to mention "phonemizer" in prose doesn't trip the guard,
+    AND a future PR that re-adds the vanilla pin still gets caught.
     """
-    block = _read_audio_extra_block()
-    for line in block:
-        stripped = (
-            line.split("#", 1)[0].strip().strip(",").strip().strip('"').strip("'")
+    names = _parsed_dependency_names()
+    if "phonemizer" in names:
+        raise AssertionError(
+            f"R6-H1: `[audio]` extra still pins vanilla `phonemizer` "
+            f"alongside (or instead of) `phonemizer-fork`. Parsed dep "
+            f"names: {sorted(names)}. Vanilla phonemizer 3.3 removed "
+            "`EspeakWrapper.set_data_path` which Kokoro's misaki dep "
+            "calls — pip's resolver order is not deterministic, so "
+            "leaving both in means CI passes but fresh installs "
+            "randomly break. Keep ONLY `phonemizer-fork`."
         )
-        # ``phonemizer-fork`` is fine; ``phonemizer>=...`` is the bad pin.
-        if stripped.startswith("phonemizer") and not stripped.startswith(
-            "phonemizer-fork"
-        ):
-            raise AssertionError(
-                "R6-H1: `[audio]` extra still pins vanilla `phonemizer` "
-                f"({stripped!r}) alongside (or instead of) `phonemizer-fork`. "
-                "Vanilla phonemizer 3.3 removed `EspeakWrapper.set_data_path` "
-                "which Kokoro's misaki dep calls — pip's resolver order is "
-                "not deterministic, so leaving both in means CI passes but "
-                "fresh installs randomly break. Keep ONLY `phonemizer-fork`."
-            )
 
 
 # ---------------------------------------------------------------------------
