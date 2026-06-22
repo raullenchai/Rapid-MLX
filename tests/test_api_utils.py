@@ -561,6 +561,23 @@ class TestExtractMultimodalContent:
         assert images == ["https://example.com/img.png"]
         assert videos == []
 
+    def test_responses_text_blocks_are_extracted_as_text(self):
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "input_text", "text": "question"},
+                    {"type": "output_text", "text": "prior answer"},
+                ],
+            )
+        ]
+
+        processed, images, videos = extract_multimodal_content(messages)
+
+        assert processed == [{"role": "user", "content": "question\nprior answer"}]
+        assert images == []
+        assert videos == []
+
     def test_multimodal_with_dict_image_url(self):
         messages = [
             Message(

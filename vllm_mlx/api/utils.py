@@ -1318,7 +1318,7 @@ def extract_multimodal_content(
                 _validate_content_part_payload(item)
                 item_type = item.get("type", "")
 
-                if item_type == "text":
+                if item_type in TEXT_CONTENT_TYPES:
                     text_parts.append(item.get("text", ""))
 
                 elif item_type == "image_url":

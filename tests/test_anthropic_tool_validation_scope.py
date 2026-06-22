@@ -530,16 +530,9 @@ def test_pinned_tool_model_emits_no_tool_calls_returns_422():
 
 def test_pinned_tool_model_emits_only_wrong_tool_returns_422():
     """F8 (D-ANTHRO-SPEC-POLISH): ``tool_choice={type:tool,name:get_weather}``
-    + model fires only ``lookup_zip`` → 200 with a best-effort
-    synthesized ``tool_use`` for ``get_weather`` (empty input). The
-    un-pinned ``lookup_zip`` call was dropped by the filter, and the
-    enforcement step synthesized the missing pinned call instead of
-    raising 422.
-
-    The previous 422 path's "called 1 call, none to <X>" diagnostic
-    now appears as a server-side warning log so operators can still
-    debug small-model compliance issues; the wire response shape is
-    identical to the no-calls case (single best-effort tool_use).
+    + model fires only ``lookup_zip`` → 422. The un-pinned
+    ``lookup_zip`` call is dropped by the filter, then the missing
+    pinned call is reported as a named-tool contract error.
     """
     engine = _MultiCallEngine([_call("lookup_zip", {"zip": "94105"})])
     client = _make_client(engine)
@@ -556,9 +549,11 @@ def test_pinned_tool_model_emits_only_wrong_tool_returns_422():
     assert "get_weather" in response.json()["detail"]
 
 
-def test_pinned_tool_streaming_no_calls_returns_422():
+def test_pinned_tool_streaming_no_calls_emits_sse_error():
     """F8 streaming variant: pinned tool, model returned text only →
-    HTTP 422 before a successful SSE stream is returned.
+    HTTP 200 with an SSE error event. Unlike non-streaming 422, the
+    violation is only known after generation has started, so the stream
+    preserves HTTP success and surfaces a client-actionable error event.
 
     PR #771 round-2 BLOCKING #1 invariant remains in force: the
     chunk loop's text deltas must NEVER reach the wire when the
@@ -577,8 +572,9 @@ def test_pinned_tool_streaming_no_calls_returns_422():
         ),
     )
 
-    assert response.status_code == 422, response.text
+    assert response.status_code == 200, response.text
     raw = response.text
+    assert "event: error" in raw, raw
     assert "tool_choice" in raw
     # No fabricated tool_use for the pinned tool is emitted.
     assert '"type": "tool_use"' not in raw, raw
@@ -601,10 +597,10 @@ def test_pinned_tool_streaming_no_calls_returns_422():
     )
 
 
-def test_pinned_tool_streaming_only_wrong_tool_returns_422():
+def test_pinned_tool_streaming_only_wrong_tool_emits_sse_error():
     """F8 streaming variant: pinned tool, model fires only the wrong
-    tool → HTTP 422; the un-pinned call never reaches the wire
-    (filter dropped it).
+    tool → HTTP 200 with an SSE error event; the un-pinned call never
+    reaches the wire (filter dropped it).
 
     Locks PR #763 round-1 BLOCKING #2 invariant under F8: the stream
     must NOT have shipped any ``tool_use`` content_block_start for
@@ -624,13 +620,13 @@ def test_pinned_tool_streaming_only_wrong_tool_returns_422():
         ),
     )
 
-    assert response.status_code == 422, response.text
+    assert response.status_code == 200, response.text
     raw = response.text
+    assert "event: error" in raw, raw
     assert "tool_choice" in raw
     assert '"type": "tool_use"' not in raw, raw
     # The un-pinned tool name MUST NOT appear anywhere — the filter
-    # dropped it before the emit loop, and the synthesized call
-    # carries only the pinned tool's name.
+    # dropped it before the emit loop.
     assert "lookup_zip" not in raw, raw
 
 
@@ -756,13 +752,9 @@ def test_enforce_named_tool_choice_present_errors_when_only_wrong_tool_emitted()
 
 
 def test_pinned_tool_with_required_field_returns_422_not_synthesized_200():
-    """codex r1 BLOCKING #1 regression: a pinned tool whose schema has
-    ``required`` fields would, pre-fix, run the synthesized empty
-    ``input={}`` through ``_validate_tool_call_params`` which would
-    400 — turning the F8 best-effort 200 path back into the symptom
-    F8 was supposed to fix. The ``synthesized`` flag from
-    ``_enforce_named_tool_choice_present`` now tells the route to
-    skip the schema validator on the placeholder call.
+    """A pinned tool whose schema has ``required`` fields must still
+    return the named-tool 422 when the model emits no pinned call, not
+    synthesize an empty placeholder and then fail schema validation.
     """
     engine = _MultiCallEngine(None, text="I'd rather not.")
     client = _make_client(engine)
@@ -770,8 +762,7 @@ def test_pinned_tool_with_required_field_returns_422_not_synthesized_200():
         "model": "test-model",
         "max_tokens": 32,
         "messages": [{"role": "user", "content": "weather please"}],
-        # ``get_weather`` declares ``location`` as ``required``; the
-        # synthesized empty ``input={}`` violates this schema.
+        # ``get_weather`` declares ``location`` as ``required``.
         "tools": [_GET_WEATHER],
         "tool_choice": {"type": "tool", "name": "get_weather"},
     }

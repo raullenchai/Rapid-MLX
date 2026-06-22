@@ -801,18 +801,16 @@ class MLLMScheduler:
                         # MLLM-backed ``/v1/messages`` traffic gets the
                         # same surface as the text path.
                         output.matched_stop = stop_str
-                        request.output_text = streamed_so_far[:idx]
-                        output.output_text = request.output_text
-                        request.stop_text = request.output_text
-                        request.stop_text_len = len(request.output_text)
-                        request.stop_tail = ""
-                        stop_trimmed = True
                         # Emit only the valid prefix before the stop marker
                         # in new_text so streaming clients don't lose content.
-                        emit_len = max(0, idx - prev_text_len)
-                        output.new_text = streamed_so_far[
-                            prev_text_len : prev_text_len + emit_len
-                        ]
+                        visible_text = streamed_so_far[:idx]
+                        output.new_text = visible_text[prev_text_len:]
+                        request.output_text = visible_text
+                        output.output_text = visible_text
+                        request.stop_text = visible_text
+                        request.stop_text_len = len(visible_text)
+                        request.stop_tail = ""
+                        stop_trimmed = True
                     else:
                         request.stop_text = streamed_so_far
                         if finish_reason is not None:

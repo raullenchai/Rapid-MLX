@@ -213,24 +213,6 @@ def _filter_tool_calls_by_tool_choice(tool_calls, tool_choice) -> list:
     return filtered
 
 
-def _synthesize_pinned_tool_call(tool_name: str):
-    """Build a synthetic ``ToolCall`` for the pinned tool with empty
-    ``input``. F8 best-effort fallback when the model failed to comply
-    with ``tool_choice={"type":"tool","name":X}``.
-
-    Local import to avoid widening the routes/anthropic.py module-level
-    import surface — these models are pulled in lazily only on the
-    pinned-tool fallback path so the happy-path import time stays flat.
-    """
-    from ..api.models import FunctionCall, ToolCall
-
-    return ToolCall(
-        id=f"call_{uuid.uuid4().hex[:8]}",
-        type="function",
-        function=FunctionCall(name=tool_name, arguments="{}"),
-    )
-
-
 def _enforce_named_tool_choice_present(
     tool_calls,
     tool_choice,
@@ -242,8 +224,9 @@ def _enforce_named_tool_choice_present(
     The first element is unchanged when the named-tool contract is
     satisfied. When the model emits text only or only wrong-tool calls,
     the function returns the filtered empty list plus an error string so
-    callers can surface 422 instead of silently returning text for a
-    pinned tool request.
+    non-stream callers can surface 422 and stream callers can emit an
+    SSE error event instead of silently returning text for a pinned tool
+    request.
 
     ``original_call_count`` is the size of ``tool_calls`` BEFORE the
     filter ran. A warning logs the disambiguation between "model
@@ -275,46 +258,6 @@ def _enforce_named_tool_choice_present(
         [],
         False,
         f"tool_choice pinned tool {target!r} but the model did not emit that tool",
-    )
-
-
-def _extract_sse_error_message(body: str) -> str | None:
-    for event in body.split("\n\n"):
-        if "event: error" not in event:
-            continue
-        data = "\n".join(
-            line.removeprefix("data: ").strip()
-            for line in event.splitlines()
-            if line.startswith("data: ")
-        )
-        if not data:
-            continue
-        try:
-            payload = json.loads(data)
-        except json.JSONDecodeError:
-            continue
-        error = payload.get("error") if isinstance(payload, dict) else None
-        message = error.get("message") if isinstance(error, dict) else None
-        if isinstance(message, str):
-            return message
-    return None
-
-
-async def _buffer_named_tool_choice_stream(stream: AsyncIterator[str]) -> Response:
-    chunks: list[str] = []
-    async for chunk in stream:
-        if isinstance(chunk, bytes):
-            chunks.append(chunk.decode())
-        else:
-            chunks.append(chunk)
-    body = "".join(chunks)
-    error_message = _extract_sse_error_message(body)
-    if error_message and "tool_choice" in error_message:
-        raise HTTPException(status_code=422, detail=error_message)
-    return Response(
-        content=body,
-        media_type="text/event-stream",
-        headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
     )
 
 
@@ -785,8 +728,6 @@ async def create_anthropic_message(
                 engine=engine,
                 request_id_holder=_anth_rid_holder,
             )
-            if _named_tool_choice_target(openai_request.tool_choice):
-                return await _buffer_named_tool_choice_stream(stream)
             return StreamingResponse(
                 stream,
                 media_type="text/event-stream",
@@ -912,15 +853,10 @@ async def create_anthropic_message(
             tool_calls = _filter_tool_calls_by_tool_choice(
                 tool_calls or [], openai_request.tool_choice
             )
-            # F8: ``_enforce_named_tool_choice_present`` now returns
-            # ``(tool_calls, synthesized)`` — best-effort synthesizes a
-            # placeholder ``tool_use`` (rather than raising 422) when
-            # the model failed to comply with a pinned ``tool_choice``.
-            # The explicit ``synthesized`` signal lets us skip
-            # schema validation on the synthesized empty ``input``
-            # (codex r1 BLOCKING #1: pinned tools with ``required``
-            # fields would otherwise 400 the best-effort path back
-            # into the symptom F8 was supposed to fix).
+            # Named pinned-tool failures are explicit contract errors.
+            # The returned boolean remains part of the shared helper
+            # signature for the required/any fallback path, but named
+            # enforcement itself no longer synthesizes placeholder calls.
             (
                 tool_calls,
                 synthesized_pinned_call,
@@ -955,13 +891,10 @@ async def create_anthropic_message(
         # propagated through ``/v1/messages`` as a 200 ``tool_use`` block
         # carrying schema-violating arguments.
         #
-        # F8 follow-up: synthesized best-effort calls have empty
-        # ``input={}`` which intentionally may not satisfy the
-        # pinned tool's schema (e.g. ``required:["city"]``). Skip
-        # the validator on those — failing them would re-instate
-        # the 422 path F8 is meant to retire. Schema-level "the
-        # synthesized input didn't satisfy `required`" complaints
-        # belong on the client's downstream dispatch path.
+        # The required/any fallback can still synthesize an empty tool call
+        # when the target is unambiguous. Skip schema validation only for
+        # that explicit synthesized path; named pinned-tool failures above
+        # return 422 before reaching this point.
         if tool_calls and openai_request.tools and not synthesized_pinned_call:
             _validate_tool_call_params(tool_calls, openai_request.tools)
 
@@ -2665,16 +2598,18 @@ async def _stream_anthropic_messages(
     tool_choice_error: str | None = None
     # The helper's boolean is retained for the Anthropic ``any`` fallback
     # below; named pinned-tool failures now return an error instead of a
-    # synthesized placeholder so the route can surface 422 consistently.
+    # synthesized placeholder. Non-stream raises 422; streaming emits an
+    # SSE error because the violation is only known after generation.
     synthesized_pinned_call = False
     original_call_count_stream = len(tool_calls or [])
     if openai_request.tool_choice:
         tool_calls = _filter_tool_calls_by_tool_choice(
             tool_calls or [], openai_request.tool_choice
         )
-        # Named pinned-tool failures are contract errors. The streaming
-        # HTTP wrapper buffers named-tool streams so this becomes an HTTP
-        # 422 before a successful SSE response is returned.
+        # Named pinned-tool failures are contract errors. On streaming
+        # requests the HTTP response has already started by the time
+        # post-parse enforcement runs, so the error is surfaced as an SSE
+        # error event rather than a non-stream-style 422.
         (
             tool_calls,
             synthesized_pinned_call,
