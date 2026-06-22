@@ -49,7 +49,7 @@ def _engine_supports_completion_logprobs(engine) -> bool:
     )
     capability = getattr(engine, "supports_completion_logprobs", None)
     if capability is not None:
-        return capability if isinstance(capability, bool) else structural_support
+        return capability if isinstance(capability, bool) else False
     return structural_support
 
 

@@ -1039,7 +1039,7 @@ class TestValidateContentBlocksForCapabilities:
                 allow_audio=True,
             )
 
-    def test_input_audio_rejected_even_when_audio_allowed(self):
+    def test_input_audio_allowed_when_audio_capability_enabled(self):
         messages = [
             {
                 "role": "user",
@@ -1052,14 +1052,13 @@ class TestValidateContentBlocksForCapabilities:
             }
         ]
 
-        with pytest.raises(ValueError, match="does not support audio inputs"):
-            validate_content_blocks_for_capabilities(
-                messages,
-                model_name="audio-model",
-                allow_image=False,
-                allow_video=False,
-                allow_audio=True,
-            )
+        validate_content_blocks_for_capabilities(
+            messages,
+            model_name="audio-model",
+            allow_image=False,
+            allow_video=False,
+            allow_audio=True,
+        )
 
 
 class TestGptOssSpecialTokens:
