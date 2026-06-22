@@ -1139,13 +1139,27 @@ class MLLMScheduler:
                             if not cf.cancelled():
 
                                 def _drain_step_result(_future: Any) -> None:
-                                    # Surface any executor-side exception
-                                    # at DEBUG so silent errors during
-                                    # shutdown still leave a trail without
-                                    # spamming the log on normal cancel.
+                                    # Surface any executor-side
+                                    # exception at DEBUG so silent
+                                    # errors during shutdown still
+                                    # leave a trail without spamming
+                                    # the log on normal cancel.
+                                    #
+                                    # Codex r5 BLOCKING #1: catch
+                                    # ``Exception`` (not
+                                    # ``BaseException``). Letting
+                                    # ``KeyboardInterrupt`` /
+                                    # ``SystemExit`` / ``GeneratorExit``
+                                    # propagate is the correct
+                                    # behaviour during shutdown — the
+                                    # callback runs on the executor
+                                    # thread, where those exception
+                                    # types signal interpreter-level
+                                    # teardown that nothing in this
+                                    # path should be swallowing.
                                     try:
                                         _future.result()
-                                    except BaseException as _exc:  # noqa: BLE001
+                                    except Exception as _exc:
                                         logger.debug(
                                             "MLLM step exception during"
                                             " cancellation drain: %r",
@@ -1178,6 +1192,7 @@ class MLLMScheduler:
                     logger.error(f"Error in MLLM process loop: {e}")
                     await asyncio.sleep(0.1)
         finally:
+            cancel_to_reraise: asyncio.CancelledError | None = None
             if self._step_executor is not None:
                 if getattr(self, "_owns_step_executor", True):
                     # Codex r1 BLOCKING #3 + codex r2/r3 BLOCKING follow-ups:
@@ -1214,6 +1229,17 @@ class MLLMScheduler:
                     _drain_secs = 5.0
                     inflight = self._inflight_step_cf
                     self._inflight_step_cf = None
+                    # Codex r5 BLOCKING #2: split exception handling so
+                    # ``asyncio.CancelledError`` propagates after we
+                    # release the executor reference. A second-cancel
+                    # storm (caller invoked ``stop()`` mid-shutdown
+                    # and the lifespan task got cancelled again) MUST
+                    # surface back to the caller — swallowing it leaves
+                    # ``stop()`` blocked on the unfinished
+                    # ``_processing_task``. ``cancel_to_reraise`` is
+                    # declared at the top of the ``finally`` block so
+                    # the re-raise sits outside the
+                    # ``_owns_step_executor`` branch.
                     if (
                         inflight is not None
                         and not inflight.done()
@@ -1224,33 +1250,27 @@ class MLLMScheduler:
                                 asyncio.wrap_future(inflight, loop=loop),
                                 timeout=_drain_secs,
                             )
-                        except (
-                            TimeoutError,
-                            asyncio.CancelledError,
-                            Exception,
-                        ) as exc:
-                            # All three branches share the same
-                            # downstream handling: we abandon the
-                            # in-flight step and proceed to drop the
-                            # executor. The wait was best-effort
-                            # observability; the asyncio-side state is
-                            # already torn down at this point. Log at
-                            # DEBUG (TimeoutError gets a WARNING below
-                            # so operators can see a wedged step
-                            # cleared shutdown).
-                            if isinstance(exc, TimeoutError):
-                                logger.warning(
-                                    "MLLM step exceeded %.1fs drain budget"
-                                    " during shutdown; abandoning the"
-                                    " worker thread and proceeding with"
-                                    " non-blocking executor teardown",
-                                    _drain_secs,
-                                )
-                            else:
-                                logger.debug(
-                                    "MLLM step in-flight drain ended with %r",
-                                    exc,
-                                )
+                        except TimeoutError:
+                            # Wedged step — operator-visible WARNING.
+                            logger.warning(
+                                "MLLM step exceeded %.1fs drain budget"
+                                " during shutdown; abandoning the"
+                                " worker thread and proceeding with"
+                                " non-blocking executor teardown",
+                                _drain_secs,
+                            )
+                        except asyncio.CancelledError as exc:
+                            # Re-raise AFTER releasing the executor
+                            # reference below (the executor cleanup is
+                            # non-blocking, so we can do it on the
+                            # exit path without losing the cancel
+                            # signal to the caller).
+                            cancel_to_reraise = exc
+                        except Exception as exc:
+                            # Executor-side raise — log only; this
+                            # path is best-effort observability and
+                            # must not mask the real shutdown trigger.
+                            logger.debug("MLLM step in-flight drain ended with %r", exc)
                     try:
                         self._step_executor.shutdown(wait=False, cancel_futures=True)
                     except Exception:  # pragma: no cover — defensive
@@ -1258,6 +1278,13 @@ class MLLMScheduler:
                             "MLLM step executor shutdown raised", exc_info=True
                         )
                 self._step_executor = None
+            if cancel_to_reraise is not None:
+                # Surface the cancellation to whatever is awaiting
+                # ``_processing_task`` (typically
+                # ``MLLMScheduler.stop`` -> outer FastAPI lifespan).
+                # We've already cleaned up the executor reference, so
+                # the re-raise leaves no resource leak.
+                raise cancel_to_reraise
 
     async def add_request_async(
         self,
