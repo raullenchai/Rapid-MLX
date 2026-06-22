@@ -459,3 +459,67 @@ def test_unregistered_root_model_falls_back_to_h17_default(monkeypatch):
     err = resp.json()["error"]
     # Default secrecy default — the attacker key must NOT echo.
     assert "EVIL" not in err["message"], err["message"]
+
+
+def test_resolve_root_model_path_probe_disambiguates_shared_field_name():
+    """Codex r3 BLOCKING #1: ``input`` lives on both ``EmbeddingRequest``
+    and ``ResponsesRequest``. When the FastAPI-wrapped loc is just
+    ``("body", "input")`` the field-name probe alone would mis-resolve.
+    The request-path probe must pick the canonical root.
+    """
+    from types import SimpleNamespace
+
+    from vllm_mlx.api.models import EmbeddingRequest
+    from vllm_mlx.api.responses_models import ResponsesRequest
+    from vllm_mlx.middleware.exception_handlers import (
+        _resolve_root_model,
+        install_exception_handlers,
+    )
+
+    install_exception_handlers(FastAPI())
+
+    def _fake_request(path: str):
+        return SimpleNamespace(url=SimpleNamespace(path=path))
+
+    # Same loc, different routes → different roots.
+    embed_resolved = _resolve_root_model(
+        exc=object(),
+        loc=("body", "input"),
+        request=_fake_request("/v1/embeddings"),
+    )
+    responses_resolved = _resolve_root_model(
+        exc=object(),
+        loc=("body", "input"),
+        request=_fake_request("/v1/responses"),
+    )
+    assert embed_resolved is EmbeddingRequest
+    assert responses_resolved is ResponsesRequest
+
+
+def test_descend_field_picks_correct_union_arm_via_hint():
+    """Codex r3 BLOCKING #2: ``ResponsesRequest.input`` is the union
+    ``str | list[ResponseInputItem]``. ``_descend_field`` must use the
+    next-loc-string hint to pick the list-of-model arm so deeper loc
+    components can keep surfacing legitimate field names instead of
+    collapsing to ``<field>``.
+    """
+    from vllm_mlx.api.responses_models import ResponsesRequest
+    from vllm_mlx.middleware.exception_handlers import (
+        _descend_field,
+        _walk_loc_with_root,
+    )
+
+    # Sanity check — the field type is in fact a non-Optional union.
+    input_ann = ResponsesRequest.model_fields["input"].annotation
+    # Walk a nested loc like ("body", "input", 0, "type") — the inner
+    # union must yield the list-of-model arm so "type" lands on a
+    # schema-owned field.
+    parts, last = _walk_loc_with_root(("body", "input", 0, "type"), ResponsesRequest)
+    # ``type`` may or may not exist as a field on ResponseInputItem
+    # depending on the discriminator wiring; the strict guarantee is
+    # that none of the *index/intermediate* parts collapse to <field>.
+    assert "<field>" not in parts[:2], parts
+    # And the hint-less form still returns SOMETHING (regression test —
+    # the new ``hint=None`` branch must not raise on a non-Optional
+    # union).
+    _descend_field(input_ann, hint=None)

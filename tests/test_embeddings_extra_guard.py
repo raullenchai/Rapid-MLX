@@ -789,44 +789,115 @@ class TestEmbeddingModelAliasResolution:
             "path stays single-sourced."
         )
 
-    def test_server_module_main_internal_dispatches_to_helper(self, monkeypatch):
-        """End-to-end behavioural pin (codex r1 BLOCKING #1
-        follow-through): patch the helper on the CLI module — the
-        same module symbol ``server.py`` imports inside the function
-        — and prove the call lands on it when the embedding-model
-        branch fires.
+    def test_server_main_if_args_embedding_model_block_body(self):
+        """Pin the actual ``if args.embedding_model:`` branch body in
+        ``server.main()`` (codex r3 BLOCKING #3 — the prior spy-style
+        test patched the helper on the cli module and called those
+        statements at test scope, which proves the *helper* runs but
+        not that ``server.main`` itself routes through it).
 
-        We don't boot ``main_internal`` directly because it loads the
-        whole engine; instead we mirror the EXACT two lines from
-        ``server.py`` that the branch executes
-        (``from .cli import _load_embedding_model_or_exit`` followed
-        by ``_load_embedding_model_or_exit(args, load_embedding_model)``).
-        Patching ``vllm_mlx.cli._load_embedding_model_or_exit`` and
-        running those two lines proves the wire reaches the spy.
+        AST walk into ``server.main`` finds the
+        ``if args.embedding_model:`` ``If`` node and asserts its body is
+        exactly ``ImportFrom(.cli, _load_embedding_model_or_exit)``
+        followed by ``Expr(_load_embedding_model_or_exit(args,
+        load_embedding_model))`` — byte-for-byte the legacy inline
+        block, but now expressed as a single helper call.
+
+        This catches a future regression where the import edge stays
+        but the call is silently dropped (or replaced with a stub).
         """
-        from types import SimpleNamespace
+        import ast
+        import inspect
 
-        from vllm_mlx import cli as cli_mod
+        from vllm_mlx import server as server_mod
 
-        captured: dict = {}
+        source = inspect.getsource(server_mod)
+        tree = ast.parse(source)
 
-        def _spy(args, load_fn):
-            captured["args"] = args
-            captured["load_fn"] = load_fn
+        # Find the ``main`` function definition (the standalone
+        # ``python -m vllm_mlx.server`` entrypoint).
+        fn = next(
+            (
+                node
+                for node in ast.walk(tree)
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+                and node.name == "main"
+            ),
+            None,
+        )
+        assert fn is not None, "vllm_mlx/server.py must define main"
 
-        monkeypatch.setattr(cli_mod, "_load_embedding_model_or_exit", _spy)
+        # Find ``if args.embedding_model:`` inside main_internal. We
+        # match on the test expression so a later cosmetic rename
+        # (e.g. ``if getattr(args, ...)``) would fail loudly.
+        target_if = None
+        for node in ast.walk(fn):
+            if not isinstance(node, ast.If):
+                continue
+            test = node.test
+            if (
+                isinstance(test, ast.Attribute)
+                and test.attr == "embedding_model"
+                and isinstance(test.value, ast.Name)
+                and test.value.id == "args"
+            ):
+                target_if = node
+                break
+        assert target_if is not None, (
+            "vllm_mlx/server.py main_internal must contain "
+            "`if args.embedding_model:` — the embedding-model gating "
+            "branch is gone, which would silently broaden the loader "
+            "and re-introduce the D-EMBED-ALIAS regression."
+        )
 
-        # These three statements are byte-for-byte the branch
-        # ``server.main_internal`` executes when args.embedding_model
-        # is truthy — see vllm_mlx/server.py.
-        from vllm_mlx.cli import _load_embedding_model_or_exit as _hook
-        from vllm_mlx.server import load_embedding_model as _server_loader
+        # Body must be exactly two statements:
+        #   from .cli import _load_embedding_model_or_exit
+        #   _load_embedding_model_or_exit(args, load_embedding_model)
+        body = target_if.body
+        assert len(body) == 2, (
+            "if args.embedding_model body must be exactly the lazy import "
+            "+ helper call; got "
+            f"{len(body)} statement(s). Either restore the two-line block "
+            "or update this assertion with the new wiring + matching parity "
+            "test for the unified CLI."
+        )
 
-        ns = SimpleNamespace(embedding_model="embeddinggemma-300m-6bit")
-        _hook(ns, _server_loader)
+        stmt_import, stmt_call = body
+        assert (
+            isinstance(stmt_import, ast.ImportFrom)
+            and stmt_import.module == "cli"
+            and stmt_import.level == 1
+            and any(
+                alias.name == "_load_embedding_model_or_exit"
+                for alias in stmt_import.names
+            )
+        ), (
+            "First statement of `if args.embedding_model:` must be "
+            "`from .cli import _load_embedding_model_or_exit` so the "
+            "alias-resolution helper is sourced from the same module the "
+            "unified `rapid-mlx serve` CLI uses."
+        )
 
-        assert captured["args"] is ns
-        # The loader passed in MUST be the server-module symbol — if
-        # someone hand-imports a different ``load_embedding_model``
-        # in the future, this catches the regression.
-        assert captured["load_fn"] is _server_loader
+        assert isinstance(stmt_call, ast.Expr) and isinstance(
+            stmt_call.value, ast.Call
+        ), "Second statement must be the helper CALL, not a re-binding."
+        call = stmt_call.value
+        assert (
+            isinstance(call.func, ast.Name)
+            and call.func.id == "_load_embedding_model_or_exit"
+        ), (
+            "Second statement must invoke `_load_embedding_model_or_exit` "
+            "(not a wrapper / not a renamed copy)."
+        )
+        assert len(call.args) == 2, (
+            "Helper invocation must pass exactly (args, load_embedding_model)."
+        )
+        first_arg, second_arg = call.args
+        assert isinstance(first_arg, ast.Name) and first_arg.id == "args"
+        assert (
+            isinstance(second_arg, ast.Name) and second_arg.id == "load_embedding_model"
+        ), (
+            "Second arg must be the module-level `load_embedding_model` "
+            "symbol from vllm_mlx/server.py — not a renamed import — so "
+            "the spy/patch path actually reaches the same loader."
+        )

@@ -116,16 +116,57 @@ def _unwrap_optional(tp: _t.Any) -> _t.Any:
     return non_none[0] if non_none else tp
 
 
-def _descend_field(tp: _t.Any) -> _t.Any:
+def _union_arms(tp: _t.Any) -> tuple[_t.Any, ...]:
+    """Return the non-``None`` arms of ``tp`` if it's a union, else ``(tp,)``.
+
+    Handles both ``typing.Union[...]`` and the PEP 604 ``X | Y`` form —
+    they share the same ``get_origin`` semantics in Python 3.10+
+    (``typing.Union``), so ``get_args`` returns the arm tuple.
+    """
+    import types as _types
+
+    origin = get_origin(tp)
+    if origin is _t.Union or origin is getattr(_types, "UnionType", None):
+        return tuple(a for a in get_args(tp) if a is not type(None))
+    return (tp,)
+
+
+def _descend_field(tp: _t.Any, hint: str | None = None) -> _t.Any:
     """Pick the inner type for ``list[X]`` / ``tuple[X, ...]`` / ``dict[K, V]``.
 
     Returns ``None`` when the inner type can't be determined.
+
+    Codex r3 BLOCKING #2: when ``tp`` is a non-``Optional`` union such
+    as ``str | list[ResponseInputItem]``, the caller may also provide a
+    ``hint`` — the next loc string component we're about to step into.
+    We pick the arm whose ``model_fields`` contain that hint (so the
+    walker can keep descending instead of bailing to ``<field>`` on the
+    first attacker-controlled-looking step).
     """
     inner = _unwrap_optional(tp)
-    origin = get_origin(inner)
+    arms = _union_arms(inner)
+    # If we have a hint, prefer a union arm that schema-owns the hint.
+    if hint is not None and len(arms) > 1:
+        for arm in arms:
+            candidate = _descend_field(arm, hint=None)
+            if (
+                isinstance(candidate, type)
+                and issubclass(candidate, BaseModel)
+                and hint in candidate.model_fields
+            ):
+                return candidate
+            if (
+                isinstance(arm, type)
+                and issubclass(arm, BaseModel)
+                and hint in arm.model_fields
+            ):
+                return arm
+    # Single-arm path (or hint-less): fall through to container peeling.
+    target = arms[0] if arms else inner
+    origin = get_origin(target)
     if origin is None:
-        return inner
-    args = get_args(inner)
+        return target
+    args = get_args(target)
     if not args:
         return None
     if origin in (list, tuple, set, frozenset):
@@ -135,27 +176,87 @@ def _descend_field(tp: _t.Any) -> _t.Any:
     return None
 
 
-def _resolve_root_model(exc: object, loc: tuple) -> type[BaseModel] | None:
+# Request-path → root model class. Wired up at install time so the
+# FastAPI-wrapped ``RequestValidationError`` path (where ``exc.title``
+# is unavailable) can disambiguate request models that share a field
+# name (codex r3 BLOCKING #1: ``input`` is a field on both
+# ``EmbeddingRequest`` and ``ResponsesRequest`` — the naive
+# first-match registry probe would mis-resolve and redact legitimate
+# nested locs as ``<field>``). Keyed by URL path prefix because
+# FastAPI routes can mount under arbitrary prefixes.
+_REQUEST_PATH_TO_ROOT: list[tuple[str, type[BaseModel]]] = []
+
+
+def register_request_path(path_prefix: str, model_cls: type[BaseModel]) -> None:
+    """Register a request-path → root-model-class mapping.
+
+    Used by the FastAPI-wrapped ``RequestValidationError`` path to
+    pick the correct root model when the loc starts with ``"body"``
+    only (no string component to disambiguate via the field-name
+    registry probe). ``path_prefix`` is matched against
+    ``request.url.path`` with the same shape as
+    :func:`_is_anthropic_path` (exact match OR strict sub-path).
+
+    Idempotent: re-registering the same ``(path_prefix, model_cls)``
+    pair is a no-op. Registering a NEW class for an existing prefix
+    overwrites the prior binding so a plugin that swaps the request
+    model can update the mapping at startup.
+    """
+    for i, (existing_prefix, _) in enumerate(_REQUEST_PATH_TO_ROOT):
+        if existing_prefix == path_prefix:
+            _REQUEST_PATH_TO_ROOT[i] = (path_prefix, model_cls)
+            return
+    _REQUEST_PATH_TO_ROOT.append((path_prefix, model_cls))
+
+
+def _resolve_root_model(
+    exc: object,
+    loc: tuple,
+    request: Request | None = None,
+) -> type[BaseModel] | None:
     """Pick the root request-model class for ``loc`` from the registry.
 
-    Two probes, in order:
+    Three probes, in order of precedence:
 
     1. ``exc.title`` — Pydantic v2 sets this on the raw
        ``ValidationError``. The route's ``AnthropicRequest(**body)`` /
-       ``ResponsesRequest(**body)`` constructions land here.
-    2. Registry walk — for FastAPI-bound bodies the wrapped
-       ``RequestValidationError`` doesn't carry a title; try each
-       registered model and pick the first whose ``model_fields``
-       contain the FIRST non-``"body"`` string component of ``loc``.
+       ``ResponsesRequest(**body)`` constructions land here. Unambiguous.
+    2. Request-path probe — for FastAPI-bound bodies the wrapped
+       ``RequestValidationError`` doesn't carry a title, but the
+       ``Request`` object's path tells us which route received the
+       body. Path-based lookup is the disambiguator for request
+       models that share a field name (codex r3 BLOCKING #1:
+       ``input`` is on both ``EmbeddingRequest`` and
+       ``ResponsesRequest``).
+    3. Field-name probe (legacy fallback) — try each registered
+       model and pick the first whose ``model_fields`` contain the
+       FIRST non-``"body"`` string component of ``loc``. Still a
+       safe fallback because the field-name probe only fires when
+       the path probe has nothing to say, and even an ambiguous
+       resolution falls back to ``<field>`` on a per-loc-component
+       basis.
 
-    Returns ``None`` if nothing matches — the caller falls back to the
-    D-ANTHRO closed-allowlist path.
+    Returns ``None`` if nothing matches — the caller falls back to
+    the D-ANTHRO closed-allowlist path.
     """
     title = getattr(exc, "title", None)
     if isinstance(title, str):
         root = _REQUEST_MODEL_REGISTRY.get(title)
         if root is not None:
             return root
+    # Path probe: matches the same exact-or-sub-path shape as
+    # ``_is_anthropic_path`` (rejects ``/v1/messages-foo`` while
+    # accepting ``/v1/messages`` and ``/v1/messages/count_tokens``).
+    if request is not None:
+        try:
+            path = request.url.path
+        except Exception:  # pragma: no cover — defensive
+            path = None
+        if path:
+            for prefix, cls in _REQUEST_PATH_TO_ROOT:
+                if path == prefix or path.startswith(prefix + "/"):
+                    return cls
+    # Field-name probe (legacy fallback).
     first_str: str | None = None
     for raw in loc:
         if raw == "body":
@@ -187,16 +288,29 @@ def _walk_loc_with_root(
     parts: list[str] = []
     last_field: str | None = None
     current: _t.Any = root_cls
-    for raw in loc:
+    loc_list = list(loc)
+    for idx, raw in enumerate(loc_list):
         if raw == "body":
             continue
         if isinstance(raw, int):
             parts.append(str(raw))
             if current is not None:
-                current = _descend_field(current)
+                # Peek the next string loc segment as a hint so
+                # _descend_field can pick the right union arm
+                # (codex r3 BLOCKING #2).
+                hint = _peek_next_field_hint(loc_list, idx)
+                current = _descend_field(current, hint=hint)
             continue
         if isinstance(raw, str) and _is_union_arm_discriminator(raw):
             continue
+        # When ``current`` is a non-Optional union (e.g. ResponsesRequest.input
+        # is ``str | list[ResponseInputItem]``), try to resolve through the
+        # union arm whose model_fields contain ``raw`` before deciding the
+        # token is attacker-controlled (codex r3 BLOCKING #2).
+        if current is not None and not (
+            isinstance(current, type) and issubclass(current, BaseModel)
+        ):
+            current = _descend_field(current, hint=raw)
         is_schema_owned = (
             isinstance(current, type)
             and issubclass(current, BaseModel)
@@ -211,6 +325,24 @@ def _walk_loc_with_root(
             parts.append("<field>")
             current = None
     return parts, last_field
+
+
+def _peek_next_field_hint(loc_list: list, idx: int) -> str | None:
+    """Return the next string component of ``loc_list`` after ``idx``.
+
+    Skips the union-arm discriminator marker and integer indices —
+    those are not field names. Used by :func:`_walk_loc_with_root` to
+    give :func:`_descend_field` a hint when picking the right arm of a
+    non-``Optional`` union.
+    """
+    for nxt in loc_list[idx + 1 :]:
+        if (
+            isinstance(nxt, str)
+            and nxt != "body"
+            and not _is_union_arm_discriminator(nxt)
+        ):
+            return nxt
+    return None
 
 
 def _extract_field_from_value_error_msg(
@@ -466,7 +598,11 @@ def _sanitize_loc(loc: tuple) -> str:
     return ".".join(parts)
 
 
-def _render_loc_for_envelope(exc: object, loc: tuple) -> tuple[str, str | None]:
+def _render_loc_for_envelope(
+    exc: object,
+    loc: tuple,
+    request: Request | None = None,
+) -> tuple[str, str | None]:
     """Render ``loc`` for the user-facing 400 envelope (D-ENVELOPE-FIELD-LEAK).
 
     Returns ``(rendered, param)``. ``rendered`` is the dotted-path
@@ -492,7 +628,7 @@ def _render_loc_for_envelope(exc: object, loc: tuple) -> tuple[str, str | None]:
     H-17 round-2 attack (attacker-controlled dict keys / extra-
     forbidden names) stays closed.
     """
-    root_cls = _resolve_root_model(exc, loc)
+    root_cls = _resolve_root_model(exc, loc, request)
     if root_cls is not None:
         parts, last_field = _walk_loc_with_root(loc, root_cls)
         return ".".join(parts), last_field
@@ -626,6 +762,7 @@ def _decode_error_response(exc: _json.JSONDecodeError) -> JSONResponse:
 
 def _validation_error_response(
     exc: RequestValidationError | PydanticValidationError,
+    request: Request | None = None,
 ) -> JSONResponse:
     """Build the 400 envelope for Pydantic body-validation failures.
 
@@ -654,7 +791,7 @@ def _validation_error_response(
     param: str | None = None
     for err in exc.errors():
         raw_loc = tuple(err.get("loc", ()))
-        loc, last_field = _render_loc_for_envelope(exc, raw_loc)
+        loc, last_field = _render_loc_for_envelope(exc, raw_loc, request)
         msg = err.get("msg", "validation error")
         # Model-level ``value_error`` (e.g. the NaN/inf scrubber that
         # runs ``mode='before'``) lands with ``loc=()`` — the field
@@ -662,7 +799,7 @@ def _validation_error_response(
         # the leading token matches a schema-owned field, so we never
         # surface attacker-controlled bytes.
         if last_field is None and not loc and err.get("type") == "value_error":
-            root_cls = _resolve_root_model(exc, raw_loc)
+            root_cls = _resolve_root_model(exc, raw_loc, request)
             recovered = _extract_field_from_value_error_msg(msg, root_cls)
             if recovered is not None:
                 last_field = recovered
@@ -821,6 +958,17 @@ def _register_canonical_request_models() -> None:
         ResponsesRequest,
     ):
         register_request_model(cls)
+    # Route-path → root-model bindings. Walked in declaration order, so
+    # more-specific prefixes must come before less-specific ones. These
+    # break ties when the same field name (e.g. ``input``, ``messages``,
+    # ``model``) appears on more than one canonical request model — the
+    # path probe wins over the field-name fallback so ``/v1/responses``
+    # resolves to ``ResponsesRequest``, never ``EmbeddingRequest``.
+    register_request_path("/v1/chat/completions", ChatCompletionRequest)
+    register_request_path("/v1/completions", CompletionRequest)
+    register_request_path("/v1/embeddings", EmbeddingRequest)
+    register_request_path("/v1/messages", AnthropicRequest)
+    register_request_path("/v1/responses", ResponsesRequest)
 
 
 def install_exception_handlers(app: FastAPI) -> None:
@@ -862,7 +1010,7 @@ def install_exception_handlers(app: FastAPI) -> None:
         request: Request,
         exc: RequestValidationError,
     ):
-        response = _validation_error_response(exc)
+        response = _validation_error_response(exc, request)
         if _is_anthropic_path(request):
             response = _wrap_for_anthropic(response)
         return response
@@ -912,7 +1060,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             len(sanitized),
             sanitized,
         )
-        response = _validation_error_response(exc)
+        response = _validation_error_response(exc, request)
         if _is_anthropic_path(request):
             response = _wrap_for_anthropic(response)
         return response
@@ -954,10 +1102,10 @@ def install_exception_handlers(app: FastAPI) -> None:
             response = _decode_error_response(exc)
             return _wrap_for_anthropic(response) if anthropic else response
         if isinstance(exc, RequestValidationError):
-            response = _validation_error_response(exc)
+            response = _validation_error_response(exc, request)
             return _wrap_for_anthropic(response) if anthropic else response
         if isinstance(exc, PydanticValidationError):
-            response = _validation_error_response(exc)
+            response = _validation_error_response(exc, request)
             return _wrap_for_anthropic(response) if anthropic else response
         if isinstance(exc, StarletteHTTPException):
             response = _http_error_response(exc)
