@@ -460,27 +460,58 @@ def test_nonstream_tool_choice_named_still_routes_to_specific_tool():
             "messages": [{"role": "user", "content": "anything"}],
         },
     )
-    # Named pin with parser-only model that returned text → 422
-    # ("model returned a text response with no tool_calls"). Either
-    # 422 or a 200 with a synth call to ``get_weather`` is contract-
-    # compliant; what we explicitly do NOT want is a tool_use for
-    # ``lookup_zip`` or a 200 ``end_turn`` text response. The 200
-    # branch therefore asserts a non-empty ``tool_uses`` list AND
-    # ``stop_reason == "tool_use"`` so the exact failure mode this
-    # test exists to catch (vacuously-empty ``tool_uses``) is
-    # surfaced as a hard fail rather than a silent skip.
-    assert r.status_code in (200, 422), r.text
-    if r.status_code == 200:
-        body = r.json()
-        assert body["stop_reason"] == "tool_use", body
-        tool_uses = [c for c in body["content"] if c["type"] == "tool_use"]
-        assert tool_uses, body
-        for tu in tool_uses:
-            assert tu["name"] == "get_weather", body
-    else:
-        body = r.json()
-        detail = body.get("detail") or body.get("error", {}).get("message", "")
-        assert "get_weather" in detail
+    # Named pin with parser-only model that returned text → 422 via
+    # ``_enforce_named_tool_choice_present``. Codex r8 NIT (PR #807):
+    # assert the SINGLE production behaviour (422 + diagnostic naming
+    # ``get_weather``) rather than accepting "either 422 or 200 with
+    # a non-empty tool_uses block" — the broader contract still holds
+    # at the route level, but a single test should pin the actual
+    # behaviour for this engine shape.
+    assert r.status_code == 422, r.text
+    body = r.json()
+    detail = body.get("detail") or body.get("error", {}).get("message", "")
+    assert "get_weather" in detail
+    assert "tool_choice" in detail
+
+
+def test_nonstream_tool_choice_named_synth_when_model_emits_the_pinned_tool():
+    """H-05 / PR #763 round-1 BLOCKING #1 — when the parser DOES
+    surface a call to the named tool, the route ships it as a
+    ``tool_use`` block and the response stops with ``stop_reason="tool_use"``.
+    This complements ``test_nonstream_tool_choice_named_still_routes_to_specific_tool``
+    by pinning the success path (no synth, no error, just the model-
+    surfaced call) so a refactor that breaks either branch is caught."""
+    # ``_parse_tool_calls_with_parser`` expects engine tool_calls in
+    # the flat ``{"id", "name", "arguments"}`` structured-payload
+    # shape (HarmonyStreamingRouter / qwen3-coder), NOT the nested
+    # OpenAI ToolCall shape.
+    pinned_call = {
+        "id": "call_test",
+        "name": "get_weather",
+        "arguments": '{"location": "Tokyo"}',
+    }
+    engine = _ToolStreamingEngine(
+        ["text"],
+        engine_prompt_tokens=5,
+        tool_calls_per_chunk=[[pinned_call]],
+    )
+    client = _make_client(engine)
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "tools": [_tool_dict("get_weather"), _tool_dict("lookup_zip", "zip")],
+            "tool_choice": {"type": "tool", "name": "get_weather"},
+            "messages": [{"role": "user", "content": "what is the weather in tokyo"}],
+        },
+    )
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["stop_reason"] == "tool_use", body
+    tool_uses = [c for c in body["content"] if c["type"] == "tool_use"]
+    assert len(tool_uses) == 1
+    assert tool_uses[0]["name"] == "get_weather"
 
 
 def test_nonstream_tool_choice_auto_does_not_force_tool_call():

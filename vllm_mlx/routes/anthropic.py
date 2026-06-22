@@ -1468,6 +1468,15 @@ async def _stream_anthropic_messages(
     # the engine returned no count" — MLLM, empty prompt, …). The
     # earlier ``or`` chain conflated the two and would re-render every
     # genuinely-empty prompt.
+    #
+    # Codex r8 BLOCKING #1+#2 (PR #807): defense-in-depth — coerce
+    # the result to int before it flows into the SSE envelope or the
+    # running-counter seed. The fallback estimator returns ``int``
+    # already (``0`` on all skip paths), but a future refactor that
+    # surfaces ``None`` from either source MUST NOT poison the
+    # Anthropic ``usage.input_tokens`` int field — JSON-serialising
+    # ``None`` would emit ``"input_tokens": null`` which violates the
+    # public schema.
     if prompt_tokens_estimate is None:
         initial_prompt_tokens_estimate = _estimate_anthropic_prompt_tokens(
             engine,
@@ -1476,6 +1485,10 @@ async def _stream_anthropic_messages(
         )
     else:
         initial_prompt_tokens_estimate = prompt_tokens_estimate
+    # Coerce ``None`` or any other non-int to ``0`` before it reaches
+    # the wire.
+    if not isinstance(initial_prompt_tokens_estimate, int):
+        initial_prompt_tokens_estimate = 0
 
     # Emit message_start
     message_start = {
