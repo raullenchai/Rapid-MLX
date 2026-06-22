@@ -6,6 +6,7 @@ This module provides the abstract base class for reasoning parsers that extract
 thinking/reasoning content from model outputs (e.g., <think>...</think> tags).
 """
 
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -213,17 +214,23 @@ def finalize_streaming_compat(
     finish_reason: str | None = None,
 ) -> DeltaMessage | None:
     """Call ``finalize_streaming`` without breaking legacy parsers."""
-    try:
+    params = inspect.signature(parser.finalize_streaming).parameters
+    supports_kwargs = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    supports_new_args = supports_kwargs or {
+        "matched_stop",
+        "prompt_thinking_active",
+        "finish_reason",
+    }.issubset(params)
+    if supports_new_args:
         return parser.finalize_streaming(
             accumulated_text,
             matched_stop=matched_stop,
             prompt_thinking_active=prompt_thinking_active,
             finish_reason=finish_reason,
         )
-    except TypeError as exc:
-        if "unexpected keyword argument" not in str(exc):
-            raise
-        return parser.finalize_streaming(accumulated_text)
+    return parser.finalize_streaming(accumulated_text)
 
 
 def finalize_truncation(

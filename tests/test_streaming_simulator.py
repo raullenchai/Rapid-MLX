@@ -699,9 +699,10 @@ class TestScenario5_EdgeCases:
             f"prompt_thinking_active; got content={full_content!r}"
         )
 
-    def test_explicit_opener_natural_eos_does_not_duplicate_content(self):
-        """Explicit ``<think>`` natural EOS has already streamed the bytes
-        as reasoning; finalize must not duplicate them into content."""
+    def test_explicit_opener_natural_eos_rescues_content(self):
+        """Explicit ``<think>`` natural EOS is not truncation. Finalize
+        surfaces the orphaned thought as content so clients do not receive
+        an empty assistant turn."""
         tokens = ["<think>", "just a thought"]
         content, reasoning = simulate_server_streaming_reasoning_aware(
             tokens,
@@ -712,8 +713,8 @@ class TestScenario5_EdgeCases:
         full_content = "".join(content)
         full_reasoning = "".join(reasoning)
         assert "just a thought" in full_reasoning
-        assert full_content == "", (
-            f"explicit-opener natural EOS duplicated reasoning into content: "
+        assert full_content == "just a thought", (
+            f"explicit-opener natural EOS should rescue content; got "
             f"content={full_content!r}"
         )
 

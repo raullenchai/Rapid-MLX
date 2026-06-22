@@ -60,14 +60,20 @@ def chat(msg, max_tokens=100, stream=False, tools=None, enable_thinking=False):
     t0 = time.perf_counter()
     try:
         if stream:
-            tokens = 0
+            chunks = 0
+            usage_tokens = None
             content = ""
-            with httpx.stream("POST", f"{BASE_URL}/chat/completions",
-                              json=payload, timeout=TIMEOUT) as resp:
+            payload["stream_options"] = {"include_usage": True}
+            with httpx.stream(
+                "POST", f"{BASE_URL}/chat/completions", json=payload, timeout=TIMEOUT
+            ) as resp:
                 for line in resp.iter_lines():
                     if not line.startswith("data: ") or line == "data: [DONE]":
                         continue
                     data = json.loads(line[6:])
+                    usage = data.get("usage") or {}
+                    if isinstance(usage.get("completion_tokens"), int):
+                        usage_tokens = usage["completion_tokens"]
                     if not data.get("choices"):
                         continue
                     delta = data["choices"][0].get("delta", {})
@@ -75,13 +81,15 @@ def chat(msg, max_tokens=100, stream=False, tools=None, enable_thinking=False):
                     # like Gemma 4 route output to reasoning_content channel)
                     text = delta.get("content") or delta.get("reasoning_content") or ""
                     if text:
-                        tokens += 1
+                        chunks += 1
                         content += text
             elapsed = time.perf_counter() - t0
+            tokens = usage_tokens if usage_tokens is not None else chunks
             return round(elapsed * 1000, 1), tokens, content[:100]
         else:
-            r = httpx.post(f"{BASE_URL}/chat/completions",
-                           json=payload, timeout=TIMEOUT)
+            r = httpx.post(
+                f"{BASE_URL}/chat/completions", json=payload, timeout=TIMEOUT
+            )
             elapsed = time.perf_counter() - t0
             data = r.json()
             ct = data.get("usage", {}).get("completion_tokens", 0)
@@ -101,11 +109,13 @@ def test_sustained_throughput():
     latencies = []
     errors = 0
     for i in range(20):
-        ms, tokens, content = chat(f"What is {i}+{i}?", max_tokens=50, enable_thinking=False)
+        ms, tokens, content = chat(
+            f"What is {i}+{i}?", max_tokens=50, enable_thinking=False
+        )
         latencies.append(ms)
         if "ERROR" in str(content):
             errors += 1
-        sys.stdout.write(f"  {i+1}/20 {ms:.0f}ms ")
+        sys.stdout.write(f"  {i + 1}/20 {ms:.0f}ms ")
         sys.stdout.flush()
     print()
     avg = sum(latencies) / len(latencies)
@@ -142,7 +152,9 @@ def test_long_generation():
     print("\n[3/8] Long generation (1024 tokens)...")
     ms, tokens, content = chat(
         "Write a detailed essay about the history of mathematics from ancient Egypt to modern times.",
-        max_tokens=1024, stream=True, enable_thinking=False,
+        max_tokens=1024,
+        stream=True,
+        enable_thinking=False,
     )
     tps = tokens / (ms / 1000) if ms > 0 else 0
     print(f"  {ms:.0f}ms, {tokens} chunks, ~{tps:.1f} chunks/s")
@@ -160,7 +172,9 @@ def test_rapid_fire():
             errors += 1
             print(f"  {i}: ERROR — {content}")
     elapsed = time.perf_counter() - t0
-    print(f"  10 requests in {elapsed:.1f}s ({10/elapsed:.1f} req/s), Errors: {errors}")
+    print(
+        f"  10 requests in {elapsed:.1f}s ({10 / elapsed:.1f} req/s), Errors: {errors}"
+    )
     return errors == 0
 
 
@@ -172,7 +186,9 @@ def test_tool_call_storm():
     for i in range(10):
         ms, tokens, content = chat(
             f"What's the weather in city_{i}?",
-            max_tokens=100, tools=TOOLS, enable_thinking=False,
+            max_tokens=100,
+            tools=TOOLS,
+            enable_thinking=False,
         )
         if "ERROR" in str(content):
             errors += 1
@@ -227,14 +243,17 @@ def test_disconnect_resilience():
     try:
         payload = {
             "model": "default",
-            "messages": [{"role": "user", "content": "Write a very long story about a dragon."}],
+            "messages": [
+                {"role": "user", "content": "Write a very long story about a dragon."}
+            ],
             "max_tokens": 500,
             "stream": True,
             "enable_thinking": False,
         }
         chunks = 0
-        with httpx.stream("POST", f"{BASE_URL}/chat/completions",
-                          json=payload, timeout=30) as resp:
+        with httpx.stream(
+            "POST", f"{BASE_URL}/chat/completions", json=payload, timeout=30
+        ) as resp:
             for line in resp.iter_lines():
                 if line.startswith("data: ") and line != "data: [DONE]":
                     chunks += 1
@@ -271,6 +290,7 @@ def test_memory_stability():
 
 def main():
     import argparse
+
     global _PORT, BASE_URL
     parser = argparse.ArgumentParser(description="Stress test for Rapid-MLX server")
     parser.add_argument("--port", type=int, default=8000, help="Server port")
@@ -279,7 +299,11 @@ def main():
     BASE_URL = f"http://localhost:{_PORT}/v1"
 
     model = detect_model()
-    engine = httpx.get(f"http://localhost:{_PORT}/health", timeout=5).json().get("engine_type")
+    engine = (
+        httpx.get(f"http://localhost:{_PORT}/health", timeout=5)
+        .json()
+        .get("engine_type")
+    )
 
     print(f"{'=' * 60}")
     print(f"  Stress Test — {model}")

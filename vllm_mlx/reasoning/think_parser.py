@@ -449,10 +449,15 @@ class BaseThinkingReasoningParser(ReasoningParser):
         """
         return bool(accumulated_text) and self.end_token not in accumulated_text
 
-    # Backward-compatible alias for the renamed predicate. Old call
-    # sites and tests continue to work; the new ``_missing_think_close``
-    # name is canonical going forward (codex round-10 NIT, PR #799).
-    _finalize_in_think_block = _missing_think_close
+    def _finalize_in_think_block(self, accumulated_text: str) -> bool:
+        """Backward-compatible evidence-aware mid-think predicate.
+
+        Unlike ``_missing_think_close``, this keeps the old "currently
+        inside a think block" semantics: a real opener must be present
+        and unmatched. Plain no-tag text such as ``"hello"`` is missing
+        a closer but is not itself proof of an open think block.
+        """
+        return self.is_open_in_think(accumulated_text)
 
     def finalize_streaming(
         self,

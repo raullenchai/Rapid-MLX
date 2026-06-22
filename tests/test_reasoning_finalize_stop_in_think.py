@@ -198,7 +198,7 @@ class TestBaseInvariant:
     def test_finalize_in_think_block_true_without_closer(self, name, parser_cls):
         parser = parser_cls()
         assert parser._finalize_in_think_block("<think>partial thought")
-        assert parser._finalize_in_think_block("Let me think about it")
+        assert not parser._finalize_in_think_block("Let me think about it")
         # Empty text: NOT considered mid-think (no bytes to leak).
         assert not parser._finalize_in_think_block("")
 
@@ -357,19 +357,19 @@ class TestStopMidThinkExplicitOpener:
     def test_natural_eos_with_explicit_opener_does_not_duplicate_content(
         self, name, parser_cls
     ):
-        """Natural-EOS after a literal ``<think>`` opener has already
-        streamed those bytes as reasoning. Finalize must not re-emit them
-        as content."""
+        """Natural-EOS after a literal ``<think>`` opener is not a
+        truncation. Finalize must surface it as content so clients do not
+        get an empty assistant turn when the route omits finalize-time
+        reasoning."""
         parser = parser_cls()
         accumulated = "<think>just a thought that the model gave up on"
         # Natural EOS: no matched_stop, no finish_reason="length".
         result = parser.finalize_streaming(
             accumulated, matched_stop=None, finish_reason=None
         )
-        assert result is None or result.content is None, (
-            f"[{name}] natural-EOS explicit opener duplicated reasoning "
-            f"into content: {result!r}"
-        )
+        assert result is not None
+        assert result.content == "just a thought that the model gave up on"
+        assert result.reasoning is None
 
     @pytest.mark.parametrize(
         "name,parser_cls",
@@ -828,25 +828,15 @@ class TestFinalizeContractSurface:
     ):
         """D-STOP-THINK invariant: explicit-opener mid-think UNDER A
         REAL TRUNCATION SIGNAL (matched_stop set OR
-        finish_reason="length") AND ``prompt_thinking_active=True``
-        MUST surface via reasoning, never content — otherwise the
-        bytes shipped during streaming would be duplicated by the
-        route's finalize content emission.
+        finish_reason="length") MUST surface via reasoning, never
+        content — otherwise the bytes shipped during streaming would be
+        duplicated by the route's finalize content emission.
 
         Codex round-8 BLOCKING refinement (PR #799): scope the
         invariant to the truncation-signal branches. Natural-EOS with
-        an explicit opener must not re-emit already-streamed reasoning
-        as content; that branch is tested separately in
+        an explicit opener surfaces as content; that branch is tested
+        separately in
         ``test_natural_eos_with_explicit_opener_does_not_duplicate_content``.
-
-        Codex round-10 BLOCKING refinement (PR #799): also gate on
-        ``prompt_thinking_active=True``. Without the chat-template
-        thinking signal, a model that spontaneously emitted a literal
-        ``<think>`` token did NOT enter thinking mode by user
-        request; the saw-prefix branch now requires BOTH the
-        truncation signal AND ``prompt_thinking_active`` to suppress
-        content (symmetric with the no-prefix branch's r4/r5
-        discriminator).
         """
         parser = parser_cls()
         for accumulated in [
@@ -854,11 +844,12 @@ class TestFinalizeContractSurface:
             "<think>5+7",
         ]:
             # Cover both truncation signals — the suppression branch
-            # must hold for stop AND length. Combine with
-            # ``prompt_thinking_active=True`` per the codex round-10
-            # AND-of-signals gate.
+            # must hold for stop AND length. Include matched_stop with
+            # prompt_thinking_active=False to lock the model-spontaneous
+            # ``<think>...STOP`` branch.
             for truncation in (
                 {"matched_stop": "STOP", "prompt_thinking_active": True},
+                {"matched_stop": "STOP", "prompt_thinking_active": False},
                 {"finish_reason": "length", "prompt_thinking_active": True},
             ):
                 parser.reset_state()
@@ -871,8 +862,7 @@ class TestFinalizeContractSurface:
                     prev = cur
                 result = parser.finalize_streaming(accumulated, **truncation)
                 # Either None (no correction) OR reasoning-only — never
-                # content under a real truncation signal + active
-                # thinking mode.
+                # content under a real truncation signal.
                 if result is not None:
                     assert result.content is None, (
                         f"[{name}] D-STOP-THINK invariant violation under "

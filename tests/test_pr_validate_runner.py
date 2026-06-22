@@ -440,3 +440,15 @@ class TestSelectModels:
             f"match expected — check overrides:{qwen36.model_id} in "
             "golden_models.yaml"
         )
+
+    def test_real_yaml_skips_diffusiongemma_quality_agents(self):
+        """diffusiongemma is a text-diffusion stress/tool-parser smoke
+        target, not a hard correctness oracle for generic agent prompts."""
+        from scripts.pr_validate.steps.stress_e2e_bench import _load_registry
+
+        registry = _load_registry()
+        agents = {a["name"]: a for a in registry["agents"]}
+        model_id = "mlx-community/diffusiongemma-26B-A4B-it-4bit"
+
+        assert model_id in agents["anthropic_sdk"].get("skip_for_models", [])
+        assert model_id in agents["langchain"].get("skip_for_models", [])
