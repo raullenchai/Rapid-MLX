@@ -301,6 +301,7 @@ class TestResponsesToOpenai:
                             "image_url": {
                                 "url": "data:image/png;base64,abc",
                                 "detail": "high",
+                                "unexpected": "ignored",
                             },
                         },
                     ],
@@ -313,6 +314,7 @@ class TestResponsesToOpenai:
         image_url = chat.messages[0].content[0].image_url
         assert image_url.url == "data:image/png;base64,abc"
         assert image_url.detail == "high"
+        assert not hasattr(image_url, "unexpected")
 
     def test_malformed_responses_content_block_does_not_become_empty_prompt(self):
         req = ResponsesRequest(

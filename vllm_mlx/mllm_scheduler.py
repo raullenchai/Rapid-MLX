@@ -732,9 +732,7 @@ class MLLMScheduler:
                 # return str; this fallback keeps legacy tests and
                 # defensive adapters on the same stop path.
                 new_text = (
-                    ""
-                    if finish_reason == "stop"
-                    else tokenizer.decode([response.token])
+                    "" if token_is_stop_token else tokenizer.decode([response.token])
                 )
 
             output_new_text = new_text

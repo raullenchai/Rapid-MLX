@@ -1131,7 +1131,11 @@ def normalize_responses_content_part(item) -> dict:
     if item_type == "input_image":
         image_url = data.get("image_url")
         if isinstance(image_url, dict):
-            normalized_image_url = dict(image_url)
+            normalized_image_url = {
+                key: value
+                for key, value in image_url.items()
+                if key in {"url", "detail"}
+            }
             _require_string(
                 normalized_image_url.get("url"), "input_image.image_url.url"
             )

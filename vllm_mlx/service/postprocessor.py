@@ -1112,10 +1112,10 @@ class StreamingPostProcessor:
                 return copy.copy(parser)
             except Exception:
                 logger.warning(
-                    "Using shared injected tool parser instance because it "
-                    "could not be cloned; automatic reset is disabled."
+                    "Disabling injected tool parser instance because it "
+                    "could not be cloned safely for a request-local stream."
                 )
-                return parser
+                return None
 
     def set_thinking_model(self, model_name: str):
         """Enable Nemotron-style thinking prefix injection."""
