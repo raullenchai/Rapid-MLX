@@ -53,6 +53,7 @@ from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
 from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from vllm_mlx.routes.chat import (
+    _contains_structural_tool_wire_leak,
     _contains_tool_wire_literal,
     _forced_tool_call_prefix,
     _recover_partial_tool_args,
@@ -1198,6 +1199,49 @@ def test_codex_r6_blocking_1_forced_choice_with_wire_leak_still_scrubs():
     assert "<tool_call>" not in cleaned
     assert "</function>" not in cleaned
     assert "The result is OK." in cleaned
+
+
+def test_codex_r7_structural_leak_detector_ignores_plain_marker_mentions():
+    """A literal marker token in ordinary prose is not by itself a
+    parser-wire leak. The route scrub gate must require structure so
+    forced synthesis does not destructively rewrite explanatory text.
+    """
+
+    prose = "I cannot call tools here, but the literal token is <tool_call>."
+    assert _contains_tool_wire_literal(prose)
+    assert not _contains_structural_tool_wire_leak(prose)
+    assert _contains_structural_tool_wire_leak(
+        '<tool_call>{"name":"add_numbers","arguments":{"a":1}}</function>'
+    )
+
+
+def test_codex_r7_synth_forced_clean_marker_prose_not_scrubbed():
+    """When forced synthesis happens because the parser found no call,
+    clean prose that merely mentions ``<tool_call>`` must survive.
+    """
+
+    raw = "I cannot call tools here, but the literal token is <tool_call>."
+
+    class _CleanMarkerMentionEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=raw, raw_text=raw)
+
+    engine = _CleanMarkerMentionEngine()
+    client = _make_client(engine, tool_call_parser="hermes")
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add 1 and 2"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    msg = resp.json()["choices"][0]["message"]
+    assert msg.get("tool_calls"), msg
+    assert msg.get("content") == raw
 
 
 # -----------------------------------------------------------------------

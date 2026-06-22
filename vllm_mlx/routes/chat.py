@@ -741,6 +741,47 @@ def _contains_tool_wire_literal(text: str | None) -> bool:
     return False
 
 
+_TOOL_WIRE_PAYLOAD_HINT_RE = re.compile(
+    r"(?:[\"'](?:name|arguments)[\"']\s*:|\{[^{}]{0,2048}\})",
+    re.DOTALL,
+)
+_TOOL_WIRE_ORPHAN_CLOSER_RE = re.compile(
+    r"(?:</tool_call>|</function>|</parameter>|<｜tool▁calls▁end｜>|"
+    r"<｜tool▁call▁end｜>|</minimax:tool_call>|</invoke>|</arg_value>|"
+    r"<\|tool_calls_section_end\|>|\[/TOOL_CALLS\])"
+)
+
+
+def _contains_structural_tool_wire_leak(text: str | None) -> bool:
+    """Return True when known wire markers appear as tool-wire residue.
+
+    ``_contains_tool_wire_literal`` intentionally answers the broad
+    question "is any marker token present?"  That is too destructive as
+    a scrub gate because ordinary prose can discuss the literal
+    ``<tool_call>`` token. This predicate is stricter: it requires a
+    balanced/cross-family wire span, or a marker next to JSON/tool-call
+    payload hints (``name`` / ``arguments`` / compact object body).
+    """
+    if not text:
+        return False
+    for opener_re, closer_re in _TOOL_WIRE_BALANCED_PAIRS:
+        if re.search(opener_re.pattern + r".*?" + closer_re.pattern, text, re.DOTALL):
+            return True
+    if _CROSS_FAMILY_SPAN_RE.search(text):
+        return True
+    if _TOOL_WIRE_ORPHAN_CLOSER_RE.search(text):
+        return True
+    for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+        match = marker_re.search(text)
+        if not match:
+            continue
+        window_start = max(0, match.start() - 128)
+        window_end = min(len(text), match.end() + 2048)
+        if _TOOL_WIRE_PAYLOAD_HINT_RE.search(text[window_start:window_end]):
+            return True
+    return False
+
+
 def _scrub_tool_wire_literals(text: str | None) -> str:
     """Strip every known parser-wire opener/closer marker from
     ``text`` in three phases. Returns a whitespace-collapsed result
@@ -2569,18 +2610,6 @@ async def _create_chat_completion_impl(
     # hatch, matching pre-#571 wording for that diagnostic.
     # Streaming path is best-effort prompt-injection only; once SSE
     # chunks are out we can't 422 mid-flight.
-    # D-TOOLCHOICE-R1 T3: track whether the post-parse path synthesised
-    # a forced-tool-choice call. When it did, the model's text output
-    # contained parser-wire markers the strict parser couldn't extract
-    # from (qwen3 emitted malformed JSON inside ``<tool_call>``,
-    # deepseek_v31 emitted a body that failed both V3 and V3.1 shapes,
-    # etc.). The raw text WILL still leak literal ``<tool_call>...``
-    # markup into ``content`` and ``reasoning_content`` unless we
-    # scrub it — the parser didn't strip those bytes because it
-    # couldn't recognise the block as a tool call. Setting this flag
-    # routes ``cleaned_text`` through ``_scrub_tool_wire_literals``
-    # before the downstream reasoning-parser pass.
-    _synth_forced_tool_call = False
     if request.tool_choice is not None and request.tools:
         if request.tool_choice == "required" and not tool_calls:
             if len(request.tools) == 1:
@@ -2600,7 +2629,6 @@ async def _create_chat_completion_impl(
                             raw_text=output.raw_text or output.text,
                         )
                     ]
-                    _synth_forced_tool_call = True
             if not tool_calls:
                 raise HTTPException(
                     status_code=422,
@@ -2669,7 +2697,6 @@ async def _create_chat_completion_impl(
                             raw_text=output.raw_text or output.text,
                         )
                     ]
-                    _synth_forced_tool_call = True
                 elif not _names and not _target_is_submitted:
                     # Codex R1 BLOCKING (#675): named tool_choice points
                     # at a function that is not in ``request.tools`` —
@@ -2736,24 +2763,20 @@ async def _create_chat_completion_impl(
     # which it MUST, because the scrub is destructive (rewrites the
     # user-visible field).
     #
-    # The two firing conditions become:
-    #   (a) synth path took over (parser couldn't extract a call from
-    #       the malformed wire — we KNOW the body is junk by
-    #       construction), OR
-    #   (b) parser DID extract a call, ``tool_choice`` is forced
-    #       AND ``cleaned_text`` still contains a wire-marker literal
-    #       (parser left junk behind — qwen3 cross-family closer,
-    #       orphan opener, etc.).
-    # In every other case the scrub stays off.
+    # The final firing condition is intentionally stricter than "a
+    # forced call exists": forced synthesis can also happen when a
+    # model ignores ``tool_choice="required"`` and emits ordinary
+    # prose. Scrub only when the visible text contains STRUCTURAL
+    # parser-wire residue, not merely a literal token mention.
     _is_forced_choice = request.tool_choice == "required" or (
         isinstance(request.tool_choice, dict)
         and request.tool_choice.get("type") == "function"
     )
-    _wire_scrub_active = _synth_forced_tool_call or (
+    _wire_scrub_active = (
         _is_forced_choice
         and request.tools
         and bool(tool_calls)
-        and _contains_tool_wire_literal(cleaned_text)
+        and _contains_structural_tool_wire_leak(cleaned_text)
     )
     # codex r6 BLOCKING #2: scrub the user-visible ``cleaned_text``
     # only. Do NOT mutate ``raw_text`` before it reaches the reasoning
@@ -2809,7 +2832,13 @@ async def _create_chat_completion_impl(
         # any caller that hasn't been threaded yet.
         finish_reason=getattr(output, "finish_reason", None),
     )
-    if _wire_scrub_active and reasoning_text:
+    _reasoning_wire_scrub_active = (
+        _is_forced_choice
+        and request.tools
+        and bool(tool_calls)
+        and _contains_structural_tool_wire_leak(reasoning_text)
+    )
+    if _reasoning_wire_scrub_active and reasoning_text:
         reasoning_text = _scrub_tool_wire_literals(reasoning_text)
 
     # Process response_format if specified (after reasoning parser cleaned the text)
