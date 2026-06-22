@@ -119,6 +119,7 @@ class MLLMRequest:
     output_tokens: list[int] = field(default_factory=list)
     finish_reason: str | None = None
     stop_tail: str = ""
+    stop_text: str = ""
     stop_text_len: int = 0
 
     # Token counts
@@ -701,10 +702,11 @@ class MLLMScheduler:
 
             # Decode the new token using streaming detokenizer (UTF-8 safe).
             # Skip stop tokens — they are not content.
+            had_detok = request_id in self._detokenizer_pool
             if response.finish_reason == "stop":
                 new_text = ""
             else:
-                if request_id not in self._detokenizer_pool:
+                if not had_detok:
                     if hasattr(tokenizer, "detokenizer"):
                         detok = tokenizer.detokenizer
                     else:
@@ -749,15 +751,23 @@ class MLLMScheduler:
                 stop_params = [s for s in request.stop if s]
                 if (
                     stop_params
+                    and not had_detok
                     and request.stop_text_len == 0
                     and not request.stop_tail
                     and len(request.output_tokens) > 1
                 ):
-                    previous_text = tokenizer.decode(request.output_tokens[:-1])
-                    request.stop_text_len = len(previous_text)
+                    # Direct scheduler tests and defensive adapters can
+                    # enter here with historical output_tokens but no
+                    # streaming detokenizer state. Seed from a one-time
+                    # full decode only for that no-detok legacy shape.
+                    # If a detokenizer already exists, empty new_text means
+                    # it is buffering partial bytes; offsets must wait for
+                    # the detokenizer to emit text.
+                    request.stop_text = tokenizer.decode(request.output_tokens[:-1])
+                    request.stop_text_len = len(request.stop_text)
                     max_stop_len = max(len(s) for s in stop_params)
                     keep = max(0, max_stop_len - 1)
-                    request.stop_tail = previous_text[-keep:] if keep else ""
+                    request.stop_tail = request.stop_text[-keep:] if keep else ""
                 prev_text_len = request.stop_text_len
                 if stop_params and new_text:
                     max_stop_len = max(len(s) for s in stop_params)
@@ -784,19 +794,18 @@ class MLLMScheduler:
                         # MLLM-backed ``/v1/messages`` traffic gets the
                         # same surface as the text path.
                         output.matched_stop = stop_str
-                        decoded_so_far = tokenizer.decode(request.output_tokens)
-                        request.output_text = decoded_so_far[:idx]
+                        streamed_so_far = request.stop_text + new_text
+                        request.output_text = streamed_so_far[:idx]
                         stop_trimmed = True
                         # Emit only the valid prefix before the stop marker
                         # in new_text so streaming clients don't lose content.
                         emit_len = max(0, idx - prev_text_len)
                         output.new_text = new_text[:emit_len]
                     else:
-                        request.stop_text_len += len(new_text)
+                        request.stop_text += new_text
+                        request.stop_text_len = len(request.stop_text)
                         keep = max(0, max_stop_len - 1)
-                        request.stop_tail = (
-                            stop_window[-keep:] if keep else ""
-                        )
+                        request.stop_tail = request.stop_text[-keep:] if keep else ""
                 elif stop_params:
                     # ``new_text`` may be empty while the detokenizer is
                     # holding an incomplete byte sequence. Preserve the
