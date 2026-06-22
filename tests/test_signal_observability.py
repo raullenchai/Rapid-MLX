@@ -87,6 +87,34 @@ def test_signal_chain_calls_prior_handler():
         so._reset_for_tests()
 
 
+def test_install_skipped_when_prior_is_sig_dfl():
+    """Codex r1 BLOCKING #1 follow-up: we must NOT install our handler
+    when the current handler is ``SIG_DFL`` / ``SIG_IGN``. Doing so
+    would silently swallow the signal because our ``_on_signal`` chain
+    deliberately does NOT re-raise on non-callable priors (re-raising
+    would change shutdown semantics from "observable graceful shutdown"
+    to "immediate default termination"). The defensive answer is to
+    preserve the original kernel-level disposition by skipping the
+    install entirely for that signal.
+    """
+    from vllm_mlx import _signal_observability as so
+
+    so._reset_for_tests()
+
+    # Force SIG_DFL as the current handler.
+    prior_usr1 = signal.signal(signal.SIGUSR1, signal.SIG_DFL)
+    try:
+        so.install_signal_observability(observed_signals=(signal.SIGUSR1,))
+        # We installed faulthandler unconditionally, but the per-signal
+        # chain skipped this signal — no entry in the prior-handler map.
+        assert signal.SIGUSR1 not in so._get_installed_handlers()
+        # The current handler is still SIG_DFL (we didn't overwrite it).
+        assert signal.getsignal(signal.SIGUSR1) == signal.SIG_DFL
+    finally:
+        signal.signal(signal.SIGUSR1, prior_usr1)
+        so._reset_for_tests()
+
+
 def test_install_skipped_off_main_thread():
     """Calling install from a worker thread must return False rather
     than raising — the server must still boot."""

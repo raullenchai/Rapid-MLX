@@ -1117,9 +1117,11 @@ class MLLMScheduler:
                             # ``BatchGenerator``/``self._step_executor``.
                             # We deliberately do NOT call
                             # ``cf.result()`` here because the outer
-                            # ``finally`` will ``shutdown(wait=False)``
-                            # the executor and the in-flight step's
-                            # output is no longer useful.
+                            # ``finally`` will ``shutdown(wait=True)``
+                            # the executor (codex r1 BLOCKING #3
+                            # follow-up — see the finally block), and
+                            # the drain done-callback below already
+                            # logs any executor-side exception.
                             if not cf.cancelled():
 
                                 def _drain_step_result(_future: Any) -> None:
@@ -1158,7 +1160,25 @@ class MLLMScheduler:
         finally:
             if self._step_executor is not None:
                 if getattr(self, "_owns_step_executor", True):
-                    self._step_executor.shutdown(wait=False)
+                    # Codex r1 BLOCKING #3: drain the executor before
+                    # tearing it down. With the migrated
+                    # ``submit + asyncio.wrap_future`` shape an
+                    # in-flight ``_step_no_queue`` may still be running
+                    # on the executor thread after the outer task is
+                    # cancelled (we deliberately let it complete rather
+                    # than racing the asyncio cancel). ``wait=False``
+                    # let that thread keep mutating
+                    # ``BatchGenerator``/``scheduler`` state while this
+                    # ``finally`` cleared ``self._step_executor`` and
+                    # the caller (``MLLMScheduler.stop``) cleared the
+                    # batch generator — exactly the
+                    # "Aborting orphaned MLLM request" race Ana flagged
+                    # in C-04 recon §3.R3. ``wait=True`` blocks for the
+                    # bounded duration of one step (≤ a few hundred ms
+                    # for any practical prompt + max_tokens=1 prefill
+                    # tick), which is well within the shutdown budget
+                    # FastAPI already allows for ``lifespan`` teardown.
+                    self._step_executor.shutdown(wait=True)
                 self._step_executor = None
 
     async def add_request_async(

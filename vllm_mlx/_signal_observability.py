@@ -55,16 +55,24 @@ logger = logging.getLogger(__name__)
 #   * SIGINT — Ctrl-C is operator-initiated, no need to spew per-thread
 #     stacks. uvicorn's existing SIGINT handler is fine.
 #   * SIGKILL / SIGSTOP — cannot be caught (kernel restriction).
-#   * SIGSEGV — handled via ``faulthandler.enable()`` (which writes a
-#     Python traceback BEFORE the interpreter dies; a plain
-#     ``signal.signal`` for SIGSEGV cannot safely run Python because the
-#     C-level state may already be corrupt).
+#   * SIGSEGV / SIGBUS / SIGILL / SIGFPE — handled via
+#     ``faulthandler.enable()`` (which writes a Python traceback BEFORE
+#     the interpreter dies; a plain ``signal.signal`` for SIGSEGV cannot
+#     safely run Python because the C-level state may already be
+#     corrupt).
+#   * SIGABRT — codex r1 BLOCKING #2: ``faulthandler.enable()`` already
+#     installs an async-signal-safe C-level handler for SIGABRT, which
+#     writes the Python traceback from a signal-safe context. Installing
+#     our Python-level ``_on_signal`` on top of it would (a) overwrite
+#     the faulthandler hook with a non-async-signal-safe Python handler
+#     that calls ``logging`` (re-entrant on stdio locks) and (b)
+#     downgrade the crash-path observability we just added. Let
+#     faulthandler keep SIGABRT.
 _OBSERVED_SIGNALS: tuple[int, ...] = tuple(
     sig
     for sig in (
         getattr(signal, "SIGTERM", None),
         getattr(signal, "SIGHUP", None),
-        getattr(signal, "SIGABRT", None),
     )
     if sig is not None
 )
@@ -136,6 +144,21 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
     # shutdown path still runs (uvicorn installs a SIGTERM handler that
     # initiates ``Server.shutdown`` — losing that would convert every
     # SIGTERM into a SIGKILL-equivalent for the lifespan hook).
+    #
+    # Codex r1 BLOCKING #1: we install ONLY when ``prior`` is callable
+    # (see ``install_signal_observability``), so this branch is the only
+    # one that can fire in practice. The ``SIG_DFL`` / ``SIG_IGN``
+    # branches are kept as defensive fall-throughs but DO NOT re-raise
+    # the signal — re-installing ``SIG_DFL`` and ``raise_signal``-ing
+    # would converted an observable signal into an immediate process
+    # kill that races any FastAPI/uvicorn shutdown machinery the
+    # operator might bring up out-of-band (e.g. embedded ASGI servers
+    # that wire their own shutdown later in startup). Keeping the
+    # original disposition's terminate behaviour requires no action
+    # from us: ``signal.signal`` returns ``SIG_DFL``/``SIG_IGN`` as
+    # the prior only when the kernel-side disposition was unchanged,
+    # and the *previous* time the signal arrives the OS will redeliver
+    # under the original (now-restored-by-uvicorn-or-FastAPI) handler.
     prior = _prior_handlers.get(signum)
     if callable(prior):
         try:
@@ -144,18 +167,10 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
             logger.debug(
                 "prior signal handler for %s raised during chain", name, exc_info=True
             )
-    elif prior == signal.SIG_DFL:
-        # Default disposition for SIGTERM/SIGHUP is to terminate the
-        # process; mirror that explicitly so a missing uvicorn handler
-        # still produces the same exit behaviour as no rapid-mlx hook.
-        # We re-install the default and re-raise via ``raise_signal``
-        # so the kernel-level disposition wins.
-        try:
-            signal.signal(signum, signal.SIG_DFL)
-            signal.raise_signal(signum)
-        except Exception:  # pragma: no cover — defensive
-            pass
-    # SIG_IGN means "ignore" — do nothing (we've already logged).
+    # SIG_DFL / SIG_IGN: do nothing further; we've already logged + dumped
+    # stacks. The operator now has the receipt evidence the C-04 recon
+    # was missing, and downstream shutdown drivers (uvicorn,
+    # FastAPI lifespan) own the actual termination semantics.
 
 
 def install_signal_observability(
@@ -223,6 +238,39 @@ def install_signal_observability(
         )
 
         for sig in signals_to_install:
+            # Codex r1 BLOCKING #1 follow-on: peek at the current
+            # handler BEFORE installing ours, so we can skip the
+            # signals where no graceful-shutdown driver is already in
+            # place. ``signal.getsignal`` returns the same Python-level
+            # callable / ``SIG_DFL`` / ``SIG_IGN`` value that
+            # ``signal.signal`` would return as the prior. If the
+            # current handler isn't a Python callable, replacing it
+            # with our observability hook would silently swallow the
+            # signal — operator gets a log line but the process never
+            # terminates (because our chain explicitly does NOT
+            # re-raise on the ``SIG_DFL`` branch — see ``_on_signal``).
+            # Preserve the original disposition by NOT installing in
+            # that case; the operator loses the receipt evidence but
+            # keeps the kernel-level terminate-or-ignore semantics
+            # they expected.
+            try:
+                current = signal.getsignal(sig)
+            except (OSError, ValueError) as exc:
+                logger.debug(
+                    "could not query current handler for %s: %r",
+                    _signal_name(sig),
+                    exc,
+                )
+                continue
+            if not callable(current):
+                logger.debug(
+                    "skipping rapid-mlx handler for %s: prior=%r is not"
+                    " a Python callable; preserving kernel-level"
+                    " disposition to avoid changing shutdown semantics",
+                    _signal_name(sig),
+                    current,
+                )
+                continue
             try:
                 prior = signal.signal(sig, _on_signal)
             except (OSError, ValueError) as exc:
