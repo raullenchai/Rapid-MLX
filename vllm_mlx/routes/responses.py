@@ -57,7 +57,6 @@ from ..api.utils import (
     decode_inline_tool_call_arguments,
     extract_json_from_response,
     extract_multimodal_content,
-    normalize_responses_content_part,
     sanitize_output,
     strip_special_tokens,
     strip_thinking_tags,
@@ -557,13 +556,19 @@ def _prepare_messages_for_engine(
         for message in messages:
             content = message.get("content")
             if isinstance(content, list):
-                message["content"] = [
-                    normalize_responses_content_part(part)
-                    if isinstance(part, dict)
-                    and part.get("type") in {"input_text", "output_text", "input_image"}
-                    else part
-                    for part in content
-                ]
+                for part in content:
+                    if not isinstance(part, dict):
+                        continue
+                    if part.get("type") in {
+                        "input_text",
+                        "output_text",
+                        "input_image",
+                        "input_audio",
+                    }:
+                        raise ValueError(
+                            "Responses content blocks must be normalized before "
+                            "engine preparation"
+                        )
         if getattr(engine, "preserve_native_tool_format", False):
             decode_inline_tool_call_arguments(messages)
         return messages

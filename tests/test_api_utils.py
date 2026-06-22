@@ -1039,6 +1039,28 @@ class TestValidateContentBlocksForCapabilities:
                 allow_audio=True,
             )
 
+    def test_input_audio_rejected_even_when_audio_allowed(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": "base64data", "format": "wav"},
+                    }
+                ],
+            }
+        ]
+
+        with pytest.raises(ValueError, match="does not support audio inputs"):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="audio-model",
+                allow_image=False,
+                allow_video=False,
+                allow_audio=True,
+            )
+
 
 class TestGptOssSpecialTokens:
     """Tests for GPT-OSS channel token handling in utils."""

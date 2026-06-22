@@ -405,17 +405,18 @@ class TestResponsesNonStream:
                 headers={"Authorization": "Bearer test-secret"},
             )
 
-    def test_mllm_message_prepare_accepts_object_style_messages(self):
-        """Responses MLLM path must handle the object-style messages accepted
-        by the text path instead of assuming every message is dict-convertible.
-        """
+    def test_mllm_message_prepare_accepts_normalized_object_style_messages(self):
+        """Responses MLLM path accepts Chat-normalized object-style messages."""
         from vllm_mlx.routes.responses import _prepare_messages_for_engine
 
         msg = SimpleNamespace(
             role="user",
             content=[
-                {"type": "input_text", "text": "Describe this"},
-                {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+                {"type": "text", "text": "Describe this"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc"},
+                },
             ],
         )
         request = SimpleNamespace(messages=[msg])
@@ -435,6 +436,22 @@ class TestResponsesNonStream:
                 ],
             }
         ]
+
+    def test_mllm_message_prepare_rejects_raw_responses_content_blocks(self):
+        from vllm_mlx.routes.responses import _prepare_messages_for_engine
+
+        msg = SimpleNamespace(
+            role="user",
+            content=[
+                {"type": "input_text", "text": "Describe this"},
+                {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+            ],
+        )
+        request = SimpleNamespace(messages=[msg])
+        engine = SimpleNamespace(is_mllm=True)
+
+        with pytest.raises(ValueError, match="must be normalized"):
+            _prepare_messages_for_engine(engine, request)
 
     def test_message_prepare_defaults_missing_native_tool_flag(self):
         from vllm_mlx.routes.responses import _prepare_messages_for_engine

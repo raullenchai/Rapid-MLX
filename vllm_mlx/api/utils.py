@@ -1091,8 +1091,6 @@ def validate_content_blocks_for_capabilities(
                 continue
             if item_type in VIDEO_CONTENT_TYPES and allow_video:
                 continue
-            if item_type in AUDIO_CONTENT_TYPES and allow_audio:
-                continue
 
             if item_type in AUDIO_CONTENT_TYPES:
                 detail = "audio inputs"
