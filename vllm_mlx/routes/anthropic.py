@@ -627,23 +627,21 @@ async def create_anthropic_message(
         #       reported the prompt by the suffix's byte cost.
         # Inject ONCE here on the rendered engine-shape messages, then
         # run the gate + capture the count on the post-injection state.
-        # Both branches reuse the same ``messages`` list afterwards so
-        # there is no second injection downstream.
-        try:
-            messages, images, videos = extract_multimodal_content(
-                openai_request.messages,
-                preserve_native_format=engine.preserve_native_tool_format,
-            )
-        except Exception:
-            messages = None
-            images = []
-            videos = []
-        if messages is not None:
-            _inject_tool_use_required_suffix(
-                messages,
-                openai_request.tool_choice,
-                tools=openai_request.tools,
-            )
+        # Both branches reuse the same ``messages`` / ``images`` /
+        # ``videos`` afterwards so there is no second injection or
+        # second extract downstream — codex r5 BLOCKING #1 (multimodal
+        # threading) + #2 (let extract errors propagate so a malformed
+        # request body 400s here instead of crossing the streaming
+        # SSE boundary mid-response).
+        messages, images, videos = extract_multimodal_content(
+            openai_request.messages,
+            preserve_native_format=engine.preserve_native_tool_format,
+        )
+        _inject_tool_use_required_suffix(
+            messages,
+            openai_request.tool_choice,
+            tools=openai_request.tools,
+        )
 
         # Context-length pre-check — same DoS gate the chat/completions/
         # responses routes enforce. Render the prompt through the engine's
@@ -662,17 +660,15 @@ async def create_anthropic_message(
         # back to its own estimator helper. We forward the value
         # verbatim (including ``None``) so the streaming path can
         # distinguish "skip" from "real zero count".
-        _ctx_prompt_tokens: int | None = None
-        if messages is not None:
-            _ctx_prompt_tokens = enforce_context_length_for_messages(
-                engine,
-                messages,
-                tools=openai_request.tools,
-                max_tokens=_resolve_max_tokens(
-                    openai_request.max_tokens,
-                    _resolve_enable_thinking(openai_request),
-                ),
-            )
+        _ctx_prompt_tokens = enforce_context_length_for_messages(
+            engine,
+            messages,
+            tools=openai_request.tools,
+            max_tokens=_resolve_max_tokens(
+                openai_request.max_tokens,
+                _resolve_enable_thinking(openai_request),
+            ),
+        )
 
         if anthropic_request.stream:
             _admission_committed = True
@@ -690,6 +686,8 @@ async def create_anthropic_message(
                         request_id_holder=_anth_rid_holder,
                         prompt_tokens_estimate=_ctx_prompt_tokens,
                         prepared_messages=messages,
+                        prepared_images=images,
+                        prepared_videos=videos,
                     ),
                     request,
                     engine=engine,
@@ -706,17 +704,9 @@ async def create_anthropic_message(
         # Non-streaming: run inference through existing engine. The
         # ``extract_multimodal_content`` + ``_inject_tool_use_required_suffix``
         # pair already ran above so ``messages`` already carries the
-        # forced-tool suffix when applicable; the original double-call
-        # was the source of codex r3 BLOCKING #1.
-        if messages is None:
-            # ``extract_multimodal_content`` raised earlier — re-raise
-            # via the same code path the engine would normally trigger
-            # so the route's exception handler maps to a 400. Defensive
-            # — every supported request shape returns a list above.
-            messages, images, videos = extract_multimodal_content(
-                openai_request.messages,
-                preserve_native_format=engine.preserve_native_tool_format,
-            )
+        # forced-tool suffix and ``images`` / ``videos`` carry the
+        # multimodal payload; no second extract/inject is needed
+        # (codex r3 BLOCKING #1 / codex r5 BLOCKING #1).
 
         chat_kwargs = {
             "max_tokens": _resolve_max_tokens(
@@ -1192,6 +1182,8 @@ async def _stream_anthropic_messages(
     request_id_holder: list | None = None,
     prompt_tokens_estimate: int | None = None,
     prepared_messages: list | None = None,
+    prepared_images: list | None = None,
+    prepared_videos: list | None = None,
 ) -> AsyncIterator[str]:
     """Stream Anthropic Messages API SSE events.
 
@@ -1220,6 +1212,14 @@ async def _stream_anthropic_messages(
             ``None`` (the default) preserves the direct-call test
             path: extract from ``openai_request.messages`` and inject
             inline, matching pre-PR-807 streaming behaviour.
+        prepared_images / prepared_videos: D-ANTHRO-TOOL-USAGE F3
+            (codex r5 BLOCKING #1) — multimodal payload from the same
+            route-level extract, threaded alongside
+            ``prepared_messages`` so /v1/messages streaming requests
+            against MLLM engines keep their image / video inputs.
+            Pre-r5 the streaming helper discarded these to ``[]``
+            when ``prepared_messages`` was supplied, silently
+            dropping every multimodal stream's media inputs.
     """
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     start_time = time.perf_counter()
@@ -1230,8 +1230,8 @@ async def _stream_anthropic_messages(
         # ``enforce_context_length_for_messages`` DoS gate against
         # this exact list. Reuse verbatim — no second injection.
         messages = prepared_messages
-        images: list = []
-        videos: list = []
+        images = prepared_images if prepared_images is not None else []
+        videos = prepared_videos if prepared_videos is not None else []
     else:
         messages, images, videos = extract_multimodal_content(
             openai_request.messages,

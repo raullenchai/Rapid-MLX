@@ -720,6 +720,34 @@ def test_stream_message_delta_input_tokens_floored_to_estimate_when_engine_silen
     assert delta_input == start_input, (start_input, delta_input)
 
 
+def test_stream_helper_threads_prepared_multimodal_payload():
+    """Codex r5 BLOCKING #1 (PR #807): when the route entry-point
+    threads ``prepared_messages``, it must ALSO thread the
+    ``prepared_images`` / ``prepared_videos`` it extracted alongside
+    them — pre-r5 the streaming helper silently dropped both to ``[]``
+    when ``prepared_messages`` was set, breaking every multimodal
+    ``/v1/messages`` streaming request against an MLLM engine.
+
+    The helper is unit-tested directly because the multimodal routes
+    in production keep the images / videos lists private to the
+    extractor; we only need to assert the threading shape — that the
+    helper does not silently overwrite the caller's payload.
+    """
+    import inspect
+
+    from vllm_mlx.routes.anthropic import _stream_anthropic_messages
+
+    sig = inspect.signature(_stream_anthropic_messages)
+    # The kwargs added by codex r5 must exist; their default ``None``
+    # signal "caller did not thread one" and the helper falls back to
+    # ``[]``. A future refactor that drops these kwargs would silently
+    # re-introduce the codex r5 BLOCKING #1 multimodal-drop regression.
+    assert "prepared_images" in sig.parameters
+    assert "prepared_videos" in sig.parameters
+    assert sig.parameters["prepared_images"].default is None
+    assert sig.parameters["prepared_videos"].default is None
+
+
 def test_stream_message_start_consistent_with_nonstream_input_tokens():
     """The streaming + non-streaming surfaces must agree on the prompt
     token count for the same prompt — this is the spec-level identity
