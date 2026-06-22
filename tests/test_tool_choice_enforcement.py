@@ -1247,6 +1247,9 @@ def test_codex_r7_structural_leak_detector_ignores_plain_marker_mentions():
     json_example_prose = 'Mention <tool_call> near {"example": true}.'
     assert _contains_tool_wire_literal(json_example_prose)
     assert not _contains_structural_tool_wire_leak(json_example_prose)
+    arguments_prose = 'The <tool_call> tag contains an "arguments" field.'
+    assert _contains_tool_wire_literal(arguments_prose)
+    assert not _contains_structural_tool_wire_leak(arguments_prose)
     assert _contains_structural_tool_wire_leak(
         '<tool_call>{"name":"add_numbers","arguments":{"a":1}}</function>'
     )

@@ -768,20 +768,18 @@ def _contains_tool_wire_literal(text: str | None) -> bool:
     return False
 
 
-_TOOL_WIRE_PAYLOAD_HINT_RE = re.compile(
-    r"[\"'](?:name|arguments)[\"']\s*:",
-    re.DOTALL,
-)
+_TOOL_WIRE_PAYLOAD_HINT_RE = re.compile(r"[\"'](?:name|arguments)[\"']\s*:")
 
 
-def _balanced_json_end(text: str, start: int) -> int | None:
+def _balanced_json_end(text: str, start: int, *, max_scan: int = 8192) -> int | None:
     """Return the exclusive end offset of a balanced JSON-ish object."""
     if start < 0 or start >= len(text) or text[start] != "{":
         return None
     depth = 0
     in_string = False
     escape = False
-    for i in range(start, len(text)):
+    stop = min(len(text), start + max_scan)
+    for i in range(start, stop):
         ch = text[i]
         if in_string:
             if escape:
@@ -800,6 +798,40 @@ def _balanced_json_end(text: str, start: int) -> int | None:
             if depth == 0:
                 return i + 1
     return None
+
+
+def _payload_object_after_marker(
+    text: str,
+    marker_end: int,
+    window_end: int,
+) -> tuple[int, int] | None:
+    """Return adjacent JSON payload bounds after a wire marker, if any."""
+    pos = marker_end
+    while pos < window_end and text[pos] in " \t\r\n":
+        pos += 1
+    if pos >= window_end or text[pos] != "{":
+        return None
+    object_end = _balanced_json_end(text, pos)
+    if object_end is None or object_end > window_end:
+        return None
+    payload = text[pos:object_end]
+    if not _TOOL_WIRE_PAYLOAD_HINT_RE.search(payload):
+        return None
+    return pos, object_end
+
+
+def _span_has_tool_payload_object(span: str) -> bool:
+    object_start = span.find("{")
+    while object_start != -1:
+        object_end = _balanced_json_end(span, object_start)
+        if object_end is not None:
+            payload = span[object_start:object_end]
+            if _TOOL_WIRE_PAYLOAD_HINT_RE.search(payload):
+                return True
+            object_start = span.find("{", object_end)
+        else:
+            object_start = span.find("{", object_start + 1)
+    return False
 def _contains_structural_tool_wire_leak(text: str | None) -> bool:
     """Return True when known wire markers appear as tool-wire residue.
 
@@ -814,18 +846,17 @@ def _contains_structural_tool_wire_leak(text: str | None) -> bool:
         return False
     for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
         match = balanced_re.search(text)
-        if match and _TOOL_WIRE_PAYLOAD_HINT_RE.search(match.group(0)):
+        if match and _span_has_tool_payload_object(match.group(0)):
             return True
     cross_match = _CROSS_FAMILY_SPAN_RE.search(text)
-    if cross_match and _TOOL_WIRE_PAYLOAD_HINT_RE.search(cross_match.group(0)):
+    if cross_match and _span_has_tool_payload_object(cross_match.group(0)):
         return True
     for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
         match = marker_re.search(text)
         if not match:
             continue
-        window_start = max(0, match.start() - 128)
         window_end = min(len(text), match.end() + 2048)
-        if _TOOL_WIRE_PAYLOAD_HINT_RE.search(text[window_start:window_end]):
+        if _payload_object_after_marker(text, match.end(), window_end) is not None:
             return True
     return False
 
@@ -853,29 +884,25 @@ def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
     result = text
     for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
         result = balanced_re.sub(
-            lambda m: "" if _TOOL_WIRE_PAYLOAD_HINT_RE.search(m.group(0)) else m.group(0),
+            lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
             result,
         )
     result = _CROSS_FAMILY_SPAN_RE.sub(
-        lambda m: "" if _TOOL_WIRE_PAYLOAD_HINT_RE.search(m.group(0)) else m.group(0),
+        lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
         result,
     )
     for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
         pieces: list[str] = []
         last = 0
         for match in marker_re.finditer(result):
-            window_start = max(0, match.start() - 128)
             window_end = min(len(result), match.end() + 2048)
             pieces.append(result[last : match.start()])
-            window = result[window_start:window_end]
-            has_payload_hint = _TOOL_WIRE_PAYLOAD_HINT_RE.search(window)
-            if has_payload_hint:
-                object_start = result.find("{", match.end(), window_end)
-                object_end = _balanced_json_end(result, object_start)
-                if object_end is not None:
-                    last = object_end
-                    continue
-                last = match.end()
+            payload_bounds = _payload_object_after_marker(
+                result, match.end(), window_end
+            )
+            if payload_bounds is not None:
+                _, object_end = payload_bounds
+                last = object_end
                 continue
             else:
                 pieces.append(match.group(0))
