@@ -558,6 +558,172 @@ class TestTranslationsRoute:
         err = body["detail"]["error"]
         assert err["type"] == "model_not_found_error", err
 
+    def test_translations_rejects_parakeet_with_400(
+        self, monkeypatch, _reset_audio_probe
+    ):
+        """Codex r6 NIT: non-Whisper engines ignore ``task=translate``
+        and silently emit source-language text. /v1/audio/translations
+        promises English output, so non-Whisper aliases must 400 BEFORE
+        the request reaches the STT engine — otherwise the client gets
+        a 200 with non-translated audio and no signal anything went
+        wrong.
+
+        Cover both the alias (``parakeet``) and the resolved HF id
+        (``mlx-community/parakeet-tdt-0.6b-v2``) so a caller that
+        bypasses the alias map by passing the repo path directly still
+        hits the gate.
+        """
+        from vllm_mlx.routes import audio as audio_route
+
+        audio_route._stt_engine = None
+
+        for parakeet_name in (
+            "parakeet",
+            "parakeet-v3",
+            "mlx-community/parakeet-tdt-0.6b-v2",
+        ):
+            client, restore = _mount_audio_app()
+            try:
+                r = client.post(
+                    "/v1/audio/translations",
+                    data={"model": parakeet_name},
+                    files={"file": ("tone.wav", _make_tone_wav(), "audio/wav")},
+                )
+            finally:
+                restore()
+                audio_route._stt_engine = None
+
+            assert r.status_code == 400, (
+                f"Codex r6 NIT: /v1/audio/translations must reject "
+                f"non-Whisper model `{parakeet_name}` with 400, "
+                f"got {r.status_code}: {r.text}"
+            )
+            err = r.json()["detail"]["error"]
+            assert err["code"] == "invalid_model_for_translation", err
+            assert err["type"] == "invalid_request_error", err
+            assert err["param"] == "model", err
+            # The error message should be actionable — mention Whisper
+            # or transcriptions so the caller knows how to fix the call.
+            msg = err["message"].lower()
+            assert "whisper" in msg or "transcriptions" in msg, err
+
+    def test_transcriptions_still_accepts_parakeet(
+        self, monkeypatch, _reset_audio_probe
+    ):
+        """The Whisper-only gate added for translations must NOT leak
+        into transcriptions. /v1/audio/transcriptions has always
+        accepted Parakeet (English-only source-language output is the
+        contract); a regression here would break F-165."""
+        from vllm_mlx.audio import stt as stt_mod
+        from vllm_mlx.routes import audio as audio_route
+
+        fake_model = _FakeParakeetModel()
+
+        def _fake_load_model(model_path, **kwargs):
+            return fake_model
+
+        fake_mlx_audio_stt_utils = types.SimpleNamespace(load_model=_fake_load_model)
+        monkeypatch.setitem(
+            sys.modules, "mlx_audio.stt.utils", fake_mlx_audio_stt_utils
+        )
+        # No transformers stub — Parakeet path mustn't touch processor.
+
+        audio_route._stt_engine = None
+        # Sanity: confirm the STT engine flags Parakeet correctly so
+        # the test exercises the right code path.
+        eng = stt_mod.STTEngine("mlx-community/parakeet-tdt-0.6b-v2")
+        assert eng._is_parakeet is True
+        assert eng._is_whisper is False
+
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/transcriptions",
+                data={"model": "parakeet"},
+                files={"file": ("tone.wav", _make_tone_wav(), "audio/wav")},
+            )
+        finally:
+            restore()
+            audio_route._stt_engine = None
+
+        assert r.status_code == 200, (
+            f"Transcriptions must still accept Parakeet — codex r6 NIT "
+            f"gate is translations-only. Got {r.status_code}: {r.text}"
+        )
+
+
+# ---------------------------------------------------------------------------
+# Codex r6 BLOCKING — _ensure_whisper_processor must NOT touch non-Whisper engines
+# ---------------------------------------------------------------------------
+
+
+class TestWhisperProcessorPatchIsWhisperOnly:
+    """Codex r6 BLOCKING: the patch helper previously ran for any
+    non-Parakeet engine, which would attach a WhisperProcessor to
+    Voxtral / future STT backends whose model object happens to expose
+    a None-valued ``_processor`` attribute.
+
+    The gate must now be POSITIVE: ``_is_whisper`` true. Anything else
+    — including a hypothetical non-Parakeet, non-Whisper engine — must
+    leave the model untouched.
+    """
+
+    def test_non_whisper_engine_does_not_get_processor_attached(
+        self, monkeypatch, _reset_audio_probe
+    ):
+        """Simulate a future STT engine (``voxtral``) whose model
+        object exposes ``_processor=None``. The patch helper must skip
+        it entirely so the upstream engine's own error path fires
+        without rapid-mlx stapling a Whisper processor on top.
+        """
+        from vllm_mlx.audio import stt as stt_mod
+
+        class _FakeVoxtralModel:
+            def __init__(self):
+                # This is the trap from codex r6: a non-Whisper engine
+                # could expose _processor=None and the old gate would
+                # have wrongly attached a WhisperProcessor.
+                self._processor = None
+
+        fake_model = _FakeVoxtralModel()
+
+        def _fake_load_model(model_path, **kwargs):
+            return fake_model
+
+        class _FakeProcessor:
+            calls = 0
+
+            @staticmethod
+            def from_pretrained(name):
+                _FakeProcessor.calls += 1
+                return object()
+
+        fake_mlx_audio_stt_utils = types.SimpleNamespace(load_model=_fake_load_model)
+        monkeypatch.setitem(
+            sys.modules, "mlx_audio.stt.utils", fake_mlx_audio_stt_utils
+        )
+        fake_transformers = types.SimpleNamespace(WhisperProcessor=_FakeProcessor)
+        monkeypatch.setitem(sys.modules, "transformers", fake_transformers)
+
+        # Use a clearly-non-Whisper, non-Parakeet model id so the
+        # positive Whisper gate is what skips the patch.
+        engine = stt_mod.STTEngine("mlx-community/voxtral-mini-3b-mlx")
+        assert engine._is_whisper is False
+        assert engine._is_parakeet is False
+        engine.load()
+
+        assert _FakeProcessor.calls == 0, (
+            "Codex r6 BLOCKING: _ensure_whisper_processor must NOT run "
+            "for non-Whisper engines. The positive ``_is_whisper`` gate "
+            "is the load-time guard that prevents accidental processor "
+            "attachment to Voxtral / future STT backends."
+        )
+        # And the fake model's _processor stays None — rapid-mlx did
+        # not mutate a non-Whisper engine.
+        assert fake_model._processor is None, (
+            "Patch must not have attached a processor to a non-Whisper engine."
+        )
+
 
 # ---------------------------------------------------------------------------
 # F-K-KOKORO-MISAKI — clean 503 when misaki is missing

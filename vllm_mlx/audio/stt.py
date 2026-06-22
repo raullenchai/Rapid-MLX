@@ -92,6 +92,14 @@ class STTEngine:
         self.model = None
         self._loaded = False
         self._is_parakeet = "parakeet" in model_name.lower()
+        # Codex r6 BLOCKING: ``_ensure_whisper_processor`` previously
+        # ran for every non-Parakeet engine, which would attach a
+        # WhisperProcessor to Voxtral/other future STT engines whose
+        # model object happens to expose a None-valued ``_processor``
+        # attribute. Gate on a positive Whisper id check so the patch
+        # only fires for actual Whisper backends — non-Whisper engines
+        # surface their own load-time errors unmodified.
+        self._is_whisper = "whisper" in model_name.lower()
 
     def load(self) -> None:
         """Load the STT model."""
@@ -107,7 +115,15 @@ class STTEngine:
             # mlx_audio's own post_load_hook, so if that succeeded
             # (e.g. a future repo upload includes processor files)
             # this is a no-op.
-            if not self._is_parakeet:
+            #
+            # Codex r6 BLOCKING: gate POSITIVELY on the Whisper id
+            # (``self._is_whisper``) rather than negatively on
+            # Parakeet. Any future STT engine (Voxtral, Wav2Vec, etc.)
+            # whose model object exposes ``_processor=None`` would
+            # otherwise get a Whisper processor stapled on by mistake.
+            # Belt-and-braces — even the helper double-checks model
+            # type via ``hasattr/_processor`` before doing anything.
+            if self._is_whisper:
                 self._ensure_whisper_processor()
             self._loaded = True
             logger.info(f"STT model loaded: {self.model_name}")

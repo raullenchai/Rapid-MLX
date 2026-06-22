@@ -185,6 +185,64 @@ def _resolve_stt_model(model: str) -> str:
     )
 
 
+def _reject_non_whisper_for_translation(model: str) -> None:
+    """Codex r6 NIT: ``/v1/audio/translations`` promises English output.
+
+    Only Whisper engines honor ``task="translate"`` (mlx_audio's
+    Parakeet path ignores the kwarg and emits source-language text).
+    Accepting a non-Whisper alias here would silently break the
+    translations contract. Inspect the alias (after resolution to its
+    upstream id, if applicable) and reject anything that is
+    recognizably non-Whisper with a 400 distinct from the 404
+    ``model_not_found`` envelope (the model is real, it's just the
+    wrong engine for this route).
+
+    Routing order: this helper handles ONLY models we positively
+    recognize as non-Whisper (Parakeet aliases, or HF ids with
+    ``parakeet``/other-engine markers). Unknown bare strings fall
+    through to ``_resolve_stt_model``'s 404 ``model_not_found_error``
+    so the envelope matches transcriptions. Empty / non-string ``model``
+    likewise falls through to the 400 envelope ``_resolve_stt_model``
+    emits.
+    """
+    if not isinstance(model, str) or not model:
+        return
+    # Resolve aliases first so callers that pass ``parakeet`` (alias)
+    # vs ``mlx-community/parakeet-tdt-0.6b-v2`` (HF id) get the same
+    # verdict.
+    resolved = STT_MODEL_ALIASES.get(model, model)
+    resolved_lc = resolved.lower()
+    # Whisper-shaped → accept; the engine honors task=translate.
+    if "whisper" in resolved_lc:
+        return
+    # Bare alias not in STT_MODEL_ALIASES → leave for _resolve_stt_model
+    # to 404 (so the envelope matches transcriptions' unknown-model
+    # path). HF-shaped ids (containing a ``/``) are pass-through in
+    # _resolve_stt_model, so we MUST classify here: a parakeet/voxtral/
+    # other-engine HF id would otherwise reach the engine and produce
+    # source-language output.
+    if "/" not in model and model not in STT_MODEL_ALIASES:
+        return
+    raise HTTPException(
+        status_code=400,
+        detail={
+            "error": {
+                "message": (
+                    f"The model `{model}` cannot perform translation. "
+                    "`/v1/audio/translations` requires a Whisper engine "
+                    "(only Whisper honors `task=translate`). Use "
+                    "`/v1/audio/transcriptions` for source-language "
+                    "output, or pass a Whisper alias such as "
+                    "`whisper-large-v3`."
+                ),
+                "type": "invalid_request_error",
+                "code": "invalid_model_for_translation",
+                "param": "model",
+            }
+        },
+    )
+
+
 class AudioBodyLimitMiddleware:
     """ASGI middleware that bounds the request body of audio-upload
     routes BEFORE Starlette's multipart parser can spool it.
@@ -632,13 +690,12 @@ async def create_translation(
     the form body. The underlying mlx-audio path is identical: Whisper
     accepts ``task="translate"`` which forces English emission.
 
-    Parakeet aliases (``parakeet``, ``parakeet-v3``) are accepted to
-    keep the model-validation envelope consistent with transcriptions,
-    but the STT engine ignores the task flag for non-Whisper engines
-    so the response will be source-language (typically English for
-    Parakeet's training set). That's the closest correct behavior we
-    can offer without a separate translation model; the client can
-    still verify by passing ``model="whisper-large-v3"``.
+    Codex r6 NIT: non-Whisper engines (Parakeet, future Voxtral, etc.)
+    ignore the ``task="translate"`` flag, so accepting them here would
+    silently return source-language audio under a contract that
+    promises English. Reject non-Whisper aliases at the route boundary
+    with a 400 ``invalid_model_for_translation`` so callers get a
+    distinct, actionable error instead of mislabeled output.
     """
     model = (
         model_form
@@ -650,6 +707,16 @@ async def create_translation(
         if response_format_form is not None
         else (response_format_query if response_format_query is not None else "json")
     )
+
+    # Codex r6 NIT: the translations contract guarantees English
+    # output. Only Whisper engines honor ``task="translate"``; any
+    # other STT alias would silently fall through to source-language
+    # output. Reject up front with a clear envelope so callers know to
+    # switch models (or fall back to /v1/audio/transcriptions if they
+    # only need source-language text). Performed BEFORE the body probe
+    # so a clearly-misrouted Parakeet request fails without touching
+    # mlx_audio at all.
+    _reject_non_whisper_for_translation(model)
 
     # F-D05: STT-lane audio dep probe (kept inside the route body so
     # the source-grep regression guard in
