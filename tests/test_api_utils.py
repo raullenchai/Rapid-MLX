@@ -666,7 +666,7 @@ class TestExtractMultimodalContent:
         processed, images, videos = extract_multimodal_content(messages)
         assert videos == ["https://example.com/v.mp4"]
 
-    def test_unknown_content_block_ignored_preserves_text_prompt(self):
+    def test_unknown_content_block_rejected_not_empty_prompt(self):
         messages = [
             Message(
                 role="user",
@@ -677,10 +677,22 @@ class TestExtractMultimodalContent:
             )
         ]
 
-        processed, images, videos = extract_multimodal_content(messages)
-        assert processed == [{"role": "user", "content": "Use this block"}]
-        assert images == []
-        assert videos == []
+        with pytest.raises(ValueError, match="Unsupported content block type"):
+            extract_multimodal_content(messages)
+
+    def test_chat_image_url_string_rejected_not_responses_shorthand(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe"},
+                    {"type": "image_url", "image_url": "data:image/png;base64,abc"},
+                ],
+            }
+        ]
+
+        with pytest.raises(ValueError, match="image_url must be an object"):
+            extract_multimodal_content(messages)
 
     def test_malformed_image_block_rejected_not_empty_prompt(self):
         messages = [

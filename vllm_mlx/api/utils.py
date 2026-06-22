@@ -988,6 +988,8 @@ def _content_part_to_dict(item) -> dict:
     item_type = item.get("type")
     if not isinstance(item_type, str) or not item_type:
         raise ValueError("content block is missing required string field 'type'")
+    if item_type not in KNOWN_CONTENT_TYPES:
+        raise ValueError(f"Unsupported content block type: {item_type!r}")
     return item
 
 
@@ -1001,8 +1003,6 @@ def _require_string(value, field_name: str) -> str:
 
 def _extract_object_url(item: dict, field_name: str) -> str:
     value = item.get(field_name)
-    if isinstance(value, str):
-        return _require_string(value, field_name)
     if not isinstance(value, dict):
         raise ValueError(
             f"{field_name} must be an object with required field 'url' "
@@ -1086,8 +1086,6 @@ def validate_content_blocks_for_capabilities(
         for raw_item in content:
             item = _content_part_to_dict(raw_item)
             item_type = item["type"]
-            if item_type not in KNOWN_CONTENT_TYPES:
-                continue
             _validate_content_part_payload(item)
             if item_type in TEXT_CONTENT_TYPES:
                 continue
