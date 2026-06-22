@@ -1829,15 +1829,10 @@ async def _stream_anthropic_messages(
     # breaking the spec-required ``max_tokens`` continuation pattern
     # (Mei dogfood report ``mei-r1.md`` HIGH). ``length`` →
     # ``max_tokens``; everything else maps via the existing
-    # tool-use / stop-sequence / end-turn ladder below.
-    stream_finish_reason: str | None = None
-
-    # D-STOP-THINK codex round-6 BLOCKING (PR #799): track the most
-    # recently observed ``finish_reason`` so the post-loop
-    # ``finalize_streaming`` can pass it to parsers. Parsers gate on
-    # ``finish_reason="length" AND prompt_thinking_active`` to route
-    # prompt-injected ``max_tokens`` truncations to reasoning instead
-    # of leaking them into ``content``.
+    # tool-use / stop-sequence / end-turn ladder below. D-STOP-THINK
+    # also passes this value into ``finalize_streaming`` so parsers can
+    # keep prompt-injected ``max_tokens`` truncations in reasoning
+    # instead of leaking them into ``content``.
     stream_finish_reason: str | None = None
 
     current_block_type = None
