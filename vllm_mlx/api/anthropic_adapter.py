@@ -50,6 +50,9 @@ from .models import (
 # Cross-route consistency: ``/v1/chat/completions`` and ``/v1/responses``
 # keep returning ``call_<hex>`` (OpenAI parity). Only the Anthropic
 # adapter and route apply this rewrite.
+_TOOLU_TAIL_RE = re.compile(r"^[0-9a-fA-F]+$")
+
+
 def to_anthropic_tool_use_id(openai_id: str | None) -> str:
     """Convert an OpenAI-style ``call_<hex>`` id to Anthropic's
     ``toolu_<hex>`` id (or mint a fresh one when the input is missing
@@ -64,14 +67,22 @@ def to_anthropic_tool_use_id(openai_id: str | None) -> str:
     ``"toolu_"`` id; mint a fresh ``toolu_<hex>`` in that case
     instead. Same guard applies to a bare ``"toolu_"`` pass-through
     so a future caller can't accidentally re-emit an empty-tail id.
+
+    Codex r4 BLOCKING #1: the public contract is ``toolu_<hex>`` —
+    only preserve the tail when it actually matches that shape
+    (``[0-9a-fA-F]+``). Malformed upstream ids like
+    ``"call_unknown_prefix_!!!"`` (caller bug, attacker probe, or a
+    third-party tool parser that didn't follow our convention) now
+    fall through to a fresh ``toolu_{secrets.token_hex(12)}`` rather
+    than emitting a non-hex tail on the Anthropic wire.
     """
     if isinstance(openai_id, str) and openai_id.startswith("call_"):
         tail = openai_id[len("call_") :]
-        if tail:
+        if tail and _TOOLU_TAIL_RE.match(tail):
             return "toolu_" + tail
     if isinstance(openai_id, str) and openai_id.startswith("toolu_"):
         tail = openai_id[len("toolu_") :]
-        if tail:
+        if tail and _TOOLU_TAIL_RE.match(tail):
             return openai_id
     # Anthropic's public examples use ~24 hex chars after ``toolu_``;
     # ``secrets.token_hex(12)`` gives 24 hex chars from a CSPRNG so

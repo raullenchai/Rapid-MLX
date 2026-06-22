@@ -830,11 +830,16 @@ class TestAnthropicToolUseIdPrefix:
         assert to_anthropic_tool_use_id("call_abcd1234") == "toolu_abcd1234"
 
     def test_to_anthropic_tool_use_id_passes_through_toolu_prefix(self):
-        """An id that already carries ``toolu_`` survives unchanged —
+        """An id that already carries ``toolu_<hex>`` survives unchanged —
         idempotency lets the helper be applied at multiple boundaries
-        without double-rewriting.
+        without double-rewriting. Codex r4 BLOCKING #1 tightened the
+        contract to require a hex tail (``[0-9a-fA-F]+``), so the
+        canonical form below is the one that actually round-trips.
         """
-        assert to_anthropic_tool_use_id("toolu_already_set") == "toolu_already_set"
+        assert (
+            to_anthropic_tool_use_id("toolu_abcd1234deadbeefcafef00d")
+            == "toolu_abcd1234deadbeefcafef00d"
+        )
 
     def test_to_anthropic_tool_use_id_mints_fresh_when_missing(self):
         """Anthropic's public examples carry ~24 hex chars after the
@@ -844,14 +849,37 @@ class TestAnthropicToolUseIdPrefix:
         assert_tool_use_id_shape(out)
         assert len(out[len("toolu_") :]) == 24
 
-    def test_to_anthropic_tool_use_id_mints_fresh_for_unknown_prefix(self):
-        """A non-OpenAI-shaped id (e.g. ``id="x_123"``) gets a fresh
-        ``toolu_<hex>`` mint — we never echo an unknown prefix back
-        on the Anthropic surface."""
+    def test_to_anthropic_tool_use_id_mints_fresh_for_non_hex_tail(self):
+        """Codex r4 BLOCKING #1: a ``call_`` prefix with a non-hex
+        tail (e.g. ``call_unknown_prefix_!!!``) is malformed — the
+        Anthropic contract is ``toolu_<hex>``, so we must NOT echo
+        the malformed tail. The helper falls through to a fresh
+        ``toolu_<24-hex>`` mint instead.
+        """
         out = to_anthropic_tool_use_id("call_unknown_prefix_!!!")
-        # Still has the ``call_`` prefix, so we DO rewrite — the
-        # contract is "if it looks like call_<X>, return toolu_<X>".
-        assert out.startswith("toolu_")
+        assert_tool_use_id_shape(out)
+        tail = out[len("toolu_") :]
+        # Fresh-mint shape — never the malformed input echoed back.
+        assert len(tail) == 24, (
+            f"non-hex call_ tail must mint a 24-hex tail; got {out!r}"
+        )
+        assert "unknown_prefix" not in out
+        assert "!" not in out
+
+    def test_to_anthropic_tool_use_id_mints_fresh_for_non_hex_toolu_tail(self):
+        """Codex r4 BLOCKING #1: same guard on the ``toolu_``
+        pass-through branch — a future caller passing
+        ``toolu_unknown_prefix_!!!`` (e.g. an upstream that minted
+        an id with non-hex chars) is treated as malformed and
+        replaced with a fresh ``toolu_<24-hex>`` mint."""
+        out = to_anthropic_tool_use_id("toolu_unknown_prefix_!!!")
+        assert_tool_use_id_shape(out)
+        tail = out[len("toolu_") :]
+        assert len(tail) == 24, (
+            f"non-hex toolu_ tail must mint a 24-hex tail; got {out!r}"
+        )
+        assert "unknown_prefix" not in out
+        assert "!" not in out
 
     def test_to_anthropic_tool_use_id_mints_fresh_on_empty_tail(self):
         """Codex r2 BLOCKING #3: ``"call_"`` (empty tail) and
@@ -901,9 +929,14 @@ class TestAnthropicToolUseIdPrefix:
     def test_tool_use_id_already_toolu_passes_through(self):
         """When upstream already mints ``toolu_<hex>`` (e.g. a future
         engine that natively produces Anthropic IDs), don't rewrite.
+        The hex-tail guard (codex r4 BLOCKING #1) means the value
+        below must use the canonical ``[0-9a-fA-F]+`` shape to
+        round-trip — a non-hex placeholder would now be rejected and
+        replaced with a fresh mint.
         """
+        upstream_id = "toolu_abcd1234deadbeefcafef00d"
         tc = ToolCall(
-            id="toolu_already_set",
+            id=upstream_id,
             type="function",
             function=FunctionCall(name="search", arguments="{}"),
         )
@@ -914,7 +947,7 @@ class TestAnthropicToolUseIdPrefix:
         resp = ChatCompletionResponse(model="default", choices=[choice], usage=Usage())
         result = openai_to_anthropic(resp, "default")
         tool_blocks = [b for b in result.content if b.type == "tool_use"]
-        assert tool_blocks[0].id == "toolu_already_set"
+        assert tool_blocks[0].id == upstream_id
 
 
 # ===========================================================================
