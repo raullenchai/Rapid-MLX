@@ -228,20 +228,34 @@ class UiTarsReasoningParser(ReasoningParser):
         # the tool parser sees the full ``Action:`` token.
         delta_start_in_current = len(previous_text)
         boundary_in_delta = action_pos - delta_start_in_current
-        self._in_content = True
         if boundary_in_delta <= 0:
             # Boundary at the start of this delta — but the prefix
             # bytes of ``Action:`` might already be in previous_text
             # that we previously held off emitting. Prepend the held
             # window so the tool parser receives the complete token.
+            # Only flip ``_in_content=True`` once we know we have a real
+            # content-bearing emission (codex r2 BLOCKING #2: never set
+            # the flag along a path that emits no content bytes — a
+            # subsequent delta would otherwise be misrouted).
+            self._in_content = True
             held_prefix = current_text[action_pos:delta_start_in_current]
             return DeltaMessage(content=held_prefix + delta_text)
         if boundary_in_delta >= len(delta_text):
-            # Boundary past end of this delta (defensive).
-            return DeltaMessage(reasoning=delta_text)
+            # Defensive: ``action_pos`` indexes a position past this
+            # delta's end. ``current_text = previous_text + delta_text``
+            # means this can only happen if some earlier code path
+            # mutated ``current_text``. Treat as a no-op (don't flip
+            # ``_in_content`` and don't classify the delta — leave the
+            # bytes for the postprocessor's hold buffer). Critically,
+            # codex r2 BLOCKING #2 flagged the previous behavior of
+            # eagerly setting ``_in_content=True`` here, which then
+            # caused subsequent deltas to skip the boundary-split branch
+            # entirely and lose the action-side bytes permanently.
+            return None
 
         reasoning_part = delta_text[:boundary_in_delta]
         content_part = delta_text[boundary_in_delta:]
+        self._in_content = True
         return DeltaMessage(reasoning=reasoning_part, content=content_part)
 
     def _compute_partial_action_hold(self, current_text: str) -> int:

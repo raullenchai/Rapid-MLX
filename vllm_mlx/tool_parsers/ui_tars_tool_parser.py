@@ -557,7 +557,44 @@ class UiTarsToolParser(ToolParser):
                     },
                 }
             )
-        return {"tool_calls": tool_calls}
+
+        # codex r2 BLOCKING #1: a single delta can contain a completed
+        # action plus trailing/leading non-action text — e.g. delta
+        # ``Action: wait() done`` where `` done`` is regular content the
+        # model emitted after the action. Without explicit handling, the
+        # original implementation only returned ``{"tool_calls": ...}``
+        # and the trailing bytes were silently dropped from the response.
+        #
+        # Recover those bytes by computing the residual portion of THIS
+        # delta that falls outside any newly completed action span. We
+        # operate on offsets into ``current_text`` and clip to the slice
+        # that this specific delta contributed.
+        delta_start_in_current = len(previous_text)
+        residual_pieces: list[str] = []
+        cursor = delta_start_in_current
+        for start, end, _verb, _kwargs in new_actions:
+            # Bytes from the prior cursor up to the action's start that
+            # fall inside this delta's window are residual content.
+            if start > cursor:
+                # Clip to [delta_start_in_current, len(current_text))
+                piece_start = max(cursor, delta_start_in_current)
+                piece_end = min(start, len(current_text))
+                if piece_end > piece_start:
+                    residual_pieces.append(current_text[piece_start:piece_end])
+            cursor = end
+        # Trailing bytes after the last newly completed action that fall
+        # inside this delta's window.
+        if cursor < len(current_text):
+            piece_start = max(cursor, delta_start_in_current)
+            piece_end = len(current_text)
+            if piece_end > piece_start:
+                residual_pieces.append(current_text[piece_start:piece_end])
+
+        residual = "".join(residual_pieces)
+        result: dict[str, Any] = {"tool_calls": tool_calls}
+        if residual:
+            result["content"] = residual
+        return result
 
     def has_pending_tool_call(self, text: str) -> bool:
         """Return True if text contains an unfinished ``Action: verb(`` block.

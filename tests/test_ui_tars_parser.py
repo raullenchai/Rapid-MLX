@@ -525,6 +525,37 @@ class TestToolParserStreaming:
         # No action at all — not pending.
         assert self.p.has_pending_tool_call("Thought: hi") is False
 
+    def test_residual_content_after_action_in_same_delta(self):
+        # codex r2 BLOCKING #1 + NIT #3: when a delta contains a
+        # completed action followed by ordinary text (e.g. the model
+        # appends ``  done`` after ``Action: wait()`` in a single chunk),
+        # the parser MUST emit both the ``tool_calls`` and the trailing
+        # text as ``content`` — otherwise the trailing bytes are lost
+        # from the response.
+        events = self._stream(["Action: wait() done"])
+        tool_events = [e for e in events if "tool_calls" in e]
+        assert len(tool_events) == 1
+        assert tool_events[0]["tool_calls"][0]["function"]["name"] == "computer"
+        # Content side must carry the trailing `` done`` bytes — note
+        # leading space is preserved verbatim (no normalization).
+        assert tool_events[0].get("content") == " done"
+
+    def test_residual_content_between_two_actions_in_same_delta(self):
+        # Same regression as above but exercises the leading/trailing
+        # residual paths simultaneously: ``prefix Action: wait() between
+        # Action: finished() trailing`` packs prefix/inter-action/trailing
+        # non-action text alongside two completed actions in one delta.
+        # All three text spans must surface in the ``content`` field.
+        delta = "leading Action: wait() between Action: finished() trailing"
+        events = self._stream([delta])
+        tool_events = [e for e in events if "tool_calls" in e]
+        assert len(tool_events) == 1
+        assert len(tool_events[0]["tool_calls"]) == 2
+        residual = tool_events[0].get("content", "")
+        assert "leading " in residual
+        assert " between " in residual
+        assert " trailing" in residual
+
 
 # ---------------------------------------------------------------------------
 # Reasoning parser — Thought:/Reflection: preamble split
