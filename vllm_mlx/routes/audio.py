@@ -669,10 +669,13 @@ def _format_stt_response(result, response_format: str, task: str):
 # re-maps them to the documented envelope.
 # ---------------------------------------------------------------------------
 
-#: Substrings that identify a decode/codec failure regardless of the
-#: underlying library (mlx_audio surfaces multiple shapes — librosa,
-#: soundfile, ffmpeg). Keep this list narrow so we don't accidentally
-#: relabel a legitimate engine bug as a client error.
+#: Substrings that POSITIVELY identify a decode/codec failure on the
+#: audio file itself (i.e. a CLIENT problem). Keep this list narrow so
+#: we don't accidentally relabel a legitimate server-side bug as a
+#: client error — codex r2 BLOCKING: broad tool-name tokens (``ffmpeg``,
+#: ``audioread``) used in isolation flagged server misconfiguration
+#: (missing/broken decoder binary) as a 400. Each hint here must
+#: describe a FORMAT-shaped failure, not just mention a library name.
 _DECODE_ERROR_HINTS: tuple[str, ...] = (
     "could not open",
     "could not decode",
@@ -680,52 +683,143 @@ _DECODE_ERROR_HINTS: tuple[str, ...] = (
     "format not recognized",
     "unknown format",
     "no such format",
-    "soundfile",
-    "libsndfile",
-    "audioread",
     "invalid audio",
     "unsupported audio",
     "could not load audio",
-    "ffmpeg",
     "header is truncated",
     "error opening",
+    # ``LibsndfileError: ...`` only fires on libsndfile-rejected bytes
+    # (truncated header, unknown subtype) — it's a strong file-shape
+    # signal, NOT a generic "soundfile imported" marker. Codex r2:
+    # bare ``soundfile``/``libsndfile`` substrings could match a
+    # ModuleNotFoundError, so qualify them.
+    "libsndfile error",
+    "soundfile.libsndfileerror",
+)
+
+#: Hints that indicate the decode tool itself is BROKEN on the server
+#: (missing binary, version mismatch, library not found). These must
+#: NOT downgrade to 400 — they're a server misconfiguration, the
+#: client did nothing wrong. Codex r2 BLOCKING fix: pre-fix a missing
+#: ``ffmpeg`` binary on the host would have produced "ffmpeg not found"
+#: which matched the prior broad ``"ffmpeg"`` hint and got relabeled as
+#: a client error.
+_DECODE_SERVER_MISCONFIG_HINTS: tuple[str, ...] = (
+    "not found",
+    "not installed",
+    "no module named",
+    "no such file or directory",
+    "executable not found",
+    "command not found",
+    "no module",
+    "libsndfile not found",
 )
 
 
 def _is_decode_error(exc: Exception) -> bool:
-    """Return True iff ``exc`` looks like an audio-decode failure.
+    """Return True iff ``exc`` looks like an audio-decode failure CAUSED
+    BY THE UPLOADED FILE (not by server misconfiguration).
 
     Matches both the exception's class name (``DecodeError``,
     ``LibsndfileError``, ``SoundFileError``) and the message text
-    against a curated hint list. Type-based matching is the strong
-    signal — we use the substring check as a fallback because
+    against a curated POSITIVE hint list. Type-based matching is the
+    strong signal — the substring check is the fallback because
     ``mlx_audio`` chains raw ``ValueError`` / ``RuntimeError`` for
     decode failures in some code paths.
+
+    Codex r2 BLOCKING: a message that matches a decode hint AND also
+    matches a server-misconfig hint (``"ffmpeg binary not found"``,
+    ``"libsndfile not installed"``) is NOT a client error. Bail out
+    in that case so the envelope stays 500 ``transcription_failed`` —
+    operators need to see those reports unmodified to know the host
+    audio stack is broken.
     """
     if not isinstance(exc, Exception):
+        return False
+    msg = str(exc).lower()
+    # Server-misconfig hints take precedence — even on a decode-shaped
+    # class name (``ImportError`` doesn't but ``RuntimeError("ffmpeg
+    # not found")`` could pattern-match the class-name path below).
+    if any(hint in msg for hint in _DECODE_SERVER_MISCONFIG_HINTS):
         return False
     cls_name = type(exc).__name__.lower()
     if any(tok in cls_name for tok in ("decode", "sndfile", "soundfile", "codec")):
         return True
-    msg = str(exc).lower()
     return any(hint in msg for hint in _DECODE_ERROR_HINTS)
+
+
+# Pattern for any string that LOOKS like a filesystem path. We strip
+# these from the decode reason BEFORE returning it to the client so a
+# librosa error of the form ``Error opening
+# '/var/folders/xy/T/tmpXYZ.wav': ...`` doesn't leak the server's
+# tempdir layout (codex r2 BLOCKING).
+#
+# Three shapes covered:
+#   1. Absolute POSIX paths (``/var/...``, ``/Users/...``)
+#   2. Windows-style absolute paths (``C:\Users\...``)
+#   3. Paths quoted inside the message (``'/tmp/x.wav'``)
+#
+# Replacement is the literal ``<redacted>`` so the rest of the message
+# (which often carries the actual format hint, e.g. ``Format not
+# recognised``) survives unchanged.
+_PATH_LIKE_RE = re.compile(
+    # Quoted absolute paths first — librosa / soundfile wrap them in
+    # single quotes. Match the entire quoted span (greedy through the
+    # closing quote) so the path AND the quotes go together.
+    r"""
+    (?P<quoted>['"][/\\][^'"]*['"]) |   # '/abs/path' or "C:\path"
+    (?P<unix>(?<![A-Za-z0-9_])/[A-Za-z0-9_./\-]+) |   # bare absolute POSIX
+    (?P<win>(?<![A-Za-z0-9_])[A-Za-z]:\\[A-Za-z0-9_.\\\-]+)  # bare Win path
+    """,
+    re.VERBOSE,
+)
+
+
+def _sanitize_decode_reason(reason: str) -> str:
+    """Strip filesystem paths from a decode error message.
+
+    Codex r2 BLOCKING: librosa/ffmpeg/soundfile errors commonly echo
+    the temp file path the route created (``/var/folders/.../tmpXYZ.wav``
+    or even the original upload filename when the client controlled
+    it). Echoing the server path is a low-severity infoleak — it
+    discloses tempdir layout. Replace any path-shaped token with the
+    literal ``<redacted>`` so the format-shape phrase (``Format not
+    recognised``) still reaches the client.
+
+    Also caps the overall length so a runaway exception (huge bytes
+    quoted in the message) can't produce a multi-MB JSON envelope.
+    """
+    if not reason:
+        return ""
+    sanitized = _PATH_LIKE_RE.sub("<redacted>", reason)
+    # Collapse multiple ``<redacted>`` in a row from overlapping matches.
+    sanitized = re.sub(r"(<redacted>\s*){2,}", "<redacted> ", sanitized)
+    # Length cap: keep messages bounded. 240 chars is plenty for any
+    # legitimate decode-reason phrase + an embedded format name.
+    if len(sanitized) > 240:
+        sanitized = sanitized[:237] + "..."
+    return sanitized.strip()
 
 
 def _audio_decode_error_envelope(exc: Exception) -> HTTPException:
     """Build the OpenAI-shape 400 envelope for a decode failure.
 
-    Keeps the original exception message in the envelope so the client
-    can surface the actual decode reason ("Format not recognised" /
-    "Header is truncated") without us leaking server paths or
-    mlx_audio internals — we only include ``str(exc)``, never the
-    traceback.
+    Codex r2 BLOCKING: the envelope previously included raw ``str(exc)``,
+    which can carry server filesystem paths (temp file basenames,
+    librosa-echoed locations). Run the reason through
+    :func:`_sanitize_decode_reason` so the FORMAT hint survives but
+    paths are redacted.
+
+    The FULL exception (with paths) still goes to the operator log
+    in the caller — only the sanitized form reaches the client.
     """
-    reason = str(exc).strip() or type(exc).__name__
+    raw = str(exc).strip() or type(exc).__name__
+    safe = _sanitize_decode_reason(raw) or type(exc).__name__
     return HTTPException(
         status_code=400,
         detail={
             "error": {
-                "message": f"could not decode audio file: {reason}",
+                "message": f"could not decode audio file: {safe}",
                 "type": "invalid_request_error",
                 "code": "invalid_audio_file",
                 "param": "file",

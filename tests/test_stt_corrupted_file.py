@@ -270,3 +270,206 @@ class TestNonDecodeErrorStillReturns500:
         err = body.get("detail", {}).get("error") or body.get("error")
         assert err is not None, body
         assert err["code"] == "transcription_failed", err
+
+
+def _install_fake_mlx_audio(monkeypatch):
+    """Install minimal mlx_audio stub so the lane probe passes."""
+    import importlib.machinery
+
+    for name, is_pkg in (
+        ("mlx_audio", True),
+        ("mlx_audio.stt", True),
+        ("mlx_audio.stt.utils", False),
+    ):
+        mod = types.ModuleType(name)
+        if is_pkg:
+            mod.__path__ = []
+        mod.__spec__ = importlib.machinery.ModuleSpec(
+            name, loader=None, is_package=is_pkg
+        )
+        monkeypatch.setitem(sys.modules, name, mod)
+    sys.modules["mlx_audio.stt.utils"].load_model = lambda *_a, **_kw: None
+
+
+def _wav_bytes() -> bytes:
+    """Return a tiny valid mono WAV so the upload itself succeeds."""
+    import math
+    import struct
+    import wave
+
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as w:
+        w.setnchannels(1)
+        w.setsampwidth(2)
+        w.setframerate(16000)
+        for i in range(4000):
+            sample = int(8000 * math.sin(2 * math.pi * 440 * i / 16000))
+            w.writeframes(struct.pack("<h", sample))
+    return buf.getvalue()
+
+
+class TestDecodeErrorEnvelopeSanitisation:
+    """Codex r2 BLOCKING: the 400 decode envelope must NOT leak server
+    filesystem paths in the message. Librosa/soundfile/ffmpeg often
+    echo the temp-file path the route created — we sanitise that out
+    while keeping the format-shape phrase the client needs.
+    """
+
+    def test_sanitiser_strips_quoted_unix_paths(self):
+        from vllm_mlx.routes.audio import _sanitize_decode_reason
+
+        # Common librosa shape: "Error opening '/var/folders/.../tmpXYZ.wav': Format not recognised."
+        msg = "Error opening '/var/folders/qz/T/tmpXYZ.wav': Format not recognised."
+        out = _sanitize_decode_reason(msg)
+        assert "/var/folders" not in out, out
+        assert "tmpXYZ.wav" not in out, out
+        assert "Format not recognised" in out, out
+
+    def test_sanitiser_strips_bare_unix_paths(self):
+        from vllm_mlx.routes.audio import _sanitize_decode_reason
+
+        msg = "could not decode audio file: /tmp/audio_xyz.wav header is truncated"
+        out = _sanitize_decode_reason(msg)
+        assert "/tmp/audio_xyz.wav" not in out, out
+        assert "header is truncated" in out, out
+
+    def test_sanitiser_strips_quoted_windows_paths(self):
+        from vllm_mlx.routes.audio import _sanitize_decode_reason
+
+        msg = "Error opening 'C:\\Users\\srv\\tmp\\x.wav': Format not recognised."
+        out = _sanitize_decode_reason(msg)
+        assert "C:\\Users" not in out, out
+        assert "Format not recognised" in out, out
+
+    def test_sanitiser_caps_length(self):
+        from vllm_mlx.routes.audio import _sanitize_decode_reason
+
+        msg = "x" * 5000
+        out = _sanitize_decode_reason(msg)
+        assert len(out) <= 240, len(out)
+        assert out.endswith("..."), out
+
+    def test_route_envelope_does_not_leak_temp_path(self, monkeypatch):
+        """End-to-end via the route: a decode error echoing the temp
+        path must reach the client with the path redacted."""
+        from vllm_mlx.audio import probe
+        from vllm_mlx.routes import audio as audio_route
+
+        _install_fake_mlx_audio(monkeypatch)
+        probe._reset_probe_cache()
+
+        class _FakeLeakyEngine:
+            def __init__(self, model_name: str):
+                self.model_name = model_name
+
+            def load(self):
+                pass
+
+            def transcribe(self, audio_path, language=None, task="transcribe"):
+                # Mirror what librosa actually raises — the temp path
+                # the route created is echoed in the exception message.
+                raise RuntimeError(
+                    f"Error opening '{audio_path}': Format not recognised."
+                )
+
+        monkeypatch.setattr(
+            "vllm_mlx.audio.stt.STTEngine", _FakeLeakyEngine, raising=False
+        )
+        audio_stt_mod = sys.modules.get("vllm_mlx.audio.stt")
+        if audio_stt_mod is not None:
+            monkeypatch.setattr(audio_stt_mod, "STTEngine", _FakeLeakyEngine)
+
+        audio_route._stt_engine = None
+        try:
+            client, restore = _mount_audio_app()
+            try:
+                r = client.post(
+                    "/v1/audio/transcriptions",
+                    data={"model": "whisper-large-v3"},
+                    files={"file": ("tone.wav", _wav_bytes(), "audio/wav")},
+                )
+            finally:
+                restore()
+        finally:
+            audio_route._stt_engine = None
+            probe._reset_probe_cache()
+
+        assert r.status_code == 400, r.text
+        body_text = r.text
+        # The temp path was created in /var/folders/.../<...>.wav on
+        # macOS, /tmp/<...>.wav on Linux. Neither must appear in the
+        # envelope.
+        for leaked in ("/var/folders", "/tmp/", "tmpXYZ"):
+            assert leaked not in body_text, (
+                f"Codex r2 BLOCKING regression: 400 envelope leaked "
+                f"{leaked!r}: {body_text!r}"
+            )
+        # The format phrase must still be there for the client.
+        body = r.json()
+        err = body.get("detail", {}).get("error") or body.get("error")
+        assert "Format not recognised" in err["message"], err
+
+
+class TestServerMisconfigStays500:
+    """Codex r2 BLOCKING: messages like "ffmpeg binary not found" or
+    "libsndfile not installed" describe SERVER misconfiguration. They
+    must NOT downgrade to 400 client-error — operators rely on the
+    500 envelope to know the host audio stack is broken."""
+
+    @pytest.mark.parametrize(
+        "message",
+        [
+            "ffmpeg binary not found in PATH",
+            "libsndfile not installed",
+            "No module named 'audioread'",
+            "ffmpeg: command not found",
+            # decode-shape phrase but with a misconfig hint mixed in —
+            # the misconfig hint wins (server problem, not client).
+            "could not open audio: ffmpeg not found",
+        ],
+    )
+    def test_misconfig_stays_500(self, monkeypatch, message):
+        from vllm_mlx.audio import probe
+        from vllm_mlx.routes import audio as audio_route
+
+        _install_fake_mlx_audio(monkeypatch)
+        probe._reset_probe_cache()
+
+        class _FakeMisconfigEngine:
+            def __init__(self, model_name: str):
+                self.model_name = model_name
+
+            def load(self):
+                pass
+
+            def transcribe(self, *_a, **_kw):
+                raise RuntimeError(message)
+
+        monkeypatch.setattr(
+            "vllm_mlx.audio.stt.STTEngine", _FakeMisconfigEngine, raising=False
+        )
+        audio_stt_mod = sys.modules.get("vllm_mlx.audio.stt")
+        if audio_stt_mod is not None:
+            monkeypatch.setattr(audio_stt_mod, "STTEngine", _FakeMisconfigEngine)
+
+        audio_route._stt_engine = None
+        try:
+            client, restore = _mount_audio_app()
+            try:
+                r = client.post(
+                    "/v1/audio/transcriptions",
+                    data={"model": "whisper-large-v3"},
+                    files={"file": ("tone.wav", _wav_bytes(), "audio/wav")},
+                )
+            finally:
+                restore()
+        finally:
+            audio_route._stt_engine = None
+            probe._reset_probe_cache()
+
+        assert r.status_code == 500, (
+            f"Codex r2 BLOCKING regression: server misconfig "
+            f"({message!r}) was downgraded to {r.status_code} client "
+            f"error: {r.text!r}. Operators rely on 500 to notice the "
+            f"host audio stack is broken."
+        )
