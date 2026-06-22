@@ -205,6 +205,59 @@ def test_inject_suffix_for_required_prepends_system_when_absent():
     assert _TOOL_USE_REQUIRED_SUFFIX.strip() in messages[0]["content"]
 
 
+def test_inject_suffix_list_system_content_appends_text_block():
+    """Codex r3 NIT (PR #807): when the system block uses Anthropic's
+    list-of-content-blocks shape, the suffix MUST be appended as a new
+    text block — NEVER stringified via ``str(...)`` (that path would
+    serialise Python repr into the rendered prompt)."""
+    tools = [SimpleNamespace(function={"name": "x"})]
+    messages = [
+        {
+            "role": "system",
+            "content": [{"type": "text", "text": "You are helpful."}],
+        },
+        {"role": "user", "content": "hi"},
+    ]
+    _inject_tool_use_required_suffix(messages, "required", tools=tools)
+    sys = messages[0]
+    assert isinstance(sys["content"], list)
+    assert sys["content"][0] == {"type": "text", "text": "You are helpful."}
+    # Suffix landed as a new text block, not as a stringified list.
+    assert sys["content"][-1]["type"] == "text"
+    assert _TOOL_USE_REQUIRED_SUFFIX in sys["content"][-1]["text"]
+
+
+def test_inject_suffix_none_system_content_writes_suffix():
+    """Edge case: system block has ``content=None``. The suffix must
+    still reach the model — write it as the new content rather than
+    crashing or stringifying ``None``."""
+    tools = [SimpleNamespace(function={"name": "x"})]
+    messages = [
+        {"role": "system", "content": None},
+        {"role": "user", "content": "hi"},
+    ]
+    _inject_tool_use_required_suffix(messages, "required", tools=tools)
+    assert _TOOL_USE_REQUIRED_SUFFIX in messages[0]["content"]
+
+
+def test_inject_suffix_unknown_system_shape_falls_back_to_prepend():
+    """When EVERY system block carries an un-appendable content shape
+    (neither str nor list nor None — e.g. dict), the helper prepends
+    a new system message so the forced-tool lever still ships rather
+    than silently dropping it."""
+    tools = [SimpleNamespace(function={"name": "x"})]
+    messages = [
+        {"role": "system", "content": {"unexpected": "shape"}},
+        {"role": "user", "content": "hi"},
+    ]
+    _inject_tool_use_required_suffix(messages, "required", tools=tools)
+    # New system block prepended with the suffix; original block kept.
+    assert messages[0]["role"] == "system"
+    assert isinstance(messages[0]["content"], str)
+    assert _TOOL_USE_REQUIRED_SUFFIX.strip() in messages[0]["content"]
+    assert messages[1] == {"role": "system", "content": {"unexpected": "shape"}}
+
+
 def test_inject_suffix_named_tool_uses_named_variant():
     tools = [SimpleNamespace(function={"name": "get_weather"})]
     messages = [{"role": "user", "content": "hi"}]

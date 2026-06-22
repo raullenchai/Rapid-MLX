@@ -352,17 +352,38 @@ def _inject_tool_use_required_suffix(
                     if isinstance(m, dict)
                     else getattr(m, "content", "")
                 )
-                # Normalise non-string content to a string before appending
-                # — Anthropic system blocks may arrive as list[dict] (text
-                # blocks) which the adapter has already joined into a
-                # string by this point, but be defensive.
-                if not isinstance(content, str):
-                    content = str(content) if content is not None else ""
-                if isinstance(m, dict):
-                    messages[i] = {**m, "content": content + suffix}
+                # Codex r3 NIT (PR #807): when system content is a
+                # list-of-blocks (multimodal / Anthropic text-block
+                # array), preserve the block shape by APPENDING a new
+                # text block carrying the suffix — never stringify the
+                # list via ``str(...)`` (which would emit Python repr
+                # like ``"[{'type': 'text', ...}]<suffix>"`` into the
+                # rendered chat-template prompt). String content is
+                # the common path and stays a fast concat.
+                if isinstance(content, str):
+                    new_content = content + suffix
+                elif isinstance(content, list):
+                    new_content = list(content)
+                    new_content.append({"type": "text", "text": suffix})
+                elif content is None:
+                    new_content = suffix
                 else:
-                    m.content = content + suffix
+                    # Unknown shape — leave the block untouched and
+                    # fall through to the "prepend a system" path so
+                    # the suffix still reaches the model. Better an
+                    # extra system block than a silently-dropped
+                    # forced-tool lever.
+                    continue
+                if isinstance(m, dict):
+                    messages[i] = {**m, "content": new_content}
+                else:
+                    m.content = new_content
                 break
+        else:
+            # No appendable system block found (every system block had
+            # a non-string / non-list content shape) — fall through to
+            # the prepend path so the suffix still ships.
+            messages.insert(0, {"role": "system", "content": suffix.strip()})
     else:
         messages.insert(0, {"role": "system", "content": suffix.strip()})
     return messages
@@ -595,6 +616,35 @@ async def create_anthropic_message(
         except AnthropicOutputConfigError as e:
             raise HTTPException(status_code=400, detail=str(e))
 
+        # D-ANTHRO-TOOL-USAGE F3 (codex r3 BLOCKING #1+#2): suffix
+        # injection MUST happen BEFORE the context-length DoS gate and
+        # BEFORE the prompt-token count is captured. Pre-r3 the suffix
+        # was injected per-branch AFTER the gate, so:
+        #   (a) a forced-tool request could bypass the context-length
+        #       cap by piggy-backing the suffix onto an already-at-cap
+        #       prompt (DoS gate measured pre-injection tokens), and
+        #   (b) ``message_start.usage.input_tokens`` (streaming) under-
+        #       reported the prompt by the suffix's byte cost.
+        # Inject ONCE here on the rendered engine-shape messages, then
+        # run the gate + capture the count on the post-injection state.
+        # Both branches reuse the same ``messages`` list afterwards so
+        # there is no second injection downstream.
+        try:
+            messages, images, videos = extract_multimodal_content(
+                openai_request.messages,
+                preserve_native_format=engine.preserve_native_tool_format,
+            )
+        except Exception:
+            messages = None
+            images = []
+            videos = []
+        if messages is not None:
+            _inject_tool_use_required_suffix(
+                messages,
+                openai_request.tool_choice,
+                tools=openai_request.tools,
+            )
+
         # Context-length pre-check — same DoS gate the chat/completions/
         # responses routes enforce. Render the prompt through the engine's
         # chat template, count tokens, raise 400 ``context_length_exceeded``
@@ -610,17 +660,10 @@ async def create_anthropic_message(
         # build_prompt, empty prompt) so a falsy value means the
         # streaming branch must fall back to its own estimator helper.
         _ctx_prompt_tokens = 0
-        try:
-            _ctx_messages, _, _ = extract_multimodal_content(
-                openai_request.messages,
-                preserve_native_format=engine.preserve_native_tool_format,
-            )
-        except Exception:
-            _ctx_messages = None
-        if _ctx_messages is not None:
+        if messages is not None:
             _ctx_prompt_tokens = enforce_context_length_for_messages(
                 engine,
-                _ctx_messages,
+                messages,
                 tools=openai_request.tools,
                 max_tokens=_resolve_max_tokens(
                     openai_request.max_tokens,
@@ -656,24 +699,20 @@ async def create_anthropic_message(
                 headers={**SSE_RESPONSE_HEADERS, "Connection": "keep-alive"},
             )
 
-        # Non-streaming: run inference through existing engine
-        messages, images, videos = extract_multimodal_content(
-            openai_request.messages,
-            preserve_native_format=engine.preserve_native_tool_format,
-        )
-
-        # D-ANTHRO-TOOL-USAGE F3: forced ``tool_choice`` levers.
-        # The Anthropic route bypasses chat.py, so chat.py's prompt-suffix
-        # injection (``_TOOL_USE_REQUIRED_SUFFIX`` / named variant) was
-        # silently skipped for /v1/messages. The OpenAI surface enforces
-        # ``tool_choice="any"`` (Anthropic ``any``) primarily via prompt
-        # injection + post-parse synth/422; mirror BOTH levers here so the
-        # two routes ship the same forced-call contract.
-        _inject_tool_use_required_suffix(
-            messages,
-            openai_request.tool_choice,
-            tools=openai_request.tools,
-        )
+        # Non-streaming: run inference through existing engine. The
+        # ``extract_multimodal_content`` + ``_inject_tool_use_required_suffix``
+        # pair already ran above so ``messages`` already carries the
+        # forced-tool suffix when applicable; the original double-call
+        # was the source of codex r3 BLOCKING #1.
+        if messages is None:
+            # ``extract_multimodal_content`` raised earlier — re-raise
+            # via the same code path the engine would normally trigger
+            # so the route's exception handler maps to a 400. Defensive
+            # — every supported request shape returns a list above.
+            messages, images, videos = extract_multimodal_content(
+                openai_request.messages,
+                preserve_native_format=engine.preserve_native_tool_format,
+            )
 
         chat_kwargs = {
             "max_tokens": _resolve_max_tokens(
