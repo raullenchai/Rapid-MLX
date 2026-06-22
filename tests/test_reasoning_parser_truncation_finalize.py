@@ -181,6 +181,31 @@ class TestIsOpenInThink:
         p = MiniMaxReasoningParser()
         assert p.is_open_in_think("The user asks about Tokyo") is False
 
+    def test_qwen3_multi_block_trailing_open(self):
+        """Codex r2 BLOCKING on PR #825: the base
+        ``BaseThinkingReasoningParser.is_open_in_think`` used a bare
+        ``in`` check (``end_token not in text``) which returned False
+        for ANY buffer containing ``</think>`` — including the valid
+        multi-block truncation shape
+        ``<think>R1</think><think>R2`` (first block closed, second
+        block opened mid-flight and truncated). The systematic fix
+        compares positions: open iff the LAST start token is after
+        the LAST end token."""
+        p = Qwen3ReasoningParser()
+        assert p.is_open_in_think("<think>R1</think><think>R2") is True
+
+    def test_deepseek_r1_multi_block_trailing_open(self):
+        p = DeepSeekR1ReasoningParser()
+        assert p.is_open_in_think("<think>R1</think><think>R2") is True
+
+    def test_glm4_multi_block_trailing_open(self):
+        p = Glm4ReasoningParser()
+        assert p.is_open_in_think("<think>R1</think><think>R2") is True
+
+    def test_minimax_multi_block_trailing_open(self):
+        p = MiniMaxReasoningParser()
+        assert p.is_open_in_think("<think>R1</think><think>R2") is True
+
 
 # ---------------------------------------------------------------------
 # Per-parser ``extract_reasoning`` finalize-on-truncation contract
@@ -330,44 +355,42 @@ class TestRouteFinalizeOnTruncation:
         assert cleaned_text != reasoning_text
 
     def test_glm4_autonomous_length_truncation_via_engine_signal(self):
-        """B-9 fix: glm4 autonomous mode (no tag) with
-        ``finish_reason="length"`` AND engine-router evidence
-        (``engine_reasoning_text`` populated, indicating the token-level
-        ``OutputRouter`` saw think tokens) must route the buffer to
-        reasoning_content."""
+        """B-9 fix: glm4 autonomous mode (no ``<think>`` tag emitted)
+        with ``finish_reason="length"`` AND engine-router evidence
+        (``engine_reasoning_text`` populated, indicating the
+        token-level ``OutputRouter`` saw think tokens) must route the
+        buffer to reasoning_content.
+
+        Codex r2 BLOCKING on PR #825: the pre-fix variant of this
+        test prepended ``<think>`` to ``raw_text`` / ``cleaned_text``
+        and passed ``engine_reasoning_text=""``, which collapsed it
+        to the explicit-tag parser fallback path (a duplicate of
+        the qwen3/deepseek tests above) and never exercised the
+        autonomous-mode route plug. Tagless input + populated
+        ``engine_reasoning_text`` is the genuine B-9 shape.
+        """
         # glm4's autonomous-mode shape: model emitted plain text without
         # a ``<think>`` opener but the engine's OutputRouter
         # token-classified the bytes as reasoning. The route-level plug
         # honours the engine signal and re-classifies.
         raw = "Okay let me reason step by step about Tokyo's history"
         parser = Glm4ReasoningParser()
-        # NOTE: the route-level plug only kicks in via the
-        # post-parser path; the engine-routed branch returns earlier.
-        # Pin the parser-only path for B-9: when parser returns
-        # ``(None, raw)`` and ``finish_reason="length"``, the route
-        # must NOT leak the buffer into content. The engine-routed
-        # case is covered by the existing F-041 plug; for the no-
-        # engine-signal case we rely on the parser's own behaviour
-        # (glm4 with ``<think>`` opener routes correctly).
         cleaned_text, reasoning_text = _finalize_content_and_reasoning(
-            raw_text="<think>" + raw,  # raw_text DOES retain the think token
-            cleaned_text="<think>" + raw,
+            raw_text=raw,
+            cleaned_text=raw,
             tool_calls=[],
             reasoning_parser=parser,
-            engine_reasoning_text="",
+            engine_reasoning_text=raw,  # engine token-router routed
             finish_reason="length",
         )
-        # Parser-side fix catches this: glm4 inherits the
-        # BaseThinkingReasoningParser Case-3 fallback (only opener,
-        # no closer) so the helper sees ``(reasoning, None)`` and
-        # the truncated-think plug fires.
+        # B-9 contract: route to reasoning, blank cleaned_text — no
+        # dup, no leak.
         assert reasoning_text is not None
-        assert (
-            raw in reasoning_text
-            or "step by step about Tokyo's history" in reasoning_text
-        )
+        assert raw in reasoning_text
         # ``content`` must NOT carry the raw scratchpad bytes.
         assert raw not in (cleaned_text or "")
+        # And content must NOT byte-equal reasoning_content.
+        assert cleaned_text != reasoning_text
 
     def test_minimax_length_truncation_routes_to_reasoning(self):
         """Cross-parser sweep: minimax mid-think on ``finish_reason="length"``

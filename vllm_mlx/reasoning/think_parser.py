@@ -95,12 +95,19 @@ class BaseThinkingReasoningParser(ReasoningParser):
         """
         if not accumulated_text:
             return False
-        if self.start_token in accumulated_text and (
-            self.end_token not in accumulated_text
-        ):
-            # Classic mid-think: opener arrived but closer never did.
-            return True
-        return False
+        last_open = accumulated_text.rfind(self.start_token)
+        if last_open < 0:
+            return False
+        last_close = accumulated_text.rfind(self.end_token)
+        # Codex r2 BLOCKING on PR #825: the pre-fix gate returned False
+        # whenever ANY ``</think>`` appeared anywhere in the buffer,
+        # so a valid multi-block truncation shape like
+        # ``<think>R1</think><think>R2`` (closed first block, second
+        # block opened but truncated) was misclassified as content
+        # and could leak the second unclosed reasoning span. The
+        # correct rule compares positions: open-in-think iff the
+        # LATEST start token occurs after the LATEST end token.
+        return last_open > last_close
 
     def extract_reasoning(
         self,

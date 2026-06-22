@@ -331,7 +331,15 @@ class MiniMaxReasoningParser(ReasoningParser):
         # ``_sweep_residual_think_tags`` scope from PR #722 codex r3.
         if not accumulated_text.lstrip().startswith("<think>"):
             return False
-        return "</think>" not in accumulated_text
+        # Codex r2 BLOCKING on PR #825: a bare ``"</think>" not in``
+        # check would mis-classify a valid multi-block truncation
+        # shape ``<think>R1</think><think>R2`` (first block closed,
+        # second block opened and truncated) as content. Compare
+        # positions instead — same fix as
+        # ``BaseThinkingReasoningParser.is_open_in_think``.
+        last_open = accumulated_text.rfind("<think>")
+        last_close = accumulated_text.rfind("</think>")
+        return last_open > last_close
 
     def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
         """
