@@ -870,6 +870,9 @@ async def create_anthropic_message(
                 original_call_count=original_call_count,
             )
             if _named_err:
+                # Named pins are not equivalent to "any tool": if the model
+                # produced text only, or only other tool calls, fabricating the
+                # named call would be a false success with unknown arguments.
                 raise HTTPException(status_code=422, detail=_named_err)
             # D-ANTHRO-TOOL-USAGE F3: Anthropic ``{"type":"any"}`` enforcement.
             # The adapter has mapped it to OpenAI ``"required"``; mirror the

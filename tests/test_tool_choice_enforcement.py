@@ -1500,8 +1500,12 @@ def test_codex_r9_raw_wire_elsewhere_does_not_scrub_reasoning_marker_example():
         },
     )
     assert resp.status_code == 200, resp.text
-    reasoning = resp.json()["choices"][0]["message"].get("reasoning_content") or ""
+    msg = resp.json()["choices"][0]["message"]
+    content = msg.get("content") or ""
+    reasoning = msg.get("reasoning_content") or ""
     assert reasoning == "Use <tool_call> as the opening tag."
+    for leak in ("<tool_call>", "</function>", '"arguments"'):
+        assert leak not in content
 
 
 # -----------------------------------------------------------------------
