@@ -714,12 +714,10 @@ def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
     assert err is None
 
 
-def test_enforce_named_tool_choice_present_errors_when_pinned_call_missing():
-    """F8 (D-ANTHRO-SPEC-POLISH): when the pinned tool call is missing,
-    the helper returns an error instead of synthesizing a placeholder
-    ``tool_use``. Single source of truth: non-stream and stream branches
-    both use this helper, then surface HTTP 422 for named-tool contract
-    failures.
+def test_enforce_named_tool_choice_present_synthesizes_when_pinned_call_missing():
+    """When the pinned tool call is missing, the helper synthesizes the
+    pinned call. Call sites then validate that empty input against the
+    tool schema before deciding whether to ship it or surface 422.
     """
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
@@ -728,15 +726,17 @@ def test_enforce_named_tool_choice_present_errors_when_pinned_call_missing():
         {"type": "function", "function": {"name": "get_weather"}},
         original_call_count=0,
     )
-    assert calls_out == []
-    assert synthesized is False
-    assert "get_weather" in err
+    assert len(calls_out) == 1
+    assert calls_out[0].function.name == "get_weather"
+    assert calls_out[0].function.arguments == "{}"
+    assert synthesized is True
+    assert err is None
 
 
-def test_enforce_named_tool_choice_present_errors_when_only_wrong_tool_emitted():
+def test_enforce_named_tool_choice_present_synthesizes_when_only_wrong_tool_emitted():
     """F8 disambiguation: the model emitted only WRONG-tool calls
-    (filter dropped them all). The helper returns an error and uses
-    ``original_call_count > 0`` only to log a different warning for
+    (filter dropped them all). The helper synthesizes the pinned call and
+    uses ``original_call_count > 0`` only to log a different warning for
     operator debugging. Wire shape is identical to the no-calls case.
     """
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
@@ -746,9 +746,11 @@ def test_enforce_named_tool_choice_present_errors_when_only_wrong_tool_emitted()
         {"type": "function", "function": {"name": "get_weather"}},
         original_call_count=3,  # model emitted 3 wrong-tool calls
     )
-    assert calls_out == []
-    assert synthesized is False
-    assert "get_weather" in err
+    assert len(calls_out) == 1
+    assert calls_out[0].function.name == "get_weather"
+    assert calls_out[0].function.arguments == "{}"
+    assert synthesized is True
+    assert err is None
 
 
 def test_pinned_tool_with_required_field_returns_422_not_synthesized_200():

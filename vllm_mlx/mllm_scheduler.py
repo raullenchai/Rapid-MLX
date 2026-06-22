@@ -700,10 +700,12 @@ class MLLMScheduler:
             request.output_tokens.append(response.token)
             request.num_output_tokens = len(request.output_tokens)
 
+            finish_reason = response.finish_reason
+
             # Decode the new token using streaming detokenizer (UTF-8 safe).
-            # Even backend stop-finished responses can carry emit-worthy text
-            # in the final token; stop-string holdback below decides what is
-            # safe to release.
+            # Plain backend stop tokens are not decoded because they can be
+            # EOS/control ids. User stop strings still decode the final token
+            # so the rolling matcher can keep visible text before the stop.
             had_detok = request_id in self._detokenizer_pool
             if not had_detok:
                 if hasattr(tokenizer, "detokenizer"):
@@ -713,8 +715,12 @@ class MLLMScheduler:
                 detok.reset()
                 self._detokenizer_pool[request_id] = detok
             detok = self._detokenizer_pool[request_id]
-            detok.add_token(response.token)
-            new_text = detok.last_segment
+            stop_params = [s for s in request.stop if s] if request.stop else []
+            if finish_reason == "stop" and not stop_params:
+                new_text = ""
+            else:
+                detok.add_token(response.token)
+                new_text = detok.last_segment
             if not isinstance(new_text, str):
                 # Unit-test mocks may not implement the streaming
                 # detokenizer contract. Production detokenizers
@@ -728,9 +734,7 @@ class MLLMScheduler:
             output_finish_reason: str | None = None
             output_matched_stop: str | None = None
 
-            finish_reason = response.finish_reason
             stop_trimmed = False
-            stop_params = [s for s in request.stop if s] if request.stop else []
             if (finish_reason != "stop" or new_text) and stop_params:
                 if (
                     not had_detok

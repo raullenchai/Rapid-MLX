@@ -1295,8 +1295,8 @@ class TestMLLMSchedulerStopSequences:
         assert outputs[1].output_text == "hello"
         assert request.output_text == "hello"
 
-    def test_backend_stop_finish_without_user_stop_emits_visible_text(self):
-        """Backend EOS/stop chunks can carry normal visible text."""
+    def test_backend_stop_token_without_user_stop_is_not_decoded(self):
+        """Backend EOS/stop token ids must not leak as visible text."""
         from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
         from vllm_mlx.mllm_scheduler import (
             MLLMRequest,
@@ -1306,15 +1306,14 @@ class TestMLLMSchedulerStopSequences:
         from vllm_mlx.request import SamplingParams
 
         class SegmentDetok:
-            last_segment = "hello"
-            text = "hello"
+            last_segment = ""
+            text = ""
 
             def reset(self):
                 pass
 
             def add_token(self, _token):
-                self.last_segment = "hello"
-                self.text = "hello"
+                raise AssertionError("backend stop token should not be detokenized")
 
             def finalize(self):
                 pass
@@ -1326,10 +1325,11 @@ class TestMLLMSchedulerStopSequences:
 
         scheduler = MLLMScheduler(mock_model, mock_processor, MLLMSchedulerConfig())
         request = MLLMRequest(
-            request_id="req-backend-stop-no-user-stop",
+            request_id="req-backend-stop-token-only",
             prompt="Say hello",
             sampling_params=SamplingParams(max_tokens=10),
         )
+        request.output_text = "hello"
         scheduler.running[request.request_id] = request
         scheduler.uid_to_request_id[0] = request.request_id
         scheduler._detokenizer_pool[request.request_id] = SegmentDetok()
@@ -1347,7 +1347,7 @@ class TestMLLMSchedulerStopSequences:
         )
 
         assert finished_ids == {request.request_id}
-        assert outputs[0].new_text == "hello"
+        assert outputs[0].new_text == ""
         assert outputs[0].finish_reason == "stop"
         assert outputs[0].matched_stop is None
         assert outputs[0].output_text == "hello"
