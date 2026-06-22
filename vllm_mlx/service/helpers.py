@@ -297,9 +297,7 @@ def _finalize_content_and_reasoning(
             and cleaned_text.strip()
             and reasoning_parser is not None
         ):
-            is_open_in_think_attr = getattr(
-                reasoning_parser, "is_open_in_think", None
-            )
+            is_open_in_think_attr = getattr(reasoning_parser, "is_open_in_think", None)
             parser_open = False
             if callable(is_open_in_think_attr):
                 try:
@@ -487,9 +485,7 @@ def _finalize_content_and_reasoning(
             and cleaned_text
             and not first_parse_was_truncated_think
         ):
-            is_open_in_think = getattr(
-                reasoning_parser, "is_open_in_think", None
-            )
+            is_open_in_think = getattr(reasoning_parser, "is_open_in_think", None)
             open_in_think = False
             if callable(is_open_in_think):
                 try:
