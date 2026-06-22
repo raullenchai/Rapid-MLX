@@ -484,6 +484,63 @@ class TestLogprobsEngineCapability:
     without a ``tokenizer`` must NOT crash with 500 when a client
     sends ``logprobs:N`` — return a controlled 501 instead."""
 
+    def test_structural_fallback_supports_non_base_engine(self):
+        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+
+        class _Engine:
+            tokenizer = object()
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+        assert _engine_supports_completion_logprobs(_Engine()) is True
+
+    def test_bound_stream_generate_supports_base_capability(self):
+        from vllm_mlx.engine.base import BaseEngine
+
+        class _Engine(BaseEngine):
+            tokenizer = object()
+
+            @property
+            def model_name(self):
+                return "stub"
+
+            @property
+            def is_mllm(self):
+                return False
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+            async def generate(self, *_a, **_kw):
+                return None
+
+            async def chat(self, *_a, **_kw):
+                return None
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+            async def stream_chat(self, *_a, **_kw):
+                if False:
+                    yield None
+
+            def get_model_info(self):
+                return {}
+
+            def build_prompt(self, *_a, **_kw):
+                return ""
+
+            def estimate_new_tokens(self, *_a, **_kw):
+                return (0, 0)
+
+        assert _Engine().supports_completion_logprobs is True
+
     def test_engine_without_stream_generate_returns_501(
         self, patched_config, monkeypatch
     ):

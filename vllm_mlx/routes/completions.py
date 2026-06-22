@@ -43,6 +43,15 @@ logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+def _engine_supports_completion_logprobs(engine) -> bool:
+    capability = getattr(engine, "supports_completion_logprobs", None)
+    if capability is not None:
+        return bool(capability)
+    return getattr(engine, "tokenizer", None) is not None and callable(
+        getattr(engine, "stream_generate", None)
+    )
+
+
 @router.post(
     "/v1/completions",
     dependencies=[Depends(verify_api_key), Depends(check_rate_limit)],
@@ -181,9 +190,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
         # disconnects after the first chunk instead of a controlled
         # 501. Lift to the top so both branches are covered.
         _want_logprobs = request.logprobs is not None
-        if _want_logprobs and not getattr(
-            engine, "supports_completion_logprobs", False
-        ):
+        if _want_logprobs and not _engine_supports_completion_logprobs(engine):
             raise HTTPException(
                 status_code=501,
                 detail=(
