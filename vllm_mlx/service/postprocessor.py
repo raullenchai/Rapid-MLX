@@ -2648,6 +2648,41 @@ class StreamingPostProcessor:
                     )
                     self.tool_calls_detected = True
 
+        # Dogfood F-R1-04 (codex r5 BLOCKING): UI-TARS reasoning
+        # parser-specific EOF flush. The opener-prefix hold-back
+        # logic returns ``None`` (no event) while the buffer is a
+        # strict prefix of a known opener — ``"Thought"`` waiting
+        # for the colon, ``"Reflection"`` waiting, etc. If the
+        # stream ends mid-prefix (e.g. ``max_tokens`` truncation
+        # mid-token, or the model genuinely produced bare
+        # ``"Thought"`` text), those bytes are otherwise silently
+        # dropped at EOF. Mirror the ``tool_parser.flush_held_content``
+        # pattern below but scope it to the UI-TARS reasoning
+        # parser specifically — other reasoning parsers
+        # (``qwen3`` / ``deepseek_r1`` / ``gemma4``) have their own
+        # ``finalize_streaming`` semantics tied to specific call
+        # sites that this generic hook would clash with.
+        if (
+            self.reasoning_parser is not None
+            and self.accumulated_text
+            and type(self.reasoning_parser).__name__ == "UiTarsReasoningParser"
+        ):
+            try:
+                final_msg = self.reasoning_parser.finalize_streaming(
+                    self.accumulated_text
+                )
+            except Exception as e:
+                logger.warning(
+                    "UI-TARS finalize_streaming raised: %s — any held "
+                    "trailing bytes will not be flushed for this request",
+                    e,
+                )
+                final_msg = None
+            if final_msg is not None:
+                final_content = getattr(final_msg, "content", None)
+                if isinstance(final_content, str) and final_content:
+                    events.append(StreamEvent(type="content", content=final_content))
+
         # Release any prefix-held content trailing the stream. Hermes
         # and harmony streaming parsers hold back partial sentinel
         # suffixes (``<``, ``<|``, ``<func``...) so per-char streaming

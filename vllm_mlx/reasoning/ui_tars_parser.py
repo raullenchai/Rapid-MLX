@@ -322,3 +322,35 @@ class UiTarsReasoningParser(ReasoningParser):
     def reset_state(self) -> None:
         self._in_reasoning = False
         self._in_content = False
+
+    def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
+        """Flush held opener-prefix bytes at end-of-stream.
+
+        Codex r5 BLOCKING: the opener-prefix hold-back loop returns
+        ``None`` when the buffer is a strict prefix of any known
+        opener (``"Thought"``, ``"Reflection"``, etc.) — waiting for
+        the disambiguating colon on a future delta. But if the
+        stream ENDS while a prefix is still held (model produced
+        plain text ``"Thought"`` with no colon, or got cut off
+        mid-token), those bytes are silently dropped.
+
+        At end-of-stream:
+        - If we never flipped channels (``_in_reasoning ==
+          _in_content == False``), every byte the model emitted is
+          still held. Flush as ``content`` — by definition the
+          buffer is NOT a complete opener (else the live loop
+          would have flipped to reasoning), so the held bytes are
+          plain text content.
+        - If we're already in a channel, the live loop has already
+          emitted everything; nothing to flush.
+        """
+        if self._in_reasoning or self._in_content:
+            return None
+        if not accumulated_text:
+            return None
+        # All emitted as content — the in-flight loop never
+        # disambiguated to an opener, so by end-of-stream this is
+        # plain content. Flip the latch so a subsequent finalize
+        # call is a no-op.
+        self._in_content = True
+        return DeltaMessage(content=accumulated_text)

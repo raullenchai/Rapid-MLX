@@ -423,6 +423,35 @@ class TestHotkeyNormalization:
         args = _decode_args(r.tool_calls[0])
         assert args == {"action": "hotkey", "key": "ctrl+c"}
 
+    # codex r5 NIT #2: modifier-scoped rewrite. Single-key names that
+    # contain a space — ``"page down"``, ``"arrow up"``, ``"caps lock"``
+    # — are NOT chords and must pass through unchanged.
+    @pytest.mark.parametrize(
+        "key_in",
+        ["page down", "arrow up", "caps lock", "num lock", "scroll lock"],
+    )
+    def test_non_chord_space_key_preserved(self, key_in: str):
+        args = _normalize_action("hotkey", {"key": key_in})
+        # No ``+`` rewrite — these are key names, not chord modifiers.
+        assert args == {"action": "hotkey", "key": key_in}
+
+    @pytest.mark.parametrize(
+        "modifier,expected",
+        [
+            ("cmd v", "cmd+v"),
+            ("command v", "command+v"),
+            ("shift tab", "shift+tab"),
+            ("alt f4", "alt+f4"),
+            ("option a", "option+a"),
+            ("meta l", "meta+l"),
+            ("win e", "win+e"),
+            ("super space", "super+space"),
+        ],
+    )
+    def test_known_modifiers_rewritten(self, modifier: str, expected: str):
+        args = _normalize_action("hotkey", {"key": modifier})
+        assert args == {"action": "hotkey", "key": expected}
+
 
 # ---------------------------------------------------------------------------
 # Streaming Thought:/Action: hold-back (F-R1-04)
@@ -534,6 +563,45 @@ class TestStreamingThoughtHoldback:
         assert "Thought:" in reasoning
         assert "Action:" not in reasoning
         assert "Action:" in content
+
+    # codex r5 BLOCKING: EOF flush. If the stream ends mid-opener-
+    # prefix (truncation by ``max_tokens``, or the model genuinely
+    # output bare ``"Thought"`` text), the held bytes must surface
+    # as content at EOF — not silently dropped.
+
+    def test_finalize_emits_held_opener_prefix_as_content(self):
+        # Stream ``"Thought"`` and never see the colon. Mid-stream
+        # event is None (held). ``finalize_streaming`` MUST return
+        # the held bytes as ``content`` so the wire stream is
+        # byte-complete.
+        events = self._stream(["Thought"])
+        assert events == []
+        # The accumulated text is what the parser saw — same as
+        # the prev+delta sum in ``_stream``.
+        final = self.p.finalize_streaming("Thought")
+        assert final is not None
+        assert final.content == "Thought"
+        assert final.reasoning is None
+
+    def test_finalize_noop_after_reasoning_started(self):
+        # Once a reasoning event has fired, we're past the hold-back
+        # phase — finalize must NOT re-emit anything (else
+        # double-emission).
+        events = self._stream(["Thought: hi.\n"])
+        assert any(e.reasoning for e in events)
+        final = self.p.finalize_streaming("Thought: hi.\n")
+        assert final is None
+
+    def test_finalize_noop_after_content_started(self):
+        # Same invariant on the content branch.
+        events = self._stream(["Hello, world!\n"])
+        assert any(e.content for e in events)
+        final = self.p.finalize_streaming("Hello, world!\n")
+        assert final is None
+
+    def test_finalize_noop_on_empty_text(self):
+        final = self.p.finalize_streaming("")
+        assert final is None
 
 
 # ---------------------------------------------------------------------------

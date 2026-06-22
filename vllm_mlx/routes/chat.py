@@ -2380,15 +2380,23 @@ async def stream_chat_completion(
                         usage=None,
                     )
                     _tc_sse = f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
-                    # Dogfood F-R2-05: previously emitted at INFO, which
-                    # leaked user-action coords + tool_call JSON into the
-                    # server log on every Computer-Use turn (UI-TARS,
-                    # Anthropic computer tool, etc.). Drop to DEBUG so
-                    # the PII / telemetry path is opt-in and not on by
-                    # default. Plain INFO observability is preserved by
-                    # the existing per-request summary log at the route
-                    # tail; the per-chunk dump is debugging-only.
-                    logger.debug(f"[SSE-TC] {_tc_sse.strip()[:300]}")
+                    # Dogfood F-R2-05 + codex r5 NIT #3: previously
+                    # emitted at INFO, which leaked user-action coords
+                    # + tool_call JSON into the server log on every
+                    # Computer-Use turn (UI-TARS, Anthropic computer
+                    # tool, etc.). Now DEBUG, AND redacted: log only
+                    # the chunk metadata (tool_call count + finish
+                    # reason), never the raw ``arguments`` JSON.
+                    # Operators who need full payloads can capture
+                    # the wire stream upstream; the application log
+                    # should not be a covert PII channel.
+                    _tc_count = len(event.tool_calls or [])
+                    _tc_finish = event.finish_reason or "-"
+                    logger.debug(
+                        "[SSE-TC] tool_calls.count=%d finish_reason=%s",
+                        _tc_count,
+                        _tc_finish,
+                    )
                     yield _tc_sse
 
                 elif event.type == "finish":

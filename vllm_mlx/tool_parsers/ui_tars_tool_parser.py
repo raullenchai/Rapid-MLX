@@ -614,6 +614,28 @@ _SINGLE_POINT_VERBS: frozenset[str] = frozenset(
 # inputs collapse to the spec ``start_point`` / ``end_point`` keys.
 _TWO_POINT_VERBS: frozenset[str] = frozenset({"drag", "select", "swipe"})
 
+# Known chord-modifier prefixes. ``_normalize_action`` uses this set
+# to decide whether to rewrite ``hotkey(key='X Y')`` → ``"X+Y"``.
+# Only ``"<modifier> <key>"`` forms get the rewrite; single key names
+# that contain a space (``"page down"``, ``"arrow up"``, ``"caps
+# lock"``) are pass-through. Codex r5 NIT #2.
+_HOTKEY_MODIFIERS: frozenset[str] = frozenset(
+    {
+        "ctrl",
+        "control",
+        "shift",
+        "alt",
+        "option",
+        "opt",
+        "cmd",
+        "command",
+        "meta",
+        "win",
+        "super",
+        "fn",
+    }
+)
+
 
 def _spec_key_for(verb: str, model_key: str) -> str:
     """Translate a model-emitted coord kwarg name to the SPEC key.
@@ -715,13 +737,22 @@ def _normalize_action(verb: str, kwargs: dict[str, Any]) -> dict[str, Any]:
         # the Anthropic computer-tool harness) receive the documented
         # shape. The model trained on space form, so normalization
         # happens at the parser boundary, not on the model side.
+        #
+        # codex r5 NIT #2: only rewrite when the first whitespace
+        # token is a known modifier — ``"ctrl c"``, ``"shift tab"``,
+        # ``"alt f4"``, etc. — so single-key names that contain a
+        # space (``"page down"``, ``"arrow up"``, ``"caps lock"``)
+        # are passed through unchanged. The chord form ALWAYS leads
+        # with a modifier; single key names never do.
         if verb == "hotkey" and key == "key" and isinstance(value, str):
             stripped = value.strip()
             if stripped and "+" not in stripped:
-                # Collapse runs of whitespace into a single ``+``
-                # (matches how xdotool / pyautogui name keys).
-                out[key] = "+".join(stripped.split())
-                continue
+                tokens = stripped.split()
+                if len(tokens) > 1 and tokens[0].lower() in _HOTKEY_MODIFIERS:
+                    # Collapse runs of whitespace into a single ``+``
+                    # (matches how xdotool / pyautogui name keys).
+                    out[key] = "+".join(tokens)
+                    continue
         out[key] = value
     return out
 
