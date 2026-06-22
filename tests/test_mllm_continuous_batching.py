@@ -1419,6 +1419,69 @@ class TestMLLMSchedulerStopSequences:
         assert outputs[0].finish_reason == "stop"
         assert outputs[0].output_text == "hello"
 
+    def test_backend_stop_token_finalizes_buffered_visible_text(self):
+        """EOS/control stop tokens should flush buffered pre-EOS text."""
+        from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
+        from vllm_mlx.mllm_scheduler import (
+            MLLMRequest,
+            MLLMScheduler,
+            MLLMSchedulerConfig,
+        )
+        from vllm_mlx.request import SamplingParams
+
+        class BufferingDetok:
+            last_segment = ""
+            text = "hel"
+
+            def reset(self):
+                pass
+
+            def add_token(self, _token):
+                raise AssertionError("backend stop token should not be detokenized")
+
+            def finalize(self):
+                self.text = "hello"
+
+        mock_model = MagicMock()
+        mock_processor = MagicMock()
+        mock_tokenizer = MagicMock()
+        mock_processor.tokenizer = mock_tokenizer
+        mock_tokenizer.decode.side_effect = AssertionError(
+            "backend stop finalize should not full-decode"
+        )
+
+        scheduler = MLLMScheduler(mock_model, mock_processor, MLLMSchedulerConfig())
+        request = MLLMRequest(
+            request_id="req-backend-stop-buffered-visible",
+            prompt="Say hello",
+            sampling_params=SamplingParams(max_tokens=10),
+        )
+        request.output_text = "hel"
+        scheduler.running[request.request_id] = request
+        scheduler.uid_to_request_id[0] = request.request_id
+        scheduler._detokenizer_pool[request.request_id] = BufferingDetok()
+
+        outputs, finished_ids = scheduler._process_batch_responses(
+            [
+                MLLMBatchResponse(
+                    uid=0,
+                    request_id=request.request_id,
+                    token=0,
+                    logprobs=mx.array([0.1]),
+                    finish_reason="stop",
+                    token_is_stop_token=True,
+                )
+            ]
+        )
+
+        assert finished_ids == {request.request_id}
+        assert outputs[0].new_text == "lo"
+        assert outputs[0].new_token_ids == []
+        assert outputs[0].finish_reason == "stop"
+        assert outputs[0].output_text == "hello"
+        assert request.output_text == "hello"
+        assert mock_tokenizer.decode.call_count == 0
+
     def test_empty_terminal_chunk_scans_held_stop_before_flush(self):
         """Terminal empty chunks must not flush a held stop sequence."""
         from vllm_mlx.mllm_batch_generator import MLLMBatchResponse

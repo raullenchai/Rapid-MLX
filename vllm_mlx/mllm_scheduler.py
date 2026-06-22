@@ -726,6 +726,18 @@ class MLLMScheduler:
             else:
                 detok.add_token(response.token)
                 new_text = detok.last_segment
+            if token_is_stop_token and finish_reason is not None:
+                baseline_text = (
+                    request.stop_text
+                    if stop_params and request.stop_text
+                    else request.output_text
+                )
+                detok.finalize()
+                finalized_text = detok.text
+                if isinstance(finalized_text, str) and finalized_text.startswith(
+                    baseline_text
+                ):
+                    new_text = finalized_text[len(baseline_text) :]
             if not isinstance(new_text, str):
                 # Unit-test mocks may not implement the streaming
                 # detokenizer contract. Production detokenizers

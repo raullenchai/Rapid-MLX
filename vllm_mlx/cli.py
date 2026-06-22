@@ -870,8 +870,7 @@ def serve_command(args):
 
     _arg_max_tokens = getattr(args, "max_tokens", None)
     _max_tokens_is_explicit = _arg_max_tokens is not None
-    if _arg_max_tokens is None:
-        args.max_tokens = 32768
+    effective_max_tokens = _arg_max_tokens if _arg_max_tokens is not None else 32768
 
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire first thing in ``serve_command`` — before
@@ -1592,7 +1591,7 @@ def serve_command(args):
             host=args.host,
             port=args.port,
             served_model_name=args.served_model_name or _alias_name,
-            default_max_tokens=args.max_tokens,
+            default_max_tokens=effective_max_tokens,
             cors_origins=cors_origins,
             uvicorn_log_level=uvicorn_log_level,
             no_thinking=args.no_thinking,
@@ -1638,7 +1637,7 @@ def serve_command(args):
             args.model,
             scheduler_config=scheduler_config,
             stream_interval=args.stream_interval,
-            max_tokens=args.max_tokens,
+            max_tokens=effective_max_tokens,
             max_tokens_is_explicit=_max_tokens_is_explicit,
             force_mllm=args.mllm,
             force_text=args.no_mllm,
