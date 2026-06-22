@@ -639,6 +639,67 @@ class TestR6M1ReasoningGateDecoupling:
         assert reasoning is None
         assert content == "Just a regular response with no thought."
 
+    def test_thought_followed_by_newline_prose_does_not_overcapture(self):
+        # Codex r4 MEDIUM: pre-fix, the plain-chat ``Thought:`` branch
+        # ended at either ``\s*\n\s*\n`` OR ``\s*\Z`` under
+        # ``re.DOTALL``. With the lazy body and ``\Z`` alternative,
+        # a response like ``"Thought: A.\nB."`` (single newline, no
+        # blank line) lazy-matched the body up to ``\Z`` and
+        # classified the WHOLE response as reasoning, dropping the
+        # model's answer. Fix: the EOS branch is now restricted to
+        # bodies with NO embedded newlines (single-line truncated
+        # thoughts only); multi-line plain prose without a blank-line
+        # boundary falls through to "no preamble" and the entire
+        # text is routed to content.
+        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+
+        parser = UiTarsReasoningParser()
+        reasoning, content = parser.extract_reasoning(
+            "Thought: I should answer directly.\nThe answer is 4."
+        )
+        # No blank-line boundary AND the body has an embedded newline
+        # — neither shape #4 nor shape #4b matches; the entire response
+        # routes to content.
+        assert reasoning is None
+        assert content == "Thought: I should answer directly.\nThe answer is 4."
+
+    def test_thought_eos_single_line_still_works(self):
+        # Positive control for the restricted shape #4b: a single-line
+        # truncated thought (no newline at all) still surfaces as
+        # reasoning. This is the EOS branch the codex r4 fix narrows.
+        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+
+        parser = UiTarsReasoningParser()
+        reasoning, content = parser.extract_reasoning("Thought: I'm uncertain.")
+        assert reasoning == "Thought: I'm uncertain."
+        assert not content
+
+    def test_thought_eos_with_trailing_whitespace_still_works(self):
+        # Edge case: single-line thought with trailing whitespace
+        # (typical when the model emits ``Thought: ...\n`` and the
+        # response is truncated before any follow-up). The
+        # ``[^\n]*?`` body matches the line, then ``\s*\Z`` consumes
+        # the trailing newline / whitespace.
+        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+
+        parser = UiTarsReasoningParser()
+        reasoning, content = parser.extract_reasoning("Thought: I'm uncertain.\n")
+        assert reasoning == "Thought: I'm uncertain."
+        assert not content
+
+    def test_thought_blank_line_boundary_multi_line_thought(self):
+        # Multi-line thought body terminated by a real blank-line
+        # boundary still works — shape #4 (not #4b) handles this.
+        from vllm_mlx.reasoning.ui_tars_parser import UiTarsReasoningParser
+
+        parser = UiTarsReasoningParser()
+        reasoning, content = parser.extract_reasoning(
+            "Thought: Step 1.\nStep 2.\n\nThe answer is 4."
+        )
+        # Body up to the blank line is reasoning; bytes after are content.
+        assert reasoning == "Thought: Step 1.\nStep 2."
+        assert content == "The answer is 4."
+
 
 # ---------------------------------------------------------------------------
 # r6-B R6-M2: Anthropic + Responses lanes translate point → coordinate
