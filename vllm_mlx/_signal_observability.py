@@ -197,12 +197,20 @@ def install_signal_observability(
     path because it's async-signal-safe and our Python-level
     ``_on_signal`` (which calls ``logging``) is not.
 
-    Returns ``True`` if at least one handler was installed (or all
-    handlers were already installed), ``False`` if installation was
-    skipped because we're off the main thread or because every
-    ``signal.signal`` call raised on this platform. Subsequent calls
+    Return value semantics (codex r6 BLOCKING #1 clarification):
+    the return value tracks **the Python-level signal-chain
+    install only**. ``faulthandler.enable()`` is the crash-path
+    observability layer and is idempotent + side-effect-only, so it
+    runs unconditionally regardless of the per-signal install
+    outcome — there is no observable difference between "fault-
+    handler was enabled by us vs by an earlier call". The bool is
+    True if at least one of the requested signals got a handler
+    (or all already had one from a prior call), False if none of
+    the requested signals could be installed (off main thread,
+    every ``signal.signal`` call raised, OR ``observed_signals=()``
+    explicitly requested a no-op chain install). Subsequent calls
     after a returning-``False`` attempt are NOT latched off — the
-    install retries fresh.
+    install retries fresh on the next call.
 
     Parameters
     ----------

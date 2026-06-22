@@ -1114,7 +1114,14 @@ class MLLMScheduler:
                         # THIS specific in-flight cf with a bounded
                         # timeout instead of starting an
                         # uncancellable ``shutdown(wait=True)`` second
-                        # join (codex r3 BLOCKING #1).
+                        # join (codex r3 BLOCKING #1). The reference is
+                        # cleared on the success path below; the cancel
+                        # path preserves it for the outer
+                        # ``finally``-block drain; the non-cancel
+                        # ``Exception`` path is handled by the explicit
+                        # ``except Exception`` arm a few lines down
+                        # which clears it before re-raising (codex r6
+                        # BLOCKING #2).
                         self._inflight_step_cf = cf
                         try:
                             output = await asyncio.wrap_future(cf, loop=loop)
@@ -1167,6 +1174,25 @@ class MLLMScheduler:
                                         )
 
                                 cf.add_done_callback(_drain_step_result)
+                            raise
+                        except Exception:
+                            # Codex r6 BLOCKING #2: a non-cancel
+                            # ``Exception`` raised by ``_step_no_queue``
+                            # (executor-side) propagates through
+                            # ``wrap_future``. Clear ``_inflight_step_cf``
+                            # before re-raising so the outer
+                            # ``except Exception`` arm at the loop level
+                            # (which logs + retries) doesn't leave a
+                            # done()-but-still-recorded reference for
+                            # the eventual ``finally`` block to chase.
+                            # The cf is already done() at this point,
+                            # so the outer-finally drain would no-op
+                            # against it, but clearing here keeps the
+                            # contract clean: ``_inflight_step_cf`` is
+                            # non-None only when there's actually
+                            # outstanding executor work that the
+                            # shutdown path might need to drain.
+                            self._inflight_step_cf = None
                             raise
 
                         # Successful step → clear the inflight reference

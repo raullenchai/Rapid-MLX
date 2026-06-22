@@ -201,42 +201,47 @@ async def test_cancel_before_executor_starts_marks_cf_cancelled():
 
 
 def test_mllm_scheduler_uses_wrap_future_pattern():
-    """Byte-code level pin: the migrated ``_process_loop`` must call
-    ``submit`` + ``asyncio.wrap_future`` rather than
-    ``loop.run_in_executor`` for the step dispatch.
+    """Bytecode-level regression pin: the migrated ``_process_loop`` must
+    reference ``submit`` + ``wrap_future`` and must NOT reference
+    ``run_in_executor`` in its actual call ops.
 
-    Without this pin a future refactor that reverted to
-    ``run_in_executor`` (re-introducing the cancel-gate gap) would pass
-    every other test in the suite — the foot-gun isn't visible until
-    a real cancellation race fires under production load.
+    Codex r6 NIT #3 noted that the earlier ``inspect.getsource``
+    substring-match version could fail on harmless comment/formatting
+    changes. This version walks ``dis.Bytecode`` — only LOAD_ATTR /
+    LOAD_METHOD ops with the matching name count as real references,
+    so the migration commentary in the source file is safely ignored
+    AND a future revert that re-introduces ``run_in_executor`` is
+    still caught by the bytecode walk.
     """
-    import inspect
+    import dis
 
     from vllm_mlx import mllm_scheduler
 
-    src = inspect.getsource(mllm_scheduler.MLLMScheduler._process_loop)
-    assert "self._step_executor.submit(self._step_no_queue)" in src, (
-        "MLLM _process_loop must use executor.submit() for the step"
-        " dispatch (MEMORY guideline + engine_core.py:855 pattern)"
+    # Walk the compiled bytecode of the coroutine. ``_process_loop`` is
+    # an async function; ``dis.get_instructions`` works on the
+    # underlying code object directly.
+    code = mllm_scheduler.MLLMScheduler._process_loop.__code__
+    instr_names = {
+        instr.argval
+        for instr in dis.get_instructions(code)
+        if instr.opname in {"LOAD_ATTR", "LOAD_METHOD"} and instr.argval
+    }
+
+    assert "submit" in instr_names, (
+        "MLLM _process_loop must call .submit() on the executor"
+        " (MEMORY guideline + engine_core.py:855 pattern)"
     )
-    assert "asyncio.wrap_future" in src, (
-        "MLLM _process_loop must wrap the cf via asyncio.wrap_future"
-        " so the asyncio-side cancel propagates cleanly"
+    assert "wrap_future" in instr_names, (
+        "MLLM _process_loop must call asyncio.wrap_future so the"
+        " asyncio-side cancel propagates cleanly to the underlying cf"
     )
-    assert "cf.cancelled()" in src, (
+    assert "cancelled" in instr_names, (
         "MLLM _process_loop must gate post-cancel handling on"
         " cf.cancelled() — the late-arriving-output branch is the"
         " whole point of the migration"
     )
-    # And the migration must NOT silently keep the old pattern
-    # alongside the new one. Strip docstring/comment lines first so the
-    # historical reference in the migration commentary doesn't count as
-    # a live call site.
-    code_only = "\n".join(
-        line for line in src.splitlines() if not line.lstrip().startswith("#")
-    )
-    assert "loop.run_in_executor(self._step_executor" not in code_only, (
-        "MLLM _process_loop still calls run_in_executor on the step"
-        " executor — the migration is incomplete and the cancel-gate"
+    assert "run_in_executor" not in instr_names, (
+        "MLLM _process_loop still calls run_in_executor — the"
+        " migration is incomplete and the MEMORY-flagged cancel-gate"
         " guideline is violated"
     )
