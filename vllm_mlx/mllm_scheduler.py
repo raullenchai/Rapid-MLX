@@ -1160,25 +1160,63 @@ class MLLMScheduler:
         finally:
             if self._step_executor is not None:
                 if getattr(self, "_owns_step_executor", True):
-                    # Codex r1 BLOCKING #3: drain the executor before
-                    # tearing it down. With the migrated
-                    # ``submit + asyncio.wrap_future`` shape an
-                    # in-flight ``_step_no_queue`` may still be running
-                    # on the executor thread after the outer task is
-                    # cancelled (we deliberately let it complete rather
-                    # than racing the asyncio cancel). ``wait=False``
-                    # let that thread keep mutating
-                    # ``BatchGenerator``/``scheduler`` state while this
-                    # ``finally`` cleared ``self._step_executor`` and
-                    # the caller (``MLLMScheduler.stop``) cleared the
-                    # batch generator — exactly the
-                    # "Aborting orphaned MLLM request" race Ana flagged
-                    # in C-04 recon §3.R3. ``wait=True`` blocks for the
-                    # bounded duration of one step (≤ a few hundred ms
-                    # for any practical prompt + max_tokens=1 prefill
-                    # tick), which is well within the shutdown budget
-                    # FastAPI already allows for ``lifespan`` teardown.
-                    self._step_executor.shutdown(wait=True)
+                    # Codex r1 BLOCKING #3 + codex r2 BLOCKING #1:
+                    # drain the executor before tearing it down so the
+                    # in-flight ``_step_no_queue`` cannot race the
+                    # caller's ``batch_generator.close()`` /
+                    # ``self.requests`` teardown ("Aborting orphaned
+                    # MLLM request" — C-04 §3.R3). The blocking wait is
+                    # bounded and OFF the asyncio loop thread:
+                    #
+                    #   * ``asyncio.to_thread`` parks the
+                    #     ``shutdown(wait=True)`` on a worker thread so
+                    #     the loop stays responsive to other tasks
+                    #     (``/healthz`` polls, other schedulers
+                    #     finalizing) for the duration of the drain.
+                    #   * ``asyncio.wait_for(..., timeout=_drain_secs)``
+                    #     caps the drain budget so a wedged MLX step
+                    #     cannot hang lifespan shutdown indefinitely.
+                    #   * On timeout we escalate to
+                    #     ``shutdown(wait=False, cancel_futures=True)``
+                    #     to release the executor's thread reference
+                    #     and any queued (not-yet-started) work so the
+                    #     process can finish exiting; the
+                    #     already-started step is left to complete on
+                    #     its own (it'll log under DEBUG via the
+                    #     drain done-callback the cancel branch
+                    #     attached).
+                    _drain_secs = 5.0
+                    try:
+                        await asyncio.wait_for(
+                            asyncio.to_thread(self._step_executor.shutdown, wait=True),
+                            timeout=_drain_secs,
+                        )
+                    except TimeoutError:
+                        logger.warning(
+                            "MLLM step executor drain exceeded %.1fs;"
+                            " escalating to non-blocking shutdown with"
+                            " cancel_futures=True",
+                            _drain_secs,
+                        )
+                        try:
+                            self._step_executor.shutdown(
+                                wait=False, cancel_futures=True
+                            )
+                        except Exception:  # pragma: no cover — defensive
+                            logger.debug(
+                                "MLLM step executor escalated shutdown raised",
+                                exc_info=True,
+                            )
+                    except Exception:  # pragma: no cover — defensive
+                        # ``to_thread`` itself raised (loop closed,
+                        # thread pool exhausted). Fall back to direct
+                        # non-blocking shutdown so we don't leak the
+                        # worker.
+                        logger.debug("MLLM step executor drain raised", exc_info=True)
+                        try:
+                            self._step_executor.shutdown(wait=False)
+                        except Exception:  # pragma: no cover — defensive
+                            pass
                 self._step_executor = None
 
     async def add_request_async(

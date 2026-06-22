@@ -313,20 +313,37 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager
 
-    # Install process-death observability BEFORE any executor is created
-    # so faulthandler can dump per-thread Python stacks for SIGSEGV from
-    # MLX/Metal C extensions as well as the SIGTERM/SIGHUP/SIGABRT chain
-    # for clean external shutdown. Mirrors C-04 recon §3.R1 + §3.R2
-    # (``/tmp/dogfood-085/c04-recon.md``) — three persona logs from the
-    # 0.8.5 dogfood ran exclusively in the "process disappeared between
-    # two stdout writes" shape with no traceback, no shutdown banner,
-    # no crash report. Without this hook the operator cannot tell
-    # SIGKILL (un-catchable) from SIGTERM (catchable but currently
-    # invisible) from a Metal segfault. The install is idempotent + safe
-    # off the main thread (returns False rather than raising), so
-    # re-entry from test harnesses and embedded-uvicorn contexts is
-    # tolerated. The handler CHAINS into uvicorn's prior SIGTERM handler
-    # so graceful shutdown semantics are unchanged.
+    # Install process-death observability BEFORE any executor is created.
+    # Two complementary mechanisms (codex r3 NIT clarification):
+    #
+    #   * ``faulthandler.enable()`` installs an async-signal-safe
+    #     C-level handler for SIGSEGV / SIGBUS / SIGILL / SIGFPE /
+    #     SIGABRT — i.e. all the crash signals MLX / Metal C extensions
+    #     can raise. The handler writes a Python traceback to stderr
+    #     before the interpreter dies. SIGABRT is owned ONLY by
+    #     faulthandler — it is intentionally NOT in our
+    #     ``signal.signal`` chain (a Python-level handler there would
+    #     call ``logging``, which is not async-signal-safe and would
+    #     downgrade the abort-path observability).
+    #
+    #   * A chained ``signal.signal`` handler for SIGTERM and SIGHUP
+    #     only. The handler logs a single WARNING line, dumps
+    #     ``faulthandler.dump_traceback(all_threads=True)``, then
+    #     chains to uvicorn's prior ``handle_exit`` (so graceful
+    #     shutdown still runs) or, when the prior was ``SIG_DFL``
+    #     (e.g. SIGHUP under uvicorn, which does not capture SIGHUP),
+    #     restores SIG_DFL + ``raise_signal`` so the kernel-level
+    #     terminate-by-default fires after the log line lands.
+    #
+    # Mirrors C-04 recon §3.R1 + §3.R2 (``/tmp/dogfood-085/c04-recon.md``)
+    # — three persona logs from the 0.8.5 dogfood ran exclusively in the
+    # "process disappeared between two stdout writes" shape with no
+    # traceback, no shutdown banner, no crash report. Without these hooks
+    # the operator cannot tell SIGKILL (un-catchable) from SIGTERM
+    # (catchable but currently invisible) from a Metal segfault. The
+    # install is idempotent + safe off the main thread (returns False
+    # rather than raising), so re-entry from test harnesses and embedded-
+    # uvicorn contexts is tolerated.
     from ._signal_observability import install_signal_observability
 
     install_signal_observability()
