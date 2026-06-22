@@ -29,8 +29,6 @@ NOT falsely recovered.
 """
 import json
 
-import pytest
-
 from vllm_mlx.tool_parsers.gemma4_tool_parser import (
     Gemma4ToolParser,
     _try_prose_recover_tool_call,
