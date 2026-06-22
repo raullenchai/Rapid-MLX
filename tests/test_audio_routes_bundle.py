@@ -636,9 +636,18 @@ class TestKokoroMisakiGate:
         """The Kokoro misaki gate must NOT trip for Chatterbox/etc. —
         ``misaki`` is Kokoro-specific. Pre-fix there was no per-family
         gate; making the dep check global would break Chatterbox-only
-        installs."""
+        installs.
+
+        Codex r3 NIT #3: drop the source-grep pin (brittle to
+        refactors / formatting). Assert the actual behaviour: with
+        ``misaki`` absent, the Kokoro probe raises but a Chatterbox
+        request must NOT invoke it. We patch ``require_kokoro_runtime``
+        to record invocations and confirm the speech route skips it
+        on non-Kokoro model strings.
+        """
         import importlib.util
 
+        from vllm_mlx.audio import probe as probe_mod
         from vllm_mlx.audio.probe import require_kokoro_runtime
 
         real_find_spec = importlib.util.find_spec
@@ -646,31 +655,99 @@ class TestKokoroMisakiGate:
         def _fake_find_spec(name, *args, **kwargs):
             if name == "misaki":
                 return None
-            return real_find_spec(name, *args, **kwargs)
+            try:
+                return real_find_spec(name, *args, **kwargs)
+            except ValueError:
+                if name == "mlx_audio":
+                    return object()
+                raise
 
         monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
 
-        # The Kokoro gate itself must raise.
+        # 1. The Kokoro gate itself MUST still raise when misaki is missing —
+        # otherwise the test couldn't distinguish "gate-not-called" from
+        # "gate-called-but-passed".
         from fastapi import HTTPException
 
         with pytest.raises(HTTPException) as exc:
             require_kokoro_runtime()
         assert exc.value.status_code == 503
 
-        # But the speech route's own Kokoro branch only fires when
-        # ``"kokoro" in model_name.lower()`` — non-Kokoro paths skip
-        # the misaki probe entirely. Source-pin this so a refactor
-        # that drops the conditional gets caught.
-        from pathlib import Path
+        # 2. Behavioural assertion: route a NON-Kokoro TTS request and
+        # confirm ``require_kokoro_runtime`` is never invoked. Wrap the
+        # probe so we can observe calls; the wrapper raises if invoked
+        # on the non-Kokoro path so the test fails clearly on
+        # regression.
+        call_count = {"n": 0}
 
-        route_file = (
-            Path(__file__).resolve().parents[1] / "vllm_mlx" / "routes" / "audio.py"
+        def _tracking_require_kokoro():
+            call_count["n"] += 1
+
+        monkeypatch.setattr(
+            probe_mod, "require_kokoro_runtime", _tracking_require_kokoro
         )
-        source = route_file.read_text()
-        assert 'if "kokoro" in model_name.lower():' in source, (
-            "Kokoro misaki gate must be conditional on the model family; "
-            "global gating would 503 Chatterbox/VibeVoice/VoxCPM users."
+        # The audio route does ``from ..audio.probe import
+        # require_kokoro_runtime`` lazily inside the handler, so the
+        # monkeypatch on the source module IS visible — confirmed by
+        # the assertion below. If a future refactor hoists the import
+        # to module-top, this comment + an additional patch on
+        # ``audio_route.require_kokoro_runtime`` would be required.
+
+        # Provide a fake mlx_audio so the TTS lane probe passes, and a
+        # fake TTSEngine so we don't load real weights. The TTS engine
+        # itself never gets called — the misaki gate would have fired
+        # first if it were going to.
+        _install_fake_mlx_audio(monkeypatch)
+
+        from vllm_mlx.audio import tts as tts_mod
+
+        class _NoopTTSEngine:
+            def __init__(self, model_name):
+                self.model_name = model_name
+
+            def load(self):
+                pass
+
+            def generate(self, *args, **kwargs):
+                return types.SimpleNamespace(
+                    audio=[0.0] * 100,
+                    sample_rate=24000,
+                    duration=0.01,
+                )
+
+            def to_bytes(self, *args, **kwargs):
+                return b"\x00" * 100
+
+        monkeypatch.setattr(tts_mod, "TTSEngine", _NoopTTSEngine)
+
+        from vllm_mlx.routes import audio as audio_route
+
+        audio_route._tts_engine = None
+
+        client, restore = _mount_audio_app()
+        try:
+            # The route declares ``model: str = "kokoro"`` without an
+            # explicit ``Body(...)`` / ``Form(...)`` annotation, so
+            # FastAPI treats it as a QUERY parameter. Sending it in
+            # the JSON body would silently leave ``model`` at the
+            # default "kokoro" and the test would trip the gate
+            # unrelated to the family-check logic. Send via query.
+            r = client.post(
+                "/v1/audio/speech?model=chatterbox&input=hi&voice=default",
+            )
+        finally:
+            restore()
+            audio_route._tts_engine = None
+
+        # Behaviour pin: chatterbox MUST not have tripped the Kokoro
+        # misaki gate. A 200 confirms the gate was skipped; a 503 with
+        # ``call_count > 0`` would mean the family check regressed.
+        assert call_count["n"] == 0, (
+            f"Kokoro misaki gate fired on a non-Kokoro request "
+            f"({call_count['n']} calls). Family-scoped gating regression."
         )
+        # The response itself should be 200 (fake engine returns bytes).
+        assert r.status_code == 200, r.text
 
 
 # ---------------------------------------------------------------------------
@@ -857,6 +934,72 @@ class TestDeepProbeSurfacesDegradedLane:
 # ---------------------------------------------------------------------------
 # Route registration: middleware guards the translations path too
 # ---------------------------------------------------------------------------
+
+
+class TestSTTEngineSignatureAcceptsTask:
+    """Pin that ``STTEngine.transcribe`` accepts a ``task`` kwarg so
+    the route's ``_run_stt_request(..., task=task)`` call cannot
+    regress to ``TypeError: unexpected keyword argument 'task'``.
+
+    Codex r3 BLOCKING #1 noted that route tests using a fake engine
+    with ``**kwargs`` wouldn't catch a real-engine signature mismatch.
+    This test uses the REAL ``STTEngine`` (not a fake) and inspects
+    the signature directly.
+    """
+
+    def test_transcribe_signature_has_task_kwarg(self):
+        import inspect
+
+        from vllm_mlx.audio.stt import STTEngine
+
+        sig = inspect.signature(STTEngine.transcribe)
+        assert "task" in sig.parameters, (
+            "STTEngine.transcribe must accept a `task` kwarg — the "
+            "transcriptions/translations route shares the helper and "
+            "passes task='translate' for translations. Without the "
+            "kwarg, real requests fail with TypeError."
+        )
+        # Default must be ``transcribe`` so existing callers don't break.
+        assert sig.parameters["task"].default == "transcribe", (
+            "STTEngine.transcribe default for `task` must be 'transcribe' "
+            "so calling without the kwarg preserves the original behaviour."
+        )
+
+    def test_transcribe_forwards_task_to_model_generate(self, monkeypatch):
+        """When task='translate' is passed through, the underlying
+        ``model.generate`` call must receive ``task='translate'`` so
+        Whisper actually emits English output. Pins the integration
+        between STTEngine and the broken-model fake without going
+        through the route."""
+        from vllm_mlx.audio import stt as stt_mod
+
+        observed: dict = {}
+
+        class _CapturingModel:
+            _processor = object()  # non-None so we skip the F-K-WHISPER-500 patch path
+
+            def generate(self, audio_path, **kwargs):
+                observed.update(kwargs)
+                return types.SimpleNamespace(
+                    text="bonjour", segments=None, language="fr"
+                )
+
+        def _fake_load_model(model_path, **kwargs):
+            return _CapturingModel()
+
+        fake_mlx_audio_stt_utils = types.SimpleNamespace(load_model=_fake_load_model)
+        monkeypatch.setitem(
+            sys.modules, "mlx_audio.stt.utils", fake_mlx_audio_stt_utils
+        )
+
+        engine = stt_mod.STTEngine("mlx-community/whisper-large-v3-mlx")
+        result = engine.transcribe("ignored.wav", task="translate")
+
+        assert observed.get("task") == "translate", (
+            f"STTEngine.transcribe(task='translate') must forward "
+            f"task='translate' to model.generate. Captured kwargs: {observed}"
+        )
+        assert result.text == "bonjour"
 
 
 class TestAudioBodyLimitCoversTranslations:

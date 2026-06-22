@@ -431,7 +431,11 @@ async def lifespan(app: FastAPI):
     # health. ``deep_probe_audio_lane`` already runs the shallow
     # presence check internally and records the missing-extra
     # status via the same code path the route's 503 envelope uses.
-    _audio_deep_probe = os.environ.get("RAPID_MLX_AUDIO_DEEP_PROBE", "").strip()
+    # Codex r3 NIT #2: lowercase the env value before comparing so
+    # ``RAPID_MLX_AUDIO_DEEP_PROBE=False`` (capital F) and ``NO``
+    # (uppercase) are treated as falsy, not truthy. Mirrors the
+    # convention used by every other ``RAPID_MLX_*`` boolean knob.
+    _audio_deep_probe = os.environ.get("RAPID_MLX_AUDIO_DEEP_PROBE", "").strip().lower()
     if _audio_deep_probe and _audio_deep_probe not in ("0", "false", "no"):
         try:
             from .audio.probe import deep_probe_audio_lane as _deep_probe
