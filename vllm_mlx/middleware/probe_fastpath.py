@@ -75,18 +75,20 @@ _FAST_PATHS: frozenset[bytes] = frozenset(
     }
 )
 
-# Response headers shared across both shapes. ``connection: keep-alive``
-# is critical: k8s kubelet reuses the probe connection across hits, so
-# emitting ``connection: close`` would force a fresh TCP handshake +
-# possibly a TLS handshake on every probe — exactly the kind of
-# per-request overhead this fast-path exists to remove. ``cache-control:
-# no-store`` mirrors what FastAPI's default JSONResponse would do for
-# probe endpoints; without it, an intermediate proxy with overly-eager
-# caching could serve a stale ``ready=false`` to kubelet long after the
-# server warmed up.
+# Response headers — must be byte-shape compatible with what
+# FastAPI's default JSONResponse emits from ``routes/health.py``,
+# so callers / dashboards / probe specs that compare the documented
+# probe surface byte-for-byte don't see drift. FastAPI's default
+# JSONResponse emits only ``content-type: application/json`` (plus
+# ``content-length``, which we set per-response below). Codex r2
+# BLOCKING #1: an earlier round added ``cache-control: no-store``
+# on speculative grounds, but the route handler does NOT emit it,
+# so the fast-path was diverging from the route's response shape.
+# Stay minimal here; an operator who wants a no-store hint should
+# add it on both code paths via FastAPI's response middleware so
+# the route + fast-path stay aligned.
 _BASE_HEADERS: list[tuple[bytes, bytes]] = [
     (b"content-type", b"application/json"),
-    (b"cache-control", b"no-store"),
 ]
 
 

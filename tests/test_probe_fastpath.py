@@ -156,25 +156,76 @@ class TestFastPathFallThrough:
         """HEAD on a fast-path route is NOT served by the fast-path —
         it falls through to the router. The route module's ``/healthz``
         is registered as GET-only (not GET+HEAD), so the router
-        returns 405; the important invariant is that the fast-path
-        does NOT swallow HEAD with the cached GET body (which would
-        ship a body to a HEAD request, violating HTTP). If a future
-        change adds HEAD to the route's method list, the 405 here
-        will flip to 200 — that's still correct because the
-        fast-path stays out of HEAD's way.
+        currently returns 405; codex r2 NIT: pin the exact 405 so a
+        future route-method contract change (e.g. registering HEAD
+        explicitly) surfaces here as a flip from 405→200 that the
+        operator can vet, not as a silently-passing or-clause.
+
+        The orthogonal HEAD-body invariant ("HEAD never carries a
+        body") is checked via the inner-app recorder in
+        :class:`TestFastPathServesRequest` — that's the test that
+        proves the fast-path didn't shadow HEAD with the cached GET
+        body.
         """
         originals = _patch_config(engine=None, model_name="test", ready=True)
         try:
             client = TestClient(_make_minimal_app(with_fastpath=True))
             r = client.head("/healthz")
-            # 405 from the router (current shape) — the fast-path did
-            # not shadow with a 200+body, which is the actual contract.
-            assert r.status_code in (200, 405)
+            # 405 from the router under the current /healthz GET-only
+            # contract. A regression that adds HEAD to the route's
+            # method list flips this to 200 — flag for review then.
+            assert r.status_code == 405, (
+                f"HEAD /healthz expected 405 from GET-only router; got "
+                f"{r.status_code}. Did the route's method list change? "
+                f"Audit the fast-path's GET-only gate too."
+            )
             # HEAD must never carry a body, regardless of which path
             # answered.
             assert r.content == b""
         finally:
             _restore_config(originals)
+
+    def test_head_does_not_invoke_fastpath_via_inner_app_recorder(self):
+        """Direct proof via inner-app recorder: HEAD on /healthz reaches
+        the inner app, not the fast-path. Pre-fix the assertion was
+        only "HEAD body is empty" — true for both fast-path and router
+        answers — so a future regression that let the fast-path serve
+        HEAD with the cached GET body would have stayed undetected
+        until a client noticed an unexpected body on HEAD.
+        """
+        inner_calls: list[dict] = []
+
+        async def _inner(scope, receive, send):
+            inner_calls.append(scope)
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 405,
+                    "headers": [(b"content-type", b"text/plain")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b""})
+
+        mw = ProbeFastPathMiddleware(_inner)
+        captured: list[dict] = []
+
+        async def _send(msg):
+            captured.append(msg)
+
+        async def _receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        scope = {
+            "type": "http",
+            "method": "HEAD",
+            "path": "/healthz",
+            "raw_path": b"/healthz",
+            "headers": [],
+            "query_string": b"",
+        }
+        asyncio.run(mw(scope, _receive, _send))
+        assert len(inner_calls) == 1, "HEAD must fall through to inner app"
+        assert inner_calls[0]["method"] == "HEAD"
 
     def test_post_falls_through_with_405(self):
         """POST on /healthz hits the router (no POST handler), 405."""
