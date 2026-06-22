@@ -476,16 +476,20 @@ require_mlx_audio = require_mlx_audio_tts
 AUDIO_EXTRA_INSTALL_HINT = "Install with: pip install 'rapid-mlx[audio]'"
 
 
-# Known audio alias surface — kept narrow on purpose. The boot guard
-# is a CONVENIENCE for the common-case alias path; an explicit HF
-# ``mlx-community/...`` repo id intentionally falls through to the
-# per-route probe (where the operator may legitimately be running the
-# server in a hybrid setup with mlx-audio injected outside the
-# extra). The list is deliberately a prefix/substring match — any
-# ``whisper``/``parakeet``/``kokoro``/``chatterbox``/``vibevoice``/
-# ``voxcpm`` alias counts, including future quantised variants
-# (``kokoro-4bit``, ``parakeet-v3`` etc.) that drop suffix on the
-# canonical name.
+# Known audio alias surface — kept narrow on purpose. The list is
+# deliberately a substring match — any ``whisper``/``parakeet``/
+# ``kokoro``/``chatterbox``/``vibevoice``/``voxcpm`` alias counts,
+# INCLUDING HF-style ids that embed the engine name
+# (``mlx-community/Kokoro-82M-bf16``, ``mlx-community/whisper-large-v3-mlx``)
+# — those are the canonical pass-through cases the STT/TTS routes
+# accept, so the boot guard MUST recognise them as audio too. Codex
+# review NIT: the previous comment claimed HF ids "fell through"; the
+# code (and test ``test_is_audio_model_alias_recognises_common_aliases``)
+# disagree — they ARE matched, and intentionally so.
+#
+# Bare strings that don't contain any of these tokens fall through
+# unchanged — the boot guard is silent for text/vision/embedding
+# aliases.
 _AUDIO_ALIAS_TOKENS: tuple[str, ...] = (
     "whisper",
     "parakeet",

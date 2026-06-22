@@ -321,3 +321,85 @@ class TestTranslationsResponseFormat:
             "verbose_json from /v1/audio/translations must set task='translate' "
             "so callers can disambiguate from /v1/audio/transcriptions output."
         )
+
+
+class TestSubtitleTimestampRollover:
+    """Codex r1 BLOCKING regression: ``_format_srt_timestamp`` /
+    ``_format_vtt_timestamp`` must carry the millisecond rollover
+    (``59.9996`` → 60s) all the way up the hierarchy, never producing
+    invalid components like ``00:00:60,000``.
+    """
+
+    @pytest.mark.parametrize(
+        "seconds,expected_srt,expected_vtt",
+        [
+            # The reported rollover case — 0.9996 rounds to 1.000.
+            (0.9996, "00:00:01,000", "00:00:01.000"),
+            # 59.9996 used to overflow to 00:00:60,000 — invalid.
+            (59.9996, "00:01:00,000", "00:01:00.000"),
+            # 3599.9996 used to overflow to 00:59:60,000 — invalid.
+            (3599.9996, "01:00:00,000", "01:00:00.000"),
+            # Sanity checks: clean values produce clean output.
+            (0.0, "00:00:00,000", "00:00:00.000"),
+            (1.5, "00:00:01,500", "00:00:01.500"),
+            (61.25, "00:01:01,250", "00:01:01.250"),
+            (3723.0, "01:02:03,000", "01:02:03.000"),
+            # Negative input clamps to zero (defective backend guard).
+            (-1.5, "00:00:00,000", "00:00:00.000"),
+        ],
+    )
+    def test_timestamp_rollover_carries_correctly(
+        self, seconds, expected_srt, expected_vtt
+    ):
+        from vllm_mlx.routes.audio import (
+            _format_srt_timestamp,
+            _format_vtt_timestamp,
+        )
+
+        srt = _format_srt_timestamp(seconds)
+        vtt = _format_vtt_timestamp(seconds)
+        assert srt == expected_srt, (
+            f"SRT rollover bug: {seconds!r} → {srt!r} (expected {expected_srt!r}). "
+            "Codex r1 BLOCKING: seconds component must not exceed 59 — carries "
+            "must propagate up to minutes/hours."
+        )
+        assert vtt == expected_vtt, (
+            f"VTT rollover bug: {seconds!r} → {vtt!r} (expected {expected_vtt!r}). "
+            "Same rollover rule applies to WebVTT."
+        )
+
+    def test_no_component_exceeds_documented_max(self):
+        """Walk a fine-grained sweep around each carry boundary and
+        confirm seconds, minutes never appear as ``60``.
+
+        Belt-and-braces on top of the parametrised cases above — catches
+        a future regression that special-cases a single boundary while
+        leaving the adjacent one broken.
+        """
+        import re
+
+        from vllm_mlx.routes.audio import (
+            _format_srt_timestamp,
+            _format_vtt_timestamp,
+        )
+
+        srt_re = re.compile(r"^(\d{2}):(\d{2}):(\d{2}),(\d{3})$")
+        vtt_re = re.compile(r"^(\d{2}):(\d{2}):(\d{2})\.(\d{3})$")
+
+        # Sweep each carry boundary at sub-ms precision so the rounding
+        # behaviour is fully exercised.
+        for base in (0, 1, 59, 60, 3599, 3600, 3601):
+            for delta in (0.0, 0.0004, 0.0005, 0.0009, 0.0010, 0.9996, 0.9999):
+                t = float(base) + delta
+                srt = _format_srt_timestamp(t)
+                vtt = _format_vtt_timestamp(t)
+                m_srt = srt_re.fullmatch(srt)
+                m_vtt = vtt_re.fullmatch(vtt)
+                assert m_srt is not None, f"SRT shape broken at {t}: {srt!r}"
+                assert m_vtt is not None, f"VTT shape broken at {t}: {vtt!r}"
+                _h, m, s, _ms = m_srt.groups()
+                assert int(m) < 60, f"SRT minutes >= 60 at {t}: {srt!r}"
+                assert int(s) < 60, f"SRT seconds >= 60 at {t}: {srt!r}"
+                _h, m, s, _ms = m_vtt.groups()
+                assert int(m) < 60, f"VTT minutes >= 60 at {t}: {vtt!r}"
+                assert int(s) < 60, f"VTT seconds >= 60 at {t}: {vtt!r}"

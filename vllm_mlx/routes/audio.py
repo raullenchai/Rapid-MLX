@@ -513,16 +513,22 @@ def _format_srt_timestamp(seconds: float) -> str:
     SRT mandates comma as the millisecond separator (vs. VTT's dot).
     Clamp negative inputs to zero — a defective backend reporting
     negative timestamps would otherwise emit a malformed cue.
+
+    Codex r1 BLOCKING: when ``round((seconds - int(seconds)) * 1000)``
+    overflows to 1000 (e.g. ``59.9996`` rounds to ``60.000``), the
+    naive ``secs += 1`` branch produced timestamps like
+    ``00:00:60,000``, which subtitle parsers reject as invalid
+    (seconds must be ``< 60``). Convert the entire timestamp to integer
+    milliseconds first, then decompose hierarchically so each carry
+    propagates all the way up to the hours digit — same approach used
+    by ffmpeg's ``av_strerror`` formatter.
     """
     if seconds < 0:
         seconds = 0.0
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    millis = int(round((seconds - int(seconds)) * 1000))
-    if millis >= 1000:  # rounding overflow
-        millis = 0
-        secs += 1
+    total_millis = int(round(seconds * 1000))
+    hours, rem = divmod(total_millis, 3600 * 1000)
+    minutes, rem = divmod(rem, 60 * 1000)
+    secs, millis = divmod(rem, 1000)
     return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
 
 
