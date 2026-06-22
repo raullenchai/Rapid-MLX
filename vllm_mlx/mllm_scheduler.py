@@ -1073,6 +1073,12 @@ class MLLMScheduler:
             )
             self._owns_step_executor = True
         loop = asyncio.get_running_loop()
+        # The currently in-flight step ``concurrent.futures.Future``
+        # (None when the loop is between steps). Lets the ``finally``
+        # block wait on THIS specific future with a bounded timeout
+        # instead of issuing a blocking ``shutdown(wait=True)`` second
+        # join that no asyncio cancel can unblock (codex r3 BLOCKING #1).
+        self._inflight_step_cf: concurrent.futures.Future | None = None
 
         try:
             while self._running:
@@ -1104,6 +1110,12 @@ class MLLMScheduler:
                         # only ever consume an ``output`` that actually
                         # came back from the executor thread.
                         cf = self._step_executor.submit(self._step_no_queue)
+                        # Stash so the ``finally`` block can wait on
+                        # THIS specific in-flight cf with a bounded
+                        # timeout instead of starting an
+                        # uncancellable ``shutdown(wait=True)`` second
+                        # join (codex r3 BLOCKING #1).
+                        self._inflight_step_cf = cf
                         try:
                             output = await asyncio.wrap_future(cf, loop=loop)
                         except asyncio.CancelledError:
@@ -1117,11 +1129,13 @@ class MLLMScheduler:
                             # ``BatchGenerator``/``self._step_executor``.
                             # We deliberately do NOT call
                             # ``cf.result()`` here because the outer
-                            # ``finally`` will ``shutdown(wait=True)``
-                            # the executor (codex r1 BLOCKING #3
-                            # follow-up — see the finally block), and
-                            # the drain done-callback below already
-                            # logs any executor-side exception.
+                            # ``finally`` block will wait on
+                            # ``self._inflight_step_cf`` with a
+                            # bounded timeout (codex r3 BLOCKING #1
+                            # follow-up) and then ``shutdown(wait=False,
+                            # cancel_futures=True)`` the executor. The
+                            # drain done-callback below logs any
+                            # executor-side exception under DEBUG.
                             if not cf.cancelled():
 
                                 def _drain_step_result(_future: Any) -> None:
@@ -1140,6 +1154,12 @@ class MLLMScheduler:
 
                                 cf.add_done_callback(_drain_step_result)
                             raise
+
+                        # Successful step → clear the inflight reference
+                        # so the ``finally`` block sees an empty slot
+                        # once the loop has exited the
+                        # ``has_requests()`` branch on this iteration.
+                        self._inflight_step_cf = None
 
                         # Distribute outputs to queues ON the event loop thread
                         # (asyncio.Queue is not thread-safe).
@@ -1160,63 +1180,83 @@ class MLLMScheduler:
         finally:
             if self._step_executor is not None:
                 if getattr(self, "_owns_step_executor", True):
-                    # Codex r1 BLOCKING #3 + codex r2 BLOCKING #1:
-                    # drain the executor before tearing it down so the
-                    # in-flight ``_step_no_queue`` cannot race the
-                    # caller's ``batch_generator.close()`` /
-                    # ``self.requests`` teardown ("Aborting orphaned
-                    # MLLM request" — C-04 §3.R3). The blocking wait is
-                    # bounded and OFF the asyncio loop thread:
+                    # Codex r1 BLOCKING #3 + codex r2/r3 BLOCKING follow-ups:
+                    # bound the teardown WITHOUT relying on
+                    # ``shutdown(wait=True)`` (an uncancellable blocking
+                    # join that no asyncio timeout can stop). Instead
+                    # wait on THIS step's specific ``cf`` via
+                    # ``asyncio.wrap_future`` with a bounded timeout,
+                    # then drop the executor reference with
+                    # ``shutdown(wait=False)`` regardless of outcome:
                     #
-                    #   * ``asyncio.to_thread`` parks the
-                    #     ``shutdown(wait=True)`` on a worker thread so
-                    #     the loop stays responsive to other tasks
-                    #     (``/healthz`` polls, other schedulers
-                    #     finalizing) for the duration of the drain.
-                    #   * ``asyncio.wait_for(..., timeout=_drain_secs)``
-                    #     caps the drain budget so a wedged MLX step
-                    #     cannot hang lifespan shutdown indefinitely.
-                    #   * On timeout we escalate to
-                    #     ``shutdown(wait=False, cancel_futures=True)``
-                    #     to release the executor's thread reference
-                    #     and any queued (not-yet-started) work so the
-                    #     process can finish exiting; the
-                    #     already-started step is left to complete on
-                    #     its own (it'll log under DEBUG via the
-                    #     drain done-callback the cancel branch
-                    #     attached).
+                    #   * Happy path — the in-flight step (if any)
+                    #     completes within ``_drain_secs``. ``cf``
+                    #     finishes, ``BatchGenerator``/``scheduler``
+                    #     state was mutated by the step EXACTLY ONCE,
+                    #     and the subsequent ``shutdown(wait=False)``
+                    #     only has the (empty) submit queue left to
+                    #     drain. The "Aborting orphaned MLLM request"
+                    #     race C-04 §3.R3 flagged is closed.
+                    #   * Wedged path — the in-flight step is stuck
+                    #     (Metal driver hang, etc.). The
+                    #     ``asyncio.wait_for`` times out after
+                    #     ``_drain_secs``, we log a WARNING, and the
+                    #     follow-on ``shutdown(wait=False,
+                    #     cancel_futures=True)`` releases the executor
+                    #     reference. The worker thread is left to its
+                    #     wedged state (we can't unwedge it from
+                    #     Python), but lifespan shutdown makes
+                    #     progress — exactly the bounded-shutdown
+                    #     guarantee codex r3 BLOCKING #1 demanded.
+                    #   * No in-flight step — the wait_for is a no-op
+                    #     against an already-resolved (or never-set)
+                    #     future.
                     _drain_secs = 5.0
+                    inflight = self._inflight_step_cf
+                    self._inflight_step_cf = None
+                    if (
+                        inflight is not None
+                        and not inflight.done()
+                        and not inflight.cancelled()
+                    ):
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.wrap_future(inflight, loop=loop),
+                                timeout=_drain_secs,
+                            )
+                        except (
+                            TimeoutError,
+                            asyncio.CancelledError,
+                            Exception,
+                        ) as exc:
+                            # All three branches share the same
+                            # downstream handling: we abandon the
+                            # in-flight step and proceed to drop the
+                            # executor. The wait was best-effort
+                            # observability; the asyncio-side state is
+                            # already torn down at this point. Log at
+                            # DEBUG (TimeoutError gets a WARNING below
+                            # so operators can see a wedged step
+                            # cleared shutdown).
+                            if isinstance(exc, TimeoutError):
+                                logger.warning(
+                                    "MLLM step exceeded %.1fs drain budget"
+                                    " during shutdown; abandoning the"
+                                    " worker thread and proceeding with"
+                                    " non-blocking executor teardown",
+                                    _drain_secs,
+                                )
+                            else:
+                                logger.debug(
+                                    "MLLM step in-flight drain ended with %r",
+                                    exc,
+                                )
                     try:
-                        await asyncio.wait_for(
-                            asyncio.to_thread(self._step_executor.shutdown, wait=True),
-                            timeout=_drain_secs,
-                        )
-                    except TimeoutError:
-                        logger.warning(
-                            "MLLM step executor drain exceeded %.1fs;"
-                            " escalating to non-blocking shutdown with"
-                            " cancel_futures=True",
-                            _drain_secs,
-                        )
-                        try:
-                            self._step_executor.shutdown(
-                                wait=False, cancel_futures=True
-                            )
-                        except Exception:  # pragma: no cover — defensive
-                            logger.debug(
-                                "MLLM step executor escalated shutdown raised",
-                                exc_info=True,
-                            )
+                        self._step_executor.shutdown(wait=False, cancel_futures=True)
                     except Exception:  # pragma: no cover — defensive
-                        # ``to_thread`` itself raised (loop closed,
-                        # thread pool exhausted). Fall back to direct
-                        # non-blocking shutdown so we don't leak the
-                        # worker.
-                        logger.debug("MLLM step executor drain raised", exc_info=True)
-                        try:
-                            self._step_executor.shutdown(wait=False)
-                        except Exception:  # pragma: no cover — defensive
-                            pass
+                        logger.debug(
+                            "MLLM step executor shutdown raised", exc_info=True
+                        )
                 self._step_executor = None
 
     async def add_request_async(

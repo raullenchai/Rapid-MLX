@@ -51,65 +51,76 @@ import pytest
 async def test_wrap_future_cancels_asyncio_side_within_100ms():
     """The asyncio side of the cancel must complete promptly even if
     the executor work keeps running. This is the core promise of the
-    migrated pattern: the loop thread is free immediately."""
+    migrated pattern: the loop thread is free immediately.
+
+    Codex r3 NIT #2: wrap the body in try/finally so a failed
+    ``started.wait()`` or assertion doesn't leak a sleeping executor
+    thread into the rest of the test process.
+    """
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="mllm-step-test"
     )
-    started = asyncio.Event()
-    loop = asyncio.get_running_loop()
-
-    def _slow_step() -> str:
-        # Signal start from the executor thread via call_soon_threadsafe
-        # (asyncio.Event is not thread-safe to call ``set()`` on
-        # directly across threads).
-        loop.call_soon_threadsafe(started.set)
-        time.sleep(2.0)
-        return "done"
-
-    # Mirror the migrated submit + wrap_future pattern from
-    # mllm_scheduler._process_loop.
-    cf = executor.submit(_slow_step)
-    awaitable = asyncio.wrap_future(cf, loop=loop)
-
-    async def _runner():
-        try:
-            return await awaitable
-        except asyncio.CancelledError:
-            return "cancelled"
-
-    task = asyncio.create_task(_runner())
-
-    # Wait until the executor work has actually started — otherwise the
-    # cancel might land BEFORE the executor picked up the job and
-    # ``cf.cancel()`` would succeed (the trivial case where the work
-    # never ran).
-    await asyncio.wait_for(started.wait(), timeout=2.0)
-
-    # Cancel the asyncio task. The asyncio side should return within
-    # ~milliseconds even though _slow_step is still sleeping for ~2s.
-    cancel_start = time.monotonic()
-    task.cancel()
+    cf: concurrent.futures.Future | None = None
     try:
-        result = await asyncio.wait_for(task, timeout=0.5)
-    except asyncio.CancelledError:
-        result = "cancelled"
-    cancel_elapsed = time.monotonic() - cancel_start
+        started = asyncio.Event()
+        loop = asyncio.get_running_loop()
 
-    assert result == "cancelled"
-    # 100ms budget gives generous headroom; in practice this resolves
-    # in single-digit ms.
-    assert cancel_elapsed < 0.5, (
-        f"asyncio side took {cancel_elapsed:.3f}s to surface cancellation —"
-        " wrap_future is not propagating cancel to the asyncio side"
-    )
+        def _slow_step() -> str:
+            # Signal start from the executor thread via call_soon_threadsafe
+            # (asyncio.Event is not thread-safe to call ``set()`` on
+            # directly across threads).
+            loop.call_soon_threadsafe(started.set)
+            time.sleep(2.0)
+            return "done"
 
-    # The executor task itself is NOT cancelled (the work already
-    # started), and that's the documented behaviour the cancel-gate
-    # branch in the migrated code is designed to handle.
-    assert cf.cancelled() is False
-    # Drain the underlying future so the executor exits cleanly.
-    cf.result(timeout=3.0)
-    executor.shutdown(wait=True)
+        # Mirror the migrated submit + wrap_future pattern from
+        # mllm_scheduler._process_loop.
+        cf = executor.submit(_slow_step)
+        awaitable = asyncio.wrap_future(cf, loop=loop)
+
+        async def _runner():
+            try:
+                return await awaitable
+            except asyncio.CancelledError:
+                return "cancelled"
+
+        task = asyncio.create_task(_runner())
+
+        # Wait until the executor work has actually started — otherwise the
+        # cancel might land BEFORE the executor picked up the job and
+        # ``cf.cancel()`` would succeed (the trivial case where the work
+        # never ran).
+        await asyncio.wait_for(started.wait(), timeout=2.0)
+
+        # Cancel the asyncio task. The asyncio side should return within
+        # ~milliseconds even though _slow_step is still sleeping for ~2s.
+        cancel_start = time.monotonic()
+        task.cancel()
+        try:
+            result = await asyncio.wait_for(task, timeout=0.5)
+        except asyncio.CancelledError:
+            result = "cancelled"
+        cancel_elapsed = time.monotonic() - cancel_start
+
+        assert result == "cancelled"
+        # 100ms budget gives generous headroom; in practice this resolves
+        # in single-digit ms.
+        assert cancel_elapsed < 0.5, (
+            f"asyncio side took {cancel_elapsed:.3f}s to surface cancellation —"
+            " wrap_future is not propagating cancel to the asyncio side"
+        )
+
+        # The executor task itself is NOT cancelled (the work already
+        # started), and that's the documented behaviour the cancel-gate
+        # branch in the migrated code is designed to handle.
+        assert cf.cancelled() is False
+        # Drain the underlying future so the executor exits cleanly.
+        cf.result(timeout=3.0)
+    finally:
+        # Always reap the worker so a failed assertion above doesn't
+        # leak a sleeping thread. ``cancel_futures=True`` clears any
+        # queued (not-yet-started) submits as a belt-and-braces.
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 @pytest.mark.asyncio
@@ -119,56 +130,74 @@ async def test_cancel_before_executor_starts_marks_cf_cancelled():
     ``_future.cancelled()`` branch in the migrated pattern. We need to
     know the difference between "the work never ran" and "the work ran
     but its result is being discarded" because only the latter requires
-    the late-arriving cleanup."""
+    the late-arriving cleanup.
+
+    Codex r3 NIT #3: release ``blocker_release`` and shut the executor
+    down from a ``finally`` so a failed assertion doesn't park the
+    worker behind a 5s blocker timeout that slows the failure-mode
+    report.
+    """
     # Single-worker executor; fill it with a blocker so subsequent
     # submits queue behind it.
     executor = concurrent.futures.ThreadPoolExecutor(
         max_workers=1, thread_name_prefix="mllm-step-test"
     )
     blocker_release = concurrent.futures.Future()
-
-    def _blocker():
-        blocker_release.result(timeout=5.0)
-        return "blocker-done"
-
-    blocker_cf = executor.submit(_blocker)
-
-    # Now the step submit will sit in the queue behind the blocker.
-    executed = []
-
-    def _step():
-        executed.append("ran")
-        return "step-result"
-
-    cf = executor.submit(_step)
-    loop = asyncio.get_running_loop()
-    awaitable = asyncio.wrap_future(cf, loop=loop)
-
-    async def _runner():
-        try:
-            return await awaitable
-        except asyncio.CancelledError:
-            return "cancelled"
-
-    task = asyncio.create_task(_runner())
-    # Give the loop one tick so the wrap_future wiring takes effect.
-    await asyncio.sleep(0.01)
-    task.cancel()
     try:
-        result = await asyncio.wait_for(task, timeout=0.5)
-    except asyncio.CancelledError:
-        result = "cancelled"
 
-    assert result == "cancelled"
-    # Because the executor was busy with the blocker, our step was
-    # cancelled while still in the queue → cf.cancelled() is True.
-    assert cf.cancelled() is True
-    assert executed == [], "step should not have run; cancel landed first"
+        def _blocker():
+            blocker_release.result(timeout=5.0)
+            return "blocker-done"
 
-    # Release the blocker so the executor can shut down.
-    blocker_release.set_result(None)
-    blocker_cf.result(timeout=3.0)
-    executor.shutdown(wait=True)
+        blocker_cf = executor.submit(_blocker)
+
+        # Now the step submit will sit in the queue behind the blocker.
+        executed = []
+
+        def _step():
+            executed.append("ran")
+            return "step-result"
+
+        cf = executor.submit(_step)
+        loop = asyncio.get_running_loop()
+        awaitable = asyncio.wrap_future(cf, loop=loop)
+
+        async def _runner():
+            try:
+                return await awaitable
+            except asyncio.CancelledError:
+                return "cancelled"
+
+        task = asyncio.create_task(_runner())
+        # Give the loop one tick so the wrap_future wiring takes effect.
+        await asyncio.sleep(0.01)
+        task.cancel()
+        try:
+            result = await asyncio.wait_for(task, timeout=0.5)
+        except asyncio.CancelledError:
+            result = "cancelled"
+
+        assert result == "cancelled"
+        # Because the executor was busy with the blocker, our step was
+        # cancelled while still in the queue → cf.cancelled() is True.
+        assert cf.cancelled() is True
+        assert executed == [], "step should not have run; cancel landed first"
+
+        # Release the blocker so the executor can shut down.
+        blocker_release.set_result(None)
+        blocker_cf.result(timeout=3.0)
+    finally:
+        # Belt-and-braces release in case an assertion above fired
+        # BEFORE we reached the ``set_result(None)`` line. ``Future``
+        # tolerates a redundant ``set_result`` only by raising
+        # ``InvalidStateError`` — wrap in a try/except so the finally
+        # doesn't itself raise and shadow the original test failure.
+        try:
+            if not blocker_release.done():
+                blocker_release.set_result(None)
+        except Exception:
+            pass
+        executor.shutdown(wait=False, cancel_futures=True)
 
 
 def test_mllm_scheduler_uses_wrap_future_pattern():
