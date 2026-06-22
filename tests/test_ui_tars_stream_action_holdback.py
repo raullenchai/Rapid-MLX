@@ -367,3 +367,145 @@ class TestCodexHighWordBoundaryGate:
         events, content, tool_calls = _drive_stream(parser, ["PlanA"])
         assert content == "PlanA"
         assert tool_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Codex r2 BLOCKING — bare Action: + non-signature prose released as content
+# ---------------------------------------------------------------------------
+
+
+class TestCodexR2BareActionProseRelease:
+    """Codex r2 BLOCKING: pre-fix, the streaming path treated every
+    ``Action:`` occurrence as "in-flight action — hold buffer." That
+    meant streams whose ``Action:`` token was followed by non-signature
+    prose (``"Action: is required."``, ``["Act", "ion: item"]``) held
+    the bytes indefinitely; ``len(cur_actions) <= len(prev_actions)``
+    returned ``None`` forever and the postprocessor never received the
+    bytes.
+
+    The fix is two-layered:
+
+    1. Mid-stream, ``_action_signature_could_complete`` discriminates
+       "this Action: could still become Action: verb(" (held)
+       from "this Action: is now provably prose" (released as content).
+    2. At stream end, ``flush_held_content`` releases ANY still-held
+       suffix — by definition the model committed to "no more tokens"
+       so the held bytes are plain content.
+    """
+
+    def test_action_followed_by_prose_releases_mid_stream(self, parser):
+        # ``Action: is required.`` — after ``Action: ``, the model emits
+        # ``is required.`` which IS a valid ident (``is``) but then a
+        # SPACE before any open-paren. Signature can't complete →
+        # release.
+        events, content, tool_calls = _drive_stream(parser, ["Action: is required."])
+        assert content == "Action: is required."
+        assert tool_calls == []
+
+    def test_action_followed_by_punctuation_releases_mid_stream(self, parser):
+        # ``Action: !`` — after the colon and whitespace, ``!`` is NOT
+        # a valid ident start. Signature can never complete → release.
+        events, content, tool_calls = _drive_stream(parser, ["Action: !"])
+        assert content == "Action: !"
+        assert tool_calls == []
+
+    def test_action_followed_by_digit_releases_mid_stream(self, parser):
+        # Digit can't start a verb-ident (Python rules) → release.
+        events, content, tool_calls = _drive_stream(parser, ["Action: 42 items"])
+        assert content == "Action: 42 items"
+        assert tool_calls == []
+
+    def test_bare_action_split_across_deltas_held_until_finalize(self, parser):
+        # ``["Act", "ion: item"]`` — after delta 2 the buffer is
+        # ``"Action: item"``. The signature "Action: item" could
+        # still complete (no terminating char yet — ``item`` could
+        # extend or the next char could be ``(``). Mid-stream MUST
+        # hold; the postprocessor's ``finalize()`` calls
+        # ``flush_held_content`` to release at stream end.
+        accumulated_text = ""
+        content_parts: list[str] = []
+        previous = ""
+        for delta in ["Act", "ion: item"]:
+            current = previous + delta
+            result = parser.extract_tool_calls_streaming(
+                previous_text=previous,
+                current_text=current,
+                delta_text=delta,
+                request=None,
+            )
+            if result and result.get("content"):
+                content_parts.append(result["content"])
+            previous = current
+            accumulated_text = current
+        # Mid-stream emit: nothing — bytes were held.
+        assert content_parts == []
+        # Finalize releases.
+        held = parser.flush_held_content(accumulated_text)
+        assert held == "Action: item"
+
+    def test_action_with_completed_verb_paren_still_holds(self, parser):
+        # Positive control: ``Action: type(`` mid-stream MUST stay held
+        # — the signature DID commit to a real action, just no balanced
+        # close yet. flush_held_content releases at stream end too
+        # (the action is incomplete bytes, but we don't drop them).
+        events, content, tool_calls = _drive_stream(parser, ["Action: type("])
+        assert content == ""
+        assert tool_calls == []
+        # At finalize, the partial action bytes flush as content
+        # (no balanced close → no structured tool_call to surface).
+        held = parser.flush_held_content("Action: type(")
+        assert held == "Action: type("
+
+    def test_safe_emit_end_helper(self):
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import _safe_emit_end
+
+        # No Action: anywhere → safe_end is at end (or before trailing prefix).
+        assert _safe_emit_end("Hello world!") == len("Hello world!")
+        # Trailing prefix: safe_end clips the partial-opener.
+        assert _safe_emit_end("Hello\nAc") == len("Hello\n")
+        # Action: with non-signature prose → safe_end at end (no hold).
+        text = "Action: is required."
+        assert _safe_emit_end(text) == len(text)
+        # Action: with completable signature → safe_end at Action: start.
+        text = "prose. Action: clic"
+        assert _safe_emit_end(text) == len("prose. ")
+        # Completed Action: verb(...) — handled by tool_calls path,
+        # safe_end is at end of the completed action.
+        text = "prose. Action: wait() done"
+        # The completed action span ends at ``Action: wait()`` close;
+        # bytes ``" done"`` after are residual content. safe_end
+        # should be at len(text) — no in-flight signal AND no
+        # trailing prefix.
+        assert _safe_emit_end(text) == len(text)
+
+
+class TestCodexR2FlushHeldContent:
+    """End-of-stream flush hook: ``flush_held_content`` returns the
+    suffix of the accumulated text that the streaming parser was still
+    holding when the stream finished. Without this hook, the bytes
+    held mid-stream would be permanently dropped from the response.
+    """
+
+    def test_no_action_no_held_bytes(self, parser):
+        assert parser.flush_held_content("Plain content.") == ""
+
+    def test_trailing_prefix_flushed_at_eos(self, parser):
+        # Stream ended with ``"...thing\nAc"`` — the trailing prefix
+        # never resolved, so flush as content.
+        assert parser.flush_held_content("Hello\nAc") == "Ac"
+
+    def test_inflight_action_flushed_at_eos(self, parser):
+        # Stream ended with ``"Action: cli"`` — partial in-flight
+        # action that didn't get the open paren. flush_held_content
+        # releases the held bytes as content.
+        assert parser.flush_held_content("Action: cli") == "Action: cli"
+
+    def test_completed_action_does_not_flush_as_content(self, parser):
+        # Completed action bytes are emitted as structured tool_calls,
+        # NOT as content via flush_held_content.
+        assert parser.flush_held_content("Action: wait()") == ""
+
+    def test_prose_action_does_not_flush_as_content(self, parser):
+        # ``Action:`` followed by definitely-non-signature prose was
+        # already released mid-stream — flush returns empty.
+        assert parser.flush_held_content("Action: is required.") == ""

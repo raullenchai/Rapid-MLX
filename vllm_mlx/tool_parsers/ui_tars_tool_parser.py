@@ -944,6 +944,134 @@ def _trailing_action_prefix_len(text: str) -> int:
     return 0
 
 
+def _safe_emit_end(text: str) -> int:
+    """Return the offset up to which bytes of ``text`` are safe to flush as content.
+
+    This is the unified hold-back computation used by the streaming
+    parser. Every byte in ``text[:safe_end]`` has been "resolved" —
+    either it's plain prose (no in-flight action signal touches it) or
+    it's a fully-completed ``Action: verb(...)`` line whose
+    ``_iter_actions`` path will surface as a structured tool_call. Every
+    byte in ``text[safe_end:]`` is HELD because:
+
+    * it's part of an in-flight ``Action: verb(`` whose balanced close
+      hasn't arrived yet (the ``_iter_actions`` path won't emit until
+      then), OR
+    * it's a bare ``Action:`` whose verb / paren is in a pending
+      decode step (signature still consistent), OR
+    * it's a trailing strict-prefix of the literal ``Action:`` token at
+      the buffer tail (e.g. ``"...thing.\\nAc"``).
+
+    Returns ``len(text)`` when no in-flight signal is present — every
+    byte is safe to flush. Codex r2 BLOCKING — this collapses the
+    previously-divergent "Action: in text" and "Action: not in text"
+    branches into one rule, closing the data-loss case where a bare
+    ``Action:`` followed by non-signature prose
+    (``"Action: is required."``, ``["Act", "ion: item"]``) held the
+    bytes indefinitely and never flushed.
+    """
+    n = len(text)
+    in_flight_starts: list[int] = []
+    # Walk every ``Action:`` occurrence in left-to-right order. For each:
+    # decide whether the post-``Action:`` tail could complete a real
+    # action signature (``\\s*[A-Za-z_][A-Za-z0-9_]*\\s*\\(``). When it
+    # could AND no balanced close has arrived yet, hold from that
+    # occurrence onward. When it can't, the occurrence is plain prose —
+    # ignore it.
+    for m in _ACTION_PREFIX.finditer(text):
+        # Resolve whether this ``Action:`` has a verb+paren+close
+        # already. The ``_ACTION_LINE`` regex requires the verb-paren
+        # signature; check if THIS offset matches.
+        line_match = _ACTION_LINE.match(text, m.start())
+        if line_match is not None:
+            close = _find_balanced_close(text, line_match.end())
+            if close == -1:
+                # In-flight action — verb and paren present but body
+                # still streaming. Hold from this start offset.
+                in_flight_starts.append(m.start())
+            # else: completed action — ``_iter_actions`` will surface
+            # this; don't claim it as "held".
+            continue
+        # No ``_ACTION_LINE`` match here. Check whether the bare token
+        # could still complete to one.
+        if _action_signature_could_complete(text, m.end()):
+            in_flight_starts.append(m.start())
+        # else: bare ``Action:`` followed by non-signature prose. Codex
+        # r2 fix — pre-fix, ALL bare-Action: occurrences were treated
+        # as held; with the signature gate, a non-completing one is
+        # plain content and doesn't constrain the safe-end.
+    if in_flight_starts:
+        # Hold from the earliest in-flight action's start offset.
+        return min(in_flight_starts)
+    # No in-flight action signal — the only hold candidate is the
+    # trailing strict-prefix of ``Action:`` at the buffer tail.
+    return n - _trailing_action_prefix_len(text)
+
+
+def _action_signature_could_complete(text: str, action_end: int) -> bool:
+    """Return True if the tail starting at ``action_end`` could still
+    complete a valid ``Action: verb(`` signature.
+
+    ``action_end`` is the index immediately AFTER the ``Action:`` token
+    in ``text``. The grammar after that point is::
+
+        \\s*           — optional leading whitespace
+        [A-Za-z_]      — verb ident start (one char)
+        [A-Za-z0-9_]*  — verb ident continuation
+        \\s*           — optional whitespace before paren
+        \\(            — open paren commits to the call
+
+    Codex r2 BLOCKING — the prior streaming path treated EVERY ``Action:``
+    occurrence as "in-flight action, hold the buffer." Streams like
+    ``["Act", "ion: item"]`` (verb-like ``item`` but never a paren, so
+    real prose ``"Action: item"``) and ``["Action: is required."]`` had
+    the bytes held indefinitely and dropped because no ``tool_calls``
+    ever fired and no content-release path executed.
+
+    Three exit states:
+
+    * **Consistent + still possible** — every char examined so far
+      respects the grammar AND we haven't seen the ``(`` yet → hold.
+    * **Consistent + complete** — we saw ``(`` (the full signature
+      committed) → hold (the existing ``_iter_actions`` path will pick
+      it up on a future delta when the balanced ``)`` arrives).
+    * **Inconsistent** — a char violates the grammar (e.g. a
+      whitespace WITHIN the verb-ident, a non-ident-non-paren char
+      after the ident, …) → DEFINITELY-NOT-an-action. Return False so
+      the caller can flush the bytes as plain content.
+
+    Reaching end-of-text in a consistent state still returns True (the
+    next delta might land the missing chars).
+    """
+    n = len(text)
+    i = action_end
+    # Phase 1: leading whitespace.
+    while i < n and text[i].isspace():
+        i += 1
+    if i >= n:
+        return True  # still consistent, waiting for verb start
+    # Phase 2: first verb-ident char.
+    if not (text[i].isalpha() or text[i] == "_"):
+        return False  # e.g. ``Action: 1foo(``, ``Action: is...`` (passes here),
+        # ``Action: !`` — wait, ``is`` starts with ``i`` (alpha) so it does pass
+        # phase 2. The disambiguation happens in phase 4 below.
+    i += 1
+    # Phase 3: verb-ident continuation.
+    while i < n and (text[i].isalnum() or text[i] == "_"):
+        i += 1
+    if i >= n:
+        return True  # still consistent, ident might continue or end
+    # Phase 4: optional whitespace then ``(``. Any other char rules out
+    # the action signature — e.g. ``Action: is required.`` reaches here
+    # with i pointing at ``" "`` (the space after ``"is"``), then we'd
+    # consume the whitespace and find ``"required"`` — NOT ``(``.
+    while i < n and text[i].isspace():
+        i += 1
+    if i >= n:
+        return True  # waiting for ``(``
+    return text[i] == "("
+
+
 def _iter_actions(text: str) -> list[tuple[int, int, str, dict[str, Any]]]:
     """Find every ``Action: verb(...)`` block in left-to-right order.
 
@@ -1244,62 +1372,42 @@ class UiTarsToolParser(ToolParser):
         """
         if _is_tool_choice_none(request):
             return {"content": delta_text}
-        if "Action:" not in current_text:
-            # R6-C3 hold-back: the trailing bytes of ``current_text``
-            # might be a STRICT prefix of the ``Action:`` token (e.g.
-            # ``current_text`` ends with ``"\nAc"``). If we emit
-            # ``delta_text`` verbatim those candidate-opener bytes leak
-            # into ``delta.content`` BEFORE the structured tool_calls
-            # flush — the dogfood R2-6 leak. Hold back any trailing
-            # bytes of THIS delta that fall inside the partial-opener
-            # window; the next delta that resolves the token (either
-            # by completing ``Action:`` or by emitting a disambiguating
-            # byte) releases them through the appropriate channel.
-            #
-            # codex r1 BLOCKING — replay any previously-held bytes that
-            # are no longer candidate-opener. Pre-fix, a stream like
-            # ``["Ac", "me"]`` would hold ``"Ac"`` on delta 1 (returns
-            # None) then on delta 2 emit only ``"me"`` — the held ``"Ac"``
-            # was permanently dropped because the streaming parser is
-            # stateless across calls. Fix: compare the prefix-window of
-            # ``previous_text`` (what was held last time) with the
-            # prefix-window of ``current_text`` (what remains held now).
-            # Bytes that fall OUT of the held window between calls must
-            # be replayed as content alongside this delta.
-            # Compute the "emit window" for this delta. Every byte of
-            # ``current_text`` is in exactly one of three buckets:
-            #
-            # 1. Already-emitted   : ``current_text[:prev_safe_end]``
-            #    — the prefix that prior calls flushed as content.
-            # 2. Emit-this-turn    : ``current_text[prev_safe_end:cur_safe_end]``
-            #    — what this call returns.
-            # 3. Still-held        : ``current_text[cur_safe_end:]``
-            #    — the trailing partial-opener candidate to release later.
-            #
-            # ``prev_safe_end = len(previous_text) - prev_held`` is the
-            # offset up to which prior calls emitted (everything they
-            # held back lives in bucket 3 or 2 of THIS call).
-            # ``cur_safe_end = len(current_text) - cur_held`` is the
-            # offset up to which it's safe to emit now (bytes after that
-            # are this call's still-held tail).
-            cur_held = _trailing_action_prefix_len(current_text)
-            prev_held = (
-                _trailing_action_prefix_len(previous_text) if previous_text else 0
-            )
-            prev_safe_end = len(previous_text) - prev_held
-            cur_safe_end = len(current_text) - cur_held
-            if cur_safe_end <= prev_safe_end:
-                # Held window grew (or stayed the same) — nothing new
-                # to emit this delta. Postprocessor's per-event buffer
-                # keeps the bytes until a future delta resolves them.
-                return None
-            return {"content": current_text[prev_safe_end:cur_safe_end]}
+
+        # R6-C3 / codex r1+r2 unified hold-back: ``_safe_emit_end``
+        # collapses the "Action: in text" and "Action: not in text"
+        # branches into one rule. Every byte of ``current_text`` is in
+        # exactly one of three buckets relative to the streaming
+        # contract:
+        #
+        # 1. Already-emitted : ``current_text[:prev_safe_end]``  — the
+        #    prefix prior calls flushed as content.
+        # 2. Emit-this-turn  : ``current_text[prev_safe_end:cur_safe_end]``
+        #    — what this call returns as ``content``.
+        # 3. Still-held      : ``current_text[cur_safe_end:]``  — the
+        #    in-flight ``Action:`` body / trailing partial-opener
+        #    candidate to release on a future delta.
+        #
+        # Plus the orthogonal ``tool_calls`` channel: when one or more
+        # actions COMPLETED in ``current_text`` since ``previous_text``,
+        # emit them; their byte span is folded into bucket 2 of the
+        # safe-end computation so the residual content slice excludes
+        # the action body.
+        cur_safe_end = _safe_emit_end(current_text)
+        prev_safe_end = _safe_emit_end(previous_text) if previous_text else 0
 
         prev_actions = _iter_actions(previous_text) if previous_text else []
         cur_actions = _iter_actions(current_text)
 
         if len(cur_actions) <= len(prev_actions):
-            return None
+            # No new tool_call this turn. Emit any newly-resolved
+            # content bytes (codex r2 BLOCKING — release bytes when
+            # the safe-end advances even with ``Action:`` in the
+            # buffer; the pre-r2 code unconditionally returned None
+            # whenever a bare ``Action:`` was present, dropping prose
+            # like ``"Action: is required."``).
+            if cur_safe_end <= prev_safe_end:
+                return None
+            return {"content": current_text[prev_safe_end:cur_safe_end]}
 
         new_actions = cur_actions[len(prev_actions) :]
         tool_calls = []
@@ -1413,3 +1521,36 @@ class UiTarsToolParser(ToolParser):
         # candidate-opener bytes off the wire until the next delta
         # either completes the token or disambiguates them as content.
         return _trailing_action_prefix_len(text) > 0
+
+    def flush_held_content(self, full_text: str) -> str:
+        """Return the suffix of ``full_text`` still held at end-of-stream.
+
+        The streaming parser holds bytes whenever a bare ``Action:``
+        token (or its trailing prefix) is in flight — those bytes might
+        be the start of a real ``Action: verb(...)`` call OR plain prose
+        like ``"Action: is required."``. Mid-stream the parser can't
+        decide; at end-of-stream the parser KNOWS no further tokens are
+        coming, so the held tail is by definition plain content and
+        must be flushed.
+
+        Codex r2 BLOCKING — pre-fix, a stream ending on
+        ``["Act", "ion: item"]`` held the entire ``"Action: item"`` and
+        the postprocessor never received those bytes (no tool_call
+        fired, no content event ever flushed). The postprocessor's
+        ``finalize()`` calls this method to drain the held suffix; we
+        return ``full_text[safe_end:]`` so the SSE stream's final
+        content event carries the leaked bytes verbatim.
+
+        Returns the empty string when nothing is held — the default
+        contract from ``abstract_tool_parser``.
+        """
+        if not full_text:
+            return ""
+        safe_end = _safe_emit_end(full_text)
+        # If any action COMPLETED in the buffer, ``extract_tool_calls``
+        # is the right path — the route's finalize path checks
+        # ``has_pending_tool_call`` first. We only flush genuinely-held
+        # bytes (the strict tail past the safe-end).
+        if safe_end >= len(full_text):
+            return ""
+        return full_text[safe_end:]
