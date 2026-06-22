@@ -141,6 +141,40 @@ def _enforce_responses_tool_choice(
     tc = responses_request.tool_choice
     if tc is None or not openai_request.tools:
         return tool_calls
+    # Codex r3 BLOCKING #1 (PR #817): for the named-function form,
+    # validate that EVERY model-produced tool_call targets the pinned
+    # name. A model that called a different tool (``ping`` when
+    # ``pong`` was pinned) violates the contract just as much as a
+    # text-only response — raise 422 with the same diagnostic
+    # chat.py uses (~L1969-L1978).
+    if tool_calls and isinstance(tc, dict) and tc.get("type") == "function":
+        _named_target = tc.get("name") or (tc.get("function") or {}).get("name")
+        if _named_target:
+            mismatched = [
+                tc_obj
+                for tc_obj in tool_calls
+                if (tc_obj.function.name or "") != _named_target
+            ]
+            if mismatched:
+                _names = [m.function.name for m in mismatched]
+                raise HTTPException(
+                    status_code=422,
+                    detail={
+                        "error": {
+                            "message": (
+                                f"tool_choice pinned function "
+                                f"{_named_target!r} but the model emitted "
+                                f"calls to {_names}. Local inference "
+                                "cannot decoder-enforce a specific "
+                                "function; retry with a more direct "
+                                "user message."
+                            ),
+                            "type": "invalid_request_error",
+                            "code": "tool_choice_named_mismatch",
+                            "param": "tool_choice.name",
+                        }
+                    },
+                )
     # Only coerce when the model surfaced NO calls — a real model
     # response that called the right tool already satisfies the
     # contract.

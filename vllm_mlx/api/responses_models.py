@@ -14,7 +14,7 @@ client).
 """
 
 import uuid
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -105,7 +105,11 @@ class ResponsesRequest(BaseModel):
     # NOTE: implement actual auto-truncation in a follow-up — operator
     # preference (0.8 dogfood r4) is to echo + no-op so migrating
     # clients don't see a silent drop while the implementation lands.
-    truncation: str | None = None
+    #
+    # Codex r3 NIT (PR #817): ``Literal[...]`` so typos like
+    # ``"enabled"`` produce a Pydantic 400 instead of silently
+    # round-tripping as if they were valid.
+    truncation: Literal["auto", "disabled"] | None = None
     # Per-request cap on reasoning tokens — see ``ChatCompletionRequest``
     # for the full semantic. ``None`` = no cap. Validated >= 1 by the
     # post-init validator below; the Responses route forwards this to
@@ -274,9 +278,10 @@ class ResponsesResponse(BaseModel):
     # Yuki R6 / R7 (0.8.5 dogfood): the OpenAI Responses spec exposes
     # ``truncation`` and ``service_tier`` as response-envelope fields.
     # ``truncation`` is echoed (today no-op'd at the engine level — see
-    # ``_convert_truncation`` in the adapter), ``service_tier`` is
-    # echoed as the requested value so clients see the contract round-
-    # trip. Both default to ``None`` so non-strict SDKs that ignore
-    # them keep working.
-    truncation: str | None = None
+    # ``ResponsesRequest`` docstring), ``service_tier`` is echoed as
+    # the requested value so clients see the contract round-trip. Both
+    # default to ``None`` so non-strict SDKs that ignore them keep
+    # working. ``truncation`` is ``Literal`` so the request-side
+    # validator's contract carries over to the response shape too.
+    truncation: Literal["auto", "disabled"] | None = None
     service_tier: str | None = None

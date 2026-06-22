@@ -478,6 +478,38 @@ class TestF6ToolChoiceEnforcement:
         body = resp.json()
         assert not [o for o in body["output"] if o["type"] == "function_call"]
 
+    def test_named_function_model_called_wrong_tool_returns_422(
+        self, make_responses_client
+    ):
+        """Codex r3 BLOCKING #1 (PR #817): when the request pins
+        ``tool_choice={type:"function","name":"pong"}`` but the model
+        produces a call to ``ping``, the route 422s (parity with
+        chat.py L1969). Pre-fix the wrong call was shipped to the
+        client as if the contract had been satisfied.
+        """
+        state = make_responses_client(
+            text="",
+            tool_calls=[
+                _make_function_call("ping", '{"msg":"hi"}', call_id="call_wrong")
+            ],
+            finish_reason="tool_calls",
+        )
+
+        resp = state.client.post(
+            "/v1/responses",
+            json=_payload(
+                tools=[
+                    self._PING_TOOL,
+                    {"type": "function", "name": "pong", "parameters": {}},
+                ],
+                tool_choice={"type": "function", "name": "pong"},
+            ),
+            headers=_AUTH,
+        )
+        assert resp.status_code == 422, resp.text
+        body = resp.json()
+        assert "tool_choice_named_mismatch" in str(body)
+
     def test_required_with_multiple_tools_no_call_returns_422(
         self, make_responses_client
     ):
@@ -851,6 +883,31 @@ class TestR6R7TruncationAndServiceTierEcho:
         assert resp.status_code == 200, resp.text
         body = resp.json()
         assert body.get("service_tier") == "flex"
+
+    def test_truncation_invalid_value_returns_400(self, make_responses_client):
+        """Codex r3 NIT (PR #817): truncation typed as
+        ``Literal["auto","disabled"]`` so typos like ``"enabled"``
+        surface as a 400 instead of silently round-tripping."""
+        state = make_responses_client()
+
+        resp = state.client.post(
+            "/v1/responses",
+            json=_payload(truncation="enabled"),
+            headers=_AUTH,
+        )
+        assert resp.status_code == 400, resp.text
+
+    def test_truncation_disabled_also_echoed(self, make_responses_client):
+        state = make_responses_client()
+
+        resp = state.client.post(
+            "/v1/responses",
+            json=_payload(truncation="disabled"),
+            headers=_AUTH,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        assert body.get("truncation") == "disabled"
 
 
 # ---------------------------------------------------------------------------
