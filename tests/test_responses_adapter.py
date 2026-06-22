@@ -85,17 +85,24 @@ class TestConvertTools:
         assert td.function["description"] == "Get weather"
         assert td.function["parameters"]["properties"] == {"city": {"type": "string"}}
 
-    def test_drops_non_function_tools(self):
-        tools = _convert_tools(
-            [
-                {"type": "function", "name": "real_one"},
-                {"type": "web_search"},
-                {"type": "code_interpreter"},
-                {"type": "image_generation"},
-            ]
-        )
-        assert tools is not None and len(tools) == 1
-        assert tools[0].function["name"] == "real_one"
+    def test_unsupported_tool_types_raise_400(self):
+        """Yuki F13 (0.8.5 dogfood): unsupported tool types now raise a
+        clean 400 instead of silently dropping. The chat/anthropic lanes
+        already 400; the /v1/responses lane now matches.
+        """
+        import pytest
+        from fastapi import HTTPException
+
+        for unsupported in ("web_search", "code_interpreter", "image_generation"):
+            with pytest.raises(HTTPException) as exc_info:
+                _convert_tools(
+                    [
+                        {"type": "function", "name": "real_one"},
+                        {"type": unsupported},
+                    ]
+                )
+            assert exc_info.value.status_code == 400
+            assert "unsupported_tool_type" in str(exc_info.value.detail)
 
     def test_drops_function_without_name(self):
         tools = _convert_tools([{"type": "function", "description": "no name"}])

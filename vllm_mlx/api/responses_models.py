@@ -97,6 +97,15 @@ class ResponsesRequest(BaseModel):
     max_output_tokens: int | None = None
     temperature: float | None = None
     top_p: float | None = None
+    # Yuki R6 (0.8.5 dogfood): OpenAI Responses spec defines
+    # ``truncation`` as ``"auto" | "disabled"``. rapid-mlx accepts and
+    # echoes the requested value back on the response envelope; the
+    # engine-level truncation behaviour is a no-op in this release (the
+    # context-length gate already rejects oversized prompts upstream).
+    # NOTE: implement actual auto-truncation in a follow-up — operator
+    # preference (0.8 dogfood r4) is to echo + no-op so migrating
+    # clients don't see a silent drop while the implementation lands.
+    truncation: str | None = None
     # Per-request cap on reasoning tokens — see ``ChatCompletionRequest``
     # for the full semantic. ``None`` = no cap. Validated >= 1 by the
     # post-init validator below; the Responses route forwards this to
@@ -209,12 +218,19 @@ class ResponsesOutputContent(BaseModel):
 class ResponsesOutputItem(BaseModel):
     """An item in the ``output`` array of a non-streaming response.
 
-    Two shapes the shim emits:
+    Four shapes the shim emits:
     - ``message`` — assistant text reply, content array of output_text
     - ``function_call`` — one per tool call the model produced
+    - ``reasoning`` — top-level reasoning summary (Yuki F4 / R10);
+      emitted alongside ``message`` when the model produced reasoning
+      (cross-lane parity with /v1/chat/completions ``message.reasoning_content``).
+    - ``computer_call`` — UI-TARS / Computer-Use action call (Ana C-06);
+      emitted instead of ``function_call`` when the request supplied
+      ``tools=[{type:"computer_20251022", ...}]`` and the underlying
+      parser surfaced a ``computer``-tool call.
     """
 
-    type: str  # "message" | "function_call"
+    type: str  # "message" | "function_call" | "reasoning" | "computer_call"
     id: str
     status: str = "completed"
     # message
@@ -224,6 +240,18 @@ class ResponsesOutputItem(BaseModel):
     call_id: str | None = None
     name: str | None = None
     arguments: str | None = None
+    # reasoning — OpenAI Responses spec, output[i].type=="reasoning":
+    #   {"type":"reasoning","id":"rs_...","summary":[{"type":"summary_text","text":"..."}]}
+    # ``encrypted_content`` is omitted unless include=["reasoning.encrypted_content"]
+    # is requested AND the backend produces one. rapid-mlx is stateless,
+    # so the field is always absent today.
+    summary: list[dict] | None = None
+    encrypted_content: str | None = None
+    # computer_call — Computer-Use action shape, populated by translating
+    # the UI-TARS tool_call (``name="computer"``, JSON arguments) into the
+    # OpenAI ``computer_call`` envelope.
+    action: dict | None = None
+    pending_safety_checks: list[dict] | None = None
 
 
 class ResponsesResponse(BaseModel):
@@ -243,3 +271,12 @@ class ResponsesResponse(BaseModel):
     metadata: dict | None = None
     instructions: str | None = None
     previous_response_id: str | None = None
+    # Yuki R6 / R7 (0.8.5 dogfood): the OpenAI Responses spec exposes
+    # ``truncation`` and ``service_tier`` as response-envelope fields.
+    # ``truncation`` is echoed (today no-op'd at the engine level — see
+    # ``_convert_truncation`` in the adapter), ``service_tier`` is
+    # echoed as the requested value so clients see the contract round-
+    # trip. Both default to ``None`` so non-strict SDKs that ignore
+    # them keep working.
+    truncation: str | None = None
+    service_tier: str | None = None
