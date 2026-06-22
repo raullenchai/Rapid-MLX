@@ -1140,7 +1140,18 @@ class StreamingPostProcessor:
         if self._explicit_think_seen:
             return True
         probe = self.accumulated_text + (delta_text or "")
-        if self._THINK_OPEN_TOKEN in probe:
+        # Codex r8-C round-2 MED: anchor the complete-token branch at
+        # the FIRST non-whitespace bytes, matching the split-prefix
+        # branch below. Without the anchor, a stream that produces a
+        # plain answer like ``You asked about <think> tags in HTML.``
+        # — literal ``<think>`` mid-content, NOT the model entering
+        # reasoning — would latch ``_explicit_think_seen`` and route
+        # all subsequent chunks through the reasoning parser, hiding
+        # the answer body. The intent is "the model started an
+        # explicit reasoning wrapper", which only happens at the head
+        # of the buffer (Qwen3 templates inject ``<think>`` first).
+        head = probe.lstrip()
+        if head.startswith(self._THINK_OPEN_TOKEN):
             self._explicit_think_seen = True
             return True
         # Tentative re-route: the head of the probe (post-leading-ws)
@@ -1148,7 +1159,6 @@ class StreamingPostProcessor:
         # arrived yet. Route this chunk through the reasoning parser
         # so a split-SSE tag doesn't pre-leak as content. Don't latch
         # — we'll re-evaluate next chunk once more bytes arrive.
-        head = probe.lstrip()
         if head and self._THINK_OPEN_TOKEN.startswith(head):
             return True
         return False

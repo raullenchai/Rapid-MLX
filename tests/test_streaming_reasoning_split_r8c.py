@@ -322,6 +322,34 @@ class TestR8M2ToolChoiceAutoThinkLeak:
         assert "thinking." in result["reasoning"]
         assert "<think>" not in result["content"]
 
+    def test_literal_think_token_mid_content_does_not_latch(self):
+        """Codex r8-C round-2 MED: a plain direct answer that MENTIONS
+        ``<think>`` mid-content (e.g. explaining HTML tags or
+        documenting a reasoning wrapper) must NOT latch the bypass
+        promotion. Pre-fix, ``self._THINK_OPEN_TOKEN in probe``
+        triggered anywhere in the buffer, so the moment the model
+        emitted ``... use the <think> tag ...`` everything after that
+        chunk routed through the reasoning parser and the answer body
+        was hidden. Post-fix, the complete-token branch anchors at the
+        first non-whitespace bytes (mirror of the split-prefix branch
+        below it)."""
+        pp = self._pp(enable_thinking=False)
+        result = _drive(
+            pp,
+            [
+                "To wrap reasoning, ",
+                "use the <think> tag. ",
+                "It is a reserved token.",
+            ],
+        )
+        # Entire answer stays on content; no chunk routed to reasoning.
+        assert result["reasoning"] == ""
+        assert "use the <think> tag" in result["content"]
+        assert "It is a reserved token." in result["content"]
+        # Latch must NOT have promoted (so a subsequent reset+request
+        # in the singleton path doesn't drag a stale latch).
+        assert pp._explicit_think_seen is False
+
 
 # =====================================================================
 # Reset / lifecycle — the latch must clear between requests
