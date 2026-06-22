@@ -86,6 +86,47 @@ def test_load_model_enables_native_tool_format_when_parser_supports_it(monkeypat
     assert server._engine.preserve_native_tool_format is True
 
 
+def test_load_model_infers_programmatic_max_tokens_explicit(monkeypatch):
+    from vllm_mlx import server
+    from vllm_mlx.config import get_config, reset_config
+
+    monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
+    monkeypatch.setattr(server, "_engine", None, raising=False)
+    monkeypatch.setattr(server, "_enable_auto_tool_choice", False, raising=False)
+    monkeypatch.setattr(server, "_tool_call_parser", None, raising=False)
+    monkeypatch.setattr(server, "_reasoning_parser_name", None, raising=False)
+    monkeypatch.setattr(server, "_reasoning_parser", None, raising=False)
+    monkeypatch.setattr(server, "_tool_parser_instance", None, raising=False)
+    monkeypatch.setattr(server, "_mcp_manager", None, raising=False)
+    monkeypatch.setattr(server, "_enable_tool_logits_bias", False, raising=False)
+    monkeypatch.setattr(server, "_model_alias", None, raising=False)
+
+    server.load_model("mlx-community/Qwen3.5-9B-4bit")
+    cfg = get_config()
+    assert cfg.default_max_tokens == 32768
+    assert cfg.default_max_tokens_is_explicit is False
+
+    reset_config()
+    monkeypatch.setattr(server, "_engine", None, raising=False)
+
+    server.load_model("mlx-community/Qwen3.5-9B-4bit", max_tokens=32)
+    cfg = get_config()
+    assert cfg.default_max_tokens == 32
+    assert cfg.default_max_tokens_is_explicit is True
+
+    reset_config()
+    monkeypatch.setattr(server, "_engine", None, raising=False)
+
+    server.load_model(
+        "mlx-community/Qwen3.5-9B-4bit",
+        max_tokens=4096,
+        max_tokens_is_explicit=False,
+    )
+    cfg = get_config()
+    assert cfg.default_max_tokens == 4096
+    assert cfg.default_max_tokens_is_explicit is False
+
+
 def test_detect_native_tool_support_requires_synced_config(monkeypatch):
     """Contract test for the ordering invariant: detection short-circuits
     to False when cfg has not been synced yet, so callers MUST run

@@ -822,7 +822,7 @@ class MLLMScheduler:
                     # existing tail and wait for a real text segment.
                     pass
             else:
-                if finish_reason != "stop":
+                if finish_reason != "stop" or new_text:
                     request.output_text += new_text
                     output_output_text = request.output_text
                 else:

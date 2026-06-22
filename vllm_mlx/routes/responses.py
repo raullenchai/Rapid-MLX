@@ -497,7 +497,9 @@ async def create_response(request: Request):
         # anthropic routes enforce. Runs BEFORE the stream branch so
         # streaming clients can't bypass by setting ``stream: true``.
         try:
-            _ctx_messages = _prepare_messages_for_engine(engine, openai_request)
+            _ctx_messages = _prepare_messages_for_context_check(
+                engine, openai_request
+            )
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception:
@@ -576,6 +578,18 @@ def _prepare_messages_for_engine(
         preserve_native_format=getattr(engine, "preserve_native_tool_format", False),
     )
     return messages
+
+
+def _prepare_messages_for_context_check(
+    engine: BaseEngine, openai_request: ChatCompletionRequest
+) -> list[dict]:
+    if getattr(engine, "is_mllm", False):
+        messages, _images, _videos = extract_multimodal_content(
+            openai_request.messages,
+            preserve_native_format=False,
+        )
+        return messages
+    return _prepare_messages_for_engine(engine, openai_request)
 
 
 def _message_to_engine_dict(msg) -> dict:

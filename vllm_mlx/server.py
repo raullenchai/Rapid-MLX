@@ -1113,7 +1113,7 @@ def load_model(
     model_name: str,
     scheduler_config=None,
     stream_interval: int = 1,
-    max_tokens: int = 32768,
+    max_tokens: int | None = None,
     force_mllm: bool = False,
     gpu_memory_utilization: float = 0.90,
     prefill_step_size: int | None = None,
@@ -1124,7 +1124,7 @@ def load_model(
     served_model_name: str | None = None,
     mtp: bool = False,
     *,
-    max_tokens_is_explicit: bool = False,
+    max_tokens_is_explicit: bool | None = None,
     force_text: bool = False,
     force_hybrid: bool = False,
     no_hybrid: bool = False,
@@ -1140,9 +1140,12 @@ def load_model(
         model_name: HuggingFace model name or local path
         scheduler_config: Scheduler config for BatchedEngine
         stream_interval: Tokens to batch before streaming
-        max_tokens: Default max tokens for generation
+        max_tokens: Default max tokens for generation. ``None`` uses the
+            programmatic default.
         max_tokens_is_explicit: True when max_tokens came from an explicit
-            operator setting such as ``serve --max-tokens``.
+            operator setting such as ``serve --max-tokens``. When omitted,
+            programmatic callers that pass ``max_tokens`` are treated as
+            explicit while callers that omit it keep the implicit default.
         force_mllm: Force loading as MLLM even if not auto-detected
         gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
         prefill_step_size: DEPRECATED — pass via
@@ -1166,6 +1169,12 @@ def load_model(
             escape hatches for ``ModelConfig.supports_spec_decode``
             auto-detection. Mutually exclusive.
     """
+    max_tokens_was_supplied = max_tokens is not None
+    if max_tokens is None:
+        max_tokens = 32768
+    if max_tokens_is_explicit is None:
+        max_tokens_is_explicit = max_tokens_was_supplied
+
     if prefill_step_size is not None:
         import warnings
 

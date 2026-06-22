@@ -338,6 +338,52 @@ class TestResponsesNonStream:
         assert [part["type"] for part in content] == ["text", "image_url"]
         assert content[1]["image_url"]["url"] == "data:image/png;base64,abc"
 
+    def test_mllm_context_precheck_counts_text_without_image_payload(
+        self, responses_client, monkeypatch
+    ):
+        from vllm_mlx.routes import responses as responses_route
+
+        client = responses_client.client
+        engine = responses_client.engine
+        engine.is_mllm = True
+        captured = {}
+
+        def _capture_context_messages(_engine, messages, **_kwargs):
+            captured["messages"] = messages
+
+        monkeypatch.setattr(
+            responses_route,
+            "enforce_context_length_for_messages",
+            _capture_context_messages,
+        )
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this"},
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,abc",
+                            },
+                        ],
+                    }
+                ],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert captured["messages"] == [
+            {"role": "user", "content": "Describe this"}
+        ]
+        sent = engine.calls[-1].messages
+        assert sent[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,abc"
+
     def test_mllm_message_prepare_accepts_object_style_messages(self):
         """Responses MLLM path must handle the object-style messages accepted
         by the text path instead of assuming every message is dict-convertible.
