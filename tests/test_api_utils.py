@@ -901,6 +901,14 @@ class TestContentToText:
         ]
         assert _content_to_text(parts) == "foo"
 
+    def test_list_of_responses_text_dicts(self):
+        parts = [
+            {"type": "input_text", "text": "foo"},
+            {"type": "output_text", "text": "bar"},
+            {"type": "input_image", "image_url": "http://img"},
+        ]
+        assert _content_to_text(parts) == "foo\nbar"
+
     def test_list_with_no_text_parts(self):
         parts = [{"type": "image_url", "image_url": "http://img"}]
         assert _content_to_text(parts) == ""

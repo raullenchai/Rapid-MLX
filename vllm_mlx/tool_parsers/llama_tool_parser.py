@@ -253,19 +253,21 @@ class LlamaToolParser(ToolParser):
         # streaming input.
         cached_len = getattr(self, "_pending_safe_len", 0)
         cached_tail = getattr(self, "_pending_safe_tail", "")
-        if cached_len and len(text) >= cached_len:
+        cached_text = getattr(self, "_pending_safe_text", "")
+        if cached_len and len(text) >= cached_len and text.startswith(cached_text):
             tail_len = len(cached_tail)
-            if tail_len == 0 or text[cached_len - tail_len : cached_len] == cached_tail:
-                scan_from = max(0, cached_len - self._PENDING_CACHE_TAIL)
-                suffix = text[scan_from:]
-                if "{" not in suffix and "<" not in suffix:
-                    self._pending_safe_len = len(text)
-                    self._pending_safe_tail = text[-self._PENDING_CACHE_TAIL :]
-                    return False
+            scan_from = max(0, cached_len - tail_len)
+            suffix = text[scan_from:]
+            if "{" not in suffix and "<" not in suffix:
+                self._pending_safe_len = len(text)
+                self._pending_safe_tail = text[-self._PENDING_CACHE_TAIL :]
+                self._pending_safe_text = text
+                return False
 
         if "{" not in text and "<" not in text:
             self._pending_safe_len = len(text)
             self._pending_safe_tail = text[-self._PENDING_CACHE_TAIL :]
+            self._pending_safe_text = text
             return False
 
         if FUNCTION_OPEN in text or PYTHON_TAG in text:
@@ -327,6 +329,7 @@ class LlamaToolParser(ToolParser):
             i = je
         self._pending_safe_len = len(text)
         self._pending_safe_tail = text[-self._PENDING_CACHE_TAIL :]
+        self._pending_safe_text = text
         return False
 
     @classmethod

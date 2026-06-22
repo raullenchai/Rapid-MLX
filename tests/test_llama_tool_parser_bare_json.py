@@ -218,6 +218,14 @@ class TestNoFalsePositives:
             text += "ordinary assistant prose without anchors "
             assert parser.has_pending_tool_call(text) is False
 
+    def test_plain_prefix_cache_does_not_cross_request_boundary(self):
+        parser = LlamaToolParser()
+
+        assert parser.has_pending_tool_call("ordinary assistant prose") is False
+        assert (
+            parser.has_pending_tool_call('different prefix {"name": "search"') is True
+        )
+
 
 # ---------------------------------------------------------------------------
 # Streaming contract — clients see content tokens until the JSON closes,

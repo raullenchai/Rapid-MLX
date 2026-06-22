@@ -1108,6 +1108,20 @@ def _content_to_text(content) -> str:
     if isinstance(content, list):
         parts = []
         for item in content:
+            data = (
+                item.model_dump(exclude_none=True)
+                if hasattr(item, "model_dump")
+                else item
+            )
+            if isinstance(data, dict) and data.get("type") in (
+                "input_text",
+                "output_text",
+            ):
+                text = data.get("text", "")
+                parts.append(text if isinstance(text, str) else "")
+                continue
+            if isinstance(data, dict) and data.get("type") == "input_image":
+                continue
             item = _content_part_to_dict(item)
             if item.get("type") == "text":
                 parts.append(item.get("text", ""))
