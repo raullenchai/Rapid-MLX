@@ -863,6 +863,8 @@ class MLLMScheduler:
                     for stop_str in stop_params:
                         idx = request.stop_text.find(stop_str)
                         if idx != -1:
+                            finish_reason = "stop"
+                            output_finish_reason = finish_reason
                             visible_text = request.stop_text[:idx]
                             output_new_text = visible_text[
                                 request.stop_text_len : len(visible_text)
