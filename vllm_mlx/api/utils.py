@@ -1136,6 +1136,9 @@ def normalize_responses_content_part(item) -> dict:
             url = _require_string(image_url, "input_image.image_url")
             normalized_image_url = {"url": url}
         return {"type": "image_url", "image_url": normalized_image_url}
+    if item_type == "input_audio":
+        _validate_content_part_payload(data)
+        return dict(data)
     raise ValueError(f"Unsupported Responses content block type: {item_type!r}")
 
 
