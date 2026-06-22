@@ -112,7 +112,13 @@ async def _await_direct(coro, *_args, **_kwargs):
 
 
 def _patch_common_route_deps(monkeypatch, module, engine):
-    monkeypatch.setattr(module, "_resolve_max_tokens", lambda *_args, **_kw: 777)
+    resolver_calls = []
+
+    def fake_resolver(*args, **kwargs):
+        resolver_calls.append((args, kwargs))
+        return 777
+
+    monkeypatch.setattr(module, "_resolve_max_tokens", fake_resolver)
     monkeypatch.setattr(module, "get_engine", lambda *_args, **_kw: engine)
     monkeypatch.setattr(module, "_validate_model_name", lambda *_args, **_kw: None)
     monkeypatch.setattr(module, "_check_admission_or_503", lambda *_args, **_kw: None)
@@ -120,6 +126,7 @@ def _patch_common_route_deps(monkeypatch, module, engine):
         module, "_release_admission_unless_committed", lambda *_args, **_kw: None
     )
     monkeypatch.setattr(module, "_wait_with_disconnect", _await_direct)
+    return resolver_calls
 
 
 @pytest.mark.asyncio
@@ -128,7 +135,7 @@ async def test_chat_route_passes_resolved_max_tokens_to_engine(monkeypatch):
     from vllm_mlx.routes import chat
 
     engine = _CaptureChatEngine()
-    _patch_common_route_deps(monkeypatch, chat, engine)
+    resolver_calls = _patch_common_route_deps(monkeypatch, chat, engine)
     monkeypatch.setattr(
         chat, "validate_content_blocks_for_capabilities", lambda *a, **k: None
     )
@@ -149,6 +156,7 @@ async def test_chat_route_passes_resolved_max_tokens_to_engine(monkeypatch):
     )
 
     assert engine.captured_max_tokens == 777
+    assert any(args and args[0] is None for args, _kwargs in resolver_calls)
 
 
 @pytest.mark.asyncio
@@ -157,7 +165,7 @@ async def test_completions_route_passes_resolved_max_tokens_to_engine(monkeypatc
     from vllm_mlx.routes import completions
 
     engine = _CaptureCompletionEngine()
-    _patch_common_route_deps(monkeypatch, completions, engine)
+    resolver_calls = _patch_common_route_deps(monkeypatch, completions, engine)
     monkeypatch.setattr(
         completions, "enforce_context_length_for_prompt", lambda *a, **k: None
     )
@@ -168,6 +176,7 @@ async def test_completions_route_passes_resolved_max_tokens_to_engine(monkeypatc
     )
 
     assert engine.captured_max_tokens == 777
+    assert any(args and args[0] is None for args, _kwargs in resolver_calls)
 
 
 @pytest.mark.asyncio
@@ -177,7 +186,13 @@ async def test_responses_route_passes_resolved_max_tokens_to_engine(monkeypatch)
     from vllm_mlx.routes import responses
 
     engine = _CaptureChatEngine()
-    monkeypatch.setattr(responses, "_resolve_max_tokens", lambda *_args, **_kw: 777)
+    resolver_calls = []
+
+    def fake_resolver(*args, **kwargs):
+        resolver_calls.append((args, kwargs))
+        return 777
+
+    monkeypatch.setattr(responses, "_resolve_max_tokens", fake_resolver)
     monkeypatch.setattr(responses, "_wait_with_disconnect", _await_direct)
 
     openai_request = ChatCompletionRequest(
@@ -198,6 +213,7 @@ async def test_responses_route_passes_resolved_max_tokens_to_engine(monkeypatch)
     )
 
     assert engine.captured_max_tokens == 777
+    assert any(args and args[0] is None for args, _kwargs in resolver_calls)
 
 
 @pytest.mark.asyncio
@@ -205,7 +221,7 @@ async def test_anthropic_route_passes_resolved_max_tokens_to_engine(monkeypatch)
     from vllm_mlx.routes import anthropic
 
     engine = _CaptureChatEngine()
-    _patch_common_route_deps(monkeypatch, anthropic, engine)
+    resolver_calls = _patch_common_route_deps(monkeypatch, anthropic, engine)
     monkeypatch.setattr(
         anthropic, "enforce_context_length_for_messages", lambda *a, **k: 1
     )
@@ -221,3 +237,4 @@ async def test_anthropic_route_passes_resolved_max_tokens_to_engine(monkeypatch)
     )
 
     assert engine.captured_max_tokens == 777
+    assert any(args and args[0] == 1 for args, _kwargs in resolver_calls)

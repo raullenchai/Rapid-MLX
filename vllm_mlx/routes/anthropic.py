@@ -285,6 +285,11 @@ def _synthesized_tool_call_schema_error(tool_calls, tools: list | None) -> str |
                 f"tool_choice pinned tool {func_name!r} requires arguments "
                 "that cannot be synthesized safely"
             )
+        if isinstance(schema, dict) and schema.get("properties"):
+            return (
+                f"tool_choice pinned tool {func_name!r} has constrained optional "
+                "arguments that cannot be synthesized safely"
+            )
         break
     try:
         _validate_tool_call_params(tool_calls, tools)

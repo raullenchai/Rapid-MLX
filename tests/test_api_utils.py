@@ -1059,6 +1059,25 @@ class TestValidateContentBlocksForCapabilities:
             allow_audio=True,
         )
 
+    @pytest.mark.parametrize(
+        "content_part",
+        [
+            {"type": "audio_url", "audio_url": {"url": "https://example.com/a.wav"}},
+            {"type": "audio", "audio": "base64data"},
+        ],
+    )
+    def test_audio_url_and_audio_rejected_even_when_audio_allowed(self, content_part):
+        messages = [{"role": "user", "content": [content_part]}]
+
+        with pytest.raises(ValueError, match="does not support audio inputs"):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="audio-model",
+                allow_image=False,
+                allow_video=False,
+                allow_audio=True,
+            )
+
 
 class TestGptOssSpecialTokens:
     """Tests for GPT-OSS channel token handling in utils."""

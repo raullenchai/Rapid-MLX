@@ -535,12 +535,28 @@ def test_pinned_tool_required_schema_model_emits_no_tool_calls_returns_422():
     assert "get_weather" in response.json()["detail"]
 
 
-def test_pinned_tool_optional_schema_model_emits_no_tool_calls_synthesizes_200():
-    """Pinned optional-schema tool can synthesize an empty ``tool_use``."""
+def test_pinned_tool_constrained_optional_schema_model_emits_no_tool_calls_returns_422():
+    """Pinned optional-but-constrained schema cannot synthesize empty input."""
     engine = _MultiCallEngine(None, text="I can't help with weather right now.")
     client = _make_client(engine)
     body = _post_messages(client, tool_choice={"type": "tool", "name": "get_weather"})
     body["tools"] = [_GET_WEATHER_OPTIONAL, _LOOKUP_ZIP]
+
+    response = client.post("/v1/messages", json=body)
+
+    assert response.status_code == 422, response.text
+    assert "constrained optional" in response.json()["detail"]
+
+
+def test_pinned_tool_empty_schema_model_emits_no_tool_calls_synthesizes_200():
+    """Pinned empty-schema tool can synthesize an empty ``tool_use``."""
+    engine = _MultiCallEngine(None, text="I can't help with weather right now.")
+    client = _make_client(engine)
+    body = _post_messages(client, tool_choice={"type": "tool", "name": "get_weather"})
+    body["tools"] = [
+        {"name": "get_weather", "input_schema": {"type": "object"}},
+        _LOOKUP_ZIP,
+    ]
 
     response = client.post("/v1/messages", json=body)
 
