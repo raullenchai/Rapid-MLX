@@ -269,6 +269,8 @@ class StreamingPostProcessor:
             self.tool_parser = cfg.tool_parser_instance  # injected mock
         else:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
+        if self.tool_parser:
+            self.tool_parser.reset()
 
         # State
         self.accumulated_text = ""

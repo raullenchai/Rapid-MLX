@@ -5,6 +5,7 @@ import json
 from unittest.mock import MagicMock
 
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
+from vllm_mlx.tool_parsers.llama_tool_parser import LlamaToolParser
 
 
 def _make_cfg(**overrides):
@@ -281,6 +282,15 @@ class TestStreamingPostProcessorToolCalls:
         # a test explicitly opts into a non-empty held suffix.
         parser.flush_held_content.return_value = ""
         return parser
+
+    def test_init_resets_injected_tool_parser_cache(self):
+        parser = LlamaToolParser()
+        assert parser.has_pending_tool_call("ordinary assistant prose " * 32) is False
+
+        cfg = _make_cfg(tool_parser_instance=parser)
+        StreamingPostProcessor(cfg)
+
+        assert parser.has_pending_tool_call('different prefix {"name": "search"')
 
     def test_tool_markup_suppresses_content(self):
         """Content is suppressed while inside tool markup."""

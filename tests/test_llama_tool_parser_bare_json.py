@@ -218,13 +218,14 @@ class TestNoFalsePositives:
             text += "ordinary assistant prose without anchors "
             assert parser.has_pending_tool_call(text) is False
 
-    def test_plain_prefix_cache_does_not_cross_request_boundary(self):
+    def test_plain_prefix_cache_reset_does_not_cross_request_boundary(self):
         parser = LlamaToolParser()
+        first = "ordinary assistant prose " * 32
+        second = 'different prefix {"name": "search"'
 
-        assert parser.has_pending_tool_call("ordinary assistant prose") is False
-        assert (
-            parser.has_pending_tool_call('different prefix {"name": "search"') is True
-        )
+        assert parser.has_pending_tool_call(first) is False
+        parser.reset()
+        assert parser.has_pending_tool_call(second) is True
 
 
 # ---------------------------------------------------------------------------

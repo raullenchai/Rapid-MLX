@@ -814,6 +814,8 @@ class MLLMScheduler:
                         ]
                         request.stop_text_len = safe_upto
                         request.stop_tail = request.stop_text[-keep:] if keep else ""
+                        request.output_text = request.stop_text[:safe_upto]
+                        output.output_text = request.output_text
                 elif stop_params:
                     # ``new_text`` may be empty while the detokenizer is
                     # holding an incomplete byte sequence. Preserve the
