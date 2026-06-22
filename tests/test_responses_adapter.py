@@ -351,6 +351,23 @@ class TestResponsesToOpenai:
         with pytest.raises(ValueError, match=match):
             responses_to_openai(req)
 
+    def test_empty_string_message_content_does_not_become_empty_prompt(self):
+        req = ResponsesRequest.model_construct(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem.model_construct(
+                    type="message",
+                    role="user",
+                    content="",
+                )
+            ],
+        )
+
+        with pytest.raises(
+            ValueError, match="input_text.text must be a non-empty string"
+        ):
+            responses_to_openai(req)
+
     @pytest.mark.parametrize(
         ("content_item", "match"),
         [
@@ -473,7 +490,8 @@ class TestResponsesToOpenai:
         assert chat.messages[0].content == ("You are the base agent.\n\nBe terse.")
         # All other messages preserved in order.
         assert chat.messages[1].role == "user"
-        assert chat.messages[1].content == "Hi"
+        assert chat.messages[1].content[0].type == "text"
+        assert chat.messages[1].content[0].text == "Hi"
 
     def test_message_input_item(self):
         req = ResponsesRequest(
@@ -483,6 +501,23 @@ class TestResponsesToOpenai:
                     type="message",
                     role="user",
                     content=[ResponsesContentItem(type="input_text", text="Hello")],
+                ),
+            ],
+        )
+        chat = responses_to_openai(req)
+        assert len(chat.messages) == 1
+        assert chat.messages[0].role == "user"
+        assert chat.messages[0].content[0].type == "text"
+        assert chat.messages[0].content[0].text == "Hello"
+
+    def test_message_input_item_string_content_uses_text_part_validation(self):
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="user",
+                    content="Hello",
                 ),
             ],
         )

@@ -722,27 +722,11 @@ class MLLMScheduler:
                 # defensive adapters on the same stop path.
                 new_text = tokenizer.decode([response.token])
 
-            # output_token_ids is a live reference (not a defensive copy):
-            # consumers read it synchronously; the per-decode list() was O(n).
-            #
-            # ``logprobs`` is wired through from the MLLMBatchResponse so a
-            # ``logprobs=true, top_logprobs=K`` chat request gets the same
-            # per-token data the text-only AR path produces. Pre-fix the
-            # MLLM path silently dropped the field — every chunk reached
-            # the route with ``logprobs=None`` and the OpenAI ``choices[0].
-            # logprobs`` slot serialised as ``null``. The shape matches the
-            # text path's ``RequestOutput.logprobs`` field exactly so the
-            # downstream ``_extract_streaming_token_logprobs`` extractor
-            # works unmodified for both paths.
-            output = RequestOutput(
-                request_id=request_id,
-                new_token_ids=[response.token],
-                new_text=new_text,
-                output_token_ids=request.output_tokens,
-                prompt_tokens=request.num_prompt_tokens,
-                completion_tokens=request.num_output_tokens,
-                logprobs=getattr(response, "logprobs", None),
-            )
+            output_new_text = new_text
+            output_output_text = ""
+            output_finished = False
+            output_finish_reason: str | None = None
+            output_matched_stop: str | None = None
 
             finish_reason = response.finish_reason
             stop_trimmed = False
@@ -767,7 +751,7 @@ class MLLMScheduler:
                     keep = max(0, max_stop_len - 1)
                     request.stop_tail = request.stop_text[-keep:] if keep else ""
                     request.output_text = request.stop_text
-                    output.output_text = request.output_text
+                    output_output_text = request.output_text
                 prev_text_len = request.stop_text_len
                 if stop_params and new_text:
                     max_stop_len = max(len(s) for s in stop_params)
@@ -792,7 +776,7 @@ class MLLMScheduler:
                     if match is not None:
                         idx, stop_str = match
                         finish_reason = "stop"
-                        output.finish_reason = finish_reason
+                        output_finish_reason = finish_reason
                         # H-03: pin WHICH user-supplied stop fired so
                         # the Anthropic adapter can surface
                         # ``stop_reason="stop_sequence"`` +
@@ -800,13 +784,13 @@ class MLLMScheduler:
                         # Mirrors the text-scheduler companion change so
                         # MLLM-backed ``/v1/messages`` traffic gets the
                         # same surface as the text path.
-                        output.matched_stop = stop_str
+                        output_matched_stop = stop_str
                         # Emit only the valid prefix before the stop marker
                         # in new_text so streaming clients don't lose content.
                         visible_text = streamed_so_far[:idx]
-                        output.new_text = visible_text[prev_text_len:]
+                        output_new_text = visible_text[prev_text_len:]
                         request.output_text = visible_text
-                        output.output_text = visible_text
+                        output_output_text = visible_text
                         request.stop_text = visible_text
                         request.stop_text_len = len(visible_text)
                         request.stop_tail = ""
@@ -817,7 +801,7 @@ class MLLMScheduler:
                             safe_upto = len(request.stop_text)
                         else:
                             safe_upto = max(0, len(request.stop_text) - keep)
-                        output.new_text = request.stop_text[
+                        output_new_text = request.stop_text[
                             request.stop_text_len : safe_upto
                         ]
                         request.stop_text_len = safe_upto
@@ -831,7 +815,7 @@ class MLLMScheduler:
                             else ""
                         )
                         request.output_text = request.stop_text[:safe_upto]
-                        output.output_text = request.output_text
+                        output_output_text = request.output_text
                 elif stop_params:
                     # ``new_text`` may be empty while the detokenizer is
                     # holding an incomplete byte sequence. Preserve the
@@ -840,10 +824,10 @@ class MLLMScheduler:
             else:
                 if finish_reason != "stop":
                     request.output_text += new_text
-                    output.output_text = request.output_text
+                    output_output_text = request.output_text
                 else:
-                    output.new_text = ""
-                    output.output_text = request.output_text
+                    output_new_text = ""
+                    output_output_text = request.output_text
 
             # Check if finished
             if finish_reason is not None:
@@ -855,16 +839,16 @@ class MLLMScheduler:
                 ):
                     held_text = request.stop_text[request.stop_text_len :]
                     request.stop_text_len = len(request.stop_text)
-                    output.new_text += held_text
+                    output_new_text += held_text
                     request.output_text += held_text
-                    output.output_text = request.output_text
+                    output_output_text = request.output_text
                 if finish_reason == "stop":
                     request.status = RequestStatus.FINISHED_STOPPED
                 elif finish_reason == "length":
                     request.status = RequestStatus.FINISHED_LENGTH_CAPPED
 
-                output.finished = True
-                output.finish_reason = finish_reason
+                output_finished = True
+                output_finish_reason = finish_reason
                 finished_ids.add(request_id)
 
                 # Use trimmed output if set by stop-string check, else
@@ -872,15 +856,15 @@ class MLLMScheduler:
                 # Use explicit flag instead of string truthiness — empty string
                 # is a valid trimmed result (stop at position 0).
                 if stop_trimmed or finish_reason == "stop":
-                    output.output_text = request.output_text
+                    output_output_text = request.output_text
                 else:
                     detok = self._detokenizer_pool.get(request_id)
                     if detok is not None:
                         detok.finalize()
-                        output.output_text = detok.text
+                        output_output_text = detok.text
                     else:
-                        output.output_text = tokenizer.decode(request.output_tokens)
-                    request.output_text = output.output_text
+                        output_output_text = tokenizer.decode(request.output_tokens)
+                    request.output_text = output_output_text
                 request.finish_reason = finish_reason
                 self._detokenizer_pool.pop(request_id, None)
 
@@ -892,7 +876,33 @@ class MLLMScheduler:
                     f"{request.num_output_tokens} tokens"
                 )
 
-            outputs.append(output)
+            # output_token_ids is a live reference (not a defensive copy):
+            # consumers read it synchronously; the per-decode list() was O(n).
+            #
+            # ``logprobs`` is wired through from the MLLMBatchResponse so a
+            # ``logprobs=true, top_logprobs=K`` chat request gets the same
+            # per-token data the text-only AR path produces. Pre-fix the
+            # MLLM path silently dropped the field — every chunk reached
+            # the route with ``logprobs=None`` and the OpenAI ``choices[0].
+            # logprobs`` slot serialised as ``null``. The shape matches the
+            # text path's ``RequestOutput.logprobs`` field exactly so the
+            # downstream ``_extract_streaming_token_logprobs`` extractor
+            # works unmodified for both paths.
+            outputs.append(
+                RequestOutput(
+                    request_id=request_id,
+                    new_token_ids=[response.token],
+                    new_text=output_new_text,
+                    output_token_ids=request.output_tokens,
+                    output_text=output_output_text,
+                    finished=output_finished,
+                    finish_reason=output_finish_reason,
+                    prompt_tokens=request.num_prompt_tokens,
+                    completion_tokens=request.num_output_tokens,
+                    logprobs=getattr(response, "logprobs", None),
+                    matched_stop=output_matched_stop,
+                )
+            )
 
         return outputs, finished_ids
 

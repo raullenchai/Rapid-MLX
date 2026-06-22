@@ -747,6 +747,7 @@ class TestMLLMSchedulerStopSequences:
         assert "req-1" in finished_ids
         assert outputs[0].finished is True
         assert outputs[0].finish_reason == "stop"
+        assert outputs[0].matched_stop == "###"
         # Output text should be trimmed at stop string
         assert outputs[0].output_text == "Hello world"
         # new_text must be cleared so the stop string isn't streamed
@@ -1222,6 +1223,7 @@ class TestMLLMSchedulerStopSequences:
         assert outputs[0].new_text == ""
         assert outputs[1].new_text == "hi there"
         assert outputs[1].finish_reason == "stop"
+        assert outputs[1].matched_stop == "STOP"
         assert outputs[1].output_text == "hi there"
         assert request.output_text == "hi there"
 
