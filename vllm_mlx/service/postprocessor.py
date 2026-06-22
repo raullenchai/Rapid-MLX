@@ -1112,11 +1112,10 @@ class StreamingPostProcessor:
             try:
                 return copy.copy(parser)
             except Exception:
-                logger.warning(
-                    "Disabling injected tool parser instance because it "
-                    "could not be cloned safely for a request-local stream."
+                raise RuntimeError(
+                    "Injected tool parser instance could not be cloned safely "
+                    "for a request-local stream"
                 )
-                return None
 
     def set_thinking_model(self, model_name: str):
         """Enable Nemotron-style thinking prefix injection."""

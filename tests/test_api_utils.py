@@ -989,6 +989,16 @@ class TestValidateContentBlocksForCapabilities:
                 allow_video=False,
             )
 
+    def test_chat_text_block_allows_empty_text(self):
+        messages = [{"role": "user", "content": [{"type": "text", "text": ""}]}]
+
+        validate_content_blocks_for_capabilities(
+            messages,
+            model_name="chat-model",
+            allow_image=False,
+            allow_video=False,
+        )
+
     def test_responses_text_blocks_are_valid_text_content(self):
         messages = [
             {

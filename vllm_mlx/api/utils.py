@@ -1025,10 +1025,8 @@ def _validate_content_part_payload(item: dict) -> None:
             raise ValueError(
                 f"content[].text must be a non-empty string (got {type(text).__name__})"
             )
-        if text == "":
-            if item_type in {"input_text", "output_text"}:
-                raise ValueError(f"{item_type}.text must be a non-empty string")
-            raise ValueError("content[].text must be a non-empty string (got str)")
+        if text == "" and item_type in {"input_text", "output_text"}:
+            raise ValueError(f"{item_type}.text must be a non-empty string")
     elif item_type == "image_url":
         _extract_object_url(item, "image_url")
     elif item_type == "input_image":

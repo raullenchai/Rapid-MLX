@@ -4,6 +4,8 @@
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
 from vllm_mlx.tool_parsers.llama_tool_parser import LlamaToolParser
 
@@ -299,6 +301,19 @@ class TestStreamingPostProcessorToolCalls:
         cfg = _make_cfg(tool_parser_instance=parser)
 
         StreamingPostProcessor(cfg)
+
+    def test_init_rejects_uncloneable_injected_tool_parser(self):
+        class UncloneableParser:
+            def __copy__(self):
+                raise TypeError("cannot copy")
+
+            def __deepcopy__(self, memo):
+                raise TypeError("cannot deepcopy")
+
+        cfg = _make_cfg(tool_parser_instance=UncloneableParser())
+
+        with pytest.raises(RuntimeError, match="could not be cloned safely"):
+            StreamingPostProcessor(cfg)
 
     def test_tool_markup_suppresses_content(self):
         """Content is suppressed while inside tool markup."""

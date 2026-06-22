@@ -848,6 +848,27 @@ class MLLMScheduler:
                     and request.stop_text
                     and request.stop_text_len < len(request.stop_text)
                 ):
+                    for stop_str in stop_params:
+                        idx = request.stop_text.find(stop_str)
+                        if idx != -1:
+                            visible_text = request.stop_text[:idx]
+                            output_new_text = visible_text[
+                                request.stop_text_len : len(visible_text)
+                            ]
+                            request.output_text = visible_text
+                            output_output_text = visible_text
+                            request.stop_text = visible_text
+                            request.stop_text_len = len(visible_text)
+                            request.stop_tail = ""
+                            output_matched_stop = stop_str
+                            stop_trimmed = True
+                            break
+                if (
+                    not stop_trimmed
+                    and stop_params
+                    and request.stop_text
+                    and request.stop_text_len < len(request.stop_text)
+                ):
                     held_text = request.stop_text[request.stop_text_len :]
                     request.stop_text_len = len(request.stop_text)
                     output_new_text += held_text
