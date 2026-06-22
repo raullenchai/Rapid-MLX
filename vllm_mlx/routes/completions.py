@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Text completion endpoints — /v1/completions."""
 
+import inspect
 import json
 import logging
 import time
@@ -49,6 +50,17 @@ def _engine_supports_completion_logprobs(engine) -> bool:
     )
     capability = getattr(engine, "supports_completion_logprobs", None)
     if capability is not None:
+        if callable(capability):
+            try:
+                value = capability()
+            except Exception:
+                return False
+            if inspect.isawaitable(value):
+                close = getattr(value, "close", None)
+                if callable(close):
+                    close()
+                return False
+            return value if isinstance(value, bool) else False
         return capability if isinstance(capability, bool) else False
     return structural_support
 

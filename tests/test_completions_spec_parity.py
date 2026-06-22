@@ -496,7 +496,7 @@ class TestLogprobsEngineCapability:
 
         assert _engine_supports_completion_logprobs(_Engine()) is True
 
-    def test_callable_capability_is_not_invoked(self):
+    def test_sync_callable_capability_is_evaluated(self):
         from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
 
         class _Engine:
@@ -505,15 +505,30 @@ class TestLogprobsEngineCapability:
 
             def supports_completion_logprobs(self):
                 self.called = True
-                return False
+                return True
 
             async def stream_generate(self, *_a, **_kw):
                 if False:
                     yield None
 
         engine = _Engine()
-        assert _engine_supports_completion_logprobs(engine) is False
-        assert engine.called is False
+        assert _engine_supports_completion_logprobs(engine) is True
+        assert engine.called is True
+
+    def test_sync_callable_false_capability_is_evaluated(self):
+        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+
+        class _Engine:
+            tokenizer = object()
+
+            def supports_completion_logprobs(self):
+                return False
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+        assert _engine_supports_completion_logprobs(_Engine()) is False
 
     def test_non_bool_capability_attribute_is_unsupported(self):
         from vllm_mlx.routes.completions import _engine_supports_completion_logprobs

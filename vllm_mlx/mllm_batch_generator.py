@@ -100,6 +100,9 @@ class MLLMBatchResponse:
     token: int  # Generated token
     logprobs: mx.array  # Log probabilities
     finish_reason: str | None = None  # "stop", "length", or None
+    # True only when the batch generator confirms ``token`` is an EOS/control
+    # stop id from its stop-token set. User stop strings are matched later by
+    # the scheduler on decoded text and must not set this flag.
     token_is_stop_token: bool = False
     prompt_cache: list[Any] | None = None  # Extracted cache for finished requests
     # Prompt-token count for the request that produced this token. Stamped
