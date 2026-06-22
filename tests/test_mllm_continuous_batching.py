@@ -1089,6 +1089,71 @@ class TestMLLMSchedulerStopSequences:
         assert outputs[0].new_text == held_tail
         assert outputs[0].output_text == full_text
 
+    def test_terminal_finalize_suffix_is_streamed_through_stop_flush(self):
+        """EOF detokenizer suffix must reach streaming clients as new_text."""
+        from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
+        from vllm_mlx.mllm_scheduler import (
+            MLLMRequest,
+            MLLMScheduler,
+            MLLMSchedulerConfig,
+        )
+        from vllm_mlx.request import SamplingParams
+
+        class FinalizingDetok:
+            last_segment = ""
+
+            def __init__(self, text):
+                self.text = text
+
+            def reset(self):
+                pass
+
+            def add_token(self, _token):
+                self.last_segment = ""
+
+            def finalize(self):
+                pass
+
+        emitted_text = "hello "
+        held_text = "wor"
+        finalized_suffix = "ld"
+        full_text = emitted_text + held_text + finalized_suffix
+        mock_model = MagicMock()
+        mock_processor = MagicMock()
+        mock_tokenizer = MagicMock()
+        mock_processor.tokenizer = mock_tokenizer
+
+        scheduler = MLLMScheduler(mock_model, mock_processor, MLLMSchedulerConfig())
+        request = MLLMRequest(
+            request_id="req-terminal-finalize-suffix",
+            prompt="Say hello",
+            sampling_params=SamplingParams(max_tokens=10),
+            stop=["STOP"],
+        )
+        request.stop_text = emitted_text + held_text
+        request.stop_text_len = len(emitted_text)
+        request.output_text = emitted_text
+        scheduler.running[request.request_id] = request
+        scheduler.uid_to_request_id[0] = request.request_id
+        scheduler._detokenizer_pool[request.request_id] = FinalizingDetok(full_text)
+
+        outputs, finished_ids = scheduler._process_batch_responses(
+            [
+                MLLMBatchResponse(
+                    uid=0,
+                    request_id=request.request_id,
+                    token=1,
+                    logprobs=mx.array([0.1]),
+                    finish_reason="length",
+                )
+            ]
+        )
+
+        assert finished_ids == {request.request_id}
+        assert outputs[0].finish_reason == "length"
+        assert outputs[0].new_text == "world"
+        assert outputs[0].output_text == full_text
+
     def test_short_initial_stop_holdback_flushes_on_empty_terminal_chunk(self):
         """Held text shorter than the stop lookbehind must not be dropped."""
         from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
