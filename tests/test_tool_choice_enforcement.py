@@ -51,6 +51,7 @@ from fastapi.testclient import TestClient
 
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
+from vllm_mlx.reasoning.qwen3_parser import Qwen3ReasoningParser
 from vllm_mlx.routes.chat import (
     _contains_tool_wire_literal,
     _forced_tool_call_prefix,
@@ -525,6 +526,58 @@ def test_t3_chat_route_strips_wire_leak_from_content_and_reasoning():
         assert leak not in reasoning, (
             f"T3 leak: {leak!r} survived in reasoning_content: {reasoning!r}"
         )
+
+
+def test_t3_chat_route_scrubs_wire_leak_from_reasoning_content():
+    """Forced malformed tool wire inside reasoning must not leak markers
+    through ``reasoning_content``.
+    """
+
+    raw = (
+        "<think>Need to call the tool.\n"
+        '<tool_call>{"name":"add_numbers","arguments": 4128, 7591}</function>\n'
+        "Done thinking.</think>"
+    )
+
+    class _ReasoningWireLeakEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=raw, raw_text=raw)
+
+    engine = _ReasoningWireLeakEngine()
+    client = _make_client(engine, tool_call_parser="hermes")
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = False
+    cfg.reasoning_parser = Qwen3ReasoningParser(tokenizer=None)
+    cfg.tool_call_parser = "hermes"
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "What is 4128 + 7591?"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    msg = resp.json()["choices"][0]["message"]
+    assert msg.get("tool_calls"), msg
+    assert msg["tool_calls"][0]["function"]["name"] == "add_numbers"
+
+    reasoning = msg.get("reasoning_content") or ""
+    for leak in ("<tool_call>", "</tool_call>", "</function>", "</parameter>"):
+        assert leak not in reasoning, (
+            f"T3 leak: {leak!r} survived in reasoning_content: {reasoning!r}"
+        )
+    assert "Need to call the tool." in reasoning
+    assert "Done thinking." in reasoning
 
 
 def test_t3_chat_route_recovers_args_when_possible():
@@ -1102,23 +1155,35 @@ def test_codex_r6_blocking_1_forced_choice_with_clean_text_does_not_scrub():
     is plain prose must keep its content unmodified. Pre-fix, the
     scrub gate fired on every successful forced call regardless of
     whether the parser left wire markers behind.
-
-    Static check on the chat-route source — the gate now AND-includes
-    ``_contains_tool_wire_literal(cleaned_text)`` so that no leak ⇒
-    no scrub.
     """
-    import inspect
 
-    import vllm_mlx.routes.chat as _chat_mod
-
-    src = inspect.getsource(_chat_mod)
-    # The gate predicate must include the leak detector.
-    assert "_contains_tool_wire_literal(cleaned_text)" in src, (
-        "scrub gate must check for actual wire leak — codex r6 BLOCKING #1"
+    raw = (
+        '<tool_call>{"name":"add_numbers","arguments":{"a":1,"b":2}}</tool_call>'
+        "\nTool called successfully."
     )
 
-    # And the helper itself must report "no leak" on plain prose.
-    assert not _contains_tool_wire_literal("Tool called successfully.")
+    class _CleanForcedEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=raw, raw_text=raw)
+
+    engine = _CleanForcedEngine()
+    client = _make_client(engine, tool_call_parser="hermes")
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add 1 and 2"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+
+    msg = resp.json()["choices"][0]["message"]
+    assert msg.get("tool_calls"), msg
+    assert msg["tool_calls"][0]["function"]["name"] == "add_numbers"
+    assert msg.get("content") == "Tool called successfully."
 
 
 def test_codex_r6_blocking_1_forced_choice_with_wire_leak_still_scrubs():

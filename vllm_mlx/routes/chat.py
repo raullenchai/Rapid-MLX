@@ -2809,6 +2809,8 @@ async def _create_chat_completion_impl(
         # any caller that hasn't been threaded yet.
         finish_reason=getattr(output, "finish_reason", None),
     )
+    if _wire_scrub_active and reasoning_text:
+        reasoning_text = _scrub_tool_wire_literals(reasoning_text)
 
     # Process response_format if specified (after reasoning parser cleaned the text)
     if response_format and not tool_calls:
