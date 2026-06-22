@@ -1788,9 +1788,7 @@ def test_save_to_disk_recovers_when_only_first_rename_fails(tmp_path, monkeypatc
 
     monkeypatch.setattr(_mc.os, "rename", _always_fail_new_to_cache_dir)
     result = c2.save_to_disk(str(cache_dir))
-    assert result is False, (
-        "save_to_disk must surface rename failures via return False"
-    )
+    assert result is False, "save_to_disk must surface rename failures via return False"
     # Restore os.rename before exercising load_from_disk's recovery
     # path (which also calls os.rename to promote .new -> cache_dir).
     monkeypatch.setattr(_mc.os, "rename", original_rename)

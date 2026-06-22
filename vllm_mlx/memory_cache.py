@@ -1710,9 +1710,7 @@ class MemoryAwarePrefixCache:
                 try:
                     os.rename(new_dir, cache_dir)
                     rename_committed = True
-                    logger.warning(
-                        "[cache_persist] recovered: .new -> cache_dir"
-                    )
+                    logger.warning("[cache_persist] recovered: .new -> cache_dir")
                 except OSError as retry_err:
                     logger.error(
                         f"[cache_persist] recovery rename failed "
