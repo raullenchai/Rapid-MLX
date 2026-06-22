@@ -339,9 +339,7 @@ class TestR8M2ResetClearsLatch:
             enable_auto_tool_choice=True,
             tool_call_parser="hermes",
         )
-        pp = StreamingPostProcessor(
-            cfg, tools_requested=True, enable_thinking=False
-        )
+        pp = StreamingPostProcessor(cfg, tools_requested=True, enable_thinking=False)
         pp.reset()
         # First request: explicit <think> triggers promotion.
         pp.process_chunk(_make_output("<think>"))
