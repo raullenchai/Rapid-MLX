@@ -985,6 +985,7 @@ def _register_canonical_request_models() -> None:
     try:
         from ..api.anthropic_models import AnthropicRequest
         from ..api.models import (
+            AudioSpeechRequest,
             ChatCompletionRequest,
             CompletionRequest,
             EmbeddingRequest,
@@ -1003,6 +1004,12 @@ def _register_canonical_request_models() -> None:
         EmbeddingRequest,
         AnthropicRequest,
         ResponsesRequest,
+        # R7-M8: AudioSpeechRequest binds the TTS request body and
+        # enforces ``input`` non-blank at the schema layer. Registering
+        # here lets the envelope handler walk the loc against the
+        # actual model fields so ``error.param`` is populated
+        # (``"input"``) instead of collapsing to ``<field>``.
+        AudioSpeechRequest,
     ):
         register_request_model(cls)
     # Route-path → root-model bindings. Walked in declaration order, so
@@ -1016,6 +1023,12 @@ def _register_canonical_request_models() -> None:
     register_request_path("/v1/embeddings", EmbeddingRequest)
     register_request_path("/v1/messages", AnthropicRequest)
     register_request_path("/v1/responses", ResponsesRequest)
+    # R7-M8: ``input`` lives on three different request models
+    # (ResponsesRequest, EmbeddingRequest, AudioSpeechRequest); the
+    # path-based pin makes ``/v1/audio/speech`` resolve to the TTS
+    # body model so the envelope's ``param`` slot points at the
+    # right ``input`` field.
+    register_request_path("/v1/audio/speech", AudioSpeechRequest)
 
 
 def install_exception_handlers(app: FastAPI) -> None:

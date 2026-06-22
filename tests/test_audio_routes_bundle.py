@@ -892,14 +892,15 @@ class TestKokoroMisakiGate:
 
         client, restore = _mount_audio_app()
         try:
-            # The route declares ``model: str = "kokoro"`` without an
-            # explicit ``Body(...)`` / ``Form(...)`` annotation, so
-            # FastAPI treats it as a QUERY parameter. Sending it in
-            # the JSON body would silently leave ``model`` at the
-            # default "kokoro" and the test would trip the gate
-            # unrelated to the family-check logic. Send via query.
+            # R7-M8: the route now binds a Pydantic Body model
+            # (``AudioSpeechRequest``) so the body MUST be JSON. The
+            # pre-r7-C query-param shape silently lost the body; the
+            # current contract puts ``input`` on the JSON body, which
+            # is the OpenAI-canonical shape and what Bo's dogfood
+            # repro emitted.
             r = client.post(
-                "/v1/audio/speech?model=chatterbox&input=hi&voice=default",
+                "/v1/audio/speech",
+                json={"model": "chatterbox", "input": "hi", "voice": "default"},
             )
         finally:
             restore()

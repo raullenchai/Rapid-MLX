@@ -2094,13 +2094,50 @@ class AudioTranscriptionResponse(BaseModel):
 
 
 class AudioSpeechRequest(BaseModel):
-    """Request for text-to-speech."""
+    """Request for text-to-speech (OpenAI ``/v1/audio/speech`` compatible).
+
+    R7-M8 (Bo 0.8.8 dogfood): ``input`` must reject empty / whitespace-
+    only strings BEFORE we reach the synthesis engine. Pre-fix the
+    route declared ``input: str = ""`` as a bare query parameter, so
+    JSON bodies were silently dropped and an empty/missing ``input``
+    collapsed into the generic 500 ``No audio generated`` envelope
+    (the engine looped over an empty phoneme list and rapid-mlx's
+    chunk-collector raised). Both shapes are CLIENT errors and should
+    surface a 400 with ``param="input"`` so callers can fix their
+    request payload without an opaque 500 round-trip.
+
+    ``input`` carries an explicit ``min_length=1``; the bound model is
+    registered with the envelope handler so the Pydantic validation
+    error surfaces as ``{"error": {"type": "invalid_request_error",
+    "param": "input", ...}}`` instead of the FastAPI 422 default.
+    """
 
     model: str = "kokoro"
-    input: str
+    # min_length=1 catches the ``input=""`` shape Bo reported. The
+    # ``model_validator`` below catches the whitespace-only shape that
+    # slips past Pydantic's length check (``" "`` is one char) — both
+    # produce empty phoneme lists downstream so both must 400.
+    input: str = Field(..., min_length=1)
     voice: str = "af_heart"
-    speed: float = 1.0
+    # OpenAI bounds: 0.25..4.0. Out-of-range values silently no-op
+    # inside mlx_audio in some lanes; reject up front so the envelope
+    # matches the documented contract.
+    speed: float = Field(default=1.0, ge=0.25, le=4.0)
     response_format: str = "wav"
+
+    @field_validator("input")
+    @classmethod
+    def _input_must_be_non_blank(cls, v: str) -> str:
+        # ``min_length=1`` only checks character count — ``"   "`` is
+        # length 3 and still passes, but it produces an empty phoneme
+        # list downstream and trips the same 500 ``No audio generated``
+        # the empty-string case did. Reject here too so the wire
+        # contract is "non-blank text" and the param= envelope stays
+        # consistent. We raise ``ValueError`` so Pydantic packages it as
+        # the same ``value_error`` shape the field handler emits.
+        if not v.strip():
+            raise ValueError("input must be a non-empty, non-blank string")
+        return v
 
 
 class AudioSeparationRequest(BaseModel):
