@@ -887,13 +887,18 @@ def _trailing_action_prefix_len(text: str) -> int:
     """Return how many trailing bytes of ``text`` could be a prefix of ``Action:``.
 
     Used by the streaming hold-back path. If ``text`` ends with a
-    non-empty strict prefix of the literal ``"Action:"`` token (e.g.
-    ``"...thing.\\nAc"`` → trailing ``"Ac"`` is the 2-byte prefix of
-    ``"Action:"``), return that prefix length so the streaming path
-    can keep those trailing bytes buffered until the next delta
-    resolves the token. Returns 0 if no such overlap exists, OR if
-    ``text`` contains the full ``"Action:"`` token already (in which
-    case the full-action consumer / strict-prefix branch handles it).
+    non-empty strict prefix of the literal ``"Action:"`` token AT A
+    WORD BOUNDARY (the ``_ACTION_LINE`` grammar is anchored on
+    ``\\bAction:``, so the candidate-opener match must start on a
+    word-boundary just like the real action would), return that
+    prefix length so the streaming path can keep those trailing bytes
+    buffered until the next delta resolves the token. Returns 0 if no
+    such overlap exists, OR if ``text`` contains the full ``"Action:"``
+    token already (the full-action consumer / strict-prefix branch
+    handles that), OR if the candidate tail is NOT word-boundary aligned
+    (codex r1 HIGH — pre-fix, trailing prose like ``"Plan A"`` /
+    ``"China"`` held the ``"A"`` / ``"Ac"`` tail incorrectly because
+    the lookahead ignored the preceding char's word-class).
 
     This is the symmetric counterpart to the reasoning parser's
     ``_compute_partial_action_hold`` — same purpose (don't ship a
@@ -914,8 +919,28 @@ def _trailing_action_prefix_len(text: str) -> int:
     # single delta containing ``"....Acti"`` returns 4, not 1.
     max_overlap = len(_ACTION_TOKEN) - 1  # 6 bytes (we already excluded full token)
     for k in range(min(max_overlap, len(text)), 0, -1):
-        if _ACTION_TOKEN.startswith(text[-k:]):
-            return k
+        candidate = text[-k:]
+        if not _ACTION_TOKEN.startswith(candidate):
+            continue
+        # Word-boundary gate: the candidate is the trailing edge of a
+        # potential ``\\bAction:`` match, so the char BEFORE the candidate
+        # must be a non-word char (or the candidate must be at start of
+        # text). Without this gate, ordinary trailing letters in prose —
+        # ``"Plan A"`` (trailing ``"A"``), ``"China"`` (trailing ``"a"``
+        # which isn't a prefix of ``Action:`` so doesn't trigger here, but
+        # consider ``"banana"`` where the trailing ``"a"`` IS a prefix of
+        # ``Actio**n**:``... no, ``"a"`` is NOT a prefix of ``"Action:"``,
+        # but ``"A"`` is) hold incorrectly, adding latency and risking
+        # downstream consumer cues. By requiring word-boundary alignment
+        # we restrict the hold to the genuine action-opener candidate.
+        if len(text) > k:
+            prev_char = text[-k - 1]
+            # Word boundary: prev_char is non-word (matches Python re's
+            # \\b definition — word chars are [a-zA-Z0-9_]).
+            if prev_char.isalnum() or prev_char == "_":
+                continue
+        # Either prev_char is non-word OR candidate is at start of text.
+        return k
     return 0
 
 
@@ -958,59 +983,130 @@ def _iter_actions(text: str) -> list[tuple[int, int, str, dict[str, Any]]]:
     return actions
 
 
-# Spec-key translation map for the Anthropic ``/v1/messages`` and OpenAI
+# Spec-key translation maps for the Anthropic ``/v1/messages`` and OpenAI
 # ``/v1/responses`` lanes. The UI-TARS parser emits its CANONICAL key set
 # (``point`` / ``start_point`` / ``end_point``) so the chat-completions
 # lane stays bytes-faithful to PR #812's contract; the adapters then
 # remap to each spec's documented key.
 #
-# Anthropic Computer-Use spec
-# (https://docs.anthropic.com/en/docs/agents-and-tools/computer-use):
-# ``coordinate=[x, y]`` for single-point verbs; two-point verbs are
-# expressed via separate ``start_coordinate`` / ``end_coordinate``
-# fields (matches the spec's ``screenshot`` / ``cursor_position`` shape).
+# Anthropic Computer-Use spec (https://platform.claude.com/docs/en/agents-
+# and-tools/tool-use/computer-use-tool): ``coordinate=[x, y]`` for
+# single-point verbs (``click`` / ``scroll`` / …); two-point ``drag``
+# uses ``start_coordinate`` plus ``coordinate`` (the end). We surface
+# both as ``start_coordinate`` + ``coordinate`` per spec.
 #
 # OpenAI Responses Computer-Use spec
-# (https://platform.openai.com/docs/api-reference/responses-streaming/output_item):
+# (https://developers.openai.com/api/docs/guides/tools-computer-use):
 # ``computer_call.action.coordinate=[x, y]`` for single-point; two-point
-# ``drag`` action uses ``path=[{x, y}, ...]`` — but a pragmatic translation
-# emits ``start_coordinate`` / ``end_coordinate`` mirroring the Anthropic
-# shape so a single key-mapper covers both surfaces. The Responses lane
-# would otherwise have NO drag shape because the parser emits the
-# Anthropic-compatible point-pair, not OpenAI's path list. Centralized
+# ``drag`` action uses ``path=[{"x": x, "y": y}, ...]`` (start, end as
+# a 2-element path). Cross-lane shape divergence is real — the two
+# Computer-Use specs don't share a drag wire format, so the single
+# key-mapping pass below has lane-specific drag handling. Centralized
 # here so the two adapters can't drift on key naming.
+
+# Single-point key rename (shared across Anthropic + Responses). The
+# UI-TARS-native ``point`` → spec ``coordinate``. ``start_point`` /
+# ``end_point`` are intentionally OMITTED from this map because the
+# two-point handling is lane-aware (see ``translate_to_*`` helpers).
 _UI_TARS_TO_SPEC_KEY_MAP: dict[str, str] = {
     "point": "coordinate",
-    "start_point": "start_coordinate",
-    "end_point": "end_coordinate",
 }
 
 
-def translate_to_spec_coordinate_keys(args: dict[str, Any]) -> dict[str, Any]:
-    """Translate UI-TARS canonical coord keys to Anthropic/Responses spec keys.
+def translate_to_anthropic_spec_keys(args: dict[str, Any]) -> dict[str, Any]:
+    """Translate UI-TARS canonical coord keys to Anthropic spec keys.
 
-    The parser output (``arguments`` JSON for the ``computer`` tool call)
-    uses UI-TARS native keys ``point`` / ``start_point`` / ``end_point``
-    because that's the contract PR #812 documented and the chat-completions
-    OpenAI lane is already on. But the Anthropic ``/v1/messages`` lane
-    (``tool_use.input``) and the OpenAI ``/v1/responses`` lane
-    (``computer_call.action``) both follow specs that use ``coordinate``
-    (and ``start_coordinate`` / ``end_coordinate`` for two-point verbs).
+    Anthropic Computer-Use spec:
+    - single-point verbs (``click`` / ``scroll`` / …): ``coordinate=[x,y]``
+    - two-point ``drag`` (and aliases): ``start_coordinate=[x,y]`` plus
+      ``coordinate=[x,y]`` (the spec uses ``coordinate`` for the END
+      point of a drag, not ``end_coordinate``).
 
-    Returns a shallow-copied dict with the keys remapped per
-    ``_UI_TARS_TO_SPEC_KEY_MAP``; non-coord keys (``action``, ``content``,
-    ``key``, ``direction``, …) pass through verbatim. Caller mutates only
-    the copy.
+    The parser emits ``point`` / ``start_point`` / ``end_point``; this
+    helper renames per the above. Non-coord kwargs (``action``,
+    ``content``, ``key``, ``direction``, …) pass through verbatim.
+    Returns a fresh dict; caller mutates only the copy.
 
     Idempotent: applying twice produces the same result (already-translated
-    keys aren't in the map and are passed through).
+    keys aren't in the renames and pass through unchanged).
     """
     if not args:
         return args
     out: dict[str, Any] = {}
     for k, v in args.items():
-        out[_UI_TARS_TO_SPEC_KEY_MAP.get(k, k)] = v
+        if k == "point":
+            out["coordinate"] = v
+        elif k == "start_point":
+            out["start_coordinate"] = v
+        elif k == "end_point":
+            # Anthropic's spec uses ``coordinate`` for the drag END.
+            out["coordinate"] = v
+        else:
+            out[k] = v
     return out
+
+
+def translate_to_responses_spec_keys(args: dict[str, Any]) -> dict[str, Any]:
+    """Translate UI-TARS canonical coord keys to OpenAI Responses spec keys.
+
+    OpenAI Responses Computer-Use spec:
+    - single-point verbs (``click`` / ``scroll`` / …): ``coordinate=[x,y]``
+    - two-point ``drag``: ``path=[{"x": x1, "y": y1}, {"x": x2, "y": y2}]``
+      (the spec uses an array of ``{x, y}`` objects, not separate
+      ``start_coordinate`` / ``end_coordinate`` fields).
+
+    The parser emits ``point`` / ``start_point`` / ``end_point``; this
+    helper folds ``start_point`` + ``end_point`` into the spec ``path``
+    array when both are present. Defensive: if only one of the two is
+    present (malformed drag), the present key falls through as the
+    UI-TARS-native name so the downstream consumer can detect the
+    incomplete shape and surface a clear error rather than emit a
+    truncated single-element path that looks valid.
+
+    Non-coord kwargs pass through verbatim.
+
+    Idempotent on the single-point ``point → coordinate`` rename.
+    NOT idempotent on the two-point ``start_point + end_point → path``
+    fold (applying twice on the already-folded shape would emit just
+    the ``path`` key, which is correct). The two-point fold is only
+    safe to run ONCE per parser output.
+    """
+    if not args:
+        return args
+    out: dict[str, Any] = {}
+    sp = args.get("start_point")
+    ep = args.get("end_point")
+    folded_path = False
+    if (
+        isinstance(sp, (list, tuple))
+        and isinstance(ep, (list, tuple))
+        and (len(sp) >= 2 and len(ep) >= 2)
+    ):
+        # Fold the point pair into the Responses ``path`` array per spec.
+        out["path"] = [
+            {"x": sp[0], "y": sp[1]},
+            {"x": ep[0], "y": ep[1]},
+        ]
+        folded_path = True
+    for k, v in args.items():
+        if k == "point":
+            out["coordinate"] = v
+        elif k in ("start_point", "end_point"):
+            if folded_path:
+                continue  # consumed into ``path``
+            # Malformed drag — surface the present key verbatim so the
+            # downstream consumer can detect the shape gap.
+            out[k] = v
+        else:
+            out[k] = v
+    return out
+
+
+# Legacy alias preserved for any external callers that import the
+# pre-codex-review symbol; the Anthropic translator IS the canonical
+# behavior for shared single-point cases. Slated for removal after a
+# deprecation cycle.
+translate_to_spec_coordinate_keys = translate_to_anthropic_spec_keys
 
 
 @ToolParserManager.register_module(["ui_tars", "ui-tars", "uitars"])
@@ -1159,21 +1255,45 @@ class UiTarsToolParser(ToolParser):
             # window; the next delta that resolves the token (either
             # by completing ``Action:`` or by emitting a disambiguating
             # byte) releases them through the appropriate channel.
-            held = _trailing_action_prefix_len(current_text)
-            if held == 0:
-                return {"content": delta_text}
-            # Compute how much of THIS delta is in the held window vs.
-            # the safely-emittable prefix.
-            delta_start_in_current = len(previous_text)
-            held_window_start = len(current_text) - held
-            if held_window_start <= delta_start_in_current:
-                # Every byte of this delta is in the partial-opener
-                # window — emit nothing. The reasoning-parser side
-                # already buffered any prior held prefix bytes; the
-                # next disambiguating delta releases them all.
+            #
+            # codex r1 BLOCKING — replay any previously-held bytes that
+            # are no longer candidate-opener. Pre-fix, a stream like
+            # ``["Ac", "me"]`` would hold ``"Ac"`` on delta 1 (returns
+            # None) then on delta 2 emit only ``"me"`` — the held ``"Ac"``
+            # was permanently dropped because the streaming parser is
+            # stateless across calls. Fix: compare the prefix-window of
+            # ``previous_text`` (what was held last time) with the
+            # prefix-window of ``current_text`` (what remains held now).
+            # Bytes that fall OUT of the held window between calls must
+            # be replayed as content alongside this delta.
+            # Compute the "emit window" for this delta. Every byte of
+            # ``current_text`` is in exactly one of three buckets:
+            #
+            # 1. Already-emitted   : ``current_text[:prev_safe_end]``
+            #    — the prefix that prior calls flushed as content.
+            # 2. Emit-this-turn    : ``current_text[prev_safe_end:cur_safe_end]``
+            #    — what this call returns.
+            # 3. Still-held        : ``current_text[cur_safe_end:]``
+            #    — the trailing partial-opener candidate to release later.
+            #
+            # ``prev_safe_end = len(previous_text) - prev_held`` is the
+            # offset up to which prior calls emitted (everything they
+            # held back lives in bucket 3 or 2 of THIS call).
+            # ``cur_safe_end = len(current_text) - cur_held`` is the
+            # offset up to which it's safe to emit now (bytes after that
+            # are this call's still-held tail).
+            cur_held = _trailing_action_prefix_len(current_text)
+            prev_held = (
+                _trailing_action_prefix_len(previous_text) if previous_text else 0
+            )
+            prev_safe_end = len(previous_text) - prev_held
+            cur_safe_end = len(current_text) - cur_held
+            if cur_safe_end <= prev_safe_end:
+                # Held window grew (or stayed the same) — nothing new
+                # to emit this delta. Postprocessor's per-event buffer
+                # keeps the bytes until a future delta resolves them.
                 return None
-            split = held_window_start - delta_start_in_current
-            return {"content": delta_text[:split]}
+            return {"content": current_text[prev_safe_end:cur_safe_end]}
 
         prev_actions = _iter_actions(previous_text) if previous_text else []
         cur_actions = _iter_actions(current_text)

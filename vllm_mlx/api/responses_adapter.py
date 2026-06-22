@@ -534,18 +534,21 @@ def _parse_computer_action(arguments: str) -> dict:
     if "type" not in out:
         return {"type": "unknown", "raw": arguments}
     # R6-M2: OpenAI's Responses Computer-Use spec uses ``coordinate``
-    # for the single-point verbs and ``start_coordinate`` /
-    # ``end_coordinate`` for two-point verbs. The UI-TARS parser emits
-    # the canonical ``point`` / ``start_point`` / ``end_point`` keys
-    # (PR #812 contract — chat-completions OpenAI lane stays on those
-    # for bytes-faithfulness with downstream OpenAI tool_call shape).
-    # Centralized key-mapper lives in the parser module so the
-    # Anthropic + Responses adapters can't drift on key naming.
+    # for the single-point verbs and ``path=[{"x":x,"y":y}, ...]`` for
+    # ``drag`` (two-point). The UI-TARS parser emits the canonical
+    # ``point`` / ``start_point`` / ``end_point`` keys (PR #812
+    # contract — chat-completions OpenAI lane stays on those for
+    # bytes-faithfulness with downstream OpenAI tool_call shape). The
+    # Responses-lane translator folds the point-pair into the spec
+    # ``path`` array shape. Anthropic's lane uses a different drag
+    # shape (``start_coordinate`` + ``coordinate``); the per-lane
+    # translators live next to the parser so the two adapters can't
+    # drift.
     from ..tool_parsers.ui_tars_tool_parser import (
-        translate_to_spec_coordinate_keys,
+        translate_to_responses_spec_keys,
     )
 
-    return translate_to_spec_coordinate_keys(out)
+    return translate_to_responses_spec_keys(out)
 
 
 # ---------------------------------------------------------------------------

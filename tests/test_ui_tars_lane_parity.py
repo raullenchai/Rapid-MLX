@@ -650,15 +650,21 @@ class TestR6M2CoordinateKeyTranslation:
     ``start_point`` / ``end_point`` keys (PR #812 contract; chat
     completions OpenAI lane stays bytes-faithful to that). The
     Anthropic ``/v1/messages`` lane and the OpenAI ``/v1/responses``
-    lane both follow specs that require ``coordinate`` (and
-    ``start_coordinate`` / ``end_coordinate`` for two-point verbs).
+    lane both follow Computer-Use specs that use ``coordinate`` for
+    single-point verbs.
+
+    Two-point ``drag`` diverges between the specs:
+    - Anthropic uses ``start_coordinate`` + ``coordinate`` (end).
+    - OpenAI Responses uses ``path=[{"x":x,"y":y}, ...]``.
 
     Pre-r6-B: both adapters surfaced the UI-TARS-native ``point`` key
     verbatim. Anthropic-strict consumers (claude-agent-sdk, Computer-
-    Use harnesses) rejected the shape. Fixed by a centralized
-    ``translate_to_spec_coordinate_keys`` helper that lives next to
-    the parser and is called from both adapters' tool_use / computer_call
-    builders so the two surfaces can't drift on key naming.
+    Use harnesses) rejected the shape. Fixed by per-lane translator
+    helpers (``translate_to_anthropic_spec_keys`` /
+    ``translate_to_responses_spec_keys``) that live next to the parser
+    and are called from each adapter's tool_use / computer_call builder
+    so the two surfaces can't drift on key naming AND so each lane
+    matches its own spec for drag.
     """
 
     def _click_chat_response(self, args_payload: dict):
@@ -711,7 +717,9 @@ class TestR6M2CoordinateKeyTranslation:
         assert tu.input == {"action": "click", "coordinate": [500, 300]}
         assert "point" not in tu.input
 
-    def test_anthropic_drag_emits_start_end_coordinate(self):
+    def test_anthropic_drag_emits_start_coordinate_and_coordinate(self):
+        # Anthropic Computer-Use spec: drag uses ``start_coordinate``
+        # plus ``coordinate`` (the END point). NOT ``end_coordinate``.
         from vllm_mlx.api.anthropic_adapter import openai_to_anthropic
 
         chat_resp = self._click_chat_response(
@@ -724,12 +732,16 @@ class TestR6M2CoordinateKeyTranslation:
         anth = openai_to_anthropic(chat_resp, model="ui-tars-1.5-7b-4bit")
         tool_uses = [b for b in anth.content if getattr(b, "type", None) == "tool_use"]
         assert len(tool_uses) == 1
-        # Two-point verb → start_coordinate / end_coordinate.
+        # Spec: ``start_coordinate`` + ``coordinate`` (the END).
         assert tool_uses[0].input == {
             "action": "drag",
             "start_coordinate": [10, 20],
-            "end_coordinate": [100, 200],
+            "coordinate": [100, 200],
         }
+        # Defensive: no ``end_coordinate`` key (that would be the wrong
+        # name per the spec).
+        assert "end_coordinate" not in tool_uses[0].input
+        assert "point" not in tool_uses[0].input
 
     def test_anthropic_non_computer_tool_input_untouched(self):
         # Vanilla function tool whose arguments happen to carry a
@@ -826,29 +838,121 @@ class TestR6M2CoordinateKeyTranslation:
         assert args == {"action": "click", "point": [500, 300]}
         assert "coordinate" not in args
 
+    # --- Responses drag (codex r1 HIGH 2) --------------------------------
+
+    def test_responses_drag_emits_path_array(self):
+        # OpenAI Responses Computer-Use spec: drag uses
+        # ``path=[{"x":x1,"y":y1}, {"x":x2,"y":y2}]``, NOT the
+        # ``start_coordinate`` / ``end_coordinate`` shape Anthropic
+        # uses. Codex r1 HIGH 2 flagged that an earlier draft
+        # surfaced the Anthropic shape on the Responses lane — a
+        # behavior regression for drag.
+        from vllm_mlx.api.responses_adapter import openai_to_responses
+        from vllm_mlx.api.responses_models import ResponsesRequest
+
+        chat_resp = self._click_chat_response(
+            {
+                "action": "drag",
+                "start_point": [10, 20],
+                "end_point": [100, 200],
+            }
+        )
+        req = ResponsesRequest(
+            model="ui-tars-1.5-7b-4bit",
+            input="Drag from (10,20) to (100,200).",
+            tools=[
+                {
+                    "type": "computer_20251022",
+                    "display_width": 1280,
+                    "display_height": 800,
+                }
+            ],
+        )
+        resp = openai_to_responses(
+            chat_resp, model="ui-tars-1.5-7b-4bit", request=req, created_at=1
+        )
+        computer_calls = [
+            o for o in resp.output if getattr(o, "type", None) == "computer_call"
+        ]
+        assert len(computer_calls) == 1
+        cc = computer_calls[0]
+        # R6-M2: Responses-spec ``path`` array shape.
+        assert cc.action == {
+            "type": "drag",
+            "path": [{"x": 10, "y": 20}, {"x": 100, "y": 200}],
+        }
+        # Defensive: NO Anthropic-style start_coordinate / end_coordinate.
+        assert "start_coordinate" not in cc.action
+        assert "end_coordinate" not in cc.action
+
     # --- Helper-level test ------------------------------------------------
 
-    def test_translate_helper_is_idempotent(self):
+    def test_anthropic_translator_is_idempotent_on_single_point(self):
         # The mapper must be safe to call twice — already-translated
         # keys stay translated (defense-in-depth for a future
         # double-translation refactor).
         from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
-            translate_to_spec_coordinate_keys,
+            translate_to_anthropic_spec_keys,
         )
 
-        once = translate_to_spec_coordinate_keys({"action": "click", "point": [1, 2]})
-        twice = translate_to_spec_coordinate_keys(once)
+        once = translate_to_anthropic_spec_keys({"action": "click", "point": [1, 2]})
+        twice = translate_to_anthropic_spec_keys(once)
         assert once == twice == {"action": "click", "coordinate": [1, 2]}
 
-    def test_translate_helper_preserves_non_coord_kwargs(self):
+    def test_anthropic_translator_preserves_non_coord_kwargs(self):
         # Non-coord kwargs (action, content, key, direction, …)
         # pass through verbatim.
         from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
-            translate_to_spec_coordinate_keys,
+            translate_to_anthropic_spec_keys,
         )
 
-        out = translate_to_spec_coordinate_keys({"action": "type", "content": "hello"})
+        out = translate_to_anthropic_spec_keys({"action": "type", "content": "hello"})
         assert out == {"action": "type", "content": "hello"}
 
-        out = translate_to_spec_coordinate_keys({"action": "hotkey", "key": "ctrl+c"})
+        out = translate_to_anthropic_spec_keys({"action": "hotkey", "key": "ctrl+c"})
         assert out == {"action": "hotkey", "key": "ctrl+c"}
+
+    def test_responses_translator_folds_drag_into_path(self):
+        # Direct probe of the helper: point pair → spec path array.
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            translate_to_responses_spec_keys,
+        )
+
+        out = translate_to_responses_spec_keys(
+            {
+                "action": "drag",
+                "start_point": [10, 20],
+                "end_point": [100, 200],
+            }
+        )
+        assert out == {
+            "action": "drag",
+            "path": [{"x": 10, "y": 20}, {"x": 100, "y": 200}],
+        }
+
+    def test_responses_translator_preserves_malformed_drag(self):
+        # Codex r1 — defensive: if only ONE of start_point / end_point
+        # is present (malformed drag), the present key falls through
+        # as the UI-TARS-native name so the downstream consumer can
+        # detect the gap rather than receive a truncated single-point
+        # ``path`` that looks valid.
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            translate_to_responses_spec_keys,
+        )
+
+        out = translate_to_responses_spec_keys(
+            {"action": "drag", "start_point": [10, 20]}
+        )
+        # No ``path``; the lone start_point falls through.
+        assert "path" not in out
+        assert out["start_point"] == [10, 20]
+
+    def test_responses_translator_handles_single_point_verb(self):
+        # Single-point verb on the Responses lane: ``point`` →
+        # ``coordinate``, same as the Anthropic translator.
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            translate_to_responses_spec_keys,
+        )
+
+        out = translate_to_responses_spec_keys({"action": "click", "point": [500, 300]})
+        assert out == {"action": "click", "coordinate": [500, 300]}

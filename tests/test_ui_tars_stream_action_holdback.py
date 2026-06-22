@@ -270,3 +270,100 @@ class TestNonStreamingActionParity:
         # Residual content is empty / None — the Action: prefix was
         # fully consumed.
         assert not result.content
+
+
+# ---------------------------------------------------------------------------
+# Codex r1 BLOCKING + HIGH — replay + word-boundary gate
+# ---------------------------------------------------------------------------
+
+
+class TestCodexBlockingHeldBytesReplayed:
+    """Codex r1 BLOCKING: when a held trailing prefix DOES NOT become
+    ``Action:`` on the next delta (the model emitted a non-action
+    follow-up byte), the previously-held bytes MUST be released as
+    content so the SSE stream stays bytes-equivalent to the model's
+    output. Pre-fix the streaming parser dropped the held bytes
+    permanently — e.g. ``["Ac", "me"]`` lost the ``"Ac"``.
+    """
+
+    @pytest.mark.parametrize(
+        ("chunks", "expected_content"),
+        [
+            # The codex example: "Ac" then "me" → "Acme" content,
+            # no tool_calls.
+            (["Ac", "me"], "Acme"),
+            # Longer prefix that resolves to non-action prose.
+            (["Actio", "n is required."], "Action is required."),
+            # Held single byte → resolved to non-action.
+            (["A", "n answer"], "An answer"),
+            # Prose then short partial prefix then continuation.
+            (["Hello\nA", "B test"], "Hello\nAB test"),
+            # Multi-stage hold + release across many deltas.
+            (["Act", "io", "ns help"], "Actions help"),
+        ],
+    )
+    def test_held_prefix_released_on_non_action_disambiguation(
+        self, parser, chunks, expected_content
+    ):
+        events, content, tool_calls = _drive_stream(parser, chunks)
+        assert tool_calls == []
+        assert content == expected_content, (
+            f"Held bytes were dropped: events={events!r}, "
+            f"content={content!r}, expected={expected_content!r}"
+        )
+
+    def test_held_prefix_resolved_into_real_action(self, parser):
+        # Held bytes that DO become Action: stay held until the
+        # structured tool_calls event flushes them.
+        chunks = ["Act", "ion: ", "wait()"]
+        events, content, tool_calls = _drive_stream(parser, chunks)
+        # No Action: bytes leak as content.
+        assert "Action" not in content
+        assert len(tool_calls) == 1
+        assert '"action": "wait"' in tool_calls[0]["function"]["arguments"]
+
+
+class TestCodexHighWordBoundaryGate:
+    """Codex r1 HIGH: the trailing-prefix hold-back must be
+    word-boundary aware. The action grammar is ``\\bAction:`` so a
+    candidate-opener tail that ISN'T at a word boundary (e.g.
+    ``"PlanA"`` — trailing ``"A"`` preceded by ``"n"``) can never
+    become a real action and must not be held. Pre-fix the hold-back
+    didn't check the preceding char's word-class.
+    """
+
+    @pytest.mark.parametrize(
+        ("text", "expected_held"),
+        [
+            # Word-boundary-aligned candidates: SHOULD hold.
+            ("Ac", 2),  # start of text
+            ("\nAc", 2),  # preceded by \n — non-word
+            (" Ac", 2),  # preceded by space — non-word
+            ("Plan Acti", 4),  # space before "Acti" — non-word
+            ("(Acti", 4),  # paren — non-word
+            # Non-word-boundary candidates: MUST NOT hold.
+            ("PlanA", 0),  # preceded by 'n' — word char
+            ("123A", 0),  # preceded by '3' — word char
+            ("foo_Ac", 0),  # preceded by '_' — word char
+            # Pure non-prefix tails: not held regardless.
+            ("China", 0),
+            ("banana", 0),
+            ("hello world", 0),
+        ],
+    )
+    def test_trailing_prefix_word_boundary(self, text, expected_held):
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            _trailing_action_prefix_len,
+        )
+
+        assert _trailing_action_prefix_len(text) == expected_held, (
+            f"text={text!r}: hold-back grammar regressed"
+        )
+
+    def test_streaming_passthrough_for_non_word_boundary_prefix(self, parser):
+        # End-to-end: a stream that ends with a non-word-boundary
+        # candidate (``"PlanA"``) MUST flush as plain content with no
+        # hold-back, no replay, no leak.
+        events, content, tool_calls = _drive_stream(parser, ["PlanA"])
+        assert content == "PlanA"
+        assert tool_calls == []
