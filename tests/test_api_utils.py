@@ -978,15 +978,16 @@ class TestContentToText:
 
 
 class TestValidateContentBlocksForCapabilities:
-    def test_chat_text_block_allows_missing_text(self):
+    def test_chat_text_block_rejects_missing_text(self):
         messages = [{"role": "user", "content": [{"type": "text"}]}]
 
-        validate_content_blocks_for_capabilities(
-            messages,
-            model_name="chat-model",
-            allow_image=False,
-            allow_video=False,
-        )
+        with pytest.raises(ValueError, match="text\\.text is required"):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="chat-model",
+                allow_image=False,
+                allow_video=False,
+            )
 
     def test_chat_text_block_allows_empty_text(self):
         messages = [{"role": "user", "content": [{"type": "text", "text": ""}]}]

@@ -1014,11 +1014,9 @@ def _extract_object_url(item: dict, field_name: str) -> str:
 def _validate_content_part_payload(item: dict) -> None:
     item_type = item["type"]
     if item_type in TEXT_CONTENT_TYPES:
-        if item_type in {"input_text", "output_text"} and "text" not in item:
+        if "text" not in item:
             raise ValueError(f"{item_type}.text is required")
         text = item.get("text")
-        if item_type == "text" and "text" not in item:
-            return
         if not isinstance(text, str):
             if item_type in {"input_text", "output_text"}:
                 raise ValueError(
