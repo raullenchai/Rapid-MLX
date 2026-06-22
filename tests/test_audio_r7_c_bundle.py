@@ -42,8 +42,34 @@ import sys
 import types
 import wave
 
-from fastapi import FastAPI
-from fastapi.testclient import TestClient
+import pytest
+
+# ``vllm_mlx.routes.audio`` transitively imports ``mlx.core`` via the
+# engine wiring. Linux CI runners (``pr_validate``'s validate job) don't
+# install mlx, so a bare import raises ``ModuleNotFoundError`` and 13
+# unrelated tests look like regressions. ``importorskip`` short-circuits
+# the file with a clean SKIP so it stays out of the negative-control set
+# AND still executes anywhere with the right deps (Apple Silicon CI +
+# any dev machine with ``[audio]`` installed). Mirrors the
+# ``test_audio_upload_size_limit.py`` skip block — same trap.
+pytest.importorskip(
+    "mlx.core",
+    reason="audio route imports transitively pull in mlx; "
+    "test runs on Apple Silicon / dev, not Linux CI runners",
+)
+pytest.importorskip(
+    "mlx_lm",
+    reason="audio route imports transitively pull in mlx_lm; "
+    "test runs on Apple Silicon / dev, not Linux CI runners",
+)
+pytest.importorskip(
+    "multipart",
+    reason="TestClient(files=...) requires python-multipart; "
+    "skip on minimal-deps runners (CI pr-validate)",
+)
+
+from fastapi import FastAPI  # noqa: E402 — keep skips at top
+from fastapi.testclient import TestClient  # noqa: E402
 
 # ---------------------------------------------------------------------------
 # Helpers (copied from test_audio_routes_bundle.py so this file stands alone)
