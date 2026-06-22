@@ -265,9 +265,20 @@ agents:
   - name: anthropic_sdk
     script: tests/integrations/test_anthropic_sdk.py
     skip_for_smoke: false
+    # diffusiongemma is kept in the matrix for text-diffusion stress and
+    # Gemma4 tool-parser smoke, but its simple calculator prompts return
+    # empty/"thought" text nondeterministically. That is model quality, not
+    # an SDK/router regression signal, so do not hard-block PRs on this agent.
+    skip_for_models:
+      - mlx-community/diffusiongemma-26B-A4B-it-4bit
   - name: langchain
     script: tests/integrations/test_langchain.py
     skip_for_smoke: false
+    # Same diffusiongemma model-quality issue as anthropic_sdk. LangChain's
+    # structured-output subtest also requires rapid-mlx[guided], which this
+    # validation environment intentionally does not install.
+    skip_for_models:
+      - mlx-community/diffusiongemma-26B-A4B-it-4bit
   - name: pydantic_ai
     script: tests/integrations/test_pydantic_ai_full.py
     # The multi-tool composition test reliably regresses on quants

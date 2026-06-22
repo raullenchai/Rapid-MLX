@@ -1063,13 +1063,26 @@ def test_rescue_still_fires_on_length_when_raw_text_lacks_open_think():
     )
 
 
-def test_rescue_still_fires_on_truncated_think_when_finish_is_stop():
-    """Counter-test: ``raw_text`` opens with unclosed ``<think>`` but
-    ``finish_reason`` is ``stop`` (model voluntarily ended without
-    producing a final answer). The new gate is specifically the
-    ``length`` x truncated-think INTERSECTION — other shapes still
-    rescue. This protects models that emit only a thought block then
-    stop (uncommon but possible)."""
+def test_rescue_skipped_on_truncated_think_when_finish_is_stop_with_matched_stop():
+    """D-STOP-THINK (cross-cycle bundle, cycle-3 / cycle-7 / cycle-11):
+    when a user-supplied ``stop`` string matches inside the
+    unterminated ``<think>`` block, the trim path in the engine cuts
+    the suffix before the closing ``</think>`` arrives. The pre-fix
+    rescue gate only skipped this arm under ``finish_reason="length"``;
+    ``finish_reason="stop"`` fell through and the rescue surfaced the
+    in-progress thought as ``content`` — yielding byte-identical
+    ``content`` AND ``reasoning_content`` on the live wire
+    (qwen3-0.6b-4bit live repro with ``stop=["STOP"]``).
+
+    Codex round-7 BLOCKING refinement (PR #799): the ``stop`` arm of
+    the unclosed-``<think>`` gate now ALSO requires
+    ``matched_stop is not None`` so natural-EOS (``finish_reason="stop"``
+    with no user stop string fired) does NOT suppress the rescue —
+    a model that voluntarily ends after emitting ``<think>just a
+    thought`` is genuinely orphaned and the #569 rescue should fire.
+    This test pins the post-fix behaviour for the
+    matched_stop-supplied case.
+    """
     raw = "<think>just a thought"
     rescued = _rescue_silent_drop_from_reasoning(
         final_content=None,
@@ -1077,8 +1090,75 @@ def test_rescue_still_fires_on_truncated_think_when_finish_is_stop():
         tool_calls=None,
         finish_reason="stop",
         raw_text=raw,
+        matched_stop="STOP",
     )
-    assert rescued == "just a thought"
+    assert rescued is None, (
+        f"D-STOP-THINK regression — rescue surfaced trace as content "
+        f"under stop-mid-think with matched_stop set: rescued={rescued!r}"
+    )
+
+
+def test_rescue_fires_on_natural_eos_truncated_think_without_matched_stop():
+    """Codex round-12 BLOCKING counter-case (PR #799): REVERTS the
+    round-11 widening of the explicit-opener suppression arm.
+
+    The helper's contract is "never silently drop an assistant
+    turn". Round-11 widened the ``stop`` arm to suppress on
+    raw-text evidence alone (regardless of ``matched_stop``),
+    closing a D-STOP-THINK leak — but it dropped the natural-EOS
+    silent-drop rescue: a model that voluntarily ends after
+    emitting ``<think>just a thought`` (no closing ``</think>``,
+    no user stop fired) would yield an empty assistant turn,
+    exactly the silent-drop failure mode #569 exists to prevent.
+
+    Round-12 reverts to the round-7 discriminator on the ``stop``
+    arm: ``matched_stop is not None`` distinguishes
+    engine-initiated trim (D-STOP-THINK leak shape) from natural
+    EOS (in-progress thought, #569 rescue). The
+    matched_stop-propagation concern from r11 is addressed at the
+    streaming call sites instead (chat.py / responses.py /
+    anthropic.py now accumulate ``output.matched_stop`` per chunk).
+    """
+    raw = "<think>just a thought"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="just a thought",
+        tool_calls=None,
+        finish_reason="stop",
+        raw_text=raw,
+        matched_stop=None,
+    )
+    assert rescued == "just a thought", (
+        f"#569 regression — natural-EOS with unclosed <think> "
+        f"silently dropped instead of rescued: rescued={rescued!r}"
+    )
+
+
+def test_rescue_skipped_on_truncated_think_under_finish_stop_with_matched_stop():
+    """Counter-test for the round-12 fix: under
+    ``finish_reason="stop"`` WITH ``matched_stop`` set, the
+    explicit-opener arm fires and the rescue is suppressed
+    (D-STOP-THINK leak shape).
+
+    Together with
+    ``test_rescue_fires_on_natural_eos_truncated_think_without_matched_stop``
+    this pins the round-12 discriminator: ``matched_stop is not
+    None`` distinguishes engine-initiated trim (suppress) from
+    natural EOS (rescue).
+    """
+    raw = "<think>still thinking when stop fired"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text="still thinking when stop fired",
+        tool_calls=None,
+        finish_reason="stop",
+        raw_text=raw,
+        matched_stop="STOP",
+    )
+    assert rescued is None, (
+        f"D-STOP-THINK regression — engine stop with matched_stop "
+        f"should suppress; got rescued={rescued!r}"
+    )
 
 
 def test_rescue_still_fires_on_truncated_think_when_finish_unknown():
@@ -1182,9 +1262,9 @@ def test_rescue_skipped_when_reasoning_is_case4_and_length():
     Without this gate, the route mistakes the post-Case-4 empty
     content for a #569 silent drop and feeds the client byte-
     identical content + reasoning_content (live-test repro: model
-    answered "What is 2+2?" with plain prose, no ``<think>`` token
-    emitted at all, raw_text did NOT start with ``<think>`` — so the
-    original narrow opener gate missed it).
+    emitted prompt-injected thinking without a literal ``<think>`` token
+    in ``raw_text`` — so the raw opener gate cannot see it and the
+    route-level ``prompt_thinking_active`` signal is required.
     """
     trace = (
         'First, the user asked "What is 2+2?" This seems like a '
@@ -1195,10 +1275,11 @@ def test_rescue_skipped_when_reasoning_is_case4_and_length():
         reasoning_text=trace,
         tool_calls=None,
         finish_reason="length",
-        # No ``<think>`` literal — model emitted plain prose. Without
-        # the case4 gate the rescue would surface the trace.
+        # No ``<think>`` literal — the route-level prompt-thinking signal
+        # is what identifies this Case-4 length cut as interrupted thinking.
         raw_text=trace,
         reasoning_is_case4=True,
+        prompt_thinking_active=True,
     )
     assert rescued is None, (
         f"Case-4 length-truncated reasoning must NOT be surfaced as "
@@ -1206,25 +1287,121 @@ def test_rescue_skipped_when_reasoning_is_case4_and_length():
     )
 
 
-def test_rescue_fires_when_case4_but_finish_is_stop():
-    """Counter-test: the Case-4 gate is specifically for the
-    ``length`` x case4 INTERSECTION. A model that voluntarily ended
-    after emitting only reasoning (no ``<think>`` token, finish=stop)
-    is a genuine silent drop — rescue still fires.
+def test_rescue_fires_when_case4_and_finish_is_stop_natural_eos():
+    """D-STOP-THINK codex round-2 BLOCKING fix: scope the Case-4 +
+    ``stop`` suppression to require explicit truncation evidence
+    (``matched_stop`` set or unclosed-``<think>`` opener in raw_text).
 
-    Uncommon but real (a chatty model that "talks itself out" of the
-    final answer). The same shape #569 was originally written for
-    on gemma-4."""
-    trace = "thought trace that ended cleanly without a final answer"
+    Natural-EOS Case-4 (``matched_stop=None``, no opener) is the
+    VibeThinker / PR #715 fuzz finding C path: the model finishes
+    its casual non-thinking answer with the model's own EOS token
+    AND the parser routes the whole body to reasoning (Case-4
+    blanking). The pre-fix rescue surfaced the reasoning trace as
+    ``content`` — correct for #569. Suppressing on Case-4 alone
+    would silently drop the assistant turn.
+    """
+    trace = "casual non-thinking answer that finished cleanly at EOS"
     rescued = _rescue_silent_drop_from_reasoning(
         final_content=None,
         reasoning_text=trace,
         tool_calls=None,
         finish_reason="stop",
+        # No ``<think>`` literal in raw_text — natural-EOS shape.
         raw_text=trace,
         reasoning_is_case4=True,
+        matched_stop=None,  # natural-EOS — no user-supplied stop fired
     )
-    assert rescued == trace
+    assert rescued == trace, (
+        f"#569 regression — rescue suppressed natural-EOS case-4 "
+        f"reasoning trace under finish=stop with no opener evidence: "
+        f"rescued={rescued!r}"
+    )
+
+
+def test_rescue_skipped_when_case4_stop_user_stop_matched_and_thinking_active():
+    """D-STOP-THINK codex round-5 BLOCKING fix: when the chat template
+    pre-injects ``<think>\\n`` AND ``enable_thinking`` is non-False,
+    a user-supplied stop firing mid-thought is the D-STOP-THINK leak
+    shape. Require BOTH ``matched_stop`` AND ``prompt_thinking_active``
+    — matched_stop alone is ambiguous (a casual stop-terminated
+    answer ALSO has it set).
+    """
+    trace = "thought in progress when STOP fired"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text=trace,
+        tool_calls=None,
+        finish_reason="stop",
+        # No literal ``<think>`` in raw_text — prompt-injected shape.
+        raw_text=trace,
+        reasoning_is_case4=True,
+        matched_stop="STOP",  # user-supplied stop fired mid-thought
+        prompt_thinking_active=True,  # chat template injected <think>
+    )
+    assert rescued is None, (
+        f"D-STOP-THINK regression — rescue surfaced prompt-injected "
+        f"truncated thought as content: rescued={rescued!r}"
+    )
+
+
+def test_rescue_fires_when_case4_stop_matched_stop_but_thinking_not_active():
+    """Codex round-5 BLOCKING counter-test: casual stop-terminated
+    answer (matched_stop set, prompt_thinking_active=False) must
+    still rescue per #569 — the OpenAI client must see the answer
+    on ``message.content``.
+
+    Example: ``"The answer is STOP"`` under ``stop=["STOP"]`` with
+    a non-thinking model. The engine sets matched_stop and the
+    parser may route the whole thing to reasoning (Case-4), but
+    suppressing the rescue here would silently drop the answer.
+    """
+    answer = "The answer is 12"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text=answer,
+        tool_calls=None,
+        finish_reason="stop",
+        raw_text=answer,
+        reasoning_is_case4=True,
+        matched_stop="STOP",  # user-supplied stop fired
+        prompt_thinking_active=False,  # chat template did NOT inject <think>
+    )
+    assert rescued == answer, (
+        f"#569 regression — casual stop-terminated answer suppressed: "
+        f"rescued={rescued!r}"
+    )
+
+
+def test_rescue_skipped_when_case4_stop_and_unclosed_think_opener():
+    """D-STOP-THINK leak shape suppressed when raw_text carries the
+    unclosed ``<think>`` opener — the opener-evidence arm picks this
+    up symmetric with the prompt-injected shape above.
+
+    Codex round-7 BLOCKING refinement (PR #799): the unclosed-``<think>``
+    arm under ``finish_reason="stop"`` now ALSO requires
+    ``matched_stop is not None`` so we discriminate engine-initiated
+    trim (user stop string fired, D-STOP-THINK leak shape) from natural
+    EOS (model voluntarily ended after emitting ``<think>just a
+    thought``, the #569 silent-drop rescue should still fire). The
+    test threads ``matched_stop="STOP"`` to pin the D-STOP-THINK
+    leak suppression that the test name implies.
+    """
+    trace = "thought in progress when STOP fired"
+    rescued = _rescue_silent_drop_from_reasoning(
+        final_content=None,
+        reasoning_text=trace,
+        tool_calls=None,
+        finish_reason="stop",
+        # Unclosed ``<think>`` opener — D-STOP-THINK explicit shape.
+        raw_text="<think>\n" + trace,
+        reasoning_is_case4=True,
+        matched_stop="STOP",
+    )
+    assert rescued is None, (
+        f"D-STOP-THINK regression — rescue surfaced unclosed-think "
+        f"trace as content under finish=stop + matched_stop: "
+        f"rescued={rescued!r}"
+    )
 
 
 def test_rescue_fires_when_length_but_not_case4():

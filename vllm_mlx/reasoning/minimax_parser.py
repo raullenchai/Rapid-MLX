@@ -333,11 +333,24 @@ class MiniMaxReasoningParser(ReasoningParser):
             return False
         return "</think>" not in accumulated_text
 
-    def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
+    def finalize_streaming(
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
+    ) -> DeltaMessage | None:
         """
         Finalize streaming - handle cases where content was never emitted:
         1. Still buffering (never decided) - emit buffer as content
         2. Everything classified as reasoning - try to extract answer
+
+        ``matched_stop``, ``prompt_thinking_active`` and
+        ``finish_reason`` are accepted for API symmetry with the
+        ``<think>``-family parsers (PR #799 D-STOP-THINK). MiniMax uses
+        a different reasoning grammar (no ``<think>`` tag) so these
+        signals do not change the decision tree here.
         """
         if not self._decided:
             # Never reached decision threshold — emit as content

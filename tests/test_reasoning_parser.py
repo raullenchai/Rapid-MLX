@@ -978,7 +978,26 @@ class TestDeepSeekNoTagThreshold:
         assert "content here" in "".join(content_parts)
 
     def test_finalize_corrects_short_no_tag_output(self, parser):
-        """finalize_streaming should correct short no-tag output."""
+        """finalize_streaming surfaces short no-tag output via content.
+
+        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
+        the short-no-tag rescue is the CASUAL-ANSWER contract — no
+        explicit ``<think>`` opener was ever seen during streaming, so
+        we have no evidence the model was actually thinking. The
+        streaming Case-3 default routed the bytes to ``reasoning`` as
+        a conservative bet; this finalize correction flips them to
+        ``content`` so the route consumer surfaces them as a text
+        block (#570/#572). Route consumers ignore
+        ``final_msg.reasoning`` (anthropic.py:1715, responses.py:907)
+        so routing this rescue to reasoning would leave the casual
+        answer silently empty on the wire — the exact #569 regression
+        the rescue exists to prevent.
+
+        The D-STOP-THINK duplication leak surface for DeepSeek-R1 is
+        the EXPLICIT-OPENER path (covered by the base class default
+        which returns None); the short-no-tag arm does NOT fire there
+        because ``_saw_any_tag`` becomes True after the opener.
+        """
         parser.reset_state()
 
         # Stream a short output (under 64 chars) without tags
@@ -990,10 +1009,12 @@ class TestDeepSeekNoTagThreshold:
             accumulated += char
             parser.extract_reasoning_streaming(prev, accumulated, char)
 
-        # Finalize should emit correction
+        # Finalize should emit correction in the content channel — the
+        # casual-answer contract per #570/#572.
         correction = parser.finalize_streaming(accumulated)
         assert correction is not None
         assert correction.content == text
+        assert correction.reasoning is None
 
     def test_finalize_no_correction_with_tags(self, parser):
         """finalize_streaming should not correct when tags were seen."""

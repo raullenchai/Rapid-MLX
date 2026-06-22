@@ -66,6 +66,7 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit, verify_api_key
+from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
     _apply_reasoning_cutoff_notice,
@@ -109,12 +110,18 @@ def _resolved_sampling_kwargs(openai_request: ChatCompletionRequest) -> dict:
 
 
 def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
-    """Same heuristic as routes/anthropic.py: stream that starts inside an
-    implicit ``<think>`` block should be routed as reasoning until the
-    closing tag. Bypass when thinking is explicitly disabled."""
-    if enable_thinking is False:
-        return False
-    return "<think>" in chat_template and "add_generation_prompt" in chat_template
+    """Thin wrapper over the shared
+    ``service.helpers._should_start_in_thinking`` predicate.
+
+    Codex round-9 BLOCKING (PR #799): the same heuristic used to live
+    here AND in ``routes/anthropic.py`` AND was reimplemented inline
+    in ``routes/chat.py``. Single source of truth now lives in
+    ``service/helpers.py``; this thin wrapper is retained so in-module
+    callers stay unchanged.
+    """
+    from ..service.helpers import _should_start_in_thinking as _shared
+
+    return _shared(chat_template, enable_thinking)
 
 
 def _enforce_responses_tool_choice(
@@ -1295,6 +1302,20 @@ async def _stream_responses(
         accumulated_text = ""
         accumulated_raw = ""
         accumulated_raw_parts: list[str] = []
+        # D-STOP-THINK (PR #799): track the most-recently-surfaced
+        # ``matched_stop`` so the post-loop finalize_streaming call
+        # can distinguish a casual non-thinking answer (None — natural
+        # EOS) from a prompt-injected mid-think truncation (set — a
+        # user-supplied stop string trimmed the output). Mirrors the
+        # ``stream_matched_stop`` accumulator in routes/anthropic.py.
+        stream_matched_stop: str | None = None
+        # D-STOP-THINK codex round-6 BLOCKING (PR #799): track the most
+        # recently observed ``finish_reason`` so the post-loop
+        # ``finalize_streaming`` can pass it to parsers. Parsers gate
+        # on ``finish_reason="length" AND prompt_thinking_active`` to
+        # route prompt-injected ``max_tokens`` truncations to reasoning
+        # (instead of leaking them into content).
+        stream_finish_reason: str | None = None
         accumulated_structured_tool_calls: list[dict] = []
         # r6-A R6-C2 codex r1 IMPORTANT: track the last engine-reported
         # ``finish_reason`` so the post-loop degenerate-output guard can
@@ -1556,6 +1577,15 @@ async def _stream_responses(
             # route avoids this by parsing `output.text` (the full
             # non-streamed text) directly; the streaming path needs an
             # explicit raw accumulator.
+            # D-STOP-THINK matched_stop accumulator (PR #799).
+            _chunk_matched_stop = getattr(output, "matched_stop", None)
+            if _chunk_matched_stop:
+                stream_matched_stop = _chunk_matched_stop
+            # D-STOP-THINK finish_reason accumulator (codex round-6, PR #799).
+            _chunk_finish_reason = getattr(output, "finish_reason", None)
+            if _chunk_finish_reason:
+                stream_finish_reason = _chunk_finish_reason
+
             if hasattr(output, "prompt_tokens") and output.prompt_tokens:
                 prompt_tokens = output.prompt_tokens
             if hasattr(output, "completion_tokens") and output.completion_tokens:
@@ -1881,8 +1911,21 @@ async def _stream_responses(
         # finalize pass still runs as the safety net for normal
         # parser-held content.
         if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
+            # D-STOP-THINK (PR #799): pass matched_stop AND the
+            # ``_starts_thinking`` boolean (chat template injected
+            # ``<think>`` AND ``enable_thinking`` is non-False) so
+            # parsers can distinguish a prompt-injected mid-think
+            # truncation from a casual stop-terminated answer. Both
+            # signals together are required (codex round-4
+            # BLOCKING). Mirrors routes/anthropic.py.
             final_msg = (
-                reasoning_parser.finalize_streaming(accumulated_raw)
+                finalize_streaming_compat(
+                    reasoning_parser,
+                    accumulated_raw,
+                    matched_stop=stream_matched_stop,
+                    prompt_thinking_active=_starts_thinking,
+                    finish_reason=stream_finish_reason,
+                )
                 if hasattr(reasoning_parser, "finalize_streaming")
                 else None
             )

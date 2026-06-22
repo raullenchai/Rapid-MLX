@@ -608,6 +608,40 @@ def test_stream_tool_choice_any_multi_tool_emits_error_event():
     assert "".join(text_deltas) == ""
 
 
+def test_stream_tool_choice_named_text_only_emits_error_event():
+    """Named ``tool_choice`` stream path emits an explicit contract error."""
+    engine = _ToolStreamingEngine(
+        ["I ", "cannot ", "help."],
+        engine_prompt_tokens=5,
+    )
+    client = _make_client(engine)
+    r = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "stream": True,
+            "tools": [_tool_dict("get_weather"), _tool_dict("lookup_zip", "zip")],
+            "tool_choice": {"type": "tool", "name": "get_weather"},
+            "messages": [{"role": "user", "content": "Tell me a joke."}],
+        },
+    )
+    assert r.status_code == 200, r.text
+    events = _parse_sse(r.text)
+    error_events = [e for e in events if e.get("type") == "error"]
+    assert error_events, events
+    assert error_events[0]["error"]["type"] == "invalid_request_error"
+    assert "tool_choice" in error_events[0]["error"]["message"]
+    assert "get_weather" in error_events[0]["error"]["message"]
+    text_deltas = [
+        e["delta"]["text"]
+        for e in events
+        if e.get("type") == "content_block_delta"
+        and e.get("delta", {}).get("type") == "text_delta"
+    ]
+    assert "".join(text_deltas) == ""
+
+
 # ──────────────────────────────────────────────────────────────────
 # F5 — streaming usage.input_tokens
 # ──────────────────────────────────────────────────────────────────

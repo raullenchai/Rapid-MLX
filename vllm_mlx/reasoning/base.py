@@ -6,6 +6,7 @@ This module provides the abstract base class for reasoning parsers that extract
 thinking/reasoning content from model outputs (e.g., <think>...</think> tags).
 """
 
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -119,7 +120,12 @@ class ReasoningParser(ABC):
         pass
 
     def finalize_streaming(  # noqa: B027
-        self, accumulated_text: str
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
     ) -> "DeltaMessage | None":
         """
         Finalize streaming and return optional correction chunk.
@@ -130,6 +136,36 @@ class ReasoningParser(ABC):
 
         Args:
             accumulated_text: Complete accumulated text from the stream.
+            matched_stop: When non-None, indicates the engine truncated
+                the output because a user-supplied stop string matched
+                (scheduler.py:3673). Combined with
+                ``prompt_thinking_active=True`` this is the
+                D-STOP-THINK signal: the chat template injected
+                ``<think>\\n`` so the opener never reaches the parser,
+                yet the model WAS in active thinking mode when the
+                user stop fired. ``matched_stop`` alone is NOT
+                sufficient — a casual answer like ``"The answer is
+                STOP"`` under ``stop=["STOP"]`` also has
+                ``matched_stop`` set but is not chain-of-thought.
+            prompt_thinking_active: True when the request's
+                ``enable_thinking`` resolved to non-False AND the
+                chat template contains a ``<think>`` injection (the
+                same boolean ``_should_start_in_thinking`` computes in
+                routes/anthropic.py). Combined with ``matched_stop``
+                this distinguishes "model is thinking via injected
+                template, user stop trimmed mid-thought" (route to
+                reasoning) from "model is answering casually, the
+                stop string is part of the literal answer" (flip to
+                content).
+            finish_reason: D-STOP-THINK codex round-6 BLOCKING (PR #799).
+                When ``"length"`` AND ``prompt_thinking_active=True``,
+                this is the ``max_tokens``-cut analogue of stop-mid-think:
+                the model was thinking via the injected template and the
+                budget ran out before ``</think>`` was emitted. Subclasses
+                MUST route the accumulated bytes to ``reasoning`` (not
+                ``content``) under this condition — otherwise the same
+                reasoning trace leaks into both channels, exactly the
+                D-STOP-THINK bug this PR closes.
 
         Returns:
             DeltaMessage correction chunk, or None if no correction needed.
@@ -167,6 +203,34 @@ class ReasoningParser(ABC):
         """
         del accumulated_text  # noqa: F841 — default is no-think
         return False
+
+
+def finalize_streaming_compat(
+    parser: ReasoningParser,
+    accumulated_text: str,
+    *,
+    matched_stop: str | None = None,
+    prompt_thinking_active: bool = False,
+    finish_reason: str | None = None,
+) -> DeltaMessage | None:
+    """Call ``finalize_streaming`` without breaking legacy parsers."""
+    params = inspect.signature(parser.finalize_streaming).parameters
+    supports_kwargs = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    supports_new_args = supports_kwargs or {
+        "matched_stop",
+        "prompt_thinking_active",
+        "finish_reason",
+    }.issubset(params)
+    if supports_new_args:
+        return parser.finalize_streaming(
+            accumulated_text,
+            matched_stop=matched_stop,
+            prompt_thinking_active=prompt_thinking_active,
+            finish_reason=finish_reason,
+        )
+    return parser.finalize_streaming(accumulated_text)
 
 
 def finalize_truncation(

@@ -166,9 +166,12 @@ class StressE2EBenchStep(Step):
 
                     # Integration matrix.
                     for agent in registry["agents"]:
+                        skip_for_models = set(agent.get("skip_for_models") or [])
                         if choice.quality_tier == "smoke" and agent.get(
                             "skip_for_smoke"
                         ):
+                            continue
+                        if choice.model_id in skip_for_models:
                             continue
                         ag_result = _run_agent(ctx, choice, agent)
                         if ag_result["status"] != "pass":

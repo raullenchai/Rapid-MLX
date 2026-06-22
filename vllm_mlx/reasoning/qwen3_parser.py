@@ -236,65 +236,219 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
         # Use base class implementation (handles both explicit and implicit)
         return super().extract_reasoning(model_output, enable_thinking=enable_thinking)
 
-    def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
+    def finalize_streaming(
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
+    ) -> DeltaMessage | None:
         """
         Finalize streaming output.
 
         Three cases:
 
-        1. No tags seen at all — base class classified everything as reasoning
-           (to support implicit think). Emit correction with full text.
+        1. ``</think>`` seen — reasoning was properly completed. Either the
+           model produced content after ``</think>`` (already emitted as
+           text_delta), or the stream ended right at ``</think>``. No
+           correction needed.
 
-        2. <think> seen (template injected or model generated) but </think>
-           never appeared — model never produced the closing tag. The base
-           class classified everything as reasoning. Emit correction with
-           full text (stripping the template-injected <think> prefix).
+        2. ``</think>`` absent BUT a leading ``<think>`` prefix is present
+           (the template-injected or model-emitted opener) AND ``stop``
+           or ``max_tokens`` cut the stream before the closer arrived.
+           This is the D-STOP-THINK leak shape (cross-cycle, six
+           parser families): pre-fix we emitted the buffered trace as
+           ``content``, which the Anthropic / Responses routes
+           appended as a NEW text block — but the streaming loop had
+           already shipped every byte as ``reasoning_content``. Clients
+           saw the EXACT SAME bytes in both channels.
 
-        3. </think> seen — reasoning was properly completed. Either the model
-           produced content after </think> (already emitted as text_delta), or
-           the stream ended right at </think>. No correction needed.
+           Fix: surface the trace as ``reasoning``. The Anthropic /
+           Responses routes only act on ``final_msg.content`` (lines
+           anthropic.py:1715, responses.py:907) so the reasoning
+           emission is silently dropped from the wire — exactly the
+           right outcome because the bytes ALREADY shipped as
+           reasoning during the stream loop. The reasoning emission
+           keeps the parser contract honest for callers that inspect
+           ``DeltaMessage`` directly (tests, custom routes).
 
-        Cases 1 and 2 fix a regression in the Anthropic streaming adapter
-        (#185 follow-on): when the chat template injects <think> as a prefix,
-        _saw_any_tag is set True from the first delta, preventing the original
-        no-tags correction. Checking for </think> presence directly handles
-        both the template-injected and genuinely-no-thought scenarios.
+           Bare-text-preamble sub-case (#570) ALSO routes here under
+           the same reasoning emission — pre-fix it was a special
+           case that returned reasoning while the surrounding branch
+           returned content; post-fix the whole saw-prefix branch
+           uniformly returns reasoning.
+
+        3. ``</think>`` absent AND no leading ``<think>`` prefix — the
+           model emitted a bare-text response with NO evidence that
+           thinking mode was active. The streaming Case-3 default
+           routes the bytes to ``reasoning``, but without an opener
+           signal we cannot tell whether the model was actually
+           thinking. Pre-fix this returned a content correction so
+           the Anthropic streaming adapter could ship the buffered
+           text as a text_delta; this branch keeps that behaviour
+           because (a) the no-prefix shape is the documented
+           "casual non-thinking answer" path that #570 / codex r3
+           pinned as the FLIP-TO-CONTENT contract, and (b) the
+           D-STOP-THINK duplication only manifests when the parser
+           routed bytes to reasoning AND finalize routes the same
+           bytes to content — for casual non-thinking answers the
+           streaming Case-3 default IS the bug we're correcting (not
+           routing to content from the start), and the finalize
+           content correction is the existing route-level patch for
+           that shape. The bare-text-preamble label fallback still
+           routes to ``reasoning`` (preserves #570).
         """
         if self.end_token in accumulated_text:
-            # Case 3: proper close tag seen — no correction
+            # Case 1: proper close tag seen — no correction
             return None
         if accumulated_text:
-            # Cases 1 & 2: no close tag — emit full text as content,
-            # stripping the template-injected ``<think>`` prefix if present.
-            saw_think_prefix = accumulated_text.startswith(self.start_token)
-            cleaned = (
-                accumulated_text[len(self.start_token) :]
-                if saw_think_prefix
-                else accumulated_text
-            )
+            # No close tag — strip the template-injected ``<think>``
+            # prefix if present so the correction text matches what was
+            # streamed.
+            #
+            # Codex round-2 BLOCKING fix (PR #799): use
+            # ``lstrip().startswith`` instead of ``startswith`` so
+            # leading whitespace before ``<think>`` (e.g. the
+            # template-injected ``<think>\n`` with leading newline
+            # padding, or a model emission like ``  <think>``) is
+            # recognised as an explicit-opener stream. The previous
+            # ``startswith`` form silently fell through to the
+            # no-evidence content-correction branch, leaking the
+            # thought trace into ``content`` for whitespace-padded
+            # explicit-opener streams — exactly the D-STOP-THINK
+            # shape this branch exists to suppress.
+            #
+            # Codex round-7 BLOCKING fix (PR #799): the previous
+            # implementation discarded the whitespace prefix
+            # entirely (``stripped_text[len(self.start_token):]``
+            # threw away the bytes before ``<think>``). A response
+            # that legitimately starts with `` \n<think>...`` would
+            # lose the leading newline+space from both channels —
+            # those bytes are user-visible content that the
+            # streaming loop already shipped. Concatenate the
+            # preserved prefix back onto the cleaned trace so
+            # finalize doesn't drop user-visible bytes when it
+            # routes the saw-prefix branch to ``reasoning``.
+            stripped_text = accumulated_text.lstrip()
+            saw_think_prefix = stripped_text.startswith(self.start_token)
+            if saw_think_prefix:
+                _prefix_ws = accumulated_text[
+                    : len(accumulated_text) - len(stripped_text)
+                ]
+                _post_open = stripped_text[len(self.start_token) :]
+                # Preserve the original whitespace prefix verbatim
+                # so we don't silently drop user-visible bytes.
+                # Concatenating in the same channel keeps the
+                # parser's wire-equivalence invariant intact.
+                cleaned = _prefix_ws + _post_open
+            else:
+                cleaned = accumulated_text
             if not cleaned:
                 return None
-            # Bare-text thinking fallback (mirrors ``extract_reasoning``):
-            # when the chat template injects ``<think>`` and the model is
-            # truncated mid-thought before producing ``</think>``, the
-            # accumulated text opens with a bare-text "thinking process"
-            # preamble. The streaming Case-3 default would surface that
-            # preamble as ``content``; keep it in ``reasoning`` instead so
-            # OpenAI-compatible clients can distinguish chain-of-thought
-            # leakage from the final answer. (Issue #570.)
+            if saw_think_prefix:
+                # D-STOP-THINK (cycle-3 F-3 / cycle-5 hermes-qwen3.5-
+                # 27b-8bit / cycle-7 nemotron-30b / cycle-11 phi-4-
+                # mini-reasoning):
+                #
+                # The streaming loop has already shipped every reasoning
+                # byte as ``reasoning_content`` (base class Case-1
+                # ``start_in_prev``). Stop OR max_tokens cut before
+                # ``</think>`` arrived. Pre-fix we returned
+                # ``DeltaMessage(content=cleaned)`` here; the Anthropic
+                # / Responses ``finalize_streaming`` path then emitted
+                # ``cleaned`` as a NEW text block — duplicating the
+                # entire thought trace into BOTH the thinking block AND
+                # the text block. Cross-cycle repro on qwen3-0.6b-4bit
+                # (live test) and qwen3.5-27b-8bit + hermes (this
+                # parser via the qwen3 reasoning route + hermes tool
+                # route).
+                #
+                # Codex round-8 BLOCKING (PR #799): emit ``reasoning``
+                # ONLY when there's an actual truncation signal —
+                # either ``finish_reason=="length"`` (engine budget
+                # cut the suffix) OR ``matched_stop is not None`` (a
+                # user-supplied stop string fired and trimmed the
+                # output). For natural EOS (no truncation signal),
+                # the model voluntarily ended after emitting
+                # ``<think>just a thought`` — that's a genuinely
+                # orphaned in-progress thought and we must flip to
+                # ``content`` so the #569 silent-drop rescue surfaces
+                # the trace as the assistant turn. Routing to
+                # reasoning here would leave the user with an empty
+                # turn because Anthropic / Responses drop
+                # ``final_msg.reasoning`` from the wire.
+                #
+                # Codex round-11 BLOCKING (PR #799): REVERTS round-10
+                # over-restriction. The saw-prefix branch has DIRECT
+                # evidence of thinking — the literal ``<think>`` token
+                # reached the parser — so the suppression does NOT
+                # need ``prompt_thinking_active`` as a discriminator.
+                # Adding that AND in round-10 created a leak: a
+                # model-spontaneous ``<think>...STOP`` stream (no chat-
+                # template injection → ``prompt_thinking_active=False``)
+                # with ``matched_stop`` set would fall through to the
+                # content emission and duplicate the trace into both
+                # channels — exactly the D-STOP-THINK shape we exist
+                # to suppress. The ``prompt_thinking_active`` signal
+                # is reserved for the NO-PREFIX branch (below) where
+                # the parser has no direct evidence and needs the
+                # route-supplied template signal to discriminate
+                # casual answers from prompt-injected mid-think.
+                #
+                # Suppression matrix (saw-prefix branch, r11 final):
+                #
+                # finish_reason | matched_stop | route
+                # ──────────────┼──────────────┼─────────
+                # "length"      | *            | reasoning (D-STOP-THINK / max_tokens)
+                # *             | set          | reasoning (D-STOP-THINK / stop)
+                # "stop"/None   | None         | content   (#569 silent-drop rescue)
+                if finish_reason == "length" or matched_stop is not None:
+                    return DeltaMessage(reasoning=cleaned)
+                # Natural EOS after a literal opener is an orphaned thought
+                # that the model voluntarily ended. Surface it as content so
+                # routes that do not serialize finalize-time reasoning do not
+                # return an empty assistant turn.
+                return DeltaMessage(content=cleaned)
+            # No leading ``<think>`` prefix — Qwen3 chat template
+            # injects ``<think>\n`` into the prompt (NOT the model
+            # output) so prompt-injected mid-think streams also land
+            # here, alongside genuine casual answers.
             #
-            # Gated on ``saw_think_prefix`` because ``finalize_streaming``
-            # has no ``enable_thinking`` kwarg — the leading
-            # ``<think>`` token (template-injected or model-generated)
-            # is our only evidence that thinking mode was active for
-            # this stream. Without that evidence, a bare-text
-            # preamble in the output is more likely a casual answer
-            # opener (``Here's a thinking process I followed: ...``)
-            # than an actual thought trace, so falling through to the
-            # content path matches the pre-fix Anthropic-streaming
-            # correction protocol and avoids clobbering valid
-            # non-thinking answers (codex r3 BLOCKING symmetry).
-            if saw_think_prefix and _looks_like_bare_think_preamble(cleaned):
+            # D-STOP-THINK no-prefix branch. Qwen3 chat templates inject
+            # ``<think>\n`` into the prompt (not the model output), so
+            # the parser never sees a literal opener on the live failure
+            # shape. The route-supplied ``prompt_thinking_active`` signal
+            # is therefore the structural evidence that no-prefix bytes
+            # are inside the injected thinking block. Require a real
+            # truncation signal too (``finish_reason="length"`` or
+            # ``matched_stop``) so natural EOS and casual no-thinking
+            # answers still rescue to content.
+            #
+            # Decision matrix (no-prefix branch, r15 final):
+            #
+            # finish_reason | matched_stop | prompt_thinking_active | bare_preamble | route
+            # ──────────────┼──────────────┼────────────────────────┼───────────────┼─────────
+            # "length"      | *            | True                   | *             | reasoning (D-STOP-THINK / max_tokens)
+            # *             | set          | True                   | *             | reasoning (D-STOP-THINK / stop)
+            # *             | None         | False                  | True          | reasoning (#570 label)
+            # *             | None         | False                  | False         | content  (#570/#572 casual)
+            # *             | set          | False                  | *             | content  (casual stop-terminated)
+            # natural EOS   | None         | True                   | *             | content  (#569 silent-drop rescue)
+            if finish_reason == "length" and prompt_thinking_active:
+                # max_tokens cut a prompt-injected thinking stream —
+                # route to reasoning to suppress duplication.
                 return DeltaMessage(reasoning=cleaned)
+            if matched_stop is not None and prompt_thinking_active:
+                # User stop cut a prompt-injected thinking stream —
+                # route to reasoning to suppress duplication.
+                return DeltaMessage(reasoning=cleaned)
+            if _looks_like_bare_think_preamble(cleaned):
+                # #570 scratchpad-label fallback — bare-preamble IS
+                # think-mode evidence.
+                return DeltaMessage(reasoning=cleaned)
+            # No truncation signal + no parser evidence — surface as
+            # content (#570/#572 casual-answer / #569 natural-EOS
+            # rescue).
             return DeltaMessage(content=cleaned)
         return None

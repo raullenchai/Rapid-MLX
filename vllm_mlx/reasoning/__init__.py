@@ -24,7 +24,12 @@ Usage:
             ...
 """
 
-from .base import DeltaMessage, ReasoningParser, finalize_truncation
+from .base import (
+    DeltaMessage,
+    ReasoningParser,
+    finalize_streaming_compat,
+    finalize_truncation,
+)
 from .think_parser import BaseThinkingReasoningParser
 
 # Parser registry
@@ -115,6 +120,7 @@ __all__ = [
     "ReasoningParser",
     "DeltaMessage",
     "BaseThinkingReasoningParser",
+    "finalize_streaming_compat",
     # Registry functions
     "register_parser",
     "get_parser",

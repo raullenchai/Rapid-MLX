@@ -352,6 +352,138 @@ class BaseThinkingReasoningParser(ReasoningParser):
             return None
         return DeltaMessage(reasoning=emit)
 
+    # ------------------------------------------------------------------
+    # D-STOP-THINK shared finalize contract (cross-cycle bundle):
+    #
+    # When ``stop`` matches inside an unterminated ``<think>`` block (OR
+    # ``max_tokens`` cuts mid-thought before ``</think>``), the streaming
+    # loop has already shipped every reasoning byte as
+    # ``reasoning_content`` (the per-delta route — Anthropic
+    # ``thinking`` block, OpenAI ``delta.reasoning_content``, Responses
+    # API thinking event). Anthropic/Responses streams ALSO call
+    # ``finalize_streaming(accumulated_raw)`` at end-of-stream and emit
+    # ``final_msg.content`` as a NEW text block. Pre-fix Qwen3 and
+    # DeepSeek-R1 ``finalize_streaming`` returned
+    # ``DeltaMessage(content=<full trace>)`` on the unterminated-think
+    # path — which made the client see the EXACT SAME bytes in BOTH
+    # ``reasoning_content`` AND ``content``. Cross-cycle repro across
+    # qwen3 / deepseek_r1 / glm4 / gemma4 / hermes / VibeThinker
+    # families: bug_report.md:128, cycle-3 F-3, cycle-5 F-1 (hermes-
+    # qwen3.5-27b-8bit), cycle-6 F-CORR-2 (gemma-4), cycle-7 F-1
+    # (nemotron-30b), cycle-8 F-801 (glm4.7-9b-4bit), cycle-11 F-11-7
+    # (phi-4-mini-reasoning).
+    #
+    # The shared invariant lives here in the base class so every
+    # ``<think>``-tag parser inherits the same gate. Codex round-8
+    # NIT (PR #799): the gate applies ONLY to streams that gave
+    # EXPLICIT or PROMPT-INJECTED thinking evidence — NOT to bare
+    # no-tag casual answers.
+    #
+    #     If ``</think>`` was NEVER crossed AND the stream gave
+    #     explicit thinking evidence (a literal ``<think>`` opener
+    #     reached the parser) AND a real truncation fired
+    #     (``finish_reason=="length"`` OR ``matched_stop is not
+    #     None``), ``finalize_streaming`` MUST NOT emit ``content``.
+    #     The route already shipped these bytes as
+    #     ``reasoning_content`` during the stream loop, so a content
+    #     emission here is a pure duplicate. The same suppression
+    #     applies to PROMPT-INJECTED thinking evidence (chat template
+    #     injected ``<think>``, ``enable_thinking`` non-False) under
+    #     the same truncation signals.
+    #
+    #     CASUAL no-tag answers (no opener, no truncation signal,
+    #     no bare-preamble label) are EXEMPT from this rule — Qwen3
+    #     and DeepSeek-R1 INTENTIONALLY emit
+    #     ``DeltaMessage(content=...)`` for that path (#570/#572)
+    #     because the streaming Case-3 default routed the bytes to
+    #     ``reasoning_content`` but the answer was never actually
+    #     chain-of-thought. Without the content correction, the
+    #     casual-answer wire would be a silently empty assistant
+    #     turn. NATURAL-EOS with an explicit ``<think>`` opener but
+    #     no truncation signal is ALSO exempt — see qwen3_parser.py
+    #     saw_think_prefix branch (#569 silent-drop rescue).
+    #
+    # Subclasses that want to emit a reasoning ``DeltaMessage`` at
+    # finalize (e.g. Qwen3's bare-text-preamble surfacing for the
+    # non-streaming envelope) MAY do so — Anthropic / Responses routes
+    # only act on ``final_msg.content``, so reasoning-channel finalize
+    # output is harmless.
+    def _missing_think_close(self, accumulated_text: str) -> bool:
+        """Return True when the accumulated text has no closing
+        ``</think>`` (or subclass-specific ``end_token``).
+
+        NARROW SEMANTICS (codex round-10 NIT, PR #799): this
+        predicate's name now EXPLICITLY says what it tests —
+        "missing think close". It does NOT itself imply that the
+        stream carried thinking evidence, nor that any D-STOP-THINK
+        suppression should fire — those are SEPARATE signals (a
+        literal ``<think>`` opener in the buffer, OR
+        ``prompt_thinking_active`` under a truncation signal). The
+        predicate's job is to be the FIRST gate: callers AND it
+        with their evidence signals before suppressing a content
+        emission.
+
+        Misuse warning: do NOT use this predicate alone to decide
+        whether to suppress a ``DeltaMessage(content=...)`` emission
+        — a plain no-tag casual answer (no opener, no truncation
+        signal) would trip it and you'd silently drop the assistant
+        turn (the #569/#570/#572 regression this PR closes from the
+        OTHER direction). Always combine with evidence:
+
+            if (self._missing_think_close(text)
+                and (saw_think_opener OR
+                     (prompt_thinking_active AND
+                      (matched_stop OR finish_reason == "length"))))
+            then suppress content (route to reasoning)
+            else allow content (casual-answer rescue per #569)
+
+        See ``qwen3_parser.py`` saw-prefix and no-prefix branches for
+        the canonical caller pattern. The base class default
+        ``finalize_streaming`` returns ``None`` for ANY accumulated
+        text and is safe to inherit — the AND-of-signals logic only
+        lives in subclasses that emit corrections.
+
+        Subclasses with different closer tokens override
+        ``end_token``; this helper reads ``self.end_token`` so the
+        predicate adapts uniformly.
+        """
+        return bool(accumulated_text) and self.end_token not in accumulated_text
+
+    def _finalize_in_think_block(self, accumulated_text: str) -> bool:
+        """Backward-compatible evidence-aware mid-think predicate.
+
+        Unlike ``_missing_think_close``, this keeps the old "currently
+        inside a think block" semantics: a real opener must be present
+        and unmatched. Plain no-tag text such as ``"hello"`` is missing
+        a closer but is not itself proof of an open think block.
+        """
+        return self.is_open_in_think(accumulated_text)
+
+    def finalize_streaming(
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
+    ) -> "DeltaMessage | None":
+        """Default base-class finalize: no correction.
+
+        D-STOP-THINK invariant: when ``</think>`` was never crossed,
+        finalize MUST NOT emit content. The default ``return None``
+        upholds that. Subclasses that want to inject a reasoning-channel
+        correction (Qwen3's bare-text preamble surfacing, etc.) MUST
+        gate their content emission on ``not self._finalize_in_think_block``.
+
+        The base class default ignores the ``matched_stop``,
+        ``prompt_thinking_active`` and ``finish_reason`` signals because
+        the no-correction return is safe either way. Subclasses (Qwen3 /
+        DeepSeek-R1) use the AND of those signals to discriminate
+        prompt-injected mid-think (stop OR max_tokens) from casual
+        no-tag answers.
+        """
+        return None
+
     def _sweep_residual_think_tags(
         self, reasoning: str, content: str
     ) -> tuple[str, str]:

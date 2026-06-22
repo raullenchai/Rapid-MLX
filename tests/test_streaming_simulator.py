@@ -139,13 +139,93 @@ def simulate_server_streaming(tokens: list[str], use_reasoning_parser: str = "qw
         if content:
             sse_chunks.append(content)
 
-    # Server line 2761: finalize_streaming correction
+    # Server line 2761: finalize_streaming correction.
+    #
+    # D-STOP-THINK (cross-cycle bundle): post-fix
+    # ``finalize_streaming`` surfaces the no-tag rescue via
+    # ``reasoning``, not ``content`` — emitting content here would
+    # duplicate bytes already streamed as reasoning_content on the
+    # Anthropic / Responses surfaces. The pre-fix simulator
+    # blindly appended ``correction.content`` to the content SSE
+    # stream which is the BUGGY path; post-fix we honour the same
+    # invariant (``final_msg.content`` is the only flip-to-content
+    # signal — reasoning emissions are silently dropped on the wire).
     if hasattr(parser, "finalize_streaming"):
         correction = parser.finalize_streaming(accumulated_text)
         if correction and correction.content:
             sse_chunks.append(correction.content)
 
     return sse_chunks
+
+
+def simulate_server_streaming_reasoning_aware(
+    tokens: list[str],
+    use_reasoning_parser: str = "qwen3",
+    *,
+    matched_stop: str | None = None,
+    prompt_thinking_active: bool = False,
+    finish_reason: str | None = None,
+):
+    """Same as ``simulate_server_streaming`` but accumulates reasoning
+    bytes too, so D-STOP-THINK tests can assert across both channels.
+
+    Codex round-10 BLOCKING (PR #799): now accepts the
+    ``matched_stop`` / ``prompt_thinking_active`` / ``finish_reason``
+    finalize kwargs so tests can drive the D-STOP-THINK suppression
+    branches (truncation + active thinking) and the #569 natural-EOS
+    rescue branch separately. Without these kwargs the simulator
+    silently exercised only the natural-EOS branches, leaving the
+    new suppression paths untested at the simulator level.
+
+    The defaults (all None / False) preserve the previous "no
+    truncation, no active thinking" semantics so existing callers
+    are unaffected.
+    """
+    parser = get_parser(use_reasoning_parser)()
+    parser.reset_state()
+    accumulated_text = ""
+    content_chunks: list[str] = []
+    reasoning_chunks: list[str] = []
+    for i, token in enumerate(tokens):
+        delta_text = token
+        is_finished = i == len(tokens) - 1
+        previous_text = accumulated_text
+        accumulated_text += delta_text
+        delta_msg = parser.extract_reasoning_streaming(
+            previous_text, accumulated_text, delta_text
+        )
+        if delta_msg is None:
+            continue
+        content = delta_msg.content
+        reasoning = delta_msg.reasoning
+        if content is not None and content == "":
+            content = None
+        finish_reason_chunk = "stop" if is_finished else None
+        if not content and not reasoning and not finish_reason_chunk:
+            continue
+        if content:
+            content_chunks.append(content)
+        if reasoning:
+            reasoning_chunks.append(reasoning)
+    if hasattr(parser, "finalize_streaming"):
+        correction = parser.finalize_streaming(
+            accumulated_text,
+            matched_stop=matched_stop,
+            prompt_thinking_active=prompt_thinking_active,
+            finish_reason=finish_reason,
+        )
+        if correction and correction.content:
+            content_chunks.append(correction.content)
+        # Mirror the Anthropic / Responses streaming routes
+        # (anthropic.py:1715, responses.py:907): they ONLY emit
+        # ``final_msg.content`` as a new wire event. ``final_msg.reasoning``
+        # is silently dropped — exactly because the streaming loop
+        # already shipped the bytes as reasoning_content / thinking_delta
+        # during the chunk pass. D-STOP-THINK invariant: the simulator
+        # must not accumulate finalize's reasoning either, otherwise
+        # tests double-count the bytes that the real wire only emits
+        # once.
+    return content_chunks, reasoning_chunks
 
 
 class TestScenario1_ExplicitThinkTags:
@@ -245,42 +325,104 @@ class TestScenario2_ImplicitThinkMode:
 class TestScenario3_NoTagModel:
     """Model never emits <think> tags (e.g., 8-bit quantized Qwen3).
 
-    This is the original user-reported bug: content is empty because
-    the reasoning parser classifies everything as reasoning.
+    D-STOP-THINK cross-cycle update: when the parser is a thinking
+    parser (qwen3 here), the streaming Case-3 default routes no-tag
+    bytes to ``reasoning_content``. Pre-fix the parser's
+    ``finalize_streaming`` then emitted a content-channel correction
+    that the Anthropic / Responses route consumers appended as a
+    fresh text block — duplicating the trace into both channels.
+    Post-fix the rescue surfaces via ``reasoning`` so the consumers'
+    content gate stays silent.
+
+    These tests therefore assert that the no-tag bytes reach the
+    reasoning channel intact (no chars lost) AND no duplication
+    leaks into content. Clients that want no-tag output as content
+    should configure a non-reasoning parser (``None`` /
+    ``Glm4ReasoningParser`` style override).
     """
 
     def test_short_no_tag_output(self):
-        """Short output (< 64 chars) with no tags at all."""
+        """Short output (< 64 chars) with no tags: streaming routes
+        to reasoning, finalize flips to content for the casual-answer
+        contract (#570/#572).
+
+        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
+        the no-evidence no-tag path is the casual-answer flip — route
+        consumers ignore ``final_msg.reasoning``, so the buffered
+        rescue text must surface via ``content`` to reach
+        ``message.content`` on the OpenAI envelope.
+        """
         tokens = ["Hello ", "world!"]
-        chunks = simulate_server_streaming(tokens)
-        full = "".join(chunks)
-        assert full == "Hello world!", f"Expected 'Hello world!', got {full!r}"
+        content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
+        assert "".join(reasoning) == "Hello world!", (
+            f"reasoning lost bytes: {reasoning!r}"
+        )
+        # Casual-answer content flip — the finalize correction is the
+        # documented bridge between the streaming Case-3 default
+        # (routes to reasoning) and the route consumer's
+        # ``message.content`` surface.
+        assert "".join(content) == "Hello world!", (
+            f"casual-answer content flip missing: {content!r}"
+        )
 
     def test_long_no_tag_output(self):
-        """Long output (> 64 chars) with no tags — the core bug."""
+        """Long output (> 64 chars) with no tags — qwen3 has no
+        NO_TAG_CONTENT_THRESHOLD so streaming routes everything to
+        reasoning and finalize flips to content (casual-answer
+        contract). Per-channel assertion (codex round-5 BLOCKING).
+        """
         text = "Here is a markdown example:\n\n# Heading\n\n- Item 1\n- Item 2\n\nDone."
         tokens = [text[i : i + 5] for i in range(0, len(text), 5)]
-        chunks = simulate_server_streaming(tokens)
-        full = "".join(chunks)
-
-        assert "# Heading" in full, f"Content missing: {full!r}"
-        assert "- Item 1" in full, f"Content missing: {full!r}"
-        assert "Done." in full, f"Content missing: {full!r}"
-        # ALL text should be in content, nothing lost
-        assert full == text, (
-            f"Content mismatch:\n  Expected: {text!r}\n  Got:      {full!r}"
+        content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Per-channel contract: each channel independently equals the
+        # source text. Concatenation-based substring matches were not
+        # enough — they could pass while bytes were duplicated within
+        # a channel or partially missing outside the substring.
+        assert full_reasoning == text, (
+            f"reasoning channel does not equal source text: "
+            f"got {full_reasoning!r}, expected {text!r}"
+        )
+        assert full_content == text, (
+            f"content channel does not equal source text: "
+            f"got {full_content!r}, expected {text!r}"
         )
 
     def test_very_long_no_tag_output(self):
-        """Very long output with no tags — no chars should be lost."""
+        """Very long output with no tags — qwen3 has no
+        NO_TAG_CONTENT_THRESHOLD so streaming keeps routing every byte
+        to reasoning, and finalize flips the same bytes to content for
+        the casual-answer contract.
+
+        Codex round-3 NIT (PR #799): assert PER-CHANNEL contract
+        rather than ``reasoning + content == text`` concatenation
+        (which could pass while duplicating or reordering bytes).
+        Both channels independently carry the full text — the
+        no-evidence-path documented trade-off; the D-STOP-THINK leak
+        surface targeted by PR #799 is the EXPLICIT-OPENER path.
+        """
         text = "The quick brown fox. " * 20  # 420 chars
         tokens = [text[i : i + 10] for i in range(0, len(text), 10)]
-        chunks = simulate_server_streaming(tokens)
-        full = "".join(chunks)
-        assert full == text, f"Length mismatch: expected {len(text)}, got {len(full)}"
+        content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Per-channel contract: each channel independently equals the
+        # source text. Concatenation-based length checks were not
+        # enough — they could pass while bytes were duplicated within
+        # a single channel or reordered across channels.
+        assert full_reasoning == text, (
+            f"reasoning channel does not equal source text: "
+            f"got {len(full_reasoning)} chars, expected {len(text)}"
+        )
+        assert full_content == text, (
+            f"content channel lost bytes: got {len(full_content)}, expected {len(text)}"
+        )
 
     def test_no_tag_with_newlines(self):
-        """No-tag output with markdown newlines — the original Reddit bug."""
+        """No-tag output with markdown newlines — per-channel
+        assertions (codex round-5 BLOCKING).
+        """
         tokens = [
             "# Title",
             "\n",
@@ -300,20 +442,43 @@ class TestScenario3_NoTagModel:
             "```",
             "\n",
         ]
-        chunks = simulate_server_streaming(tokens)
-        full = "".join(chunks)
-
-        assert "# Title\n\n" in full, f"Heading newlines lost: {full!r}"
-        assert "- bullet 1\n- bullet 2" in full, f"Bullets lost: {full!r}"
-        assert "```python\nprint('hello')\n```" in full, f"Code block lost: {full!r}"
+        expected = "".join(tokens)
+        content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Per-channel: each channel independently carries the full
+        # text (qwen3 casual-answer contract — streaming routes to
+        # reasoning, finalize flips to content). Substring matches
+        # were not enough.
+        assert full_reasoning == expected, (
+            f"reasoning channel does not equal source: "
+            f"got {full_reasoning!r}, expected {expected!r}"
+        )
+        assert full_content == expected, (
+            f"content channel does not equal source: "
+            f"got {full_content!r}, expected {expected!r}"
+        )
 
     def test_no_tag_emojis(self):
-        """Emoji characters should pass through correctly."""
+        """Emoji characters survive across both channels — per-channel
+        assertions (codex round-5 BLOCKING)."""
         tokens = ["Hello ", "🎉", " ", "🚀", " world!"]
-        chunks = simulate_server_streaming(tokens)
-        full = "".join(chunks)
-        assert "🎉" in full
-        assert "🚀" in full
+        expected = "".join(tokens)
+        content, reasoning = simulate_server_streaming_reasoning_aware(tokens)
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Per-channel: each channel independently carries the full
+        # text. Concatenation-based substring matches could have
+        # passed even if emoji bytes were duplicated or missing
+        # from one channel.
+        assert full_reasoning == expected, (
+            f"reasoning channel does not equal source: "
+            f"got {full_reasoning!r}, expected {expected!r}"
+        )
+        assert full_content == expected, (
+            f"content channel does not equal source: "
+            f"got {full_content!r}, expected {expected!r}"
+        )
 
 
 class TestScenario4_NewlinePreservation:
@@ -363,19 +528,111 @@ class TestScenario5_EdgeCases:
         full = "".join(chunks)
         assert full == "Just content."
 
-    def test_deepseek_no_tag_threshold(self):
-        """DeepSeek-R1 should also handle no-tag output correctly."""
-        text = "A regular response without thinking tags, should be content."
+    def test_deepseek_no_tag_above_threshold_splits_strictly(self):
+        """DeepSeek-R1 ABOVE-threshold no-tag output: streaming Case-3
+        flips to content past ``NO_TAG_CONTENT_THRESHOLD`` (64 chars
+        on the base parser). Pre-threshold bytes ship as reasoning;
+        post-threshold bytes ship as content; finalize short-no-tag
+        arm does NOT fire because the threshold cap was crossed.
+        Strict split: reasoning + content == text exactly.
+
+        Codex round-5 BLOCKING: assert exact channel allocation,
+        not substring/concatenation.
+        """
+        # 80 chars — comfortably above the 64-char threshold so the
+        # streaming Case-3 override fires and the finalize short-no-
+        # tag arm does NOT (NO_TAG_CONTENT_THRESHOLD check fails).
+        text = (
+            "A regular response without thinking tags. "
+            "It should be split across channels."
+        )
+        assert len(text) > 64, "test fixture must cross deepseek threshold"
         tokens = [text[i : i + 5] for i in range(0, len(text), 5)]
-        chunks = simulate_server_streaming(tokens, use_reasoning_parser="deepseek_r1")
-        full = "".join(chunks)
-        assert full == text, f"DeepSeek no-tag mismatch: {full!r}"
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            tokens, use_reasoning_parser="deepseek_r1"
+        )
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Strict split — concatenation in correct order MUST equal
+        # the source text. There is no duplicate finalize emission
+        # because the threshold cap was crossed (the short-no-tag
+        # arm requires len < threshold).
+        assert full_reasoning + full_content == text, (
+            f"DeepSeek-R1 channel split does not reconstruct source:\n"
+            f"  reasoning={full_reasoning!r}\n  content={full_content!r}"
+        )
+        # No overlap — the prefix in reasoning must not also appear
+        # in content (regression: the codex BLOCKING shape would let
+        # a duplicate pass under the old substring-based assertion).
+        if full_reasoning and full_content:
+            assert full_reasoning not in full_content, (
+                f"reasoning bytes duplicated into content:\n"
+                f"  reasoning={full_reasoning!r}\n  content={full_content!r}"
+            )
+
+    def test_deepseek_no_tag_below_threshold_finalize_flips_to_content(self):
+        """DeepSeek-R1 BELOW-threshold no-tag output: streaming
+        routes everything to reasoning AND finalize short-no-tag arm
+        flips to content (matched_stop=None → casual-answer
+        contract). Both channels carry the full text — this is the
+        documented #570/#572 no-evidence-path trade-off.
+
+        Codex round-5 BLOCKING: assert PER-CHANNEL contract instead
+        of substring-on-concatenation.
+        """
+        text = "Short answer."  # well under 64-char threshold
+        assert len(text) < 64, "test fixture must stay under threshold"
+        tokens = [text[i : i + 5] for i in range(0, len(text), 5)]
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            tokens, use_reasoning_parser="deepseek_r1"
+        )
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Streaming Case-3 default routed every byte to reasoning.
+        assert full_reasoning == text, (
+            f"reasoning channel does not equal source: "
+            f"got {full_reasoning!r}, expected {text!r}"
+        )
+        # Finalize short-no-tag arm flipped to content per #570/#572
+        # (matched_stop default None in the simulator → casual-answer
+        # branch). Both channels carry the full text.
+        assert full_content == text, (
+            f"content channel does not equal source: "
+            f"got {full_content!r}, expected {text!r}"
+        )
 
     def test_single_char_no_tag(self):
-        """Single character output, no tags."""
-        chunks = simulate_server_streaming(["Y"], use_reasoning_parser="qwen3")
-        full = "".join(chunks)
-        assert full == "Y"
+        """Single character ``"Y"`` output, no tags, no truncation
+        signal — qwen3 streaming Case-3 routes the byte to reasoning,
+        finalize short-no-tag arm flips to content per #570/#572
+        (matched_stop=None, prompt_thinking_active=False default).
+
+        Codex round-8 BLOCKING (PR #799): assert the EXACT per-channel
+        contract (``reasoning == ["Y"]`` AND ``content == ["Y"]``)
+        instead of the weak substring check. Under the old
+        ``"Y" in full_combined`` assertion, a regression that dropped
+        the content correction, duplicated the byte across channels,
+        or routed to the wrong channel would still pass — exactly the
+        D-STOP-THINK suppression-vs-rescue boundary this PR pins.
+        """
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            ["Y"], use_reasoning_parser="qwen3"
+        )
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        # Streaming routed the byte to reasoning (qwen3 base-class
+        # Case-3 default for the no-prefix short answer).
+        assert full_reasoning == "Y", (
+            f"qwen3 streaming should route bare 'Y' to reasoning: "
+            f"got reasoning={full_reasoning!r}"
+        )
+        # Finalize short-no-tag arm flipped to content per #570/#572
+        # (matched_stop=None default → casual-answer contract; no
+        # truncation signal → not D-STOP-THINK).
+        assert full_content == "Y", (
+            f"qwen3 finalize should flip bare 'Y' to content "
+            f"(casual-answer #572 contract): got content={full_content!r}"
+        )
 
     def test_whitespace_only_not_emitted_as_content(self):
         """Pure empty string should be filtered, but whitespace should pass."""
@@ -383,6 +640,83 @@ class TestScenario5_EdgeCases:
         chunks = simulate_server_streaming(tokens)
         full = "".join(chunks)
         assert "a\n\tb" in full
+
+    def test_explicit_opener_with_matched_stop_suppresses_content(self):
+        """D-STOP-THINK suppression via the simulator: an explicit
+        ``<think>`` opener AND a user stop string firing inside the
+        unclosed block AND ``prompt_thinking_active=True`` MUST route
+        the trace to reasoning only (text channel stays empty).
+
+        Codex round-10 BLOCKING (PR #799): the simulator was
+        previously locked to natural-EOS at finalize — this test
+        threads ``matched_stop`` AND ``prompt_thinking_active`` so
+        the simulator now exercises the D-STOP-THINK suppression
+        branch the production routes hit.
+        """
+        tokens = ["<think>", "Let me think ", "about 5+7."]
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            tokens,
+            use_reasoning_parser="qwen3",
+            matched_stop="STOP",
+            prompt_thinking_active=True,
+        )
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        assert "Let me think" in full_reasoning, (
+            f"streaming should ship reasoning bytes: got reasoning={full_reasoning!r}"
+        )
+        assert full_content == "", (
+            f"D-STOP-THINK suppression: text channel must stay empty "
+            f"under matched_stop + prompt_thinking_active; got "
+            f"content={full_content!r}"
+        )
+
+    def test_explicit_opener_with_length_finish_suppresses_content(self):
+        """D-STOP-THINK ``max_tokens`` suppression via the simulator:
+        explicit ``<think>`` opener AND ``finish_reason="length"`` AND
+        ``prompt_thinking_active=True`` MUST route the trace to
+        reasoning only.
+
+        Codex round-10 BLOCKING (PR #799): pin the budget-cut branch
+        at the simulator level too (complement of the matched_stop
+        test above).
+        """
+        tokens = ["<think>", "5+7"]
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            tokens,
+            use_reasoning_parser="qwen3",
+            finish_reason="length",
+            prompt_thinking_active=True,
+        )
+        full_reasoning = "".join(reasoning)
+        full_content = "".join(content)
+        assert "5+7" in full_reasoning, (
+            f"streaming should ship reasoning bytes: got reasoning={full_reasoning!r}"
+        )
+        assert full_content == "", (
+            f"D-STOP-THINK max_tokens suppression: text channel must "
+            f"stay empty under finish_reason=length + "
+            f"prompt_thinking_active; got content={full_content!r}"
+        )
+
+    def test_explicit_opener_natural_eos_rescues_content(self):
+        """Explicit ``<think>`` natural EOS is not truncation. Finalize
+        surfaces the orphaned thought as content so clients do not receive
+        an empty assistant turn."""
+        tokens = ["<think>", "just a thought"]
+        content, reasoning = simulate_server_streaming_reasoning_aware(
+            tokens,
+            use_reasoning_parser="qwen3",
+            matched_stop=None,
+            finish_reason=None,
+        )
+        full_content = "".join(content)
+        full_reasoning = "".join(reasoning)
+        assert "just a thought" in full_reasoning
+        assert full_content == "just a thought", (
+            f"explicit-opener natural EOS should rescue content; got "
+            f"content={full_content!r}"
+        )
 
 
 class TestScenario6_NoParserThinkTagPassthrough:

@@ -36,6 +36,7 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit_or_x_api_key, verify_api_key_or_x_api_key
+from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     SSE_RESPONSE_HEADERS,
@@ -94,21 +95,19 @@ router = APIRouter()
 
 
 def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
-    """Return whether streaming should begin in an implicit thinking block.
+    """Thin wrapper over the shared
+    ``service.helpers._should_start_in_thinking`` predicate.
 
-    Some thinking-capable chat templates include ``<think>`` in the generated
-    assistant prefix instead of emitting it as a normal output token.  In that
-    case the stream router needs to start in thinking mode so tokens before
-    ``</think>`` are emitted as Anthropic thinking deltas.
-
-    When thinking is explicitly disabled, however, the template marker is only
-    stale capability metadata for routing purposes: direct answer tokens should
-    be emitted as text.  Otherwise Claude Code receives a message with only a
-    thinking block and no text result.
+    Codex round-9 BLOCKING (PR #799): the same heuristic used to live
+    here AND in ``routes/responses.py`` AND was reimplemented inline
+    in ``routes/chat.py`` with a hard-coded substring check. The three
+    copies could drift apart silently. The single source of truth now
+    lives in ``service/helpers.py``; this thin wrapper is retained so
+    in-module callers stay unchanged.
     """
-    if enable_thinking is False:
-        return False
-    return "<think>" in chat_template and "add_generation_prompt" in chat_template
+    from ..service.helpers import _should_start_in_thinking as _shared
+
+    return _shared(chat_template, enable_thinking)
 
 
 def _named_tool_choice_target(tool_choice) -> str | None:
@@ -238,7 +237,7 @@ def _enforce_named_tool_choice_present(
     if not target or tool_calls:
         return tool_calls, False, None
     # Log the disambiguation an operator needs to debug small-model
-    # compliance issues. The wire response shape is identical either way.
+    # compliance issues.
     if original_call_count == 0:
         logger.warning(
             "tool_choice pinned tool %r but the model returned a text "
@@ -961,6 +960,17 @@ async def create_anthropic_message(
             and cfg.reasoning_parser is not None
             and not (getattr(output, "reasoning_text", "") or "")
         )
+        # D-STOP-THINK codex round-5 BLOCKING (PR #799): compute
+        # ``prompt_thinking_active`` so the helper's Case-4 + stop +
+        # matched_stop arm can discriminate prompt-injected mid-think
+        # from a casual stop-terminated answer.
+        _tok_ns = getattr(engine, "tokenizer", None)
+        _chat_template_ns = ""
+        if _tok_ns and hasattr(_tok_ns, "chat_template"):
+            _chat_template_ns = _tok_ns.chat_template or ""
+        prompt_thinking_active_ns = _should_start_in_thinking(
+            _chat_template_ns, resolved_thinking
+        )
         final_content = _rescue_silent_drop_from_reasoning(
             final_content,
             reasoning_text,
@@ -968,6 +978,8 @@ async def create_anthropic_message(
             finish_reason=finish_reason,
             raw_text=output.raw_text or output.text,
             reasoning_is_case4=reasoning_is_case4,
+            matched_stop=getattr(output, "matched_stop", None),
+            prompt_thinking_active=prompt_thinking_active_ns,
         )
         # R-01 (was H-01): Anthropic-side mirror of the chat-route opt-in
         # cutoff sentinel. Default-off — the Anthropic envelope already
@@ -1814,7 +1826,10 @@ async def _stream_anthropic_messages(
     # breaking the spec-required ``max_tokens`` continuation pattern
     # (Mei dogfood report ``mei-r1.md`` HIGH). ``length`` →
     # ``max_tokens``; everything else maps via the existing
-    # tool-use / stop-sequence / end-turn ladder below.
+    # tool-use / stop-sequence / end-turn ladder below. D-STOP-THINK
+    # also passes this value into ``finalize_streaming`` so parsers can
+    # keep prompt-injected ``max_tokens`` truncations in reasoning
+    # instead of leaking them into ``content``.
     stream_finish_reason: str | None = None
 
     current_block_type = None
@@ -2503,8 +2518,20 @@ async def _stream_anthropic_messages(
         # read ``accumulated_text`` + class attributes only), so the
         # single call is also safer if a future parser variant
         # introduces side effects: we only invoke once.
+        #
+        # D-STOP-THINK (PR #799): pass the engine-supplied
+        # ``matched_stop`` signal, prompt-think predicate, and terminal
+        # ``finish_reason`` into that single finalize call so parsers
+        # can suppress prompt-injected mid-think stop truncation without
+        # undoing the C-08 duplicate-thinking guard below.
         final_msg = (
-            reasoning_parser.finalize_streaming(accumulated_raw)
+            finalize_streaming_compat(
+                reasoning_parser,
+                accumulated_raw,
+                matched_stop=stream_matched_stop,
+                prompt_thinking_active=_starts_thinking,
+                finish_reason=stream_finish_reason,
+            )
             if hasattr(reasoning_parser, "finalize_streaming")
             else None
         )
@@ -2652,10 +2679,6 @@ async def _stream_anthropic_messages(
     # non-stream branch's 400 contract in spirit while staying within
     # the Anthropic streaming protocol.
     tool_validation_error: str | None = None
-    # F8 follow-up: skip the JSON-schema validator on synthesized
-    # best-effort calls — their empty ``input={}`` is intentionally
-    # placeholder and may not satisfy ``required`` fields. Same
-    # rationale as the non-stream branch (codex r1 BLOCKING #1).
     if tool_calls and openai_request.tools and not synthesized_pinned_call:
         try:
             _validate_tool_call_params(tool_calls, openai_request.tools)
@@ -2682,11 +2705,6 @@ async def _stream_anthropic_messages(
     # The buffer is unused when ``tool_choice`` is not a named pin —
     # in that case the chunk loop yielded directly and ``pre_filter_buffer``
     # is empty, so this block is a no-op on every non-pinned request.
-    # F8 follow-up: when synthesis fired the model emitted text instead
-    # of the pinned tool. Replaying that buffered text would put the
-    # forbidden text payload back on the wire (same family of contract
-    # violation the 422 path used to suppress); drop the buffer and let
-    # the synthesized tool_use below carry the entire content list.
     if synthesized_pinned_call:
         pre_filter_buffer.clear()
     if _buffer_for_pinned_tool and not (

@@ -718,6 +718,38 @@ def _apply_reasoning_cap(
     return cleaned_text, truncated
 
 
+def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
+    """Shared predicate: does this chat template start the assistant
+    response inside an implicit ``<think>`` block?
+
+    Some thinking-capable chat templates include ``<think>`` in the
+    generated assistant prefix instead of emitting it as a normal
+    output token. In that case the streaming router needs to start in
+    thinking mode so tokens before ``</think>`` are emitted as
+    reasoning deltas (Anthropic thinking_delta, Responses thinking
+    event, OpenAI delta.reasoning_content).
+
+    When thinking is explicitly disabled, the template marker is only
+    stale capability metadata for routing purposes: direct answer
+    tokens should be emitted as text. Otherwise the client receives a
+    message with only a thinking block and no text result.
+
+    Codex round-9 BLOCKING (PR #799): this helper used to live in
+    ``routes/anthropic.py`` and ``routes/responses.py`` as duplicate
+    private functions, plus an inline reimplementation in
+    ``routes/chat.py`` that hard-coded the same ``"<think>"`` +
+    ``"add_generation_prompt"`` substring check. The three copies
+    could drift apart silently — chat completions could misclassify
+    prompt-injected thinking templates that Anthropic / Responses
+    correctly detect. Hoist to the shared service layer so every
+    route uses the same predicate and the contract has a single
+    source of truth.
+    """
+    if enable_thinking is False:
+        return False
+    return "<think>" in chat_template and "add_generation_prompt" in chat_template
+
+
 def _rescue_silent_drop_from_reasoning(
     final_content: str | None,
     reasoning_text: str | None,
@@ -726,6 +758,8 @@ def _rescue_silent_drop_from_reasoning(
     raw_text: str | None = None,
     *,
     reasoning_is_case4: bool = False,
+    matched_stop: str | None = None,
+    prompt_thinking_active: bool = False,
 ) -> str | None:
     """Issue #569: never silently drop an assistant turn.
 
@@ -803,44 +837,88 @@ def _rescue_silent_drop_from_reasoning(
     if not reasoning_text or not reasoning_text.strip():
         return final_content
     # 2026-06-17 VibeThinker live test: when the model was truncated
-    # mid-thought (``finish_reason="length"``) with an unclosed
-    # ``<think>`` opener in ``raw_text``, the reasoning trace is NOT
-    # the final answer — it's an interrupted chain of thought. Surfacing
-    # it as ``content`` per the #569 rescue would feed the client the
-    # SAME bytes as ``reasoning_content`` and break the "content is the
-    # final answer" contract. Skip the rescue and let the client see
-    # ``content=null`` so they can detect "model ran out of budget
-    # before producing an answer" via the ``finish_reason="length"``
-    # signal — symmetric with how OpenAI's o1 / o3 behave on truncated
-    # reasoning.
+    # D-STOP-THINK rescue gate. The #569 rescue normally copies
+    # reasoning-only output into ``content`` so clients do not see an
+    # empty assistant turn. Do not run that rescue when the empty content
+    # is a known interrupted-thought shape; otherwise the same thought
+    # bytes appear in both ``content`` and ``reasoning_content``.
     #
-    # Gate on BOTH ``finish_reason="length"`` AND raw_text opening with
-    # an unclosed ``<think>``. Other ``finish_reason="length"`` cases
-    # (e.g. a non-thinking model truncated mid-answer where reasoning
-    # was empty but content was building) still get rescued — the
-    # opener check is the discriminator.
+    # Current suppression matrix:
     #
-    # Also gate on the helper-Case-4 signal (``reasoning_is_case4``)
-    # passed from the route — covers the PR #715-bundle live-test
-    # repro where VibeThinker is asked a no-tool no-think prompt:
-    # the chat template doesn't pre-inject ``<think>``, the model
-    # answers in plain prose (no ``<think>`` token emitted), but the
-    # route still defaults ``enable_thinking=True`` for the family.
-    # The parser's Case-4 fallback routes the WHOLE output to
-    # reasoning AND the helper blanks ``cleaned_text=""``. The
-    # ``raw_text`` opener check then misses (raw_text doesn't start
-    # with ``<think>``), and the rescue without the Case-4 signal
-    # mistakes the no-content state for a #569 silent drop and
-    # surfaces the reasoning as content — duplicating the trace
-    # byte-identically. The Case-4 signal stops that.
-    if (
-        finish_reason == "length"
-        and raw_text
-        and raw_text.lstrip().startswith("<think>")
-        and "</think>" not in raw_text
-    ):
-        return final_content
-    if finish_reason == "length" and reasoning_is_case4:
+    # finish | raw starts unclosed <think> | case4 | matched_stop | prompt think | suppress
+    # length | yes                         | *     | *            | *            | yes
+    # length | no                          | yes   | *            | true         | yes
+    # length | no                          | yes   | *            | false        | no
+    # stop   | yes                         | *     | set          | *            | yes
+    # stop   | no                          | yes   | set          | true         | yes
+    # stop   | no                          | yes   | set/none     | false        | no
+    # stop   | no                          | no    | *            | *            | no
+    #
+    # ``case4`` means the parser routed a no-tag output wholly to
+    # reasoning. For case4 we require the route's
+    # ``prompt_thinking_active`` signal so a direct answer truncated by
+    # ``max_tokens`` or by a user stop string still rescues to content.
+    truncated_mid_think = (
+        # Explicit-opener under length OR stop: raw_text proves
+        # an in-progress ``<think>`` was truncated.
+        #
+        # Codex round-12 BLOCKING (PR #799): REVERTS round-11's
+        # unconditional ``stop`` arm. Round-11 widened the
+        # suppression on the ``stop`` arm to fire regardless of
+        # ``matched_stop`` because the streaming chat path can lose
+        # ``matched_stop`` between sampler and helper — but that
+        # widening dropped the #569 silent-drop rescue for a model
+        # that voluntarily ends after emitting ``<think>just a
+        # thought`` (no closing ``</think>``, no user stop fired).
+        # The helper's contract is "never silently drop an
+        # assistant turn"; a natural-EOS in-progress thought must
+        # still rescue. Fix: ``length`` stays unconditional (length
+        # is unambiguously truncation); ``stop`` requires
+        # ``matched_stop is not None`` so only engine-initiated
+        # trims suppress, natural EOS falls through to the rescue
+        # path. The matched_stop-propagation concern from r11 is
+        # addressed at the call sites (chat.py streaming now
+        # accumulates ``output.matched_stop`` per chunk, mirroring
+        # responses.py / anthropic.py).
+        (
+            finish_reason == "length"
+            and raw_text
+            and raw_text.lstrip().startswith("<think>")
+            and "</think>" not in raw_text
+        )
+        or (
+            finish_reason == "stop"
+            and matched_stop is not None
+            and raw_text
+            and raw_text.lstrip().startswith("<think>")
+            and "</think>" not in raw_text
+        )
+        # Case-4 + length + prompt_thinking_active: parser routed the
+        # whole body to reasoning (helper-Case-4 signal) and the route
+        # says the chat template injected thinking, so ``length`` means
+        # max_tokens cut an implicit thought. Without the template signal
+        # this is just a non-thinking answer truncated mid-content, and
+        # the #569 rescue must surface it instead of silently dropping it.
+        or (finish_reason == "length" and reasoning_is_case4 and prompt_thinking_active)
+        # Case-4 + stop + matched_stop + prompt_thinking_active:
+        # codex round-5 BLOCKING — matched_stop alone with
+        # Case-4 under finish=stop is NOT enough to identify the
+        # D-STOP-THINK shape. A casual answer like ``"The answer
+        # is STOP"`` under ``stop=["STOP"]`` ALSO has matched_stop
+        # set but is NOT chain-of-thought. Require the route-
+        # supplied ``prompt_thinking_active`` boolean (chat
+        # template injected ``<think>`` AND ``enable_thinking`` is
+        # non-False) as the secondary discriminator. Symmetric
+        # with the parser-level ``finalize_streaming`` AND-of-
+        # signals contract.
+        or (
+            finish_reason == "stop"
+            and reasoning_is_case4
+            and matched_stop is not None
+            and prompt_thinking_active
+        )
+    )
+    if truncated_mid_think:
         return final_content
     # r5-D (F-DGF-V080-B-7, 2026-06-21): gemma4 channel-token analog
     # of the truncated-``<think>`` gate above. When generation is cut
@@ -1248,7 +1326,19 @@ _TOOL_USE_SYSTEM_SUFFIX = (
     "a reasonable default exists. Do NOT explain what you will do — just do it. "
     "Be direct and concise in your responses. "
     "Do NOT think out loud or show your reasoning process. "
-    "Give direct answers only — no preamble like 'The user asks...' or 'Let me think...'."
+    "Give direct answers only — no preamble like 'The user asks...' or 'Let me think...'. "
+    # D-TOOLCHOICE-R1 T1: DeepSeek-R1 distills (and other reasoning
+    # models) under ``tool_choice="auto"`` will happily HALLUCINATE
+    # the result of a tool they were never told existed — emit
+    # ``"The current temperature in Tokyo is 24°C"`` while the only
+    # weather data they have is whatever the user typed. The
+    # earlier "use a tool immediately" clause does not cover this:
+    # the model can interpret "use a tool" as "include a tool-shaped
+    # answer". This clause is a HARD floor: if you didn't actually
+    # call a tool, you must not claim a tool result.
+    "If you do NOT call a tool, do NOT fabricate the contents of any tool's response — "
+    "answer only from what you actually know. Do NOT print fake JSON, fake API responses, "
+    "or sentences that begin with 'Tool returned:' / 'Tool output:' / 'The API returned'."
 )
 
 # Tool-use system prompt for ``tool_choice="required"`` (#468). Strict
