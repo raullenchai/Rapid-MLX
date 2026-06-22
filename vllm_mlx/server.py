@@ -419,24 +419,31 @@ async def lifespan(app: FastAPI):
     # turn on via ``RAPID_MLX_AUDIO_DEEP_PROBE=1`` when running an
     # audio-serving build. The dry-run is non-fatal: any failure is
     # caught inside ``deep_probe_audio_lane`` and recorded as
-    # ``degraded``; the lifespan completes regardless so a torn
-    # audio backend doesn't block server boot.
+    # ``degraded`` / ``missing``; the lifespan completes regardless
+    # so a torn audio backend doesn't block server boot.
+    #
+    # Codex r2 NIT #3: call ``deep_probe_audio_lane`` unconditionally
+    # (even when ``mlx_audio`` is missing) so ``/v1/models`` carries
+    # ``audio_lanes={"stt":"missing","tts":"missing"}`` on bare
+    # installs. The prior branch short-circuited on ``find_spec``
+    # and ``audio_lanes`` came back ``null``, hiding the "no audio
+    # extra installed" state from operators using the field for
+    # health. ``deep_probe_audio_lane`` already runs the shallow
+    # presence check internally and records the missing-extra
+    # status via the same code path the route's 503 envelope uses.
     _audio_deep_probe = os.environ.get("RAPID_MLX_AUDIO_DEEP_PROBE", "").strip()
     if _audio_deep_probe and _audio_deep_probe not in ("0", "false", "no"):
         try:
-            import importlib.util as _audio_ilu
+            from .audio.probe import deep_probe_audio_lane as _deep_probe
 
-            if _audio_ilu.find_spec("mlx_audio") is not None:
-                from .audio.probe import deep_probe_audio_lane as _deep_probe
-
-                logger.info("Running deep audio probe (STT + TTS dry-run)...")
-                _stt_status = _deep_probe("stt")
-                _tts_status = _deep_probe("tts")
-                logger.info(
-                    "Audio lane status — stt=%s, tts=%s",
-                    _stt_status.get("status"),
-                    _tts_status.get("status"),
-                )
+            logger.info("Running deep audio probe (STT + TTS dry-run)...")
+            _stt_status = _deep_probe("stt")
+            _tts_status = _deep_probe("tts")
+            logger.info(
+                "Audio lane status — stt=%s, tts=%s",
+                _stt_status.get("status"),
+                _tts_status.get("status"),
+            )
         except Exception as _audio_err:  # noqa: BLE001
             logger.warning("Deep audio probe failed (non-fatal): %s", _audio_err)
 

@@ -224,18 +224,22 @@ def _dry_run_stt(model_name: str | None) -> tuple[bool, str | None]:
     Catches the F-K-WHISPER-500 shape: a Whisper model that loads
     but has no processor wired. The dry-run reaches the same
     ``get_tokenizer()`` branch the real request hits.
+
+    Codex r2 BLOCKING #1+#2: defaults to the Whisper engine, not
+    Parakeet — the WHOLE POINT of the deep probe is to catch the
+    Whisper-specific processor wiring failure. Parakeet bypasses
+    the broken code path (its tokenizer is bundled), so probing it
+    would always report ``ok`` even when ``whisper-large-v3``
+    requests are silently 500'ing. Operators serving a non-Whisper
+    STT model can pass ``model_name`` explicitly to probe their
+    configured engine instead.
     """
     try:
         import tempfile
         import wave
 
-        from ..audio.stt import DEFAULT_PARAKEET_MODEL, STTEngine
+        from ..audio.stt import DEFAULT_WHISPER_MODEL, STTEngine
 
-        # Synthesize 1 second of mono 16 kHz silence in a tempfile.
-        # ``parakeet`` is the cheapest engine to probe (no processor
-        # download); operators who care specifically about Whisper
-        # health can re-call ``deep_probe_audio_lane`` with the
-        # whisper model name to validate that specific lane.
         with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
             wav_path = tmp.name
         try:
@@ -244,7 +248,7 @@ def _dry_run_stt(model_name: str | None) -> tuple[bool, str | None]:
                 w.setsampwidth(2)
                 w.setframerate(16000)
                 w.writeframes(b"\x00\x00" * 16000)
-            engine = STTEngine(model_name or DEFAULT_PARAKEET_MODEL)
+            engine = STTEngine(model_name or DEFAULT_WHISPER_MODEL)
             engine.load()
             result = engine.transcribe(wav_path)
             # An empty string is a valid transcription of silence.

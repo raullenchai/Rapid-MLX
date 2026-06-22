@@ -779,6 +779,80 @@ class TestDeepProbeSurfacesDegradedLane:
         entry = body["data"][0]
         assert entry["audio_lanes"] is None, entry
 
+    def test_stt_dry_run_defaults_to_whisper_not_parakeet(
+        self, monkeypatch, _reset_audio_probe
+    ):
+        """Codex r2 BLOCKING #1+#2: the STT dry-run must default to
+        the Whisper engine, not Parakeet — the WHOLE POINT of
+        F-K-CAPABILITIES-OMIT-AUDIO is to catch the Whisper-specific
+        processor wiring failure. Parakeet bypasses the broken code
+        path (its tokenizer is bundled), so probing it would always
+        report ``ok`` even when ``whisper-large-v3`` requests are
+        silently 500'ing.
+        """
+        from vllm_mlx.audio import probe
+        from vllm_mlx.audio import stt as stt_mod
+        from vllm_mlx.audio.stt import DEFAULT_WHISPER_MODEL
+
+        observed: list[str] = []
+
+        class _RecordingEngine:
+            def __init__(self, model_name):
+                observed.append(model_name)
+                self.model_name = model_name
+
+            def load(self):
+                pass
+
+            def transcribe(self, *args, **kwargs):
+                return types.SimpleNamespace(
+                    text="", language=None, duration=None, segments=None
+                )
+
+        monkeypatch.setattr(stt_mod, "STTEngine", _RecordingEngine)
+        _install_fake_mlx_audio(monkeypatch)
+
+        probe.deep_probe_audio_lane("stt")
+
+        assert observed, "STT dry-run should have instantiated an engine"
+        assert observed[0] == DEFAULT_WHISPER_MODEL, (
+            f"F-K-CAPABILITIES-OMIT-AUDIO regression: STT dry-run probed "
+            f"{observed[0]!r} but must default to {DEFAULT_WHISPER_MODEL!r} "
+            "so the Whisper-specific processor failure is caught at boot. "
+            "Codex r2 BLOCKING #1+#2."
+        )
+
+    def test_missing_mlx_audio_marks_lane_missing(
+        self, monkeypatch, _reset_audio_probe
+    ):
+        """Codex r2 NIT #3: when ``mlx_audio`` isn't installed,
+        ``deep_probe_audio_lane`` must record ``missing`` status so
+        ``/v1/models`` surfaces the missing-extra state instead of
+        leaving ``audio_lanes`` as ``null``.
+        """
+        import importlib.util
+
+        from vllm_mlx.audio import probe
+
+        real_find_spec = importlib.util.find_spec
+
+        def _fake_find_spec(name, *args, **kwargs):
+            if name == "mlx_audio":
+                return None
+            return real_find_spec(name, *args, **kwargs)
+
+        monkeypatch.setattr(importlib.util, "find_spec", _fake_find_spec)
+
+        # Drop any already-imported mlx_audio so the shallow probe
+        # genuinely sees a missing extra.
+        for name in list(sys.modules):
+            if name == "mlx_audio" or name.startswith("mlx_audio."):
+                monkeypatch.delitem(sys.modules, name, raising=False)
+
+        status = probe.deep_probe_audio_lane("stt")
+        assert status["status"] == "missing", status
+        assert "not installed" in (status["reason"] or "").lower(), status
+
 
 # ---------------------------------------------------------------------------
 # Route registration: middleware guards the translations path too
