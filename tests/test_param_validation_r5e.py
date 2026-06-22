@@ -119,9 +119,21 @@ class TestTopKUpperBound:
 
     def test_top_k_negative_still_rejected_no_regression(self):
         """H-10's negative-int gate still fires — r5-E's upper cap is
-        an additive tightening, NOT a relaxation of the lower gate."""
-        with pytest.raises(ValidationError):
-            ChatCompletionRequest(messages=_user_msg(), top_k=-5)
+        an additive tightening, NOT a relaxation of the lower gate.
+
+        Pass ``model="x"`` and all other required fields so the only
+        possible source of ``ValidationError`` is the ``top_k`` validator
+        (codex pr_validate BLOCKING-4: previously this test could have
+        passed for the wrong reason — missing-``model`` error — even
+        if the negative ``top_k`` gate had been removed).
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            ChatCompletionRequest(model="x", messages=_user_msg(), top_k=-5)
+        # Assert the validation error specifically cites top_k.
+        errors = excinfo.value.errors()
+        assert any("top_k" in err.get("loc", ()) for err in errors), (
+            f"Expected top_k validation error, got: {errors}"
+        )
 
 
 # ---------------------------------------------------------------------------

@@ -201,8 +201,18 @@ def _try_prose_recover_tool_call(
     """
     if not tools or not text:
         return None
-    text_lower = text.lower()
-    candidates: list[tuple[int, dict, str, list[str]]] = []
+    # Carry per-mention: (name_start, fn, name, required[], allowed_keys_or_None)
+    # We index by EVERY name occurrence (not just the first) so a
+    # prose like "using the `add` tool. I should call the `add` tool
+    # with a=13 and b=29." can recover from the SECOND mention even
+    # when the first mention's bounded window has no key=value pairs.
+    # ``allowed_keys_or_None`` is the set of declared parameter keys
+    # from ``parameters.properties`` (None means "schema doesn't
+    # declare properties — accept anything", which preserves
+    # behaviour for tools defined with a free-form schema).
+    candidates: list[
+        tuple[int, dict, str, list[str], set[str] | None]
+    ] = []
     for tool in tools:
         fn = tool.get("function") if isinstance(tool, dict) else None
         if not isinstance(fn, dict):
@@ -216,34 +226,65 @@ def _try_prose_recover_tool_call(
         # unrelated tool's signature.
         # Allow surrounding ``\`add\```, ``"add"``, ``'add'``, or
         # the bare word at a word boundary.
+        # Case-sensitive: OpenAI tool spec says function names are
+        # case-sensitive identifiers, so a model writing ``ADD`` when
+        # the registered tool is ``add`` is NOT a confident call.
+        # (codex pr_validate NIT-5)
         name_re = re.compile(
             r"(?:`|\"|')?" + re.escape(name) + r"(?:`|\"|')?\b",
-            re.IGNORECASE,
         )
-        match = name_re.search(text)
-        if match is None:
+        matches = list(name_re.finditer(text))
+        if not matches:
             continue
         params = fn.get("parameters") if isinstance(fn, dict) else None
-        required = []
+        required: list[str] = []
+        allowed_keys: set[str] | None = None
         if isinstance(params, dict):
             req = params.get("required")
             if isinstance(req, list):
                 required = [r for r in req if isinstance(r, str)]
-        candidates.append((match.start(), fn, name, required))
+            props = params.get("properties")
+            if isinstance(props, dict):
+                allowed_keys = {
+                    k for k in props.keys() if isinstance(k, str)
+                }
+        for match in matches:
+            candidates.append(
+                (match.start(), fn, name, required, allowed_keys)
+            )
 
     if not candidates:
         return None
-    # Prefer the earliest tool-name mention. If two tools tie on
-    # start position (unlikely — names would have to be identical),
-    # the first one in ``tools`` wins.
+    # Try mentions in document order. If two tools tie on start
+    # position (unlikely — names would have to be identical), the
+    # first one in ``tools`` wins.
     candidates.sort(key=lambda c: c[0])
 
-    for name_start, fn, name, required in candidates:
-        # Search a window AFTER the name mention up to the end of the
-        # text (gemma4 prose is short — usually < 300 chars). Scanning
-        # forward only ensures the "call X with args" ordering rather
-        # than picking up an unrelated ``a=`` from an earlier sentence.
-        window = text[name_start:]
+    # Window bound — codex pr_validate BLOCKING-1: scanning to
+    # end-of-text turned multi-sentence answers into false positives.
+    # 300 chars after the name mention covers any realistic gemma4
+    # tool prose (e.g. "call `add` with a=13 and b=29") while
+    # rejecting ramble that mentions ``add`` once and later
+    # mentions an unrelated ``a=…`` many sentences later.
+    PROSE_WINDOW_BYTES = 300
+
+    for name_start, fn, name, required, allowed_keys in candidates:
+        # Search a BOUNDED window after the name mention, clipped at
+        # the first sentence-end (period/question/exclamation followed
+        # by whitespace) or PROSE_WINDOW_BYTES, whichever is smaller.
+        # Forward-only scanning preserves the "call X with args"
+        # ordering AND avoids dragging in unrelated key=value pairs.
+        window_end = min(len(text), name_start + PROSE_WINDOW_BYTES)
+        window = text[name_start:window_end]
+        # Clip at first sentence boundary if one exists in the window.
+        # This handles "call add with a=13 and b=29. Earlier I noted
+        # result=42." — we keep only the first sentence so the
+        # ``result=42`` from a later sentence does not leak into the
+        # recovered call.
+        sentence_match = re.search(r"[.!?](?:\s|$)", window)
+        if sentence_match is not None:
+            # Include the punctuation so "a=29." still captures the 29.
+            window = window[: sentence_match.end()]
         found: dict[str, Any] = {}
         for kv in GEMMA4_PROSE_KV_PATTERN.finditer(window):
             key = kv.group(1)
@@ -253,6 +294,12 @@ def _try_prose_recover_tool_call(
             # argument assignment.
             if key.lower() == name.lower():
                 continue
+            # Drop keys not declared in the tool schema. (codex
+            # pr_validate BLOCKING-2: strict tool servers reject
+            # unknown args, so silently filter here rather than
+            # forward `result=42` from `call add with a=13, result=42`.)
+            if allowed_keys is not None and key not in allowed_keys:
+                continue
             # First mention wins: a prose like "a=13" then later
             # "a=14" most likely the second is a correction; pick
             # the first, which matches the model's earliest stated
@@ -260,7 +307,12 @@ def _try_prose_recover_tool_call(
             # earliest commitment is the most reliable).
             found.setdefault(key, value)
         if required and not all(r in found for r in required):
-            # Required params missing — not a confident recovery.
+            # Required params missing — not a confident recovery on
+            # THIS mention. Continue to later mentions (e.g. the
+            # canonical "using the `add` tool. I should call the
+            # `add` tool with a=13 and b=29." has TWO `add` mentions;
+            # the second one has the args, so we skip the first and
+            # succeed on the second).
             continue
         if not found:
             continue
