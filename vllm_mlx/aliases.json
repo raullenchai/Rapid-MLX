@@ -987,5 +987,23 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown"
+  },
+  "embeddinggemma-300m-6bit": {
+    "hf_path": "mlx-community/embeddinggemma-300m-6bit",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false
+  },
+  "embeddinggemma-300m-8bit": {
+    "hf_path": "mlx-community/embeddinggemma-300m-8bit",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "supports_dflash": false
   }
 }

@@ -293,17 +293,28 @@ def _validate_logit_bias_finite(
         # this validator may run in ``mode="before"`` paths so the
         # explicit guard keeps the error message coherent.
         raise ValueError(f"{field_name} must be a mapping of token-id (str) → float.")
-    for k, vv in v.items():
+    for _k, vv in v.items():
+        # D-ENVELOPE-FIELD-LEAK sibling: the original error messages
+        # embedded ``{k!r}`` — the dict key the caller supplied —
+        # straight into the ValueError text. Since the canonical
+        # envelope drops ``input`` but DOES surface ``msg``, that
+        # reflected attacker-controlled bytes (``{"AWS_SECRET":
+        # NaN}`` → ``logit_bias['AWS_SECRET'] must be a finite
+        # number``). The schema-walker in
+        # :mod:`vllm_mlx.middleware.exception_handlers` only sanitizes
+        # the ``loc`` path; bytes a validator chooses to embed in
+        # ``msg`` aren't covered. So we drop the key from the message
+        # entirely — the field name + value type is sufficient context
+        # for the caller to fix their request.
         if isinstance(vv, bool):
-            raise ValueError(f"{field_name}[{k!r}] must be a finite number (got bool).")
+            raise ValueError(f"{field_name} values must be finite numbers (got bool).")
         if not isinstance(vv, (int, float)):
             raise ValueError(
-                f"{field_name}[{k!r}] must be a finite number "
-                f"(got {type(vv).__name__})."
+                f"{field_name} values must be finite numbers (got {type(vv).__name__})."
             )
         if not math.isfinite(vv):
             raise ValueError(
-                f"{field_name}[{k!r}] must be a finite number (not NaN or inf)."
+                f"{field_name} values must be finite numbers (not NaN or inf)."
             )
     return v
 
@@ -810,10 +821,16 @@ class ToolDefinition(BaseModel):
             or not isinstance(name, str)
             or not _FUNCTION_NAME_PATTERN.match(name)
         ):
+            # D-ENVELOPE-FIELD-LEAK sibling: do NOT embed ``{name!r}``
+            # — the regex pattern accepts identifier-shaped bytes
+            # (``AWS_SECRET_ACCESS_KEY`` matches ``^[a-zA-Z0-9_-]{1,64}$``)
+            # which is the exact H-17 round-2 attack vector for a
+            # rejected-name reflection. The error message gives the
+            # rule; the operator log captures the literal value if
+            # needed.
             raise ValueError(
                 "function.name must be a non-empty string of 1-64 characters "
-                "matching ^[a-zA-Z0-9_-]{1,64}$ (per OpenAI spec); got "
-                f"{name!r}."
+                "matching ^[a-zA-Z0-9_-]{1,64}$ (per OpenAI spec)."
             )
         # D-TOOL-RECUR: reject a ``function.parameters`` (JSON Schema)
         # whose structural nesting exceeds ``RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH``

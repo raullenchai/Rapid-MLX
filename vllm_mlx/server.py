@@ -1809,15 +1809,16 @@ Examples:
     # Pre-load embedding model if specified. The H-08 guard already
     # fired at the top of this function (F-H08-INCOMPLETE fix); by the
     # time we reach this point either ``args.embedding_model`` is None
-    # or ``mlx_embeddings`` is importable. Re-probe defensively as
-    # belt-and-braces: cheap, and any caller that synthesizes args and
-    # jumps in here still gets the install-hint exit instead of a raw
-    # ``ModuleNotFoundError``.
+    # or ``mlx_embeddings`` is importable. The shared helper re-probes
+    # defensively as belt-and-braces and also performs the D-EMBED-ALIAS
+    # alias-resolution + ModelNotFoundError translation so behaviour
+    # matches the unified ``rapid-mlx serve`` path exactly. Lazy import
+    # to avoid a circular at module-load time (cli imports server in
+    # ``serve_command``; server imports cli only inside this branch).
     if args.embedding_model:
-        from .embedding import require_mlx_embeddings_or_exit
+        from .cli import _load_embedding_model_or_exit
 
-        require_mlx_embeddings_or_exit()
-        load_embedding_model(args.embedding_model, lock=True)
+        _load_embedding_model_or_exit(args, load_embedding_model)
 
     # Build a SchedulerConfig so user-supplied flags on this standalone entry
     # (`python -m vllm_mlx.server` / `mise run`) reach the engine. Pre-0.6.52

@@ -37,14 +37,415 @@ from __future__ import annotations
 
 import json as _json
 import logging
+import typing as _t
+from typing import get_args, get_origin
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
+from pydantic import BaseModel
 from pydantic import ValidationError as PydanticValidationError
 from starlette.exceptions import HTTPException as StarletteHTTPException
 from starlette.responses import JSONResponse
 
 logger = logging.getLogger("rapid_mlx.exception_handlers")
+
+
+# ---------------------------------------------------------------------------
+# Trusted root-model registry (D-ENVELOPE-FIELD-LEAK, layered on top of
+# the D-ANTHRO-VALIDATION F1 closed allowlist below)
+# ---------------------------------------------------------------------------
+#
+# D-ANTHRO-VALIDATION (PR #811) shipped a CLOSED ALLOWLIST of schema-
+# owned field names (``_SCHEMA_OWNED_FIELD_NAMES`` below) — names in
+# the set echo verbatim, names outside collapse to ``<field>``. That
+# fixes Sergei's F1 dogfood case and Sarah F-S1-1 alike.
+#
+# D-ENVELOPE-FIELD-LEAK layers a STRICTER per-error walk ON TOP:
+# whenever the failing root model can be identified (via
+# ``exc.title`` or the registry probe below), we walk the loc against
+# THAT class's ``model_fields`` instead of trusting the global
+# allowlist. Two wins over the allowlist alone:
+#
+#   1. ``error.param`` gets populated — the OpenAI SDK error branches
+#      key on this slot, and the allowlist path leaves it ``None``.
+#   2. The H-17 round-2 attack (``AWS_SECRET_ACCESS_KEY`` stuffed into
+#      a ``dict[str, T]`` field's KEY) stays closed even if a future
+#      contributor adds ``AWS_SECRET_ACCESS_KEY`` as a request-model
+#      field somewhere — the walker only echoes names that live on
+#      the SPECIFIC class for the current loc, not the global union.
+#
+# Both gates fire belt-and-suspenders: schema-owned names must pass
+# BOTH the walker (when a root resolves) AND the allowlist (when it
+# doesn't). The allowlist remains the safety floor for the FastAPI-
+# bound body cases where the wrapped ``RequestValidationError`` carries
+# only ``loc=("body",)`` — i.e. no string component to disambiguate
+# the root.
+_REQUEST_MODEL_REGISTRY: dict[str, type[BaseModel]] = {}
+
+
+def register_request_model(model_cls: type[BaseModel]) -> None:
+    """Register a root request-model class for envelope field-name resolution.
+
+    Idempotent — re-registering the same class is a no-op. Called from
+    :func:`install_exception_handlers` (where the canonical OpenAI /
+    Anthropic / Responses / Embeddings request models live) so tests
+    that import the middleware in isolation get the same registry as
+    production.
+
+    Third-party plugins that add their own routes can call this at
+    import time to opt into safe field-name surfacing for their own
+    request models. Classes not registered fall through to the
+    D-ANTHRO closed-allowlist behaviour, which is the safe default.
+    """
+    _REQUEST_MODEL_REGISTRY[model_cls.__name__] = model_cls
+
+
+def _unwrap_optional(tp: _t.Any) -> _t.Any:
+    """Strip ``Optional[X]`` / ``X | None`` / ``Union[X, None]`` to ``X``."""
+    origin = get_origin(tp)
+    if origin is None:
+        return tp
+    args = get_args(tp)
+    if not args:
+        return tp
+    non_none = [a for a in args if a is not type(None)]
+    if len(non_none) == len(args):
+        return tp
+    if len(non_none) == 1:
+        return non_none[0]
+    return non_none[0] if non_none else tp
+
+
+def _union_arms(tp: _t.Any) -> tuple[_t.Any, ...]:
+    """Return the non-``None`` arms of ``tp`` if it's a union, else ``(tp,)``.
+
+    Handles both ``typing.Union[...]`` and the PEP 604 ``X | Y`` form —
+    they share the same ``get_origin`` semantics in Python 3.10+
+    (``typing.Union``), so ``get_args`` returns the arm tuple.
+    """
+    import types as _types
+
+    origin = get_origin(tp)
+    if origin is _t.Union or origin is getattr(_types, "UnionType", None):
+        return tuple(a for a in get_args(tp) if a is not type(None))
+    return (tp,)
+
+
+def _descend_field(tp: _t.Any, hint: str | None = None) -> _t.Any:
+    """Pick the inner type for ``list[X]`` / ``tuple[X, ...]`` / ``dict[K, V]``.
+
+    Returns ``None`` when the inner type can't be determined.
+
+    Codex r3 BLOCKING #2: when ``tp`` is a non-``Optional`` union such
+    as ``str | list[ResponseInputItem]``, the caller may also provide a
+    ``hint`` — the next loc string component we're about to step into.
+    We pick the arm whose ``model_fields`` contain that hint (so the
+    walker can keep descending instead of bailing to ``<field>`` on the
+    first attacker-controlled-looking step).
+    """
+    inner = _unwrap_optional(tp)
+    arms = _union_arms(inner)
+    # If we have a hint, prefer a union arm that schema-owns the hint.
+    if hint is not None and len(arms) > 1:
+        for arm in arms:
+            candidate = _descend_field(arm, hint=None)
+            if (
+                isinstance(candidate, type)
+                and issubclass(candidate, BaseModel)
+                and hint in candidate.model_fields
+            ):
+                return candidate
+            if (
+                isinstance(arm, type)
+                and issubclass(arm, BaseModel)
+                and hint in arm.model_fields
+            ):
+                return arm
+    # Single-arm path (or hint-less): fall through to container peeling.
+    target = arms[0] if arms else inner
+    origin = get_origin(target)
+    if origin is None:
+        return target
+    args = get_args(target)
+    if not args:
+        return None
+    if origin in (list, tuple, set, frozenset):
+        return args[0]
+    if origin is dict:
+        return args[1] if len(args) >= 2 else None
+    return None
+
+
+# Request-path → root model class. Wired up at install time so the
+# FastAPI-wrapped ``RequestValidationError`` path (where ``exc.title``
+# is unavailable) can disambiguate request models that share a field
+# name (codex r3 BLOCKING #1: ``input`` is a field on both
+# ``EmbeddingRequest`` and ``ResponsesRequest`` — the naive
+# first-match registry probe would mis-resolve and redact legitimate
+# nested locs as ``<field>``). Keyed by URL path prefix because
+# FastAPI routes can mount under arbitrary prefixes.
+_REQUEST_PATH_TO_ROOT: list[tuple[str, type[BaseModel]]] = []
+
+
+def register_request_path(path_prefix: str, model_cls: type[BaseModel]) -> None:
+    """Register a request-path → root-model-class mapping.
+
+    Used by the FastAPI-wrapped ``RequestValidationError`` path to
+    pick the correct root model when the loc starts with ``"body"``
+    only (no string component to disambiguate via the field-name
+    registry probe). ``path_prefix`` is matched against
+    ``request.url.path`` with the same shape as
+    :func:`_is_anthropic_path` (exact match OR strict sub-path).
+
+    Idempotent: re-registering the same ``(path_prefix, model_cls)``
+    pair is a no-op. Registering a NEW class for an existing prefix
+    overwrites the prior binding so a plugin that swaps the request
+    model can update the mapping at startup.
+    """
+    for i, (existing_prefix, _) in enumerate(_REQUEST_PATH_TO_ROOT):
+        if existing_prefix == path_prefix:
+            _REQUEST_PATH_TO_ROOT[i] = (path_prefix, model_cls)
+            return
+    _REQUEST_PATH_TO_ROOT.append((path_prefix, model_cls))
+
+
+def _path_matches_canonical_prefix(path: str, prefix: str) -> bool:
+    """Return True if ``path`` matches ``prefix`` as a canonical segment.
+
+    Matching shape (codex r4 BLOCKING):
+
+    * Exact match — ``/v1/embeddings`` == ``/v1/embeddings``.
+    * Strict sub-path — ``/v1/embeddings/anything`` matches
+      ``/v1/embeddings`` but ``/v1/embeddings-foo`` does not.
+    * Mounted-prefix match — ``/api/v1/embeddings`` matches
+      ``/v1/embeddings`` because the canonical prefix appears at a
+      ``/``-boundary AND the path ends there (or continues with a
+      ``/``).  Substring attacks like ``/v1/embeddings-foo`` /
+      ``/foo/v1/embeddingsbar`` are rejected because the segment must
+      align on both sides.
+
+    The implementation does the cheap exact/startswith case first and
+    only falls back to the segment scan for the mounted-deployment
+    case so the hot path stays O(1).
+    """
+    if path == prefix or path.startswith(prefix + "/"):
+        return True
+    # Mounted-prefix: ``/<anything>/<prefix>`` exact or with trailing
+    # ``/<rest>``. The canonical prefix already starts with a leading
+    # ``/`` so the left boundary IS that leading slash — we don't need
+    # to require a second ``/`` before it. We just require that idx
+    # itself is > 0 (so there's a non-empty mount segment) AND that
+    # the right side closes at a ``/`` or end-of-string so
+    # ``/v1/embeddings-foo`` doesn't false-match.
+    needle = prefix
+    idx = path.find(needle, 1)  # start at 1 — idx=0 was the unmounted case
+    while idx != -1:
+        end = idx + len(needle)
+        # Right side must align on a ``/`` boundary or end of string.
+        right_ok = end == len(path) or path[end] == "/"
+        if right_ok:
+            return True
+        idx = path.find(needle, idx + 1)
+    return False
+
+
+def _resolve_root_model(
+    exc: object,
+    loc: tuple,
+    request: Request | None = None,
+) -> type[BaseModel] | None:
+    """Pick the root request-model class for ``loc`` from the registry.
+
+    Three probes, in order of precedence:
+
+    1. ``exc.title`` — Pydantic v2 sets this on the raw
+       ``ValidationError``. The route's ``AnthropicRequest(**body)`` /
+       ``ResponsesRequest(**body)`` constructions land here. Unambiguous.
+    2. Request-path probe — for FastAPI-bound bodies the wrapped
+       ``RequestValidationError`` doesn't carry a title, but the
+       ``Request`` object's path tells us which route received the
+       body. Path-based lookup is the disambiguator for request
+       models that share a field name (codex r3 BLOCKING #1:
+       ``input`` is on both ``EmbeddingRequest`` and
+       ``ResponsesRequest``).
+    3. Field-name probe (legacy fallback) — try each registered
+       model and pick the first whose ``model_fields`` contain the
+       FIRST non-``"body"`` string component of ``loc``. Still a
+       safe fallback because the field-name probe only fires when
+       the path probe has nothing to say, and even an ambiguous
+       resolution falls back to ``<field>`` on a per-loc-component
+       basis.
+
+    Returns ``None`` if nothing matches — the caller falls back to
+    the D-ANTHRO closed-allowlist path.
+    """
+    title = getattr(exc, "title", None)
+    if isinstance(title, str):
+        root = _REQUEST_MODEL_REGISTRY.get(title)
+        if root is not None:
+            return root
+    # Path probe: matches by canonical-segment suffix so the same
+    # registry entry covers both unmounted routes (``/v1/embeddings``)
+    # AND deployments behind a FastAPI ``APIRouter`` mount that prepends
+    # an arbitrary prefix (e.g. ``/api/v1/embeddings`` or
+    # ``/proxy/foo/v1/embeddings``). Codex r4 BLOCKING: the prior
+    # ``startswith`` check left mounted deployments resolving by the
+    # ambiguous field-name probe again. We still reject
+    # ``/v1/messages-foo`` (would-be substring attack) because the
+    # match is on path SEGMENTS, not raw bytes — the canonical prefix
+    # must align with a ``/``-boundary on both ends.
+    if request is not None:
+        try:
+            path = request.url.path
+        except Exception:  # pragma: no cover — defensive
+            path = None
+        if path:
+            for prefix, cls in _REQUEST_PATH_TO_ROOT:
+                if _path_matches_canonical_prefix(path, prefix):
+                    return cls
+    # Field-name probe (legacy fallback).
+    first_str: str | None = None
+    for raw in loc:
+        if raw == "body":
+            continue
+        if isinstance(raw, str):
+            first_str = raw
+            break
+        break
+    if first_str is None:
+        return None
+    for cls in _REQUEST_MODEL_REGISTRY.values():
+        if first_str in cls.model_fields:
+            return cls
+    return None
+
+
+def _walk_loc_with_root(
+    loc: tuple,
+    root_cls: type[BaseModel] | None,
+) -> tuple[list[str], str | None]:
+    """Walk ``loc`` against ``root_cls`` and return ``(parts, last_field)``.
+
+    Schema-owned field names (in ``current_class.model_fields``) pass
+    through unchanged; attacker-controlled string components collapse
+    to ``<field>`` and stop the descent. Integer indices pass through
+    unchanged. ``last_field`` is the last schema-owned field name we
+    crossed — used to populate ``error.param``.
+    """
+    parts: list[str] = []
+    last_field: str | None = None
+    current: _t.Any = root_cls
+    loc_list = list(loc)
+    for idx, raw in enumerate(loc_list):
+        if raw == "body":
+            continue
+        if isinstance(raw, int):
+            parts.append(str(raw))
+            if current is not None:
+                # Peek the next string loc segment as a hint so
+                # _descend_field can pick the right union arm
+                # (codex r3 BLOCKING #2).
+                hint = _peek_next_field_hint(loc_list, idx)
+                current = _descend_field(current, hint=hint)
+            continue
+        if isinstance(raw, str) and _is_union_arm_discriminator(raw):
+            continue
+        # When ``current`` is a non-Optional union (e.g. ResponsesRequest.input
+        # is ``str | list[ResponseInputItem]``), try to resolve through the
+        # union arm whose model_fields contain ``raw`` before deciding the
+        # token is attacker-controlled (codex r3 BLOCKING #2).
+        if current is not None and not (
+            isinstance(current, type) and issubclass(current, BaseModel)
+        ):
+            current = _descend_field(current, hint=raw)
+        is_schema_owned = (
+            isinstance(current, type)
+            and issubclass(current, BaseModel)
+            and raw in current.model_fields
+        )
+        if is_schema_owned:
+            parts.append(raw)
+            last_field = raw
+            field_info = current.model_fields[raw]  # type: ignore[union-attr]
+            current = _unwrap_optional(field_info.annotation)
+        else:
+            parts.append("<field>")
+            current = None
+    return parts, last_field
+
+
+def _peek_next_field_hint(loc_list: list, idx: int) -> str | None:
+    """Return the next string component of ``loc_list`` after ``idx``.
+
+    Skips the union-arm discriminator marker and integer indices —
+    those are not field names. Used by :func:`_walk_loc_with_root` to
+    give :func:`_descend_field` a hint when picking the right arm of a
+    non-``Optional`` union.
+    """
+    for nxt in loc_list[idx + 1 :]:
+        if (
+            isinstance(nxt, str)
+            and nxt != "body"
+            and not _is_union_arm_discriminator(nxt)
+        ):
+            return nxt
+    return None
+
+
+def _extract_field_from_value_error_msg(
+    msg: str,
+    root_cls: type[BaseModel] | None,
+) -> str | None:
+    """Extract a schema-owned field name from a model-level ``value_error``.
+
+    The NaN/inf scrubber runs ``mode='before'`` so it can mutate the
+    raw dict before Pydantic's float-coercion fires. The ``ValueError``
+    reaches the envelope with ``loc=()`` (raw ``PydanticValidationError``)
+    or ``loc=("body",)`` (FastAPI-wrapped ``RequestValidationError``) —
+    the field name is only in the message string.
+
+    Recovery is gated on three layers of schema membership to keep the
+    H-17 round-2 secrecy default intact even on this empty-loc path
+    (pr_validate codex r2 BLOCKING — explicit demonstration that the
+    fallback path actually populates ``error.param``):
+
+    1. If ``root_cls`` was resolved, the token must be a field of
+       THAT class (strictest gate).
+    2. Else, the token must be a field of SOME registered request
+       model — covers the FastAPI-wrapped case where ``loc`` only
+       has ``"body"`` so ``_resolve_root_model`` can't disambiguate.
+    3. Else, the token must be a member of the D-ANTHRO closed
+       allowlist — same safety floor every other code path uses.
+
+    Each layer is a closed schema set, so attacker-controlled bytes
+    can never reflect even when steps 1-2 produce no anchor.
+    """
+    if not msg:
+        return None
+    stripped = msg
+    prefix = "Value error, "
+    if stripped.startswith(prefix):
+        stripped = stripped[len(prefix) :]
+    first = stripped.split(None, 1)[0] if stripped else ""
+    while first and not (first[-1].isalnum() or first[-1] == "_"):
+        first = first[:-1]
+    if not first:
+        return None
+    # Layer 1: strict per-class membership when a root resolved.
+    if root_cls is not None:
+        return first if first in root_cls.model_fields else None
+    # Layer 2: registry-wide schema membership (covers the FastAPI-
+    # wrapped ``loc=("body",)`` case — _resolve_root_model can't
+    # disambiguate without a string loc component, but the field
+    # name in the message is still gated on the closed union of
+    # registered request models).
+    for cls in _REQUEST_MODEL_REGISTRY.values():
+        if first in cls.model_fields:
+            return first
+    # Layer 3: D-ANTHRO closed allowlist (final safety floor — used
+    # when nothing is registered yet, e.g. in an isolated test
+    # fixture that didn't call install_exception_handlers).
+    return first if first in _SCHEMA_OWNED_FIELD_NAMES else None
 
 
 # D-ANTHRO-VALIDATION F1 — closed allowlist of schema-owned field names
@@ -244,6 +645,51 @@ def _sanitize_loc(loc: tuple) -> str:
     return ".".join(parts)
 
 
+def _render_loc_for_envelope(
+    exc: object,
+    loc: tuple,
+    request: Request | None = None,
+) -> tuple[str, str | None]:
+    """Render ``loc`` for the user-facing 400 envelope (D-ENVELOPE-FIELD-LEAK).
+
+    Returns ``(rendered, param)``. ``rendered`` is the dotted-path
+    string the envelope ``message`` field uses; ``param`` is the
+    last schema-owned field name on the path (used to populate the
+    OpenAI envelope's ``error.param`` slot — Sarah F-S1-1 / F-S2-2).
+
+    Two-stage resolution:
+
+    1. Resolve the root request-model class via
+       :func:`_resolve_root_model` (uses ``exc.title`` for
+       ``PydanticValidationError`` + a registry probe for the
+       FastAPI-wrapped ``RequestValidationError``). If a root
+       resolves, walk it against ``model_fields`` for the strict
+       per-class membership check.
+    2. If no root resolves (an unregistered request model, or the
+       FastAPI-bound case where ``loc`` is just ``("body",)``), fall
+       back to :func:`_sanitize_loc` which applies the D-ANTHRO closed
+       allowlist. ``param`` is recovered from the last allowlist-hit
+       component on that branch.
+
+    Either way, the rendered path matches the per-route SCHEMA — the
+    H-17 round-2 attack (attacker-controlled dict keys / extra-
+    forbidden names) stays closed.
+    """
+    root_cls = _resolve_root_model(exc, loc, request)
+    if root_cls is not None:
+        parts, last_field = _walk_loc_with_root(loc, root_cls)
+        return ".".join(parts), last_field
+    # Fallback: closed-allowlist sanitisation. Recover param by
+    # scanning the rendered path for an allowlist-hit token (no
+    # attacker bytes survived the allowlist, so this is safe).
+    rendered = _sanitize_loc(loc)
+    param: str | None = None
+    for part in rendered.split("."):
+        if part and part in _SCHEMA_OWNED_FIELD_NAMES:
+            param = part  # last match wins — matches the walker's contract
+    return rendered, param
+
+
 # D-ANTHRO-VALIDATION F1 — Anthropic /v1/messages routes use a
 # different top-level error envelope than the OpenAI surfaces:
 # ``{"type":"error","error":{...}}`` (with an explicit ``type`` key on
@@ -363,6 +809,7 @@ def _decode_error_response(exc: _json.JSONDecodeError) -> JSONResponse:
 
 def _validation_error_response(
     exc: RequestValidationError | PydanticValidationError,
+    request: Request | None = None,
 ) -> JSONResponse:
     """Build the 400 envelope for Pydantic body-validation failures.
 
@@ -377,16 +824,35 @@ def _validation_error_response(
     ``/v1/responses``). Both expose the same ``.errors()`` shape, so a
     single sanitizer covers both code paths (H-17).
 
-    The ``loc`` is run through :func:`_sanitize_loc` so attacker-
-    controlled dict keys / extra-field names (codex H-17 round-2
-    finding) collapse to ``<field>`` instead of being echoed verbatim
-    in the 400 message.
+    The ``loc`` is run through :func:`_render_loc_for_envelope` which
+    layers a strict per-class registry walk (D-ENVELOPE-FIELD-LEAK) on
+    top of the D-ANTHRO closed allowlist. Attacker-controlled dict keys
+    / extra-forbidden names (H-17 round-2) still collapse to ``<field>``.
+
+    ``error.param`` is populated from the LAST schema-owned field on
+    the FIRST error in the list — matches the OpenAI single-``param``
+    envelope shape so the SDK error branches (Sarah F-S1-1 / F-S2-2)
+    finally have something to key on.
     """
-    details = []
+    details: list[str] = []
+    param: str | None = None
     for err in exc.errors():
-        loc = _sanitize_loc(tuple(err.get("loc", ())))
+        raw_loc = tuple(err.get("loc", ()))
+        loc, last_field = _render_loc_for_envelope(exc, raw_loc, request)
         msg = err.get("msg", "validation error")
+        # Model-level ``value_error`` (e.g. the NaN/inf scrubber that
+        # runs ``mode='before'``) lands with ``loc=()`` — the field
+        # name is only in the message string. Pull it back out IFF
+        # the leading token matches a schema-owned field, so we never
+        # surface attacker-controlled bytes.
+        if last_field is None and not loc and err.get("type") == "value_error":
+            root_cls = _resolve_root_model(exc, raw_loc, request)
+            recovered = _extract_field_from_value_error_msg(msg, root_cls)
+            if recovered is not None:
+                last_field = recovered
         details.append(f"{loc}: {msg}" if loc else msg)
+        if param is None and last_field is not None:
+            param = last_field
     summary = "; ".join(details) or "Invalid request body"
     return JSONResponse(
         status_code=400,
@@ -395,7 +861,7 @@ def _validation_error_response(
                 "message": f"Invalid request body: {summary}",
                 "type": "invalid_request_error",
                 "code": "invalid_request",
-                "param": None,
+                "param": param,
             }
         },
     )
@@ -507,13 +973,64 @@ def _recursion_error_response() -> JSONResponse:
     )
 
 
+def _register_canonical_request_models() -> None:
+    """Pre-populate the request-model registry with the canonical roots.
+
+    Lazy on first ``install_exception_handlers`` call (not at module-
+    import time) so the middleware module stays import-light — the API
+    model modules pull in pydantic + a fair amount of route metadata,
+    and H-17 deliberately kept the middleware importable in isolated
+    route tests without dragging that in. Idempotent.
+    """
+    try:
+        from ..api.anthropic_models import AnthropicRequest
+        from ..api.models import (
+            ChatCompletionRequest,
+            CompletionRequest,
+            EmbeddingRequest,
+        )
+        from ..api.responses_models import ResponsesRequest
+    except Exception:  # pragma: no cover — defensive
+        logger.debug(
+            "Failed to import canonical request models for the envelope "
+            "registry — falling back to the D-ANTHRO closed allowlist only.",
+            exc_info=True,
+        )
+        return
+    for cls in (
+        ChatCompletionRequest,
+        CompletionRequest,
+        EmbeddingRequest,
+        AnthropicRequest,
+        ResponsesRequest,
+    ):
+        register_request_model(cls)
+    # Route-path → root-model bindings. Walked in declaration order, so
+    # more-specific prefixes must come before less-specific ones. These
+    # break ties when the same field name (e.g. ``input``, ``messages``,
+    # ``model``) appears on more than one canonical request model — the
+    # path probe wins over the field-name fallback so ``/v1/responses``
+    # resolves to ``ResponsesRequest``, never ``EmbeddingRequest``.
+    register_request_path("/v1/chat/completions", ChatCompletionRequest)
+    register_request_path("/v1/completions", CompletionRequest)
+    register_request_path("/v1/embeddings", EmbeddingRequest)
+    register_request_path("/v1/messages", AnthropicRequest)
+    register_request_path("/v1/responses", ResponsesRequest)
+
+
 def install_exception_handlers(app: FastAPI) -> None:
     """Register the rapid-mlx exception handlers on ``app``.
 
     Wiring is idempotent — re-registering the same exception class
     just overwrites the previous binding (FastAPI / Starlette behaviour).
     Tests and production both call this exactly once.
+
+    Also pre-populates the request-model registry that
+    :func:`_render_loc_for_envelope` uses to walk the loc against the
+    actual root request model class (D-ENVELOPE-FIELD-LEAK, layered on
+    top of D-ANTHRO).
     """
+    _register_canonical_request_models()
 
     @app.exception_handler(StarletteHTTPException)
     async def _http_handler(
@@ -540,7 +1057,7 @@ def install_exception_handlers(app: FastAPI) -> None:
         request: Request,
         exc: RequestValidationError,
     ):
-        response = _validation_error_response(exc)
+        response = _validation_error_response(exc, request)
         if _is_anthropic_path(request):
             response = _wrap_for_anthropic(response)
         return response
@@ -590,7 +1107,7 @@ def install_exception_handlers(app: FastAPI) -> None:
             len(sanitized),
             sanitized,
         )
-        response = _validation_error_response(exc)
+        response = _validation_error_response(exc, request)
         if _is_anthropic_path(request):
             response = _wrap_for_anthropic(response)
         return response
@@ -632,10 +1149,10 @@ def install_exception_handlers(app: FastAPI) -> None:
             response = _decode_error_response(exc)
             return _wrap_for_anthropic(response) if anthropic else response
         if isinstance(exc, RequestValidationError):
-            response = _validation_error_response(exc)
+            response = _validation_error_response(exc, request)
             return _wrap_for_anthropic(response) if anthropic else response
         if isinstance(exc, PydanticValidationError):
-            response = _validation_error_response(exc)
+            response = _validation_error_response(exc, request)
             return _wrap_for_anthropic(response) if anthropic else response
         if isinstance(exc, StarletteHTTPException):
             response = _http_error_response(exc)
