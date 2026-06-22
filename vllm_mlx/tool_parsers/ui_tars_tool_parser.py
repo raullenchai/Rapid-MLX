@@ -70,6 +70,147 @@ logger = logging.getLogger(__name__)
 COMPUTER_TOOL_NAME = "computer"
 
 
+# Canonical UI-TARS Computer-Use action-API system prompt. Sourced
+# verbatim (with the ``{language}`` / ``{instruction}`` placeholders
+# stripped — we render only the static action-space contract so the
+# user-supplied turn stays intact) from upstream
+# https://github.com/bytedance/UI-TARS/blob/main/codes/ui_tars/prompt.py
+# ``COMPUTER_USE_DOUBAO``. The model is post-trained on this exact
+# wire format — without it the parser silently no-ops on raw output
+# (dogfood C-05). Auto-prepended on the chat lane when the loaded
+# alias's ``tool_call_parser == "ui_tars"`` AND the request didn't
+# already include a UI-TARS preamble. Users CAN extend by supplying
+# their own ``system`` message — the auto-injected sysprompt lands
+# FIRST and the user's system content is appended (operator default:
+# auto-injected sysprompt wins; user system is additive).
+UI_TARS_COMPUTER_USE_SYSTEM_PROMPT = (
+    "You are a GUI agent. You are given a task and your action history, "
+    "with screenshots. You need to perform the next action to complete the task.\n\n"
+    "## Output Format\n"
+    "```\n"
+    "Thought: ...\n"
+    "Action: ...\n"
+    "```\n\n"
+    "## Action Space\n"
+    "click(point='<point>x1 y1</point>')\n"
+    "left_double(point='<point>x1 y1</point>')\n"
+    "right_single(point='<point>x1 y1</point>')\n"
+    "drag(start_point='<point>x1 y1</point>', end_point='<point>x2 y2</point>')\n"
+    "hotkey(key='ctrl c')\n"
+    "type(content='xxx') # Use escape characters \\\\', \\\\\", and \\\\n in content "
+    "part to ensure we can parse the content in normal python string format. "
+    "If you want to submit your input, use \\\\n at the end of content.\n"
+    "scroll(point='<point>x1 y1</point>', direction='down or up or right or left')\n"
+    "wait() # Sleep for 5s and take a screenshot to check for any changes.\n"
+    "finished(content='xxx') # Use escape characters \\\\', \\\\\", and \\\\n in content "
+    "part to ensure we can parse the content in normal python string format.\n\n"
+    "## Note\n"
+    "- Use English in `Thought` part.\n"
+    "- Write a small plan and finally summarize your next action (with its target "
+    "element) in one sentence in `Thought` part."
+)
+
+
+# Sentinel substrings that, if present in any user-supplied system
+# message, mark the operator as already having pasted (a variant of)
+# the canonical UI-TARS sysprompt — in which case we DO NOT prepend
+# the built-in one. Detection is intentionally permissive ("did the
+# operator mention the Action Space at all?") because every UI-TARS
+# fork in the wild carries one of these tokens. A strict match would
+# fail-open for benign reshuffles of the same prompt.
+_UI_TARS_SYSPROMPT_MARKERS: tuple[str, ...] = (
+    "## Action Space",
+    "## Output Format",
+    "click(point=",
+    "click(start_box=",
+    "You are a GUI agent",
+)
+
+
+def maybe_inject_ui_tars_system_prompt(
+    messages: list,
+    *,
+    tool_call_parser: str | None,
+    tool_choice: Any = None,
+) -> list:
+    """Auto-prepend the canonical UI-TARS sysprompt to ``messages`` when needed.
+
+    Dogfood C-05 fix: PR #812 auto-wired the ``ui_tars`` parser to the
+    UI-TARS alias family but the chat-completions / messages routes
+    never injected the canonical action-API system prompt. The parser
+    then silently no-op'd on raw model output because the model never
+    saw the ``## Output Format`` / ``## Action Space`` contract it was
+    post-trained on. This helper closes the gap: every UI-TARS request
+    (parser == ``"ui_tars"``) gets the canonical sysprompt prepended.
+
+    Operator design choice: auto-injected sysprompt wins; a user-
+    supplied ``system`` message is preserved as-is and APPENDED after
+    the auto-injected one (additive, not overriding). This matches the
+    PR #812 contract that "the alias just works" while leaving the
+    operator a knob to extend / constrain the action space.
+
+    Skip conditions (no injection):
+    1. ``tool_call_parser != "ui_tars"`` — wrong model family.
+    2. ``tool_choice == "none"`` — dogfood C-07 fix: the caller is
+       requesting a text-only turn (e.g. for planning / debugging /
+       asking the user). Prepending the action-API sysprompt would
+       prime the model to emit ``Action: ...`` lines anyway, which
+       the parser would then surface as a tool_call — violating
+       OpenAI spec for ``tool_choice="none"``. Skipping the inject
+       collapses the model into plain prose mode.
+    3. The user already pasted (a variant of) the canonical
+       sysprompt — ``has_ui_tars_system_prompt`` returns True. We
+       respect the operator's preferred wording verbatim.
+
+    Returns the (possibly prepended) ``messages`` list. The caller's
+    reference is mutated only when a new message is inserted.
+    """
+    if tool_call_parser != "ui_tars":
+        return messages
+    if tool_choice == "none":
+        return messages
+    if has_ui_tars_system_prompt(messages):
+        return messages
+
+    sys_msg = {"role": "system", "content": UI_TARS_COMPUTER_USE_SYSTEM_PROMPT}
+    # Find the FIRST non-system slot — auto-injected sysprompt lands
+    # BEFORE any user-supplied system message so it primes the model
+    # FIRST and the user's content extends (rather than overrides) the
+    # action-API contract. If no system is present, insert at index 0.
+    return [sys_msg, *messages]
+
+
+def has_ui_tars_system_prompt(messages: list) -> bool:
+    """Return True if any ``system`` message already contains a UI-TARS preamble.
+
+    Used by the chat / anthropic routes to decide whether to prepend the
+    canonical sysprompt. The detector inspects ``str`` content directly
+    and stringifies list-of-blocks content (Anthropic shape) so a
+    multimodal system message with ``[{"type":"text","text":...}]``
+    is still scanned.
+    """
+    for m in messages:
+        role = m.get("role") if isinstance(m, dict) else getattr(m, "role", None)
+        if role != "system":
+            continue
+        content = m.get("content") if isinstance(m, dict) else getattr(m, "content", "")
+        if isinstance(content, list):
+            for block in content:
+                text = (
+                    block.get("text")
+                    if isinstance(block, dict)
+                    else getattr(block, "text", "")
+                )
+                if isinstance(text, str) and any(
+                    marker in text for marker in _UI_TARS_SYSPROMPT_MARKERS
+                ):
+                    return True
+        elif isinstance(content, str):
+            if any(marker in content for marker in _UI_TARS_SYSPROMPT_MARKERS):
+                return True
+    return False
+
+
 # Verbs UI-TARS may emit. The set is a superset of the desktop
 # (``COMPUTER_USE_DOUBAO``) and mobile (``MOBILE_USE_DOUBAO``) action
 # spaces in ``codes/ui_tars/prompt.py``. Verbs not in this set are still
@@ -144,6 +285,20 @@ _BBOX_TAGGED = re.compile(
 _BOX_SENTINEL = re.compile(
     r"<\|box_start\|>\s*(\([^)]+\)(?:\s*,\s*\([^)]+\))?)\s*<\|box_end\|>"
 )
+
+
+def _is_tool_choice_none(request: dict[str, Any] | None) -> bool:
+    """Return True if ``request.tool_choice`` is OpenAI's ``"none"`` sentinel.
+
+    The parser uses this to short-circuit tool emission for both the
+    non-streaming and streaming paths so a model that still produced
+    ``Action: ...`` text (e.g. operator-supplied UI-TARS sysprompt,
+    quantization variance) doesn't bypass the OpenAI spec for
+    ``tool_choice="none"``. Dogfood C-07.
+    """
+    if not isinstance(request, dict):
+        return False
+    return request.get("tool_choice") == "none"
 
 
 def _generate_tool_id() -> str:
@@ -368,6 +523,91 @@ def _parse_kwargs_lenient(body: str) -> dict[str, Any]:
     return out
 
 
+# Coordinate kwargs the model may emit. Both upstream UI-TARS-1.0
+# (``point`` / ``start_point`` / ``end_point``) and UI-TARS-1.5
+# (``start_box`` / ``end_box``) are accepted on input; the parser
+# normalizes everything to the SPEC keys on output (``point`` for
+# single-point verbs, ``start_point`` / ``end_point`` for two-point
+# verbs). This decouples downstream consumers from per-checkpoint
+# kwarg drift — same OpenAI/Anthropic tool_call shape regardless of
+# which UI-TARS variant produced the bytes.
+_COORD_KEYS: tuple[str, ...] = (
+    "point",
+    "start_point",
+    "end_point",
+    "start_box",
+    "end_box",
+)
+
+# Verbs that take a SINGLE point argument. All single-point variants
+# (whether the model wrote ``point=`` or ``start_box=``) collapse to
+# the spec ``point`` key. Verbs not in this set and not in the
+# two-point set below preserve whatever key the model emitted (after
+# the box→point rename below).
+_SINGLE_POINT_VERBS: frozenset[str] = frozenset(
+    {
+        "click",
+        "left_double",
+        "right_single",
+        "scroll",
+        "hover",
+        "tap",
+        "long_press",
+    }
+)
+
+# Verbs that take a TWO-point (start + end) argument. Both
+# ``start_box`` / ``end_box`` and ``start_point`` / ``end_point``
+# inputs collapse to the spec ``start_point`` / ``end_point`` keys.
+_TWO_POINT_VERBS: frozenset[str] = frozenset({"drag", "select", "swipe"})
+
+
+def _spec_key_for(verb: str, model_key: str) -> str:
+    """Translate a model-emitted coord kwarg name to the SPEC key.
+
+    The model speaks ``start_box`` / ``end_box`` (UI-TARS-1.5) OR
+    ``point`` / ``start_point`` / ``end_point`` (UI-TARS-1.0). The
+    spec — and PR #812's contract — is ``point`` / ``start_point`` /
+    ``end_point``. We rename based on the verb so the OpenAI/Anthropic
+    consumer sees a single canonical shape regardless of model
+    variant.
+
+    Renames applied (verb-aware):
+    - Single-point verbs (``click`` / ``scroll`` / …):
+      ``start_box`` → ``point``; ``point`` and ``start_point`` are
+      kept as ``point``; ``end_box`` / ``end_point`` are dropped to
+      ``point`` only if no single ``point`` was already present
+      (defensive — these shouldn't appear on single-point verbs).
+    - Two-point verbs (``drag`` / ``select`` / …):
+      ``start_box`` → ``start_point``; ``end_box`` → ``end_point``;
+      ``point`` → ``start_point`` (lone-point form for two-point
+      verbs — model variant; rare).
+    - Other / unknown verbs: preserve the model's choice (rare
+      future-proofing — a UI-TARS-2.0 verb we haven't enumerated
+      won't get its kwargs silently renamed).
+    """
+    if verb in _SINGLE_POINT_VERBS:
+        if model_key in ("start_box", "start_point"):
+            return "point"
+        if model_key in ("end_box", "end_point"):
+            # Unusual but possible: model emitted both. Don't
+            # collide with an already-renamed ``point`` — drop the
+            # ``end_*`` for single-point verbs. The caller filters
+            # this case (preserves first-write-wins semantics).
+            return "end_point"
+        return model_key  # ``point`` passes through.
+    if verb in _TWO_POINT_VERBS:
+        if model_key == "start_box":
+            return "start_point"
+        if model_key == "end_box":
+            return "end_point"
+        if model_key == "point":
+            return "start_point"
+        return model_key  # ``start_point`` / ``end_point`` pass through.
+    # Unknown verb: emit whatever the model said.
+    return model_key
+
+
 def _normalize_action(verb: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     """Map a parsed (verb, kwargs) pair to the canonical computer-tool args.
 
@@ -375,17 +615,53 @@ def _normalize_action(verb: str, kwargs: dict[str, Any]) -> dict[str, Any]:
 
     Point-bearing kwargs (``point``, ``start_point``, ``end_point``,
     ``start_box``, ``end_box``) are normalized to integer lists when the
-    coordinate body parses cleanly. Other kwargs pass through untouched.
-    Unknown verbs are NOT rejected — emit them verbatim so a future
-    UI-TARS-2.0 verb doesn't get dropped during the upgrade window.
+    coordinate body parses cleanly. Coord KEYS are renamed via
+    ``_spec_key_for`` so single-point verbs emit ``point`` and two-point
+    verbs emit ``start_point`` / ``end_point`` — independent of which
+    UI-TARS checkpoint generated the wire bytes (PR #812 contract).
+
+    The ``hotkey`` ``key`` argument is also normalized: UI-TARS emits
+    space-separated chords (``"ctrl c"``) but the documented spec — and
+    every downstream computer-use runtime — expects plus-separated
+    chords (``"ctrl+c"``). The translation is lossless and reversible
+    so a runtime that ALSO accepts the space form keeps working.
+
+    Other kwargs pass through untouched. Unknown verbs are NOT
+    rejected — emit them verbatim so a future UI-TARS-2.0 verb doesn't
+    get dropped during the upgrade window.
     """
     out: dict[str, Any] = {"action": verb}
-    _COORD_KEYS = ("point", "start_point", "end_point", "start_box", "end_box")
+    # Track which spec keys have already been written so a model that
+    # emits BOTH ``point=...`` and ``start_box=...`` on a single-point
+    # verb doesn't double-write the same canonical key (first-wins).
+    written: set[str] = set()
     for key, value in kwargs.items():
-        if key in _COORD_KEYS and isinstance(value, str):
-            parsed = _parse_point(value)
-            if parsed is not None:
-                out[key] = parsed
+        if key in _COORD_KEYS:
+            spec_key = _spec_key_for(verb, key)
+            if spec_key in written:
+                # Already populated by an earlier (typically more
+                # canonical) kwarg. Don't clobber.
+                continue
+            if isinstance(value, str):
+                parsed = _parse_point(value)
+                if parsed is not None:
+                    out[spec_key] = parsed
+                    written.add(spec_key)
+                    continue
+            out[spec_key] = value
+            written.add(spec_key)
+            continue
+        # ``hotkey.key``: rewrite space-separated chord to plus-form
+        # so downstream computer-use runtimes (xdotool, pyautogui,
+        # the Anthropic computer-tool harness) receive the documented
+        # shape. The model trained on space form, so normalization
+        # happens at the parser boundary, not on the model side.
+        if verb == "hotkey" and key == "key" and isinstance(value, str):
+            stripped = value.strip()
+            if stripped and "+" not in stripped:
+                # Collapse runs of whitespace into a single ``+``
+                # (matches how xdotool / pyautogui name keys).
+                out[key] = "+".join(stripped.split())
                 continue
         out[key] = value
     return out
@@ -463,8 +739,21 @@ class UiTarsToolParser(ToolParser):
         Empty / no-action input passes through with ``tools_called=False``
         and the original text as ``content`` so non-action prose
         (e.g. ``call_user()`` rejection messages) isn't lost.
+
+        Dogfood C-07: when ``request.tool_choice == "none"`` the caller
+        is opting OUT of tool emission. Even if the model still
+        produced an ``Action:`` line (e.g. because the operator pasted
+        the UI-TARS sysprompt and the route-level skip didn't fire),
+        suppress the tool_call shape and surface the raw bytes as
+        ``content`` so the OpenAI spec contract — "no tool_calls on
+        tool_choice=none" — holds.
         """
         if not model_output or "Action:" not in model_output:
+            return ExtractedToolCallInformation(
+                tools_called=False, tool_calls=[], content=model_output
+            )
+
+        if _is_tool_choice_none(request):
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=model_output
             )
@@ -532,7 +821,15 @@ class UiTarsToolParser(ToolParser):
         - No ``Action:`` seen yet — passthrough delta as content so the
           ``Thought:`` preamble streams to the reasoning channel via the
           reasoning parser (which sees the same delta).
+
+        Dogfood C-07: ``tool_choice=none`` short-circuits to
+        passthrough — never emit a streaming ``tool_calls`` chunk so
+        the OpenAI streaming spec for ``tool_choice=none`` ("no
+        tool_calls in any delta") holds even if the model still emits
+        ``Action:`` bytes.
         """
+        if _is_tool_choice_none(request):
+            return {"content": delta_text}
         if "Action:" not in current_text:
             return {"content": delta_text}
 

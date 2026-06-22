@@ -690,6 +690,25 @@ async def create_anthropic_message(
             openai_request.messages,
             preserve_native_format=engine.preserve_native_tool_format,
         )
+        # Dogfood C-05 / F-R2-04 lane parity: auto-prepend the canonical
+        # UI-TARS Computer-Use sysprompt on the Anthropic lane too so
+        # the two surfaces produce the SAME prompt for the SAME model.
+        # Pre-fix the OAI lane had the sysprompt the operator pasted
+        # (or not), and the Anthropic lane never injected anything —
+        # so the same model + image + user text produced different
+        # coordinates across surfaces (Ana F-R2-04). Single shared
+        # helper, single canonical sysprompt, single coordinate space.
+        from ..tool_parsers.ui_tars_tool_parser import (
+            maybe_inject_ui_tars_system_prompt as _maybe_inject_ui_tars_sysprompt,
+        )
+
+        _cfg_for_ui_tars = get_config()
+        messages = _maybe_inject_ui_tars_sysprompt(
+            messages,
+            tool_call_parser=_cfg_for_ui_tars.tool_call_parser,
+            tool_choice=openai_request.tool_choice,
+        )
+
         _inject_tool_use_required_suffix(
             messages,
             openai_request.tool_choice,

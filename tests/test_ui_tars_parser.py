@@ -218,8 +218,21 @@ class TestNormalizeAction:
         }
 
     def test_hotkey_passthrough(self):
+        # Dogfood F-R1-06 fix: UI-TARS trains on space-separated chord
+        # syntax (``"ctrl c"``) but the documented Computer-Use spec —
+        # and every downstream computer-use runtime (xdotool,
+        # pyautogui, the Anthropic computer-tool harness) — expects
+        # plus form (``"ctrl+c"``). Normalize at the parser boundary
+        # so SDK consumers don't have to.
         args = _normalize_action("hotkey", {"key": "ctrl c"})
-        assert args == {"action": "hotkey", "key": "ctrl c"}
+        assert args == {"action": "hotkey", "key": "ctrl+c"}
+
+    def test_hotkey_plus_form_preserved(self):
+        # Already plus-shaped chord (rare — model usually emits space
+        # form) stays untouched so a runtime that accepts BOTH forms
+        # keeps working.
+        args = _normalize_action("hotkey", {"key": "ctrl+c"})
+        assert args == {"action": "hotkey", "key": "ctrl+c"}
 
     def test_unknown_verb_emitted_verbatim(self):
         # Future UI-TARS verb — preserve so we don't silently drop calls.
@@ -322,8 +335,11 @@ class TestToolParserComplete:
 
     def test_hotkey(self):
         text = "Action: hotkey(key='ctrl c')"
+        # Dogfood F-R1-06 fix: parser normalizes space-form chord to
+        # plus-form so downstream computer-use runtimes receive the
+        # spec shape.
         r = self.p.extract_tool_calls(text)
-        assert _decode(r.tool_calls[0]) == {"action": "hotkey", "key": "ctrl c"}
+        assert _decode(r.tool_calls[0]) == {"action": "hotkey", "key": "ctrl+c"}
 
     def test_type(self):
         text = "Action: type(content='hello world\\n')"
@@ -402,11 +418,16 @@ class TestToolParserComplete:
         # UI-TARS-1.5 emits ``start_box='<|box_start|>(x,y)<|box_end|>'``
         # — verified against the live mlx-community/UI-TARS-1.5-7B-4bit
         # checkpoint (2026-06-21). Coords are absolute pixel offsets.
+        # Dogfood F-R1-02 fix: the parser renames the verb-specific
+        # ``start_box`` (UI-TARS-1.5 internal) → spec ``point`` for
+        # single-point verbs like ``click``, so downstream consumers
+        # see the documented PR #812 contract regardless of which
+        # UI-TARS checkpoint produced the bytes.
         text = "Action: click(start_box='<|box_start|>(233,45)<|box_end|>')"
         r = self.p.extract_tool_calls(text)
         assert _decode(r.tool_calls[0]) == {
             "action": "click",
-            "start_box": [233, 45],
+            "point": [233, 45],
         }
 
     def test_nested_action_in_string_arg_not_double_parsed(self):

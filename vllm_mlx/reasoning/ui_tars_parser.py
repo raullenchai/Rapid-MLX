@@ -150,6 +150,18 @@ class UiTarsReasoningParser(ReasoningParser):
                 return None
             if any(stripped.startswith(p) for p in self._PREAMBLE_OPENERS):
                 self._in_reasoning = True
+                # Dogfood F-R1-04 follow-up: bytes from PRIOR deltas
+                # that we held back (returned ``None`` for) live in
+                # ``previous_text``. Now that the opener has resolved,
+                # release them through the reasoning channel alongside
+                # this delta — otherwise the held prefix bytes would
+                # be silently dropped from the SSE stream.
+                if previous_text:
+                    # Use the slice of ``current_text`` that contains
+                    # the full opener-bearing prefix (i.e. everything
+                    # the parser has seen) so the emitted reasoning
+                    # text starts from the actual model-output start.
+                    return DeltaMessage(reasoning=previous_text + delta_text)
                 # FALLTHROUGH to the reasoning branch below — first delta
                 # of the preamble emits as reasoning.
             elif stripped.startswith("Action:"):
@@ -166,19 +178,45 @@ class UiTarsReasoningParser(ReasoningParser):
                     return DeltaMessage(content=previous_text + delta_text)
                 return DeltaMessage(content=delta_text)
             else:
-                # Buffer doesn't yet match any opener. Use the SHORTEST
-                # disambiguating prefix length — once ``len(stripped) >=
-                # len("Action:")`` (7), we know it can't be a preamble
-                # whose opener starts with ``T``/``R``/``A`` because
-                # those would have matched above. Flip to content and
-                # flush any previously held bytes alongside this delta.
-                if len(stripped) >= len("Action:"):
-                    self._in_content = True
-                    if previous_text:
-                        return DeltaMessage(content=previous_text + delta_text)
-                    return DeltaMessage(content=delta_text)
-                # Hold off — the next delta might complete a preamble.
-                return None
+                # Buffer doesn't yet match any opener. We need to wait
+                # until ``stripped`` is either long enough that NO
+                # opener prefix can match anymore, OR ``stripped`` is
+                # not even a prefix of any opener — only then can we
+                # safely flip to content.
+                #
+                # Dogfood F-R1-04 fix (Ana 2026-06-21): the previous
+                # heuristic ``len(stripped) >= len("Action:")`` was 7
+                # chars, but ``"Thought"`` is ALSO 7 chars — and at
+                # exactly that length the buffer is still the strict
+                # prefix of ``"Thought:"`` (waiting for the colon on
+                # the next delta). The old code flipped to content
+                # there and leaked ``Thought: ...`` into
+                # ``delta.content`` instead of routing it to the
+                # reasoning channel. Same hazard for ``"Reflection"``
+                # (10 chars, prefix of ``Reflection:``) and
+                # ``"Action_Summa"`` (12 chars, prefix of
+                # ``Action_Summary:``).
+                #
+                # Correct gate: flip to content ONLY when ``stripped``
+                # is NOT a prefix of any known opener AND not a prefix
+                # of ``"Action:"`` (which means it's regular content).
+                # Otherwise keep buffering — the next delta will land
+                # the colon and the opener-match branch above fires.
+                _OPENERS_PLUS_ACTION = self._PREAMBLE_OPENERS + ("Action:",)
+                still_could_be_opener = any(
+                    op.startswith(stripped) for op in _OPENERS_PLUS_ACTION
+                )
+                if still_could_be_opener:
+                    # Hold off — the next delta might complete the
+                    # opener (e.g. ``"Thought"`` → ``"Thought:"``).
+                    return None
+                # ``stripped`` is no longer a prefix of any opener —
+                # this is regular content. Flip to content and flush
+                # any previously held bytes alongside this delta.
+                self._in_content = True
+                if previous_text:
+                    return DeltaMessage(content=previous_text + delta_text)
+                return DeltaMessage(content=delta_text)
 
         # In reasoning channel. Look for the ``Action:`` boundary inside
         # this delta to decide whether to split.

@@ -960,6 +960,23 @@ async def _create_chat_completion_impl(
             else:
                 m.role = "system"
 
+    # Dogfood C-05 fix: auto-prepend the canonical UI-TARS Computer-Use
+    # action-API system prompt for the ``ui_tars`` parser family. PR
+    # #812 wired the parser by alias regex but never injected the
+    # sysprompt the model is post-trained on — so the parser silently
+    # no-op'd on raw output. The helper is idempotent (skips when the
+    # user already pasted the sysprompt) and honors ``tool_choice=
+    # "none"`` (skips so the model emits plain prose — dogfood C-07).
+    from ..tool_parsers.ui_tars_tool_parser import (
+        maybe_inject_ui_tars_system_prompt as _maybe_inject_ui_tars_sysprompt,
+    )
+
+    messages = _maybe_inject_ui_tars_sysprompt(
+        messages,
+        tool_call_parser=cfg.tool_call_parser,
+        tool_choice=tc,
+    )
+
     # Auto-inject system prompt suffix for tool use and/or reasoning control.
     # ``tool_choice="required"`` (and the specific-function form) gets a
     # stricter suffix than the default tool-use one — the OpenAI spec
@@ -2363,7 +2380,15 @@ async def stream_chat_completion(
                         usage=None,
                     )
                     _tc_sse = f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
-                    logger.info(f"[SSE-TC] {_tc_sse.strip()[:300]}")
+                    # Dogfood F-R2-05: previously emitted at INFO, which
+                    # leaked user-action coords + tool_call JSON into the
+                    # server log on every Computer-Use turn (UI-TARS,
+                    # Anthropic computer tool, etc.). Drop to DEBUG so
+                    # the PII / telemetry path is opt-in and not on by
+                    # default. Plain INFO observability is preserved by
+                    # the existing per-request summary log at the route
+                    # tail; the per-chunk dump is debugging-only.
+                    logger.debug(f"[SSE-TC] {_tc_sse.strip()[:300]}")
                     yield _tc_sse
 
                 elif event.type == "finish":
