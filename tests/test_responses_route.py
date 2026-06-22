@@ -409,6 +409,39 @@ class TestResponsesNonStream:
         assert expected in msg
         assert engine.calls == []
 
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (None, "Responses message content is required"),
+            ([], "Responses message content must not be empty"),
+        ],
+    )
+    def test_empty_message_content_returns_400_not_empty_prompt(
+        self, responses_client, content, expected
+    ):
+        client = responses_client.client
+        engine = responses_client.engine
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": content,
+                    }
+                ],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 400, response.text
+        body = response.json()
+        msg = body.get("detail") or body.get("error", {}).get("message", "")
+        assert expected in msg
+        assert engine.calls == []
+
 
 # ---------------------------------------------------------------------------
 # Codex model-name bypass (parallel to #557 claude-* bypass)

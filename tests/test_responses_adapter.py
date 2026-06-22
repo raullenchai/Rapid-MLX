@@ -330,6 +330,28 @@ class TestResponsesToOpenai:
             responses_to_openai(req)
 
     @pytest.mark.parametrize(
+        ("content", "match"),
+        [
+            (None, "Responses message content is required"),
+            ([], "Responses message content must not be empty"),
+        ],
+    )
+    def test_empty_message_content_does_not_become_empty_prompt(self, content, match):
+        req = ResponsesRequest.model_construct(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem.model_construct(
+                    type="message",
+                    role="user",
+                    content=content,
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match=match):
+            responses_to_openai(req)
+
+    @pytest.mark.parametrize(
         ("content_item", "match"),
         [
             (ResponsesContentItem(type="input_text"), "input_text.text is required"),

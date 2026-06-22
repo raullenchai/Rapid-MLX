@@ -673,7 +673,7 @@ def _message_item_to_chat(item: ResponsesInputItem) -> Message:
     if isinstance(content, str):
         chat_content = content
     elif content is None:
-        chat_content = ""
+        raise ValueError("Responses message content is required")
     else:
         parts = []
         for c in content:
@@ -681,6 +681,8 @@ def _message_item_to_chat(item: ResponsesInputItem) -> Message:
             # becomes Chat image_url. Unsupported or malformed blocks raise
             # here rather than producing an empty prompt.
             parts.append(normalize_responses_content_part(c))
+        if not parts:
+            raise ValueError("Responses message content must not be empty")
         chat_content = parts
 
     return Message(role=role, content=chat_content)
