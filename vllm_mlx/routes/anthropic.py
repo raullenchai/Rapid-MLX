@@ -1343,6 +1343,64 @@ async def count_anthropic_tokens(request: Request):
     return {"input_tokens": total_tokens}
 
 
+def _split_tool_input_json(tool_input: object) -> list[str]:
+    """Return a list of ``input_json_delta.partial_json`` fragments
+    whose concatenation equals ``json.dumps(tool_input)``.
+
+    R-08 (r5-A bundle) — Anthropic's streaming spec emits
+    ``input_json_delta`` progressively as the model generates the
+    tool arguments. Local inference produces the full JSON
+    structurally (the parser only surfaces tool_calls once the
+    arguments object closes), so we can't stream per-token; the
+    next best is to emit one fragment per top-level key-value pair
+    so a consumer that parses-as-it-goes (the documented use case
+    for ``input_json_delta``) gets at least the same number of cues
+    an Anthropic-side stream would.
+
+    Codex r5 NIT (PR #826): the structural braces are attached to
+    their adjacent key-value fragments — the first pair carries the
+    opening ``{`` and the last pair carries the closing ``}`` — so
+    every emitted fragment is a complete structural addition to the
+    accumulating JSON. The earlier draft emitted standalone ``{``
+    and ``}`` fragments, which strictly satisfied the
+    byte-concatenation contract but surfaced empty-value cues to
+    progressive consumers (the first event carried no key/value
+    payload, just a brace). Pairing the braces with their adjacent
+    pair removes those empty cues while keeping
+    ``"".join(fragments) == json.dumps(tool_input)`` exactly.
+
+    Empty / non-string-keyed / non-dict inputs return a single
+    fragment so the wire contract (at least one ``input_json_delta``
+    per tool block) holds; concatenating that single fragment still
+    yields the exact ``json.dumps`` bytes.
+
+    Codex r1 NIT #3: the per-pair split path is only safe when every
+    dict key is a string — ``json.dumps`` coerces ``int`` / ``bool``
+    keys to their string form (``{1: "x"}`` → ``{"1": "x"}``), and
+    ``json.dumps(1)`` would emit ``1`` (no quotes), breaking the
+    concatenation contract. Fall back to the monolithic shard for
+    those shapes so byte-equivalence holds regardless of input.
+    """
+    if not isinstance(tool_input, dict) or not tool_input:
+        return [json.dumps(tool_input)]
+    if not all(isinstance(k, str) for k in tool_input):
+        # Non-string keys: ``json.dumps`` coerces them but the
+        # per-pair ``json.dumps(key)`` we use below would emit the
+        # raw value (no coercion), breaking byte-equivalence. The
+        # whole-blob encoding is the only safe fallback for the
+        # progressive contract on those shapes.
+        return [json.dumps(tool_input)]
+    keys = list(tool_input.keys())
+    fragments: list[str] = []
+    for i, key in enumerate(keys):
+        value_repr = json.dumps(tool_input[key])
+        key_repr = json.dumps(key)
+        opener = "{" if i == 0 else ", "
+        closer = "}" if i == len(keys) - 1 else ""
+        fragments.append(f"{opener}{key_repr}: {value_repr}{closer}")
+    return fragments
+
+
 def _emit_content_pieces(
     pieces: list[tuple[str, str]],
     current_block_type: str | None,
@@ -1780,9 +1838,70 @@ async def _stream_anthropic_messages(
     # value is equivalent to "did any stop fire on this request?".
     # Stays ``None`` for EOS / length / no-stop terminations.
     stream_matched_stop: str | None = None
+    # R-06 (r5-A bundle): track the engine-surfaced ``finish_reason``
+    # so the terminal ``message_delta`` can emit Anthropic's correct
+    # ``stop_reason`` per the public spec instead of hard-coding
+    # ``end_turn``. Pre-r5-A the route ignored ``finish_reason``
+    # entirely and every non-tool stream finished with ``end_turn``,
+    # breaking the spec-required ``max_tokens`` continuation pattern
+    # (Mei dogfood report ``mei-r1.md`` HIGH). ``length`` →
+    # ``max_tokens``; everything else maps via the existing
+    # tool-use / stop-sequence / end-turn ladder below.
+    stream_finish_reason: str | None = None
 
     current_block_type = None
     block_index = 0
+    # C-08 + R-07 (r5-A bundle): track whether the chunk loop ever
+    # opened a thinking block AND whether any content_block was
+    # emitted at all. C-08 needs the thinking flag so the
+    # ``finalize_streaming`` Case-2 path (no ``</think>`` seen) does
+    # NOT re-encode already-streamed thinking bytes as a phantom text
+    # block (Mei dogfood report ``mei-r1.md`` CRIT). R-07 needs the
+    # any-block flag so a stream that ends with ``message_start →
+    # message_delta → message_stop`` (no content blocks at all — e.g.
+    # ``/no_think`` + ``max_tokens`` exhausted entirely by suppressed
+    # reasoning) can synthesize a zero-text ``content_block`` pair so
+    # SDKs that iterate ``message.content`` see a valid empty block
+    # instead of a malformed Message (Mei ``mei-r1.md`` HIGH).
+    streamed_any_thinking = False
+    streamed_any_content_block = False
+    # C-08 (r5-A bundle, codex r2 REQUIRED): accumulate the exact bytes
+    # the chunk loop shipped as ``thinking_delta`` so the terminal
+    # ``finalize_streaming`` re-encoding guard can do a byte-faithful
+    # "did the parser just re-classify already-streamed bytes?" check.
+    # Tag-presence heuristics (``"<think>" in accumulated_raw`` etc.)
+    # miss models that emit a reasoning preamble BEFORE the literal
+    # ``<think>`` opener (VibeThinker, codex r2). Byte-faithful
+    # comparison is parser-agnostic — the suppression fires iff the
+    # finalize correction's content is bytes the wire has already
+    # carried as thinking.
+    streamed_thinking_text = ""
+
+    def _emit_and_track(
+        pieces: list[tuple[str, str]],
+        cur_block_type: str | None,
+        blk_index: int,
+    ) -> tuple[list[str], str | None, int]:
+        """Run ``_emit_content_pieces`` and update C-08 / R-07 flags.
+
+        Tracks whether any thinking piece reached the wire (C-08
+        guards the ``finalize_streaming`` re-encoding against this),
+        whether any content_block at all was emitted (R-07 uses this
+        to decide if the terminal stream needs a synthetic empty
+        content_block pair), and the exact bytes shipped as thinking
+        (the byte-faithful C-08 suppression discriminator). The flag
+        updates happen here so every call site stays a single line
+        and the ``nonlocal`` plumbing lives in exactly one place.
+        """
+        nonlocal streamed_any_thinking, streamed_any_content_block
+        nonlocal streamed_thinking_text
+        if pieces:
+            streamed_any_content_block = True
+            for piece_type, piece_text in pieces:
+                if piece_type == "thinking":
+                    streamed_any_thinking = True
+                    streamed_thinking_text += piece_text
+        return _emit_content_pieces(pieces, cur_block_type, blk_index)
 
     # Per-request reasoning parser instance (not the singleton from cfg).
     # Avoids state corruption under concurrent BatchedEngine requests.
@@ -1882,6 +2001,15 @@ async def _stream_anthropic_messages(
         _chunk_matched_stop = getattr(output, "matched_stop", None)
         if _chunk_matched_stop:
             stream_matched_stop = _chunk_matched_stop
+        # R-06 (r5-A bundle): latch the engine's ``finish_reason`` on
+        # every chunk that carries one. The scheduler typically pins
+        # this on the LAST chunk (sentinel) so simply taking the
+        # newest non-None reading is equivalent to "whichever
+        # finish_reason fired for this request". ``getattr`` keeps
+        # legacy mocks without the field working unchanged.
+        _chunk_finish_reason = getattr(output, "finish_reason", None)
+        if _chunk_finish_reason:
+            stream_finish_reason = _chunk_finish_reason
 
         # Capture engine-surfaced structured tool calls (HarmonyStreamingRouter
         # via openai-harmony's StreamableParser). The delta_text on these
@@ -1987,7 +2115,7 @@ async def _stream_anthropic_messages(
                     # still surfaces and clients don't see a
                     # ``thinking`` block on a non-extended-thinking
                     # alias.
-                    events, current_block_type, block_index = _emit_content_pieces(
+                    events, current_block_type, block_index = _emit_and_track(
                         _gate_thinking_pieces(pieces_routed, current_block_type),
                         current_block_type,
                         block_index,
@@ -2144,7 +2272,7 @@ async def _stream_anthropic_messages(
                         if filtered:
                             pieces.append(("text", filtered))
                 if pieces:
-                    events, current_block_type, block_index = _emit_content_pieces(
+                    events, current_block_type, block_index = _emit_and_track(
                         _gate_thinking_pieces(pieces, current_block_type),
                         current_block_type,
                         block_index,
@@ -2166,7 +2294,7 @@ async def _stream_anthropic_messages(
                 if not filtered:
                     continue
                 pieces = think_router.process(filtered)
-                events, current_block_type, block_index = _emit_content_pieces(
+                events, current_block_type, block_index = _emit_and_track(
                     _gate_thinking_pieces(pieces, current_block_type),
                     current_block_type,
                     block_index,
@@ -2186,7 +2314,7 @@ async def _stream_anthropic_messages(
             pieces_flush: list[tuple[str, str]] = [("text", remaining)]
         else:
             pieces_flush = think_router.process(remaining)
-        events, current_block_type, block_index = _emit_content_pieces(
+        events, current_block_type, block_index = _emit_and_track(
             _gate_thinking_pieces(pieces_flush, current_block_type),
             current_block_type,
             block_index,
@@ -2199,7 +2327,7 @@ async def _stream_anthropic_messages(
     if not reasoning_parser:
         flush_pieces = think_router.flush()
         if flush_pieces:
-            events, current_block_type, block_index = _emit_content_pieces(
+            events, current_block_type, block_index = _emit_and_track(
                 _gate_thinking_pieces(flush_pieces, current_block_type),
                 current_block_type,
                 block_index,
@@ -2278,7 +2406,7 @@ async def _stream_anthropic_messages(
             if inject_content:
                 filtered = tool_filter.process(inject_content)
                 if filtered:
-                    events, current_block_type, block_index = _emit_content_pieces(
+                    events, current_block_type, block_index = _emit_and_track(
                         [("text", filtered)], current_block_type, block_index
                     )
                     for event in events:
@@ -2317,11 +2445,129 @@ async def _stream_anthropic_messages(
     # was already injected mid-stream), the finalize pass still runs
     # as the safety net for normal parser-held content.
     if reasoning_parser and accumulated_raw and not terminal_injection_attempted:
+        # C-08 (r5-A bundle): the parser's ``finalize_streaming``
+        # fallback (qwen3 / deepseek_r1 / thinking-family parsers)
+        # reclassifies the whole buffer as ``content`` when the model
+        # never produced ``</think>``. That fallback exists for the
+        # NON-STREAMING surface, where the whole-buffer re-parse is the
+        # FIRST and ONLY chance to surface those bytes — the parser's
+        # implicit-think heuristic conservatively buckets them as
+        # reasoning during incremental scanning and ``finalize_streaming``
+        # is the corrective pass. On the streaming surface, however,
+        # we already shipped those bytes as ``thinking_delta`` events
+        # via the chunk loop, and the corrective pass re-encodes them
+        # as a fresh text content_block — the exact "data fabrication"
+        # failure mode Mei's r1 dogfood caught as CRIT (R-01 streaming
+        # twin: identical bytes shipped as both thinking AND text).
+        #
+        # The distinguishing question is whether the streaming
+        # surface's bucketing was correct — i.e. whether the bytes
+        # ``finalize_streaming`` is about to surface as content were
+        # ALREADY shipped as ``thinking_delta`` to the wire. Three
+        # qualitatively different streams reach this branch:
+        #
+        #   (a) Model emitted plain content with no tags AND finished
+        #       naturally (``finish_reason="stop"``). The parser was
+        #       too conservative (implicit-think); the corrective pass
+        #       is RIGHT — those bytes belong in a text block (test
+        #       ``test_no_think_tags_yields_text_delta`` — natural
+        #       stop, no length guard). The corrective pass runs in
+        #       this case because the ``stream_finish_reason ==
+        #       "length"`` guard below blocks suppression.
+        #   (b) Model emitted plain content with no tags AND got
+        #       truncated by ``max_tokens``. The streaming surface
+        #       has ALREADY shipped those bytes as ``thinking_delta``
+        #       events; the finalize correction would emit them again
+        #       as ``text_delta``, producing a Message with
+        #       ``content=[thinking, text]`` where both blocks carry
+        #       byte-identical content — the same duplicate-bytes
+        #       shape C-08 closes. Re-classifying mid-stream is
+        #       impossible (those events are on the wire). Suppress
+        #       the duplicate emit; the client sees a thinking-only
+        #       Message but with no fabricated content. This is the
+        #       deliberate trade-off codex r5 questioned (BLOCKING
+        #       analysis); the alternative (let the duplicate emit)
+        #       re-introduces the original C-08 deception. The
+        #       streaming-surface fix — never route those bytes
+        #       through ``thinking_delta`` in the first place — is
+        #       a parser-side change tracked separately from this
+        #       finalize bundle.
+        #   (c) Model produced reasoning that the streaming surface
+        #       correctly bucketed as thinking (template ``<think>``
+        #       prefix, model-emitted ``<think>``, OR a parser-side
+        #       preamble pattern like VibeThinker's chatty pre-tag
+        #       sentences) AND was truncated by ``max_tokens`` before
+        #       closing. The streaming bucketing was RIGHT — those
+        #       bytes are reasoning and the corrective pass would dup
+        #       them as text. This is the C-08 path Mei's r1 dogfood
+        #       caught.
+        #
+        # The byte-faithful discriminator (codex r2 REQUIRED):
+        # compare the finalize correction's content against the bytes
+        # we already shipped as ``thinking_delta``. Tag-presence
+        # heuristics would miss case (c) — VibeThinker / DeepSeek-R1
+        # implicit-reasoning preambles where the parser streams
+        # thinking BEFORE the ``<think>`` opener is reached have
+        # ``streamed_any_thinking=True`` and ``"<think>" not in
+        # accumulated_raw`` simultaneously — and the only signal that
+        # discriminates (b)+(c) from (a) is the length truncation
+        # guard. The byte comparison is parser-agnostic: if
+        # ``finalize_streaming`` returns exactly the bytes we already
+        # streamed (after Anthropic's pre-emit
+        # ``strip_special_tokens`` so the comparison is on wire-shape
+        # bytes), the corrective pass is duplicating; otherwise it is
+        # surfacing new (parser-held) content and must run.
+        # Compute ``final_msg`` ONCE and apply the byte-faithful
+        # suppression in-place. The parser's ``finalize_streaming``
+        # is a pure function (qwen3 / deepseek_r1 / vibethinker —
+        # read ``accumulated_text`` + class attributes only), so the
+        # single call is also safer if a future parser variant
+        # introduces side effects: we only invoke once.
         final_msg = (
             reasoning_parser.finalize_streaming(accumulated_raw)
             if hasattr(reasoning_parser, "finalize_streaming")
             else None
         )
+        if (
+            final_msg is not None
+            and streamed_any_thinking
+            and stream_finish_reason == "length"
+            and "</think>" not in accumulated_raw
+        ):
+            probe_content = getattr(final_msg, "content", None)
+            if isinstance(probe_content, str) and probe_content:
+                # Both sides of the equality are post-
+                # ``strip_special_tokens`` — the streamed buffer
+                # accumulates pieces that were stripped at every
+                # in-loop emission site (channel-routed reasoning at
+                # line 2051, parser-routed reasoning at line 2170,
+                # think_router path at line 2277), so the
+                # comparison is against the EXACT wire bytes.
+                normalized_probe = strip_special_tokens(probe_content)
+                # Strict equality only (codex r2 REQUIRED #2): mutual
+                # containment risks dropping legitimate trailing
+                # content the parser HELD back during streaming and
+                # now releases via finalize. For the two known
+                # ``finalize_streaming`` implementers (``qwen3``,
+                # ``deepseek_r1`` / ``vibethinker``), the Case-1/2
+                # fallback returns exactly the wire bytes —
+                # ``accumulated_text`` minus a literal ``<think>``
+                # prefix when present — so equality fires for the
+                # documented C-08 + VibeThinker-preamble paths. A
+                # future parser whose finalize emits MORE bytes than
+                # were streamed would fall through to the legacy
+                # correction path; that's safe (no over-suppression
+                # of new bytes) and the duplicate-detection
+                # regression test would catch it for follow-up.
+                if (
+                    streamed_thinking_text
+                    and normalized_probe == streamed_thinking_text
+                ):
+                    # Drop the duplicate — the wire already carried
+                    # these bytes as ``thinking_delta``. ``final_msg``
+                    # gets cleared so the emit branch below short-
+                    # circuits.
+                    final_msg = None
         if final_msg and final_msg.content:
             content = strip_special_tokens(final_msg.content)
             if content:
@@ -2337,6 +2583,11 @@ async def _stream_anthropic_messages(
                     ev = _capture(raw_event)
                     if ev is not None:
                         yield ev
+                # Re-tracking: this is a manually-yielded
+                # content_block triple, not routed through
+                # ``_emit_and_track``. Mark the any-block flag so R-07
+                # doesn't double-synthesize a second empty block.
+                streamed_any_content_block = True
                 block_index += 1
 
     # Check for tool calls — prefer engine-surfaced structured payload
@@ -2529,18 +2780,91 @@ async def _stream_anthropic_messages(
                 },
             }
             yield f"event: content_block_start\ndata: {json.dumps(tool_block_start)}\n\n"
+            # R-07 tracking: tool_use blocks count as content_blocks
+            # for the malformed-message guard below.
+            streamed_any_content_block = True
 
-            input_json = json.dumps(tool_input)
-            input_delta = {
-                "type": "content_block_delta",
-                "index": tool_index,
-                "delta": {"type": "input_json_delta", "partial_json": input_json},
-            }
-            yield f"event: content_block_delta\ndata: {json.dumps(input_delta)}\n\n"
+            # R-08 (r5-A bundle): emit ``input_json_delta`` PROGRESSIVELY
+            # instead of buffering the entire serialized JSON into a
+            # single shard. The Anthropic spec streams
+            # ``input_json_delta.partial_json`` fragments that the
+            # client accumulates, and consumers that parse-as-they-go
+            # (the documented use case for the delta format) get no
+            # incremental signal when the server ships the whole JSON
+            # in one event. Mei's r2 dogfood caught this on the
+            # Computer-Use streaming path. ``_split_tool_input_json``
+            # produces structurally-meaningful fragments (one per
+            # top-level key-value pair) so concatenation by the client
+            # still yields the exact bytes the engine produced.
+            for fragment in _split_tool_input_json(tool_input):
+                input_delta = {
+                    "type": "content_block_delta",
+                    "index": tool_index,
+                    "delta": {
+                        "type": "input_json_delta",
+                        "partial_json": fragment,
+                    },
+                }
+                yield (
+                    f"event: content_block_delta\ndata: {json.dumps(input_delta)}\n\n"
+                )
 
             yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': tool_index})}\n\n"
 
-    stop_reason = "tool_use" if tool_calls else "end_turn"
+    # R-07 (r5-A bundle): synthesize a zero-text ``content_block`` pair
+    # ONLY for the malformed-message case the dogfood actually caught
+    # — non-zero ``output_tokens`` burned by suppressed reasoning,
+    # with no content blocks emitted, ``max_tokens`` truncation, and
+    # no error event already on the wire. Pre-r5-A the
+    # ``/no_think`` + ``max_tokens`` case (the entire budget eaten by
+    # suppressed reasoning) emitted ``message_start → message_delta →
+    # message_stop`` with an empty content list and non-zero
+    # ``output_tokens`` — a malformed Message that the Anthropic SDK
+    # would surface as an empty ``message.content=[]`` despite billing
+    # the consumer for tokens that produced no visible payload (Mei
+    # ``mei-r1.md`` HIGH).
+    #
+    # Codex r1 REQUIRED #1: tighten the predicate so a legitimately
+    # empty completion (e.g. ``max_tokens=0`` returning nothing, or
+    # the engine emitting zero tokens) stays empty rather than
+    # silently growing a synthetic block clients did not produce.
+    # The actual bug class is "billed for tokens that produced no
+    # content_block" — both ``completion_tokens > 0`` AND
+    # ``finish_reason="length"`` are required to enter that state, so
+    # gate on both.
+    if (
+        not streamed_any_content_block
+        and not tool_calls
+        and not (tool_choice_error or tool_validation_error)
+        and completion_tokens > 0
+        and stream_finish_reason == "length"
+    ):
+        empty_block_index = block_index
+        for raw_event in (
+            f"event: content_block_start\ndata: "
+            f"{json.dumps({'type': 'content_block_start', 'index': empty_block_index, 'content_block': {'type': 'text', 'text': ''}})}\n\n",
+            f"event: content_block_stop\ndata: "
+            f"{json.dumps({'type': 'content_block_stop', 'index': empty_block_index})}\n\n",
+        ):
+            ev = _capture(raw_event)
+            if ev is not None:
+                yield ev
+        block_index += 1
+        streamed_any_content_block = True
+
+    # R-06 (r5-A bundle): map the engine's ``finish_reason`` onto the
+    # Anthropic ``stop_reason`` enum (``end_turn``, ``max_tokens``,
+    # ``stop_sequence``, ``tool_use``). Tool-use wins over everything
+    # else (mutually-exclusive per the public spec); ``length`` from
+    # the engine becomes ``max_tokens`` for spec-compliant
+    # continuation; the ``stop_sequence`` ladder below preserves H-03
+    # behaviour for user-supplied ``stop_sequences`` matches.
+    if tool_calls:
+        stop_reason = "tool_use"
+    elif stream_finish_reason == "length":
+        stop_reason = "max_tokens"
+    else:
+        stop_reason = "end_turn"
     # H-03: when a user-supplied ``stop_sequences`` entry fired (and the
     # turn would otherwise have terminated normally with ``end_turn``),
     # surface Anthropic's dedicated ``stop_sequence`` reason + populate
