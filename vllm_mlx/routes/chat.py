@@ -769,9 +769,37 @@ def _contains_tool_wire_literal(text: str | None) -> bool:
 
 
 _TOOL_WIRE_PAYLOAD_HINT_RE = re.compile(
-    r"(?:[\"'](?:name|arguments)[\"']\s*:|\{[^{}]{0,2048}\})",
+    r"[\"'](?:name|arguments)[\"']\s*:",
     re.DOTALL,
 )
+
+
+def _balanced_json_end(text: str, start: int) -> int | None:
+    """Return the exclusive end offset of a balanced JSON-ish object."""
+    if start < 0 or start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return None
 def _contains_structural_tool_wire_leak(text: str | None) -> bool:
     """Return True when known wire markers appear as tool-wire residue.
 
@@ -839,7 +867,17 @@ def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
             window_start = max(0, match.start() - 128)
             window_end = min(len(result), match.end() + 2048)
             pieces.append(result[last : match.start()])
-            if not _TOOL_WIRE_PAYLOAD_HINT_RE.search(result[window_start:window_end]):
+            window = result[window_start:window_end]
+            has_payload_hint = _TOOL_WIRE_PAYLOAD_HINT_RE.search(window)
+            if has_payload_hint:
+                object_start = result.find("{", match.end(), window_end)
+                object_end = _balanced_json_end(result, object_start)
+                if object_end is not None:
+                    last = object_end
+                    continue
+                last = match.end()
+                continue
+            else:
                 pieces.append(match.group(0))
             last = match.end()
         if pieces:

@@ -58,6 +58,7 @@ from vllm_mlx.routes.chat import (
     _forced_tool_call_prefix,
     _recover_partial_tool_args,
     _scrub_tool_wire_literals,
+    _scrub_visible_tool_wire_leaks,
     _synthesize_forced_tool_call,
 )
 from vllm_mlx.routes.chat import router as chat_router
@@ -1243,9 +1244,25 @@ def test_codex_r7_structural_leak_detector_ignores_plain_marker_mentions():
     balanced_prose = "Show the literal form <tool_call>...</tool_call>."
     assert _contains_tool_wire_literal(balanced_prose)
     assert not _contains_structural_tool_wire_leak(balanced_prose)
+    json_example_prose = 'Mention <tool_call> near {"example": true}.'
+    assert _contains_tool_wire_literal(json_example_prose)
+    assert not _contains_structural_tool_wire_leak(json_example_prose)
     assert _contains_structural_tool_wire_leak(
         '<tool_call>{"name":"add_numbers","arguments":{"a":1}}</function>'
     )
+
+
+def test_codex_r10_visible_scrub_removes_unclosed_opener_payload_body():
+    """A structural orphan opener must not leave name/arguments JSON behind."""
+
+    out = _scrub_visible_tool_wire_leaks(
+        'prefix <tool_call>{"name":"x","arguments":{"a":1}} suffix'
+    )
+    assert "<tool_call>" not in out
+    assert '"name"' not in out
+    assert '"arguments"' not in out
+    assert "prefix" in out
+    assert "suffix" in out
 
 
 def test_codex_r7_synth_forced_clean_marker_prose_not_scrubbed():
