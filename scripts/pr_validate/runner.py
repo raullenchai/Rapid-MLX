@@ -9,8 +9,11 @@ a step: write the module under ``steps/``, import it here, append to
 
 from __future__ import annotations
 
+import os
 import sys
+import time
 from collections.abc import Sequence
+from datetime import UTC, datetime
 
 from .base import Step
 from .context import Context
@@ -83,7 +86,13 @@ def run_pipeline(
         pipeline = [s for s in pipeline if s.name not in dropped]
 
     ctx = Context(pr_number=pr_number, verbose=verbose)
-    ctx.work_dir = ctx.work_dir / f"pr-{pr_number}"
+    run_id = (
+        f"run-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-"
+        f"{os.getpid()}-{time.time_ns()}"
+    )
+    # Use a unique run directory instead of reusing / deleting pr-<n>.
+    # Reuse leaves stale failure logs; deletion can corrupt a concurrent run.
+    ctx.work_dir = ctx.work_dir / f"pr-{pr_number}" / run_id
     ctx.work_dir.mkdir(parents=True, exist_ok=True)
 
     print(f"# PR #{pr_number} validation", file=sys.stderr)
