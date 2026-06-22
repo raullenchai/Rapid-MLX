@@ -837,116 +837,27 @@ def _rescue_silent_drop_from_reasoning(
     if not reasoning_text or not reasoning_text.strip():
         return final_content
     # 2026-06-17 VibeThinker live test: when the model was truncated
-    # mid-thought (``finish_reason="length"``) with an unclosed
-    # ``<think>`` opener in ``raw_text``, the reasoning trace is NOT
-    # the final answer — it's an interrupted chain of thought. Surfacing
-    # it as ``content`` per the #569 rescue would feed the client the
-    # SAME bytes as ``reasoning_content`` and break the "content is the
-    # final answer" contract. Skip the rescue and let the client see
-    # ``content=null`` so they can detect "model ran out of budget
-    # before producing an answer" via the ``finish_reason="length"``
-    # signal — symmetric with how OpenAI's o1 / o3 behave on truncated
-    # reasoning.
+    # D-STOP-THINK rescue gate. The #569 rescue normally copies
+    # reasoning-only output into ``content`` so clients do not see an
+    # empty assistant turn. Do not run that rescue when the empty content
+    # is a known interrupted-thought shape; otherwise the same thought
+    # bytes appear in both ``content`` and ``reasoning_content``.
     #
-    # Gate on BOTH ``finish_reason="length"`` AND raw_text opening with
-    # an unclosed ``<think>``. Other ``finish_reason="length"`` cases
-    # (e.g. a non-thinking model truncated mid-answer where reasoning
-    # was empty but content was building) still get rescued — the
-    # opener check is the discriminator.
+    # Current suppression matrix:
     #
-    # Also gate on the helper-Case-4 signal (``reasoning_is_case4``)
-    # passed from the route — covers the PR #715-bundle live-test
-    # repro where VibeThinker is asked a no-tool no-think prompt:
-    # the chat template doesn't pre-inject ``<think>``, the model
-    # answers in plain prose (no ``<think>`` token emitted), but the
-    # route still defaults ``enable_thinking=True`` for the family.
-    # The parser's Case-4 fallback routes the WHOLE output to
-    # reasoning AND the helper blanks ``cleaned_text=""``. The
-    # ``raw_text`` opener check then misses (raw_text doesn't start
-    # with ``<think>``), and the rescue without the Case-4 signal
-    # mistakes the no-content state for a #569 silent drop and
-    # surfaces the reasoning as content — duplicating the trace
-    # byte-identically. The Case-4 signal stops that.
-    # D-STOP-THINK (cross-cycle bundle, cycle-3 F-3 / cycle-7
-    # nemotron-30b / cycle-11 phi-4-mini-reasoning): when ``stop``
-    # matches inside an unterminated ``<think>`` block, the trim path
-    # in the scheduler / engine cuts the suffix before the closing
-    # ``</think>`` ever arrives. The finalize path then sees raw_text
-    # with an unclosed ``<think>`` opener (or the helper's Case-4
-    # signal under chat-template prompt injection) AND
-    # ``finish_reason="stop"`` instead of "length" — the existing
-    # ``finish_reason="length"``-only gate misses this and the
-    # rescue runs, surfacing the in-progress thought as
-    # ``content``. Result: byte-identical ``content`` AND
-    # ``reasoning_content`` on the wire (live-test repro:
-    # ``Think about 5+7. After your thinking, write the word STOP``
-    # with ``stop=["STOP"]`` on qwen3-0.6b-4bit). Six parser
-    # families confirmed.
+    # finish | raw starts unclosed <think> | case4 | matched_stop | prompt think | suppress
+    # length | yes                         | *     | *            | *            | yes
+    # length | no                          | yes   | *            | true         | yes
+    # length | no                          | yes   | *            | false        | no
+    # stop   | yes                         | *     | set          | *            | yes
+    # stop   | no                          | yes   | set          | true         | yes
+    # stop   | no                          | yes   | set/none     | false        | no
+    # stop   | no                          | no    | *            | *            | no
     #
-    # Codex round-2 BLOCKING on PR #799: the prompt-injected
-    # ``<think>`` case (chat template wraps the prompt with
-    # ``<think>\n`` so the opener never appears in raw_text) means
-    # Case-4 + ``stop`` with a user-supplied stop string firing
-    # mid-thought can ALSO produce the D-STOP-THINK leak shape —
-    # but ``raw_text`` won't carry the opener for the
-    # raw_text-evidence arm to fire. The truncation signal we
-    # actually have for this shape is ``matched_stop != None``
-    # (set by the scheduler when a user-supplied stop string
-    # fires — see scheduler.py:3673). Natural EOS finishes have
-    # ``matched_stop=None``.
-    #
-    # Suppression matrix (D-STOP-THINK), codex round-5 scope:
-    #
-    # finish_reason | raw_text<think>? | case4 | matched_stop | thinking | suppress?
-    # length        | yes              | *     | *            | *        | YES
-    # length        | no               | yes   | *            | True     | YES (case4 arm)
-    # length        | no               | yes   | *            | False    | no  (non-thinking truncated answer)
-    # length        | no               | no    | *            | *        | no  (#569 rescue)
-    # stop          | yes              | *     | *            | *        | YES
-    # stop          | no               | yes   | set          | True     | YES (D-STOP-THINK prompt-injected)
-    # stop          | no               | yes   | set          | False    | no  (casual stop-term answer)
-    # stop          | no               | yes   | None         | *        | no  (PR #715 fuzz finding C)
-    # stop          | no               | no    | *            | *        | no  (closed think + stop in answer)
-    #
-    # Codex round-5 BLOCKING: the Case-4 + stop + matched_stop
-    # arm previously fired on matched_stop alone, but a casual
-    # answer like ``"The answer is STOP"`` under
-    # ``stop=["STOP"]`` ALSO has matched_stop set and is NOT
-    # chain-of-thought. Add the ``prompt_thinking_active`` AND
-    # to discriminate: only suppress when the chat template
-    # injected ``<think>`` AND ``enable_thinking`` is non-False
-    # (the same boolean ``_should_start_in_thinking`` computes
-    # for the StreamingThinkRouter). Symmetric with the
-    # parser-level ``finalize_streaming`` AND-of-signals
-    # discriminator.
-    # Codex round-7 BLOCKING (PR #799): the previous formulation
-    # treated EVERY ``finish_reason="stop"`` with an unclosed
-    # ``<think>`` in raw_text as truncation evidence. R7 narrowed
-    # the stop-arm to require ``matched_stop is not None`` so a
-    # model that voluntarily ends after emitting ``<think>just a
-    # thought`` would still rescue via #569.
-    #
-    # Codex round-11 BLOCKING (PR #799): REVERTS the r7 narrow.
-    # An unclosed ``<think>`` in raw_text is STRONG direct
-    # evidence that the trace is in-progress — surfacing it as
-    # ``content`` re-introduces the D-STOP-THINK leak whenever a
-    # caller / engine path reports only ``finish_reason="stop"``
-    # without propagating ``matched_stop``. (The streaming chat
-    # path can lose ``matched_stop`` between the sampler chunk
-    # and the helper call site; making the propagation mandatory
-    # at every call site is brittle. The raw-text evidence is
-    # the authoritative discriminator.) Suppress on raw-text
-    # evidence regardless of ``matched_stop`` — symmetric with
-    # the parser-level saw-prefix branch which now suppresses
-    # on truncation alone (round-11 BLOCKING #1).
-    #
-    # The "model voluntarily ended mid-thought" case (codex r7
-    # concern) loses the #569 silent-drop rescue here — that's
-    # the deliberate trade-off in r11: an empty assistant turn
-    # is a SAFER failure than a duplicated trace, because the
-    # client can detect the empty turn via ``finish_reason``
-    # and either retry or surface a "model gave up" UX. A
-    # duplicated trace would be silently wrong on the wire.
+    # ``case4`` means the parser routed a no-tag output wholly to
+    # reasoning. For case4 we require the route's
+    # ``prompt_thinking_active`` signal so a direct answer truncated by
+    # ``max_tokens`` or by a user stop string still rescues to content.
     truncated_mid_think = (
         # Explicit-opener under length OR stop: raw_text proves
         # an in-progress ``<think>`` was truncated.

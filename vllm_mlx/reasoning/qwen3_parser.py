@@ -402,19 +402,13 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
                 # ──────────────┼──────────────┼─────────
                 # "length"      | *            | reasoning (D-STOP-THINK / max_tokens)
                 # *             | set          | reasoning (D-STOP-THINK / stop)
-                # "stop"/None   | None         | content   (#569 natural EOS rescue)
+                # "stop"/None   | None         | None      (already streamed as reasoning)
                 if finish_reason == "length" or matched_stop is not None:
                     return DeltaMessage(reasoning=cleaned)
-                # Natural EOS (no truncation signal): model voluntarily
-                # ended after emitting ``<think>just a thought``.
-                # Surface the trace as content so the user sees an
-                # answer instead of an empty turn (#569 silent-drop
-                # rescue contract). The duplication trade-off with the
-                # bytes already shipped on reasoning_content is the
-                # same #569 tolerance the route-level rescue helper
-                # accepts: "duplication into the two fields is the
-                # lesser evil vs. a silently empty response".
-                return DeltaMessage(content=cleaned)
+                # Natural EOS after a literal opener has already streamed
+                # ``cleaned`` as reasoning. Do not emit a corrective content
+                # block or the same bytes appear in both channels.
+                return None
             # No leading ``<think>`` prefix — Qwen3 chat template
             # injects ``<think>\n`` into the prompt (NOT the model
             # output) so prompt-injected mid-think streams also land

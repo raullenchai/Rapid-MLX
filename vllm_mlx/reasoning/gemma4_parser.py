@@ -220,7 +220,23 @@ class Gemma4ReasoningParser(ReasoningParser):
                         # segments. Each segment starts at a
                         # ``<|channel>X`` marker and ends at the next
                         # marker OR end-of-text.
-                        for m in _CHANNEL_SEGMENT.finditer(downstream):
+                        first_match = _CHANNEL_SEGMENT.search(downstream)
+                        if first_match is not None:
+                            prefix = downstream[: first_match.start()]
+                            prefix = _CHANNEL_END.sub("", prefix)
+                            prefix = _TURN_END.sub("", prefix).strip()
+                            if prefix:
+                                downstream_content_parts.append(prefix)
+                            matches = _CHANNEL_SEGMENT.finditer(
+                                downstream, first_match.start()
+                            )
+                        else:
+                            prefix = _CHANNEL_END.sub("", downstream)
+                            prefix = _TURN_END.sub("", prefix).strip()
+                            if prefix:
+                                downstream_content_parts.append(prefix)
+                            matches = ()
+                        for m in matches:
                             ch_type = m.group("type")
                             body_start = m.end()
                             # Locate end of this segment: the next

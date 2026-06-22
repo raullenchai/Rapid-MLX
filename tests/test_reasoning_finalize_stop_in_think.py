@@ -201,9 +201,8 @@ class TestStopMidThinkExplicitOpener:
         Codex round-8 BLOCKING refinement (PR #799): thread the
         ``matched_stop`` truncation signal so the test pins the
         actual D-STOP-THINK suppression branch. Natural EOS without
-        the signal now correctly flips to content per the #569
-        silent-drop rescue contract (covered separately in
-        ``test_natural_eos_with_explicit_opener_flips_to_content``).
+        the signal is covered separately by
+        ``test_natural_eos_with_explicit_opener_does_not_duplicate_content``.
         """
         parser = parser_cls()
         chunks = ["<think>", "Let me think ", "about 5+7. The "]
@@ -329,36 +328,22 @@ class TestStopMidThinkExplicitOpener:
         "name,parser_cls",
         [("qwen3", Qwen3ReasoningParser)],
     )
-    def test_natural_eos_with_explicit_opener_flips_to_content(self, name, parser_cls):
-        """Codex round-8 BLOCKING (PR #799): natural-EOS stream with a
-        literal ``<think>`` opener but NO ``</think>`` AND NO truncation
-        signal means the model voluntarily ended mid-thought. The
-        finalize correction MUST flip to ``content`` so the
-        Anthropic/Responses route surfaces the trace as the assistant
-        turn — otherwise the user sees an empty turn because the route
-        consumer drops ``final_msg.reasoning``.
-
-        This is the #569 silent-drop rescue contract: a turn that
-        produced only orphaned reasoning must still reach
-        ``message.content`` so the wire is never silently empty.
-        """
+    def test_natural_eos_with_explicit_opener_does_not_duplicate_content(
+        self, name, parser_cls
+    ):
+        """Natural-EOS after a literal ``<think>`` opener has already
+        streamed those bytes as reasoning. Finalize must not re-emit them
+        as content."""
         parser = parser_cls()
         accumulated = "<think>just a thought that the model gave up on"
         # Natural EOS: no matched_stop, no finish_reason="length".
         result = parser.finalize_streaming(
             accumulated, matched_stop=None, finish_reason=None
         )
-        assert result is not None, (
-            f"[{name}] natural-EOS with unclosed <think>: no rescue emitted "
-            f"— assistant turn would be empty"
+        assert result is None or result.content is None, (
+            f"[{name}] natural-EOS explicit opener duplicated reasoning "
+            f"into content: {result!r}"
         )
-        assert result.content is not None, (
-            f"[{name}] codex r8 BLOCKING regression — natural-EOS with "
-            f"unclosed <think> routed to reasoning (route drops it from "
-            f"wire); assistant turn would be empty: {result!r}"
-        )
-        assert "just a thought" in result.content
-        assert result.reasoning is None
 
     @pytest.mark.parametrize(
         "name,parser_cls",
@@ -449,18 +434,10 @@ class TestStopMidThinkNoOpener:
                 f"content via streaming: text={text!r}"
             )
             return
-        # All other ``<think>``-family parsers (qwen3 / deepseek_r1 /
-        # vibethinker) route the no-tag stream to reasoning via the
-        # base class Case-3 default. Finalize then flips the buffered
-        # trace to content via the casual-answer correction contract
-        # (#572). The Anthropic route emits both — streaming thinking
-        # block AND finalize text block — which IS the documented
-        # behaviour for the no-evidence path (codex round-N BLOCKING
-        # scope on D-STOP-THINK).
-        assert "Let me think" in thinking, (
-            f"[{name}] expected base-class Case-3 reasoning routing; "
-            f"thinking={thinking!r}"
-        )
+        # External contract: the casual no-evidence answer must be visible
+        # as text. Do not assert any cross-channel duplication as desired
+        # behavior here; parser internals may stream conservatively while
+        # routes decide what to expose.
         assert "Let me think" in text, (
             f"[{name}] expected finalize content correction for casual "
             f"answer: text={text!r}"
@@ -751,10 +728,8 @@ class TestMaxTokensMidThink:
         Codex round-8 BLOCKING refinement (PR #799): thread
         ``finish_reason="length"`` through the simulator so the
         D-STOP-THINK ``max_tokens`` suppression branch actually fires.
-        Without the truncation signal, natural-EOS now correctly flips
-        to content (#569 silent-drop rescue) — that's the complementary
-        path tested in
-        ``test_natural_eos_with_explicit_opener_flips_to_content``.
+        Natural EOS without the truncation signal is tested separately in
+        ``test_natural_eos_with_explicit_opener_does_not_duplicate_content``.
         """
         parser = parser_cls()
         # Short prefix simulating ``max_tokens`` cut after a few tokens.
@@ -834,9 +809,9 @@ class TestFinalizeContractSurface:
 
         Codex round-8 BLOCKING refinement (PR #799): scope the
         invariant to the truncation-signal branches. Natural-EOS with
-        an explicit opener now legitimately emits content (the #569
-        silent-drop rescue) — that branch is tested separately in
-        ``test_natural_eos_with_explicit_opener_flips_to_content``.
+        an explicit opener must not re-emit already-streamed reasoning
+        as content; that branch is tested separately in
+        ``test_natural_eos_with_explicit_opener_does_not_duplicate_content``.
 
         Codex round-10 BLOCKING refinement (PR #799): also gate on
         ``prompt_thinking_active=True``. Without the chat-template
@@ -956,6 +931,24 @@ class TestGemma4ChannelGrammar:
         assert "<|channel>" not in content, (
             f"channel marker leaked into content: {content!r}"
         )
+
+    def test_unterminated_thought_downstream_prefix_preserved(self):
+        """Malformed downstream bytes before the first channel marker must
+        not disappear when an unterminated thought is followed by content."""
+        parser = Gemma4ReasoningParser()
+        text = (
+            "<|channel>thought\nsecret"
+            "<|channel>analysis\npreface "
+            "<|channel>content\nThe answer is 12.<channel|>"
+        )
+        reasoning, content = parser.extract_reasoning(text)
+        assert reasoning is not None and "secret" in reasoning
+        assert content is not None
+        assert "preface" in content, (
+            f"downstream unmatched prefix was dropped: content={content!r}"
+        )
+        assert "answer is 12" in content
+        assert "secret" not in content
 
 
 class TestHermesWithReasoningComposition:

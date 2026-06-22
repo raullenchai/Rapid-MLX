@@ -699,17 +699,9 @@ class TestScenario5_EdgeCases:
             f"prompt_thinking_active; got content={full_content!r}"
         )
 
-    def test_explicit_opener_natural_eos_flips_to_content(self):
-        """#569 silent-drop rescue via the simulator: explicit
-        ``<think>`` opener with NO truncation signal (natural EOS)
-        MUST flip to content so the assistant turn is not silently
-        empty.
-
-        Codex round-10 BLOCKING (PR #799): pin the natural-EOS
-        complement of the suppression tests above. Without this
-        flip the user would get an empty content channel even
-        though the model emitted the trace as their answer.
-        """
+    def test_explicit_opener_natural_eos_does_not_duplicate_content(self):
+        """Explicit ``<think>`` natural EOS has already streamed the bytes
+        as reasoning; finalize must not duplicate them into content."""
         tokens = ["<think>", "just a thought"]
         content, reasoning = simulate_server_streaming_reasoning_aware(
             tokens,
@@ -718,9 +710,11 @@ class TestScenario5_EdgeCases:
             finish_reason=None,
         )
         full_content = "".join(content)
-        assert "just a thought" in full_content, (
-            f"#569 natural-EOS rescue: text channel must surface the "
-            f"trace; got content={full_content!r}"
+        full_reasoning = "".join(reasoning)
+        assert "just a thought" in full_reasoning
+        assert full_content == "", (
+            f"explicit-opener natural EOS duplicated reasoning into content: "
+            f"content={full_content!r}"
         )
 
 
