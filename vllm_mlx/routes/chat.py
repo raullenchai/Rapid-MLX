@@ -253,7 +253,9 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
     return None
 
 
-def _recover_partial_tool_args(raw_text: str | None) -> str | None:
+def _recover_partial_tool_args(
+    raw_text: str | None, expected_name: str | None = None
+) -> str | None:
     """Best-effort recovery of a JSON arguments object from a malformed
     model response under ``tool_choice="required"``.
 
@@ -290,6 +292,20 @@ def _recover_partial_tool_args(raw_text: str | None) -> str | None:
     ``"{}"`` plus a downstream ``_validate_tool_call_params`` warning
     is the right contract for that case (the client retries with a
     clearer prompt or a named-function ``tool_choice``).
+
+    codex r4 BLOCKING #1: when ``expected_name`` is provided, also
+    verify that the recovered candidate is paired with a
+    ``"name": "<expected>"`` field in the same wire span. Without
+    this gate, a synth for a named ``tool_choice`` whose target is
+    ``"my_target"`` could pick up an unrelated
+    ``{"name": "other_tool", "arguments": {...}}`` block elsewhere
+    in the response and ship ``other_tool``'s args under the
+    forced target's name — a subtle correctness bug because the
+    synthesized call's ``function.name`` would not match the args'
+    intended schema. We REQUIRE a name match within a 512-byte
+    window of the ``"arguments"`` marker (covers a typical inner
+    wire body), and FALL BACK to ``"{}"`` (return ``None``) when no
+    match exists.
     """
     if not raw_text:
         return None
@@ -377,6 +393,60 @@ def _recover_partial_tool_args(raw_text: str | None) -> str | None:
         window = text[window_start:idx]
         return any(opener in window for opener in _WIRE_SPAN_OPENERS)
 
+    def _name_pairs_with(idx: int, expected: str) -> bool:
+        """Does a ``"name": "<expected>"`` (or ``"name":"<expected>"``)
+        sit in the SAME wire-call block as the ``"arguments"``
+        occurrence at ``idx``?
+
+        Heuristic: the per-call block is bounded by the nearest
+        wire opener BEFORE ``idx`` (we never look past it for a
+        ``"name"`` literal) and either the previous ``"arguments"``
+        marker OR the start of the surrounding text — whichever is
+        closer. Forward we cap at the next ``"arguments"`` or 256
+        bytes. This intentionally restricts the search to the
+        ``"name"`` literal that belongs to THE SAME wire body as
+        ``idx``, so an unrelated call's ``"name"`` further up the
+        response never matches.
+
+        codex r4 BLOCKING #1: the wire-span check alone is not enough
+        because a response can contain multiple wire spans each
+        with a different ``"name"``. We MUST verify the pairing,
+        and the window MUST be tight enough to separate inline
+        blocks (a fixed ±512-byte window let adjacent blocks pollute
+        each other's pairing).
+        """
+        if not expected:
+            return True  # No constraint when caller doesn't pass one.
+
+        # Backward bound: the closer of (previous "arguments"
+        # occurrence + len) or the nearest wire-opener literal
+        # backward, or ``idx - 512`` as a hard fallback so a wire
+        # body with no opener literal still bounds the scan.
+        prev_args_end = text.rfind('"arguments"', 0, idx)
+        if prev_args_end != -1:
+            backward_bound = prev_args_end + len('"arguments"')
+        else:
+            backward_bound = max(0, idx - 512)
+        # Forward bound: the next "arguments" marker or 256 bytes
+        # forward. We cap forward TIGHTER than backward because the
+        # canonical wire shape ``{"name":"X","arguments":{...}}``
+        # always has ``"name"`` BEFORE ``"arguments"``.
+        next_args_idx = text.find('"arguments"', idx + len('"arguments"'))
+        if next_args_idx != -1:
+            forward_bound = next_args_idx
+        else:
+            forward_bound = min(n, idx + 256)
+        window = text[backward_bound:forward_bound]
+        # Accept ``"name": "<expected>"`` with optional whitespace.
+        # ``re.escape`` keeps the name literal even if it contains
+        # regex metacharacters.
+        escaped = re.escape(expected)
+        pair_re = re.compile(
+            r'"name"\s*:\s*"' + escaped + r'"',
+            re.DOTALL,
+        )
+        return pair_re.search(window) is not None
+
     # Collect every parseable candidate, tagged with whether it sits
     # inside a wire span.
     candidates_in_wire: list[str] = []
@@ -417,6 +487,14 @@ def _recover_partial_tool_args(raw_text: str | None) -> str | None:
             continue
         if not isinstance(parsed, dict):
             search_start = args_marker_idx + len('"arguments"')
+            continue
+        # codex r4 BLOCKING #1: when an expected name is set, only
+        # accept this candidate if a matching ``"name"`` literal
+        # sits within the same wire body. Otherwise we'd pick up
+        # an unrelated tool's args and ship them under the forced
+        # target's name.
+        if expected_name and not _name_pairs_with(args_marker_idx, expected_name):
+            search_start = obj_end
             continue
         canonical = json.dumps(parsed, ensure_ascii=False)
         if _position_in_wire_span(args_marker_idx):
@@ -673,8 +751,11 @@ def _synthesize_forced_tool_call(
 
     # Try the partial-recovery path first; only fall back to the
     # caller-provided default (``"{}"`` or an upstream override) when
-    # the raw text yields nothing structurally parseable.
-    recovered = _recover_partial_tool_args(raw_text)
+    # the raw text yields nothing structurally parseable. Pass the
+    # synth target ``name`` as ``expected_name`` so recovery rejects
+    # ``"arguments"`` candidates paired with a DIFFERENT tool's
+    # ``"name"`` literal (codex r4 BLOCKING #1).
+    recovered = _recover_partial_tool_args(raw_text, expected_name=name)
     final_args = recovered if recovered is not None else arguments
 
     return ToolCall(
@@ -2557,8 +2638,24 @@ async def _create_chat_completion_impl(
     # is parser-agnostic so adding a new parser doesn't reopen the
     # leak; codex r3 BLOCKING #2 caught case (b) — even the
     # recover-args path needs the scrub.
+    # codex r4 BLOCKING #2: the broad gate ``tool_choice is not None``
+    # also fired on ``tool_choice="auto"``, where a model legitimately
+    # may emit prose alongside a tool call that contains XML/tool
+    # marker text (e.g. discussing the tool wire format in the prose).
+    # Narrow to forced/required modes only — that's where the wire
+    # leakage is structurally known to be junk by construction:
+    #   - ``tool_choice="required"`` — model was FORCED to call,
+    #     so any wire-shaped leftovers are by-products of that forcing.
+    #   - ``tool_choice={"type":"function","function":{"name":X}}`` —
+    #     same forcing semantics.
+    # ``"auto"`` and ``"none"`` keep the prior pre-0.8.3 behaviour —
+    # cleaned_text is the parser's authoritative output.
+    _is_forced_choice = request.tool_choice == "required" or (
+        isinstance(request.tool_choice, dict)
+        and request.tool_choice.get("type") == "function"
+    )
     _wire_scrub_active = _synth_forced_tool_call or (
-        request.tool_choice is not None and request.tools and bool(tool_calls)
+        _is_forced_choice and request.tools and bool(tool_calls)
     )
     _scrubbed_raw_text: str | None = None
     if _wire_scrub_active:

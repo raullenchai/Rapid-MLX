@@ -869,6 +869,148 @@ def test_codex_r3_blocking_1_scrub_orphan_opener_still_preserves_tail():
     assert "Legitimate trailing prose" in out
 
 
+def test_codex_r4_blocking_1_recover_rejects_unrelated_tool_name():
+    """Codex r4 BLOCKING #1 — when an ``expected_name`` is set, the
+    recovery must NOT pick up an unrelated tool's args. A response
+    containing ``{"name":"other_tool","arguments":{...}}`` must yield
+    ``None`` for a synth target ``"my_target"``."""
+    raw = '<tool_call>{"name":"other_tool","arguments":{"x":1}}</tool_call>'
+    # Without expected_name: returns the args (pre-codex-r4 behaviour).
+    got = _recover_partial_tool_args(raw)
+    assert got is not None
+    import json as _json
+
+    assert _json.loads(got) == {"x": 1}
+    # WITH expected_name set to a non-matching tool: returns None.
+    got = _recover_partial_tool_args(raw, expected_name="my_target")
+    assert got is None, f"expected None when name mismatches; got {got!r}"
+
+
+def test_codex_r4_blocking_1_recover_accepts_matching_tool_name():
+    """The companion: when the expected name DOES match, recovery
+    returns the args as before. Pin the success case so the
+    name-pair gate doesn't accidentally reject correct calls."""
+    raw = '<tool_call>{"name":"my_target","arguments":{"x":1}}</tool_call>'
+    got = _recover_partial_tool_args(raw, expected_name="my_target")
+    assert got is not None
+    import json as _json
+
+    assert _json.loads(got) == {"x": 1}
+
+
+def test_codex_r4_blocking_1_recover_picks_matching_pair_from_multiple():
+    """When MULTIPLE ``"arguments"`` occurrences exist, the
+    ``expected_name`` gate must steer recovery to the one paired
+    with the matching name even if another candidate appears later."""
+    raw = (
+        '<tool_call>{"name":"other","arguments":{"k":"first"}}</tool_call>'
+        '<tool_call>{"name":"target","arguments":{"k":"correct"}}</tool_call>'
+        '<tool_call>{"name":"third","arguments":{"k":"last"}}</tool_call>'
+    )
+    got = _recover_partial_tool_args(raw, expected_name="target")
+    assert got is not None
+    import json as _json
+
+    assert _json.loads(got) == {"k": "correct"}
+
+
+def test_codex_r4_blocking_1_synthesize_uses_name_paired_args():
+    """End-to-end through ``_synthesize_forced_tool_call``: when
+    raw_text contains the wrong tool's args plus the right one,
+    the synth picks the right one because it passes its ``name``
+    as the ``expected_name`` to recovery."""
+    raw = (
+        '<tool_call>{"name":"other","arguments":{"wrong":true}}</tool_call>'
+        '<tool_call>{"name":"target","arguments":{"correct":true}}</tool_call>'
+    )
+    tc = _synthesize_forced_tool_call("target", raw_text=raw)
+    import json as _json
+
+    args = _json.loads(tc.function.arguments)
+    assert args == {"correct": True}
+
+
+def test_codex_r4_blocking_1_synthesize_falls_back_when_no_pair():
+    """When raw_text contains NO ``"arguments"`` paired with the
+    synth target name, the synth falls back to ``"{}"`` instead of
+    silently picking up unrelated args."""
+    raw = '<tool_call>{"name":"unrelated_tool","arguments":{"x":1}}</tool_call>'
+    tc = _synthesize_forced_tool_call("target", raw_text=raw)
+    assert tc.function.arguments == "{}"
+
+
+def test_codex_r4_blocking_2_scrub_does_not_fire_for_tool_choice_auto():
+    """Codex r4 BLOCKING #2 — the scrub must NOT fire for
+    ``tool_choice="auto"`` because the model may legitimately emit
+    prose discussing the tool wire format. End-to-end: ``auto`` +
+    parser-extracted call + raw text containing wire-shaped prose
+    keeps the prose in content."""
+
+    # Engine returns text where the parser successfully extracts a
+    # tool call AND there's wire-shaped content in the trailing prose
+    # (e.g. the assistant explaining what just happened).
+    PROSE_WITH_WIRE_LOOKING_TEXT = (
+        '<tool_call>{"name":"get_time","arguments":{"city":"Tokyo"}}</tool_call>\n'
+        "Note: tool calls use the <tool_call> envelope syntax."
+    )
+
+    class _AutoEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(
+                text=PROSE_WITH_WIRE_LOOKING_TEXT,
+                raw_text=PROSE_WITH_WIRE_LOOKING_TEXT,
+            )
+
+    engine = _AutoEngine()
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = "hermes"
+    cfg.enable_auto_tool_choice = True
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "time in Tokyo?"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_time",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
+            "tool_choice": "auto",
+            "max_tokens": 32,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    msg = body["choices"][0]["message"]
+    assert msg.get("tool_calls"), "auto-mode parser-extracted call must survive"
+    # The auto-mode scrub gate is OFF — the prose mention of
+    # ``<tool_call>`` survives in content (legitimate model output).
+    # This is the pre-0.8.3 contract; codex r4 BLOCKING #2 wants it
+    # preserved so the broadened scrub doesn't strip legitimate
+    # prose containing tool wire syntax under ``auto``.
+    content = msg.get("content") or ""
+    # The phrase "<tool_call>" in the trailing prose was legitimate
+    # — the scrub must NOT have removed it under tool_choice=auto.
+    assert "<tool_call>" in content, (
+        f"auto-mode legitimate prose mentioning <tool_call> was stripped; "
+        f"content={content!r}"
+    )
+
+
 def test_codex_r3_nit_recover_handles_pretty_print_whitespace():
     """Codex r3 NIT — the colon between ``"arguments"`` and ``{``
     may have arbitrary whitespace (newlines, deep indents,
