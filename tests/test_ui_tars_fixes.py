@@ -36,6 +36,7 @@ Bugs covered:
 
 from __future__ import annotations
 
+import ast
 import json
 from typing import Any
 
@@ -600,69 +601,133 @@ class TestLaneInjectionParity:
         assert oai_out[0]["content"] == UI_TARS_COMPUTER_USE_SYSTEM_PROMPT
         assert oai_out[1] == {"role": "system", "content": "Be concise."}
 
-    def test_chat_route_actually_invokes_helper(self):
-        # Codex r3 BLOCKING #1: the helper-layer parity asserts above
-        # can't catch a route that STOPPED calling the helper. Pin
-        # the wiring by inspecting the route module source for the
-        # call. Source-grep is brittle vs imports moving, but the
-        # alternative — driving the full route with a stub engine
-        # — pulls the entire MLX runtime into the unit-test path
-        # which is structurally infeasible on a non-Apple-Silicon
-        # CI runner. Source-grep is the cheapest gate that fails
-        # loud if either route accidentally drops the inject.
+    @staticmethod
+    def _find_helper_calls(module) -> list[ast.Call]:
+        """Return every ``Call`` node in ``module`` whose call target
+        ultimately resolves to ``maybe_inject_ui_tars_system_prompt``.
+
+        Tolerates:
+        - ``from .ui_tars_tool_parser import maybe_inject_ui_tars_system_prompt as X``
+          followed by ``X(...)``.
+        - ``import vllm_mlx.tool_parsers.ui_tars_tool_parser as X``
+          followed by ``X.maybe_inject_ui_tars_system_prompt(...)``.
+        - The direct unaliased ``maybe_inject_ui_tars_system_prompt(...)``.
+
+        Pinning at the AST level (rather than source substring) is
+        codex r4's requirement — a dead ``import`` or a literal in a
+        comment / docstring no longer satisfies the assertion. The
+        test fails when (and only when) the route actually drops the
+        live call site.
+        """
         import inspect
 
+        src = inspect.getsource(module)
+        tree = ast.parse(src)
+        target_name = "maybe_inject_ui_tars_system_prompt"
+        # Step 1: walk imports to learn what local names refer to
+        # the helper (direct or aliased).
+        local_aliases: set[str] = set()
+        module_aliases: set[str] = set()  # ``X`` when ``import … as X``
+        for node in ast.walk(tree):
+            if isinstance(node, ast.ImportFrom):
+                # ``from … import maybe_inject_ui_tars_system_prompt
+                # [as ALIAS]``
+                for n in node.names:
+                    if n.name == target_name:
+                        local_aliases.add(n.asname or n.name)
+            elif isinstance(node, ast.Import):
+                # ``import vllm_mlx.tool_parsers.ui_tars_tool_parser
+                # as X`` — record ``X`` so we can match
+                # ``X.maybe_inject_ui_tars_system_prompt(...)``.
+                for n in node.names:
+                    if "ui_tars_tool_parser" in n.name:
+                        module_aliases.add(n.asname or n.name.split(".")[-1])
+        # Step 2: walk the tree looking for Call nodes whose callable
+        # resolves to the helper.
+        calls: list[ast.Call] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = node.func
+            if isinstance(callee, ast.Name) and callee.id in local_aliases:
+                calls.append(node)
+            elif isinstance(callee, ast.Attribute):
+                if (
+                    callee.attr == target_name
+                    and isinstance(callee.value, ast.Name)
+                    and callee.value.id in module_aliases
+                ):
+                    calls.append(node)
+        return calls
+
+    @staticmethod
+    def _call_kwarg_value_source(call: ast.Call, kwarg_name: str) -> str | None:
+        """Return ``ast.unparse`` of the kwarg's value expression, or None."""
+        for kw in call.keywords:
+            if kw.arg == kwarg_name:
+                return ast.unparse(kw.value)
+        return None
+
+    def test_chat_route_actually_invokes_helper(self):
+        # Codex r4 BLOCKING: walk the route's AST and assert a real
+        # ``Call`` node to the helper exists. A dead ``import`` no
+        # longer satisfies this — only a live call site counts.
         from vllm_mlx.routes import chat as chat_route
 
-        src = inspect.getsource(chat_route)
-        # The route MUST import the helper and call it on the
-        # ``messages`` list. We don't pin the exact import shape
-        # (``from … import`` vs ``import …``) — just that the
-        # symbol name appears in source.
-        assert "maybe_inject_ui_tars_system_prompt" in src, (
-            "routes/chat.py must call maybe_inject_ui_tars_system_prompt"
-            " — dogfood C-05 regression"
+        calls = self._find_helper_calls(chat_route)
+        assert len(calls) >= 1, (
+            "routes/chat.py must contain at least one Call node to"
+            " maybe_inject_ui_tars_system_prompt — dogfood C-05"
         )
 
     def test_anthropic_route_actually_invokes_helper(self):
-        # Symmetric pin for the Anthropic lane (dogfood F-R2-04
-        # lane-parity fix).
-        import inspect
-
         from vllm_mlx.routes import anthropic as anthropic_route
 
-        src = inspect.getsource(anthropic_route)
-        assert "maybe_inject_ui_tars_system_prompt" in src, (
-            "routes/anthropic.py must call"
-            " maybe_inject_ui_tars_system_prompt — dogfood F-R2-04"
-            " regression"
+        calls = self._find_helper_calls(anthropic_route)
+        assert len(calls) >= 1, (
+            "routes/anthropic.py must contain at least one Call node"
+            " to maybe_inject_ui_tars_system_prompt — dogfood F-R2-04"
         )
 
-    def test_chat_route_invokes_helper_with_request_tool_choice(self):
-        # Stronger pin: the chat route must pass BOTH
-        # ``tool_call_parser`` AND ``tool_choice`` to the helper —
-        # otherwise the ``tool_choice="none"`` skip (C-07) would
-        # silently regress without the helper-side guard catching
-        # it.
-        import inspect
-
+    def test_chat_route_invokes_helper_with_parser_and_tool_choice(self):
+        # Codex r4 BLOCKING: assert the helper call's kwargs
+        # specifically pass the server config's ``tool_call_parser``
+        # and the request's ``tool_choice`` — not just that those
+        # tokens appear anywhere in the source. AST-level check
+        # over the actual ``Call`` node's keyword arguments.
         from vllm_mlx.routes import chat as chat_route
 
-        src = inspect.getsource(chat_route)
-        # Look for the call shape — the source has a multi-line
-        # invocation. We tolerate whitespace by checking for the
-        # named kwargs on adjacent lines.
-        assert "tool_call_parser=cfg.tool_call_parser" in src
-        assert "tool_choice=tc" in src
+        calls = self._find_helper_calls(chat_route)
+        assert calls, "routes/chat.py must call the helper"
+        # Pick the first live call (route only has one).
+        call = calls[0]
+        parser_expr = self._call_kwarg_value_source(call, "tool_call_parser")
+        tc_expr = self._call_kwarg_value_source(call, "tool_choice")
+        assert parser_expr is not None, "tool_call_parser= kwarg missing"
+        assert tc_expr is not None, "tool_choice= kwarg missing"
+        # Pin the EXACT expressions — refactors that move config or
+        # rename the resolved variable should re-evaluate this test
+        # on purpose, not accidentally regress C-05 / C-07.
+        assert "cfg.tool_call_parser" in parser_expr
+        # ``tc`` is the route's local for ``request.tool_choice``;
+        # accept either the local or the explicit dotted form so
+        # a future cleanup that drops the local doesn't false-fail.
+        assert tc_expr in ("tc", "request.tool_choice")
 
-    def test_anthropic_route_invokes_helper_with_request_tool_choice(self):
-        import inspect
-
+    def test_anthropic_route_invokes_helper_with_parser_and_tool_choice(self):
         from vllm_mlx.routes import anthropic as anthropic_route
 
-        src = inspect.getsource(anthropic_route)
-        assert "tool_call_parser=" in src
-        assert "tool_choice=openai_request.tool_choice" in src
+        calls = self._find_helper_calls(anthropic_route)
+        assert calls, "routes/anthropic.py must call the helper"
+        call = calls[0]
+        parser_expr = self._call_kwarg_value_source(call, "tool_call_parser")
+        tc_expr = self._call_kwarg_value_source(call, "tool_choice")
+        assert parser_expr is not None
+        assert tc_expr is not None
+        # Anthropic route uses a local cfg snapshot — accept either
+        # the local snapshot or the direct ``get_config().``-shape.
+        assert parser_expr.endswith("tool_call_parser")
+        assert tc_expr == "openai_request.tool_choice"
 
     def test_inject_parity_skips_on_tool_choice_none(self):
         # ``tool_choice="none"`` short-circuit fires identically on
