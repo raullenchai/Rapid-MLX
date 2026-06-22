@@ -118,6 +118,8 @@ class MLLMRequest:
     output_text: str = ""
     output_tokens: list[int] = field(default_factory=list)
     finish_reason: str | None = None
+    stop_tail: str = ""
+    stop_text_len: int = 0
 
     # Token counts
     num_prompt_tokens: int = 0
@@ -712,6 +714,12 @@ class MLLMScheduler:
                 detok = self._detokenizer_pool[request_id]
                 detok.add_token(response.token)
                 new_text = detok.last_segment
+                if not isinstance(new_text, str):
+                    # Unit-test mocks may not implement the streaming
+                    # detokenizer contract. Production detokenizers
+                    # return str; this fallback keeps legacy tests and
+                    # defensive adapters on the same stop path.
+                    new_text = tokenizer.decode([response.token])
 
             # output_token_ids is a live reference (not a defensive copy):
             # consumers read it synchronously; the per-decode list() was O(n).
@@ -735,22 +743,38 @@ class MLLMScheduler:
                 logprobs=getattr(response, "logprobs", None),
             )
 
-            # Check text-based stop sequences against the full decoded
-            # output. ``tokenizer.decode(request.output_tokens)`` re-
-            # decodes the entire token list each step (O(T) per step) —
-            # equivalent to the text scheduler's IncrementalDecoder-
-            # backed surface, but built up from the cumulative token
-            # list. The MLLM streaming detokenizer
-            # (``NaiveStreamingDetokenizer``) only carries the
-            # current-segment slice in its ``.text`` property, so it
-            # is NOT equivalent to a fresh full decode — the stop
-            # check must use the full decode.
             finish_reason = response.finish_reason
             stop_trimmed = False
             if finish_reason is None and request.stop:
-                decoded_so_far = tokenizer.decode(request.output_tokens)
-                for stop_str in request.stop:
-                    if stop_str and stop_str in decoded_so_far:
+                stop_params = [s for s in request.stop if s]
+                if (
+                    stop_params
+                    and request.stop_text_len == 0
+                    and not request.stop_tail
+                    and len(request.output_tokens) > 1
+                ):
+                    previous_text = tokenizer.decode(request.output_tokens[:-1])
+                    request.stop_text_len = len(previous_text)
+                    max_stop_len = max(len(s) for s in stop_params)
+                    keep = max(0, max_stop_len - 1)
+                    request.stop_tail = previous_text[-keep:] if keep else ""
+                prev_text_len = request.stop_text_len
+                if stop_params and new_text:
+                    max_stop_len = max(len(s) for s in stop_params)
+                    # Only the prior suffix can participate in a new
+                    # cross-token stop match. This keeps the common
+                    # per-token path bounded by len(new_text)+max_stop_len.
+                    window_base = prev_text_len - len(request.stop_tail)
+                    stop_window = request.stop_tail + new_text
+                    match: tuple[int, str] | None = None
+                    for stop_str in stop_params:
+                        local_idx = stop_window.find(stop_str)
+                        if local_idx != -1:
+                            global_idx = window_base + local_idx
+                            if match is None or global_idx < match[0]:
+                                match = (global_idx, stop_str)
+                    if match is not None:
+                        idx, stop_str = match
                         finish_reason = "stop"
                         # H-03: pin WHICH user-supplied stop fired so
                         # the Anthropic adapter can surface
@@ -760,20 +784,24 @@ class MLLMScheduler:
                         # MLLM-backed ``/v1/messages`` traffic gets the
                         # same surface as the text path.
                         output.matched_stop = stop_str
-                        # Trim output at stop string
-                        idx = decoded_so_far.index(stop_str)
+                        decoded_so_far = tokenizer.decode(request.output_tokens)
                         request.output_text = decoded_so_far[:idx]
                         stop_trimmed = True
                         # Emit only the valid prefix before the stop marker
                         # in new_text so streaming clients don't lose content.
-                        # Compute what was already streamed vs the trimmed total.
-                        prev_text = tokenizer.decode(request.output_tokens[:-1])
-                        trimmed_total = decoded_so_far[:idx]
-                        if len(trimmed_total) > len(prev_text):
-                            output.new_text = trimmed_total[len(prev_text) :]
-                        else:
-                            output.new_text = ""
-                        break
+                        emit_len = max(0, idx - prev_text_len)
+                        output.new_text = new_text[:emit_len]
+                    else:
+                        request.stop_text_len += len(new_text)
+                        keep = max(0, max_stop_len - 1)
+                        request.stop_tail = (
+                            stop_window[-keep:] if keep else ""
+                        )
+                elif stop_params:
+                    # ``new_text`` may be empty while the detokenizer is
+                    # holding an incomplete byte sequence. Preserve the
+                    # existing tail and wait for a real text segment.
+                    pass
 
             # Check if finished
             if finish_reason is not None:

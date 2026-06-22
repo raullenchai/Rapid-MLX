@@ -1804,6 +1804,7 @@ async def _stream_anthropic_messages(
 
     accumulated_text = ""
     accumulated_raw = ""
+    accumulated_raw_parts: list[str] = []
     # Structured tool calls surfaced by the engine's OutputRouter
     # (currently HarmonyStreamingRouter via openai-harmony's
     # StreamableParser). When non-empty at end-of-stream the final
@@ -2057,6 +2058,8 @@ async def _stream_anthropic_messages(
             # falling through to the text path below.
             output_channel = getattr(output, "channel", None)
             if output_channel is not None:
+                if output_channel in ("reasoning", "content", "tool_call"):
+                    accumulated_raw_parts.append(delta_text)
                 # Explicit allowlist (mirrors ``_CHANNEL_TO_STRING``
                 # in ``engine/batched.py``). An unrecognized channel
                 # is suppressed and logged rather than emitted as
@@ -2132,6 +2135,8 @@ async def _stream_anthropic_messages(
                             yield ev
                 continue
 
+            accumulated_raw_parts.append(delta_text)
+
             if reasoning_parser:
                 # Closes #185: when a reasoning_parser is active it ALREADY
                 # splits content vs reasoning at every chunk; routing the
@@ -2172,7 +2177,12 @@ async def _stream_anthropic_messages(
                 else:
                     parser_delta_text = delta_text
                     parser_current = previous_raw + delta_text
-                accumulated_raw += delta_text
+                # Compatibility path: reasoning parsers still consume
+                # the legacy ``previous + delta == current`` API. This
+                # cumulative concat remains O(n^2) for active
+                # reasoning_parser streams; the list buffer above only
+                # fixes the no-reasoning hot path and final parse.
+                accumulated_raw = previous_raw + delta_text
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, parser_current, parser_delta_text
                 )
@@ -2365,6 +2375,9 @@ async def _stream_anthropic_messages(
     # text block before stream end. Idempotent via
     # ``_reasoning_close_injected``.
     terminal_injection_attempted = False
+    if accumulated_raw_parts and not accumulated_raw:
+        accumulated_raw = "".join(accumulated_raw_parts)
+
     if (
         reasoning_parser is not None
         and _reasoning_cap_hit

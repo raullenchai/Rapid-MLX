@@ -1273,6 +1273,7 @@ async def _stream_responses(
 
         accumulated_text = ""
         accumulated_raw = ""
+        accumulated_raw_parts: list[str] = []
         accumulated_structured_tool_calls: list[dict] = []
         # r6-A R6-C2 codex r1 IMPORTANT: track the last engine-reported
         # ``finish_reason`` so the post-loop degenerate-output guard can
@@ -1534,9 +1535,6 @@ async def _stream_responses(
             # route avoids this by parsing `output.text` (the full
             # non-streamed text) directly; the streaming path needs an
             # explicit raw accumulator.
-            if delta_text:
-                accumulated_raw += delta_text
-
             if hasattr(output, "prompt_tokens") and output.prompt_tokens:
                 prompt_tokens = output.prompt_tokens
             if hasattr(output, "completion_tokens") and output.completion_tokens:
@@ -1565,6 +1563,8 @@ async def _stream_responses(
             # ``response.reasoning_text.delta`` we omit in v1).
             output_channel = getattr(output, "channel", None)
             if output_channel is not None:
+                if output_channel in ("content", "tool_call", "reasoning"):
+                    accumulated_raw_parts.append(delta_text)
                 if output_channel in ("content", "tool_call"):
                     content = strip_special_tokens(delta_text)
                     if content:
@@ -1590,18 +1590,15 @@ async def _stream_responses(
                 # ``reasoning`` and unknown channels are dropped for v1.
                 continue
 
+            accumulated_raw_parts.append(delta_text)
+
             if reasoning_parser:
-                # ``accumulated_raw`` already had the ORIGINAL
-                # ``delta_text`` appended above. Pass current/previous
-                # to the parser's streaming extractor. Note: ``previous_raw``
-                # here is computed from the buffer minus the ORIGINAL
-                # delta (round-9 fix — keep the shared buffer clean of
-                # synthetic markers).
-                previous_raw = (
-                    accumulated_raw[: -len(delta_text)]
-                    if delta_text
-                    else accumulated_raw
-                )
+                # Keep ``accumulated_raw`` to real model output only.
+                # ``previous_raw`` is the already-accepted prefix;
+                # ``parser_current`` may locally include a synthetic
+                # close marker for cap handling, but that marker never
+                # enters the shared raw buffer.
+                previous_raw = accumulated_raw
                 # Text-parser path: once the cap fires, splice ``</think>``
                 # in front of the next chunk so the parser flips to
                 # content. Idempotent — only fires once per request.
@@ -1633,7 +1630,13 @@ async def _stream_responses(
                     injected_this_chunk = True
                 else:
                     parser_delta_text = delta_text
-                    parser_current = accumulated_raw
+                    parser_current = previous_raw + delta_text
+                # Compatibility path: reasoning parsers still consume
+                # the legacy ``previous + delta == current`` API. This
+                # cumulative concat remains O(n^2) for active
+                # reasoning_parser streams; the list buffer above only
+                # fixes the no-reasoning hot path and final parse.
+                accumulated_raw = previous_raw + delta_text
                 delta_msg = reasoning_parser.extract_reasoning_streaming(
                     previous_raw, parser_current, parser_delta_text
                 )
@@ -1779,6 +1782,9 @@ async def _stream_responses(
         # trailing bytes are promoted to ``response.output_text.delta``.
         # Idempotent via ``_reasoning_close_injected``.
         terminal_injection_attempted = False
+        if accumulated_raw_parts and not accumulated_raw:
+            accumulated_raw = "".join(accumulated_raw_parts)
+
         if (
             reasoning_parser is not None
             and _reasoning_cap_hit

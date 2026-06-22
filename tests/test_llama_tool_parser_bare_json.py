@@ -197,6 +197,31 @@ class TestNoFalsePositives:
         result = parser.extract_tool_calls("")
         assert not result.tools_called
 
+    def test_plain_long_prefix_pending_fast_path_skips_json_scan(
+        self, monkeypatch
+    ):
+        """Plain cumulative prose must stay on the parser-owned fast path.
+
+        ``has_pending_tool_call`` is invoked for every streaming prefix.
+        With no ``{``/``<`` anchors, it should not enter the JSON
+        scanner at all; otherwise ordinary long text becomes O(n^2).
+        """
+        import vllm_mlx.tool_parsers.llama_tool_parser as llama_mod
+
+        parser = LlamaToolParser()
+
+        def fail_json_scan(*_args, **_kwargs):
+            raise AssertionError("plain text should not enter JSON scanner")
+
+        monkeypatch.setattr(
+            llama_mod, "_find_top_level_json_object", fail_json_scan
+        )
+
+        text = ""
+        for _ in range(128):
+            text += "ordinary assistant prose without anchors "
+            assert parser.has_pending_tool_call(text) is False
+
 
 # ---------------------------------------------------------------------------
 # Streaming contract — clients see content tokens until the JSON closes,

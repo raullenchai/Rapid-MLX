@@ -686,6 +686,73 @@ class TestMLLMSchedulerStopSequences:
         # new_text must be cleared so the stop string isn't streamed
         assert outputs[0].new_text == ""
 
+    def test_stop_string_no_match_does_not_full_decode_per_token(self):
+        """Long no-match streams must not re-decode all output tokens.
+
+        The previous MLLM stop-string path called
+        ``tokenizer.decode(request.output_tokens)`` on every generated
+        token, making no-match streaming O(n^2). The rolling tail
+        matcher should need zero full decodes until an actual match.
+        """
+        from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
+        from vllm_mlx.mllm_scheduler import (
+            MLLMRequest,
+            MLLMScheduler,
+            MLLMSchedulerConfig,
+        )
+        from vllm_mlx.request import SamplingParams
+
+        class FakeDetok:
+            last_segment = ""
+            text = ""
+
+            def reset(self):
+                self.last_segment = ""
+                self.text = ""
+
+            def add_token(self, token):
+                self.last_segment = "x"
+                self.text += self.last_segment
+
+            def finalize(self):
+                pass
+
+        mock_model = MagicMock()
+        mock_processor = MagicMock()
+        mock_tokenizer = MagicMock()
+        mock_processor.tokenizer = mock_tokenizer
+        mock_tokenizer.decode.side_effect = AssertionError(
+            "full decode should not run on no-match stop checks"
+        )
+
+        scheduler = MLLMScheduler(mock_model, mock_processor, MLLMSchedulerConfig())
+        request = MLLMRequest(
+            request_id="req-no-match",
+            prompt="Say hello",
+            sampling_params=SamplingParams(max_tokens=100),
+            stop=["STOP"],
+        )
+        scheduler.running[request.request_id] = request
+        scheduler.uid_to_request_id[0] = request.request_id
+        scheduler._detokenizer_pool[request.request_id] = FakeDetok()
+
+        responses = [
+            MLLMBatchResponse(
+                uid=0,
+                request_id=request.request_id,
+                token=i,
+                logprobs=mx.array([0.1]),
+                finish_reason=None,
+            )
+            for i in range(128)
+        ]
+
+        outputs, finished_ids = scheduler._process_batch_responses(responses)
+
+        assert len(outputs) == 128
+        assert finished_ids == set()
+        assert mock_tokenizer.decode.call_count == 0
+
     def test_add_request_forwards_stop(self):
         """add_request should store stop sequences on the MLLMRequest."""
         from vllm_mlx.mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
