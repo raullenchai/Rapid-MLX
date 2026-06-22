@@ -510,10 +510,10 @@ Decoded examples:
 
 ### Full model lineup
 
-83 explicit aliases across 14 families ship today. Run `rapid-mlx models` for the live list with parser, hybrid / MoE flags, and DFlash eligibility.
+103 explicit aliases across 15 families ship today. Run `rapid-mlx models` for the live list with parser, hybrid / MoE flags, and DFlash eligibility.
 
 <details>
-<summary><strong>Show all 83 aliases by family</strong></summary>
+<summary><strong>Show all 103 aliases by family</strong></summary>
 
 | Family | Aliases | Notable |
 |---|---|---|
@@ -531,6 +531,7 @@ Decoded examples:
 | **Mistral / Devstral** | `mistral-24b-4bit`, `devstral-24b-4bit`, `devstral-v2-24b-4bit`, `ministral-3b-4bit` | |
 | **Other** | `phi-4-14b-4bit`, `phi-4-mini-4bit`, `smollm3-3b-4bit`, `nemotron-30b-4bit`, `bonsai-1.7b-unpacked`, `-4b-unpacked`, `-8b-unpacked`, `granite4-tiny-4bit`, `vibethinker-1.5b-4bit`, `vibethinker-3b-8bit` | Weibo VibeThinker 1.5B / 3B reasoning (MIT) |
 | 🆕 **Text-Diffusion** | `diffusion-gemma-26b-4bit`, `diffusion-gemma-26b-8bit` | Non-autoregressive (block denoising); same `/v1/chat/completions` API |
+| 🆕 **UI-TARS** | `ui-tars-1.5-7b-4bit`, `-6bit`, `-8bit`, `ui-tars-7b-dpo-4bit`, `-6bit`, `-8bit`, `ui-tars-7b-sft-4bit`, `-8bit`, `ui-tars-72b-dpo-4bit` | ByteDance GUI agent (Qwen2-VL); Computer-Use actions parsed as OpenAI `tool_calls` + Anthropic `tool_use` (`name="computer"`) |
 
 ✨ = DFlash speculative decoding supported (opt in with `--enable-dflash`). `rapid-mlx info <alias>` shows per-alias capabilities.
 
