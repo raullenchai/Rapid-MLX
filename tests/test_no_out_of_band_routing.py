@@ -247,6 +247,17 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # whether the sentinel notice is surfaced on a single envelope
         # field. See PR fix/h-01-reasoning-content-null-rescue.
         "RAPID_MLX_REASONING_CUTOFF_NOTICE",
+        # F-K-CAPABILITIES-OMIT-AUDIO opt-in deep audio probe (boolean
+        # flag). When set to a truthy value, the lifespan hook runs a
+        # tiny dry-run inference on each audio lane (STT + TTS) so
+        # ``/v1/models`` can surface ``audio_lanes`` status reflecting
+        # the real backend health (a degraded Whisper backend that
+        # 500s at first request would otherwise look healthy on the
+        # listing). Pure observability/health knob — never selects a
+        # model, parser, or routing tier. Consumed only by
+        # ``vllm_mlx/server.py``'s lifespan to decide whether to fire
+        # the deep probe at boot.
+        "RAPID_MLX_AUDIO_DEEP_PROBE",
     }
 )
 
