@@ -242,6 +242,56 @@ def _synthesize_forced_tool_call(name: str, arguments: str = "{}"):
     )
 
 
+def _normalize_ui_tars_tcs_for_chat(tool_calls: list | None) -> list | None:
+    """Apply UI-TARS Computer-Use spec keys to a streaming-shaped tool_calls list.
+
+    The streaming postprocessor surfaces tool_calls as a list of dicts
+    in OpenAI-streaming shape (``{"index","id","type","function":{
+    "name","arguments"}}``); the cross-format fallback path
+    (``finalize_tool_calls``) and the terminal-chunk merge path use
+    the same shape. Centralising the per-entry normalisation here
+    keeps the three streaming sites (mid-stream emit, terminal merge,
+    synthetic fallback) byte-identical with the non-stream chat
+    response builder — without it the streaming path would emit the
+    parser-native ``point`` shape while the non-stream path emitted
+    the spec ``coordinate`` shape (r7-A R7-H1).
+
+    Gated on ``function.name == "computer"`` so vanilla function tools
+    whose arguments carry a key named ``point`` are passed through
+    verbatim. A None / empty input passes through.
+    """
+    if not tool_calls:
+        return tool_calls
+    from ..tool_parsers.ui_tars_tool_parser import (
+        normalize_ui_tars_chat_tool_call_arguments,
+    )
+
+    out = []
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            out.append(tc)
+            continue
+        fn = tc.get("function") or {}
+        name = fn.get("name")
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            out.append(tc)
+            continue
+        new_args = normalize_ui_tars_chat_tool_call_arguments(args, name)
+        if new_args is args:
+            out.append(tc)
+            continue
+        # Shallow-copy so the upstream postprocessor's structures are
+        # not mutated under the caller's feet (defense-in-depth in case
+        # the same event is referenced elsewhere).
+        new_tc = dict(tc)
+        new_fn = dict(fn)
+        new_fn["arguments"] = new_args
+        new_tc["function"] = new_fn
+        out.append(new_tc)
+    return out
+
+
 def _is_harmony_cut_short_stream(
     reasoning_parser,
     accumulated_reasoning: str,
@@ -1863,6 +1913,25 @@ async def _create_chat_completion_impl(
         output.text, request, structured_tool_calls=engine_tool_calls
     )
 
+    # r7-A R7-H1: UI-TARS chat-lane coordinate-key parity. The parser
+    # emits canonical ``point`` / ``start_point`` / ``end_point``; the
+    # OpenAI Computer-Use spec uses ``coordinate`` (single-point) and
+    # ``path=[{"x","y"}, …]`` (drag). The Anthropic + Responses lanes
+    # already normalize at their adapters (``api/anthropic_adapter.py``,
+    # ``api/responses_adapter.py``); the chat lane was missed in r6-B
+    # and surfaced the parser-native shape, breaking parity. Gated on
+    # ``function.name == "computer"`` so vanilla function tools whose
+    # arguments happen to carry a ``point`` key are untouched.
+    if tool_calls:
+        from ..tool_parsers.ui_tars_tool_parser import (
+            normalize_ui_tars_chat_tool_call_arguments,
+        )
+
+        for _tc in tool_calls:
+            _tc.function.arguments = normalize_ui_tars_chat_tool_call_arguments(
+                _tc.function.arguments, _tc.function.name
+            )
+
     # Honor ``parallel_tool_calls=false`` by capping the parsed list at one.
     # No decoder-level enforcement exists, so this is a post-parse trim — the
     # only reliable lever for OpenAI-compat clients that explicitly request a
@@ -2238,8 +2307,22 @@ async def stream_chat_completion(
         _sse_suffix = "}}]}\n\n"
 
         def _fast_sse_chunk(text: str, field: str = "content") -> str:
-            """Build SSE chunk JSON directly, bypassing Pydantic serialization."""
+            """Build SSE chunk JSON directly, bypassing Pydantic serialization.
+
+            r7-A R7-H2 — when ``field == "reasoning_content"`` emit
+            BOTH ``reasoning_content`` (legacy field name, retained for
+            one release as a deprecation window) AND ``reasoning`` (the
+            OpenAI spec field name). This mirrors the non-stream
+            ``AssistantMessage._serialize_assistant_message`` contract
+            so stream + non-stream parity holds — clients reading
+            either key see the same value.
+            """
             escaped = json.dumps(text)
+            if field == "reasoning_content":
+                return (
+                    f'{_sse_prefix}"reasoning_content":{escaped},'
+                    f'"reasoning":{escaped}{_sse_suffix}'
+                )
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
         # First chunk with role
@@ -2364,6 +2447,15 @@ async def stream_chat_completion(
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
 
                 elif event.type == "tool_call":
+                    # r7-A R7-H1: streaming-lane parity with the
+                    # non-stream chat path. The same
+                    # ``normalize_ui_tars_chat_tool_call_arguments``
+                    # helper runs here so per-delta tool_call
+                    # arguments emit the OpenAI Computer-Use spec
+                    # keys (``coordinate`` / ``path``) instead of the
+                    # parser-native ``point``. Gated on
+                    # ``function.name == "computer"`` inside the helper.
+                    _normalized_tcs = _normalize_ui_tars_tcs_for_chat(event.tool_calls)
                     chunk = ChatCompletionChunk(
                         id=response_id,
                         created=_sse_created,
@@ -2371,7 +2463,7 @@ async def stream_chat_completion(
                         choices=[
                             ChatCompletionChunkChoice(
                                 delta=ChatCompletionChunkDelta(
-                                    tool_calls=event.tool_calls,
+                                    tool_calls=_normalized_tcs,
                                 ),
                                 finish_reason=event.finish_reason,
                             )
@@ -2434,7 +2526,12 @@ async def stream_chat_completion(
         finalize_content_parts: list[str] = []
         for event in processor.finalize():
             if event.type == "tool_call":
-                fallback_tool_calls.extend(event.tool_calls or [])
+                # r7-A R7-H1: normalize before append so terminal-merge
+                # + synthetic-fallback emit sites don't need to know
+                # about the UI-TARS spec-key contract.
+                fallback_tool_calls.extend(
+                    _normalize_ui_tars_tcs_for_chat(event.tool_calls) or []
+                )
             elif event.type == "content" and event.content:
                 finalize_content_parts.append(event.content)
         finalize_content = "".join(finalize_content_parts)

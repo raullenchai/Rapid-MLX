@@ -2217,10 +2217,25 @@ class ChatCompletionChunkDelta(BaseModel):
         final one. Normal pure-content / pure-role / empty deltas keep
         their current minimal shape, so the per-token streaming budget
         is unchanged for non-reasoning paths.
+
+        r7-A R7-H2 — stream/non-stream reasoning field-name parity.
+        The non-stream ``AssistantMessage`` emits BOTH
+        ``reasoning_content`` (legacy) and ``reasoning`` (OpenAI spec
+        name) so SDKs reading either field work. Streaming previously
+        emitted only ``reasoning_content``, which forced clients to
+        special-case the stream vs. non-stream code paths. Mirror the
+        non-stream contract here: when ``reasoning_content`` is set,
+        also expose it under the spec name ``reasoning``. The
+        duplicate ``reasoning_content`` is kept for one release as a
+        deprecation window for any downstream that already special-
+        cased the legacy field name; it will be dropped in a
+        subsequent release.
         """
         d = handler(self)
         if "content" not in d and ("reasoning_content" in d or "tool_calls" in d):
             d["content"] = None
+        if "reasoning_content" in d:
+            d["reasoning"] = d["reasoning_content"]
         return d
 
 

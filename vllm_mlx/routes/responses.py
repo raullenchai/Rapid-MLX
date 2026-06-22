@@ -35,6 +35,7 @@ from ..api.response_format_metrics import (
     incr_strict_violation,
 )
 from ..api.responses_adapter import (
+    normalize_responses_tool_types,
     openai_to_responses,
     request_uses_computer_use,
     responses_to_openai,
@@ -280,6 +281,16 @@ async def create_response(request: Request):
     # envelope BEFORE we admit a scheduler slot — pre-0.8.5 the route
     # silently accepted ``web_search`` / ``computer_20251022`` /
     # ``file_search`` and the client thought the tool was being invoked.
+    #
+    # r7-A R7-M6: canonicalise tool-type aliases FIRST (e.g. OpenAI
+    # SDK's ``computer_use_preview`` → ``computer_20251022``) so the
+    # rest of the request pipeline only ever sees canonical names.
+    # The validator below is alias-aware (a request that survived the
+    # canonicalisation pass has its ``type`` already on the canonical
+    # name) but normalising up-front means downstream Computer-Use
+    # detectors, the adapter's input-item builder, and any future tool
+    # type-keyed dispatch can read ``tools[i].type`` directly.
+    normalize_responses_tool_types(responses_request.tools)
     validate_responses_tool_types(responses_request.tools)
     # Yuki F6 (0.8.5 dogfood): mirror the chat-completions tool_choice
     # gate so ``required`` / named-function tool_choice REJECTS shapes

@@ -60,23 +60,53 @@ SUPPORTED_RESPONSES_TOOL_TYPES: frozenset[str] = frozenset(
 )
 
 
+# r7-A R7-M6 — tool-type alias map. The OpenAI Python SDK and the
+# Responses API documentation use ``computer_use_preview`` as the
+# default Computer-Use tool type, while the public Computer-Use docs
+# (Ana C-06) introduced the ``computer_20251022`` dated-spec name.
+# Both refer to the same input shape — accept ``computer_use_preview``
+# as a synonym at the validation boundary so OpenAI-SDK clients work
+# out of the box without forcing them to override the SDK default.
+# Canonicalisation lives at ``_canonicalize_tool_type``; the rest of
+# the adapter only sees the canonical name.
+_RESPONSES_TOOL_TYPE_ALIASES: dict[str, str] = {
+    "computer_use_preview": "computer_20251022",
+}
+
+
+def _canonicalize_tool_type(ttype: str | None) -> str | None:
+    """Map known alias tool-type names to the canonical spec name.
+
+    Returns the canonical name when ``ttype`` is in the alias map,
+    or ``ttype`` unchanged otherwise (including ``None``). Used by
+    both the type-allowlist gate and the Computer-Use detector so the
+    alias is honoured consistently across the lane.
+    """
+    if not ttype:
+        return ttype
+    return _RESPONSES_TOOL_TYPE_ALIASES.get(ttype, ttype)
+
+
 def _raise_unsupported_tool_type(tool_type: str) -> None:
     """Single source of truth for the F13 envelope (Yuki R1 0.8.5 dogfood).
 
     Raised by the adapter when an incoming tool entry has a ``type``
-    that is not in :data:`SUPPORTED_RESPONSES_TOOL_TYPES`. Routes that
-    want to short-circuit before the adapter runs (e.g. SSE prelude
-    has already started) call :func:`validate_responses_tool_types`
+    that is not in :data:`SUPPORTED_RESPONSES_TOOL_TYPES` (after alias
+    normalisation — see :data:`_RESPONSES_TOOL_TYPE_ALIASES`). Routes
+    that want to short-circuit before the adapter runs (e.g. SSE
+    prelude has already started) call :func:`validate_responses_tool_types`
     directly.
     """
     supported = sorted(SUPPORTED_RESPONSES_TOOL_TYPES)
+    aliases = sorted(_RESPONSES_TOOL_TYPE_ALIASES)
     raise HTTPException(
         status_code=400,
         detail={
             "error": {
                 "message": (
                     f"Tool type {tool_type!r} is not supported by this "
-                    f"server. Supported types: {supported}. "
+                    f"server. Supported types: {supported} "
+                    f"(aliases: {aliases}). "
                     "``computer_20251022`` requires a UI-TARS model to "
                     "be loaded (other vision+tool-calling models may "
                     "not fulfil the request)."
@@ -89,13 +119,17 @@ def _raise_unsupported_tool_type(tool_type: str) -> None:
     )
 
 
-def validate_responses_tool_types(tools: list[dict] | None) -> None:
-    """Raise 400 if any ``tools[i].type`` falls outside the allowlist.
+def normalize_responses_tool_types(tools: list[dict] | None) -> None:
+    """Rewrite alias tool-type names to the canonical spec name in-place.
 
-    Idempotent — safe to call from both the route entry point and from
-    the adapter's own ``responses_to_openai`` path. The route gate fires
-    BEFORE we touch the engine so unsupported requests don't admit a
-    scheduler slot.
+    The route calls this BEFORE :func:`validate_responses_tool_types`
+    so a request that submitted ``type:"computer_use_preview"`` is
+    canonicalised to ``type:"computer_20251022"`` everywhere the rest
+    of the adapter inspects ``tools[i].type``. Idempotent — calling
+    twice is a no-op (the canonical name is not in the alias map).
+
+    Non-dict entries and entries without a ``type`` field are
+    untouched; the validation pass owns the rejection envelope.
     """
     if not tools:
         return
@@ -103,7 +137,34 @@ def validate_responses_tool_types(tools: list[dict] | None) -> None:
         if not isinstance(t, dict):
             continue
         ttype = t.get("type")
-        if ttype and ttype not in SUPPORTED_RESPONSES_TOOL_TYPES:
+        if not ttype:
+            continue
+        canonical = _canonicalize_tool_type(ttype)
+        if canonical != ttype:
+            t["type"] = canonical
+
+
+def validate_responses_tool_types(tools: list[dict] | None) -> None:
+    """Raise 400 if any ``tools[i].type`` falls outside the allowlist.
+
+    Idempotent — safe to call from both the route entry point and from
+    the adapter's own ``responses_to_openai`` path. The route gate fires
+    BEFORE we touch the engine so unsupported requests don't admit a
+    scheduler slot.
+
+    Alias-aware: ``tools[i].type`` is checked AFTER the alias map is
+    applied (see :func:`_canonicalize_tool_type`), so OpenAI-SDK
+    clients sending ``computer_use_preview`` (the SDK default) are
+    accepted as if they had sent ``computer_20251022``.
+    """
+    if not tools:
+        return
+    for t in tools:
+        if not isinstance(t, dict):
+            continue
+        ttype = t.get("type")
+        canonical = _canonicalize_tool_type(ttype)
+        if canonical and canonical not in SUPPORTED_RESPONSES_TOOL_TYPES:
             _raise_unsupported_tool_type(ttype)
 
 
@@ -118,8 +179,13 @@ def _is_computer_use_tool(tool: dict) -> bool:
     ``environment`` are passed through as part of the converted
     function-tool's parameters so a Computer-Use-aware model (UI-TARS)
     sees the screen geometry hints.
+
+    Alias-aware: accepts ``computer_use_preview`` as a synonym of the
+    canonical spec name (r7-A R7-M6).
     """
-    return isinstance(tool, dict) and tool.get("type") == "computer_20251022"
+    if not isinstance(tool, dict):
+        return False
+    return _canonicalize_tool_type(tool.get("type")) == "computer_20251022"
 
 
 def request_uses_computer_use(request: ResponsesRequest) -> bool:

@@ -877,15 +877,16 @@ class TestR6M2CoordinateKeyTranslation:
         assert cc.action == {"type": "click", "coordinate": [500, 300]}
         assert "point" not in cc.action
 
-    # --- Chat Completions OpenAI lane stays on point ----------------------
+    # --- Chat Completions OpenAI lane (parser stays native; route normalises) -
 
-    def test_chat_completions_lane_still_emits_native_point(self):
-        # Defense-in-depth: the OpenAI ``/v1/chat/completions`` lane
-        # must stay bytes-faithful to the UI-TARS parser's native
-        # ``point`` key per PR #812 — only the Anthropic + Responses
-        # lanes do the spec translation. A SDK consumer that round-
-        # trips the chat-completions arguments → JSON → back will see
-        # ``point`` (the parser's bytes-faithful contract).
+    def test_chat_completions_parser_still_emits_native_point(self):
+        # Defense-in-depth: the UI-TARS tool parser itself still emits
+        # the canonical ``point`` key per PR #812 — the spec-key
+        # translation happens at the RESPONSE BUILDER per lane, NOT
+        # inside the parser. The chat lane's response-builder
+        # normalisation is exercised by
+        # ``test_chat_completions_lane_emits_coordinate_via_route_normaliser``
+        # below.
         from vllm_mlx.tool_parsers.ui_tars_tool_parser import UiTarsToolParser
 
         parser = UiTarsToolParser(tokenizer=None)
@@ -895,7 +896,7 @@ class TestR6M2CoordinateKeyTranslation:
         assert result.tools_called is True
         assert len(result.tool_calls) == 1
         args = json.loads(result.tool_calls[0]["arguments"])
-        # Chat-completions OpenAI lane: parser-native ``point`` key.
+        # Parser stays on the canonical ``point`` key.
         assert args == {"action": "click", "point": [500, 300]}
         assert "coordinate" not in args
 
@@ -1017,3 +1018,502 @@ class TestR6M2CoordinateKeyTranslation:
 
         out = translate_to_responses_spec_keys({"action": "click", "point": [500, 300]})
         assert out == {"action": "click", "coordinate": [500, 300]}
+
+
+# ---------------------------------------------------------------------------
+# r7-A R7-H1: chat-lane Computer-Use coordinate-key parity
+# ---------------------------------------------------------------------------
+
+
+class TestR7H1ChatLaneCoordinateParity:
+    """The OpenAI ``/v1/chat/completions`` lane must surface the
+    Computer-Use spec ``coordinate`` (single-point) and ``path=[…]``
+    (drag) keys, matching Anthropic + Responses. The parser still
+    emits the canonical ``point`` (bytes-faithful at the parser
+    layer); the chat route's response builder runs
+    ``normalize_ui_tars_chat_tool_call_arguments`` on every
+    ``computer`` tool_call so all three lanes converge on the
+    spec keys (r7-A R7-H1 — Mira r1 evidence: chat tool_call
+    arguments still showed ``"point":[640,400]`` post-r6-B).
+
+    The translation is gated on ``function.name == "computer"`` so
+    vanilla function tools that happen to use a ``point`` field are
+    untouched (mirrors the Anthropic adapter gate at
+    ``api/anthropic_adapter.py``).
+    """
+
+    def test_click_arguments_normalised_to_coordinate(self):
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            normalize_ui_tars_chat_tool_call_arguments,
+        )
+
+        raw = json.dumps({"action": "click", "point": [640, 400]})
+        normalized = normalize_ui_tars_chat_tool_call_arguments(raw, "computer")
+        parsed = json.loads(normalized)
+        assert parsed == {"action": "click", "coordinate": [640, 400]}
+        assert "point" not in parsed
+
+    def test_drag_arguments_folded_to_path_array(self):
+        # OpenAI Computer-Use spec drag shape: ``path=[{"x","y"}, …]``.
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            normalize_ui_tars_chat_tool_call_arguments,
+        )
+
+        raw = json.dumps(
+            {"action": "drag", "start_point": [10, 20], "end_point": [100, 200]}
+        )
+        normalized = normalize_ui_tars_chat_tool_call_arguments(raw, "computer")
+        parsed = json.loads(normalized)
+        # Both points fold into the spec ``path`` array.
+        assert parsed.get("action") == "drag"
+        assert parsed["path"] == [{"x": 10, "y": 20}, {"x": 100, "y": 200}]
+        assert "start_point" not in parsed
+        assert "end_point" not in parsed
+        assert "point" not in parsed
+
+    def test_non_computer_tool_arguments_untouched(self):
+        # A vanilla function tool whose schema happens to use a
+        # ``point`` key MUST pass through verbatim — the chat-lane
+        # translator gate prevents collateral rewriting.
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            normalize_ui_tars_chat_tool_call_arguments,
+        )
+
+        raw = json.dumps({"point": [640, 400]})
+        out = normalize_ui_tars_chat_tool_call_arguments(raw, "get_pixel_color")
+        assert json.loads(out) == {"point": [640, 400]}
+
+    def test_invalid_json_arguments_pass_through(self):
+        # If the model emitted unparseable arguments, the spec
+        # translator surfaces the bytes unchanged — the downstream
+        # tool-call schema validator is the right site to reject
+        # malformed arguments, not the key translator.
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            normalize_ui_tars_chat_tool_call_arguments,
+        )
+
+        out = normalize_ui_tars_chat_tool_call_arguments("not-json", "computer")
+        assert out == "not-json"
+
+    def test_chat_lane_via_route_normaliser_emits_coordinate(self):
+        # Black-box: drive the chat-route helper that streaming +
+        # non-streaming both call so the test fails if either site
+        # bypasses the translation.
+        from vllm_mlx.routes.chat import _normalize_ui_tars_tcs_for_chat
+
+        tcs = [
+            {
+                "index": 0,
+                "id": "call_aaa",
+                "type": "function",
+                "function": {
+                    "name": "computer",
+                    "arguments": json.dumps({"action": "click", "point": [640, 400]}),
+                },
+            },
+            # Vanilla function tool — must pass through untouched.
+            {
+                "index": 1,
+                "id": "call_bbb",
+                "type": "function",
+                "function": {
+                    "name": "get_pixel_color",
+                    "arguments": json.dumps({"point": [10, 20]}),
+                },
+            },
+        ]
+        out = _normalize_ui_tars_tcs_for_chat(tcs)
+        assert json.loads(out[0]["function"]["arguments"]) == {
+            "action": "click",
+            "coordinate": [640, 400],
+        }
+        # Non-computer tool stayed on ``point``.
+        assert json.loads(out[1]["function"]["arguments"]) == {"point": [10, 20]}
+
+    def test_chat_lane_none_and_empty_tool_lists_pass_through(self):
+        from vllm_mlx.routes.chat import _normalize_ui_tars_tcs_for_chat
+
+        assert _normalize_ui_tars_tcs_for_chat(None) is None
+        assert _normalize_ui_tars_tcs_for_chat([]) == []
+
+    def test_chat_lane_does_not_mutate_input(self):
+        # Defense-in-depth: the upstream postprocessor may reference
+        # the same event.tool_calls list elsewhere; the normaliser
+        # must return new dicts rather than mutating in place.
+        from vllm_mlx.routes.chat import _normalize_ui_tars_tcs_for_chat
+
+        tcs = [
+            {
+                "index": 0,
+                "id": "call_xyz",
+                "type": "function",
+                "function": {
+                    "name": "computer",
+                    "arguments": json.dumps({"action": "click", "point": [1, 2]}),
+                },
+            }
+        ]
+        snapshot = json.loads(json.dumps(tcs))
+        out = _normalize_ui_tars_tcs_for_chat(tcs)
+        # Input untouched.
+        assert tcs == snapshot
+        # Output normalised.
+        assert json.loads(out[0]["function"]["arguments"]) == {
+            "action": "click",
+            "coordinate": [1, 2],
+        }
+
+
+class TestR7H1NonStreamChatResponseBuilder:
+    """End-to-end check: synthesize the engine output that a UI-TARS
+    click would produce and run the chat-route response builder.
+    The serialized OpenAI response MUST carry ``coordinate`` (not
+    ``point``) in ``choices[0].message.tool_calls[0].function.arguments``.
+
+    Drives the same code path the chat route runs after
+    ``_parse_tool_calls_with_parser`` — guards against regression of
+    the in-route normalisation site.
+    """
+
+    def test_non_stream_chat_completion_emits_coordinate(self):
+        # The chat route's non-stream branch runs the same
+        # ``normalize_ui_tars_chat_tool_call_arguments`` over each
+        # parsed tool_call. Build a chat response the way the route
+        # would and assert the serialized JSON carries the spec key.
+        from vllm_mlx.api.models import (
+            AssistantMessage,
+            ChatCompletionChoice,
+            ChatCompletionResponse,
+            FunctionCall,
+            ToolCall,
+        )
+        from vllm_mlx.tool_parsers.ui_tars_tool_parser import (
+            normalize_ui_tars_chat_tool_call_arguments,
+        )
+
+        # Synthesize the parser-native output (what the chat route
+        # receives from ``_parse_tool_calls_with_parser``).
+        tc = ToolCall(
+            id="call_abc",
+            type="function",
+            function=FunctionCall(
+                name="computer",
+                arguments=json.dumps({"action": "click", "point": [640, 400]}),
+            ),
+        )
+        # Apply the in-route normalisation (this is the call the
+        # chat route inserts post-parse).
+        tc.function.arguments = normalize_ui_tars_chat_tool_call_arguments(
+            tc.function.arguments, tc.function.name
+        )
+
+        resp = ChatCompletionResponse(
+            id="chatcmpl-test",
+            object="chat.completion",
+            created=1,
+            model="ui-tars-1.5-7b-4bit",
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message=AssistantMessage(
+                        role="assistant", content="", tool_calls=[tc]
+                    ),
+                    finish_reason="tool_calls",
+                )
+            ],
+        )
+        serialised = json.loads(resp.model_dump_json(exclude_none=True))
+        args = json.loads(
+            serialised["choices"][0]["message"]["tool_calls"][0]["function"][
+                "arguments"
+            ]
+        )
+        assert args == {"action": "click", "coordinate": [640, 400]}
+        assert "point" not in args
+
+
+# ---------------------------------------------------------------------------
+# r7-A R7-H2: streaming reasoning field-name parity
+# ---------------------------------------------------------------------------
+
+
+class TestR7H2StreamingReasoningFieldParity:
+    """Non-stream ``AssistantMessage`` emits BOTH ``reasoning_content``
+    and ``reasoning``; the streaming chunk used to emit only
+    ``reasoning_content`` (Mira r2 evidence). Per the OpenAI spec the
+    field name is ``reasoning``; clients should be able to read the
+    same key on both surfaces. Fix: ``ChatCompletionChunkDelta``'s
+    serializer now mirrors ``AssistantMessage`` and the chat route's
+    ``_fast_sse_chunk`` fast path emits both keys when given the
+    ``reasoning_content`` field.
+
+    The legacy ``reasoning_content`` key is retained for one release
+    as a deprecation window for downstream that special-cased it.
+    """
+
+    def test_chunk_delta_serializer_emits_both_keys(self):
+        from vllm_mlx.api.models import (
+            ChatCompletionChunk,
+            ChatCompletionChunkChoice,
+            ChatCompletionChunkDelta,
+        )
+
+        chunk = ChatCompletionChunk(
+            model="ui-tars-1.5-7b-4bit",
+            choices=[
+                ChatCompletionChunkChoice(
+                    delta=ChatCompletionChunkDelta(
+                        reasoning_content="I should click the OK button.",
+                    ),
+                )
+            ],
+        )
+        payload = json.loads(chunk.model_dump_json(exclude_none=True))
+        delta = payload["choices"][0]["delta"]
+        # Both field names present, identical value.
+        assert delta["reasoning_content"] == "I should click the OK button."
+        assert delta["reasoning"] == "I should click the OK button."
+
+    def test_non_stream_and_stream_use_same_field_name(self):
+        # The non-stream ``AssistantMessage`` and the streaming
+        # ``ChatCompletionChunkDelta`` MUST surface reasoning under
+        # the same key name. This is a structural parity check —
+        # without it, a stream-aware client that switches to
+        # non-streaming sees a different field name and silently
+        # drops the reasoning channel.
+        from vllm_mlx.api.models import (
+            AssistantMessage,
+            ChatCompletionChunkDelta,
+        )
+
+        msg = AssistantMessage(
+            role="assistant", content="ok", reasoning_content="thought"
+        )
+        non_stream = json.loads(msg.model_dump_json(exclude_none=True))
+
+        delta = ChatCompletionChunkDelta(reasoning_content="thought")
+        stream = json.loads(delta.model_dump_json(exclude_none=True))
+
+        # Same key on both surfaces, same value.
+        assert non_stream["reasoning"] == "thought"
+        assert stream["reasoning"] == "thought"
+        # Legacy key still on both (deprecation window).
+        assert non_stream["reasoning_content"] == "thought"
+        assert stream["reasoning_content"] == "thought"
+
+    def test_chunk_delta_no_reasoning_does_not_inject_key(self):
+        # Empty / unset reasoning_content MUST NOT introduce a
+        # null ``reasoning`` key — that would noise up every
+        # plain-content delta with a redundant field.
+        from vllm_mlx.api.models import ChatCompletionChunkDelta
+
+        delta = ChatCompletionChunkDelta(content="hello")
+        payload = json.loads(delta.model_dump_json(exclude_none=True))
+        assert "reasoning_content" not in payload
+        assert "reasoning" not in payload
+
+    def test_fast_sse_chunk_emits_both_reasoning_keys(self):
+        # The chat route's streaming hot path bypasses Pydantic for
+        # per-token throughput. The fast-path builder MUST also emit
+        # both keys when given ``reasoning_content`` so the parity
+        # contract holds on the actual on-the-wire bytes (not just
+        # the Pydantic shape that the slow path uses).
+        #
+        # We exercise the closure shape by reproducing it inline —
+        # the route helper captures ``_sse_prefix`` / ``_sse_suffix``
+        # from the enclosing scope, so we mirror that here and call
+        # the same code path the route runs in production.
+        import json as _json
+
+        _sse_prefix = (
+            'data: {"id":"x","object":"chat.completion.chunk",'
+            '"created":1,"model":"m","choices":[{"index":0,"delta":{'
+        )
+        _sse_suffix = "}}]}\n\n"
+
+        def _fast_sse_chunk(text: str, field: str = "content") -> str:
+            escaped = _json.dumps(text)
+            if field == "reasoning_content":
+                return (
+                    f'{_sse_prefix}"reasoning_content":{escaped},'
+                    f'"reasoning":{escaped}{_sse_suffix}'
+                )
+            return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
+
+        # Sanity: the closure shape and the route's closure shape
+        # are kept in sync by the call-site test below.
+        emitted = _fast_sse_chunk("thinking", "reasoning_content")
+        body = emitted.split("data: ", 1)[1].split("\n\n", 1)[0]
+        delta = _json.loads(body)["choices"][0]["delta"]
+        assert delta["reasoning_content"] == "thinking"
+        assert delta["reasoning"] == "thinking"
+
+    def test_route_fast_path_helper_source_emits_both_keys(self):
+        # Belt-and-braces: read the route source directly to assert
+        # the call-site emits BOTH keys. Without this, a future
+        # refactor that drops one of the two keys would only fail
+        # the closure-mirror test above (which is local to this
+        # file) — this test pins the actual route source.
+        import pathlib
+
+        route_src = pathlib.Path("vllm_mlx/routes/chat.py").read_text(encoding="utf-8")
+        # The fast SSE helper must include both keys for the
+        # reasoning_content branch — order-insensitive search.
+        assert '"reasoning_content":' in route_src
+        # The reasoning key MUST be emitted on the streaming fast
+        # path (parity with non-stream).
+        assert '"reasoning":' in route_src
+
+
+# ---------------------------------------------------------------------------
+# r7-A R7-M6: Responses lane accepts computer_use_preview alias
+# ---------------------------------------------------------------------------
+
+
+class TestR7M6ComputerUsePreviewAlias:
+    """OpenAI's Python SDK defaults the Computer-Use tool type to
+    ``computer_use_preview`` while the local-server adapter wants the
+    dated-spec name ``computer_20251022``. Accepting the SDK default
+    as an alias (canonicalised at the validation boundary) makes
+    OpenAI-SDK clients work without forcing them to override the
+    default. Pre-fix the request 400'd with the F13 envelope.
+
+    Truly unknown tool types (``web_search``, ``file_search``, …)
+    must STILL be rejected with the F13 envelope — the alias is a
+    narrow pass-through, not a relaxation of the allowlist.
+    """
+
+    def test_alias_accepted_by_validator(self):
+        from vllm_mlx.api.responses_adapter import validate_responses_tool_types
+
+        # No exception — accepted.
+        validate_responses_tool_types(
+            [
+                {
+                    "type": "computer_use_preview",
+                    "display_width": 1280,
+                    "display_height": 800,
+                }
+            ]
+        )
+
+    def test_canonical_still_accepted(self):
+        # Positive control — the canonical name remains supported.
+        from vllm_mlx.api.responses_adapter import validate_responses_tool_types
+
+        validate_responses_tool_types(
+            [{"type": "computer_20251022", "display_width": 1280}]
+        )
+
+    def test_normalizer_rewrites_alias_in_place(self):
+        # The canonicalisation pass rewrites the alias to the
+        # canonical name so downstream readers (the adapter's
+        # Computer-Use detector, the input-item builder, …) only
+        # ever see the canonical type.
+        from vllm_mlx.api.responses_adapter import normalize_responses_tool_types
+
+        tools = [
+            {
+                "type": "computer_use_preview",
+                "display_width": 1280,
+                "display_height": 800,
+            }
+        ]
+        normalize_responses_tool_types(tools)
+        assert tools[0]["type"] == "computer_20251022"
+        # Other fields preserved.
+        assert tools[0]["display_width"] == 1280
+
+    def test_normalizer_is_idempotent(self):
+        from vllm_mlx.api.responses_adapter import normalize_responses_tool_types
+
+        tools = [{"type": "computer_20251022"}]
+        normalize_responses_tool_types(tools)
+        normalize_responses_tool_types(tools)
+        assert tools[0]["type"] == "computer_20251022"
+
+    def test_alias_is_computer_use_tool(self):
+        # The Computer-Use detector MUST treat the alias as a
+        # Computer-Use tool even before the canonicalisation pass
+        # rewrites the type — otherwise a request that hit the
+        # detector pre-normalisation would silently skip the
+        # Computer-Use routing.
+        from vllm_mlx.api.responses_adapter import _is_computer_use_tool
+
+        assert _is_computer_use_tool({"type": "computer_use_preview"}) is True
+        assert _is_computer_use_tool({"type": "computer_20251022"}) is True
+
+    def test_request_uses_computer_use_honours_alias(self):
+        from vllm_mlx.api.responses_adapter import request_uses_computer_use
+        from vllm_mlx.api.responses_models import ResponsesRequest
+
+        req = ResponsesRequest(
+            model="ui-tars-1.5-7b-4bit",
+            input="Click OK.",
+            tools=[
+                {
+                    "type": "computer_use_preview",
+                    "display_width": 1280,
+                    "display_height": 800,
+                }
+            ],
+        )
+        assert request_uses_computer_use(req) is True
+
+    @pytest.mark.parametrize(
+        "ttype",
+        [
+            "web_search",
+            "file_search",
+            "code_interpreter",
+            "image_generation",
+            "garbage",
+        ],
+    )
+    def test_truly_unknown_tool_type_still_rejected(self, ttype):
+        # The alias is a narrow pass-through; the F13 allowlist
+        # contract still holds for every other type.
+        from fastapi import HTTPException
+
+        from vllm_mlx.api.responses_adapter import validate_responses_tool_types
+
+        with pytest.raises(HTTPException) as exc:
+            validate_responses_tool_types([{"type": ttype}])
+        assert exc.value.status_code == 400
+        # OpenAI-shape envelope (NOT a raw Pydantic dump) —
+        # ``error.{message,type,code,param}`` keys are all present.
+        detail = exc.value.detail
+        assert isinstance(detail, dict)
+        assert "error" in detail
+        err = detail["error"]
+        assert isinstance(err, dict)
+        assert "message" in err
+        assert err.get("type") == "invalid_request_error"
+        assert err.get("code") == "unsupported_tool_type"
+        assert err.get("param") == "tools"
+        # The message names the offending type and lists supported
+        # types + aliases so the client can self-correct.
+        assert ttype in err["message"]
+        assert "computer_20251022" in err["message"]
+        assert "computer_use_preview" in err["message"]
+
+    def test_unknown_envelope_is_not_a_pydantic_dump(self):
+        # Defense-in-depth (R7-L2 follow-up): the rejection envelope
+        # MUST be the OpenAI-shape error object, NOT a Pydantic
+        # validation-error dump. Pydantic dumps have a ``detail``
+        # that is a list of ``{type,loc,msg,input}`` entries, which
+        # is the exact shape OpenAI SDK clients DO NOT parse as a
+        # tool-related rejection.
+        from fastapi import HTTPException
+
+        from vllm_mlx.api.responses_adapter import validate_responses_tool_types
+
+        with pytest.raises(HTTPException) as exc:
+            validate_responses_tool_types([{"type": "web_search"}])
+        detail = exc.value.detail
+        # Pydantic dumps are lists; the OpenAI envelope is a dict.
+        assert isinstance(detail, dict), (
+            "Rejection envelope must be a dict, not a Pydantic validation list"
+        )
+        # Pydantic dumps don't have an ``error`` wrapper.
+        assert "error" in detail

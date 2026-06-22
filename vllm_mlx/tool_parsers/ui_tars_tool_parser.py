@@ -1245,6 +1245,49 @@ def translate_to_responses_spec_keys(args: dict[str, Any]) -> dict[str, Any]:
 translate_to_spec_coordinate_keys = translate_to_anthropic_spec_keys
 
 
+# r7-A R7-H1: the OpenAI Computer-Use tool spec (published under the
+# Responses API but applicable to any OpenAI surface that exposes a
+# Computer-Use tool, including the chat-completions function-tool lane
+# UI-TARS adopters use today) is bytes-identical to the Responses
+# translator — single-point verbs emit ``coordinate``; drag folds into
+# a ``path=[{"x","y"}, …]`` array. Alias rather than duplicate so any
+# future spec change updates both surfaces atomically. The chat-lane
+# normalization site lives in ``routes/chat.py`` and gates on
+# ``function.name == "computer"`` so vanilla function tools whose
+# arguments happen to carry ``point`` are untouched (mirrors the
+# Anthropic adapter's gate at ``api/anthropic_adapter.py``).
+translate_to_openai_chat_spec_keys = translate_to_responses_spec_keys
+
+
+def normalize_ui_tars_chat_tool_call_arguments(
+    arguments_json: str, tool_name: str | None
+) -> str:
+    """Apply chat-lane Computer-Use key translation to an arguments string.
+
+    Centralizes the chat lane's UI-TARS coordinate normalization so the
+    non-stream response builder (``routes/chat.py`` synchronous path)
+    and the streaming SSE emitter (``routes/chat.py`` ``tool_call``
+    event branch) share one decision. Gated on ``tool_name ==
+    "computer"`` — non-Computer-Use function tools whose arguments
+    happen to carry a ``point`` key pass through unchanged.
+
+    Invariant: the returned string is always valid JSON when the input
+    was valid JSON. On any parse failure we surface the original bytes
+    rather than 500 — the downstream tool-call schema validator is the
+    correct site to reject malformed arguments, not the spec translator.
+    """
+    if tool_name != "computer":
+        return arguments_json
+    try:
+        parsed = json.loads(arguments_json)
+    except (ValueError, TypeError):
+        return arguments_json
+    if not isinstance(parsed, dict):
+        return arguments_json
+    translated = translate_to_openai_chat_spec_keys(parsed)
+    return json.dumps(translated, ensure_ascii=False)
+
+
 @ToolParserManager.register_module(["ui_tars", "ui-tars", "uitars"])
 class UiTarsToolParser(ToolParser):
     """Tool-call parser for UI-TARS (ByteDance) GUI-agent VLMs.
