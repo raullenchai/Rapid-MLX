@@ -2757,6 +2757,25 @@ async def _stream_anthropic_messages(
             except (json.JSONDecodeError, AttributeError):
                 tool_input = {}
 
+            # R6-M2: Anthropic Computer-Use spec uses ``coordinate``
+            # for single-point verbs and ``start_coordinate`` /
+            # ``end_coordinate`` for two-point verbs. The UI-TARS
+            # parser emits the canonical ``point`` / ``start_point``
+            # / ``end_point`` keys (PR #812 contract — chat-completions
+            # OpenAI lane stays bytes-faithful to that). Translate on
+            # the streaming ``/v1/messages`` boundary so a client
+            # correlating non-stream + stream sees the same spec key
+            # (the non-stream adapter ``openai_to_anthropic`` applies
+            # the same mapping). Gated on ``name=="computer"`` so
+            # vanilla function tools whose args happen to carry
+            # ``point`` are untouched.
+            if tc.function.name == "computer" and isinstance(tool_input, dict):
+                from ..tool_parsers.ui_tars_tool_parser import (
+                    translate_to_spec_coordinate_keys,
+                )
+
+                tool_input = translate_to_spec_coordinate_keys(tool_input)
+
             # F9: normalize the ``tool_use.id`` once per call. The
             # current loop only references ``tc.id`` inside the
             # ``content_block_start`` event, but if a future patch adds

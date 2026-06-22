@@ -20,21 +20,54 @@ from .base import DeltaMessage, ReasoningParser
 # Anchor at start-of-output so a mid-response mention of "Thought:" inside
 # a user-supplied screenshot caption doesn't get misclassified.
 #
-# Three preamble shapes are recognized (one match per response):
-#   1. "Thought: ...\nAction: ..."         (default UI-TARS prompt)
+# Five preamble shapes are recognized (one match per response):
+#   1. "Thought: ...\nAction: ..."         (default UI-TARS Computer-Use prompt)
 #   2. "Reflection: ...\nAction_Summary: ...\nAction: ..."  (1.5 reflective shape)
 #   3. "Action_Summary: ...\nAction: ..."  (1.5 minimal-reflection shape)
+#   4. "Thought: ...\n\n<plain-chat answer>" (plain chat lane — R6-M1)
+#   5. "<think>...</think><plain-chat answer>"  (generic think-tag fallback — R6-M1)
 #
-# Non-greedy up to the first ``Action:`` literal so a runaway thought
-# trace doesn't swallow the entire response.
+# R6-M1 fix (Aki R1, 2026-06-21): pre-fix the regex required ``(?=\s*Action:)``
+# so shapes #4/#5 silently failed to match. On the plain chat lane (no
+# Computer-Use tool declared, so r5-B's tool-coupled gate skipped the
+# action-API sysprompt injection) the model still emitted ``Thought: ...``
+# preambles — because the UI-TARS checkpoint is post-trained on the format
+# — but the reasoning channel returned ``None``. The decoupling: the
+# reasoning emission gate triggers on the parser-detected preamble shape,
+# NOT on the presence of any auto-injected sysprompt. The Action: lookahead
+# was a coincidence of the C-05 dogfood scenario, not a structural
+# requirement.
+#
+# Boundary semantics:
+# - For shape #1/#2/#3 (Action lane): the rest-after-preamble is consumed
+#   by the tool parser as ``content``.
+# - For shape #4 (plain Thought boundary): the boundary is the first blank
+#   line (``\n\s*\n``) OR end-of-string. Allowing end-of-string handles
+#   the case where the model never emitted a follow-up answer — the entire
+#   buffer is reasoning, ``content`` is empty.
+# - For shape #5 (think-tag): the boundary is the literal ``</think>``.
+#
+# Non-greedy bodies prevent a runaway thought trace from swallowing
+# legitimate downstream content / action lines.
 _PREAMBLE_RE = re.compile(
     r"^\s*"
     r"(?P<thought>"
+    # 1+2+3 — Action-lane preambles. Body up to the ``Action:`` lookahead.
+    r"(?:"
     r"(?:Thought:\s*(?:.*?))"
     r"|(?:Reflection:\s*(?:.*?)\s*Action_Summary:\s*(?:.*?))"
     r"|(?:Action_Summary:\s*(?:.*?))"
-    r")"
-    r"(?=\s*Action:)",
+    r")(?=\s*Action:)"
+    # 4 — plain-chat ``Thought:`` boundary: blank line OR end-of-string.
+    # ``Action:`` would have matched shape #1 already; reaching here
+    # means the model's ``Thought:`` is followed by prose, not a
+    # Computer-Use action.
+    r"|(?:Thought:\s*(?:.*?))(?=\s*\n\s*\n|\s*\Z)"
+    # 5 — generic ``<think>...</think>`` tag. The tag itself is part of
+    # the matched preamble; the post-match content (``model_output[m.end():]``)
+    # is the user-facing answer.
+    r"|(?:<think>\s*(?:.*?)</think>)"
+    r")",
     re.DOTALL,
 )
 
@@ -102,7 +135,20 @@ class UiTarsReasoningParser(ReasoningParser):
             # still extract the actions.
             return None, model_output
 
-        thought = m.group("thought").strip() or None
+        raw_thought = m.group("thought")
+        # R6-M1: shape #5 captures the ``<think>...</think>`` tag wrapper
+        # inside the named group. Strip the structural tags so the
+        # reasoning channel surfaces only the human-readable thought,
+        # matching how every other reasoning parser in the codebase
+        # (qwen3, think_parser, deepseek_r1) handles their own opener
+        # tokens.
+        thought_text = raw_thought
+        if thought_text.lstrip().startswith("<think>"):
+            inner = thought_text.lstrip()[len("<think>") :]
+            if inner.endswith("</think>"):
+                inner = inner[: -len("</think>")]
+            thought_text = inner
+        thought = thought_text.strip() or None
         rest = model_output[m.end() :].lstrip()
         return thought, (rest if rest else None)
 

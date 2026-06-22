@@ -411,6 +411,21 @@ _KNOWN_VERBS: frozenset[str] = frozenset(
 # parens inside string args.
 _ACTION_LINE = re.compile(r"\bAction:\s*([A-Za-z_][A-Za-z0-9_]*)\s*\(", re.MULTILINE)
 
+# Bare ``Action:`` token marker (no verb / paren required). Used by the
+# streaming hold-back path to detect that an in-flight delta has STARTED
+# the action prefix even though the verb/parens haven't arrived yet.
+# Without this, ``has_pending_tool_call("Action: type")`` returned False
+# (the strict ``_ACTION_LINE`` regex needs ``(``) and the postprocessor
+# fast-path leaked the bare ``Action: <verb>`` bytes into ``delta.content``
+# BEFORE the structured ``tool_calls`` flush (R6-C3, dogfood-087/R2-6).
+_ACTION_PREFIX = re.compile(r"\bAction:", re.MULTILINE)
+
+# Sentinel string the streaming parser hangs onto when a trailing
+# delta tail is a STRICT prefix of ``Action:``. e.g. delta ends with
+# ``"\nActi"`` → could become ``"\nAction:"`` on the next chunk, so we
+# hold back those 4 bytes rather than leaking them as ``content``.
+_ACTION_TOKEN = "Action:"
+
 # Reasoning-channel preamble at the start of a UI-TARS response. When the
 # tool parser is run on its own (no separate reasoning parser configured),
 # we strip this preamble out of ``content`` so the same chain-of-thought
@@ -868,6 +883,42 @@ def _normalize_action(verb: str, kwargs: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+def _trailing_action_prefix_len(text: str) -> int:
+    """Return how many trailing bytes of ``text`` could be a prefix of ``Action:``.
+
+    Used by the streaming hold-back path. If ``text`` ends with a
+    non-empty strict prefix of the literal ``"Action:"`` token (e.g.
+    ``"...thing.\\nAc"`` → trailing ``"Ac"`` is the 2-byte prefix of
+    ``"Action:"``), return that prefix length so the streaming path
+    can keep those trailing bytes buffered until the next delta
+    resolves the token. Returns 0 if no such overlap exists, OR if
+    ``text`` contains the full ``"Action:"`` token already (in which
+    case the full-action consumer / strict-prefix branch handles it).
+
+    This is the symmetric counterpart to the reasoning parser's
+    ``_compute_partial_action_hold`` — same purpose (don't ship a
+    candidate-opener prefix until disambiguation), but operates on the
+    tool-parser side of the hand-off so a leak that snuck past the
+    reasoning parser's gate (e.g. via the postprocessor's fast-path
+    short-circuit on ``<``/``[``-free deltas) is still suppressed.
+    """
+    if not text:
+        return 0
+    # If the full token is already present anywhere in the buffer,
+    # the strict-prefix check is moot — the streaming consumer should
+    # handle the completed-action accounting and emit the residual.
+    if _ACTION_TOKEN in text:
+        return 0
+    # Longest non-empty suffix of ``text`` that matches a strict prefix
+    # of ``_ACTION_TOKEN``. We scan from longest-to-shortest so that a
+    # single delta containing ``"....Acti"`` returns 4, not 1.
+    max_overlap = len(_ACTION_TOKEN) - 1  # 6 bytes (we already excluded full token)
+    for k in range(min(max_overlap, len(text)), 0, -1):
+        if _ACTION_TOKEN.startswith(text[-k:]):
+            return k
+    return 0
+
+
 def _iter_actions(text: str) -> list[tuple[int, int, str, dict[str, Any]]]:
     """Find every ``Action: verb(...)`` block in left-to-right order.
 
@@ -905,6 +956,61 @@ def _iter_actions(text: str) -> list[tuple[int, int, str, dict[str, Any]]]:
         actions.append((m.start(), close + 1, verb, kwargs))
         cursor = close + 1
     return actions
+
+
+# Spec-key translation map for the Anthropic ``/v1/messages`` and OpenAI
+# ``/v1/responses`` lanes. The UI-TARS parser emits its CANONICAL key set
+# (``point`` / ``start_point`` / ``end_point``) so the chat-completions
+# lane stays bytes-faithful to PR #812's contract; the adapters then
+# remap to each spec's documented key.
+#
+# Anthropic Computer-Use spec
+# (https://docs.anthropic.com/en/docs/agents-and-tools/computer-use):
+# ``coordinate=[x, y]`` for single-point verbs; two-point verbs are
+# expressed via separate ``start_coordinate`` / ``end_coordinate``
+# fields (matches the spec's ``screenshot`` / ``cursor_position`` shape).
+#
+# OpenAI Responses Computer-Use spec
+# (https://platform.openai.com/docs/api-reference/responses-streaming/output_item):
+# ``computer_call.action.coordinate=[x, y]`` for single-point; two-point
+# ``drag`` action uses ``path=[{x, y}, ...]`` — but a pragmatic translation
+# emits ``start_coordinate`` / ``end_coordinate`` mirroring the Anthropic
+# shape so a single key-mapper covers both surfaces. The Responses lane
+# would otherwise have NO drag shape because the parser emits the
+# Anthropic-compatible point-pair, not OpenAI's path list. Centralized
+# here so the two adapters can't drift on key naming.
+_UI_TARS_TO_SPEC_KEY_MAP: dict[str, str] = {
+    "point": "coordinate",
+    "start_point": "start_coordinate",
+    "end_point": "end_coordinate",
+}
+
+
+def translate_to_spec_coordinate_keys(args: dict[str, Any]) -> dict[str, Any]:
+    """Translate UI-TARS canonical coord keys to Anthropic/Responses spec keys.
+
+    The parser output (``arguments`` JSON for the ``computer`` tool call)
+    uses UI-TARS native keys ``point`` / ``start_point`` / ``end_point``
+    because that's the contract PR #812 documented and the chat-completions
+    OpenAI lane is already on. But the Anthropic ``/v1/messages`` lane
+    (``tool_use.input``) and the OpenAI ``/v1/responses`` lane
+    (``computer_call.action``) both follow specs that use ``coordinate``
+    (and ``start_coordinate`` / ``end_coordinate`` for two-point verbs).
+
+    Returns a shallow-copied dict with the keys remapped per
+    ``_UI_TARS_TO_SPEC_KEY_MAP``; non-coord keys (``action``, ``content``,
+    ``key``, ``direction``, …) pass through verbatim. Caller mutates only
+    the copy.
+
+    Idempotent: applying twice produces the same result (already-translated
+    keys aren't in the map and are passed through).
+    """
+    if not args:
+        return args
+    out: dict[str, Any] = {}
+    for k, v in args.items():
+        out[_UI_TARS_TO_SPEC_KEY_MAP.get(k, k)] = v
+    return out
 
 
 @ToolParserManager.register_module(["ui_tars", "ui-tars", "uitars"])
@@ -1043,7 +1149,31 @@ class UiTarsToolParser(ToolParser):
         if _is_tool_choice_none(request):
             return {"content": delta_text}
         if "Action:" not in current_text:
-            return {"content": delta_text}
+            # R6-C3 hold-back: the trailing bytes of ``current_text``
+            # might be a STRICT prefix of the ``Action:`` token (e.g.
+            # ``current_text`` ends with ``"\nAc"``). If we emit
+            # ``delta_text`` verbatim those candidate-opener bytes leak
+            # into ``delta.content`` BEFORE the structured tool_calls
+            # flush — the dogfood R2-6 leak. Hold back any trailing
+            # bytes of THIS delta that fall inside the partial-opener
+            # window; the next delta that resolves the token (either
+            # by completing ``Action:`` or by emitting a disambiguating
+            # byte) releases them through the appropriate channel.
+            held = _trailing_action_prefix_len(current_text)
+            if held == 0:
+                return {"content": delta_text}
+            # Compute how much of THIS delta is in the held window vs.
+            # the safely-emittable prefix.
+            delta_start_in_current = len(previous_text)
+            held_window_start = len(current_text) - held
+            if held_window_start <= delta_start_in_current:
+                # Every byte of this delta is in the partial-opener
+                # window — emit nothing. The reasoning-parser side
+                # already buffered any prior held prefix bytes; the
+                # next disambiguating delta releases them all.
+                return None
+            split = held_window_start - delta_start_in_current
+            return {"content": delta_text[:split]}
 
         prev_actions = _iter_actions(previous_text) if previous_text else []
         cur_actions = _iter_actions(current_text)
@@ -1106,18 +1236,60 @@ class UiTarsToolParser(ToolParser):
         return result
 
     def has_pending_tool_call(self, text: str) -> bool:
-        """Return True if text contains an unfinished ``Action: verb(`` block.
+        """Return True if text contains (or could complete to) an unfinished action.
 
-        The ``finalize()`` postprocessor uses this to decide whether to
-        hold delta bytes back vs. flush them as content at end-of-stream.
-        For UI-TARS we conservatively say "pending" iff an ``Action:``
-        token appears with no balanced ``)`` after it — that's the only
-        case where a late-arriving byte could change parser output.
+        Used by the streaming postprocessor's fast-path: when ``False``
+        the postprocessor short-circuits the delta into ``content``;
+        when ``True`` the full streaming path is engaged so the parser
+        can buffer / suppress / emit structured ``tool_calls`` instead
+        of leaking raw bytes.
+
+        Pre-r6-B contract was "Action: verb( with no balanced )" only.
+        The R6-C3 dogfood leak (R2-6) showed that an in-flight delta
+        carrying the bare ``Action: <verb>`` token (no ``(`` yet) hit
+        the False arm and leaked into ``delta.content`` BEFORE the
+        structured ``tool_calls`` arrived. Tightened contract — three
+        cases now return True:
+
+        1. The strict ``_ACTION_LINE`` regex (``Action: verb(``) matched
+           and has no balanced close — the original case.
+        2. The bare ``Action:`` token appears in ``text`` (verb /
+           parens not yet emitted) — a few more decode steps will
+           complete the action signature, so hold the buffer.
+        3. ``text`` ends with a non-empty STRICT prefix of ``Action:``
+           (e.g. ``"...thing.\\nAc"``) — the next delta might land the
+           rest of the token, so the trailing bytes must NOT be flushed
+           through the fast-path; the streaming parser's hold-back
+           logic clips them.
+
+        Pure-False only when the buffer has no in-flight action signal
+        and no trailing partial-opener candidate.
         """
-        if "Action:" not in text:
-            return False
+        # Case 1: full ``Action: verb(`` line whose ``)`` hasn't arrived.
+        # Note: when an action HAS completed (balanced close found) we
+        # still return False here — the streaming consumer will surface
+        # the completed tool_call on the next delta-resolving step; we
+        # don't claim "pending" for an already-resolved action.
+        line_starts: list[int] = []
         for m in _ACTION_LINE.finditer(text):
+            line_starts.append(m.start())
             close = _find_balanced_close(text, m.end())
             if close == -1:
                 return True
-        return False
+        # Case 2: bare ``Action:`` token whose verb / open-paren hasn't
+        # arrived yet (i.e. an ``Action:`` occurrence that is NOT the
+        # head of any matched ``_ACTION_LINE``). The classic dogfood
+        # leak shape is ``"Action: type"`` where the ``(`` is in a
+        # pending decode step — the postprocessor's fast-path used
+        # to short-circuit the delta as plain ``content`` because
+        # ``_ACTION_LINE.search`` requires the open paren. Holding
+        # the buffer keeps the bare prefix bytes off the wire until
+        # the verb + body resolve on subsequent deltas.
+        for pm in _ACTION_PREFIX.finditer(text):
+            if pm.start() not in line_starts:
+                return True
+        # Case 3: trailing strict-prefix of ``Action:`` at the buffer
+        # tail (e.g. ``"...end.\\nAc"``). Holding back keeps the
+        # candidate-opener bytes off the wire until the next delta
+        # either completes the token or disambiguates them as content.
+        return _trailing_action_prefix_len(text) > 0

@@ -913,20 +913,25 @@ class TestLaneInjectionParity:
 
 
 # ---------------------------------------------------------------------------
-# Anthropic adapter: tool_use.input carries the spec'd ``point`` shape
+# Anthropic adapter: tool_use.input carries the spec ``coordinate`` shape (R6-M2)
 # ---------------------------------------------------------------------------
 
 
 class TestAnthropicAdapterPointShape:
-    """The Anthropic adapter ``openai_to_anthropic`` just ``json.loads``
+    """The Anthropic adapter ``openai_to_anthropic`` ``json.loads``
     the OAI tool_call arguments and stuffs them into ``tool_use.input``.
-    With our parser-level rename, the Anthropic ``tool_use.input``
-    naturally carries ``point`` / ``start_point`` / ``end_point``
-    instead of ``start_box`` / ``end_box`` — closing dogfood F-R1-02
-    for the Anthropic lane.
+
+    Pre-r6-B: parser-level rename collapsed ``start_box`` → ``point``
+    on the UI-TARS canonical key set; the Anthropic lane then carried
+    ``point`` verbatim — but Anthropic's Computer-Use spec actually
+    requires ``coordinate``. R6-M2 (Aki R1) fix: the Anthropic adapter
+    now translates UI-TARS canonical ``point`` to spec ``coordinate``
+    on the ``/v1/messages`` boundary, gated on ``name=="computer"``
+    so vanilla function tools whose arguments happen to carry a
+    ``point`` key are untouched.
     """
 
-    def test_click_tool_use_input_uses_point_not_start_box(self):
+    def test_click_tool_use_input_uses_coordinate_not_point_or_start_box(self):
         from vllm_mlx.api.anthropic_adapter import openai_to_anthropic
         from vllm_mlx.api.models import (
             AssistantMessage,
@@ -964,9 +969,12 @@ class TestAnthropicAdapterPointShape:
         tool_use_blocks = [b for b in anth.content if b.type == "tool_use"]
         assert len(tool_use_blocks) == 1
         assert tool_use_blocks[0].name == "computer"
-        # Anthropic ``tool_use.input`` carries the spec key.
+        # R6-M2: Anthropic ``tool_use.input`` carries the spec ``coordinate``
+        # key, not the UI-TARS-native ``point`` (and certainly not the
+        # UI-TARS-1.5 ``start_box``).
         assert tool_use_blocks[0].input == {
             "action": "click",
-            "point": [128, 128],
+            "coordinate": [128, 128],
         }
+        assert "point" not in tool_use_blocks[0].input
         assert "start_box" not in tool_use_blocks[0].input

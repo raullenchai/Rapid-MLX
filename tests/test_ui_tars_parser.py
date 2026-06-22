@@ -808,7 +808,9 @@ class TestAnthropicAdapter:
         assert len(tool_use_blocks) == 1
         tu = tool_use_blocks[0]
         assert tu.name == "computer"
-        assert tu.input == {"action": "click", "point": [200, 300]}
+        # R6-M2: Anthropic adapter translates UI-TARS canonical ``point``
+        # to spec ``coordinate`` on the ``/v1/messages`` boundary.
+        assert tu.input == {"action": "click", "coordinate": [200, 300]}
 
     def test_multi_action_emits_multiple_tool_use_blocks(self):
         from vllm_mlx.api.anthropic_adapter import openai_to_anthropic

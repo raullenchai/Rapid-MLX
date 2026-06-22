@@ -533,7 +533,19 @@ def _parse_computer_action(arguments: str) -> dict:
     # back to the sentinel so the dispatcher can detect the gap.
     if "type" not in out:
         return {"type": "unknown", "raw": arguments}
-    return out
+    # R6-M2: OpenAI's Responses Computer-Use spec uses ``coordinate``
+    # for the single-point verbs and ``start_coordinate`` /
+    # ``end_coordinate`` for two-point verbs. The UI-TARS parser emits
+    # the canonical ``point`` / ``start_point`` / ``end_point`` keys
+    # (PR #812 contract — chat-completions OpenAI lane stays on those
+    # for bytes-faithfulness with downstream OpenAI tool_call shape).
+    # Centralized key-mapper lives in the parser module so the
+    # Anthropic + Responses adapters can't drift on key naming.
+    from ..tool_parsers.ui_tars_tool_parser import (
+        translate_to_spec_coordinate_keys,
+    )
+
+    return translate_to_spec_coordinate_keys(out)
 
 
 # ---------------------------------------------------------------------------
