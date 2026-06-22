@@ -3345,57 +3345,129 @@ class Scheduler:
             f"(D-METAL-CAP); retry after pressure drops"
         )
 
+    def _resolve_pressure_evict_fraction(self) -> float:
+        """Return the clamped ``(0, 1]`` fraction used for pressure thresholds.
+
+        Codex round 2 NIT (kept across the R6-H6 expansion): a zero or
+        negative configured fraction would compute ``threshold <= 0``
+        and trip the eviction loop on every tick even when memory is
+        quiet. A value > 1.0 would push the threshold ABOVE the cap
+        itself, so eviction would never run before the admission gate
+        started rejecting requests. Both shapes are clamped (not
+        rejected) so a misconfigured operator gets a working default.
+        """
+        raw_fraction = float(getattr(self.config, "metal_pressure_evict_fraction", 0.9))
+        if not (raw_fraction > 0.0):
+            raw_fraction = 0.9
+        if raw_fraction > 1.0:
+            raw_fraction = 1.0
+        return raw_fraction
+
+    def _cache_self_pressure_threshold_bytes(self) -> int:
+        """Return the prefix-cache memory threshold above which the
+        scheduler proactively evicts, INDEPENDENT of ``gpu_memory_utilization``.
+
+        R6-H6 root cause: pre-fix the pressure path was gated solely
+        on ``mx.get_active_memory() > fraction × metal_cap``. When
+        ``gpu_memory_utilization`` is unset (the default 0.0 — the
+        configuration the 0.8.7 dogfood actually ran with),
+        ``_resolve_metal_cap_bytes`` returns 0, the function early-
+        returns, and ``num_prefix_cache_pressure_evictions`` never
+        ticks even though the cache itself crept to 31 GB / 35.5 GB
+        Metal allocated. This helper surfaces a second, always-on
+        trigger so the pressure counter ticks whenever the cache's
+        own memory ledger crosses the same configured fraction of
+        its OWN budget (driven by ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES``
+        when set, or the heuristic 20%-of-RAM default otherwise).
+
+        Returns ``0`` when no memory-aware cache is configured or it
+        reports a non-positive max — callers treat ``0`` as "do not
+        check on this path" and the legacy Metal-cap path still runs.
+        """
+        cache = self.memory_aware_cache
+        if cache is None:
+            return 0
+        # ``_max_memory`` is the bytes budget compute_memory_limit()
+        # resolved at cache init (env override > programmatic >
+        # heuristic > 8 GiB fallback). Pull it through a getattr so
+        # this helper is robust against fakes / older cache variants
+        # that don't expose the attribute.
+        max_memory = int(getattr(cache, "_max_memory", 0) or 0)
+        if max_memory <= 0:
+            return 0
+        return int(max_memory * self._resolve_pressure_evict_fraction())
+
+    def _cache_self_pressure_current_bytes(self) -> int:
+        """Snapshot of memory_aware_cache's current ledger in bytes.
+
+        Returns ``0`` when no memory-aware cache is configured so
+        callers short-circuit cleanly on engines that route through
+        the block-aware / trie-based variants instead.
+        """
+        cache = self.memory_aware_cache
+        if cache is None:
+            return 0
+        return int(getattr(cache, "_current_memory", 0) or 0)
+
     def evict_prefix_cache_under_pressure(self, max_evict: int = 64) -> int:
-        """D-METAL-PFX: LRU-evict prefix-cache entries while Metal pressure persists.
+        """LRU-evict prefix-cache entries while memory pressure persists.
 
-        Designed for the periodic engine_core memory-pressure tick:
-        when Metal active climbs above ``metal_pressure_evict_fraction``
-        of the soft cap, this method walks the LRU evicting the oldest
-        prefix-cache entries until pressure drops or ``max_evict``
-        entries have been removed. After each eviction we call
-        ``mx.clear_cache()`` so the allocator actually returns slabs
-        to MLX's free pool rather than holding wired memory pinned to
-        the now-dead CacheEntry.
+        Two independent triggers can fire this loop:
 
-        Returns the number of entries evicted (0 if pressure was
-        already below threshold, no cache is configured, or the cache
-        had nothing eligible for eviction). Increments
-        ``num_prefix_cache_pressure_evictions`` for each eviction so
-        operators can attribute pressure-driven eviction separately
-        from the cache's own LRU-capacity eviction in /metrics.
+        * **D-METAL-PFX (Metal active pressure):** when
+          ``mx.get_active_memory()`` climbs above
+          ``metal_pressure_evict_fraction × _resolve_metal_cap_bytes()``.
+          Requires ``gpu_memory_utilization > 0`` so the Metal soft cap
+          is configured.
+        * **R6-H6 (cache-self pressure):** when the memory-aware
+          cache's own ``_current_memory`` ledger climbs above
+          ``metal_pressure_evict_fraction × _max_memory``. Fires
+          INDEPENDENTLY of ``gpu_memory_utilization`` — this was the
+          missing trigger in 0.8.7 dogfood (31 GB cache / 35.5 GB Metal
+          allocated, zero pressure evictions because the Metal cap
+          was never configured).
+
+        After each eviction we call ``mx.clear_cache()`` so the
+        allocator actually returns slabs to MLX's free pool rather
+        than holding wired memory pinned to the now-dead CacheEntry.
+
+        Returns the number of entries evicted (0 if neither trigger
+        fired, no cache is configured, or the cache had nothing
+        eligible). Increments ``num_prefix_cache_pressure_evictions``
+        for each eviction so operators can attribute pressure-driven
+        eviction separately from the cache's own LRU-capacity
+        eviction in /metrics.
 
         Implementation note: ``max_evict`` is bounded so a single
         pressure tick cannot evict the entire prefix cache and trash
         every in-flight hit-rate stat on a transient spike. The
         engine_core loop calls this method every 16 steps, so a
         sustained-pressure scenario still drains the cache within a
-        few hundred ms — fast enough to recover from the D-METAL-PFX
-        single-32k-prefill cliff that pinned ~7.7 GB worth of cache
-        entries with zero allocator-cache memory free.
+        few hundred ms.
         """
-        cap = self._resolve_metal_cap_bytes()
-        if cap <= 0:
+        metal_cap = self._resolve_metal_cap_bytes()
+        cache_self_threshold = self._cache_self_pressure_threshold_bytes()
+        # Short-circuit when NEITHER trigger is configured. This keeps
+        # the no-op cost (one ``mx.get_active_memory()`` syscall +
+        # one dict lookup) off the path on engines that disabled both
+        # the Metal soft cap AND the cache-self trigger (e.g. legacy
+        # trie-based PrefixCacheManager engines).
+        if metal_cap <= 0 and cache_self_threshold <= 0:
             return 0
-        # Codex round 2 NIT: clamp the configured pressure-evict
-        # fraction into a documented ``(0, 1]`` range. A zero or
-        # negative value would otherwise compute ``threshold <= 0``
-        # and trip the eviction loop on every tick even when Metal is
-        # quiet. A value > 1.0 would push the threshold ABOVE the cap
-        # itself, so pressure eviction would never run before the
-        # admission gate started rejecting requests — defeating the
-        # whole D-METAL-PFX recovery path. Out-of-range values are
-        # clamped (not rejected) so a misconfigured operator gets a
-        # working default rather than a hard server failure.
-        raw_fraction = float(getattr(self.config, "metal_pressure_evict_fraction", 0.9))
-        if not (raw_fraction > 0.0):
-            raw_fraction = 0.9
-        if raw_fraction > 1.0:
-            raw_fraction = 1.0
-        threshold = int(cap * raw_fraction)
+        fraction = self._resolve_pressure_evict_fraction()
+        metal_threshold = int(metal_cap * fraction) if metal_cap > 0 else 0
         evicted = 0
         for _ in range(max(0, int(max_evict))):
-            active = self._current_metal_active_bytes()
-            if active < threshold:
+            should_evict = False
+            if metal_threshold > 0:
+                active = self._current_metal_active_bytes()
+                if active >= metal_threshold:
+                    should_evict = True
+            if not should_evict and cache_self_threshold > 0:
+                current_cache = self._cache_self_pressure_current_bytes()
+                if current_cache >= cache_self_threshold:
+                    should_evict = True
+            if not should_evict:
                 break
             if not self._evict_one_prefix_cache_entry():
                 break
@@ -3428,12 +3500,14 @@ class Scheduler:
             # cache-state-vs-metric in sync on failure.
             mx.clear_cache()
         if evicted:
+            trigger = "Metal" if metal_threshold > 0 else "cache-self"
             logger.info(
-                "[D-METAL-PFX] evicted %d prefix-cache entries under Metal "
-                "pressure (cap=%.1fGB threshold=%.1fGB)",
+                "[prefix-pressure-evict] evicted %d entries under %s pressure "
+                "(metal_cap=%.1fGB, cache_max=%.1fGB)",
                 evicted,
-                cap / 1e9,
-                threshold / 1e9,
+                trigger,
+                metal_cap / 1e9 if metal_cap > 0 else 0.0,
+                cache_self_threshold / 1e9 if cache_self_threshold > 0 else 0.0,
             )
         return evicted
 

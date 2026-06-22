@@ -289,6 +289,53 @@ def _get_available_memory() -> int:
         return 0
 
 
+# Name of the env var operators set to bound the prefix-cache memory.
+# Exported so the metrics route, config dumps, and the tests can refer
+# to a single canonical string.
+PREFIX_CACHE_MAX_BYTES_ENV = "RAPID_MLX_PREFIX_CACHE_MAX_BYTES"
+
+
+def _resolve_env_cache_max_bytes() -> int:
+    """Read ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` from the environment.
+
+    Returns the parsed integer when the env var is set to a positive
+    integer; ``0`` for any other shape (unset, blank, non-integer, or
+    non-positive). The caller treats ``0`` as "no override" and falls
+    through to the legacy heuristic. Out-of-shape values are logged
+    once per process so a misconfigured operator gets a visible
+    diagnostic without flooding subsequent reconfigs.
+    """
+    raw = os.environ.get(PREFIX_CACHE_MAX_BYTES_ENV)
+    if raw is None:
+        return 0
+    raw = raw.strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        global _ENV_CACHE_MAX_BYTES_PARSE_WARNED
+        if not _ENV_CACHE_MAX_BYTES_PARSE_WARNED:
+            _ENV_CACHE_MAX_BYTES_PARSE_WARNED = True
+            logger.warning(
+                "%s=%r is not a valid integer; ignoring and falling back "
+                "to the heuristic limit.",
+                PREFIX_CACHE_MAX_BYTES_ENV,
+                raw,
+            )
+        return 0
+    if value <= 0:
+        return 0
+    return value
+
+
+# Once-per-process flag so an operator who set ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES``
+# to garbage (e.g. ``"5GB"`` instead of bytes) sees the warning once and
+# the cache silently falls through to the heuristic instead of spamming
+# the log on every reconfig.
+_ENV_CACHE_MAX_BYTES_PARSE_WARNED = False
+
+
 def _array_memory(arr) -> int:
     """
     Estimate array memory from shape+dtype without triggering lazy eval.
@@ -426,9 +473,36 @@ class MemoryCacheConfig:
         """
         Compute the memory limit in bytes.
 
+        Resolution order (first hit wins):
+          1. ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` env var — operator
+             override for ops who need to bound the cache to a known
+             ceiling regardless of system RAM (R6-H6 fix from the
+             0.8.7 dogfood: the default 20% of available RAM let the
+             cache balloon to 31 GB on a large-memory host before any
+             eviction fired). Accepts a plain integer (bytes); invalid
+             / non-positive values fall through to the next step so a
+             misconfigured operator gets the legacy default rather
+             than a hard server failure.
+          2. ``MemoryCacheConfig.max_memory_mb`` — programmatic
+             override set by callers (CLI / config plumbing).
+          3. ``max_memory_percent`` × available RAM (default 20%).
+          4. ``max_memory_percent`` × 8 GiB fallback when psutil is
+             unavailable.
+
         Returns:
             Memory limit in bytes.
         """
+        env_override = _resolve_env_cache_max_bytes()
+        if env_override > 0:
+            # The env override is an OPERATOR ceiling — we trust it
+            # verbatim. NOT clamped to ``_MIN_MEMORY_BYTES`` because
+            # that floor only exists to keep the heuristic 20% × RAM
+            # path from underestimating on a memory-starved host. An
+            # operator who explicitly set a small value wants the
+            # small value (e.g. test fixtures that drive eviction
+            # against a deterministic cap).
+            return env_override
+
         if self.max_memory_mb is not None:
             return self.max_memory_mb * _BYTES_PER_MB
 

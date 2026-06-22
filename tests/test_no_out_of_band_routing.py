@@ -187,6 +187,18 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # equivalents) escalate to SIGKILL and orphan ``<cache_dir>.new/``.
         # Pure deadline knob — never selects model, parser, or tier.
         "RAPID_MLX_PREFIX_CACHE_SHUTDOWN_BUDGET",
+        # R6-H6 prefix-cache memory ceiling (bytes). Read by
+        # ``MemoryCacheConfig.compute_memory_limit`` and consumed by
+        # ``MemoryAwarePrefixCache._max_memory``. The 0.8.7 dogfood found
+        # the default 20%-of-RAM heuristic let the cache balloon to 31 GB
+        # before any eviction fired; this env var lets ops bound the cache
+        # to a known ceiling so both
+        # ``rapid_mlx_prefix_cache_evictions_total`` (LRU-on-cap inside
+        # the cache) and ``rapid_mlx_prefix_cache_pressure_evictions_total``
+        # (the scheduler's cache-self-pressure trigger) tick on real
+        # eviction activity. Pure capacity knob — never selects a model,
+        # parser, or routing tier.
+        "RAPID_MLX_PREFIX_CACHE_MAX_BYTES",
         # Sandbox root for the KV cache export/import HTTP API (issue #476).
         # Default ``~/.cache/rapid-mlx/cache_exports/``. All caller-supplied
         # paths to ``/v1/cache/{export,import,info}`` must resolve inside
