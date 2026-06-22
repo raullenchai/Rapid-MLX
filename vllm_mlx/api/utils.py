@@ -1026,8 +1026,11 @@ def _validate_content_part_payload(item: dict) -> None:
     elif item_type == "input_audio":
         value = item.get("input_audio")
         if not isinstance(value, dict):
-            raise ValueError("input_audio must be an object with required field 'data'")
+            raise ValueError(
+                "input_audio must be an object with required fields 'data' and 'format'"
+            )
         _require_string(value.get("data"), "input_audio.data")
+        _require_string(value.get("format"), "input_audio.format")
 
 
 def validate_content_blocks_for_capabilities(

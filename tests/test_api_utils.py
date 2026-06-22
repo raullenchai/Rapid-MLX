@@ -22,6 +22,7 @@ from vllm_mlx.api.utils import (
     extract_multimodal_content,
     is_mllm_model,
     is_vlm_model,
+    validate_content_blocks_for_capabilities,
 )
 
 
@@ -915,6 +916,30 @@ class TestContentToText:
 
     def test_empty_list(self):
         assert _content_to_text([]) == ""
+
+
+class TestValidateContentBlocksForCapabilities:
+    def test_input_audio_requires_format_even_when_audio_allowed(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": "base64data"},
+                    }
+                ],
+            }
+        ]
+
+        with pytest.raises(ValueError, match="input_audio\\.format"):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="audio-model",
+                allow_image=False,
+                allow_video=False,
+                allow_audio=True,
+            )
 
 
 class TestGptOssSpecialTokens:

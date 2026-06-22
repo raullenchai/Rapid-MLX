@@ -827,11 +827,24 @@ class MLLMScheduler:
                 if (
                     not stop_trimmed
                     and request.stop
-                    and request.stop_text
-                    and request.stop_text_len < len(request.stop_text)
+                    and (
+                        (
+                            request.stop_text
+                            and request.stop_text_len < len(request.stop_text)
+                        )
+                        or request.stop_tail
+                    )
                 ):
-                    output.new_text += request.stop_text[request.stop_text_len :]
-                    request.stop_text_len = len(request.stop_text)
+                    if request.stop_text and request.stop_text_len < len(
+                        request.stop_text
+                    ):
+                        held_text = request.stop_text[request.stop_text_len :]
+                        request.stop_text_len = len(request.stop_text)
+                    else:
+                        held_text = request.stop_tail
+                    output.new_text += held_text
+                    request.output_text += held_text
+                    output.output_text = request.output_text
                 if finish_reason == "stop":
                     request.status = RequestStatus.FINISHED_STOPPED
                 elif finish_reason == "length":
