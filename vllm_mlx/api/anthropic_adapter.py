@@ -32,7 +32,6 @@ from .models import (
     ToolDefinition,
 )
 
-
 # F9: Anthropic's public spec uses ``id="toolu_<hex>"`` on every
 # ``tool_use`` block (and every matching ``tool_result.tool_use_id``).
 # Our underlying tool parsers all mint OpenAI-style ``call_<hex>`` IDs
