@@ -785,9 +785,11 @@ def _contains_structural_tool_wire_leak(text: str | None) -> bool:
     if not text:
         return False
     for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
-        if balanced_re.search(text):
+        match = balanced_re.search(text)
+        if match and _TOOL_WIRE_PAYLOAD_HINT_RE.search(match.group(0)):
             return True
-    if _CROSS_FAMILY_SPAN_RE.search(text):
+    cross_match = _CROSS_FAMILY_SPAN_RE.search(text)
+    if cross_match and _TOOL_WIRE_PAYLOAD_HINT_RE.search(cross_match.group(0)):
         return True
     for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
         match = marker_re.search(text)
@@ -2794,16 +2796,20 @@ async def _create_chat_completion_impl(
     _raw_has_structural_wire = _contains_structural_tool_wire_leak(
         _raw_text_for_reasoning
     )
-    _wire_scrub_active = (
-        _is_forced_choice
-        and request.tools
-        and bool(tool_calls)
-        and _contains_tool_wire_literal(cleaned_text)
-        and (
-            _contains_structural_tool_wire_leak(cleaned_text)
-            or _raw_has_structural_wire
+
+    def _should_scrub_visible_wire(text: str | None) -> bool:
+        return (
+            _is_forced_choice
+            and request.tools
+            and bool(tool_calls)
+            and _contains_tool_wire_literal(text)
+            and (
+                _contains_structural_tool_wire_leak(text)
+                or _raw_has_structural_wire
+            )
         )
-    )
+
+    _wire_scrub_active = _should_scrub_visible_wire(cleaned_text)
     # codex r6 BLOCKING #2: scrub the user-visible ``cleaned_text``
     # only. Do NOT mutate ``raw_text`` before it reaches the reasoning
     # parser — pretty-printed reasoning bodies may legitimately
@@ -2858,17 +2864,9 @@ async def _create_chat_completion_impl(
         # any caller that hasn't been threaded yet.
         finish_reason=getattr(output, "finish_reason", None),
     )
-    _reasoning_wire_scrub_active = (
-        _is_forced_choice
-        and request.tools
-        and bool(tool_calls)
-        and _contains_tool_wire_literal(reasoning_text)
-        and (
-            _contains_structural_tool_wire_leak(reasoning_text)
-            or _raw_has_structural_wire
-        )
-    )
-    if _reasoning_wire_scrub_active and reasoning_text:
+    if _should_scrub_visible_wire(cleaned_text):
+        cleaned_text = _scrub_tool_wire_literals(cleaned_text)
+    if _should_scrub_visible_wire(reasoning_text) and reasoning_text:
         reasoning_text = _scrub_tool_wire_literals(reasoning_text)
 
     # Process response_format if specified (after reasoning parser cleaned the text)

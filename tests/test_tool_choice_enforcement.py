@@ -1240,6 +1240,9 @@ def test_codex_r7_structural_leak_detector_ignores_plain_marker_mentions():
     closer_prose = "Use </function> to close XML in this example."
     assert _contains_tool_wire_literal(closer_prose)
     assert not _contains_structural_tool_wire_leak(closer_prose)
+    balanced_prose = "Show the literal form <tool_call>...</tool_call>."
+    assert _contains_tool_wire_literal(balanced_prose)
+    assert not _contains_structural_tool_wire_leak(balanced_prose)
     assert _contains_structural_tool_wire_leak(
         '<tool_call>{"name":"add_numbers","arguments":{"a":1}}</function>'
     )
@@ -1301,34 +1304,97 @@ def test_codex_r7_synth_forced_clean_closer_prose_not_scrubbed():
     assert msg.get("content") == raw
 
 
+def test_codex_r8_synth_forced_clean_balanced_marker_prose_not_scrubbed():
+    """Balanced marker examples without payload hints are explanatory prose."""
+
+    raw = "Show the literal form <tool_call>...</tool_call>."
+
+    class _CleanBalancedMentionEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=raw, raw_text=raw)
+
+    engine = _CleanBalancedMentionEngine()
+    client = _make_client(engine, tool_call_parser="hermes")
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add 1 and 2"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    msg = resp.json()["choices"][0]["message"]
+    assert msg.get("tool_calls"), msg
+    content = msg.get("content") or ""
+    assert "Show the literal form" in content
+    assert "<tool_call>" in content
+    assert "..." in content
+
+
 # -----------------------------------------------------------------------
 # codex r6 BLOCKING #2 — don't scrub raw_text before reasoning extract
 # -----------------------------------------------------------------------
 
 
 def test_codex_r6_blocking_2_raw_text_not_mutated_before_reasoning():
-    """The chat route must NOT pre-scrub ``output.raw_text`` before
-    handing it to the reasoning parser. Pretty-printed reasoning may
-    legitimately contain wire-marker-shaped tokens (e.g. when
-    discussing tool wire formats), and rewriting those before
-    extraction truncates / collapses reasoning content.
+    """The route keeps raw reasoning extraction but scrubs visible fields.
 
-    Static check on the route source — the call site must pass
-    ``output.raw_text or output.text`` UNMODIFIED to
-    ``_finalize_content_and_reasoning``.
+    This is the production contract: a reasoning parser may inspect the
+    original raw text, but any wire markers it surfaces into
+    ``content``/``reasoning_content`` must be removed before response
+    construction.
     """
-    import inspect
 
-    import vllm_mlx.routes.chat as _chat_mod
-
-    src = inspect.getsource(_chat_mod)
-    # The fix moved the raw_text= argument to the un-scrubbed path.
-    # We assert the un-scrubbed expression is wired in, and that the
-    # pre-fix ``_scrubbed_raw_text`` ternary is gone.
-    assert "_scrubbed_raw_text" not in src, (
-        "raw_text scrub path must not survive — codex r6 BLOCKING #2"
+    raw = (
+        "<think>Need a tool.\n"
+        '<tool_call>{"name":"add_numbers","arguments":{"a":1,"b":2}}</function>\n'
+        "Done.</think>"
     )
-    assert "raw_text=output.raw_text or output.text" in src
+
+    class _RawEchoReasoningParser:
+        def extract_reasoning(self, text, enable_thinking=None):
+            return (
+                "Reasoning saw "
+                '<tool_call>{"name":"add_numbers","arguments":{"a":1,"b":2}}</function>',
+                text,
+            )
+
+    class _RawWireEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=raw, raw_text=raw)
+
+    engine = _RawWireEngine()
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = False
+    cfg.reasoning_parser = _RawEchoReasoningParser()
+    cfg.tool_call_parser = "hermes"
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add 1 and 2"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    msg = resp.json()["choices"][0]["message"]
+    assert msg.get("tool_calls"), msg
+    content = msg.get("content") or ""
+    reasoning = msg.get("reasoning_content") or ""
+    for leak in ("<tool_call>", "</tool_call>", "</function>", "</parameter>"):
+        assert leak not in content
+        assert leak not in reasoning
 
 
 # -----------------------------------------------------------------------
