@@ -224,7 +224,10 @@ def _enforce_named_tool_choice_present(
     satisfied. When the model emits text only or only wrong-tool calls,
     synthesize the pinned call so valid forced-tool requests keep the
     Anthropic-compatible ``tool_use`` response shape instead of silently
-    returning text for a pinned tool request.
+    returning text for a pinned tool request. The ``error`` slot is kept
+    for the shared stream/non-stream call-site contract; schema-specific
+    failures for synthesized empty inputs are decided by the call sites
+    with ``_synthesized_tool_call_schema_error``.
 
     ``original_call_count`` is the size of ``tool_calls`` BEFORE the
     filter ran. A warning logs the disambiguation between "model

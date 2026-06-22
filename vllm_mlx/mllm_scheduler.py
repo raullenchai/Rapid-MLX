@@ -696,8 +696,13 @@ class MLLMScheduler:
                 if resp_pt > 0:
                     request.num_prompt_tokens = resp_pt
 
-            # Append token to request
-            request.output_tokens.append(response.token)
+            token_is_stop_token = bool(getattr(response, "token_is_stop_token", False))
+
+            # Append generated content tokens to request state. Backend
+            # EOS/control stop ids are scheduler control signals, not user
+            # output, so they must not appear in output_token_ids either.
+            if not token_is_stop_token:
+                request.output_tokens.append(response.token)
             request.num_output_tokens = len(request.output_tokens)
 
             finish_reason = response.finish_reason
@@ -716,7 +721,6 @@ class MLLMScheduler:
                 self._detokenizer_pool[request_id] = detok
             detok = self._detokenizer_pool[request_id]
             stop_params = [s for s in request.stop if s] if request.stop else []
-            token_is_stop_token = bool(getattr(response, "token_is_stop_token", False))
             if token_is_stop_token:
                 new_text = ""
             else:
@@ -900,7 +904,7 @@ class MLLMScheduler:
             outputs.append(
                 RequestOutput(
                     request_id=request_id,
-                    new_token_ids=[response.token],
+                    new_token_ids=[] if token_is_stop_token else [response.token],
                     new_text=output_new_text,
                     output_token_ids=request.output_tokens,
                     output_text=output_output_text,

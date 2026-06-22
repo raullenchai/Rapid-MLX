@@ -1349,6 +1349,8 @@ class TestMLLMSchedulerStopSequences:
 
         assert finished_ids == {request.request_id}
         assert outputs[0].new_text == ""
+        assert outputs[0].new_token_ids == []
+        assert outputs[0].output_token_ids == []
         assert outputs[0].finish_reason == "stop"
         assert outputs[0].matched_stop is None
         assert outputs[0].output_text == "hello"
@@ -1412,6 +1414,8 @@ class TestMLLMSchedulerStopSequences:
 
         assert finished_ids == {request.request_id}
         assert outputs[0].new_text == ""
+        assert outputs[0].new_token_ids == []
+        assert outputs[0].output_token_ids == []
         assert outputs[0].finish_reason == "stop"
         assert outputs[0].output_text == "hello"
 

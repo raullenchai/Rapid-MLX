@@ -133,6 +133,13 @@ _GET_WEATHER = {
         "required": ["location"],
     },
 }
+_GET_WEATHER_OPTIONAL = {
+    "name": "get_weather",
+    "input_schema": {
+        "type": "object",
+        "properties": {"location": {"type": "string"}},
+    },
+}
 _LOOKUP_ZIP = {
     "name": "lookup_zip",
     "input_schema": {
@@ -507,11 +514,11 @@ def test_validator_multiple_calls_bad_one_raises_about_bad_one_only():
 # ---------------------------------------------------------------------------
 
 
-def test_pinned_tool_model_emits_no_tool_calls_returns_422():
-    """F8 (D-ANTHRO-SPEC-POLISH): ``tool_choice={type:tool,name:X}``
-    + model returns text only → 422 instead of silently returning text
-    or synthesizing a fake ``tool_use``. Rapid-MLX cannot decoder-enforce
-    the pinned named-tool contract, so violating it must be explicit.
+def test_pinned_tool_required_schema_model_emits_no_tool_calls_returns_422():
+    """Pinned required-schema tool + model returns text only → 422.
+
+    Empty synthesized input would violate the tool schema, so this remains
+    an explicit error instead of shipping an invalid ``tool_use``.
     """
     engine = _MultiCallEngine(None, text="I can't help with weather right now.")
     client = _make_client(engine)
@@ -528,11 +535,27 @@ def test_pinned_tool_model_emits_no_tool_calls_returns_422():
     assert "get_weather" in response.json()["detail"]
 
 
-def test_pinned_tool_model_emits_only_wrong_tool_returns_422():
-    """F8 (D-ANTHRO-SPEC-POLISH): ``tool_choice={type:tool,name:get_weather}``
-    + model fires only ``lookup_zip`` → 422. The un-pinned
-    ``lookup_zip`` call is dropped by the filter, then the missing
-    pinned call is reported as a named-tool contract error.
+def test_pinned_tool_optional_schema_model_emits_no_tool_calls_synthesizes_200():
+    """Pinned optional-schema tool can synthesize an empty ``tool_use``."""
+    engine = _MultiCallEngine(None, text="I can't help with weather right now.")
+    client = _make_client(engine)
+    body = _post_messages(client, tool_choice={"type": "tool", "name": "get_weather"})
+    body["tools"] = [_GET_WEATHER_OPTIONAL, _LOOKUP_ZIP]
+
+    response = client.post("/v1/messages", json=body)
+
+    assert response.status_code == 200, response.text
+    tool_blocks = [b for b in response.json()["content"] if b["type"] == "tool_use"]
+    assert len(tool_blocks) == 1
+    assert tool_blocks[0]["name"] == "get_weather"
+    assert tool_blocks[0]["input"] == {}
+
+
+def test_pinned_tool_required_schema_model_emits_only_wrong_tool_returns_422():
+    """Pinned required-schema tool + model fires only wrong tool → 422.
+
+    The un-pinned ``lookup_zip`` call is dropped by the filter, then the
+    required pinned call cannot be safely synthesized with empty input.
     """
     engine = _MultiCallEngine([_call("lookup_zip", {"zip": "94105"})])
     client = _make_client(engine)
@@ -549,11 +572,8 @@ def test_pinned_tool_model_emits_only_wrong_tool_returns_422():
     assert "get_weather" in response.json()["detail"]
 
 
-def test_pinned_tool_streaming_no_calls_emits_sse_error():
-    """F8 streaming variant: pinned tool, model returned text only →
-    HTTP 200 with an SSE error event. Unlike non-streaming 422, the
-    violation is only known after generation has started, so the stream
-    preserves HTTP success and surfaces a client-actionable error event.
+def test_pinned_tool_required_schema_streaming_no_calls_emits_sse_error():
+    """Streaming required-schema variant: pinned tool, text only → SSE error.
 
     PR #771 round-2 BLOCKING #1 invariant remains in force: the
     chunk loop's text deltas must NEVER reach the wire when the
@@ -597,10 +617,8 @@ def test_pinned_tool_streaming_no_calls_emits_sse_error():
     )
 
 
-def test_pinned_tool_streaming_only_wrong_tool_emits_sse_error():
-    """F8 streaming variant: pinned tool, model fires only the wrong
-    tool → HTTP 200 with an SSE error event; the un-pinned call never
-    reaches the wire (filter dropped it).
+def test_pinned_tool_required_schema_streaming_only_wrong_tool_emits_sse_error():
+    """Streaming required-schema variant: model fires only wrong tool → SSE error.
 
     Locks PR #763 round-1 BLOCKING #2 invariant under F8: the stream
     must NOT have shipped any ``tool_use`` content_block_start for
