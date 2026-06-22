@@ -148,7 +148,9 @@ class BaseEngine(ABC):
         probe for optional methods with `hasattr(engine, ...)`.
         """
         stream_generate = getattr(self, "stream_generate", None)
-        return self.tokenizer is not None and callable(stream_generate)
+        return getattr(self, "tokenizer", None) is not None and callable(
+            stream_generate
+        )
 
     def generate_warmup(self) -> None:  # noqa: B027 — intentional no-op default
         """Run a minimal generation to compile Metal shaders.

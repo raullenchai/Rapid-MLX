@@ -556,6 +556,53 @@ class TestLogprobsEngineCapability:
 
         assert _Engine().supports_completion_logprobs is True
 
+    def test_missing_tokenizer_base_capability_returns_false(self):
+        from vllm_mlx.engine.base import BaseEngine
+
+        class _Engine(BaseEngine):
+            @property
+            def model_name(self):
+                return "stub"
+
+            @property
+            def is_mllm(self):
+                return False
+
+            @property
+            def tokenizer(self):
+                raise AttributeError("tokenizer not initialized")
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+            async def generate(self, *_a, **_kw):
+                return None
+
+            async def chat(self, *_a, **_kw):
+                return None
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+            async def stream_chat(self, *_a, **_kw):
+                if False:
+                    yield None
+
+            def get_model_info(self):
+                return {}
+
+            def build_prompt(self, *_a, **_kw):
+                return ""
+
+            def estimate_new_tokens(self, *_a, **_kw):
+                return (0, 0)
+
+        assert _Engine().supports_completion_logprobs is False
+
     def test_engine_without_stream_generate_returns_501(
         self, patched_config, monkeypatch
     ):
