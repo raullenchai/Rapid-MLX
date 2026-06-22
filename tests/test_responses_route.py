@@ -486,7 +486,7 @@ class TestResponsesNonStream:
             ({"type": "output_text"}, "output_text.text is required"),
             (
                 {"type": "input_audio", "input_audio": {"data": "base64data"}},
-                "input_audio.format",
+                "input_audio content blocks are not supported",
             ),
         ],
     )

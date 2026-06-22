@@ -11,6 +11,7 @@ from __future__ import annotations
 import copy
 import json
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
@@ -1103,7 +1104,7 @@ class StreamingPostProcessor:
     def _clone_injected_tool_parser(parser):
         if parser is None:
             return None
-        if isinstance(parser, Mock):
+        if isinstance(parser, Mock) and os.environ.get("PYTEST_CURRENT_TEST"):
             return parser
         try:
             return copy.deepcopy(parser)

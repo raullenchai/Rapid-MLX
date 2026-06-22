@@ -988,8 +988,6 @@ def _content_part_to_dict(item) -> dict:
     item_type = item.get("type")
     if not isinstance(item_type, str) or not item_type:
         raise ValueError("content block is missing required string field 'type'")
-    if item_type not in KNOWN_CONTENT_TYPES:
-        raise ValueError(f"Unsupported content block type: {item_type!r}")
     return item
 
 
@@ -1087,8 +1085,10 @@ def validate_content_blocks_for_capabilities(
             continue
         for raw_item in content:
             item = _content_part_to_dict(raw_item)
-            _validate_content_part_payload(item)
             item_type = item["type"]
+            if item_type not in KNOWN_CONTENT_TYPES:
+                continue
+            _validate_content_part_payload(item)
             if item_type in TEXT_CONTENT_TYPES:
                 continue
             if item_type in IMAGE_CONTENT_TYPES and allow_image:
@@ -1144,8 +1144,7 @@ def normalize_responses_content_part(item) -> dict:
             normalized_image_url = {"url": url}
         return {"type": "image_url", "image_url": normalized_image_url}
     if item_type == "input_audio":
-        _validate_content_part_payload(data)
-        return dict(data)
+        raise ValueError("Responses input_audio content blocks are not supported")
     raise ValueError(f"Unsupported Responses content block type: {item_type!r}")
 
 

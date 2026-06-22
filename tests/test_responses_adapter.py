@@ -331,6 +331,26 @@ class TestResponsesToOpenai:
         with pytest.raises(ValueError, match="input_image.image_url"):
             responses_to_openai(req)
 
+    def test_input_audio_content_block_rejected_on_responses_path(self):
+        req = ResponsesRequest.model_construct(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem.model_construct(
+                    type="message",
+                    role="user",
+                    content=[
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"data": "AAAA", "format": "wav"},
+                        }
+                    ],
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match="input_audio content blocks"):
+            responses_to_openai(req)
+
     @pytest.mark.parametrize(
         ("content", "match"),
         [
