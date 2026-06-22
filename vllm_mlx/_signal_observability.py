@@ -170,12 +170,20 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
     # ``raise_signal`` after restoring the default handler.
     prior = _prior_handlers.get(signum)
     if callable(prior):
+        # Codex r8 BLOCKING #2: do NOT swallow exceptions from the prior
+        # handler — uvicorn raises ``KeyboardInterrupt`` from its own
+        # SIGTERM/SIGINT handlers to drive shutdown, and other prior
+        # handlers may raise ``SystemExit`` for the same reason. Catching
+        # ``Exception`` blanket-style here would prevent process
+        # termination, re-introducing C-04 silent-death shape. Log + re-
+        # raise so observability and shutdown semantics both win.
         try:
             prior(signum, frame)
-        except Exception:  # pragma: no cover — defensive
+        except Exception:  # pragma: no cover — defensive logging only
             logger.debug(
                 "prior signal handler for %s raised during chain", name, exc_info=True
             )
+            raise
     elif prior == signal.SIG_DFL:
         # Restore the default disposition and re-deliver the signal so
         # the kernel-level terminate behaviour fires. ``signal.signal``

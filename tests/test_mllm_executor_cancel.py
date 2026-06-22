@@ -103,9 +103,10 @@ async def test_wrap_future_cancels_asyncio_side_within_100ms():
         cancel_elapsed = time.monotonic() - cancel_start
 
         assert result == "cancelled"
-        # 100ms budget gives generous headroom; in practice this resolves
-        # in single-digit ms.
-        assert cancel_elapsed < 0.5, (
+        # Codex r8 NIT #4: 100ms is the advertised latency budget; the
+        # earlier 500ms assert let regressions slip silently. Single-
+        # digit ms in practice.
+        assert cancel_elapsed < 0.1, (
             f"asyncio side took {cancel_elapsed:.3f}s to surface cancellation —"
             " wrap_future is not propagating cancel to the asyncio side"
         )

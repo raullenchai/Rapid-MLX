@@ -1109,7 +1109,23 @@ class MLLMScheduler:
                         # post-cancel cleanup on ``cf.cancelled()`` so we
                         # only ever consume an ``output`` that actually
                         # came back from the executor thread.
-                        cf = self._step_executor.submit(self._step_no_queue)
+                        # Codex r8 BLOCKING #1: ``submit()`` itself can
+                        # raise synchronously if the executor was
+                        # already shut down (e.g. shutdown raced ahead
+                        # of this call). Guard the submit so
+                        # ``_inflight_step_cf`` is never left dangling
+                        # and the scheduler loop breaks cleanly instead
+                        # of retrying against a dead executor.
+                        try:
+                            cf = self._step_executor.submit(self._step_no_queue)
+                        except RuntimeError as _submit_exc:
+                            logger.warning(
+                                "MLLM scheduler executor rejected new work "
+                                "(%s); breaking step loop for clean shutdown",
+                                _submit_exc,
+                            )
+                            self._inflight_step_cf = None
+                            break
                         # Stash so the ``finally`` block can wait on
                         # THIS specific in-flight cf with a bounded
                         # timeout instead of starting an
