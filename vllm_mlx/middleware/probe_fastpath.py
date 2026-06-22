@@ -132,9 +132,18 @@ def _has_origin(scope: dict[str, Any]) -> bool:
     ``Access-Control-Allow-Origin`` header. Trading a few microseconds
     of fast-path for spec-compliant CORS on the cross-origin slice is
     the right call.
+
+    Codex r3 BLOCKING #1: the ASGI spec (PEP 3333 / ASGI 2.x) requires
+    headers to be lowercased before they reach app code, but not every
+    ASGI server or test harness enforces this — uvicorn does, h11 with
+    a custom scope adapter may not, and TestClient's manual scope
+    construction is operator-dependent. Lowercasing defensively here
+    avoids a silent CORS-bypass failure mode where the fast-path
+    serves a 200 to a cross-origin browser request that should have
+    received ACAO from the outer CORS middleware.
     """
     for name, _value in scope.get("headers", ()):
-        if name == b"origin":
+        if name.lower() == b"origin":
             return True
     return False
 
