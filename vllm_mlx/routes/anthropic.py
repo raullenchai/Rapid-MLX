@@ -737,6 +737,20 @@ async def create_anthropic_message(
 
         if openai_request.tools:
             chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
+        # Codex r5/r7 BLOCKING (PR #807): forward the extracted
+        # multimodal payload to the engine — mirrors ``routes/chat.py``
+        # lines 1049-1050. Pre-PR the Anthropic route silently dropped
+        # ``images`` / ``videos`` on every /v1/messages request, so
+        # MLLM models served via Claude SDK never saw the user's
+        # uploaded image even though the wire-format carried it. The
+        # ``or None`` keeps the chat-route pattern: empty list → None
+        # so the engine treats "no media" identically to a text-only
+        # request rather than running its multimodal preprocessor on
+        # an empty list.
+        if images:
+            chat_kwargs["images"] = images
+        if videos:
+            chat_kwargs["videos"] = videos
         cfg = get_config()
         # Resolve enable_thinking via shared helper (#387: chat_template_kwargs
         # passthrough). Same precedence as the OpenAI route.
@@ -1281,6 +1295,16 @@ async def _stream_anthropic_messages(
 
     if openai_request.tools:
         chat_kwargs["tools"] = convert_tools_for_template(openai_request.tools)
+    # Codex r5/r7 BLOCKING (PR #807): forward the multimodal payload
+    # to the engine on the streaming path too — same parity with
+    # ``routes/chat.py`` lines 1049-1050 the non-stream branch now
+    # follows. The ``if`` gates avoid passing empty lists so the
+    # engine's multimodal preprocessor stays on the text-only fast
+    # path for plain prompts.
+    if images:
+        chat_kwargs["images"] = images
+    if videos:
+        chat_kwargs["videos"] = videos
     cfg = get_config()
     # Resolve enable_thinking via shared helper (#387: chat_template_kwargs
     # passthrough). Same precedence as the OpenAI route.

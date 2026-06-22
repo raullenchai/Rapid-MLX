@@ -720,72 +720,30 @@ def test_stream_message_delta_input_tokens_floored_to_estimate_when_engine_silen
     assert delta_input == start_input, (start_input, delta_input)
 
 
-def test_stream_helper_preserves_prepared_messages_for_engine():
-    """Codex r5 BLOCKING #1 (PR #807): when the route entry-point
-    threads ``prepared_messages``, it must ALSO thread the
-    ``prepared_images`` / ``prepared_videos`` it extracted alongside
-    them — pre-r5 the streaming helper silently dropped both to ``[]``
-    when ``prepared_messages`` was set, breaking every multimodal
-    ``/v1/messages`` streaming request against an MLLM engine.
+def test_stream_helper_forwards_prepared_multimodal_to_engine():
+    """Codex r5 BLOCKING #1 / r6 BLOCKING / r7 BLOCKING (PR #807): the
+    ``prepared_images`` / ``prepared_videos`` lists the route entry-
+    point threads MUST reach the engine's ``stream_chat`` as ``images=``
+    / ``videos=`` kwargs. Pre-PR the route never forwarded multimodal
+    payloads to the engine on either branch (a long-standing
+    /v1/messages MLLM bug); fixing the codex-flagged silent-drop
+    naturally lined up the missing engine plumbing.
 
-    Codex r6 BLOCKING (PR #807): the earlier signature-shape guard was
-    too weak — a future refactor could keep the kwargs but stop
-    forwarding them. Drive the helper end-to-end with a sentinel-list
-    payload and assert the engine receives the EXACT same object the
-    caller threaded.
+    Driven directly via asyncio so the test pins the SAME object
+    identity the route threaded — a future refactor that "forwards"
+    via ``list(images)`` copy would still pass an identity-equal
+    assert, but a refactor that drops the kwargs or substitutes ``[]``
+    fails immediately.
     """
-    sentinel_messages = [
-        {"role": "user", "content": "stream this"},
-    ]
-    sentinel_images: list = [b"img-bytes-0", b"img-bytes-1"]
-    sentinel_videos: list = [b"vid-bytes-0"]
-    engine = _ToolStreamingEngine(["ok"], engine_prompt_tokens=4)
-    client = _make_client(engine)
-
-    # Direct ``client.post`` exercises the full route which goes
-    # through ``extract_multimodal_content`` (not our sentinel data),
-    # so we can't observe the threading from there. Instead, drive
-    # the route via TestClient on a fresh route+app and assert via
-    # the engine spy that ``stream_chat`` received the SAME messages
-    # list the route prepared (the threading is the in-flight
-    # contract this test exists to guard). The multimodal-list
-    # threading is then exercised by reading the kwargs on the spy:
-    response = client.post(
-        "/v1/messages",
-        json={
-            "model": "test-model",
-            "max_tokens": 16,
-            "stream": True,
-            "messages": [{"role": "user", "content": "stream this"}],
-        },
-    )
-    assert response.status_code == 200, response.text
-    assert engine.stream_calls, "engine.stream_chat was never invoked"
-    # The route's ``extract_multimodal_content`` returns the rendered
-    # ``messages`` list; the streaming helper must forward it to the
-    # engine unchanged. Sentinel-equality is sufficient because the
-    # extractor is a pure function and a mid-flight overwrite would
-    # be observable as a different list identity.
-    seen = engine.stream_calls[0]["messages"]
-    assert isinstance(seen, list)
-    # The rendered shape preserves the user content the request sent.
-    assert any(
-        (m.get("content") if isinstance(m, dict) else getattr(m, "content", None))
-        == "stream this"
-        for m in seen
-    ), seen
-
-    # Direct invocation of the helper with explicit ``prepared_*``
-    # kwargs lets us also pin the images/videos threading contract —
-    # the engine spy records ``messages`` only, but we assert the
-    # helper resolves ``prepared_images`` / ``prepared_videos``
-    # verbatim (no ``[]`` substitution) by exercising the
-    # ``prepared_messages is not None`` branch directly.
     import asyncio
 
-    from vllm_mlx.api.models import ChatCompletionRequest
     from vllm_mlx.api.anthropic_models import AnthropicRequest
+    from vllm_mlx.api.models import ChatCompletionRequest
     from vllm_mlx.routes.anthropic import _stream_anthropic_messages
+
+    sentinel_messages = [{"role": "user", "content": "stream this"}]
+    sentinel_images: list = [b"img-bytes-0", b"img-bytes-1"]
+    sentinel_videos: list = [b"vid-bytes-0"]
 
     direct_engine = _ToolStreamingEngine(["ok"], engine_prompt_tokens=4)
     cfg = reset_config()
@@ -818,18 +776,67 @@ def test_stream_helper_preserves_prepared_messages_for_engine():
             pass
 
     asyncio.run(_drive())
-    # The engine spy sees the sentinel ``prepared_messages`` list
-    # forwarded unchanged. ``stream_chat`` does not currently receive
-    # ``images`` / ``videos`` as kwargs (engines extract media from
-    # the messages themselves), but the helper MUST resolve the
-    # ``prepared_*`` kwargs to the caller's list rather than ``[]``;
-    # the resolution is asserted via the ``images`` / ``videos`` local
-    # state, which we expose by checking that the helper did NOT raise
-    # a TypeError or AttributeError when the sentinel bytes are
-    # forwarded. The test would FAIL if the helper dropped the
-    # sentinel and the engine had a media-required code path.
     assert direct_engine.stream_calls
-    assert direct_engine.stream_calls[0]["messages"] is sentinel_messages
+    call = direct_engine.stream_calls[0]
+    # Messages identity must be preserved (the caller's list, not a
+    # copy or a re-rendered version).
+    assert call["messages"] is sentinel_messages
+    # Images + videos must reach the engine as ``images=`` /
+    # ``videos=`` kwargs carrying the SAME caller-supplied lists.
+    # A silent ``[]`` substitution OR a missing kwarg both fail.
+    assert call["kwargs"].get("images") is sentinel_images, call["kwargs"]
+    assert call["kwargs"].get("videos") is sentinel_videos, call["kwargs"]
+
+
+def test_stream_helper_skips_empty_multimodal_kwargs():
+    """Text-only requests must NOT pass ``images=`` / ``videos=`` to
+    the engine even with empty-list sentinels — the engine's
+    multimodal preprocessor would otherwise see ``[]`` instead of
+    ``None`` and produce a different fast-path decision. Mirrors
+    ``routes/chat.py`` lines 1049-1050."""
+    import asyncio
+
+    from vllm_mlx.api.anthropic_models import AnthropicRequest
+    from vllm_mlx.api.models import ChatCompletionRequest
+    from vllm_mlx.routes.anthropic import _stream_anthropic_messages
+
+    direct_engine = _ToolStreamingEngine(["ok"], engine_prompt_tokens=4)
+    cfg = reset_config()
+    cfg.engine = direct_engine
+    cfg.model_name = "test-model"
+    cfg.no_thinking = True
+    cfg.reasoning_parser_name = None
+    cfg.model_registry = None
+
+    async def _drive():
+        gen = _stream_anthropic_messages(
+            direct_engine,
+            ChatCompletionRequest(
+                model="test-model",
+                messages=[{"role": "user", "content": "x"}],
+                max_tokens=8,
+            ),
+            AnthropicRequest(
+                model="test-model",
+                messages=[{"role": "user", "content": "x"}],
+                max_tokens=8,
+                stream=True,
+            ),
+            prepared_messages=[{"role": "user", "content": "x"}],
+            prepared_images=[],
+            prepared_videos=[],
+            prompt_tokens_estimate=4,
+        )
+        async for _ in gen:
+            pass
+
+    asyncio.run(_drive())
+    assert direct_engine.stream_calls
+    kwargs = direct_engine.stream_calls[0]["kwargs"]
+    # ``if images:`` / ``if videos:`` gates suppress empty-list
+    # forwarding. The text-only fast path stays clean.
+    assert "images" not in kwargs, kwargs
+    assert "videos" not in kwargs, kwargs
 
 
 def test_stream_message_start_consistent_with_nonstream_input_tokens():
