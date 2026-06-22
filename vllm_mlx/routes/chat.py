@@ -886,6 +886,28 @@ def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
     if not text:
         return text or ""
     result = text
+    # DeepSeek V3.1 orphan fragment:
+    # ``<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{...}`` without a closer.
+    # Remove the whole fragment so the opener/name prefix cannot leak
+    # when the separator-adjacent JSON payload is scrubbed below.
+    deepseek_begin = "<｜tool▁call▁begin｜>"
+    deepseek_sep = "<｜tool▁sep｜>"
+    while True:
+        begin = result.find(deepseek_begin)
+        if begin == -1:
+            break
+        sep = result.find(deepseek_sep, begin + len(deepseek_begin))
+        if sep == -1:
+            break
+        payload_bounds = _payload_object_after_marker(
+            result,
+            sep + len(deepseek_sep),
+            min(len(result), sep + len(deepseek_sep) + 2048),
+        )
+        if payload_bounds is None:
+            break
+        _, object_end = payload_bounds
+        result = result[:begin] + result[object_end:]
     for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
         result = balanced_re.sub(
             lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),

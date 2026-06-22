@@ -1267,6 +1267,20 @@ def test_codex_r10_visible_scrub_removes_unclosed_opener_payload_body():
     assert "suffix" in out
 
 
+def test_codex_r12_visible_scrub_removes_unclosed_deepseek_prefix_payload():
+    """DeepSeek begin/name/sep prefix must not survive payload scrubbing."""
+
+    out = _scrub_visible_tool_wire_leaks(
+        'prefix <｜tool▁call▁begin｜>get_weather<｜tool▁sep｜>{"arguments":{"city":"Tokyo"}} suffix'
+    )
+    assert "<｜tool▁call▁begin｜>" not in out
+    assert "<｜tool▁sep｜>" not in out
+    assert "get_weather" not in out
+    assert '"arguments"' not in out
+    assert "prefix" in out
+    assert "suffix" in out
+
+
 def test_codex_r11_broad_scrub_does_not_cross_family_strip_marker_prose():
     """Cross-family scrub needs payload evidence before deleting a span."""
 
