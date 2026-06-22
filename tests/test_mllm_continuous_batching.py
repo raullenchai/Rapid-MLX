@@ -1158,8 +1158,8 @@ class TestMLLMSchedulerStopSequences:
         assert outputs[1].finish_reason == "stop"
         assert outputs[1].output_text == "hi"
 
-    def test_backend_stop_finish_trims_stop_marker_and_keeps_prefix(self):
-        """Backend stop finish trims the marker but keeps visible prefix text."""
+    def test_backend_stop_finish_skips_stop_token_and_flushes_held_prefix(self):
+        """Backend stop token is skipped; previously held text is released."""
         from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
         from vllm_mlx.mllm_scheduler import (
             MLLMRequest,
@@ -1221,14 +1221,14 @@ class TestMLLMSchedulerStopSequences:
 
         assert finished_ids == {request.request_id}
         assert outputs[0].new_text == ""
-        assert outputs[1].new_text == "hi there"
+        assert outputs[1].new_text == "hi"
         assert outputs[1].finish_reason == "stop"
-        assert outputs[1].matched_stop == "STOP"
-        assert outputs[1].output_text == "hi there"
-        assert request.output_text == "hi there"
+        assert outputs[1].matched_stop is None
+        assert outputs[1].output_text == "hi"
+        assert request.output_text == "hi"
 
-    def test_backend_stop_finish_flushes_visible_text_without_stop_match(self):
-        """Backend stop finish without a user stop match still emits text."""
+    def test_backend_stop_finish_flushes_held_text_without_decoding_stop_token(self):
+        """Backend stop finish releases held text without decoding stop id."""
         from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
         from vllm_mlx.mllm_scheduler import (
             MLLMRequest,
@@ -1290,10 +1290,10 @@ class TestMLLMSchedulerStopSequences:
 
         assert finished_ids == {request.request_id}
         assert outputs[0].new_text == ""
-        assert outputs[1].new_text == "hello"
+        assert outputs[1].new_text == "hel"
         assert outputs[1].finish_reason == "stop"
-        assert outputs[1].output_text == "hello"
-        assert request.output_text == "hello"
+        assert outputs[1].output_text == "hel"
+        assert request.output_text == "hel"
 
     def test_backend_stop_token_without_user_stop_is_not_decoded(self):
         """Backend EOS/stop token ids must not leak as visible text."""

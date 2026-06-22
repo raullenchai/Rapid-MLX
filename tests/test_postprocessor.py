@@ -283,7 +283,7 @@ class TestStreamingPostProcessorToolCalls:
         parser.flush_held_content.return_value = ""
         return parser
 
-    def test_init_resets_injected_tool_parser_cache(self):
+    def test_init_does_not_reset_injected_tool_parser_cache(self):
         parser = LlamaToolParser()
         assert parser.has_pending_tool_call("ordinary assistant prose " * 32) is False
 

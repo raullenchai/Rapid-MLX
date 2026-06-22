@@ -263,13 +263,16 @@ class StreamingPostProcessor:
         else:
             self.reasoning_parser = cfg.reasoning_parser  # None or injected mock
 
+        self._tool_parser_request_local = False
         if cfg.tool_call_parser:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
+            self._tool_parser_request_local = self.tool_parser is not None
         elif cfg.tool_parser_instance:
             self.tool_parser = cfg.tool_parser_instance  # injected mock
         else:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
-        if self.tool_parser:
+            self._tool_parser_request_local = self.tool_parser is not None
+        if self.tool_parser and self._tool_parser_request_local:
             reset_parser = getattr(self.tool_parser, "reset", None)
             if callable(reset_parser):
                 reset_parser()
@@ -1687,8 +1690,9 @@ class StreamingPostProcessor:
     def reset(self):
         """Reset all parser states for a new stream.
 
-        Safe for concurrent BatchedEngine requests — each PostProcessor
-        instance holds its own parser instances (created in __init__).
+        Safe for concurrent BatchedEngine requests when parser instances
+        are request-local. Injected singleton parsers are not reset here
+        because that would clear another active stream's parser state.
         """
         self.accumulated_text = ""
         self.tool_accumulated_text = ""
@@ -1736,7 +1740,7 @@ class StreamingPostProcessor:
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
-        if self.tool_parser:
+        if self.tool_parser and self._tool_parser_request_local:
             self.tool_parser.reset()
 
     def process_chunk(self, output: GenerationOutput) -> list[StreamEvent]:

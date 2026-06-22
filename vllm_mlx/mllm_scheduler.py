@@ -716,7 +716,7 @@ class MLLMScheduler:
                 self._detokenizer_pool[request_id] = detok
             detok = self._detokenizer_pool[request_id]
             stop_params = [s for s in request.stop if s] if request.stop else []
-            if finish_reason == "stop" and not stop_params:
+            if finish_reason == "stop":
                 new_text = ""
             else:
                 detok.add_token(response.token)
