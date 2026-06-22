@@ -162,6 +162,32 @@ class TestRegisteredParsersAcceptNewSignature:
                     f"the codex round-8 finalize_streaming signature: {exc!r}"
                 )
 
+    def test_finalize_streaming_compat_accepts_legacy_override(self):
+        from vllm_mlx.reasoning import finalize_streaming_compat
+        from vllm_mlx.reasoning.base import DeltaMessage, ReasoningParser
+
+        class LegacyFinalizeParser(ReasoningParser):
+            def extract_reasoning(self, model_output, enable_thinking=None):
+                return None, model_output
+
+            def extract_reasoning_streaming(
+                self, previous_text, current_text, delta_text
+            ):
+                return DeltaMessage(content=delta_text)
+
+            def finalize_streaming(self, accumulated_text):
+                return DeltaMessage(content=accumulated_text)
+
+        result = finalize_streaming_compat(
+            LegacyFinalizeParser(),
+            "legacy text",
+            matched_stop="STOP",
+            prompt_thinking_active=True,
+            finish_reason="stop",
+        )
+        assert result is not None
+        assert result.content == "legacy text"
+
 
 class TestBaseInvariant:
     """The shared ``_finalize_in_think_block`` invariant pins the rule

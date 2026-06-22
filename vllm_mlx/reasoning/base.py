@@ -204,6 +204,28 @@ class ReasoningParser(ABC):
         return False
 
 
+def finalize_streaming_compat(
+    parser: ReasoningParser,
+    accumulated_text: str,
+    *,
+    matched_stop: str | None = None,
+    prompt_thinking_active: bool = False,
+    finish_reason: str | None = None,
+) -> DeltaMessage | None:
+    """Call ``finalize_streaming`` without breaking legacy parsers."""
+    try:
+        return parser.finalize_streaming(
+            accumulated_text,
+            matched_stop=matched_stop,
+            prompt_thinking_active=prompt_thinking_active,
+            finish_reason=finish_reason,
+        )
+    except TypeError as exc:
+        if "unexpected keyword argument" not in str(exc):
+            raise
+        return parser.finalize_streaming(accumulated_text)
+
+
 def finalize_truncation(
     open_in_think: bool, buffer: str | None
 ) -> tuple[str | None, str | None]:

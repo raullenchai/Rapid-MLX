@@ -63,6 +63,7 @@ from ..api.utils import (
 from ..config import get_config
 from ..engine import BaseEngine
 from ..middleware.auth import check_rate_limit, verify_api_key
+from ..reasoning import finalize_streaming_compat
 from ..service.helpers import (
     SSE_RESPONSE_HEADERS,
     _apply_reasoning_cutoff_notice,
@@ -1850,7 +1851,8 @@ async def _stream_responses(
             # signals together are required (codex round-4
             # BLOCKING). Mirrors routes/anthropic.py.
             final_msg = (
-                reasoning_parser.finalize_streaming(
+                finalize_streaming_compat(
+                    reasoning_parser,
                     accumulated_raw,
                     matched_stop=stream_matched_stop,
                     prompt_thinking_active=_starts_thinking,
