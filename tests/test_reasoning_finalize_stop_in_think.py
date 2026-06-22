@@ -932,9 +932,8 @@ class TestGemma4ChannelGrammar:
             f"channel marker leaked into content: {content!r}"
         )
 
-    def test_unterminated_thought_downstream_prefix_preserved(self):
-        """Malformed downstream bytes before the first channel marker must
-        not disappear when an unterminated thought is followed by content."""
+    def test_unterminated_thought_unknown_downstream_channel_is_reasoning(self):
+        """Unknown downstream channels are not user-visible answer text."""
         parser = Gemma4ReasoningParser()
         text = (
             "<|channel>thought\nsecret"
@@ -943,11 +942,10 @@ class TestGemma4ChannelGrammar:
         )
         reasoning, content = parser.extract_reasoning(text)
         assert reasoning is not None and "secret" in reasoning
+        assert "preface" in reasoning
         assert content is not None
-        assert "preface" in content, (
-            f"downstream unmatched prefix was dropped: content={content!r}"
-        )
         assert "answer is 12" in content
+        assert "preface" not in content
         assert "secret" not in content
 
 

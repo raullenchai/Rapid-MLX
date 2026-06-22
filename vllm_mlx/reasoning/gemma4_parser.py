@@ -45,7 +45,7 @@ _TURN_END = re.compile(r"<turn\|>")
 # Captures the channel type into the named group ``type`` so a nested
 # ``thought`` channel that follows the unterminated one routes to
 # reasoning instead of leaking into content.
-_CHANNEL_SEGMENT = re.compile(r"<\|channel>(?P<type>thought|content|final)\n?")
+_CHANNEL_SEGMENT = re.compile(r"<\|channel>(?P<type>[A-Za-z0-9_-]+)\n?")
 
 
 class Gemma4ReasoningParser(ReasoningParser):
@@ -252,11 +252,14 @@ class Gemma4ReasoningParser(ReasoningParser):
                             body = _TURN_END.sub("", body).strip()
                             if not body:
                                 continue
-                            if ch_type == "thought":
-                                downstream_reasoning_parts.append(body)
-                            else:
+                            if ch_type in {"content", "final"}:
                                 # ``content`` / ``final`` → content surface.
                                 downstream_content_parts.append(body)
+                            else:
+                                # ``thought`` and unknown/non-final channels
+                                # (e.g. ``analysis``) are not user-visible
+                                # answer text.
+                                downstream_reasoning_parts.append(body)
                         reasoning_full = (
                             (reasoning_body or "")
                             + (
