@@ -103,7 +103,12 @@ class TestSysPromptAutoWire:
     def test_skip_inject_when_user_pasted_canonical(self):
         # If the operator already pasted (a variant of) the canonical
         # sysprompt, we DON'T double-inject — respect their wording.
-        user_sys = "You are a GUI agent. Custom action space follows..."
+        # Detection requires a STRONG UI-TARS-specific marker (codex
+        # r2): use the canonical ``## Action Space`` heading here.
+        user_sys = (
+            "You are a GUI agent.\n## Action Space\n"
+            "click(point='<point>x y</point>')\nfinished()"
+        )
         messages = [
             {"role": "system", "content": user_sys},
             {"role": "user", "content": "Click."},
@@ -118,19 +123,54 @@ class TestSysPromptAutoWire:
     @pytest.mark.parametrize(
         "marker",
         [
-            "## Output Format",
+            # Header-level marker — unique to UI-TARS-class prompts.
             "## Action Space",
+            # Action-verb call signatures — model-API kwarg shape.
             "click(point=",
             "click(start_box=",
-            "You are a GUI agent — custom variant.",
+            "drag(start_point=",
+            "drag(start_box=",
+            # Joint Output Format / Action skeleton — catches
+            # forks that strip the markdown headers.
+            "Thought: ...\nAction: ...",
         ],
     )
-    def test_detect_canonical_via_any_marker(self, marker: str):
-        # Detection is permissive: any of these markers in a system
-        # message marks the operator as "already pasted (a variant of)
-        # the canonical sysprompt". Skips double-inject.
+    def test_detect_canonical_via_strong_marker(self, marker: str):
+        # Detection requires a STRONG, UI-TARS-specific marker:
+        # either the canonical section heading
+        # (``## Action Space``), a model-API kwarg call signature
+        # (``click(point=`` etc.), or the joint Output-Format
+        # skeleton. Generic markers were rejected per codex r2.
         messages = [{"role": "system", "content": f"prefix\n{marker}\nsuffix"}]
         assert has_ui_tars_system_prompt(messages) is True
+
+    @pytest.mark.parametrize(
+        "generic_sys",
+        [
+            # Codex r2 BLOCKING regression: a generic system
+            # prompt that happens to mention ``## Output Format``
+            # for JSON / markdown formatting MUST NOT skip the
+            # UI-TARS auto-inject — the pre-tightening detector
+            # would have falsely treated this as "operator already
+            # pasted UI-TARS sysprompt".
+            "## Output Format\nReturn answers as JSON.",
+            "You are a GUI agent for browser-based tasks.",
+            # A generic system prompt about agents / instructions
+            # without the UI-TARS structural markers.
+            "Follow the user's instructions step by step.",
+            "## Tools available\nclick, drag, scroll",
+        ],
+    )
+    def test_generic_system_prompt_does_not_false_positive(self, generic_sys: str):
+        messages = [{"role": "system", "content": generic_sys}]
+        assert has_ui_tars_system_prompt(messages) is False
+        # And the auto-inject still fires for a UI-TARS request that
+        # carries one of these generic system messages.
+        out = maybe_inject_ui_tars_system_prompt(
+            messages, tool_call_parser="ui_tars", tool_choice="auto"
+        )
+        assert len(out) == 2
+        assert out[0]["content"] == UI_TARS_COMPUTER_USE_SYSTEM_PROMPT
 
     def test_skip_inject_when_parser_is_not_ui_tars(self):
         # Wrong model family — no inject. Avoids polluting

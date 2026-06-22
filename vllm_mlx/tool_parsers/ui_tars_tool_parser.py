@@ -111,19 +111,49 @@ UI_TARS_COMPUTER_USE_SYSTEM_PROMPT = (
 )
 
 
-# Sentinel substrings that, if present in any user-supplied system
-# message, mark the operator as already having pasted (a variant of)
-# the canonical UI-TARS sysprompt — in which case we DO NOT prepend
-# the built-in one. Detection is intentionally permissive ("did the
-# operator mention the Action Space at all?") because every UI-TARS
-# fork in the wild carries one of these tokens. A strict match would
-# fail-open for benign reshuffles of the same prompt.
+# Sentinel substrings used to detect that an operator-supplied system
+# message ALREADY carries (a variant of) the canonical UI-TARS
+# sysprompt — in which case the auto-prepend is a no-op so we don't
+# double-inject.
+#
+# Codex r2 BLOCKING (2026-06-21): the earlier draft accepted
+# ``"## Output Format"`` or ``"You are a GUI agent"`` as evidence
+# alone — both are too generic. A non-UI-TARS request whose system
+# message happened to say "## Output Format: ...JSON..." would skip
+# the inject and regress to raw prose / no tool calls.
+#
+# Tightened contract: detection requires BOTH a header-level marker
+# (``"## Action Space"`` — present in every fork of the canonical
+# UI-TARS prompt, and a phrase no general-purpose system message
+# carries) OR a literal action-verb call signature
+# (``click(point=``, ``click(start_box=``, ``drag(start_point=``)
+# whose presence is mechanically the model-API kwarg shape.
+# Header-alone hits + verb-alone hits both qualify; we don't AND
+# them, because UI-TARS forks come in two flavors: full-prompt
+# variants ship the ``## Action Space`` header; minimal variants
+# ship only the verb-list table without the markdown headers.
 _UI_TARS_SYSPROMPT_MARKERS: tuple[str, ...] = (
+    # Header-level marker — unique to UI-TARS-class prompts; the
+    # exact heading appears in every upstream fork of
+    # ``codes/ui_tars/prompt.py``. Generic markdown formatting
+    # instructions don't write this section heading.
     "## Action Space",
-    "## Output Format",
+    # Action-verb call signatures: structural model-API kwarg
+    # shapes that only a UI-TARS sysprompt would carry verbatim.
+    # The space-and-paren forms make these robust against shuffled
+    # whitespace.
     "click(point=",
     "click(start_box=",
-    "You are a GUI agent",
+    "drag(start_point=",
+    "drag(start_box=",
+    # Joint check — the canonical opener PLUS the next-line
+    # ``Action`` keyword from the ``Output Format`` block. This
+    # AND-shape catches forks that strip the ``## Action Space``
+    # header but keep the ``Thought: ... / Action: ...`` skeleton.
+    # (Implemented as substring of the joint phrase rather than a
+    # boolean AND because string-contains is O(1) per marker and
+    # keeps the detector single-pass.)
+    "Thought: ...\nAction: ...",
 )
 
 
