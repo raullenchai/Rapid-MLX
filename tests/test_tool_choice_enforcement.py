@@ -1009,6 +1009,29 @@ def test_codex_r4_blocking_1_synthesize_falls_back_when_no_pair():
     assert tc.function.arguments == "{}"
 
 
+def test_codex_r10_deepseek_name_pair_requires_exact_safe_name():
+    """DeepSeek V3.1 recovery must not treat whitespace-padded names as
+    matching the forced target.
+
+    The prefix path only emits safe tool names exactly between
+    ``tool_call_begin`` and ``tool_sep``. Recovery uses the same contract
+    instead of a regex with permissive ``\\s*`` around the expected name.
+    """
+    raw = (
+        "<｜tool▁calls▁begin｜>"
+        "<｜tool▁call▁begin｜>\nget_weather<｜tool▁sep｜>"
+        '{"arguments":{"city":"Tokyo"}}'
+        "<｜tool▁call▁end｜>"
+        "<｜tool▁calls▁end｜>"
+    )
+    assert _recover_partial_tool_args(raw, expected_name="get_weather") is None
+
+    exact_raw = raw.replace("\nget_weather", "get_weather")
+    assert _recover_partial_tool_args(exact_raw, expected_name="get_weather") == (
+        '{"city": "Tokyo"}'
+    )
+
+
 def test_codex_r4_blocking_2_scrub_does_not_fire_for_tool_choice_auto():
     """Codex r4 BLOCKING #2 — the scrub must NOT fire for
     ``tool_choice="auto"`` because the model may legitimately emit
@@ -1075,6 +1098,7 @@ def test_codex_r4_blocking_2_scrub_does_not_fire_for_tool_choice_auto():
     content = msg.get("content") or ""
     # The phrase "<tool_call>" in the trailing prose was legitimate
     # — the scrub must NOT have removed it under tool_choice=auto.
+    assert content == "Note: tool calls use the <tool_call> envelope syntax."
     assert "<tool_call>" in content, (
         f"auto-mode legitimate prose mentioning <tool_call> was stripped; "
         f"content={content!r}"
@@ -1506,6 +1530,50 @@ def test_codex_r9_raw_wire_elsewhere_does_not_scrub_reasoning_marker_example():
     assert reasoning == "Use <tool_call> as the opening tag."
     for leak in ("<tool_call>", "</function>", '"arguments"'):
         assert leak not in content
+
+
+def test_codex_r10_raw_wire_context_scrubs_marker_only_reasoning_leak():
+    """Reasoning derived from structural raw wire keeps the raw-context scrub.
+
+    A parser may surface only the opener token from a leaky raw tool wire.
+    That is not a clean documentation example, so the route should scrub it
+    from ``reasoning_content`` while still preserving the r9 prose example.
+    """
+
+    raw = '<tool_call>{"name":"add_numbers","arguments":{"a":1,"b":2}}</function>'
+
+    class _MarkerLeakReasoningParser:
+        def extract_reasoning(self, text, enable_thinking=None):
+            return "<tool_call>", ""
+
+    class _RawWireEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=raw, raw_text=raw)
+
+    engine = _RawWireEngine()
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = False
+    cfg.reasoning_parser = _MarkerLeakReasoningParser()
+    cfg.tool_call_parser = "hermes"
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add 1 and 2"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    msg = resp.json()["choices"][0]["message"]
+    assert "<tool_call>" not in (msg.get("reasoning_content") or "")
 
 
 # -----------------------------------------------------------------------

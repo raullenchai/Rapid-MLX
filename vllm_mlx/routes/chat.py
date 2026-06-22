@@ -512,11 +512,22 @@ def _recover_partial_tool_args(
         )
         if json_pair_re.search(window):
             return True
-        deepseek_pair_re = re.compile(
-            r"<｜tool▁call▁begin｜>\s*" + escaped + r"\s*<｜tool▁sep｜>",
-            re.DOTALL,
-        )
-        return deepseek_pair_re.search(window) is not None
+        if not _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(expected):
+            return False
+        deepseek_begin = "<｜tool▁call▁begin｜>"
+        deepseek_sep = "<｜tool▁sep｜>"
+        search_pos = 0
+        while True:
+            begin = window.find(deepseek_begin, search_pos)
+            if begin == -1:
+                return False
+            name_start = begin + len(deepseek_begin)
+            sep = window.find(deepseek_sep, name_start)
+            if sep == -1:
+                return False
+            if window[name_start:sep] == expected:
+                return True
+            search_pos = sep + len(deepseek_sep)
 
     # Collect every parseable candidate, tagged with whether it sits
     # inside a wire span.
@@ -3016,10 +3027,7 @@ async def _create_chat_completion_impl(
     )
     if _should_scrub_visible_wire(cleaned_text, allow_raw_context=False):
         cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
-    if (
-        _should_scrub_visible_wire(reasoning_text, allow_raw_context=False)
-        and reasoning_text
-    ):
+    if _should_scrub_visible_wire(reasoning_text) and reasoning_text:
         reasoning_text = _scrub_visible_tool_wire_leaks(reasoning_text)
 
     # Process response_format if specified (after reasoning parser cleaned the text)
