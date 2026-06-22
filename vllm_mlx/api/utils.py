@@ -1285,6 +1285,7 @@ def extract_multimodal_content(
             text_parts = []
             for item in content:
                 item = _content_part_to_dict(item)
+                _validate_content_part_payload(item)
                 item_type = item.get("type", "")
 
                 if item_type == "text":

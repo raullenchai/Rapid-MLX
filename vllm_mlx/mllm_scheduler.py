@@ -777,11 +777,13 @@ class MLLMScheduler:
                     # Only the prior suffix can participate in a new
                     # cross-token stop match. This keeps the common
                     # per-token path bounded by len(new_text)+max_stop_len.
-                    window_base = previous_seen_len - len(request.stop_tail)
-                    stop_window = request.stop_tail + new_text
+                    window_base = max(0, previous_seen_len - keep)
+                    stop_window = request.stop_text[window_base:] + new_text
                     match: tuple[int, str] | None = None
                     for stop_str in stop_params:
-                        search_from = max(0, len(request.stop_tail) - len(stop_str) + 1)
+                        search_from = max(
+                            0, previous_seen_len - window_base - len(stop_str) + 1
+                        )
                         local_idx = stop_window.find(stop_str, search_from)
                         if local_idx != -1:
                             global_idx = window_base + local_idx
@@ -800,12 +802,15 @@ class MLLMScheduler:
                         output.matched_stop = stop_str
                         request.output_text = streamed_so_far[:idx]
                         output.output_text = request.output_text
+                        request.stop_text = request.output_text
+                        request.stop_text_len = len(request.output_text)
+                        request.stop_tail = ""
                         stop_trimmed = True
                         # Emit only the valid prefix before the stop marker
                         # in new_text so streaming clients don't lose content.
                         emit_len = max(0, idx - prev_text_len)
                         output.new_text = streamed_so_far[
-                            request.stop_text_len : request.stop_text_len + emit_len
+                            prev_text_len : prev_text_len + emit_len
                         ]
                     else:
                         request.stop_text = streamed_so_far

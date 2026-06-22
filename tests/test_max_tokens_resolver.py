@@ -58,8 +58,13 @@ def _function_calls_resolver(fn) -> bool:
     tree = ast.parse(inspect.getsource(fn))
     return any(
         isinstance(node, ast.Call)
-        and isinstance(node.func, ast.Name)
-        and node.func.id == "_resolve_max_tokens"
+        and (
+            (isinstance(node.func, ast.Name) and node.func.id == "_resolve_max_tokens")
+            or (
+                isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_resolve_max_tokens"
+            )
+        )
         for node in ast.walk(tree)
     )
 
