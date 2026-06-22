@@ -536,7 +536,14 @@ class UiTarsReasoningParser(ReasoningParser):
         self._in_reasoning = False
         self._in_content = False
 
-    def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
+    def finalize_streaming(
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
+    ) -> DeltaMessage | None:
         """Flush held opener-prefix bytes at end-of-stream.
 
         Codex r5 BLOCKING: the opener-prefix hold-back loop returns
@@ -556,6 +563,11 @@ class UiTarsReasoningParser(ReasoningParser):
           plain text content.
         - If we're already in a channel, the live loop has already
           emitted everything; nothing to flush.
+
+        The D-STOP-THINK keyword arguments are accepted for the shared
+        parser interface. UI-TARS does not use those signals because its
+        channel evidence comes from literal ``Thought:`` / ``Action:``
+        boundaries.
         """
         if self._in_reasoning or self._in_content:
             return None

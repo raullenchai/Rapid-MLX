@@ -513,7 +513,6 @@ class TestPromptInjectedMidThinkDiscriminator:
     @pytest.mark.parametrize(
         "name,parser_cls",
         [
-            ("qwen3", Qwen3ReasoningParser),
             ("deepseek_r1", DeepSeekR1ReasoningParser),
             ("vibethinker", VibeThinkerReasoningParser),
         ],
@@ -525,15 +524,13 @@ class TestPromptInjectedMidThinkDiscriminator:
         thinking active → route to reasoning (suppress D-STOP-THINK
         duplication).
 
-        Codex round-15 BLOCKING (PR #799) RESTORED the qwen3 row in
-        this parametrize after the r14 attempt to restrict qwen3's
-        no-prefix branch to PARSER-EVIDENCE-ONLY (motivated by the
-        casual-answer counter-example ``"The answer is STOP"``) was
-        reverted — that change re-opened the D-STOP-THINK leak this
-        PR exists to close. The ``prompt_thinking_active`` template
-        signal IS the discriminator the parser has for no-prefix
-        streams, and it matches the deepseek_r1 / vibethinker
-        behavior.
+        Qwen3 is intentionally excluded: its no-prefix branch has no
+        parser evidence for a user-stop shape, so ``matched_stop`` +
+        ``prompt_thinking_active`` alone would silently suppress a
+        direct answer like ``"The answer is STOP"``. Qwen3 keeps the
+        max_tokens-mid-think suppression below, and requires direct
+        parser evidence (``<think>`` or bare scratchpad preamble) for
+        stop-triggered no-prefix suppression.
         """
         parser = parser_cls()
         trace = "5+7 equals 12"
@@ -685,6 +682,24 @@ class TestPromptInjectedMidThinkDiscriminator:
             f"{result.content!r}"
         )
         assert result.reasoning == trace
+
+    def test_qwen3_no_prefix_stop_with_thinking_active_flips_to_content(self):
+        """Qwen3 no-prefix + user stop needs parser evidence before
+        suppressing content. ``prompt_thinking_active`` says the template
+        injected think mode, but a direct answer can still hit a user stop
+        string; without a literal opener or bare scratchpad preamble, the
+        user-visible answer must not become an empty assistant turn."""
+        parser = Qwen3ReasoningParser()
+        trace = "The answer is 12"
+        result = parser.finalize_streaming(
+            trace,
+            matched_stop="STOP",
+            prompt_thinking_active=True,
+            finish_reason="stop",
+        )
+        assert result is not None
+        assert result.content == trace
+        assert result.reasoning is None
 
     @pytest.mark.parametrize(
         "name,parser_cls",

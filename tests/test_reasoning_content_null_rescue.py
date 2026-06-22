@@ -43,6 +43,7 @@ import pytest
 from vllm_mlx.service.helpers import (
     REASONING_CUTOFF_SENTINEL,
     _apply_reasoning_cutoff_notice,
+    _rescue_silent_drop_from_reasoning,
 )
 
 # ──────────────────────────────────────────────────────────────────────
@@ -538,6 +539,36 @@ class TestGemma4HarmonyEngineRouted:
             ),
             tool_calls=None,
             finish_reason="length",
+        )
+        assert content is None
+
+
+class TestRescueSilentDropFromReasoning:
+    def test_case4_length_without_prompt_thinking_rescues_content(self):
+        """A non-thinking answer truncated by max_tokens must not be
+        silently dropped just because a Case-4 parser put it in reasoning."""
+        content = _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="The answer is 12",
+            tool_calls=None,
+            finish_reason="length",
+            raw_text="The answer is 12",
+            reasoning_is_case4=True,
+            prompt_thinking_active=False,
+        )
+        assert content == "The answer is 12"
+
+    def test_case4_length_with_prompt_thinking_stays_suppressed(self):
+        """Prompt-injected max_tokens mid-think remains a structured
+        reasoning truncation, not user-visible content."""
+        content = _rescue_silent_drop_from_reasoning(
+            final_content=None,
+            reasoning_text="5+7 equals 12",
+            tool_calls=None,
+            finish_reason="length",
+            raw_text="5+7 equals 12",
+            reasoning_is_case4=True,
+            prompt_thinking_active=True,
         )
         assert content is None
 

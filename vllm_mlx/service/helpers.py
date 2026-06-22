@@ -899,7 +899,8 @@ def _rescue_silent_drop_from_reasoning(
     #
     # finish_reason | raw_text<think>? | case4 | matched_stop | thinking | suppress?
     # length        | yes              | *     | *            | *        | YES
-    # length        | no               | yes   | *            | *        | YES (case4 arm)
+    # length        | no               | yes   | *            | True     | YES (case4 arm)
+    # length        | no               | yes   | *            | False    | no  (non-thinking truncated answer)
     # length        | no               | no    | *            | *        | no  (#569 rescue)
     # stop          | yes              | *     | *            | *        | YES
     # stop          | no               | yes   | set          | True     | YES (D-STOP-THINK prompt-injected)
@@ -981,11 +982,13 @@ def _rescue_silent_drop_from_reasoning(
             and raw_text.lstrip().startswith("<think>")
             and "</think>" not in raw_text
         )
-        # Case-4 + length: parser routed whole body to reasoning
-        # (helper-Case-4 signal) and finish_reason=length means
-        # truncation. Unconditional on length (no #569 false
-        # positive — length means engine cut the suffix).
-        or (finish_reason == "length" and reasoning_is_case4)
+        # Case-4 + length + prompt_thinking_active: parser routed the
+        # whole body to reasoning (helper-Case-4 signal) and the route
+        # says the chat template injected thinking, so ``length`` means
+        # max_tokens cut an implicit thought. Without the template signal
+        # this is just a non-thinking answer truncated mid-content, and
+        # the #569 rescue must surface it instead of silently dropping it.
+        or (finish_reason == "length" and reasoning_is_case4 and prompt_thinking_active)
         # Case-4 + stop + matched_stop + prompt_thinking_active:
         # codex round-5 BLOCKING — matched_stop alone with
         # Case-4 under finish=stop is NOT enough to identify the
