@@ -237,6 +237,16 @@ class StreamingPostProcessor:
         # leaving content empty. Track the explicit signal so process_chunk
         # can skip the reasoning path in that case.
         self.enable_thinking = enable_thinking
+        # R8-M2 (2026-06-22): one-way latch tracking whether the model
+        # has emitted an explicit ``<think>`` token despite
+        # ``enable_thinking=False``. Set by
+        # ``_should_route_through_reasoning`` when the opener shows up
+        # in the accumulated buffer; promotes the bypass path back to
+        # the reasoning lane so the wrapper bytes split correctly
+        # instead of leaking into ``delta.content``. Latched so the
+        # decision doesn't oscillate as the accumulator grows past the
+        # opener.
+        self._explicit_think_seen = False
 
         # Per-request parser instances — each streaming request gets its
         # own parser to avoid state corruption under concurrent
@@ -1080,6 +1090,69 @@ class StreamingPostProcessor:
             "nemotron" in model_name.lower() and not self.reasoning_parser
         )
 
+    _THINK_OPEN_TOKEN = "<think>"
+
+    def _should_route_through_reasoning(self, delta_text: str = "") -> bool:
+        """Decide whether the current chunk should go through the reasoning
+        parser.
+
+        Default policy: route when ``enable_thinking is not False``. The
+        ``False`` bypass exists because Qwen3's implicit-think heuristic
+        otherwise misroutes a plain answer to ``reasoning_content`` when
+        the chat template skipped the ``<think>`` injection.
+
+        R8-M2 override (2026-06-22): even when ``enable_thinking=False``,
+        if the model has ALREADY emitted an explicit ``<think>`` token
+        (or the buffer head is consistent with the leading bytes of one
+        — e.g. ``<th`` waiting for ``ink>``), re-enter the reasoning
+        lane so the gate splits BEFORE the wrapper text leaks into
+        ``delta.content``. The pre-fix bypass shipped the literal
+        wrapper to the client whenever ``tool_choice="auto"`` +
+        thinking-capable model + the model decided to think anyway
+        despite the off-flag (Sven r8 evidence; Qwen3 with two tools
+        defined).
+
+        Signal: ``self.accumulated_text + delta_text`` — checked
+        BEFORE this chunk's bytes have been folded into the
+        accumulator (the per-chunk fold happens inside the reasoning
+        path itself). Two cases enable the promotion:
+          1. The complete ``<think>`` opener is in the probe → latch.
+          2. The probe's HEAD (after leading whitespace) is a strict
+             prefix of ``<think>`` → tentative re-route this chunk so
+             a split-SSE tag (``<th`` then ``ink>``) doesn't leak.
+             The latch stays off until the full opener resolves; if
+             the prefix turns out NOT to be a tag (e.g. the model
+             emitted ``<thanks for asking!``), the parser falls back
+             to its Case-3 content path on the next chunk via the
+             same mechanism the default path uses.
+
+        Once promoted, the latch (``_explicit_think_seen``) makes the
+        decision sticky for the rest of the request so it doesn't
+        oscillate as the accumulator grows past the opener.
+
+        ``delta_text`` is optional to keep the helper callable as a
+        property-style predicate from other call sites that don't have
+        the live delta handy; those sites use the strict
+        accumulated-buffer signal (sufficient post-first-chunk).
+        """
+        if self.enable_thinking is not False:
+            return True
+        if self._explicit_think_seen:
+            return True
+        probe = self.accumulated_text + (delta_text or "")
+        if self._THINK_OPEN_TOKEN in probe:
+            self._explicit_think_seen = True
+            return True
+        # Tentative re-route: the head of the probe (post-leading-ws)
+        # might be the start of a ``<think>`` opener whose tail hasn't
+        # arrived yet. Route this chunk through the reasoning parser
+        # so a split-SSE tag doesn't pre-leak as content. Don't latch
+        # — we'll re-evaluate next chunk once more bytes arrive.
+        head = probe.lstrip()
+        if head and self._THINK_OPEN_TOKEN.startswith(head):
+            return True
+        return False
+
     def _consume_reasoning_budget(self, reasoning_text: str) -> tuple[str, str]:
         """Account for ``reasoning_text`` against the per-request cap.
 
@@ -1643,6 +1716,9 @@ class StreamingPostProcessor:
         self._reasoning_tokens_emitted = 0
         self._reasoning_cap_hit = False
         self._reasoning_close_injected = False
+        # R8-M2: clear the explicit-think latch so a re-used processor
+        # doesn't carry the prior request's promotion into this one.
+        self._explicit_think_seen = False
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
@@ -1705,11 +1781,23 @@ class StreamingPostProcessor:
         # Step 1: Separate content from reasoning
         if output.channel is not None:
             events = self._process_channel_routed(delta_text, output)
-        elif self.reasoning_parser and self.enable_thinking is not False:
+        elif self.reasoning_parser and self._should_route_through_reasoning(delta_text):
             # When enable_thinking is explicitly False, the model is told to
             # skip thinking and answer directly. Bypass the reasoning parser
             # so its implicit-think heuristic doesn't reroute the answer to
             # reasoning_content.
+            #
+            # R8-M2 (2026-06-22): the bypass was overzealous. When
+            # ``tool_choice="auto"`` is set on a thinking-capable model
+            # AND the client explicitly set ``enable_thinking=False``,
+            # the model can STILL emit explicit ``<think>...</think>``
+            # wrapper tokens (Qwen3-thinking sometimes ignores the
+            # chat-template hint when tools are in the prompt). The
+            # pre-fix bypass routed the literal ``<think>`` bytes to
+            # ``delta.content`` BEFORE the tool-call chunk. Detect the
+            # explicit wrapper here and re-enter the reasoning lane so
+            # the gate splits BEFORE content emit. See
+            # ``_should_route_through_reasoning`` for the policy.
             events = self._process_with_reasoning(delta_text, output)
         else:
             events = self._process_standard(delta_text, output)

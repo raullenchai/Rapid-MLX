@@ -109,17 +109,48 @@ class UiTarsReasoningParser(ReasoningParser):
         "Action_Summary:",
     )
 
-    # Maximum trailing-byte prefix that could be the start of the
-    # ``Action:`` boundary token. ``Action:`` is 7 chars; we hold back up
-    # to 6 trailing bytes from a reasoning delta when they might be the
-    # partial opener so the tool parser sees the complete ``Action:``
-    # token in its content stream, not pre-truncated to ``ction:`` etc.
-    _MAX_BOUNDARY_PREFIX = len("Action:") - 1
+    # R8-M6 (2026-06-22): the ``<think>`` tag wrapper is a 5th preamble
+    # opener (non-stream shape #5). The streaming state machine treats
+    # it like any other opener — the bytes after the tag stream as
+    # reasoning until ``</think>`` arrives.
+    _THINK_OPEN = "<think>"
+    _THINK_CLOSE = "</think>"
+
+    # R8-M6: full set of exit predicates that flip the streaming state
+    # machine from ``reasoning`` to ``content``. Mirrors the non-stream
+    # boundary semantics in ``extract_reasoning`` (shapes #1-#5 and the
+    # ``a16d8c8`` plain-chat follow-up):
+    #   * ``Action:``  — action-lane boundary (shapes #1/#2/#3)
+    #   * ``</think>`` — think-tag wrapper close (shape #5)
+    #   * ``Answer:``  — UI-TARS-native plain chat (``Thought:\n\nAnswer:``
+    #     observed on UI-TARS plain-chat lane; Sven r8 evidence)
+    #   * ``\n\n``     — plain-chat blank-line boundary (shape #4)
+    # Order matters only for tie-breaking: the FIRST predicate to appear
+    # in the buffer wins, so a delta with both ``\n\n`` and ``Answer:``
+    # splits at ``\n\n`` (the blank line is part of the reasoning
+    # trailing whitespace; the ``Answer:`` heading goes to content).
+    _EXIT_PREDICATES: tuple[str, ...] = (
+        "Action:",
+        "</think>",
+        "Answer:",
+        "\n\n",
+    )
+
+    # Maximum trailing-byte prefix that could be the start of any exit
+    # predicate. We hold back up to ``max_len - 1`` trailing bytes from
+    # a reasoning delta when they might be the partial opener so a tag
+    # that straddles an SSE chunk boundary is recognized whole instead
+    # of pre-leaking the leading bytes (e.g. ``</thi`` then ``nk>``).
+    # R8-M6 broadened this from ``Action:`` only to all exit predicates;
+    # ``</think>`` is 8 chars so the new max hold is 7.
+    _MAX_BOUNDARY_PREFIX = max(len(t) - 1 for t in _EXIT_PREDICATES)
 
     def __init__(self, tokenizer=None):
         super().__init__(tokenizer)
         # Streaming state: True once we've routed at least one byte to
-        # reasoning so the channel is sticky until ``Action:`` shows up.
+        # reasoning so the channel is sticky until any exit predicate
+        # shows up (``Action:`` / ``</think>`` / ``Answer:`` / ``\n\n``
+        # — see ``_EXIT_PREDICATES``).
         self._in_reasoning = False
         self._in_content = False
 
@@ -202,6 +233,11 @@ class UiTarsReasoningParser(ReasoningParser):
 
         # Discriminate the very first delta(s). We're "in reasoning" as
         # soon as we've seen a preamble opener at offset 0 of the buffer.
+        # R8-M6: the ``<think>`` tag wrapper (shape #5) is recognised as
+        # a 5th opener here so its body streams through ``delta.reasoning``
+        # like every other preamble — pre-fix it leaked verbatim into
+        # ``delta.content`` because the streaming state machine ignored
+        # the wrapper entirely.
         if not self._in_reasoning:
             stripped = current_text.lstrip()
             if not stripped:
@@ -224,6 +260,66 @@ class UiTarsReasoningParser(ReasoningParser):
                     return DeltaMessage(reasoning=previous_text + delta_text)
                 # FALLTHROUGH to the reasoning branch below — first delta
                 # of the preamble emits as reasoning.
+            elif stripped.startswith(self._THINK_OPEN):
+                # R8-M6 shape #5: ``<think>...</think><answer>`` wrapper.
+                # Flip to reasoning; the opening tag itself is structural
+                # and gets stripped (the model didn't intend to surface
+                # the literal ``<think>`` token in either channel). The
+                # body bytes between the open and close tag stream as
+                # reasoning; the close tag below acts as an exit predicate
+                # that flips to content.
+                self._in_reasoning = True
+                # Find where the opener ends in current_text and slice
+                # everything after as reasoning. ``previous_text`` and
+                # ``delta_text`` together make up ``current_text``; the
+                # delta may carry the whole opener, the tail of the
+                # opener, or post-opener bytes only.
+                think_idx = current_text.find(self._THINK_OPEN)
+                after_open = think_idx + len(self._THINK_OPEN)
+                delta_start_in_current = len(previous_text)
+                # If the post-opener slice extends into this delta, emit
+                # it (and check for the close tag exit on this same
+                # delta). If the delta is entirely inside the opener
+                # tag, emit nothing this round.
+                if after_open >= len(current_text):
+                    # All bytes seen so far are still within the opener
+                    # tag (or just up to its end with no body yet).
+                    return None
+                # Drop tag bytes; reasoning slice starts at the higher
+                # of ``after_open`` (post-tag start) and
+                # ``delta_start_in_current`` (this delta's start in the
+                # buffer).
+                reason_start_in_current = max(after_open, delta_start_in_current)
+                reason_in_current = current_text[reason_start_in_current:]
+                # Now check whether the close-tag exit also lives in
+                # this buffer slice — if so split at the close tag and
+                # flip to content; else emit the whole slice as reasoning
+                # (the close-tag exit will fire on a later delta) modulo
+                # the trailing partial-tag hold-back.
+                exit_pos, exit_tok = self._find_first_exit(current_text)
+                if exit_pos != -1 and exit_pos >= reason_start_in_current:
+                    # Close-tag (or other exit) lands inside the slice
+                    # we're about to emit. Split.
+                    reasoning_part = current_text[reason_start_in_current:exit_pos]
+                    content_part = self._content_after_exit(
+                        current_text, exit_pos, exit_tok
+                    )
+                    self._in_content = True
+                    return DeltaMessage(
+                        reasoning=reasoning_part or None,
+                        content=content_part or None,
+                    )
+                # No exit yet; reasoning slice survives. Apply trailing
+                # partial-exit hold-back so we don't pre-leak a
+                # straddling ``</thi`` etc.
+                held = self._compute_partial_exit_hold(current_text)
+                safe_end_in_current = len(current_text) - held
+                if safe_end_in_current <= reason_start_in_current:
+                    return None
+                emit = current_text[reason_start_in_current:safe_end_in_current]
+                if not emit:
+                    return None
+                return DeltaMessage(reasoning=emit)
             elif stripped.startswith("Action:"):
                 # Action-only response (Grounding template) — no preamble.
                 # Flip to content immediately so a ``wait()`` / ``finished()``
@@ -262,9 +358,15 @@ class UiTarsReasoningParser(ReasoningParser):
                 # of ``"Action:"`` (which means it's regular content).
                 # Otherwise keep buffering — the next delta will land
                 # the colon and the opener-match branch above fires.
-                _OPENERS_PLUS_ACTION = self._PREAMBLE_OPENERS + ("Action:",)
+                # R8-M6: include ``<think>`` in the prefix set so a
+                # split-opener (e.g. ``<thi`` then ``nk>``) is held
+                # back instead of leaking to content.
+                _OPENERS_PLUS_BOUNDARIES = self._PREAMBLE_OPENERS + (
+                    "Action:",
+                    self._THINK_OPEN,
+                )
                 still_could_be_opener = any(
-                    op.startswith(stripped) for op in _OPENERS_PLUS_ACTION
+                    op.startswith(stripped) for op in _OPENERS_PLUS_BOUNDARIES
                 )
                 if still_could_be_opener:
                     # Hold off — the next delta might complete the
@@ -278,102 +380,153 @@ class UiTarsReasoningParser(ReasoningParser):
                     return DeltaMessage(content=previous_text + delta_text)
                 return DeltaMessage(content=delta_text)
 
-        # In reasoning channel. Look for the ``Action:`` boundary inside
-        # this delta to decide whether to split.
-        action_pos = current_text.find("Action:")
-        if action_pos == -1:
-            # No full ``Action:`` yet. The trailing bytes of current_text
-            # MIGHT be the partial leading edge of ``Action:`` (e.g.
-            # delta ``Action`` then later ``:``). Hold any tail bytes
-            # back so the tool parser receives the complete ``Action:``
-            # token once the boundary forms, instead of seeing the
-            # leading ``Action`` token leak into the reasoning channel.
-            held = self._compute_partial_action_hold(current_text)
-            if held == 0:
-                return DeltaMessage(reasoning=delta_text)
-            # ``held`` bytes are the trailing partial-opener candidate.
-            # Emit only the prefix bytes of this delta that fall BEFORE
-            # the partial-opener zone. Bytes already in previous_text
-            # were emitted on a prior delta — those can't be unsent —
-            # but we can still avoid streaming the boundary candidate
-            # bytes that arrived in THIS delta.
-            held_window_start = len(current_text) - held
-            delta_start_in_current = len(previous_text)
-            if held_window_start <= delta_start_in_current:
-                # Every byte of this delta is in the held window — emit
-                # nothing this round (postprocessor's per-event buffer
-                # holds the bytes until the next delta resolves them).
+        # In reasoning channel. Look for the FIRST exit predicate
+        # (``Action:`` / ``</think>`` / ``Answer:`` / ``\n\n``) inside
+        # this delta to decide whether to split. R8-M6: pre-fix only
+        # ``Action:`` was honoured; the plain-chat and ``<think>``
+        # boundary forms leaked the post-boundary answer into
+        # ``delta.reasoning``.
+        exit_pos, exit_tok = self._find_first_exit(current_text)
+        if exit_pos == -1:
+            # No full exit predicate yet. The trailing bytes of
+            # current_text MIGHT be the partial leading edge of one
+            # (e.g. delta ``Action`` then later ``:``, or ``</thi`` then
+            # ``nk>``, or a single ``\n`` that might become ``\n\n``).
+            # Hold any tail bytes back so the tool parser / content
+            # channel receives the complete sentinel once the boundary
+            # forms, instead of seeing the leading bytes leak into the
+            # reasoning channel.
+            #
+            # Bookkeeping: track which bytes have already been emitted
+            # on prior deltas. We've emitted everything up to
+            # ``len(previous_text) - prev_held``. New emit window is
+            # ``[emitted_so_far, safe_end)`` where ``safe_end`` is
+            # ``len(current_text) - held``.
+            prev_held = (
+                self._compute_partial_exit_hold(previous_text) if previous_text else 0
+            )
+            held = self._compute_partial_exit_hold(current_text)
+            emitted_so_far = len(previous_text) - prev_held
+            safe_end = len(current_text) - held
+            if safe_end <= emitted_so_far:
                 return None
-            split = held_window_start - delta_start_in_current
-            return DeltaMessage(reasoning=delta_text[:split])
+            return DeltaMessage(reasoning=current_text[emitted_so_far:safe_end])
 
-        # ``Action:`` is in current_text but might be straddling this
-        # delta or might be entirely in previous_text. Compute the offset
-        # of the boundary within the delta.
-        prev_action_pos = previous_text.find("Action:") if previous_text else -1
-        if prev_action_pos != -1:
-            # Boundary was already crossed on a prior delta — should not
-            # happen in practice (we flip ``_in_content=True`` below the
-            # first time it does), but defend against double-fire.
-            self._in_content = True
-            return DeltaMessage(content=delta_text)
-
-        # First time we see ``Action:``. Split delta around the boundary:
-        # bytes before it are reasoning, bytes from it onward are content.
-        # NOTE: if any partial-opener bytes were held back on a prior
-        # delta (e.g. trailing ``Action`` while the colon hadn't arrived
-        # yet), they're now part of the content half — prepend them so
-        # the tool parser sees the full ``Action:`` token.
+        # Exit predicate is in current_text. Split around it.
+        #
+        # Bookkeeping: on prior deltas we may have HELD back trailing
+        # bytes of ``previous_text`` because they looked like a partial
+        # exit predicate (e.g. a single ``\n`` that might have been the
+        # start of ``\n\n``, or ``Acti`` that might have been the start
+        # of ``Action:``). Those bytes were not emitted on the prior
+        # delta. Now that we know what the real exit predicate is, we
+        # need to:
+        #   * RECOVER held bytes that fall BEFORE the exit position
+        #     and emit them as reasoning (they were reasoning content
+        #     that got optimistically held).
+        #   * PREPEND held bytes that fall INSIDE the exit token to the
+        #     content side for in-place sentinels (``Action:``,
+        #     ``Answer:``), so the tool parser sees the complete token.
+        prev_held = (
+            self._compute_partial_exit_hold(previous_text) if previous_text else 0
+        )
+        already_emitted_reasoning_end = len(previous_text) - prev_held
         delta_start_in_current = len(previous_text)
-        boundary_in_delta = action_pos - delta_start_in_current
-        if boundary_in_delta <= 0:
-            # Boundary at the start of this delta — but the prefix
-            # bytes of ``Action:`` might already be in previous_text
-            # that we previously held off emitting. Prepend the held
-            # window so the tool parser receives the complete token.
-            # Only flip ``_in_content=True`` once we know we have a real
-            # content-bearing emission (codex r2 BLOCKING #2: never set
-            # the flag along a path that emits no content bytes — a
-            # subsequent delta would otherwise be misrouted).
-            self._in_content = True
-            held_prefix = current_text[action_pos:delta_start_in_current]
-            return DeltaMessage(content=held_prefix + delta_text)
-        if boundary_in_delta >= len(delta_text):
-            # Defensive: ``action_pos`` indexes a position past this
-            # delta's end. ``current_text = previous_text + delta_text``
-            # means this can only happen if some earlier code path
-            # mutated ``current_text``. Treat as a no-op (don't flip
-            # ``_in_content`` and don't classify the delta — leave the
-            # bytes for the postprocessor's hold buffer). Critically,
-            # codex r2 BLOCKING #2 flagged the previous behavior of
-            # eagerly setting ``_in_content=True`` here, which then
-            # caused subsequent deltas to skip the boundary-split branch
-            # entirely and lose the action-side bytes permanently.
-            return None
+        token_start = exit_pos
+        token_end = exit_pos + len(exit_tok)
 
-        reasoning_part = delta_text[:boundary_in_delta]
-        content_part = delta_text[boundary_in_delta:]
+        # Reasoning side: bytes from the last-emitted position up to the
+        # exit token. May span across the previous_text held region AND
+        # the head of this delta.
+        if token_start > already_emitted_reasoning_end:
+            reasoning_part = current_text[already_emitted_reasoning_end:token_start]
+        else:
+            # Exit token starts inside or before the already-emitted
+            # region — no extra reasoning bytes to recover.
+            reasoning_part = ""
+
+        # Content side: for structural exits (``</think>``, ``\n\n``)
+        # drop the token bytes entirely. For in-place sentinels
+        # (``Action:`` / ``Answer:``) keep them so the tool parser sees
+        # the full token.
+        if exit_tok in ("</think>", "\n\n"):
+            content_part = current_text[token_end:]
+        else:
+            content_part = current_text[token_start:]
+
+        # ``content_part`` is the full post-boundary tail of the
+        # current_text buffer. Bytes from prior deltas in that tail
+        # have NOT been emitted (we were in reasoning channel until
+        # this delta), so we emit them whole — no slicing needed.
+
         self._in_content = True
-        return DeltaMessage(reasoning=reasoning_part, content=content_part)
+        return DeltaMessage(
+            reasoning=reasoning_part or None,
+            content=content_part or None,
+        )
 
-    def _compute_partial_action_hold(self, current_text: str) -> int:
-        """Return the number of trailing bytes that might be a partial ``Action:``.
+    def _find_first_exit(self, buffer: str) -> tuple[int, str]:
+        """Find the position of the FIRST exit predicate in ``buffer``.
+
+        Returns ``(position, token)`` of the earliest match across
+        ``_EXIT_PREDICATES``. Returns ``(-1, "")`` if no exit predicate
+        is present. Tie-breaking on equal positions favours the LONGER
+        token (so ``Answer:`` wins over a degenerate empty match — the
+        actual predicates don't overlap so ties are rare in practice).
+        """
+        best_pos = -1
+        best_tok = ""
+        for tok in self._EXIT_PREDICATES:
+            pos = buffer.find(tok)
+            if pos == -1:
+                continue
+            if best_pos == -1 or pos < best_pos:
+                best_pos = pos
+                best_tok = tok
+            elif pos == best_pos and len(tok) > len(best_tok):
+                best_tok = tok
+        return best_pos, best_tok
+
+    def _content_after_exit(self, buffer: str, exit_pos: int, exit_tok: str) -> str:
+        """Return the bytes of ``buffer`` that belong on the content side
+        after the exit predicate at ``exit_pos`` of token ``exit_tok``.
+
+        For structural separators (``</think>`` / ``\n\n``) the token
+        bytes are dropped. For in-place sentinels (``Action:`` /
+        ``Answer:``) the token bytes are kept so downstream parsers see
+        the full sentinel.
+        """
+        if exit_tok in ("</think>", "\n\n"):
+            return buffer[exit_pos + len(exit_tok) :]
+        return buffer[exit_pos:]
+
+    def _compute_partial_exit_hold(self, current_text: str) -> int:
+        """Return the number of trailing bytes that might be a partial
+        exit predicate.
 
         Specifically: the longest non-empty suffix ``current_text[-k:]``
-        (1 ≤ k ≤ 6) that matches a strict prefix of ``"Action:"``. Returns
-        0 if no such partial overlap exists.
+        (1 ≤ k ≤ ``_MAX_BOUNDARY_PREFIX``) that matches a strict prefix
+        of ANY token in ``_EXIT_PREDICATES``. Returns 0 if no such
+        partial overlap exists.
 
         Example: current_text ends with ``...thing.\nAction`` — the
         trailing 6 bytes ``Action`` match the 6-char prefix of
         ``Action:``, so we hold those 6 bytes back. The next delta brings
         ``:``, the full ``Action:`` resolves, and the held bytes are
         released to content alongside.
+
+        R8-M6 broadened this from ``Action:`` only to all exit
+        predicates so a ``</thi`` straddle for shape #5 (or a single
+        ``\n`` straddle for shape #4's ``\n\n`` boundary) is held
+        instead of leaking the leading bytes into ``delta.reasoning``.
         """
         for k in range(self._MAX_BOUNDARY_PREFIX, 0, -1):
             if k > len(current_text):
                 continue
-            if "Action:".startswith(current_text[-k:]):
-                return k
+            suffix = current_text[-k:]
+            for tok in self._EXIT_PREDICATES:
+                if tok.startswith(suffix):
+                    return k
         return 0
 
     # ------------------------------------------------------------------
