@@ -149,16 +149,37 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
     except Exception:  # pragma: no cover — defensive
         pass
 
+    # R7-C1 (dogfood-088 Talia r1/r2): SIGHUP is special-cased to a
+    # *diagnostic dump* — restore the default disposition for
+    # termination-class signals OTHER than SIGHUP, but treat SIGHUP as
+    # "dump and stay alive". Historically SIGHUP was used by daemons as
+    # a "reload config / rotate logs" signal: terminating the process on
+    # it (the POSIX SIG_DFL default) is hostile in a long-running
+    # inference server where operators reach for SIGHUP to *probe* a
+    # live process without taking it down. The 0.8.7 dogfood (Hiro r6)
+    # explicitly verified the dump-and-stay-alive shape on SIGHUP; the
+    # 0.8.8 regression Talia caught (PR-#820 chain still terminating
+    # because the SIG_DFL ``raise_signal`` path fires unconditionally)
+    # is fixed here by gating that path behind a "not SIGHUP" check.
+    #
+    # SIGTERM is unchanged — uvicorn registers a callable handler for
+    # SIGTERM (its ``handle_exit``), so the ``callable(prior)`` branch
+    # below runs the graceful drain. Even on the corner case where
+    # SIGTERM's prior is SIG_DFL (no uvicorn installed yet, e.g. unit
+    # tests that mount the lifespan without binding the socket),
+    # SIGTERM still terminates via the SIG_DFL chain — only SIGHUP
+    # short-circuits.
+    #
     # Chain to whatever was registered before us so the original
     # disposition is preserved end-to-end:
     #   * callable prior (uvicorn's ``handle_exit`` etc.) → call it so
     #     graceful shutdown still runs;
-    #   * SIG_DFL → restore default + ``signal.raise_signal`` so the
-    #     kernel-level terminate-by-default fires (this is correct
-    #     because if the prior was SIG_DFL, no shutdown driver was
-    #     listening — termination IS the original behaviour, and we've
-    #     already added the observability via the WARNING + stack dump
-    #     above);
+    #   * SIG_DFL on SIGHUP → return (stay alive); the WARNING + stack
+    #     dump above is the entire intended behaviour for SIGHUP as a
+    #     diagnostic probe;
+    #   * SIG_DFL on any other signal → restore default + ``raise_signal``
+    #     so the kernel-level terminate-by-default fires (we've already
+    #     added the observability via the WARNING + stack dump above);
     #   * SIG_IGN → return; ignore-by-default IS the original behaviour.
     #
     # Codex r2 BLOCKING #1: an earlier round of this PR skipped the
@@ -167,8 +188,10 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
     # uvicorn does not capture SIGHUP) was never observed in production
     # — exactly the silent-death shape C-04 was trying to fix. Always
     # install, and make the SIG_DFL branch preserve termination via
-    # ``raise_signal`` after restoring the default handler.
+    # ``raise_signal`` after restoring the default handler (except for
+    # SIGHUP per R7-C1 above).
     prior = _prior_handlers.get(signum)
+    is_sighup = getattr(signal, "SIGHUP", None) is not None and signum == signal.SIGHUP
     if callable(prior):
         # Codex r8 BLOCKING #2: do NOT swallow exceptions from the prior
         # handler — uvicorn raises ``KeyboardInterrupt`` from its own
@@ -184,6 +207,15 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
                 "prior signal handler for %s raised during chain", name, exc_info=True
             )
             raise
+    elif prior == signal.SIG_DFL and is_sighup:
+        # R7-C1: SIGHUP-as-diagnostic-probe path. The WARNING + stack
+        # dump above is the full intended behaviour — return without
+        # restoring SIG_DFL + raising, so the process stays alive. Do
+        # NOT chain to terminate semantics here; that's the regression
+        # Talia's r1/r2 caught. Operators reach for SIGHUP precisely
+        # because they want a live-process snapshot WITHOUT taking the
+        # server down (a SIGTERM/SIGINT is the right signal for that).
+        return
     elif prior == signal.SIG_DFL:
         # Restore the default disposition and re-deliver the signal so
         # the kernel-level terminate behaviour fires. ``signal.signal``

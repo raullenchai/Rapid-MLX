@@ -376,13 +376,25 @@ def test_subprocess_sigterm_emits_warning_and_stack_dump():
     assert "Thread" in stderr or "Current thread" in stderr, stderr
 
 
-def test_subprocess_sighup_default_disposition_emits_warning_and_terminates():
-    """Codex r2 BLOCKING #3: SIGHUP's default disposition under uvicorn
-    is ``SIG_DFL`` because uvicorn only installs handlers for
-    SIGINT/SIGTERM (``HANDLED_SIGNALS``). This is the production
-    SIGHUP path, and it has to work end-to-end: log the receipt + dump
-    stacks + still terminate (so the operator's ``kill -SIGHUP <pid>``
-    still works as expected).
+def test_subprocess_sighup_default_disposition_dumps_and_stays_alive():
+    """R7-C1 (dogfood-088 Talia r1/r2): SIGHUP is now a *diagnostic
+    probe* — the observability hook dumps the stack to stderr and
+    KEEPS THE PROCESS ALIVE. The 0.8.5/0.8.7 lineage (PR #820) had
+    the SIG_DFL chain terminate on SIGHUP via ``raise_signal``; the
+    0.8.7 dogfood (Hiro r6) confirmed dump-and-stay-alive as the
+    intended shape, and the 0.8.8 regression Talia caught was that
+    the SIG_DFL re-raise still terminated the process. Per the C-04
+    PR commentary, operators reach for SIGHUP precisely to inspect a
+    LIVE process without taking it down — SIGTERM/SIGINT are the
+    right signals for graceful shutdown.
+
+    The test:
+      1. Asserts SIGHUP starts from SIG_DFL (the production baseline:
+         uvicorn captures SIGINT/SIGTERM only).
+      2. Sends SIGHUP after the install.
+      3. Verifies stderr contains the WARNING marker + stack frames.
+      4. Verifies the process REACHES the post-sleep ``os._exit(0)``
+         (stays alive end-to-end).
 
     A previous round of this test installed a callable
     ``_exit_handler`` BEFORE calling ``install_signal_observability``,
@@ -401,11 +413,13 @@ def test_subprocess_sighup_default_disposition_emits_warning_and_terminates():
         from vllm_mlx._signal_observability import install_signal_observability
         assert install_signal_observability() is True
         sys.stdout.write("READY\\n"); sys.stdout.flush()
-        # If the chain swallows the signal we'll fall through to
-        # os._exit(99) and the test will detect that via returncode.
-        for _ in range(50):
+        # If the chain DOES terminate (the regression), we never
+        # reach the os._exit(0) below and the test detects the
+        # subprocess died via a non-zero returncode.
+        for _ in range(20):
             time.sleep(0.1)
-        os._exit(99)
+        sys.stdout.write("ALIVE\\n"); sys.stdout.flush()
+        os._exit(0)
         """
     ).strip()
 
@@ -425,14 +439,79 @@ def test_subprocess_sighup_default_disposition_emits_warning_and_terminates():
             proc.kill()
             proc.communicate()
 
-    # WARNING marker must land before termination.
+    # WARNING marker must land before the process continues running.
     assert "received signal SIGHUP" in stderr, stderr
-    # faulthandler.dump_traceback shape.
+    # faulthandler.dump_traceback shape — verifies stack-dump fired.
     assert "Thread" in stderr or "Current thread" in stderr, stderr
-    # The chain MUST have re-raised under SIG_DFL → terminate, NOT
-    # swallowed the signal. If we hit os._exit(99) below the signal,
-    # the SIG_DFL re-raise branch in _on_signal regressed.
+    # R7-C1 invariant: the process MUST reach the post-sleep
+    # ``os._exit(0)`` (returncode=0, "ALIVE" line printed). If
+    # returncode is negative (signal-terminated) or 99 (a different
+    # bailout), the regression is back.
+    assert proc.returncode == 0, (
+        f"SIGHUP terminated the process — R7-C1 regression: the"
+        f" SIG_DFL chain re-raised instead of staying alive."
+        f" returncode={proc.returncode} stdout={stdout!r}"
+        f" stderr={stderr!r}"
+    )
+    assert "ALIVE" in stdout, (
+        f"SIGHUP did not allow the subprocess to continue past the"
+        f" 2-second sleep window; stdout={stdout!r} stderr={stderr!r}"
+    )
+
+
+def test_subprocess_sigterm_default_disposition_still_terminates():
+    """R7-C1 invariant guard: the SIGHUP-stays-alive change must NOT
+    leak into SIGTERM. SIGTERM with a SIG_DFL prior (no uvicorn
+    installed yet, e.g. unit tests that mount the lifespan without
+    binding the socket) must still terminate the process — that's the
+    PR #820 contract Liang r5 verified for graceful drain. Only
+    SIGHUP gets the dump-and-stay-alive short-circuit.
+
+    We use SIGUSR1 as a proxy for "SIG_DFL-defaults-to-terminate
+    signal that isn't SIGHUP" so the test runs without disturbing the
+    test runner's SIGTERM handler. SIGUSR1's default action is
+    "terminate" same as SIGTERM/SIGHUP, so it exercises the same
+    SIG_DFL chain branch.
+    """
+    program = textwrap.dedent(
+        """
+        import logging, os, signal, sys, time
+        logging.basicConfig(level=logging.WARNING, stream=sys.stderr,
+                            format="%(levelname)s %(name)s: %(message)s")
+        assert signal.getsignal(signal.SIGUSR1) == signal.SIG_DFL
+        from vllm_mlx._signal_observability import install_signal_observability
+        assert install_signal_observability(observed_signals=(signal.SIGUSR1,)) is True
+        sys.stdout.write("READY\\n"); sys.stdout.flush()
+        os.kill(os.getpid(), signal.SIGUSR1)
+        # If the chain incorrectly swallowed the signal (SIGHUP-style
+        # short-circuit leaking to other signals), we'd fall through
+        # to os._exit(99) and the test would catch it.
+        time.sleep(2.0)
+        os._exit(99)
+        """
+    ).strip()
+
+    proc = subprocess.Popen(
+        [sys.executable, "-c", program],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        ready_line = _read_ready_with_timeout(proc)
+        assert ready_line.strip() == "READY", ready_line
+        stdout, stderr = proc.communicate(timeout=10)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.communicate()
+
+    assert "received signal SIGUSR1" in stderr, stderr
+    # Process must have been terminated by the SIG_DFL re-raise (NOT
+    # by hitting os._exit(99) which would mean the SIGHUP short-
+    # circuit leaked to non-SIGHUP signals).
     assert proc.returncode != 99, (
-        f"SIGHUP was swallowed — chain failed to re-raise under SIG_DFL"
-        f" so the process kept running; stderr={stderr!r}"
+        f"non-SIGHUP signal was swallowed — the R7-C1 stay-alive"
+        f" short-circuit must be gated on SIGHUP only;"
+        f" stderr={stderr!r}"
     )

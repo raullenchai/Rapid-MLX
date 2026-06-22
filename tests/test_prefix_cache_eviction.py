@@ -394,3 +394,157 @@ def test_get_stats_surfaces_evictions(monkeypatch):
     stats = cache.get_stats()
     assert "evictions" in stats
     assert stats["evictions"] >= 1
+
+
+# ─── R7-H7: cap admission MUST evict-LRU-until-fits, not reject-new ──
+
+
+def test_r7_h7_near_full_cache_admits_fresh_inserts_via_lru_eviction(
+    monkeypatch,
+):
+    """R7-H7 (dogfood-088 Talia r1/r2): when the cache is preloaded
+    to near-cap, fresh prefix stores must STILL succeed by evicting
+    LRU entries — not be rejected (``stored=False``) without freeing
+    room. Talia's repro shape:
+
+      1. Preload cache to 95% of cap (mimics ``load_from_disk``
+         repopulating from a previous run).
+      2. Insert 50 distinct fresh prefixes.
+      3. Assert all 50 returned ``stored=True``.
+      4. Assert ``evictions`` counter incremented.
+
+    Pre-R7 (Talia's claim), the eviction path fired only on prefix-
+    subset replacement (``evict_prefixes=True`` shrinks the cache
+    when a new entry SUPERSETS an old one); cap-driven LRU eviction
+    on a fresh-prefix insert was missing. The code review confirmed
+    the LRU loop is present in ``store()`` lines 1168-1173 — this
+    test pins the integration end-to-end so a refactor that moves the
+    insert path can't silently lose the loop.
+
+    8 MiB cap is small enough that the math is obvious: 1 MiB fake
+    entries × ~7 = preload to 87% (close to "95% of cap" without
+    burning fixture time on a long preload).
+    """
+    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(8 * 1024 * 1024))
+
+    from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+
+    cache = MemoryAwarePrefixCache(model=object(), config=MemoryCacheConfig())
+
+    per_entry_bytes = 1 * 1024 * 1024  # 1 MiB
+    # Preload to ~87% (7 × 1 MiB out of 8 MiB cap).
+    for i in range(7):
+        cache.store(
+            list(range(i * 100, i * 100 + 64)),
+            _make_cache_entry(per_entry_bytes),
+        )
+
+    preload_stats = cache.get_stats()
+    preload_evictions = preload_stats["evictions"]
+    # Sanity: preload populated the cache.
+    assert preload_stats["entry_count"] >= 5, preload_stats
+
+    # Insert 50 distinct fresh prefixes. NONE may be rejected; LRU
+    # eviction must free room for every one of them.
+    rejected = 0
+    accepted = 0
+    for i in range(50):
+        tokens = list(range(10_000 + i * 100, 10_000 + i * 100 + 64))
+        ok = cache.store(tokens, _make_cache_entry(per_entry_bytes))
+        if ok:
+            accepted += 1
+        else:
+            rejected += 1
+
+    final_stats = cache.get_stats()
+    assert rejected == 0, (
+        f"R7-H7 regression: {rejected}/50 fresh prefix stores rejected"
+        f" without LRU eviction. The cap admission policy must"
+        f" evict-LRU-until-fits, not reject-new. Final stats:"
+        f" {final_stats!r}"
+    )
+    assert accepted == 50
+    # At least one cap-driven eviction must have ticked the counter.
+    new_evictions = final_stats["evictions"] - preload_evictions
+    assert new_evictions >= 1, (
+        f"R7-H7 regression: evictions counter did not tick across the"
+        f" fresh-insert burst. preload_evictions={preload_evictions},"
+        f" final_evictions={final_stats['evictions']}"
+    )
+    # Cap must hold — current memory cannot exceed the configured ceiling.
+    assert final_stats["current_memory_mb"] <= final_stats["max_memory_mb"] + 0.5
+
+
+def test_r7_h7_lru_ordering_least_recently_touched_evicted_first(
+    monkeypatch,
+):
+    """R7-H7 LRU-ordering invariant: the entry evicted on cap pressure
+    must be the LEAST recently touched (read OR write). A fetch hit
+    must promote the entry to MRU so subsequent cap pressure evicts
+    the older neighbours first.
+
+    Strategy:
+      1. Fill the cache to capacity with 3 entries.
+      2. Fetch entry[0] (move it to MRU).
+      3. Insert one new entry that requires eviction.
+      4. Assert entry[1] (the new least-recently-touched) is gone but
+         entry[0] (just fetched) and the new entry are still present.
+
+    Pre-r7-D the LRU ordering wasn't tested explicitly — this test
+    pins the contract so a refactor that swaps OrderedDict for a
+    dict (loses insertion order) or skips the ``move_to_end`` on
+    fetch silently broken-evicts the wrong entries.
+    """
+    # 3 MiB cap, 1 MiB per existing entry → 3 fit exactly at cap;
+    # the 4th MUST force eviction. The 4th entry is the SAME 1 MiB
+    # size as the others so the LRU loop only has to evict ONE entry
+    # to make room.
+    monkeypatch.setenv("RAPID_MLX_PREFIX_CACHE_MAX_BYTES", str(3 * 1024 * 1024))
+
+    from vllm_mlx.memory_cache import MemoryAwarePrefixCache, MemoryCacheConfig
+
+    cache = MemoryAwarePrefixCache(model=object(), config=MemoryCacheConfig())
+
+    # Three distinct prefixes whose token sequences DO NOT share a
+    # common prefix — the ``evict_prefixes`` branch only removes
+    # entries whose key is a strict prefix of the new key, so we
+    # avoid that path here to isolate the LRU-on-cap behaviour. The
+    # first token of each list must differ to skip the prefix sweep.
+    tokens_a = [1, 100, 101, 102, 103]
+    tokens_b = [2, 200, 201, 202, 203]
+    tokens_c = [3, 300, 301, 302, 303]
+    tokens_d = [4, 400, 401, 402, 403]
+
+    per_entry_bytes = 1024 * 1024  # 1 MiB
+
+    assert cache.store(tokens_a, _make_cache_entry(per_entry_bytes))
+    assert cache.store(tokens_b, _make_cache_entry(per_entry_bytes))
+    assert cache.store(tokens_c, _make_cache_entry(per_entry_bytes))
+    # Cache is now AT cap (3 MiB / 3 MiB).
+
+    # Touch A via fetch — must promote A to MRU. (Exact-match fetch
+    # bumps via ``move_to_end`` inside fetch.)
+    cache.fetch(tokens_a)
+
+    # Insert D — this MUST evict the least-recently-touched entry
+    # (B, since A was just fetched and C is newer than B). The
+    # while-loop in store() should drop the LRU until room exists.
+    assert cache.store(tokens_d, _make_cache_entry(per_entry_bytes))
+
+    # Direct ledger inspection: keys present must be {A, C, D}.
+    present_keys = set(cache._entries.keys())  # noqa: SLF001 — test asserts internals
+    assert tuple(tokens_a) in present_keys, (
+        f"LRU regression: just-fetched entry was evicted; present={present_keys}"
+    )
+    assert tuple(tokens_c) in present_keys, (
+        f"LRU regression: middle-aged entry was evicted instead of LRU;"
+        f" present={present_keys}"
+    )
+    assert tuple(tokens_d) in present_keys, (
+        f"newly inserted entry missing from cache; present={present_keys}"
+    )
+    assert tuple(tokens_b) not in present_keys, (
+        f"R7-H7 LRU ordering regression: the least-recently-touched"
+        f" entry was NOT evicted. Present keys: {present_keys}."
+        f" Expected B (tokens_b={tokens_b}) to be the eviction victim."
+    )

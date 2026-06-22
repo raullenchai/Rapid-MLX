@@ -273,6 +273,84 @@ def test_metrics_omits_cache_series_when_no_cache_active(metrics_client):
     assert "rapid_mlx_requests_processed_total 0" in body
 
 
+def test_metrics_exposes_r7_m1_prefix_cache_cap_and_current_bytes(metrics_client):
+    """R7-M1 (dogfood-088 Talia r2): ``rapid_mlx_prefix_cache_cap_bytes``
+    and ``rapid_mlx_prefix_cache_current_bytes`` gauges must appear in
+    the scrape output when a cache is active. Pre-fix, operators tuning
+    ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` had no way to verify their
+    ceiling was honored at runtime; this test pins both gauges through
+    the metrics route.
+
+    The values must match the byte fields the cache exposes via
+    ``get_stats() -> {"current_memory_bytes", "max_memory_bytes"}``
+    (added in R7-M1 to CacheStats.to_dict). Both must be gauges
+    (instantaneous values), not counters (which Prometheus expects
+    to be monotonic).
+    """
+    stats = {
+        "num_waiting": 0,
+        "num_running": 0,
+        "num_requests_processed": 0,
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "steps_executed": 0,
+        "uptime_seconds": 0,
+        "memory_aware_cache": {
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+            "tokens_saved": 0,
+            # R7-M1 fields: cap = 1 GiB, current usage = 256 MiB.
+            "max_memory_bytes": 1024 * 1024 * 1024,
+            "current_memory_bytes": 256 * 1024 * 1024,
+        },
+    }
+    metrics_client.cfg.engine = _fake_engine(stats)
+    body = metrics_client.client.get("/metrics").text
+
+    # HELP + TYPE banners pin the metric name + gauge classification —
+    # a refactor that flips to counter shape (which Prometheus would
+    # reject with rate() going negative) trips this assertion.
+    assert "# HELP rapid_mlx_prefix_cache_cap_bytes" in body
+    assert "# TYPE rapid_mlx_prefix_cache_cap_bytes gauge" in body
+    assert "# HELP rapid_mlx_prefix_cache_current_bytes" in body
+    assert "# TYPE rapid_mlx_prefix_cache_current_bytes gauge" in body
+
+    # Sample-line values: the raw byte values, no rescaling.
+    assert f"rapid_mlx_prefix_cache_cap_bytes {1024 * 1024 * 1024}" in body
+    assert f"rapid_mlx_prefix_cache_current_bytes {256 * 1024 * 1024}" in body
+
+
+def test_metrics_r7_m1_gauges_handle_missing_byte_fields_as_zero(metrics_client):
+    """If a cache implementation doesn't surface the new byte fields
+    yet (e.g. ``paged_cache`` rolled forward before adding them), the
+    gauges render as 0 rather than dropping the series. Prometheus
+    rate() / dashboards prefer "explicit 0" to "missing series" for
+    a known-but-not-yet-populated metric.
+    """
+    stats = {
+        "num_waiting": 0,
+        "num_running": 0,
+        "num_requests_processed": 0,
+        "total_prompt_tokens": 0,
+        "total_completion_tokens": 0,
+        "steps_executed": 0,
+        "uptime_seconds": 0,
+        "memory_aware_cache": {
+            "hits": 0,
+            "misses": 0,
+            "evictions": 0,
+            "tokens_saved": 0,
+            # Note: no max_memory_bytes / current_memory_bytes keys.
+        },
+    }
+    metrics_client.cfg.engine = _fake_engine(stats)
+    body = metrics_client.client.get("/metrics").text
+
+    assert "rapid_mlx_prefix_cache_cap_bytes 0" in body
+    assert "rapid_mlx_prefix_cache_current_bytes 0" in body
+
+
 def test_metrics_escapes_quotes_in_model_label(metrics_client):
     """Label values containing ``"`` are escaped per the exposition spec.
 

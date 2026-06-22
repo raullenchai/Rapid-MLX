@@ -387,6 +387,60 @@ def _render_prometheus(cfg: Any) -> str:
             monotonic = _cache_counter_accumulator.advance(metric_name, raw)
             lines.extend(_fmt_metric(metric_name, "counter", help_text, monotonic))
 
+        # ---- R7-M1: prefix-cache cap + current-usage gauges ----------
+        # Dogfood-088 (Talia r2) flagged that operators tuning the
+        # ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` env override had NO
+        # Prometheus surface to verify the cap was actually honored
+        # at runtime — they could see ``evictions_total`` tick but
+        # couldn't graph "how close are we to cap?" or "did our env
+        # ceiling stick?". These two gauges close that gap by
+        # exposing the same byte values the LRU evict-until-fits loop
+        # in MemoryAwarePrefixCache.store() compares against:
+        #
+        #   * ``rapid_mlx_prefix_cache_cap_bytes`` — the resolved
+        #     ceiling from ``MemoryCacheConfig.compute_memory_limit``
+        #     (env > programmatic > heuristic > 8 GiB fallback).
+        #     Gauge, not counter, because the value is set once at
+        #     cache init and reflects current config, not cumulative
+        #     work.
+        #   * ``rapid_mlx_prefix_cache_current_bytes`` — the cache's
+        #     live ledger of how many bytes are pinned by entries.
+        #     Pair with cap_bytes to compute utilization headroom
+        #     (1 - current/cap) in Prometheus or Grafana without
+        #     each consumer re-implementing the math.
+        #
+        # Both are byte gauges in line with the Prometheus naming
+        # convention ("base unit, no suffix"). They sit beside (not
+        # replace) the existing ``current_memory_mb`` /
+        # ``max_memory_mb`` fields in /v1/status which dashboards
+        # already consume.
+        lines.extend(
+            _fmt_metric(
+                "rapid_mlx_prefix_cache_cap_bytes",
+                "gauge",
+                (
+                    "Prefix-cache memory ceiling in bytes (resolved from "
+                    "RAPID_MLX_PREFIX_CACHE_MAX_BYTES env override, "
+                    "programmatic max_memory_mb, or the heuristic "
+                    "fraction-of-RAM default)."
+                ),
+                int(_coerce_number(cache_stats.get("max_memory_bytes"))),
+            )
+        )
+        lines.extend(
+            _fmt_metric(
+                "rapid_mlx_prefix_cache_current_bytes",
+                "gauge",
+                (
+                    "Prefix-cache memory currently pinned by cached entries, "
+                    "in bytes. Compare to rapid_mlx_prefix_cache_cap_bytes "
+                    "for headroom; the cache evicts LRU entries to stay "
+                    "below the cap."
+                ),
+                int(_coerce_number(cache_stats.get("current_memory_bytes"))),
+            )
+        )
+
     # ---- PFlash observability (M-02 reframe) ---------------------------
     # When PFlash compression engages, the prompt skips the prefix-cache
     # fetch + store paths entirely (the compressed sequence is a

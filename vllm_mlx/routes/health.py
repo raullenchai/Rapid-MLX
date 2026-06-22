@@ -108,10 +108,39 @@ async def health_ready():
 
 @probe_router.get("/healthz")
 async def healthz():
-    """k8s-convention alias for /health. Many orchestrator templates default
-    to /healthz; without this alias they 404 and the operator has to override
-    every chart."""
-    return await health()
+    """k8s-convention liveness probe. Many orchestrator templates default
+    to /healthz; without this alias they 404 and the operator has to
+    override every chart.
+
+    R7-H8 (dogfood-088 Talia r1/r2): this route used to delegate to
+    ``/health``, which calls ``engine.get_stats()`` on every hit. That
+    call (a) synchronizes with the Metal command queue via
+    ``mx.get_active_memory()`` (allocator lock under load), and
+    (b) iterates ``scheduler.running`` + ``scheduler.waiting`` building
+    per-request progress dicts via ``get_running_requests_info``. Under
+    8-way streaming concurrency, p99 climbed from ~70 ms (Olu r5) to
+    213 ms (Talia r2) — well past the 50 ms k8s probe budget. /healthz
+    is a *liveness* probe in the k8s sense ("is the process responsive
+    enough to keep serving?"), NOT a rich engine-status view; the
+    fast-path here reads three constant-time fields off the config
+    object and nothing else. Operators who need engine_type / mcp /
+    requests should hit ``/health`` (full view) or ``/v1/status``
+    (auth-gated dashboard view). This split mirrors what Envoy /
+    nginx-ingress / etcd / kubelet do for their own /healthz: a
+    fixed-cost probe that never reads runtime state.
+
+    The fields below all read static config state — no engine call,
+    no MCP iteration, no scheduler lock. ``cfg.ready`` is a bool
+    flipped once at lifespan boot; ``cfg.model_name`` is a string
+    set once; ``cfg.engine`` is either None or a stable reference.
+    """
+    cfg = get_config()
+    return {
+        "status": "healthy",
+        "ready": cfg.ready,
+        "model_loaded": cfg.engine is not None,
+        "model_name": cfg.model_name,
+    }
 
 
 @probe_router.get("/readyz")

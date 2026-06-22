@@ -548,6 +548,17 @@ class CacheStats:
             "tokens_saved": self.tokens_saved,
             "current_memory_mb": round(self.current_memory_bytes / _BYTES_PER_MB, 2),
             "max_memory_mb": round(self.max_memory_bytes / _BYTES_PER_MB, 2),
+            # R7-M1 (dogfood-088 Talia r2): raw-byte fields surface the
+            # cap + current usage in the unit the Prometheus gauges
+            # ``rapid_mlx_prefix_cache_cap_bytes`` and
+            # ``rapid_mlx_prefix_cache_current_bytes`` consume. The
+            # MB-rounded fields above stay (existing dashboards depend
+            # on them) but Prometheus prefers raw bytes for byte-unit
+            # series (see "Base units" in the Prometheus naming
+            # conventions doc). Both rows are static-cost — they read
+            # ints already tracked on this stats object.
+            "current_memory_bytes": int(self.current_memory_bytes),
+            "max_memory_bytes": int(self.max_memory_bytes),
             "memory_utilization": round(self.memory_utilization, 4),
             "entry_count": self.entry_count,
         }
