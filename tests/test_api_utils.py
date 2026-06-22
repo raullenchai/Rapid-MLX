@@ -902,6 +902,14 @@ class TestContentToText:
         ]
         assert _content_to_text(parts) == "foo"
 
+    def test_list_of_unknown_dicts_ignored(self):
+        parts = [
+            {},
+            {"type": "future_block", "text": "ignored"},
+            {"type": "text", "text": "foo"},
+        ]
+        assert _content_to_text(parts) == "foo"
+
     def test_list_of_responses_text_dicts(self):
         parts = [
             {"type": "input_text", "text": "foo"},

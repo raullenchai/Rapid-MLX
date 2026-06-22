@@ -409,6 +409,8 @@ def _merge_system_messages(messages: list[Message]) -> list[Message]:
     def _to_text(value):
         if isinstance(value, str):
             return value
+        if hasattr(value, "model_dump"):
+            value = value.model_dump(exclude_none=True)
         if isinstance(value, dict):
             return value.get("text") or ""
         if isinstance(value, list):
@@ -679,12 +681,7 @@ def _message_item_to_chat(item: ResponsesInputItem) -> Message:
             # becomes Chat image_url. Unsupported or malformed blocks raise
             # here rather than producing an empty prompt.
             parts.append(normalize_responses_content_part(c))
-        if all(part.get("type") == "text" for part in parts):
-            chat_content = "\n".join(
-                part.get("text", "") for part in parts if part.get("text")
-            )
-        else:
-            chat_content = parts
+        chat_content = parts
 
     return Message(role=role, content=chat_content)
 

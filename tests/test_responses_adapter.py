@@ -441,7 +441,8 @@ class TestResponsesToOpenai:
         chat = responses_to_openai(req)
         assert len(chat.messages) == 1
         assert chat.messages[0].role == "user"
-        assert chat.messages[0].content == "Hello"
+        assert chat.messages[0].content[0].type == "text"
+        assert chat.messages[0].content[0].text == "Hello"
 
     def test_message_input_joins_multiple_text_parts(self):
         req = ResponsesRequest(
@@ -458,7 +459,10 @@ class TestResponsesToOpenai:
             ],
         )
         chat = responses_to_openai(req)
-        assert chat.messages[0].content == "line one\nline two"
+        assert [part.text for part in chat.messages[0].content] == [
+            "line one",
+            "line two",
+        ]
 
     def test_output_text_content_replays_assistant(self):
         # Codex echoes prior assistant turns as type=message role=assistant
@@ -477,7 +481,8 @@ class TestResponsesToOpenai:
         )
         chat = responses_to_openai(req)
         assert chat.messages[0].role == "assistant"
-        assert chat.messages[0].content == "prior reply"
+        assert chat.messages[0].content[0].type == "text"
+        assert chat.messages[0].content[0].text == "prior reply"
 
     def test_function_call_input_item_becomes_assistant_with_tool_calls(self):
         req = ResponsesRequest(
@@ -549,7 +554,7 @@ class TestResponsesToOpenai:
         )
         chat = responses_to_openai(req)
         assert len(chat.messages) == 1
-        assert chat.messages[0].content == "Hi"
+        assert chat.messages[0].content[0].text == "Hi"
 
     def test_unknown_item_types_silently_dropped(self):
         req = ResponsesRequest(
@@ -565,6 +570,7 @@ class TestResponsesToOpenai:
         )
         chat = responses_to_openai(req)
         assert len(chat.messages) == 1
+        assert chat.messages[0].content[0].text == "Hi"
 
     def test_sampling_fields_forwarded(self):
         req = ResponsesRequest(

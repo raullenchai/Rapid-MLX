@@ -1123,11 +1123,9 @@ def _content_to_text(content) -> str:
                 text = data.get("text", "")
                 parts.append(text if isinstance(text, str) else "")
                 continue
-            if isinstance(data, dict) and data.get("type") == "input_image":
-                continue
-            item = _content_part_to_dict(item)
-            if item.get("type") == "text":
-                parts.append(item.get("text", ""))
+            if isinstance(data, dict) and data.get("type") == "text":
+                text = data.get("text", "")
+                parts.append(text if isinstance(text, str) else "")
         return "\n".join(parts)
     return str(content)
 
