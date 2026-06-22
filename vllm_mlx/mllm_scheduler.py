@@ -747,7 +747,7 @@ class MLLMScheduler:
 
             finish_reason = response.finish_reason
             stop_trimmed = False
-            if finish_reason is None and request.stop:
+            if finish_reason != "stop" and request.stop:
                 stop_params = [s for s in request.stop if s]
                 if (
                     stop_params
@@ -771,10 +771,13 @@ class MLLMScheduler:
                 prev_text_len = request.stop_text_len
                 if stop_params and new_text:
                     max_stop_len = max(len(s) for s in stop_params)
+                    keep = max(0, max_stop_len - 1)
+                    previous_seen_len = len(request.stop_text)
+                    streamed_so_far = request.stop_text + new_text
                     # Only the prior suffix can participate in a new
                     # cross-token stop match. This keeps the common
                     # per-token path bounded by len(new_text)+max_stop_len.
-                    window_base = prev_text_len - len(request.stop_tail)
+                    window_base = previous_seen_len - len(request.stop_tail)
                     stop_window = request.stop_tail + new_text
                     match: tuple[int, str] | None = None
                     for stop_str in stop_params:
@@ -794,17 +797,21 @@ class MLLMScheduler:
                         # MLLM-backed ``/v1/messages`` traffic gets the
                         # same surface as the text path.
                         output.matched_stop = stop_str
-                        streamed_so_far = request.stop_text + new_text
                         request.output_text = streamed_so_far[:idx]
                         stop_trimmed = True
                         # Emit only the valid prefix before the stop marker
                         # in new_text so streaming clients don't lose content.
                         emit_len = max(0, idx - prev_text_len)
-                        output.new_text = new_text[:emit_len]
+                        output.new_text = streamed_so_far[
+                            request.stop_text_len : request.stop_text_len + emit_len
+                        ]
                     else:
-                        request.stop_text += new_text
-                        request.stop_text_len = len(request.stop_text)
-                        keep = max(0, max_stop_len - 1)
+                        request.stop_text = streamed_so_far
+                        safe_upto = max(0, len(request.stop_text) - keep)
+                        output.new_text = request.stop_text[
+                            request.stop_text_len : safe_upto
+                        ]
+                        request.stop_text_len = safe_upto
                         request.stop_tail = request.stop_text[-keep:] if keep else ""
                 elif stop_params:
                     # ``new_text`` may be empty while the detokenizer is
@@ -814,6 +821,14 @@ class MLLMScheduler:
 
             # Check if finished
             if finish_reason is not None:
+                if (
+                    not stop_trimmed
+                    and request.stop
+                    and request.stop_text
+                    and request.stop_text_len < len(request.stop_text)
+                ):
+                    output.new_text += request.stop_text[request.stop_text_len :]
+                    request.stop_text_len = len(request.stop_text)
                 if finish_reason == "stop":
                     request.status = RequestStatus.FINISHED_STOPPED
                 elif finish_reason == "length":

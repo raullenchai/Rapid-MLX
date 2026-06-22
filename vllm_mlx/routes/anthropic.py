@@ -239,16 +239,34 @@ def _enforce_named_tool_choice_present(
 ) -> tuple[list, bool]:
     """Return ``(tool_calls, synthesized)``.
 
-    Named ``tool_choice`` pins one specific tool. If the model returns
-    no call for that tool, fail with a 422 instead of synthesizing a
-    fake ``tool_use``. This is stricter than ``tool_choice={"type":
-    "any"}``: for named pins the target is semantically meaningful, and
-    returning an empty-input call would tell clients a tool invocation
-    happened when the model only produced text or the wrong tool.
+    The first element is the (possibly synthesized) tool-call list:
+    unchanged when the named-tool contract is satisfied, or a list
+    containing a single synthesized best-effort ``tool_use`` for the
+    pinned tool with empty ``input={}`` when the model failed to
+    comply. The second element is an explicit boolean signal — True
+    iff this call synthesized a placeholder. Callers use the signal
+    to (a) skip JSON-schema validation on the synthesized empty
+    ``input`` (which would otherwise 400 on tools with ``required``
+    fields, codex r1 BLOCKING #1) and (b) drop the streaming
+    buffered-text replay (the model emitted forbidden text instead
+    of the pinned tool, codex r1 BLOCKING #2 — inferring from list
+    lengths can misclassify a legitimate single-call from a filtered
+    list).
 
-    The ``synthesized`` return value remains for the ``required/any``
-    enforcement path, where a single available tool can be synthesized
-    unambiguously by ``_enforce_required_tool_choice_present``.
+    F8 history: PR #763 round-1 added this as a 422 "could not enforce"
+    surface — honest about local inference's lack of decoder-level
+    constraints, but breaks Anthropic SDK callers that expect a 200
+    with the pinned tool_use block (the forced-named-tool flow is a
+    common agent pattern; ``anthropic`` SDK does not retry on 422).
+    Anthropic's real backend uses an FSM constraint to GUARANTEE a
+    ``tool_use`` for the pinned tool; we don't have that, but a
+    synthesized empty-input call gives clients SOMETHING shaped like
+    the pinned tool to dispatch — closer to spec than 422.
+
+    Mirrors chat.py's named-function path which 422s on the OpenAI
+    surface (strict spec) but the Anthropic spec is more forgiving;
+    see ``_filter_tool_calls_by_tool_choice`` for the same
+    surface-divergence rationale (H-05).
 
     ``original_call_count`` is the size of ``tool_calls`` BEFORE the
     filter ran. A warning logs the disambiguation between "model
@@ -263,16 +281,22 @@ def _enforce_named_tool_choice_present(
     # Log the disambiguation an operator needs to debug small-model
     # compliance issues. The wire response shape is identical either way.
     if original_call_count == 0:
-        detail = (
-            f"tool_choice pinned tool {target!r} but the model returned "
-            "a text response with no tool_calls."
+        logger.warning(
+            "tool_choice pinned tool %r but the model returned a text "
+            "response with no tool_calls; synthesizing a best-effort "
+            "tool_use with empty input (F8 fallback).",
+            target,
         )
     else:
-        detail = (
-            f"tool_choice pinned tool {target!r} but the model emitted "
-            f"{original_call_count} call(s), none to {target!r}."
+        logger.warning(
+            "tool_choice pinned tool %r but the model emitted %d call(s), "
+            "none to %r; synthesizing a best-effort tool_use with empty "
+            "input (F8 fallback).",
+            target,
+            original_call_count,
+            target,
         )
-    raise HTTPException(status_code=422, detail=detail)
+    return [_synthesize_pinned_tool_call(target)], True
 
 
 def _is_required_tool_choice(tool_choice) -> bool:
