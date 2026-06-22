@@ -1262,9 +1262,9 @@ def test_rescue_skipped_when_reasoning_is_case4_and_length():
     Without this gate, the route mistakes the post-Case-4 empty
     content for a #569 silent drop and feeds the client byte-
     identical content + reasoning_content (live-test repro: model
-    answered "What is 2+2?" with plain prose, no ``<think>`` token
-    emitted at all, raw_text did NOT start with ``<think>`` — so the
-    original narrow opener gate missed it).
+    emitted prompt-injected thinking without a literal ``<think>`` token
+    in ``raw_text`` — so the raw opener gate cannot see it and the
+    route-level ``prompt_thinking_active`` signal is required.
     """
     trace = (
         'First, the user asked "What is 2+2?" This seems like a '
@@ -1275,10 +1275,11 @@ def test_rescue_skipped_when_reasoning_is_case4_and_length():
         reasoning_text=trace,
         tool_calls=None,
         finish_reason="length",
-        # No ``<think>`` literal — model emitted plain prose. Without
-        # the case4 gate the rescue would surface the trace.
+        # No ``<think>`` literal — the route-level prompt-thinking signal
+        # is what identifies this Case-4 length cut as interrupted thinking.
         raw_text=trace,
         reasoning_is_case4=True,
+        prompt_thinking_active=True,
     )
     assert rescued is None, (
         f"Case-4 length-truncated reasoning must NOT be surfaced as "
