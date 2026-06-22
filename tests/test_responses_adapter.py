@@ -8,6 +8,8 @@ dependency. Mirrors the test shape of test_anthropic_adapter.py.
 
 import json
 
+import pytest
+
 from vllm_mlx.api.models import (
     AssistantMessage,
     ChatCompletionChoice,
@@ -90,7 +92,6 @@ class TestConvertTools:
         clean 400 instead of silently dropping. The chat/anthropic lanes
         already 400; the /v1/responses lane now matches.
         """
-        import pytest
         from fastapi import HTTPException
 
         for unsupported in ("web_search", "code_interpreter", "image_generation"):
@@ -259,6 +260,76 @@ class TestResponsesToOpenai:
         assert chat.messages[0].role == "system"
         assert "part one" in chat.messages[0].content
         assert "part two" in chat.messages[0].content
+
+    def test_input_image_is_preserved_as_chat_multimodal_content(self):
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="user",
+                    content=[
+                        ResponsesContentItem(type="input_text", text="Describe this"),
+                        ResponsesContentItem(
+                            type="input_image",
+                            image_url="data:image/png;base64,abc",
+                        ),
+                    ],
+                ),
+            ],
+        )
+        chat = responses_to_openai(req)
+
+        assert len(chat.messages) == 1
+        content = chat.messages[0].content
+        assert isinstance(content, list)
+        assert content[0].type == "text"
+        assert content[0].text == "Describe this"
+        assert content[1].type == "image_url"
+        assert content[1].image_url.url == "data:image/png;base64,abc"
+
+    def test_malformed_responses_content_block_does_not_become_empty_prompt(self):
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="user",
+                    content=[ResponsesContentItem(type="input_image")],
+                ),
+            ],
+        )
+
+        with pytest.raises(ValueError, match="input_image.image_url"):
+            responses_to_openai(req)
+
+    @pytest.mark.parametrize(
+        ("content_item", "match"),
+        [
+            (ResponsesContentItem(type="input_text"), "input_text.text is required"),
+            (
+                ResponsesContentItem(type="input_text", text=""),
+                "input_text.text must be a non-empty string",
+            ),
+            (ResponsesContentItem(type="output_text"), "output_text.text is required"),
+        ],
+    )
+    def test_malformed_text_content_block_does_not_become_empty_prompt(
+        self, content_item, match
+    ):
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="user",
+                    content=[content_item],
+                ),
+            ],
+        )
+
+        with pytest.raises(ValueError, match=match):
+            responses_to_openai(req)
 
     def test_merge_system_messages_defends_list_content(self):
         # Directly exercise the defensive `_to_text(list)` path that the

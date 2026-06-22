@@ -49,6 +49,7 @@ class _GenerationOutput:
 
 class _Engine:
     preserve_native_tool_format = False
+    is_mllm = False
 
     def __init__(self):
         self.calls: list[SimpleNamespace] = []
@@ -302,6 +303,107 @@ class TestResponsesNonStream:
         first_content = first.content if hasattr(first, "content") else first["content"]
         assert first_role == "system"
         assert first_content == "You are Codex."
+
+    def test_input_image_reaches_mllm_engine_as_multimodal_content(
+        self, responses_client
+    ):
+        client = responses_client.client
+        engine = responses_client.engine
+        engine.is_mllm = True
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this"},
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,abc",
+                            },
+                        ],
+                    }
+                ],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 200, response.text
+        sent = engine.calls[-1].messages
+        content = sent[0]["content"]
+        assert isinstance(content, list)
+        assert [part["type"] for part in content] == ["text", "image_url"]
+        assert content[1]["image_url"]["url"] == "data:image/png;base64,abc"
+
+    def test_input_image_rejected_on_text_only_engine(self, responses_client):
+        client = responses_client.client
+        engine = responses_client.engine
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this"},
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,abc",
+                            },
+                        ],
+                    }
+                ],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 400, response.text
+        body = response.json()
+        msg = body.get("detail") or body.get("error", {}).get("message", "")
+        assert "image inputs" in msg
+        assert engine.calls == []
+
+    @pytest.mark.parametrize(
+        ("content_part", "expected"),
+        [
+            ({"type": "input_text"}, "input_text.text is required"),
+            (
+                {"type": "input_text", "text": ""},
+                "input_text.text must be a non-empty string",
+            ),
+            ({"type": "output_text"}, "output_text.text is required"),
+        ],
+    )
+    def test_malformed_text_content_block_returns_400_not_empty_prompt(
+        self, responses_client, content_part, expected
+    ):
+        client = responses_client.client
+        engine = responses_client.engine
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [content_part],
+                    }
+                ],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 400, response.text
+        body = response.json()
+        msg = body.get("detail") or body.get("error", {}).get("message", "")
+        assert expected in msg
+        assert engine.calls == []
 
 
 # ---------------------------------------------------------------------------

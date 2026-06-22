@@ -27,7 +27,6 @@ from .models import (
     ToolDefinition,
 )
 from .responses_models import (
-    ResponsesContentItem,
     ResponsesInputItem,
     ResponsesOutputContent,
     ResponsesOutputItem,
@@ -35,6 +34,7 @@ from .responses_models import (
     ResponsesResponse,
     ResponsesUsage,
 )
+from .utils import normalize_responses_content_part
 
 # Yuki F13 (0.8.5 dogfood) — allowlist of tool types accepted by the
 # /v1/responses lane. Single source of truth: route, adapter, and tests
@@ -669,29 +669,24 @@ def _message_item_to_chat(item: ResponsesInputItem) -> Message:
     content = item.content
 
     if isinstance(content, str):
-        text = content
+        chat_content = content
     elif content is None:
-        text = ""
+        chat_content = ""
     else:
         parts = []
         for c in content:
-            if isinstance(c, ResponsesContentItem):
-                # input_text and output_text both render as plain text.
-                # input_image is dropped here — vision passthrough is a
-                # follow-up and Codex CLI does not send images today.
-                if c.type in ("input_text", "output_text") and c.text:
-                    parts.append(c.text)
-            elif isinstance(c, dict):
-                # Defensive: client may have sent a raw dict that slipped
-                # past Pydantic if validators are loosened later.
-                ctype = c.get("type")
-                if ctype in ("input_text", "output_text"):
-                    t = c.get("text")
-                    if t:
-                        parts.append(t)
-        text = "\n".join(parts)
+            # input_text/output_text become Chat text parts; input_image
+            # becomes Chat image_url. Unsupported or malformed blocks raise
+            # here rather than producing an empty prompt.
+            parts.append(normalize_responses_content_part(c))
+        if all(part.get("type") == "text" for part in parts):
+            chat_content = "\n".join(
+                part.get("text", "") for part in parts if part.get("text")
+            )
+        else:
+            chat_content = parts
 
-    return Message(role=role, content=text)
+    return Message(role=role, content=chat_content)
 
 
 def _function_call_to_chat(item: ResponsesInputItem) -> Message:

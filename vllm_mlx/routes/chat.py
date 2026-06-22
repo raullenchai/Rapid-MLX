@@ -46,6 +46,7 @@ from ..api.utils import (
     extract_multimodal_content,
     sanitize_output,
     strip_thinking_tags,
+    validate_content_blocks_for_capabilities,
 )
 from ..config import get_config
 from ..engine import GenerationOutput
@@ -925,40 +926,20 @@ async def _create_chat_completion_impl(
     else:
         _cloud_original_messages = None
 
-    # Reject image/video/audio content when the loaded model has no
-    # multimodal head. Without this guard ``extract_multimodal_content``
-    # silently drops the media parts on the text-only path and the model
-    # hallucinates (R9P1: 600M text model returned "a red rose" for
-    # arbitrary images; iter12 onboarding: text-only model claimed
-    # "no audio attached" while silently dropping ``audio_url``).
-    if not engine.is_mllm:
-        for _msg in request.messages:
-            _content = (
-                _msg.content if hasattr(_msg, "content") else _msg.get("content", "")
-            )
-            if isinstance(_content, list):
-                for _item in _content:
-                    _item_type = (
-                        _item.type
-                        if hasattr(_item, "type")
-                        else (_item.get("type", "") if isinstance(_item, dict) else "")
-                    )
-                    if _item_type in (
-                        "image_url",
-                        "image",
-                        "video",
-                        "video_url",
-                        "audio_url",
-                        "audio",
-                        "input_audio",
-                    ):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=(
-                                f"Model '{cfg.model_name}' does not support "
-                                "image, video, or audio inputs."
-                            ),
-                        )
+    # Content blocks must either reach a capable model path or be rejected
+    # before generation. Text-only models reject all media; MLLM/VLM models
+    # accept image/video but this server has no chat audio lane, so audio is
+    # still a request-time 400 instead of being ignored by prompt rendering.
+    try:
+        validate_content_blocks_for_capabilities(
+            request.messages,
+            model_name=cfg.model_name,
+            allow_image=engine.is_mllm,
+            allow_video=engine.is_mllm,
+            allow_audio=False,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # For MLLM models, keep original messages with embedded images
     if engine.is_mllm:

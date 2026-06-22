@@ -628,6 +628,51 @@ class TestExtractMultimodalContent:
         processed, images, videos = extract_multimodal_content(messages)
         assert videos == ["https://example.com/v.mp4"]
 
+    def test_unknown_content_block_rejected_not_empty_prompt(self):
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Use this block"},
+                    {"type": "document_url", "document_url": {"url": "doc.pdf"}},
+                ],
+            )
+        ]
+
+        with pytest.raises(ValueError, match="Unsupported content block type"):
+            extract_multimodal_content(messages)
+
+    def test_malformed_image_block_rejected_not_empty_prompt(self):
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Describe"},
+                    {"type": "image_url", "image_url": {}},
+                ],
+            )
+        ]
+
+        with pytest.raises(ValueError, match="image_url.url"):
+            extract_multimodal_content(messages)
+
+    def test_audio_content_block_rejected_not_silently_dropped(self):
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Transcribe"},
+                    {
+                        "type": "audio_url",
+                        "audio_url": {"url": "https://example.com/a.wav"},
+                    },
+                ],
+            )
+        ]
+
+        with pytest.raises(ValueError, match="Audio content blocks"):
+            extract_multimodal_content(messages)
+
     def test_multimodal_with_string_video_url_rejected(self):
         """F-065 mirror surface: bare-string ``video_url`` was
         also previously accepted and silently dropped. Now → 422."""

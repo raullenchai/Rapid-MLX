@@ -673,7 +673,9 @@ class ContentPart(BaseModel):
     image_url: ImageUrl | dict | str | None = None
     video: str | None = None
     video_url: VideoUrl | dict | str | None = None
+    audio: str | None = None
     audio_url: AudioUrl | dict | str | None = None
+    input_audio: dict | None = None
 
     @field_validator("text", mode="before")
     @classmethod

@@ -180,6 +180,40 @@ def test_chat_route_forwards_image_url_content_to_mllm_engine():
     assert image_part["image_url"]["url"].startswith("data:image/png;base64,")
 
 
+@pytest.mark.parametrize(
+    "audio_part",
+    [
+        {"type": "audio_url", "audio_url": {"url": "https://example.com/a.wav"}},
+        {"type": "input_audio", "input_audio": {"data": "AAAA", "format": "wav"}},
+    ],
+)
+def test_chat_route_rejects_audio_content_on_mllm_engine(audio_part):
+    """VLM/MLLM route has no audio lane; reject instead of dropping the block."""
+    engine = _StubMLLMEngine()
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3-vl-8b-4bit",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "Transcribe this"},
+                        audio_part,
+                    ],
+                }
+            ],
+            "max_tokens": 16,
+        },
+    )
+
+    assert resp.status_code == 400, resp.text
+    assert "audio inputs" in resp.json()["detail"]
+    assert engine.chat_calls == []
+
+
 def test_chat_route_maps_per_batch_cap_error_to_http_400():
     """Engine raises "exceeds the per-batch cap" → route returns 400.
 

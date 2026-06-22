@@ -54,11 +54,13 @@ from ..api.utils import (
     StreamingThinkRouter,
     StreamingToolCallFilter,
     clean_output_text,
+    decode_inline_tool_call_arguments,
     extract_json_from_response,
     extract_multimodal_content,
     sanitize_output,
     strip_special_tokens,
     strip_thinking_tags,
+    validate_content_blocks_for_capabilities,
 )
 from ..config import get_config
 from ..engine import BaseEngine
@@ -339,7 +341,18 @@ async def create_response(request: Request):
         # global ``_pydantic_validation_handler`` (H-17) which routes
         # it through the sanitized 400 envelope — no more ``str(e)``
         # echo that leaked the model class name and pydantic version.
-        openai_request = responses_to_openai(responses_request)
+        try:
+            openai_request = responses_to_openai(responses_request)
+        except ValueError as e:
+            err_msg = str(e)
+            if (
+                "content block" in err_msg
+                or "input_text." in err_msg
+                or "output_text." in err_msg
+                or "input_image." in err_msg
+            ):
+                raise HTTPException(status_code=400, detail=err_msg)
+            raise
 
         # H-06: ``text.format`` with strict json_schema on /v1/responses
         # was suggestion-only — the route went straight to
@@ -469,14 +482,22 @@ async def create_response(request: Request):
                     },
                 )
 
+        try:
+            validate_content_blocks_for_capabilities(
+                openai_request.messages,
+                model_name=get_config().model_name or responses_request.model,
+                allow_image=getattr(engine, "is_mllm", False),
+                allow_video=getattr(engine, "is_mllm", False),
+                allow_audio=False,
+            )
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+
         # Context-length pre-check — same DoS gate the chat/completions/
         # anthropic routes enforce. Runs BEFORE the stream branch so
         # streaming clients can't bypass by setting ``stream: true``.
         try:
-            _ctx_messages, _, _ = extract_multimodal_content(
-                openai_request.messages,
-                preserve_native_format=engine.preserve_native_tool_format,
-            )
+            _ctx_messages = _prepare_messages_for_engine(engine, openai_request)
         except Exception:
             _ctx_messages = None
         if _ctx_messages is not None:
@@ -527,6 +548,28 @@ async def create_response(request: Request):
 # ---------------------------------------------------------------------------
 
 
+def _prepare_messages_for_engine(
+    engine: BaseEngine, openai_request: ChatCompletionRequest
+) -> list[dict]:
+    if getattr(engine, "is_mllm", False):
+        messages = []
+        for msg in openai_request.messages:
+            if hasattr(msg, "model_dump"):
+                messages.append(msg.model_dump(exclude_none=True))
+            else:
+                raw = dict(msg)
+                messages.append({k: v for k, v in raw.items() if v is not None})
+        if engine.preserve_native_tool_format:
+            decode_inline_tool_call_arguments(messages)
+        return messages
+
+    messages, _images, _videos = extract_multimodal_content(
+        openai_request.messages,
+        preserve_native_format=engine.preserve_native_tool_format,
+    )
+    return messages
+
+
 async def _non_stream(
     engine: BaseEngine,
     openai_request: ChatCompletionRequest,
@@ -536,10 +579,7 @@ async def _non_stream(
     cfg = get_config()
     created_at = int(time.time())
 
-    messages, _images, _videos = extract_multimodal_content(
-        openai_request.messages,
-        preserve_native_format=engine.preserve_native_tool_format,
-    )
+    messages = _prepare_messages_for_engine(engine, openai_request)
 
     # r5-B C-10 / C-11: tool-coupled UI-TARS sysprompt injection. PR
     # #817 wired ``computer_20251022`` → ``computer`` tool translation
@@ -764,6 +804,10 @@ async def _non_stream(
             "Failed to process image" in err_msg
             or "Failed to process video" in err_msg
             or "exceeds the per-batch cap" in err_msg
+            or "content block" in err_msg
+            or "input_text." in err_msg
+            or "output_text." in err_msg
+            or "input_image." in err_msg
         ):
             raise HTTPException(status_code=400, detail=err_msg)
         raise
@@ -1191,10 +1235,7 @@ async def _stream_responses(
         },
     )
     try:
-        messages, _images, _videos = extract_multimodal_content(
-            openai_request.messages,
-            preserve_native_format=engine.preserve_native_tool_format,
-        )
+        messages = _prepare_messages_for_engine(engine, openai_request)
 
         # r5-B C-10 / C-11: tool-coupled UI-TARS sysprompt injection on
         # the streaming responses lane. Same gate as the non-stream
