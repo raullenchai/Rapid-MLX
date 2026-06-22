@@ -868,6 +868,10 @@ def serve_command(args):
     import os
     import sys
 
+    _max_tokens_is_explicit = args.max_tokens is not None
+    if args.max_tokens is None:
+        args.max_tokens = 32768
+
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire first thing in ``serve_command`` — before
     # ``prompt_upgrade_if_available`` (which may exit 0 on user
@@ -1634,6 +1638,7 @@ def serve_command(args):
             scheduler_config=scheduler_config,
             stream_interval=args.stream_interval,
             max_tokens=args.max_tokens,
+            max_tokens_is_explicit=_max_tokens_is_explicit,
             force_mllm=args.mllm,
             force_text=args.no_mllm,
             gpu_memory_utilization=args.gpu_memory_utilization,
@@ -4631,7 +4636,7 @@ Examples:
     serve_parser.add_argument(
         "--max-tokens",
         type=int,
-        default=32768,
+        default=None,
         help="Default max tokens for generation (default: 32768)",
     )
     serve_parser.add_argument(

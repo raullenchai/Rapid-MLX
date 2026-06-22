@@ -198,6 +198,7 @@ _model_path: str | None = (
     None  # Actual model path (for cache dir, not affected by --served-model-name)
 )
 _default_max_tokens: int = 4096
+_default_max_tokens_is_explicit: bool = False
 _thinking_token_budget: int = 2048  # Extra tokens added for thinking models
 _default_timeout: float = 1800.0  # Default request timeout in seconds (30 minutes)
 _default_temperature: float | None = None  # Set via --default-temperature
@@ -1123,6 +1124,7 @@ def load_model(
     served_model_name: str | None = None,
     mtp: bool = False,
     *,
+    max_tokens_is_explicit: bool = False,
     force_text: bool = False,
     force_hybrid: bool = False,
     no_hybrid: bool = False,
@@ -1139,6 +1141,8 @@ def load_model(
         scheduler_config: Scheduler config for BatchedEngine
         stream_interval: Tokens to batch before streaming
         max_tokens: Default max tokens for generation
+        max_tokens_is_explicit: True when max_tokens came from an explicit
+            operator setting such as ``serve --max-tokens``.
         force_mllm: Force loading as MLLM even if not auto-detected
         gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
         prefill_step_size: DEPRECATED — pass via
@@ -1184,12 +1188,14 @@ def load_model(
         _model_name, \
         _model_path, \
         _default_max_tokens, \
+        _default_max_tokens_is_explicit, \
         _tool_parser_instance, \
         _cloud_router, \
         _alias_recommended_sampling, \
         _generation_config_sampling
 
     _default_max_tokens = max_tokens
+    _default_max_tokens_is_explicit = max_tokens_is_explicit
     _model_path = model_name
     _model_name = served_model_name or model_name
     _tool_parser_instance = None
@@ -1405,6 +1411,7 @@ def _sync_config() -> None:
     cfg.model_path = _model_path
     cfg.inference_lock = None  # legacy, unused with BatchedEngine
     cfg.default_max_tokens = _default_max_tokens
+    cfg.default_max_tokens_is_explicit = _default_max_tokens_is_explicit
     cfg.default_timeout = _default_timeout
     cfg.default_temperature = _default_temperature
     cfg.default_top_p = _default_top_p
@@ -1679,7 +1686,7 @@ Examples:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=4096,
+        default=None,
         help="Default max tokens for generation (caps when client sends None)",
     )
     parser.add_argument(
@@ -1960,6 +1967,10 @@ Examples:
     )
 
     # Load model before starting server
+    _max_tokens_is_explicit = args.max_tokens is not None
+    if args.max_tokens is None:
+        args.max_tokens = 4096
+
     if args.mllm and args.no_mllm:
         parser.error("--mllm and --no-mllm are mutually exclusive")
     if getattr(args, "force_hybrid", False) and getattr(args, "no_hybrid", False):
@@ -1979,6 +1990,7 @@ Examples:
         args.model,
         scheduler_config=scheduler_config,
         max_tokens=args.max_tokens,
+        max_tokens_is_explicit=_max_tokens_is_explicit,
         force_mllm=args.mllm,
         force_text=args.no_mllm,
         cloud_model=args.cloud_model,

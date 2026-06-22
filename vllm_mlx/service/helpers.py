@@ -1362,16 +1362,19 @@ def _resolve_max_tokens(
     and the server scheduled ``max_tokens=2088``. v0.6.63 onboarding
     sweep finding #2.
 
-    The thinking budget still applies when the client did NOT specify
-    ``max_tokens`` (server default in effect): reasoning models need
-    headroom to think *and* respond, and the server-side default is
-    the right place to bake that in.
+    The thinking budget applies only when neither the client nor the
+    operator specified a cap. If the default came from
+    ``serve --max-tokens`` (or another explicit operator setting), that
+    value is also a hard upper bound and must not receive additive
+    headroom.
     """
     if request_value is not None:
         # Hard cap per client contract.
         return request_value
     cfg = get_config()
     base = cfg.default_max_tokens
+    if cfg.default_max_tokens_is_explicit:
+        return base
     if enable_thinking is False:
         return base
     if cfg.reasoning_parser_name and base > 0 and base < 4096:
