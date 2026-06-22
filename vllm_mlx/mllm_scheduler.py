@@ -802,8 +802,8 @@ class MLLMScheduler:
                         output_new_text = visible_text[prev_text_len:]
                         request.output_text = visible_text
                         output_output_text = visible_text
-                        request.stop_text = visible_text
-                        request.stop_text_len = len(visible_text)
+                        request.stop_text = streamed_so_far
+                        request.stop_text_len = len(streamed_so_far)
                         request.stop_tail = ""
                         stop_trimmed = True
                     else:
@@ -857,8 +857,7 @@ class MLLMScheduler:
                             ]
                             request.output_text = visible_text
                             output_output_text = visible_text
-                            request.stop_text = visible_text
-                            request.stop_text_len = len(visible_text)
+                            request.stop_text_len = len(request.stop_text)
                             request.stop_tail = ""
                             output_matched_stop = stop_str
                             stop_trimmed = True

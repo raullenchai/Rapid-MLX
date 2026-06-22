@@ -45,6 +45,9 @@ router = APIRouter()
 
 
 def _engine_supports_completion_logprobs(engine) -> bool:
+    structural_support = getattr(engine, "tokenizer", None) is not None and callable(
+        getattr(engine, "stream_generate", None)
+    )
     capability = getattr(engine, "supports_completion_logprobs", None)
     if capability is not None:
         if callable(capability):
@@ -54,11 +57,9 @@ def _engine_supports_completion_logprobs(engine) -> bool:
                 if callable(close):
                     close()
                 return False
-            return value if isinstance(value, bool) else False
-        return capability if isinstance(capability, bool) else False
-    return getattr(engine, "tokenizer", None) is not None and callable(
-        getattr(engine, "stream_generate", None)
-    )
+            return value if isinstance(value, bool) else structural_support
+        return capability if isinstance(capability, bool) else structural_support
+    return structural_support
 
 
 @router.post(

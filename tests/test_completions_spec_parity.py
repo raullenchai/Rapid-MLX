@@ -511,6 +511,19 @@ class TestLogprobsEngineCapability:
 
         assert _engine_supports_completion_logprobs(_Engine()) is False
 
+    def test_non_bool_capability_attribute_falls_back_to_structure(self):
+        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+
+        class _Engine:
+            tokenizer = object()
+            supports_completion_logprobs = object()
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+        assert _engine_supports_completion_logprobs(_Engine()) is True
+
     def test_async_callable_capability_is_unsupported(self):
         from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
 
