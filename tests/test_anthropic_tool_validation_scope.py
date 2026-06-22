@@ -507,7 +507,7 @@ def test_validator_multiple_calls_bad_one_raises_about_bad_one_only():
 # ---------------------------------------------------------------------------
 
 
-def test_pinned_tool_model_emits_no_tool_calls_returns_200_with_synthesized_tool_use():
+def test_pinned_tool_model_emits_no_tool_calls_returns_422():
     """F8 (D-ANTHRO-SPEC-POLISH): ``tool_choice={type:tool,name:X}``
     + model returns text only → 200 with a best-effort synthesized
     ``tool_use`` block for the pinned tool with empty ``input={}``.
@@ -532,18 +532,12 @@ def test_pinned_tool_model_emits_no_tool_calls_returns_200_with_synthesized_tool
         ),
     )
 
-    assert response.status_code == 200, response.text
-    body = response.json()
-    tool_uses = [b for b in body["content"] if b["type"] == "tool_use"]
-    assert len(tool_uses) == 1
-    assert tool_uses[0]["name"] == "get_weather"
-    assert tool_uses[0]["input"] == {}
-    # F9: synthesized id uses the Anthropic ``toolu_`` prefix.
-    assert tool_uses[0]["id"].startswith("toolu_")
-    assert body["stop_reason"] == "tool_use"
+    assert response.status_code == 422, response.text
+    assert "tool_choice" in response.json()["detail"]
+    assert "get_weather" in response.json()["detail"]
 
 
-def test_pinned_tool_model_emits_only_wrong_tool_returns_200_with_synthesized_tool_use():
+def test_pinned_tool_model_emits_only_wrong_tool_returns_422():
     """F8 (D-ANTHRO-SPEC-POLISH): ``tool_choice={type:tool,name:get_weather}``
     + model fires only ``lookup_zip`` → 200 with a best-effort
     synthesized ``tool_use`` for ``get_weather`` (empty input). The
@@ -566,15 +560,9 @@ def test_pinned_tool_model_emits_only_wrong_tool_returns_200_with_synthesized_to
         ),
     )
 
-    assert response.status_code == 200, response.text
-    body = response.json()
-    tool_uses = [b for b in body["content"] if b["type"] == "tool_use"]
-    assert len(tool_uses) == 1
-    assert tool_uses[0]["name"] == "get_weather"
-    assert tool_uses[0]["input"] == {}
-    # The un-pinned tool name must not survive into the response.
-    assert "lookup_zip" not in json.dumps(body)
-    assert body["stop_reason"] == "tool_use"
+    assert response.status_code == 422, response.text
+    assert "tool_choice" in response.json()["detail"]
+    assert "get_weather" in response.json()["detail"]
 
 
 def test_pinned_tool_streaming_no_calls_emits_synthesized_tool_use():
@@ -605,13 +593,12 @@ def test_pinned_tool_streaming_no_calls_emits_synthesized_tool_use():
 
     assert response.status_code == 200
     raw = response.text
-    # F8: no more SSE error event for this case — the response shape
-    # is a successful tool_use stream.
-    assert "event: error" not in raw, raw
-    # Synthesized tool_use for the pinned tool IS emitted.
-    assert '"type": "tool_use"' in raw, raw
+    assert "event: error" in raw, raw
+    assert "tool_choice" in raw
+    # No fabricated tool_use for the pinned tool is emitted.
+    assert '"type": "tool_use"' not in raw, raw
     assert "get_weather" in raw
-    assert '"stop_reason": "tool_use"' in raw
+    assert '"stop_reason": "tool_use"' not in raw
     # The model's forbidden text MUST NOT appear anywhere in the
     # stream — neither as a ``text_delta``, ``content_block_start``
     # of type ``text``, nor in the raw SSE payload. The distinctive
@@ -654,11 +641,9 @@ def test_pinned_tool_streaming_only_wrong_tool_emits_synthesized_tool_use():
 
     assert response.status_code == 200
     raw = response.text
-    # F8: no more SSE error event for the wrong-tool case.
-    assert "event: error" not in raw, raw
-    # Synthesized tool_use for the pinned tool IS emitted.
-    assert '"type": "tool_use"' in raw, raw
-    assert "get_weather" in raw
+    assert "event: error" in raw, raw
+    assert "tool_choice" in raw
+    assert '"type": "tool_use"' not in raw, raw
     # The un-pinned tool name MUST NOT appear anywhere — the filter
     # dropped it before the emit loop, and the synthesized call
     # carries only the pinned tool's name.
@@ -711,14 +696,16 @@ def test_enforce_named_tool_choice_present_noop_for_non_named_choice():
     assert _enforce_named_tool_choice_present([], None, original_call_count=0) == (
         [],
         False,
+        None,
     )
     assert _enforce_named_tool_choice_present([], "auto", original_call_count=0) == (
         [],
         False,
+        None,
     )
     assert _enforce_named_tool_choice_present(
         [], {"type": "function"}, original_call_count=0
-    ) == ([], False)
+    ) == ([], False, None)
 
 
 def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
@@ -737,13 +724,14 @@ def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
         type="function",
         function=FunctionCall(name="get_weather", arguments='{"location": "SF"}'),
     )
-    calls_out, synthesized = _enforce_named_tool_choice_present(
+    calls_out, synthesized, err = _enforce_named_tool_choice_present(
         [pinned_call],
         {"type": "function", "function": {"name": "get_weather"}},
         original_call_count=1,
     )
     assert calls_out == [pinned_call]
     assert synthesized is False
+    assert err is None
 
 
 def test_enforce_named_tool_choice_present_synthesizes_when_pinned_call_missing():
@@ -760,19 +748,14 @@ def test_enforce_named_tool_choice_present_synthesizes_when_pinned_call_missing(
     """
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
-    calls_out, synthesized = _enforce_named_tool_choice_present(
+    calls_out, synthesized, err = _enforce_named_tool_choice_present(
         [],
         {"type": "function", "function": {"name": "get_weather"}},
         original_call_count=0,
     )
-    assert synthesized is True
-    assert len(calls_out) == 1
-    assert calls_out[0].function.name == "get_weather"
-    assert calls_out[0].function.arguments == "{}"
-    # Synthesized id uses OpenAI-style ``call_<hex>`` on the
-    # OpenAI-side ``ToolCall`` model — the Anthropic adapter rewrites
-    # to ``toolu_`` at the wire boundary (F9).
-    assert calls_out[0].id.startswith("call_")
+    assert calls_out == []
+    assert synthesized is False
+    assert "get_weather" in err
 
 
 def test_enforce_named_tool_choice_present_synthesizes_when_only_wrong_tool_emitted():
@@ -784,17 +767,17 @@ def test_enforce_named_tool_choice_present_synthesizes_when_only_wrong_tool_emit
     """
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
-    calls_out, synthesized = _enforce_named_tool_choice_present(
+    calls_out, synthesized, err = _enforce_named_tool_choice_present(
         [],
         {"type": "function", "function": {"name": "get_weather"}},
         original_call_count=3,  # model emitted 3 wrong-tool calls
     )
-    assert synthesized is True
-    assert len(calls_out) == 1
-    assert calls_out[0].function.name == "get_weather"
+    assert calls_out == []
+    assert synthesized is False
+    assert "get_weather" in err
 
 
-def test_pinned_tool_with_required_field_synthesizes_200_not_400():
+def test_pinned_tool_with_required_field_returns_422_not_synthesized_200():
     """codex r1 BLOCKING #1 regression: a pinned tool whose schema has
     ``required`` fields would, pre-fix, run the synthesized empty
     ``input={}`` through ``_validate_tool_call_params`` which would
@@ -816,13 +799,8 @@ def test_pinned_tool_with_required_field_synthesizes_200_not_400():
     }
 
     response = client.post("/v1/messages", json=body)
-    assert response.status_code == 200, response.text
-    resp_body = response.json()
-    tool_uses = [b for b in resp_body["content"] if b["type"] == "tool_use"]
-    assert len(tool_uses) == 1
-    assert tool_uses[0]["name"] == "get_weather"
-    assert tool_uses[0]["input"] == {}
-    assert tool_uses[0]["id"].startswith("toolu_")
+    assert response.status_code == 422, response.text
+    assert "tool_choice" in response.json()["detail"]
 
 
 def test_pinned_tool_streaming_text_replays_when_enforcement_passes():

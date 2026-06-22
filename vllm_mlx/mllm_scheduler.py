@@ -794,6 +794,7 @@ class MLLMScheduler:
                     if match is not None:
                         idx, stop_str = match
                         finish_reason = "stop"
+                        output.finish_reason = finish_reason
                         # H-03: pin WHICH user-supplied stop fired so
                         # the Anthropic adapter can surface
                         # ``stop_reason="stop_sequence"`` +

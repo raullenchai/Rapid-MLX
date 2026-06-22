@@ -236,7 +236,7 @@ def _enforce_named_tool_choice_present(
     tool_choice,
     *,
     original_call_count: int,
-) -> tuple[list, bool]:
+) -> tuple[list, bool, str | None]:
     """Return ``(tool_calls, synthesized)``.
 
     The first element is the (possibly synthesized) tool-call list:
@@ -277,7 +277,7 @@ def _enforce_named_tool_choice_present(
     """
     target = _named_tool_choice_target(tool_choice)
     if not target or tool_calls:
-        return tool_calls, False
+        return tool_calls, False, None
     # Log the disambiguation an operator needs to debug small-model
     # compliance issues. The wire response shape is identical either way.
     if original_call_count == 0:
@@ -296,7 +296,11 @@ def _enforce_named_tool_choice_present(
             original_call_count,
             target,
         )
-    return [_synthesize_pinned_tool_call(target)], True
+    return (
+        [],
+        False,
+        f"tool_choice pinned tool {target!r} but the model did not emit that tool",
+    )
 
 
 def _is_required_tool_choice(tool_choice) -> bool:
@@ -899,11 +903,17 @@ async def create_anthropic_message(
             # (codex r1 BLOCKING #1: pinned tools with ``required``
             # fields would otherwise 400 the best-effort path back
             # into the symptom F8 was supposed to fix).
-            tool_calls, synthesized_pinned_call = _enforce_named_tool_choice_present(
+            (
+                tool_calls,
+                synthesized_pinned_call,
+                _named_tool_choice_err,
+            ) = _enforce_named_tool_choice_present(
                 tool_calls,
                 openai_request.tool_choice,
                 original_call_count=original_call_count,
             )
+            if _named_tool_choice_err:
+                raise HTTPException(status_code=422, detail=_named_tool_choice_err)
             # D-ANTHRO-TOOL-USAGE F3: Anthropic ``{"type":"any"}`` enforcement.
             # The adapter has mapped it to OpenAI ``"required"``; mirror the
             # chat-route synth+422 policy so a no-tool reply either becomes
@@ -2655,11 +2665,17 @@ async def _stream_anthropic_messages(
         # model failed to comply with a pinned ``tool_choice``. The
         # explicit ``synthesized`` signal is the source of truth for
         # the buffered-text-drop branch below.
-        tool_calls, synthesized_pinned_call = _enforce_named_tool_choice_present(
+        (
+            tool_calls,
+            synthesized_pinned_call,
+            _named_tool_choice_err_stream,
+        ) = _enforce_named_tool_choice_present(
             tool_calls,
             openai_request.tool_choice,
             original_call_count=original_call_count_stream,
         )
+        if _named_tool_choice_err_stream:
+            tool_choice_error = _named_tool_choice_err_stream
 
         # D-ANTHRO-TOOL-USAGE F3: stream variant of
         # ``_enforce_required_tool_choice_present`` for

@@ -460,17 +460,10 @@ def test_nonstream_tool_choice_named_still_routes_to_specific_tool():
             "messages": [{"role": "user", "content": "anything"}],
         },
     )
-    # Named pin with parser-only model that returned text synthesizes a
-    # best-effort empty-input tool_use for the pinned tool. Anthropic
-    # SDK callers expect a tool_use-shaped 200 and do not retry on a
-    # 422; broader validation is pinned in
-    # test_anthropic_tool_validation_scope.py.
-    assert r.status_code == 200, r.text
-    body = r.json()
-    tool_uses = [c for c in body["content"] if c.get("type") == "tool_use"]
-    assert len(tool_uses) == 1
-    assert tool_uses[0]["name"] == "get_weather"
-    assert tool_uses[0]["input"] == {}
+    assert r.status_code == 422, r.text
+    detail = r.json()["detail"]
+    assert "tool_choice" in detail
+    assert "get_weather" in detail
 
 
 def test_nonstream_tool_choice_named_synth_when_model_emits_the_pinned_tool():
