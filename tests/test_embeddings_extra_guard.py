@@ -543,16 +543,10 @@ class TestEmbeddingModelAliasResolution:
         wiring has no anchor."""
         from vllm_mlx.model_aliases import resolve_model
 
-        resolved = resolve_model("embeddinggemma-300m-6bit")
-        # Either the alias resolved (returns the mlx-community path) or
-        # it isn't in aliases.json yet. The CLI behaviour must be
-        # consistent either way; if the alias IS registered, ensure the
-        # resolution actually happens.
-        from vllm_mlx.model_aliases import list_aliases
-
-        if "embeddinggemma-300m-6bit" in list_aliases():
-            assert resolved.startswith("mlx-community/"), resolved
-            assert resolved != "embeddinggemma-300m-6bit"
+        assert (
+            resolve_model("embeddinggemma-300m-6bit")
+            == "mlx-community/embeddinggemma-300m-6bit"
+        )
 
     def test_resolve_model_passes_through_hf_path(self):
         """A full HF org/name path (``mlx-community/foo``) is already
