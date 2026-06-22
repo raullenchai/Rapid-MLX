@@ -8,10 +8,12 @@ one cohesive orchestrator, because reasoning/tool/sanitize are tightly coupled.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
 import uuid
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 from ..api.tool_calling import parse_tool_calls
 from ..api.utils import sanitize_output, strip_special_tokens
@@ -268,7 +270,13 @@ class StreamingPostProcessor:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
             self._tool_parser_request_local = self.tool_parser is not None
         elif cfg.tool_parser_instance:
-            self.tool_parser = cfg.tool_parser_instance  # injected mock
+            self.tool_parser = self._clone_injected_tool_parser(
+                cfg.tool_parser_instance
+            )
+            self._tool_parser_request_local = (
+                self.tool_parser is not None
+                and self.tool_parser is not cfg.tool_parser_instance
+            )
         else:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
             self._tool_parser_request_local = self.tool_parser is not None
@@ -1090,6 +1098,24 @@ class StreamingPostProcessor:
                     logger.debug(f"Auto-infer tool parser for streaming failed: {e}")
 
         return None
+
+    @staticmethod
+    def _clone_injected_tool_parser(parser):
+        if parser is None:
+            return None
+        if isinstance(parser, Mock):
+            return parser
+        try:
+            return copy.deepcopy(parser)
+        except Exception:
+            try:
+                return copy.copy(parser)
+            except Exception:
+                logger.warning(
+                    "Using shared injected tool parser instance because it "
+                    "could not be cloned; automatic reset is disabled."
+                )
+                return parser
 
     def set_thinking_model(self, model_name: str):
         """Enable Nemotron-style thinking prefix injection."""

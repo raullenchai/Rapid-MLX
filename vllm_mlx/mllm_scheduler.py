@@ -703,9 +703,9 @@ class MLLMScheduler:
             finish_reason = response.finish_reason
 
             # Decode the new token using streaming detokenizer (UTF-8 safe).
-            # Plain backend stop tokens are not decoded because they can be
-            # EOS/control ids. User stop strings still decode the final token
-            # so the rolling matcher can keep visible text before the stop.
+            # Backend EOS/control stop tokens are not decoded. Backend
+            # responses that finish with normal text still detokenize so
+            # the rolling matcher can keep visible text before a user stop.
             had_detok = request_id in self._detokenizer_pool
             if not had_detok:
                 if hasattr(tokenizer, "detokenizer"):
@@ -716,7 +716,8 @@ class MLLMScheduler:
                 self._detokenizer_pool[request_id] = detok
             detok = self._detokenizer_pool[request_id]
             stop_params = [s for s in request.stop if s] if request.stop else []
-            if finish_reason == "stop":
+            token_is_stop_token = bool(getattr(response, "token_is_stop_token", False))
+            if token_is_stop_token:
                 new_text = ""
             else:
                 detok.add_token(response.token)
