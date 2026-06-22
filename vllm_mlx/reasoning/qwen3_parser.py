@@ -420,32 +420,32 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # output) so prompt-injected mid-think streams also land
             # here, alongside genuine casual answers.
             #
-            # D-STOP-THINK no-prefix branch. The route-supplied
-            # ``prompt_thinking_active`` template signal is useful, but
-            # it is not parser evidence by itself: a valid direct answer
-            # like ``"The answer is STOP"`` can also arrive under an
-            # injected thinking template and trip a user stop string.
-            # Treat ``finish_reason="length"`` + active thinking as a
-            # budget-cut mid-think signal, because max_tokens fired before
-            # the model had a chance to close the implicit thought. For
-            # ``matched_stop`` stops, require direct no-prefix parser
-            # evidence (the bare scratchpad preamble below); otherwise
-            # rescue to content so the assistant turn is not silently
-            # empty.
+            # D-STOP-THINK no-prefix branch. Qwen3 chat templates inject
+            # ``<think>\n`` into the prompt (not the model output), so
+            # the parser never sees a literal opener on the live failure
+            # shape. The route-supplied ``prompt_thinking_active`` signal
+            # is therefore the structural evidence that no-prefix bytes
+            # are inside the injected thinking block. Require a real
+            # truncation signal too (``finish_reason="length"`` or
+            # ``matched_stop``) so natural EOS and casual no-thinking
+            # answers still rescue to content.
             #
             # Decision matrix (no-prefix branch, r15 final):
             #
             # finish_reason | matched_stop | prompt_thinking_active | bare_preamble | route
             # ──────────────┼──────────────┼────────────────────────┼───────────────┼─────────
             # "length"      | *            | True                   | *             | reasoning (D-STOP-THINK / max_tokens)
-            # *             | set          | True                   | True          | reasoning (D-STOP-THINK / stop + parser evidence)
-            # *             | set          | True                   | False         | content  (direct answer under stop)
+            # *             | set          | True                   | *             | reasoning (D-STOP-THINK / stop)
             # *             | None         | False                  | True          | reasoning (#570 label)
             # *             | None         | False                  | False         | content  (#570/#572 casual)
             # *             | set          | False                  | *             | content  (casual stop-terminated)
             # natural EOS   | None         | True                   | *             | content  (#569 silent-drop rescue)
             if finish_reason == "length" and prompt_thinking_active:
                 # max_tokens cut a prompt-injected thinking stream —
+                # route to reasoning to suppress duplication.
+                return DeltaMessage(reasoning=cleaned)
+            if matched_stop is not None and prompt_thinking_active:
+                # User stop cut a prompt-injected thinking stream —
                 # route to reasoning to suppress duplication.
                 return DeltaMessage(reasoning=cleaned)
             if _looks_like_bare_think_preamble(cleaned):
