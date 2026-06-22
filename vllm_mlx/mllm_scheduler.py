@@ -747,7 +747,7 @@ class MLLMScheduler:
             finish_reason = response.finish_reason
             stop_trimmed = False
             stop_params = [s for s in request.stop if s] if request.stop else []
-            if finish_reason != "stop" and stop_params:
+            if (finish_reason != "stop" or new_text) and stop_params:
                 if (
                     not had_detok
                     and request.stop_text_len == 0
@@ -812,26 +812,20 @@ class MLLMScheduler:
                         request.stop_tail = ""
                         stop_trimmed = True
                     else:
-                        request.stop_text = streamed_so_far
-                        if finish_reason is not None:
-                            safe_upto = len(request.stop_text)
+                        if finish_reason == "stop":
+                            output.new_text = ""
                         else:
+                            request.stop_text = streamed_so_far
                             safe_upto = max(0, len(request.stop_text) - keep)
-                        output.new_text = request.stop_text[
-                            request.stop_text_len : safe_upto
-                        ]
-                        request.stop_text_len = safe_upto
-                        request.stop_tail = (
-                            (
-                                ""
-                                if finish_reason is not None
-                                else request.stop_text[-keep:]
+                            output.new_text = request.stop_text[
+                                request.stop_text_len : safe_upto
+                            ]
+                            request.stop_text_len = safe_upto
+                            request.stop_tail = (
+                                request.stop_text[-keep:] if keep else ""
                             )
-                            if keep
-                            else ""
-                        )
-                        request.output_text = request.stop_text[:safe_upto]
-                        output.output_text = request.output_text
+                            request.output_text = request.stop_text[:safe_upto]
+                            output.output_text = request.output_text
                 elif stop_params:
                     # ``new_text`` may be empty while the detokenizer is
                     # holding an incomplete byte sequence. Preserve the

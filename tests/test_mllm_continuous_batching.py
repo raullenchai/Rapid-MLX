@@ -1157,8 +1157,8 @@ class TestMLLMSchedulerStopSequences:
         assert outputs[1].finish_reason == "stop"
         assert outputs[1].output_text == "hi"
 
-    def test_backend_stop_finish_does_not_stream_stop_token_text(self):
-        """Backend stop-token text is a terminator, not user-visible content."""
+    def test_backend_stop_finish_trims_stop_marker_and_keeps_prefix(self):
+        """Backend stop finish trims the marker but keeps visible prefix text."""
         from vllm_mlx.mllm_batch_generator import MLLMBatchResponse
         from vllm_mlx.mllm_scheduler import (
             MLLMRequest,
@@ -1171,7 +1171,7 @@ class TestMLLMSchedulerStopSequences:
             def __init__(self):
                 self.last_segment = ""
                 self.text = ""
-                self._segments = iter(["hi", "STOP"])
+                self._segments = iter(["hi", " thereSTOP"])
 
             def reset(self):
                 pass
@@ -1220,10 +1220,10 @@ class TestMLLMSchedulerStopSequences:
 
         assert finished_ids == {request.request_id}
         assert outputs[0].new_text == ""
-        assert outputs[1].new_text == "hi"
+        assert outputs[1].new_text == "hi there"
         assert outputs[1].finish_reason == "stop"
-        assert outputs[1].output_text == "hi"
-        assert request.output_text == "hi"
+        assert outputs[1].output_text == "hi there"
+        assert request.output_text == "hi there"
 
     def test_add_request_forwards_stop(self):
         """add_request should store stop sequences on the MLLMRequest."""
