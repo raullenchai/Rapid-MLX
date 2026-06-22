@@ -802,6 +802,54 @@ def _contains_structural_tool_wire_leak(text: str | None) -> bool:
     return False
 
 
+def _is_tool_wire_marker_only(text: str | None) -> bool:
+    """True when ``text`` has markers but no non-marker payload/prose."""
+    if not text or not _contains_tool_wire_literal(text):
+        return False
+    result = text
+    for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+        result = marker_re.sub("", result)
+    return not result.strip()
+
+
+def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
+    """Scrub structural wire residue while preserving marker examples.
+
+    Unlike ``_scrub_tool_wire_literals`` this is safe for route-visible
+    fields: prose such as ``"Use <tool_call>...</tool_call>"`` stays
+    intact because it has no tool payload hint. Actual malformed wire
+    spans and marker-only leftovers are removed.
+    """
+    if not text:
+        return text or ""
+    result = text
+    for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
+        result = balanced_re.sub(
+            lambda m: "" if _TOOL_WIRE_PAYLOAD_HINT_RE.search(m.group(0)) else m.group(0),
+            result,
+        )
+    result = _CROSS_FAMILY_SPAN_RE.sub(
+        lambda m: "" if _TOOL_WIRE_PAYLOAD_HINT_RE.search(m.group(0)) else m.group(0),
+        result,
+    )
+    for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+        pieces: list[str] = []
+        last = 0
+        for match in marker_re.finditer(result):
+            window_start = max(0, match.start() - 128)
+            window_end = min(len(result), match.end() + 2048)
+            pieces.append(result[last : match.start()])
+            if not _TOOL_WIRE_PAYLOAD_HINT_RE.search(result[window_start:window_end]):
+                pieces.append(match.group(0))
+            last = match.end()
+        if pieces:
+            pieces.append(result[last:])
+            result = "".join(pieces)
+    if _is_tool_wire_marker_only(result):
+        result = _scrub_tool_wire_literals(result)
+    return re.sub(r"\s+", " ", result).strip()
+
+
 def _scrub_tool_wire_literals(text: str | None) -> str:
     """Strip every known parser-wire opener/closer marker from
     ``text`` in three phases. Returns a whitespace-collapsed result
@@ -2821,7 +2869,7 @@ async def _create_chat_completion_impl(
     # (handled by ``_finalize_content_and_reasoning`` returning
     # ``cleaned_text`` that we never mutate after this block).
     if _wire_scrub_active:
-        cleaned_text = _scrub_tool_wire_literals(cleaned_text)
+        cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
 
     # Extract reasoning content. extract_reasoning() is stateless (pure regex
     # on full text), so the singleton is safe here unlike the streaming variant.
@@ -2865,9 +2913,9 @@ async def _create_chat_completion_impl(
         finish_reason=getattr(output, "finish_reason", None),
     )
     if _should_scrub_visible_wire(cleaned_text):
-        cleaned_text = _scrub_tool_wire_literals(cleaned_text)
+        cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
     if _should_scrub_visible_wire(reasoning_text) and reasoning_text:
-        reasoning_text = _scrub_tool_wire_literals(reasoning_text)
+        reasoning_text = _scrub_visible_tool_wire_leaks(reasoning_text)
 
     # Process response_format if specified (after reasoning parser cleaned the text)
     if response_format and not tool_calls:

@@ -1397,6 +1397,45 @@ def test_codex_r6_blocking_2_raw_text_not_mutated_before_reasoning():
         assert leak not in reasoning
 
 
+def test_codex_r9_raw_wire_elsewhere_does_not_scrub_reasoning_marker_example():
+    """Raw structural wire elsewhere must not scrub a marker-only example."""
+
+    raw = '<tool_call>{"name":"add_numbers","arguments":{"a":1,"b":2}}</function>'
+
+    class _MarkerExampleReasoningParser:
+        def extract_reasoning(self, text, enable_thinking=None):
+            return "Use <tool_call> as the opening tag.", ""
+
+    class _RawWireEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=raw, raw_text=raw)
+
+    engine = _RawWireEngine()
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = False
+    cfg.reasoning_parser = _MarkerExampleReasoningParser()
+    cfg.tool_call_parser = "hermes"
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add 1 and 2"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    reasoning = resp.json()["choices"][0]["message"].get("reasoning_content") or ""
+    assert reasoning == "Use <tool_call> as the opening tag."
+
+
 # -----------------------------------------------------------------------
 # codex r6 NIT — wire-span lookback bounded by nearest opener/closer
 # -----------------------------------------------------------------------
