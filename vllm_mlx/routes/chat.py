@@ -832,6 +832,8 @@ def _span_has_tool_payload_object(span: str) -> bool:
         else:
             object_start = span.find("{", object_start + 1)
     return False
+
+
 def _contains_structural_tool_wire_leak(text: str | None) -> bool:
     """Return True when known wire markers appear as tool-wire residue.
 
@@ -952,7 +954,10 @@ def _scrub_tool_wire_literals(text: str | None) -> str:
     # pairs above don't match. Without this, the malformed body
     # between the opener and the unrelated closer survives as
     # ``content`` (codex r3 BLOCKING #1).
-    result = _CROSS_FAMILY_SPAN_RE.sub("", result)
+    result = _CROSS_FAMILY_SPAN_RE.sub(
+        lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
+        result,
+    )
     # Phase 2: strip standalone marker tokens (orphan opener OR
     # orphan closer that survived phases 1+1.5). ONLY the marker
     # bytes are removed; surrounding text is preserved.

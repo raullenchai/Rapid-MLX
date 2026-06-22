@@ -1268,6 +1268,14 @@ def test_codex_r10_visible_scrub_removes_unclosed_opener_payload_body():
     assert "suffix" in out
 
 
+def test_codex_r11_broad_scrub_does_not_cross_family_strip_marker_prose():
+    """Cross-family scrub needs payload evidence before deleting a span."""
+
+    prose = "Explain <tool_call> as an opener and </function> as a closer."
+    out = _scrub_tool_wire_literals(prose)
+    assert "as an opener and" in out
+
+
 def test_codex_r7_synth_forced_clean_marker_prose_not_scrubbed():
     """When forced synthesis happens because the parser found no call,
     clean prose that merely mentions ``<tool_call>`` must survive.
