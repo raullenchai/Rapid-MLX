@@ -1271,9 +1271,37 @@ class MLLMScheduler:
                         and not inflight.done()
                         and not inflight.cancelled()
                     ):
+                        # Codex r8 BLOCKING #2: ``asyncio.wait_for``
+                        # cancels the awaitable on timeout, and
+                        # cancelling an ``asyncio.wrap_future``
+                        # propagates ``cancel()`` to the underlying
+                        # ``concurrent.futures.Future``. For a
+                        # step that's queued-but-not-started, that
+                        # cancel succeeds and discards the work —
+                        # violating the surrounding comment's
+                        # contract ("the step either finishes once
+                        # or is abandoned only when wedged"). The
+                        # observed silent-data-loss shape would be:
+                        # a final scheduled step is queued; lifespan
+                        # shutdown fires; the timeout cancels the
+                        # CF; the step never runs; an inflight
+                        # generation completes with truncated
+                        # output because its kv-fetch never
+                        # happened. ``asyncio.shield`` prevents the
+                        # timeout's cancellation from propagating
+                        # to the inner ``wrap_future`` — the
+                        # awaitable is cancelled at the wait_for
+                        # boundary but the wrapped CF is left
+                        # alone. The shutdown still proceeds in
+                        # bounded time (drain returns or
+                        # TimeoutError fires), and the executor
+                        # is torn down with ``wait=False`` below
+                        # so the worker thread is released
+                        # regardless.
+                        wrapped = asyncio.wrap_future(inflight, loop=loop)
                         try:
                             await asyncio.wait_for(
-                                asyncio.wrap_future(inflight, loop=loop),
+                                asyncio.shield(wrapped),
                                 timeout=_drain_secs,
                             )
                         except TimeoutError:

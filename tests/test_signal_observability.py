@@ -279,11 +279,22 @@ def test_install_skipped_off_main_thread():
 
 def test_faulthandler_is_enabled_after_install():
     """``faulthandler.enable`` must fire so SIGSEGV from MLX produces a
-    Python traceback rather than a silent core dump."""
+    Python traceback rather than a silent core dump.
+
+    Codex r8 NIT: capture the prior enabled-state and restore it in the
+    ``finally`` block. The previous revision unconditionally called
+    ``faulthandler.disable()`` and never restored it, so if the test
+    ran inside a runner that had ``faulthandler`` pre-enabled (the
+    ``-X faulthandler`` interpreter flag, the pytest ``--faulthandler``
+    option, or any earlier test that turned it on) we'd silently leak
+    the disable into the rest of the suite — the next SIGSEGV would
+    crash without the traceback the operator relies on.
+    """
     import faulthandler
 
     from vllm_mlx import _signal_observability as so
 
+    was_enabled = faulthandler.is_enabled()
     so._reset_for_tests()
     try:
         # Disable first so we can prove the install enabled it.
@@ -293,6 +304,13 @@ def test_faulthandler_is_enabled_after_install():
         assert faulthandler.is_enabled()
     finally:
         so._reset_for_tests()
+        # Restore the enabled-state we observed on entry so the test
+        # is a pure no-op w.r.t. global faulthandler state. The
+        # ``install_signal_observability(observed_signals=())`` call
+        # above already left it enabled, so we only need to disable
+        # if it was originally off.
+        if not was_enabled:
+            faulthandler.disable()
 
 
 def test_subprocess_sigterm_emits_warning_and_stack_dump():

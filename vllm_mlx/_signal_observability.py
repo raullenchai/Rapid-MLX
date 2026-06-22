@@ -183,11 +183,42 @@ def _on_signal(signum: int, frame) -> None:  # noqa: ARG001 — frame unused
         # ``raise_signal`` call lands on the now-restored SIG_DFL
         # handler and terminates the process the same way it would
         # have without our hook — just AFTER we've logged + dumped.
+        #
+        # Codex r8 BLOCKING #1: if EITHER ``signal.signal`` or
+        # ``signal.raise_signal`` raises (extremely rare — would
+        # require a kernel-level disagreement about the signum, or
+        # the signal module being torn down mid-shutdown), the
+        # silent-swallow path used in earlier revisions would let
+        # the process keep running after a SIGTERM whose default
+        # disposition is "terminate". That re-introduces the exact
+        # silent-death shape C-04 was trying to make observable —
+        # except now with the OPPOSITE problem: the operator sees
+        # the WARNING + stack dump and assumes the process died,
+        # but it didn't. Fall back to ``os._exit(128 + signum)``
+        # (POSIX convention: exit code = 128 + signal number for
+        # signal-terminated processes) so the termination semantic
+        # is preserved end-to-end even on the failure path. We use
+        # ``os._exit`` rather than ``sys.exit`` because the latter
+        # raises ``SystemExit`` which can be caught by surrounding
+        # code (and we're already in a signal handler — no atexit
+        # / finally should fire).
+        terminate_failed = False
         try:
             signal.signal(signum, signal.SIG_DFL)
             signal.raise_signal(signum)
         except Exception:  # pragma: no cover — defensive
-            pass
+            terminate_failed = True
+            logger.error(
+                "could not chain SIGTERM-class signal %s to SIG_DFL"
+                " for termination; forcing os._exit(128+%d)",
+                name,
+                signum,
+                exc_info=True,
+            )
+        if terminate_failed:
+            import os
+
+            os._exit(128 + signum)
     # SIG_IGN means "ignore" — do nothing (the original disposition was
     # ignore, and we've already logged the receipt).
 
