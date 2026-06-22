@@ -273,6 +273,18 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # ``vllm_mlx/server.py``'s lifespan to decide whether to fire
         # the deep probe at boot.
         "RAPID_MLX_AUDIO_DEEP_PROBE",
+        # Deep JSON/schema recursion caps (DoS defense). These bound
+        # request-body and tool-schema traversal depth before Pydantic
+        # or chat-template sanitizers recurse over attacker-controlled
+        # structures. Pure admission/safety knobs — never select a
+        # model, parser, scheduler lane, or routing tier.
+        "RAPID_MLX_MAX_BODY_DEPTH",
+        "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH",
+        # API model-level generation-token ceiling (DoS/cost defense).
+        # Caps accepted ``max_tokens`` values at validation time when
+        # set; it never chooses which model/parser/tier handles the
+        # request.
+        "RAPID_MLX_MAX_GENERATION_TOKENS",
     }
 )
 
