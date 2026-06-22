@@ -738,9 +738,13 @@ def test_stream_message_start_consistent_with_nonstream_input_tokens():
         },
     )
     events = _parse_sse(r_s.text)
-    delta_input = next(e for e in events if e.get("type") == "message_delta")["usage"][
-        "input_tokens"
-    ]
+    # Codex r4 BLOCKING #2 (PR #807): Anthropic streams may emit
+    # intermediate ``message_delta`` events; the contract is that the
+    # FINAL one carries the closeout usage. Read the last delta — same
+    # pattern the other streaming-usage tests in this module use.
+    delta_events = [e for e in events if e.get("type") == "message_delta"]
+    assert delta_events, events
+    delta_input = delta_events[-1]["usage"]["input_tokens"]
 
     engine_ns = _ToolStreamingEngine(deltas, engine_prompt_tokens=11)
     client_ns = _make_client(engine_ns)

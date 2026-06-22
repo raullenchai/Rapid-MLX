@@ -656,10 +656,13 @@ async def create_anthropic_message(
         # gate-computed prompt-token count so the streaming branch's
         # ``message_start.usage.input_tokens`` can reuse it instead of
         # re-rendering + re-tokenising the same messages. The helper
-        # returns ``0`` on permissive-skip paths (MLLM engines, no
-        # build_prompt, empty prompt) so a falsy value means the
-        # streaming branch must fall back to its own estimator helper.
-        _ctx_prompt_tokens = 0
+        # returns ``None`` on permissive-skip paths (MLLM engines, no
+        # build_prompt, empty prompt) — codex r4 NIT — which means
+        # "no estimate available"; the streaming branch then falls
+        # back to its own estimator helper. We forward the value
+        # verbatim (including ``None``) so the streaming path can
+        # distinguish "skip" from "real zero count".
+        _ctx_prompt_tokens: int | None = None
         if messages is not None:
             _ctx_prompt_tokens = enforce_context_length_for_messages(
                 engine,
@@ -686,6 +689,7 @@ async def create_anthropic_message(
                         anthropic_request,
                         request_id_holder=_anth_rid_holder,
                         prompt_tokens_estimate=_ctx_prompt_tokens,
+                        prepared_messages=messages,
                     ),
                     request,
                     engine=engine,
@@ -1186,7 +1190,8 @@ async def _stream_anthropic_messages(
     anthropic_request: AnthropicRequest,
     *,
     request_id_holder: list | None = None,
-    prompt_tokens_estimate: int = 0,
+    prompt_tokens_estimate: int | None = None,
+    prepared_messages: list | None = None,
 ) -> AsyncIterator[str]:
     """Stream Anthropic Messages API SSE events.
 
@@ -1199,33 +1204,49 @@ async def _stream_anthropic_messages(
             (default) is a no-op.
         prompt_tokens_estimate: D-ANTHRO-TOOL-USAGE F5 — pre-computed
             prompt-token count from the route entry-point's
-            ``enforce_context_length_for_messages`` call. Defaults to
-            ``0`` so callers (and tests) that don't pass it fall back
+            ``enforce_context_length_for_messages`` call. ``None``
+            (sentinel — codex r4 NIT) means "the caller did not
+            compute one"; ``0`` is now a real value meaning "engine
+            permissive-skip path returned no count". Both fall back
             to the route-internal ``_estimate_anthropic_prompt_tokens``
             helper, which goes through the SAME
-            ``build_prompt`` + ``count_prompt_tokens`` path. Non-zero
-            values save a duplicate render+tokenize round-trip on the
-            hot path (codex r2 NIT on PR #807).
+            ``build_prompt`` + ``count_prompt_tokens`` path.
+        prepared_messages: D-ANTHRO-TOOL-USAGE F3 (codex r4 BLOCKING
+            #1) — pre-extracted + suffix-injected messages from the
+            route entry-point. When supplied, the streaming helper
+            skips its own extract+inject so suffix injection happens
+            in EXACTLY ONE layer and ``prompt_tokens_estimate`` is
+            guaranteed to match what the engine actually sees.
+            ``None`` (the default) preserves the direct-call test
+            path: extract from ``openai_request.messages`` and inject
+            inline, matching pre-PR-807 streaming behaviour.
     """
     msg_id = f"msg_{uuid.uuid4().hex[:24]}"
     start_time = time.perf_counter()
 
-    messages, images, videos = extract_multimodal_content(
-        openai_request.messages,
-        preserve_native_format=engine.preserve_native_tool_format,
-    )
+    if prepared_messages is not None:
+        # Caller (the route entry-point) already extracted +
+        # suffix-injected, AND already paid for the
+        # ``enforce_context_length_for_messages`` DoS gate against
+        # this exact list. Reuse verbatim — no second injection.
+        messages = prepared_messages
+        images: list = []
+        videos: list = []
+    else:
+        messages, images, videos = extract_multimodal_content(
+            openai_request.messages,
+            preserve_native_format=engine.preserve_native_tool_format,
+        )
 
-    # D-ANTHRO-TOOL-USAGE F3: forced ``tool_choice`` levers — same
-    # injection the non-stream branch performs. The streaming path was
-    # previously a silent no-op for ``tool_choice={"type":"any"}``
-    # (and the named-tool form's prompt level), letting the model emit
-    # a text reply that violated the forced-call contract before the
-    # post-stream enforcement could fire.
-    _inject_tool_use_required_suffix(
-        messages,
-        openai_request.tool_choice,
-        tools=openai_request.tools,
-    )
+        # D-ANTHRO-TOOL-USAGE F3: forced ``tool_choice`` levers — same
+        # injection the non-stream branch performs. Only runs on the
+        # direct-call path (no ``prepared_messages``); the route-level
+        # caller has already done this above and threaded the result.
+        _inject_tool_use_required_suffix(
+            messages,
+            openai_request.tool_choice,
+            tools=openai_request.tools,
+        )
 
     chat_kwargs = {
         "max_tokens": _resolve_max_tokens(
@@ -1394,20 +1415,24 @@ async def _stream_anthropic_messages(
     # D-ANTHRO-TOOL-USAGE F5: pre-compute prompt_tokens BEFORE
     # ``message_start`` so the SSE envelope carries the real input
     # estimate instead of the hard-coded ``0`` that under-reported the
-    # input share by 100%. Reuses the SAME
-    # ``build_prompt`` + ``count_prompt_tokens`` SOURCE OF TRUTH the
-    # context-length DoS gate already ran at route entry — codex r2 NIT
-    # (PR #807). On engines without ``build_prompt`` (MLLM / mock test
-    # stubs) the gate returned 0 and the fallback estimator below also
-    # returns 0; the streaming path then degrades to the pre-fix
-    # ``input_tokens=0`` shape rather than 500-ing.
-    initial_prompt_tokens_estimate = prompt_tokens_estimate or (
-        _estimate_anthropic_prompt_tokens(
+    # input share by 100%. Prefers the route-level estimate when the
+    # caller threaded one (already shared with the context-length DoS
+    # gate — codex r2 NIT) and falls back to a local render when the
+    # caller used the direct-call test path.
+    #
+    # Codex r4 NIT (PR #807): treat ``None`` as the SENTINEL for "no
+    # estimate available", separate from ``0`` ("estimator ran but
+    # the engine returned no count" — MLLM, empty prompt, …). The
+    # earlier ``or`` chain conflated the two and would re-render every
+    # genuinely-empty prompt.
+    if prompt_tokens_estimate is None:
+        initial_prompt_tokens_estimate = _estimate_anthropic_prompt_tokens(
             engine,
             messages,
             tools=openai_request.tools,
         )
-    )
+    else:
+        initial_prompt_tokens_estimate = prompt_tokens_estimate
 
     # Emit message_start
     message_start = {

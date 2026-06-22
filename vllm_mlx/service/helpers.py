@@ -3136,9 +3136,9 @@ def enforce_context_length_for_messages(
     *,
     tools: list | None = None,
     max_tokens: int | None = None,
-) -> int:
+) -> int | None:
     """Run the context-length gate for a chat-style request and return
-    the rendered prompt's token count (``0`` on permissive-skip paths).
+    the rendered prompt's token count (``None`` on permissive-skip paths).
 
     Renders the prompt through the engine's chat template (same path
     used by ``BatchedEngine.build_prompt``), counts the tokens, then
@@ -3150,10 +3150,13 @@ def enforce_context_length_for_messages(
     Returns the integer prompt-token count so callers that already pay
     the build_prompt + tokenize cost can reuse it (e.g. Anthropic
     streaming usage's ``message_start.input_tokens`` plumbing). Returns
-    ``0`` when the render or tokenization was skipped (MLLM engine, no
-    build_prompt, empty prompt, etc.) so callers fall through to their
-    own fallback. Existing call sites that discard the return value
-    keep working unchanged — this is an additive contract change.
+    ``None`` when the render or tokenization was skipped — MLLM engine,
+    no ``build_prompt`` attribute, empty rendered prompt, or
+    tokenizer-returned-zero — so callers can distinguish "no estimate
+    available" from "real zero count" without re-parsing a sentinel
+    overload (codex r4 NIT on PR #807). Existing call sites that
+    discard the return value keep working unchanged — this is an
+    additive contract change.
 
     Scoped to text-only engines: MLLM models accept image / video /
     audio inputs whose token cost is computed by the multimodal
@@ -3165,10 +3168,10 @@ def enforce_context_length_for_messages(
     applies regardless of which compatibility surface the client uses.
     """
     if getattr(engine, "is_mllm", False):
-        return 0
+        return None
     build_prompt = getattr(engine, "build_prompt", None)
     if build_prompt is None:
-        return 0
+        return None
     try:
         prompt = build_prompt(messages, tools=tools)
     except HTTPException:
@@ -3193,12 +3196,12 @@ def enforce_context_length_for_messages(
                 status_code=400,
                 detail=f"Chat template error: {err_msg}",
             )
-        return 0
+        return None
     if not prompt:
-        return 0
+        return None
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
-        return 0
+        return None
     enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
     return prompt_tokens
 
