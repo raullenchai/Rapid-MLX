@@ -26,21 +26,57 @@ band-aids.
 
 from __future__ import annotations
 
-import platform
 import sys
+import types
+from contextlib import contextmanager
 from unittest.mock import MagicMock
 
 import pytest
 
-# Most tests below stub the embedding/STT engines, but the model-aliases
-# load path itself reads ``aliases.json``. That file is checked into the
-# repo and works cross-platform, so we don't gate on Apple Silicon for
-# the helper unit tests. We DO gate the route-level integration tests
-# because ``vllm_mlx.server`` imports MLX at module level on macOS-ARM.
-_APPLE_SILICON_ONLY = pytest.mark.skipif(
-    sys.platform != "darwin" or platform.machine() != "arm64",
-    reason="Server route imports MLX which is Apple-Silicon only",
-)
+# All tests run cross-platform. The route-level integration tests below
+# import ``vllm_mlx.routes.embeddings`` + ``vllm_mlx.routes.audio``
+# directly (which do NOT pull in MLX at module load), and inject a fake
+# ``vllm_mlx.server`` module into ``sys.modules`` so the route's lazy
+# ``from ..server import load_embedding_model`` lookup never drags in
+# the MLX-importing real server module.
+#
+# Codex r0 BLOCKING on PR #816: pinning the route fix only on
+# Apple-Silicon CI silently leaked the regression past Linux CI on
+# every prior PR — fix is to make the route tests CI-safe by mocking
+# the server module, not by skipping.
+
+
+@contextmanager
+def _fake_server_module(
+    embedding_engine=None,
+    embedding_model_locked=None,
+    load_fn=None,
+):
+    """Inject a stub ``vllm_mlx.server`` into ``sys.modules``.
+
+    The route handler does lazy imports
+    (``from ..server import load_embedding_model``,
+    ``from ..server import _embedding_engine``,
+    ``from ..server import _embedding_model_locked``) so the only
+    surface the test must cover is the ``vllm_mlx.server`` name in
+    ``sys.modules``. A real import of that module on Linux CI fails
+    with ``ModuleNotFoundError: mlx.core`` — the stub keeps the test
+    cross-platform.
+    """
+    name = "vllm_mlx.server"
+    prev = sys.modules.get(name)
+    fake = types.ModuleType(name)
+    fake._embedding_engine = embedding_engine
+    fake._embedding_model_locked = embedding_model_locked
+    fake.load_embedding_model = load_fn or (lambda *a, **kw: None)
+    sys.modules[name] = fake
+    try:
+        yield fake
+    finally:
+        if prev is not None:
+            sys.modules[name] = prev
+        else:
+            sys.modules.pop(name, None)
 
 
 # ──────────────────────────────────────────────────────────────────
@@ -163,10 +199,16 @@ class TestResolveRequestAliasOrDefault:
 # ──────────────────────────────────────────────────────────────────
 
 
-@_APPLE_SILICON_ONLY
 class TestEmbeddingsRouteAliasResolution:
     """Pin the route-level wiring: the helper must be called and the
     mock engine must be reached for every accepted ``model`` form.
+
+    Cross-platform: builds a minimal FastAPI app from
+    ``vllm_mlx.routes.embeddings.router`` (which does NOT pull in MLX
+    at import time) and mocks ``vllm_mlx.server.load_embedding_model``
+    so the load path never instantiates a real engine. Codex r0
+    BLOCKING on PR #816 — the previous Apple-Silicon-only gate let
+    the regression slip past Linux CI.
     """
 
     EMBED_ALIAS = "embeddinggemma-300m-6bit"
@@ -176,11 +218,13 @@ class TestEmbeddingsRouteAliasResolution:
     def client_with_locked_embed(self):
         """TestClient with the embedding engine mocked and the locked
         id set to the resolved HF path (as the CLI dispatch produces)."""
+        from unittest.mock import patch
+
+        from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        import vllm_mlx.server as srv
         from vllm_mlx.config import get_config
-        from vllm_mlx.server import app
+        from vllm_mlx.routes.embeddings import router
 
         mock_engine = MagicMock()
         mock_engine.model_name = self.EMBED_HF
@@ -188,26 +232,40 @@ class TestEmbeddingsRouteAliasResolution:
         mock_engine.count_tokens.return_value = 1
 
         cfg = get_config()
-        prev = (
-            srv._embedding_engine,
-            srv._embedding_model_locked,
-            cfg.embedding_engine,
-            cfg.embedding_model_locked,
-        )
-        srv._embedding_engine = mock_engine
-        srv._embedding_model_locked = self.EMBED_HF
+        prev_engine = cfg.embedding_engine
+        prev_locked = cfg.embedding_model_locked
+        prev_api_key = cfg.api_key
         cfg.embedding_engine = mock_engine
         cfg.embedding_model_locked = self.EMBED_HF
+        cfg.api_key = None
+
+        # Stub ``check_rate_limit`` with a clean no-arg async callable
+        # — ``patch(..., return_value=None)`` replaces with a MagicMock
+        # whose ``(*args, **kwargs)`` signature trips FastAPI's
+        # introspection (we hit this on test_routes.py too — see the
+        # same fix to test_embeddings_locked_model_reject).
+        async def _noop_rate_limit():
+            return None
+
+        app = FastAPI()
+        app.include_router(router)
 
         try:
-            yield TestClient(app), mock_engine
+            with (
+                _fake_server_module(
+                    embedding_engine=mock_engine,
+                    embedding_model_locked=self.EMBED_HF,
+                ),
+                patch(
+                    "vllm_mlx.middleware.auth.check_rate_limit",
+                    new=_noop_rate_limit,
+                ),
+            ):
+                yield TestClient(app), mock_engine
         finally:
-            (
-                srv._embedding_engine,
-                srv._embedding_model_locked,
-                cfg.embedding_engine,
-                cfg.embedding_model_locked,
-            ) = prev
+            cfg.embedding_engine = prev_engine
+            cfg.embedding_model_locked = prev_locked
+            cfg.api_key = prev_api_key
 
     def _assert_embedding_200(self, resp, expected_echo: str) -> None:
         assert resp.status_code == 200, resp.text
@@ -258,47 +316,67 @@ class TestEmbeddingsRouteAliasResolution:
         )
         assert resp.status_code == 400
         body = resp.json()
-        assert "error" in body
-        assert body["error"].get("param") == "model"
-        assert body["error"].get("code") == "model_not_found"
+        # FastAPI surfaces a dict ``detail`` verbatim when no exception
+        # handler is wired (bare ``include_router`` app). The production
+        # server installs ``install_exception_handlers`` which unwraps
+        # to ``body["error"]`` directly.
+        err = body.get("error") or body.get("detail", {}).get("error")
+        assert err is not None, body
+        assert err["param"] == "model"
+        assert err["code"] == "model_not_found"
         # The error message should still surface the locked id so the
         # operator sees what the server was actually booted with.
-        assert self.EMBED_HF in body["error"]["message"]
+        assert self.EMBED_HF in err["message"]
 
     def test_no_embedding_model_configured_400(self):
         """H-09 invariant preserved: no ``--embedding-model`` →
         every request 400s with the install-hint envelope, regardless
         of whether the client sent ``"default"`` (the bridge MUST NOT
-        route ``"default"`` to a chat-only server's hidden states)."""
+        route ``"default"`` to a chat-only server's hidden states).
+
+        Cross-platform path: inject a stub ``vllm_mlx.server`` module
+        with ``_embedding_model_locked = None`` so the H-09 bridge
+        sees the unconfigured state without dragging in the
+        MLX-importing real server module on Linux CI.
+        """
+        from unittest.mock import patch
+
+        from fastapi import FastAPI
         from fastapi.testclient import TestClient
 
-        import vllm_mlx.server as srv
         from vllm_mlx.config import get_config
-        from vllm_mlx.server import app
+        from vllm_mlx.routes.embeddings import router
 
         cfg = get_config()
-        prev = (
-            srv._embedding_engine,
-            srv._embedding_model_locked,
-            cfg.embedding_engine,
-            cfg.embedding_model_locked,
-        )
-        srv._embedding_engine = None
-        srv._embedding_model_locked = None
+        prev_engine = cfg.embedding_engine
+        prev_locked = cfg.embedding_model_locked
+        prev_api_key = cfg.api_key
         cfg.embedding_engine = None
         cfg.embedding_model_locked = None
+        cfg.api_key = None
+
+        async def _noop_rate_limit():
+            return None
+
+        app = FastAPI()
+        app.include_router(router)
+
         try:
-            client = TestClient(app)
-            resp = client.post(
-                "/v1/embeddings", json={"model": "default", "input": "hi"}
-            )
+            with (
+                _fake_server_module(embedding_engine=None, embedding_model_locked=None),
+                patch(
+                    "vllm_mlx.middleware.auth.check_rate_limit",
+                    new=_noop_rate_limit,
+                ),
+            ):
+                client = TestClient(app)
+                resp = client.post(
+                    "/v1/embeddings", json={"model": "default", "input": "hi"}
+                )
         finally:
-            (
-                srv._embedding_engine,
-                srv._embedding_model_locked,
-                cfg.embedding_engine,
-                cfg.embedding_model_locked,
-            ) = prev
+            cfg.embedding_engine = prev_engine
+            cfg.embedding_model_locked = prev_locked
+            cfg.api_key = prev_api_key
 
         assert resp.status_code == 400
         body = resp.json()
@@ -389,7 +467,6 @@ class TestAudioRouteAliasResolution:
 # ──────────────────────────────────────────────────────────────────
 
 
-@_APPLE_SILICON_ONLY
 class TestChatRouteDefaultNotRegressed:
     """Cross-check: ``model="default"`` on the chat route already
     works because ``_validate_model_name`` falls through when the
