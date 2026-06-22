@@ -484,12 +484,31 @@ def _estimate_anthropic_prompt_tokens(engine, messages, tools) -> int:
     try:
         prompt = build_prompt(messages, tools=tools)
     except Exception:
+        # Codex r6 NIT (PR #807): log at debug so a genuinely broken
+        # chat template / malformed tools schema is visible in the
+        # server log even though we return ``0`` to let the engine's
+        # own validation surface a clean 400 downstream. Without the
+        # log, a debug session can't distinguish "no estimate
+        # available" from "the route silently swallowed a real
+        # build_prompt error".
+        logger.debug(
+            "_estimate_anthropic_prompt_tokens: build_prompt raised; "
+            "returning 0 so the streaming usage path falls back to the "
+            "engine-reported prompt_tokens",
+            exc_info=True,
+        )
         return 0
     if not prompt:
         return 0
     try:
         return count_prompt_tokens(engine, prompt)
     except Exception:
+        logger.debug(
+            "_estimate_anthropic_prompt_tokens: count_prompt_tokens raised; "
+            "returning 0 so the streaming usage path falls back to the "
+            "engine-reported prompt_tokens",
+            exc_info=True,
+        )
         return 0
 
 
