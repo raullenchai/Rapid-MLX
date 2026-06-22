@@ -161,7 +161,33 @@ audio = [
     "spacy>=3.7.0",
     "num2words>=0.5.0",
     "loguru>=0.7.0",
-    "phonemizer>=3.2.0",
+    # R6-H1 (Eva 0.8.7 dogfood): Kokoro TTS imports ``misaki.espeak`` which
+    # calls ``EspeakWrapper.set_data_path(...)`` (the legacy 3.2-era API).
+    # Two things need to line up for that call to succeed on a fresh
+    # ``pip install rapid-mlx[audio]``:
+    #
+    #   1. ``espeakng-loader`` provides the bundled libespeak-ng binary
+    #      and ``espeak-ng-data/`` directory misaki passes to
+    #      ``set_data_path``. Without it, the import crashes inside
+    #      ``misaki/espeak.py`` with ``ModuleNotFoundError`` before any
+    #      TTS request reaches the engine.
+    #   2. ``phonemizer-fork`` (NOT vanilla ``phonemizer``) is the only
+    #      package that still exposes ``EspeakWrapper.set_data_path``.
+    #      Vanilla ``phonemizer>=3.3.0`` removed it in favour of a
+    #      property-only ``data_path`` accessor — so the legacy API
+    #      misaki uses raises ``AttributeError: type object
+    #      'EspeakWrapper' has no attribute 'set_data_path'`` and the
+    #      Kokoro TTS route 500s on first request.
+    #
+    # Pin ``phonemizer-fork`` BEFORE the vanilla ``phonemizer`` line and
+    # drop the vanilla pin — pip installs the first one wins and they
+    # claim the same import name, so leaving both in produces a
+    # non-deterministic resolution depending on resolver order.
+    # ``test_audio_extras_lockin.py`` asserts both packages are
+    # importable and that ``EspeakWrapper.set_data_path`` exists so we
+    # catch a future drift back to vanilla phonemizer in CI.
+    "espeakng-loader>=0.2.0",
+    "phonemizer-fork>=3.3.0",
     # Additional multilingual dependencies
     "ordered_set>=4.1.0",    # Required for Chinese TTS
     "cn2an>=0.5.0",          # Chinese number conversion

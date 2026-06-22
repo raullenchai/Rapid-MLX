@@ -7,7 +7,7 @@ import re
 import tempfile
 
 from fastapi import APIRouter, Depends, Form, HTTPException, Query, UploadFile
-from starlette.responses import Response
+from starlette.responses import PlainTextResponse, Response
 
 from ..middleware.auth import verify_api_key
 
@@ -443,6 +443,291 @@ def install_audio_body_limit_middleware(app) -> None:
     app.add_middleware(AudioBodyLimitMiddleware)
 
 
+# ---------------------------------------------------------------------------
+# R6-H2: STT ``response_format`` — was silently ignored pre-fix.
+#
+# Pre-r6-C the route only branched on ``response_format == "text"`` and
+# fell through to a JSON envelope for everything else. Clients passing
+# ``srt`` / ``vtt`` / ``verbose_json`` got a JSON body back regardless,
+# silently breaking the OpenAI contract. The fix:
+#
+#   1. Accept the request only if ``response_format`` is one of the
+#      OpenAI-documented five values — anything else → 400 with the
+#      OpenAI-shaped envelope (``invalid_request_error``,
+#      ``param="response_format"``). Saves the engine load.
+#   2. After transcription, branch on the validated value and produce
+#      the matching Content-Type / body — ``text/plain``, ``text/srt``,
+#      ``text/vtt``, or ``application/json`` (default + verbose_json).
+#
+# SRT / VTT formatters work from ``result.segments`` when the STT
+# engine reports them. If a backend doesn't (Parakeet today), the
+# formatter falls back to a single cue spanning ``result.duration``
+# so the client still gets a syntactically valid subtitle file.
+# ---------------------------------------------------------------------------
+
+#: OpenAI's documented set — keep the literal in sync with
+#: ``test_stt_response_format.py`` so a drift here trips CI before
+#: hitting prod.
+_STT_RESPONSE_FORMATS: frozenset[str] = frozenset(
+    ("json", "text", "srt", "vtt", "verbose_json")
+)
+
+#: Default when the caller omits the field. Mirrors OpenAI's behaviour.
+_STT_DEFAULT_RESPONSE_FORMAT = "json"
+
+
+def _validate_response_format(response_format: str | None) -> str:
+    """Return the normalised response_format or raise 400.
+
+    A ``None`` / empty value resolves to the documented default
+    (``"json"``). Anything outside the OpenAI five-value set raises
+    a 400 with the same OpenAI-shape envelope the rest of the route
+    uses for ``invalid_request_error``. Performed BEFORE the upload
+    drains so a typo (``"jsno"``) fails cheaply without touching the
+    engine or temp file.
+    """
+    if response_format is None or response_format == "":
+        return _STT_DEFAULT_RESPONSE_FORMAT
+    if response_format not in _STT_RESPONSE_FORMATS:
+        available = ", ".join(sorted(_STT_RESPONSE_FORMATS))
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"`response_format` must be one of: {available}; "
+                        f"got {response_format!r}."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "invalid_request",
+                    "param": "response_format",
+                }
+            },
+        )
+    return response_format
+
+
+def _format_srt_timestamp(seconds: float) -> str:
+    """Format a float second offset as the SRT timestamp ``HH:MM:SS,mmm``.
+
+    SRT mandates comma as the millisecond separator (vs. VTT's dot).
+    Clamp negative inputs to zero — a defective backend reporting
+    negative timestamps would otherwise emit a malformed cue.
+    """
+    if seconds < 0:
+        seconds = 0.0
+    hours = int(seconds // 3600)
+    minutes = int((seconds % 3600) // 60)
+    secs = int(seconds % 60)
+    millis = int(round((seconds - int(seconds)) * 1000))
+    if millis >= 1000:  # rounding overflow
+        millis = 0
+        secs += 1
+    return f"{hours:02d}:{minutes:02d}:{secs:02d},{millis:03d}"
+
+
+def _format_vtt_timestamp(seconds: float) -> str:
+    """Format as the WebVTT timestamp ``HH:MM:SS.mmm``.
+
+    Differs from SRT only in the millisecond separator (``.`` vs ``,``)
+    and the lack of trailing index — share the bulk of the formatting
+    with :func:`_format_srt_timestamp` to keep the two outputs in sync
+    when one is patched.
+    """
+    return _format_srt_timestamp(seconds).replace(",", ".")
+
+
+def _iter_segments_for_subtitles(result) -> list[tuple[float, float, str]]:
+    """Normalise the engine's ``segments`` list into ``(start, end, text)``.
+
+    Whisper-style engines report dicts with ``start``/``end``/``text``
+    keys; future backends may report a dataclass. Walk both shapes and
+    fall back to a single cue covering ``result.duration`` (or 0..0)
+    when no segments are present so the SRT/VTT body is still valid.
+    """
+    segments = getattr(result, "segments", None) or []
+    out: list[tuple[float, float, str]] = []
+    for seg in segments:
+        if isinstance(seg, dict):
+            start = float(seg.get("start", 0.0) or 0.0)
+            end = float(seg.get("end", start) or start)
+            text = str(seg.get("text", "") or "").strip()
+        else:
+            start = float(getattr(seg, "start", 0.0) or 0.0)
+            end = float(getattr(seg, "end", start) or start)
+            text = str(getattr(seg, "text", "") or "").strip()
+        if not text:
+            continue
+        out.append((start, end, text))
+    if not out:
+        duration = float(getattr(result, "duration", 0.0) or 0.0)
+        text = str(getattr(result, "text", "") or "").strip()
+        out.append((0.0, duration, text))
+    return out
+
+
+def _build_srt_body(result) -> str:
+    """Render a SubRip Subtitle (.srt) body from a transcription result."""
+    cues = _iter_segments_for_subtitles(result)
+    lines: list[str] = []
+    for idx, (start, end, text) in enumerate(cues, start=1):
+        lines.append(str(idx))
+        lines.append(f"{_format_srt_timestamp(start)} --> {_format_srt_timestamp(end)}")
+        lines.append(text)
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _build_vtt_body(result) -> str:
+    """Render a WebVTT (.vtt) body from a transcription result.
+
+    WebVTT starts with the mandatory ``WEBVTT`` header line followed
+    by a blank line — clients that strip it (or some browsers that
+    only support full WebVTT) will refuse to render the cues
+    otherwise.
+    """
+    cues = _iter_segments_for_subtitles(result)
+    lines: list[str] = ["WEBVTT", ""]
+    for start, end, text in cues:
+        lines.append(f"{_format_vtt_timestamp(start)} --> {_format_vtt_timestamp(end)}")
+        lines.append(text)
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _build_verbose_json_body(result) -> dict:
+    """Render the ``verbose_json`` body — text + language + duration + segments.
+
+    Mirrors OpenAI's documented field set. ``segments`` is normalised
+    to a list of dicts with the canonical key names; the engine's
+    raw shape is whatever ``stt`` chose to expose (whisper-mlx ships
+    dicts; future backends might ship objects).
+    """
+    cues = _iter_segments_for_subtitles(result)
+    return {
+        "task": "transcribe",
+        "text": getattr(result, "text", ""),
+        "language": getattr(result, "language", None),
+        "duration": getattr(result, "duration", None),
+        "segments": [
+            {
+                "id": idx,
+                "start": start,
+                "end": end,
+                "text": text,
+            }
+            for idx, (start, end, text) in enumerate(cues)
+        ],
+    }
+
+
+def _format_stt_response(result, response_format: str, task: str):
+    """Branch on the validated ``response_format`` and produce a body.
+
+    Centralised so the transcription and translation routes pick the
+    same shape for the same value — a future change to one path
+    automatically lands on the other.
+    """
+    if response_format == "text":
+        return PlainTextResponse(getattr(result, "text", "") or "")
+    if response_format == "srt":
+        return PlainTextResponse(_build_srt_body(result), media_type="text/srt")
+    if response_format == "vtt":
+        return PlainTextResponse(_build_vtt_body(result), media_type="text/vtt")
+    if response_format == "verbose_json":
+        body = _build_verbose_json_body(result)
+        # The verbose envelope carries an explicit ``task`` field —
+        # translations should advertise themselves correctly even
+        # when ``transcribe`` is the engine default.
+        body["task"] = task
+        return body
+    # Default "json" envelope — keep the historical three fields so
+    # any pre-fix client that already parses ``text``/``language``/
+    # ``duration`` doesn't notice the upgrade.
+    return {
+        "text": getattr(result, "text", ""),
+        "language": getattr(result, "language", None),
+        "duration": getattr(result, "duration", None),
+    }
+
+
+# ---------------------------------------------------------------------------
+# R6-H3: STT corrupted-upload envelope.
+#
+# Pre-fix every exception from the engine (including ffmpeg/librosa
+# decode failures on garbage bytes) fell into the catch-all that
+# returned 500 ``transcription_failed``. A corrupted upload is a
+# CLIENT error — the OpenAI contract maps it to 400
+# ``invalid_request_error`` with ``param="file"``. The fix introspects
+# the exception (and its message) for the decode-failure shapes and
+# re-maps them to the documented envelope.
+# ---------------------------------------------------------------------------
+
+#: Substrings that identify a decode/codec failure regardless of the
+#: underlying library (mlx_audio surfaces multiple shapes — librosa,
+#: soundfile, ffmpeg). Keep this list narrow so we don't accidentally
+#: relabel a legitimate engine bug as a client error.
+_DECODE_ERROR_HINTS: tuple[str, ...] = (
+    "could not open",
+    "could not decode",
+    "format not recognised",
+    "format not recognized",
+    "unknown format",
+    "no such format",
+    "soundfile",
+    "libsndfile",
+    "audioread",
+    "invalid audio",
+    "unsupported audio",
+    "could not load audio",
+    "ffmpeg",
+    "header is truncated",
+    "error opening",
+)
+
+
+def _is_decode_error(exc: Exception) -> bool:
+    """Return True iff ``exc`` looks like an audio-decode failure.
+
+    Matches both the exception's class name (``DecodeError``,
+    ``LibsndfileError``, ``SoundFileError``) and the message text
+    against a curated hint list. Type-based matching is the strong
+    signal — we use the substring check as a fallback because
+    ``mlx_audio`` chains raw ``ValueError`` / ``RuntimeError`` for
+    decode failures in some code paths.
+    """
+    if not isinstance(exc, Exception):
+        return False
+    cls_name = type(exc).__name__.lower()
+    if any(tok in cls_name for tok in ("decode", "sndfile", "soundfile", "codec")):
+        return True
+    msg = str(exc).lower()
+    return any(hint in msg for hint in _DECODE_ERROR_HINTS)
+
+
+def _audio_decode_error_envelope(exc: Exception) -> HTTPException:
+    """Build the OpenAI-shape 400 envelope for a decode failure.
+
+    Keeps the original exception message in the envelope so the client
+    can surface the actual decode reason ("Format not recognised" /
+    "Header is truncated") without us leaking server paths or
+    mlx_audio internals — we only include ``str(exc)``, never the
+    traceback.
+    """
+    reason = str(exc).strip() or type(exc).__name__
+    return HTTPException(
+        status_code=400,
+        detail={
+            "error": {
+                "message": f"could not decode audio file: {reason}",
+                "type": "invalid_request_error",
+                "code": "invalid_audio_file",
+                "param": "file",
+            }
+        },
+    )
+
+
 async def _stream_upload_to_tempfile(file: UploadFile, tmp) -> None:
     """Copy `file` into the open temp-file `tmp`, enforcing the size cap as
     we go. Raises HTTPException(413) the moment the cap is exceeded.
@@ -526,14 +811,11 @@ async def _run_stt_request(
 
         result = _stt_engine.transcribe(tmp_path, language=language, task=task)
 
-        if response_format == "text":
-            return result.text
-
-        return {
-            "text": result.text,
-            "language": result.language,
-            "duration": result.duration,
-        }
+        # R6-H2: branch on the validated ``response_format`` so callers
+        # that requested ``srt`` / ``vtt`` / ``verbose_json`` actually
+        # get those shapes. Pre-fix only ``text`` had a non-JSON path;
+        # everything else fell through to the JSON envelope.
+        return _format_stt_response(result, response_format, task=task)
 
     except ImportError:
         raise HTTPException(
@@ -546,6 +828,15 @@ async def _run_stt_request(
         # via the catch-all below.
         raise
     except Exception as e:
+        # R6-H3: corrupted upload (raw garbage bytes, wrong codec,
+        # truncated header) is a CLIENT error — surface a 400 with
+        # the OpenAI-shape envelope so callers don't have to retry
+        # the request on a 500 they're never going to recover from.
+        # Decode errors must be detected BEFORE the generic 500
+        # catch-all logs the trace as an unexpected backend bug.
+        if _is_decode_error(e):
+            logger.info("STT %s rejected corrupted upload: %s", task, e)
+            raise _audio_decode_error_envelope(e)
         # Full traceback goes to the operator log; the client sees a
         # generic message so we don't leak filesystem paths or
         # mlx-audio internals (mirrors the global server handler).
@@ -663,6 +954,14 @@ async def create_transcription(
         else (response_format_query if response_format_query is not None else "json")
     )
 
+    # R6-H2: reject unknown ``response_format`` values up front with a
+    # 400 envelope so a typo (``"jsno"``) or unsupported value
+    # (``"yaml"``) fails BEFORE we drain the upload, load the engine,
+    # or run inference. Pre-fix the value silently fell through to the
+    # JSON branch, masking client-side bugs as "STT lies about
+    # response_format".
+    response_format = _validate_response_format(response_format)
+
     # F-D05: STT-lane audio dep probe — same envelope as the TTS
     # lane shares. Fires BEFORE we spool any upload bytes so a broken
     # ``mlx_audio.stt`` install rejects cheaply (no temp file, no
@@ -724,6 +1023,13 @@ async def create_translation(
         if response_format_form is not None
         else (response_format_query if response_format_query is not None else "json")
     )
+
+    # R6-H2: validate ``response_format`` BEFORE the model-eligibility
+    # check so a typo / unsupported value fails cheaply with the same
+    # 400 envelope the transcriptions route uses. Mirrors the helper
+    # used on the transcriptions route — the two paths share the
+    # OpenAI five-value contract.
+    response_format = _validate_response_format(response_format)
 
     # Codex r6 NIT: the translations contract guarantees English
     # output. Only Whisper engines honor ``task="translate"``; any
