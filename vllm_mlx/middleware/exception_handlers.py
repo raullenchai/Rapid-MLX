@@ -221,10 +221,25 @@ def _extract_field_from_value_error_msg(
 
     The NaN/inf scrubber runs ``mode='before'`` so it can mutate the
     raw dict before Pydantic's float-coercion fires. The ``ValueError``
-    reaches the envelope with ``loc=()`` — the field name is only in
-    the message string. Recover it iff the leading token IS a schema-
-    owned field of the root model class (or a member of the closed
-    allowlist when no root resolved).
+    reaches the envelope with ``loc=()`` (raw ``PydanticValidationError``)
+    or ``loc=("body",)`` (FastAPI-wrapped ``RequestValidationError``) —
+    the field name is only in the message string.
+
+    Recovery is gated on three layers of schema membership to keep the
+    H-17 round-2 secrecy default intact even on this empty-loc path
+    (pr_validate codex r2 BLOCKING — explicit demonstration that the
+    fallback path actually populates ``error.param``):
+
+    1. If ``root_cls`` was resolved, the token must be a field of
+       THAT class (strictest gate).
+    2. Else, the token must be a field of SOME registered request
+       model — covers the FastAPI-wrapped case where ``loc`` only
+       has ``"body"`` so ``_resolve_root_model`` can't disambiguate.
+    3. Else, the token must be a member of the D-ANTHRO closed
+       allowlist — same safety floor every other code path uses.
+
+    Each layer is a closed schema set, so attacker-controlled bytes
+    can never reflect even when steps 1-2 produce no anchor.
     """
     if not msg:
         return None
@@ -237,10 +252,20 @@ def _extract_field_from_value_error_msg(
         first = first[:-1]
     if not first:
         return None
+    # Layer 1: strict per-class membership when a root resolved.
     if root_cls is not None:
         return first if first in root_cls.model_fields else None
-    # Fall back to the D-ANTHRO closed allowlist — same secrecy
-    # default, just a wider membership set.
+    # Layer 2: registry-wide schema membership (covers the FastAPI-
+    # wrapped ``loc=("body",)`` case — _resolve_root_model can't
+    # disambiguate without a string loc component, but the field
+    # name in the message is still gated on the closed union of
+    # registered request models).
+    for cls in _REQUEST_MODEL_REGISTRY.values():
+        if first in cls.model_fields:
+            return first
+    # Layer 3: D-ANTHRO closed allowlist (final safety floor — used
+    # when nothing is registered yet, e.g. in an isolated test
+    # fixture that didn't call install_exception_handlers).
     return first if first in _SCHEMA_OWNED_FIELD_NAMES else None
 
 

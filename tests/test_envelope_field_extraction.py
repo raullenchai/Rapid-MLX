@@ -282,6 +282,40 @@ def test_nested_loc_path_renders_full_path(client):
     assert err["param"] == "role", err
 
 
+def test_nan_param_populated_on_fastapi_wrapped_path(client):
+    """pr_validate codex r2 BLOCKING explicit pin: the FastAPI-wrapped
+    ``RequestValidationError`` path carries ``loc=("body",)`` for a
+    ``model_validator(mode='before')`` failure (the NaN scrubber). The
+    raw inner ``ValidationError`` has ``loc=()``. Both branches must
+    still populate ``error.param`` from the message-recovery path —
+    layer 2 of :func:`_extract_field_from_value_error_msg` (registry-
+    wide membership) is the anchor when ``_resolve_root_model`` can't
+    disambiguate without a string loc component."""
+    raw = json.dumps(
+        {
+            "model": "x",
+            "messages": [{"role": "user", "content": "hi"}],
+            "temperature": math.nan,
+        },
+        allow_nan=True,
+    )
+    resp = client.post(
+        "/v1/chat/completions",
+        content=raw,
+        headers={"Content-Type": "application/json"},
+    )
+    assert resp.status_code == 400
+    err = _err(resp)
+    # The NaN scrubber raises with ``loc=()`` — wrapped to
+    # ``loc=("body",)`` by FastAPI. ``_resolve_root_model`` returns
+    # None on both shapes, so the registry-wide fallback in
+    # ``_extract_field_from_value_error_msg`` is the ONLY way ``param``
+    # gets populated. This test pins that path explicitly.
+    assert err["param"] == "temperature", err
+    assert "temperature" in err["message"], err["message"]
+    assert "<field>" not in err["message"], err["message"]
+
+
 # ---------------------------------------------------------------------------
 # Family 4: H-17 attack vector stays closed
 # ---------------------------------------------------------------------------
