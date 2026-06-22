@@ -228,7 +228,9 @@ def _submitted_tool_names(tools: list[dict] | None) -> set[str]:
             if n:
                 names.add(n)
         elif t.get("type") == "computer_20251022":
-            names.add(t.get("name") or "computer")
+            # Force canonical name to match the ``_convert_tools``
+            # contract — see Codex r2 BLOCKING fix in that function.
+            names.add("computer")
     return names
 
 
@@ -697,13 +699,21 @@ def _convert_tools(tools: list[dict] | None) -> list[ToolDefinition] | None:
             )
         elif ttype == "computer_20251022":
             # Ana C-06: translate Computer-Use to the canonical
-            # ``computer`` function tool. The UI-TARS tool parser emits
-            # ``function.name == "computer"`` regardless of which tools
-            # the request submitted, so as long as we register a tool by
-            # that name the post-parse synthesis path lets the parsed
-            # call flow through to the response envelope. Screen
-            # geometry hints stay in the parameters so the
-            # render-template / system-prompt can ground the model.
+            # ``computer`` function tool. The UI-TARS tool parser ALWAYS
+            # emits ``function.name == "computer"`` regardless of which
+            # ``name`` field the caller supplied. We force the canonical
+            # name here so the post-parse ``computer_call`` translation
+            # in ``_build_tool_call_output_item`` (which keys off
+            # ``function.name == "computer"``) lights up — even when
+            # the caller submitted e.g. ``{type:"computer_20251022",
+            # name:"screen"}``. Codex r2 BLOCKING (PR #817): keying the
+            # downstream check on the original ``type`` instead of the
+            # function name would require threading the tool-type
+            # metadata through the engine surface; forcing the name at
+            # the boundary is simpler and keeps the parser → adapter
+            # contract intact. Screen geometry hints stay in the
+            # parameters so the chat template / system prompt can
+            # ground the model.
             geometry: dict = {
                 "type": "object",
                 "properties": {
@@ -721,7 +731,8 @@ def _convert_tools(tools: list[dict] | None) -> list[ToolDefinition] | None:
                 ToolDefinition(
                     type="function",
                     function={
-                        "name": t.get("name") or "computer",
+                        # NB: hard-coded ``"computer"`` — see comment above.
+                        "name": "computer",
                         "description": "Computer-Use (UI-TARS) GUI action tool",
                         "parameters": geometry,
                     },

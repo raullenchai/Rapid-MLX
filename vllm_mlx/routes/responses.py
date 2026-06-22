@@ -1652,6 +1652,14 @@ async def _stream_responses(
                     },
                 },
             )
+            # ``response.failed`` IS the terminal event for the
+            # OpenAI Responses SSE spec — there is no ``data: [DONE]``
+            # sentinel on this surface (see module docstring + the
+            # ``_sse`` helper docstring). Codex r2 reviewer flagged a
+            # missing ``[DONE]`` but that's chat-completions-only;
+            # Responses-API clients (Codex CLI, openai-python) detect
+            # stream end via the terminal event type, not a sentinel
+            # data line.
             return
         # Codex r1 BLOCKING #2 (PR #817): under forced choice the
         # ``deferred_text`` buffer holds text deltas we held back. Flush

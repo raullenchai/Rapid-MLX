@@ -681,6 +681,50 @@ class TestC06ComputerUseReachability:
         assert cc["action"]["type"] == "click"
         assert cc["action"]["start_box"] == [128, 128]
 
+    def test_computer_call_emitted_even_when_caller_supplies_custom_tool_name(
+        self, make_responses_client
+    ):
+        """Codex r2 BLOCKING (PR #817): a request like
+        ``{type:"computer_20251022", name:"screen"}`` previously
+        registered a tool named ``"screen"`` while the UI-TARS parser
+        always emits ``function.name == "computer"`` — no match, and
+        the lane downgraded to a plain ``function_call``. The fix
+        forces the canonical name at the adapter boundary so the
+        ``computer_call`` translation lights up.
+        """
+        state = make_responses_client(
+            text="",
+            tool_calls=[
+                _make_function_call(
+                    "computer",
+                    json.dumps({"action": "click", "start_box": [50, 50]}),
+                    call_id="call_screen",
+                )
+            ],
+            finish_reason="tool_calls",
+        )
+
+        resp = state.client.post(
+            "/v1/responses",
+            json=_payload(
+                tools=[
+                    {
+                        "type": "computer_20251022",
+                        "name": "screen",  # Non-canonical caller name
+                        "display_width": 800,
+                        "display_height": 600,
+                        "environment": "linux",
+                    }
+                ]
+            ),
+            headers=_AUTH,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+
+        computer_calls = [o for o in body["output"] if o["type"] == "computer_call"]
+        assert computer_calls, body["output"]
+
     def test_function_tool_without_computer_use_still_emits_function_call(
         self, make_responses_client
     ):
