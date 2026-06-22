@@ -684,6 +684,33 @@ class TestPromptInjectedMidThinkDiscriminator:
     @pytest.mark.parametrize(
         "name,parser_cls",
         [
+            ("deepseek_r1", DeepSeekR1ReasoningParser),
+            ("vibethinker", VibeThinkerReasoningParser),
+        ],
+    )
+    def test_above_threshold_no_tag_truncation_routes_to_reasoning(
+        self, name, parser_cls
+    ):
+        """DeepSeek-family no-tag prompt-injected thoughts stay reasoning
+        even when they exceed the parser's casual-answer threshold."""
+        parser = parser_cls()
+        trace = "thinking " * 140
+        assert len(trace) > parser.NO_TAG_CONTENT_THRESHOLD
+        result = parser.finalize_streaming(
+            trace,
+            prompt_thinking_active=True,
+            finish_reason="length",
+        )
+        assert result is not None
+        assert result.content is None, (
+            f"[{name}] above-threshold prompt-injected truncation leaked "
+            f"to content: {result!r}"
+        )
+        assert result.reasoning == trace
+
+    @pytest.mark.parametrize(
+        "name,parser_cls",
+        [
             ("qwen3", Qwen3ReasoningParser),
             ("deepseek_r1", DeepSeekR1ReasoningParser),
             ("vibethinker", VibeThinkerReasoningParser),

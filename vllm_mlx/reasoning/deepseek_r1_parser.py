@@ -202,19 +202,21 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
         Returns:
             DeltaMessage correction, or None if no correction needed.
         """
-        if (
-            not self._saw_any_tag
-            and accumulated_text
-            and len(accumulated_text) < self.NO_TAG_CONTENT_THRESHOLD
-        ):
+        if not self._saw_any_tag and accumulated_text:
             if finish_reason == "length" and prompt_thinking_active:
                 # Prompt-injected mid-think + max_tokens cut — route to
-                # reasoning to suppress D-STOP-THINK duplication.
+                # reasoning to suppress D-STOP-THINK duplication. This
+                # must run before the no-tag content threshold: long
+                # prompt-injected thoughts are still thoughts when a real
+                # truncation signal arrives.
                 return DeltaMessage(reasoning=accumulated_text)
             if matched_stop is not None and prompt_thinking_active:
                 # Prompt-injected mid-think shape — route to reasoning
-                # to suppress D-STOP-THINK duplication.
+                # to suppress D-STOP-THINK duplication. Same
+                # above-threshold rationale as the length arm.
                 return DeltaMessage(reasoning=accumulated_text)
+            if len(accumulated_text) >= self.NO_TAG_CONTENT_THRESHOLD:
+                return None
             # Casual no-tag answer (or max_tokens cut, or stop without
             # active thinking) — flip to content per #570/#572.
             # Without this the casual answer would be silently empty
