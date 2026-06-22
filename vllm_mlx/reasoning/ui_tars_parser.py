@@ -152,12 +152,30 @@ class UiTarsReasoningParser(ReasoningParser):
                 self._in_reasoning = True
                 # FALLTHROUGH to the reasoning branch below — first delta
                 # of the preamble emits as reasoning.
+            elif stripped.startswith("Action:"):
+                # Action-only response (Grounding template) — no preamble.
+                # Flip to content immediately so a ``wait()`` / ``finished()``
+                # ack lands promptly instead of being held until the buffer
+                # reaches ``Action_Summary:`` length (codex r1 BLOCKING #2).
+                # ``previous_text`` is whatever we previously held back
+                # (returned ``None`` for); prepend it so the tool parser
+                # sees the complete ``Action:`` sentinel including any
+                # leading whitespace.
+                self._in_content = True
+                if previous_text:
+                    return DeltaMessage(content=previous_text + delta_text)
+                return DeltaMessage(content=delta_text)
             else:
-                # No preamble. If the buffer is long enough to definitively
-                # rule out a preamble (longest opener is ``Action_Summary:``
-                # at 15 chars), route to content from here on out.
-                if len(stripped) >= len("Action_Summary:"):
+                # Buffer doesn't yet match any opener. Use the SHORTEST
+                # disambiguating prefix length — once ``len(stripped) >=
+                # len("Action:")`` (7), we know it can't be a preamble
+                # whose opener starts with ``T``/``R``/``A`` because
+                # those would have matched above. Flip to content and
+                # flush any previously held bytes alongside this delta.
+                if len(stripped) >= len("Action:"):
                     self._in_content = True
+                    if previous_text:
+                        return DeltaMessage(content=previous_text + delta_text)
                     return DeltaMessage(content=delta_text)
                 # Hold off — the next delta might complete a preamble.
                 return None

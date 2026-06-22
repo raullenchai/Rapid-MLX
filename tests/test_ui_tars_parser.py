@@ -409,6 +409,21 @@ class TestToolParserComplete:
             "start_box": [233, 45],
         }
 
+    def test_nested_action_in_string_arg_not_double_parsed(self):
+        # Codex r1 BLOCKING #1 (2026-06-21): ``Action: type(content=
+        # 'Action: wait()')`` previously parsed as TWO calls because the
+        # outer ``finditer`` matched the sentinel inside the string arg.
+        # The scanner now advances past each matched ``)`` before
+        # searching for the next ``Action:``, so the inner sentinel
+        # stays as plain string content.
+        text = "Action: type(content='Action: wait()')"
+        r = self.p.extract_tool_calls(text)
+        assert len(r.tool_calls) == 1
+        assert _decode(r.tool_calls[0]) == {
+            "action": "type",
+            "content": "Action: wait()",
+        }
+
     def test_no_action_passes_through(self):
         text = "Just a thought, no action."
         r = self.p.extract_tool_calls(text)
@@ -556,19 +571,34 @@ class TestReasoningParserComplete:
         assert reasoning is None
         assert content == ""
 
-    def test_bpe_markers_do_not_leak(self):
-        # Regression guard: ensure no Qwen/BPE artifacts (``Ġ``, ``Ċ``)
-        # are introduced into reasoning_content by the parser. UI-TARS
-        # tokenizers use byte-level BPE; if the upstream pipeline
-        # already detokenized the bytes back to UTF-8 the parser must
-        # not add them. Run with markers in source and verify they
-        # survive untouched (i.e. parser doesn't munge or strip
-        # legitimate text content).
-        text = "Thought: This thought has no bpe markers.\nAction: wait()"
-        reasoning, _ = self.p.extract_reasoning(text)
+    def test_bpe_markers_pass_through_untouched(self):
+        # Regression guard: if a buggy upstream pipeline forwards raw
+        # byte-level BPE artifacts (``Ġ`` for space, ``Ċ`` for newline)
+        # to the reasoning parser, we must NOT silently strip them — we
+        # also must not add them where they didn't exist. The parser is
+        # a string-level slicer; markers should round-trip verbatim into
+        # the reasoning channel so the caller can detect the upstream
+        # detokenizer bug instead of having it hidden here.
+        # (codex r1 NIT #3: the previous version of this test claimed to
+        # exercise marker handling but never fed markers in.)
+        text = "Thought:ĠThisĠthoughtĠhasĠBPEĠmarkers.ĊAction: wait()"
+        reasoning, content = self.p.extract_reasoning(text)
+        # Marker bytes survive untouched in reasoning (no covert strip).
         assert reasoning is not None
-        assert "Ġ" not in reasoning
-        assert "Ċ" not in reasoning
+        assert "Ġ" in reasoning
+        assert "Ċ" in reasoning
+        # And the parser doesn't smear markers into the content side
+        # where the source text had none.
+        assert content is not None
+        assert "Ġ" not in content
+        assert "Ċ" not in content
+
+        # Companion check: with NO markers in source, none appear in
+        # output either (parser never invents BPE artifacts).
+        clean = "Thought: a clean thought.\nAction: wait()"
+        r2, c2 = self.p.extract_reasoning(clean)
+        assert r2 is not None and "Ġ" not in r2 and "Ċ" not in r2
+        assert c2 is not None and "Ġ" not in c2 and "Ċ" not in c2
 
 
 class TestReasoningParserStreaming:
@@ -610,6 +640,34 @@ class TestReasoningParserStreaming:
         reasoning_concat = "".join(e.reasoning or "" for e in events)
         assert reasoning_concat == ""
         assert content_concat.startswith("Action:")
+
+    def test_short_action_only_response_routes_promptly(self):
+        # codex r1 BLOCKING #2: when the response is a short action-only
+        # ack (Grounding template, no Thought:) and the bytes arrive
+        # split across tiny deltas, the parser must flip to content as
+        # soon as ``Action:`` is complete — NOT wait until the buffer
+        # reaches ``Action_Summary:`` length (15 chars). Otherwise a
+        # bare ``Action: wait()`` (13 chars) gets held forever and the
+        # dispatcher emits an empty assistant message.
+        events = self._stream(
+            [
+                "Action",  # 6 chars — could still be Action: prefix
+                ":",  # now ``Action:`` complete at 7 chars
+                " wait()",
+            ]
+        )
+        reasoning_concat = "".join(e.reasoning or "" for e in events)
+        content_concat = "".join(e.content or "" for e in events)
+        # All bytes route to content (no preamble).
+        assert reasoning_concat == ""
+        # Content stream contains the full ``Action: wait()`` sentinel
+        # ready for the tool parser to extract.
+        assert "Action:" in content_concat
+        assert "wait()" in content_concat
+        # And we actually emitted at least one content event before
+        # end-of-stream — i.e. the bytes weren't held until the buffer
+        # reached 15 chars (the response is only 13 chars total).
+        assert sum(1 for e in events if e.content) >= 1
 
     def test_partial_action_opener_held_back(self):
         # Regression for the live-stream symptom: model emits

@@ -400,22 +400,33 @@ def _iter_actions(text: str) -> list[tuple[int, int, str, dict[str, Any]]]:
     residual ``content``. Bodies are extracted via the balanced-paren
     scanner above so embedded ``)`` inside string args don't truncate.
 
+    Action: sentinels that appear INSIDE an already-consumed action's
+    body — e.g. ``Action: type(content='Action: wait()')`` — are skipped
+    so the inner string-literal content is not re-parsed as a second
+    tool call. The scanner advances past each matched ``)`` cursor.
+
     A partial action mid-stream (no balanced ``)`` yet) is NOT returned —
     the streaming path relies on this to avoid double-emitting once the
     rest of the body arrives.
     """
     actions: list[tuple[int, int, str, dict[str, Any]]] = []
-    for m in _ACTION_LINE.finditer(text):
+    cursor = 0
+    n = len(text)
+    while cursor < n:
+        m = _ACTION_LINE.search(text, cursor)
+        if m is None:
+            break
         verb = m.group(1)
         body_start = m.end()
         close = _find_balanced_close(text, body_start)
         if close == -1:
             # Partial action — skip until the body finishes. The streaming
             # callsite re-scans on every delta, so we'll catch it later.
-            continue
+            break
         body = text[body_start:close]
         kwargs = _parse_kwargs(body)
         actions.append((m.start(), close + 1, verb, kwargs))
+        cursor = close + 1
     return actions
 
 
