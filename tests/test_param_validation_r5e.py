@@ -19,6 +19,7 @@ All three reproduce on the request-model layer, so the tests below
 exercise the Pydantic models directly — that's the same gate every
 route hits before request handlers run.
 """
+
 import pytest
 from pydantic import ValidationError
 
@@ -237,9 +238,7 @@ class TestStreamOptionsIncludeUsageStrict:
             (CompletionRequest, {"prompt": "hi"}),
         ],
     )
-    @pytest.mark.parametrize(
-        "bad_value", ["yes", "true", "false", "on", "1", 1, 0]
-    )
+    @pytest.mark.parametrize("bad_value", ["yes", "true", "false", "on", "1", 1, 0])
     def test_request_nested_include_usage_rejected(self, Model, extra, bad_value):
         """The same gate must fire through the parent request model."""
         with pytest.raises(ValidationError):

@@ -175,9 +175,7 @@ def _coerce_prose_value(quoted: tuple) -> Any:
     return ""
 
 
-def _try_prose_recover_tool_call(
-    text: str, tools: list[dict]
-) -> dict | None:
+def _try_prose_recover_tool_call(text: str, tools: list[dict]) -> dict | None:
     r"""Recover a structured tool call from prose like
     ``"I should call the \`add\` tool with a=13 and b=29."`` (r5-E
     F-DGF-V080-B-8). Returns ``{"id","name","arguments"}`` on hit, or
@@ -210,9 +208,7 @@ def _try_prose_recover_tool_call(
     # from ``parameters.properties`` (None means "schema doesn't
     # declare properties — accept anything", which preserves
     # behaviour for tools defined with a free-form schema).
-    candidates: list[
-        tuple[int, dict, str, list[str], set[str] | None]
-    ] = []
+    candidates: list[tuple[int, dict, str, list[str], set[str] | None]] = []
     for tool in tools:
         fn = tool.get("function") if isinstance(tool, dict) else None
         if not isinstance(fn, dict):
@@ -249,13 +245,9 @@ def _try_prose_recover_tool_call(
                 required = [r for r in req if isinstance(r, str)]
             props = params.get("properties")
             if isinstance(props, dict):
-                allowed_keys = {
-                    k for k in props if isinstance(k, str)
-                }
+                allowed_keys = {k for k in props if isinstance(k, str)}
         for match in matches:
-            candidates.append(
-                (match.start(), fn, name, required, allowed_keys)
-            )
+            candidates.append((match.start(), fn, name, required, allowed_keys))
 
     if not candidates:
         return None
@@ -321,9 +313,7 @@ def _try_prose_recover_tool_call(
         # ...a=42, b=99." still won't recover because the boundary
         # walk stops well before the later sentence.
         MAX_SENTENCES = 3
-        sentence_ends = [
-            m.end() for m in re.finditer(r"[.!?](?:\s|$)", bounded)
-        ]
+        sentence_ends = [m.end() for m in re.finditer(r"[.!?](?:\s|$)", bounded)]
         # Always include the full bounded window as the final
         # fallback so a single-sentence prose without trailing
         # punctuation (``call add with a=13 and b=29``) still works.

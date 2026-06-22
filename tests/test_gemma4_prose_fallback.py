@@ -27,6 +27,7 @@ prose in ``content`` unchanged. The conservative gating means a
 chat that just discusses ``add`` and an unrelated ``a=`` mention is
 NOT falsely recovered.
 """
+
 import json
 
 from vllm_mlx.tool_parsers.gemma4_tool_parser import (
