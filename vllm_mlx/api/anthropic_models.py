@@ -13,6 +13,7 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import (
+    _TOP_K_SENTINEL_CAP,
     _enforce_max_generation_tokens_ceiling,
     _scrub_nonfinite_sampling_raw,
     _validate_finite_in_range,
@@ -429,10 +430,13 @@ class AnthropicRequest(BaseModel):
         )
 
     # H-10: ``top_k`` range gate — mirrors the OpenAI surfaces.
+    # r5-E B-7: upper-bound sentinel cap (see ``models._TOP_K_SENTINEL_CAP``).
     @field_validator("top_k", mode="before")
     @classmethod
     def _validate_top_k(cls, v) -> int | None:
-        return _validate_nonnegative_int(v, field_name="top_k")
+        return _validate_nonnegative_int(
+            v, max_value=_TOP_K_SENTINEL_CAP, field_name="top_k"
+        )
 
     # M-03 (#742 follow-up): the Anthropic Messages spec only accepts
     # four ``tool_choice.type`` values — ``auto``, ``any``, ``tool``,

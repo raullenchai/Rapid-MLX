@@ -19,6 +19,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    StrictBool,
     StrictInt,
     StrictStr,
     field_validator,
@@ -206,6 +207,26 @@ def _validate_finite_in_range(
     return v
 
 
+# r5-E B-7 / F-DGF-V080-C-4: ``top_k`` upper-bound cap. Pre-fix,
+# ``top_k=999999999`` and ``top_k=2**63-1`` slid through with HTTP 200
+# even though no vocabulary in the catalog has more than ~256K entries
+# (Gemma 3 sits at 262144; Qwen3 at 151936; Llama 3 at 128256). The
+# request-time gate cannot consult the resolved model's vocab_size
+# because route validation runs before model selection in the engine
+# (and ``model`` is a free-form alias that may not even be loaded yet).
+# We instead use a generous sentinel cap of 2**20 (~1 M tokens) — wider
+# than any vocab we anticipate shipping while still rejecting the
+# pathological 999M / 2^63 forms that produce silent-overflow inside
+# mlx-lm's top-k kernel. The backend kernel does its own ``min(top_k,
+# vocab_size)`` clamp at sample time, so a request with ``top_k=500_000``
+# on a model with a 128K vocab still works exactly like ``top_k=128_000``;
+# the cap here is purely a defence-in-depth ceiling against the obviously-
+# invalid forms. ``top_k=0`` is documented as "disabled" by mlx-lm and
+# is preserved as a legal value (the v0.8.2 validator's own error string
+# read "use 0 to disable" — the by-design escape hatch).
+_TOP_K_SENTINEL_CAP: int = 1 << 20  # 1_048_576
+
+
 def _validate_nonnegative_int(
     v,
     *,
@@ -320,23 +341,23 @@ def _validate_logit_bias_finite(
 
 
 def _validate_seed(v) -> int | None:
-    """Reject bool / non-integer values on ``seed`` (H-11).
+    """Reject bool / non-integer / negative values on ``seed`` (H-11 + r5-E B-8).
 
-    OpenAI's spec documents ``seed`` as an unbounded integer (their
-    Python SDK ships ``seed: Optional[int]`` with no range), so the
-    request-model layer accepts the FULL public range. The backend-
-    specific narrowing to mlx-core's ``uint32`` ``mx.random.key`` is
-    applied LATER, in ``make_seeded_sampler``, via a deterministic
-    bit-fold (``seed & 0xFFFFFFFF``). That keeps OpenAI-compatible
-    clients passing 64-bit / negative seeds working: same input value
-    always maps to the same backend key, so reproducibility is
-    preserved within rapid-mlx (the OpenAI spec only promises
-    within-engine determinism — "we cannot guarantee determinism
-    across model versions or backends"). Codex round-6 BLOCKING fix
-    on the original ``le=0xFFFFFFFF`` Field bound that 422'd valid
-    OpenAI seed values.
+    OpenAI's spec documents ``seed`` as an integer; their Python SDK
+    ships ``seed: Optional[int]`` with no documented range, but every
+    real-world usage in their docs and examples uses non-negative
+    integers (the canonical example is ``seed=12345``). The mlx-core
+    backend key is a ``uint32``: a negative seed has no natural
+    meaning in that space and ``-1`` is almost always a sentinel from a
+    misbehaving SDK (Python ``random.randint(0, sys.maxsize)`` returning
+    ``-1`` on overflow, ``np.int32(-1)`` from a probe). Accepting it
+    silently and then bit-folding via ``& 0xFFFFFFFF`` maps ``-1`` →
+    ``0xFFFFFFFF`` (a perfectly valid backend key) — which means the
+    user thinks they passed a sentinel but actually pinned a fixed PRNG
+    state. That mismatch is the exact silent-correctness hazard
+    r5-E B-8 / cycle-DGF-V080-V2 surfaced; we close it with a 400.
 
-    What we DO still reject at the request layer:
+    What we reject at the request layer:
 
       * ``bool`` — Pydantic v2 silently coerces ``True`` → 1 / ``False``
         → 0 on an ``int | None`` field, but ``seed=True`` is almost
@@ -346,6 +367,19 @@ def _validate_seed(v) -> int | None:
       * Non-integer types — strings, floats, dicts. The OpenAI spec
         is unambiguous that ``seed`` is an integer; a float seed is
         a serialization bug, not a legitimate request.
+      * Negative integers — see the rationale block above. ``seed=0``
+        is preserved as a legal value (a fixed PRNG key, common in
+        evaluation harnesses).
+
+    Upper bound is unbounded by design: 64-bit / very-large seeds are
+    accepted and folded to the backend's uint32 PRNG key range in
+    ``make_seeded_sampler`` via a deterministic ``seed & 0xFFFFFFFF``
+    bit-fold. Same input value always maps to the same backend key, so
+    reproducibility is preserved within rapid-mlx (OpenAI's spec only
+    promises within-engine determinism — "we cannot guarantee
+    determinism across model versions or backends"). Codex round-6
+    BLOCKING fix on the original ``le=0xFFFFFFFF`` Field bound that
+    422'd valid OpenAI seed values.
 
     Returns ``None`` unchanged so the field's optional contract is
     preserved (no value → no per-request seed → process-global
@@ -358,10 +392,17 @@ def _validate_seed(v) -> int | None:
         raise ValueError("seed must be an integer (not bool)")
     if not isinstance(v, int):
         raise ValueError("seed must be an integer")
-    # No range check — see the docstring. Any Python int (positive,
-    # negative, or larger than uint32) is accepted at the API layer;
-    # ``make_seeded_sampler`` folds it to the backend's uint32 PRNG
-    # key range at sampler construction.
+    # r5-E B-8: reject negative seeds at the request layer. The
+    # downstream ``& 0xFFFFFFFF`` fold maps ``-1`` to ``0xFFFFFFFF``
+    # (a valid uint32 key), which silently pins a fixed PRNG state
+    # for a caller that thought they were passing a sentinel.
+    # ``seed=0`` is a legitimate PRNG key (used by every eval
+    # harness) and is preserved.
+    if v < 0:
+        raise ValueError(
+            f"seed must be >= 0 (got {v}); use a non-negative integer "
+            "or omit the field for no determinism guarantee."
+        )
     return v
 
 
@@ -1068,7 +1109,53 @@ class LegacyCompletionLogProbs(BaseModel):
 class StreamOptions(BaseModel):
     """Options for streaming responses."""
 
-    include_usage: bool = False  # Include usage stats in final chunk
+    # r5-E B-9 / F-DGF-V080-V1: strict bool, no coercion. Pre-fix,
+    # Pydantic v2's default ``bool`` field happily coerced
+    # ``include_usage:"yes"`` / ``"true"`` / ``1`` to ``True`` (lax-mode
+    # coercion). The OpenAI spec is unambiguous that the wire shape is
+    # a JSON ``true``/``false`` literal — a truthy string is a
+    # client-side serialization bug and silently rewriting it to
+    # ``True`` masks the bug AND diverges from real OpenAI which
+    # 400's the same payload. Use ``StrictBool`` so a non-bool wire
+    # value 422s at the schema layer; the ``_validate_include_usage``
+    # mode="before" validator below flattens the Pydantic union-error
+    # noise into a single human-readable message naming the field.
+    include_usage: StrictBool = False  # Include usage stats in final chunk
+
+    @field_validator("include_usage", mode="before")
+    @classmethod
+    def _validate_include_usage(cls, v):
+        """Reject non-bool wire values BEFORE Pydantic's StrictBool gate.
+
+        Without this, Pydantic v2's default ``StrictBool`` error reads
+        ``"Input should be a valid boolean"`` (loc=include_usage),
+        which is correct but doesn't pin the spec hint that callers
+        most need (the wire shape MUST be a JSON literal, not a
+        truthy string like ``"yes"`` / ``"on"`` / ``"1"``).
+        Running the type check ourselves with ``mode="before"`` lets
+        us return a message a client can act on AND keeps the
+        contract identical to Pydantic's strict-mode behavior
+        (booleans pass through unchanged; everything else 4xx's).
+        """
+        if v is None:
+            # ``None`` is not a valid value for StrictBool; let the
+            # field's default-False semantics handle the absent case
+            # via field_validator returning None which Pydantic then
+            # rejects with a clean "missing"/"none" error. Callers
+            # that want the default should omit the field entirely.
+            raise ValueError(
+                "stream_options.include_usage must be a boolean "
+                "(true or false); got null. Omit the field for the "
+                "default (false) instead."
+            )
+        if not isinstance(v, bool):
+            raise ValueError(
+                "stream_options.include_usage must be a boolean "
+                "(JSON true or false); got "
+                f"{type(v).__name__}={v!r}. Truthy strings such as "
+                "'yes'/'on'/'1' are NOT accepted per OpenAI spec."
+            )
+        return v
 
 
 class ChatCompletionRequest(BaseModel):
@@ -1381,7 +1468,9 @@ class ChatCompletionRequest(BaseModel):
     @field_validator("top_k", mode="before")
     @classmethod
     def _validate_top_k(cls, v) -> int | None:
-        return _validate_nonnegative_int(v, field_name="top_k")
+        return _validate_nonnegative_int(
+            v, max_value=_TOP_K_SENTINEL_CAP, field_name="top_k"
+        )
 
     # H-10: defensive finite-check on ``logit_bias`` values. The chat
     # route already 4xx's non-empty ``logit_bias`` (see ``routes/chat.py``
@@ -1726,7 +1815,9 @@ class CompletionRequest(BaseModel):
     @field_validator("top_k", mode="before")
     @classmethod
     def _validate_top_k(cls, v) -> int | None:
-        return _validate_nonnegative_int(v, field_name="top_k")
+        return _validate_nonnegative_int(
+            v, max_value=_TOP_K_SENTINEL_CAP, field_name="top_k"
+        )
 
     # F-155: enforce ``n == 1`` at parse time, mirroring the chat
     # surface. The route already 400's ``n > 1``; the schema layer
