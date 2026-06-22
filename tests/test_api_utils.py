@@ -594,6 +594,26 @@ class TestExtractMultimodalContent:
         processed, images, videos = extract_multimodal_content(messages)
         assert images == ["data:image/png;base64,abc"]
 
+    def test_multimodal_with_input_image(self):
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "input_text", "text": "Describe this"},
+                    {
+                        "type": "input_image",
+                        "image_url": {"url": "data:image/png;base64,abc"},
+                    },
+                ],
+            )
+        ]
+
+        processed, images, videos = extract_multimodal_content(messages)
+
+        assert processed == [{"role": "user", "content": "Describe this"}]
+        assert images == ["data:image/png;base64,abc"]
+        assert videos == []
+
     def test_multimodal_with_string_image_url_rejected(self):
         """F-065: the bare-string ``image_url`` shorthand was
         previously accepted at the Message layer and silently

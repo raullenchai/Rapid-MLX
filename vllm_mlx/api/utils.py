@@ -1335,6 +1335,19 @@ def extract_multimodal_content(
                         _require_string(item.get("image", item.get("url")), "image")
                     )
 
+                elif item_type == "input_image":
+                    image_url = item.get("image_url")
+                    if isinstance(image_url, dict):
+                        images.append(
+                            _require_string(
+                                image_url.get("url"), "input_image.image_url.url"
+                            )
+                        )
+                    else:
+                        images.append(
+                            _require_string(image_url, "input_image.image_url")
+                        )
+
                 elif item_type == "video":
                     videos.append(
                         _require_string(item.get("video", item.get("url")), "video")
