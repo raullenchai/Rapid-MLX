@@ -1056,13 +1056,7 @@ def test_anthropic_route_default_off_no_sentinel_on_length_cut(monkeypatch):
                 "stream": False,
             },
         )
-        if resp.status_code != 200:
-            pytest.skip(
-                f"/v1/messages adapter rejected synthetic shape "
-                f"({resp.status_code}); behavior covered by chat e2e "
-                f"and unit-level helper tests — call-site source-grep "
-                f"above still pins the wiring."
-            )
+        assert resp.status_code == 200, resp.text
         payload = resp.json()
         body_str = json.dumps(payload)
         assert REASONING_CUTOFF_SENTINEL not in body_str, (
@@ -1111,10 +1105,7 @@ def test_anthropic_route_optin_surfaces_sentinel(monkeypatch):
                 "stream": False,
             },
         )
-        if resp.status_code != 200:
-            pytest.skip(
-                f"/v1/messages adapter rejected synthetic shape ({resp.status_code})"
-            )
+        assert resp.status_code == 200, resp.text
         payload = resp.json()
         # Compare against the JSON-decoded text block payloads — the raw
         # ``json.dumps`` body escapes the em-dash to ``—`` and would
@@ -1160,13 +1151,7 @@ def test_responses_route_default_off_no_sentinel_on_length_cut(monkeypatch):
                 "stream": False,
             },
         )
-        if resp.status_code != 200:
-            pytest.skip(
-                f"/v1/responses adapter rejected synthetic shape "
-                f"({resp.status_code}); behavior covered by chat e2e "
-                f"and unit-level helper tests — call-site source-grep "
-                f"above still pins the wiring."
-            )
+        assert resp.status_code == 200, resp.text
         payload = resp.json()
         body_str = json.dumps(payload)
         assert REASONING_CUTOFF_SENTINEL not in body_str, (
@@ -1211,10 +1196,7 @@ def test_responses_route_optin_surfaces_sentinel(monkeypatch):
                 "stream": False,
             },
         )
-        if resp.status_code != 200:
-            pytest.skip(
-                f"/v1/responses adapter rejected synthetic shape ({resp.status_code})"
-            )
+        assert resp.status_code == 200, resp.text
         payload = resp.json()
         # Walk ``output[].content[]`` for a text block carrying the
         # sentinel literal — the JSON-dumped body escapes the em-dash,

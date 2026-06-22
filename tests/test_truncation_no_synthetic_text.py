@@ -312,12 +312,7 @@ def test_responses_nonstream_no_truncated_injection():
                 "stream": False,
             },
         )
-        if resp.status_code != 200:
-            pytest.skip(
-                f"/v1/responses adapter rejected synthetic shape "
-                f"({resp.status_code}); behavior covered by helper unit "
-                f"tests in test_reasoning_content_null_rescue.py"
-            )
+        assert resp.status_code == 200, resp.text
         payload = resp.json()
         body_str = json.dumps(payload)
 
@@ -366,11 +361,7 @@ def test_responses_stream_no_truncated_injection():
                 "stream": True,
             },
         )
-        if resp.status_code != 200:
-            pytest.skip(
-                f"/v1/responses stream adapter rejected synthetic shape "
-                f"({resp.status_code}); covered by helper unit tests"
-            )
+        assert resp.status_code == 200, resp.text
         events = _parse_sse_named(resp.text)
         assert events, "expected at least one SSE event"
 
@@ -424,12 +415,7 @@ def test_messages_nonstream_no_truncated_injection():
                 "stream": False,
             },
         )
-        if resp.status_code != 200:
-            pytest.skip(
-                f"/v1/messages adapter rejected synthetic shape "
-                f"({resp.status_code}); behavior covered by helper unit "
-                f"tests"
-            )
+        assert resp.status_code == 200, resp.text
         payload = resp.json()
         body_str = json.dumps(payload)
 
@@ -479,11 +465,7 @@ def test_messages_stream_no_truncated_injection():
                 "stream": True,
             },
         )
-        if resp.status_code != 200:
-            pytest.skip(
-                f"/v1/messages stream adapter rejected synthetic shape "
-                f"({resp.status_code})"
-            )
+        assert resp.status_code == 200, resp.text
         events = _parse_sse_named(resp.text)
         assert events, "expected at least one SSE event"
 
