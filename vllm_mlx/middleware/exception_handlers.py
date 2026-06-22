@@ -209,6 +209,46 @@ def register_request_path(path_prefix: str, model_cls: type[BaseModel]) -> None:
     _REQUEST_PATH_TO_ROOT.append((path_prefix, model_cls))
 
 
+def _path_matches_canonical_prefix(path: str, prefix: str) -> bool:
+    """Return True if ``path`` matches ``prefix`` as a canonical segment.
+
+    Matching shape (codex r4 BLOCKING):
+
+    * Exact match — ``/v1/embeddings`` == ``/v1/embeddings``.
+    * Strict sub-path — ``/v1/embeddings/anything`` matches
+      ``/v1/embeddings`` but ``/v1/embeddings-foo`` does not.
+    * Mounted-prefix match — ``/api/v1/embeddings`` matches
+      ``/v1/embeddings`` because the canonical prefix appears at a
+      ``/``-boundary AND the path ends there (or continues with a
+      ``/``).  Substring attacks like ``/v1/embeddings-foo`` /
+      ``/foo/v1/embeddingsbar`` are rejected because the segment must
+      align on both sides.
+
+    The implementation does the cheap exact/startswith case first and
+    only falls back to the segment scan for the mounted-deployment
+    case so the hot path stays O(1).
+    """
+    if path == prefix or path.startswith(prefix + "/"):
+        return True
+    # Mounted-prefix: ``/<anything>/<prefix>`` exact or with trailing
+    # ``/<rest>``. The canonical prefix already starts with a leading
+    # ``/`` so the left boundary IS that leading slash — we don't need
+    # to require a second ``/`` before it. We just require that idx
+    # itself is > 0 (so there's a non-empty mount segment) AND that
+    # the right side closes at a ``/`` or end-of-string so
+    # ``/v1/embeddings-foo`` doesn't false-match.
+    needle = prefix
+    idx = path.find(needle, 1)  # start at 1 — idx=0 was the unmounted case
+    while idx != -1:
+        end = idx + len(needle)
+        # Right side must align on a ``/`` boundary or end of string.
+        right_ok = end == len(path) or path[end] == "/"
+        if right_ok:
+            return True
+        idx = path.find(needle, idx + 1)
+    return False
+
+
 def _resolve_root_model(
     exc: object,
     loc: tuple,
@@ -244,9 +284,16 @@ def _resolve_root_model(
         root = _REQUEST_MODEL_REGISTRY.get(title)
         if root is not None:
             return root
-    # Path probe: matches the same exact-or-sub-path shape as
-    # ``_is_anthropic_path`` (rejects ``/v1/messages-foo`` while
-    # accepting ``/v1/messages`` and ``/v1/messages/count_tokens``).
+    # Path probe: matches by canonical-segment suffix so the same
+    # registry entry covers both unmounted routes (``/v1/embeddings``)
+    # AND deployments behind a FastAPI ``APIRouter`` mount that prepends
+    # an arbitrary prefix (e.g. ``/api/v1/embeddings`` or
+    # ``/proxy/foo/v1/embeddings``). Codex r4 BLOCKING: the prior
+    # ``startswith`` check left mounted deployments resolving by the
+    # ambiguous field-name probe again. We still reject
+    # ``/v1/messages-foo`` (would-be substring attack) because the
+    # match is on path SEGMENTS, not raw bytes — the canonical prefix
+    # must align with a ``/``-boundary on both ends.
     if request is not None:
         try:
             path = request.url.path
@@ -254,7 +301,7 @@ def _resolve_root_model(
             path = None
         if path:
             for prefix, cls in _REQUEST_PATH_TO_ROOT:
-                if path == prefix or path.startswith(prefix + "/"):
+                if _path_matches_canonical_prefix(path, prefix):
                     return cls
     # Field-name probe (legacy fallback).
     first_str: str | None = None

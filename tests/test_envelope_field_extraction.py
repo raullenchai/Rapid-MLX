@@ -496,6 +496,98 @@ def test_resolve_root_model_path_probe_disambiguates_shared_field_name():
     assert responses_resolved is ResponsesRequest
 
 
+def test_resolve_root_model_path_probe_handles_mounted_prefix():
+    """Codex r4 BLOCKING: a deployment behind a mounted ``APIRouter``
+    prefix (e.g. ``/api/v1/embeddings``) must still resolve to
+    ``EmbeddingRequest`` via the path probe — the prior
+    ``startswith`` check missed mounted prefixes and silently fell
+    back to the ambiguous field-name probe.
+    """
+    from types import SimpleNamespace
+
+    from vllm_mlx.api.models import EmbeddingRequest
+    from vllm_mlx.api.responses_models import ResponsesRequest
+    from vllm_mlx.middleware.exception_handlers import (
+        _resolve_root_model,
+        install_exception_handlers,
+    )
+
+    install_exception_handlers(FastAPI())
+
+    def _fake_request(path: str):
+        return SimpleNamespace(url=SimpleNamespace(path=path))
+
+    # Single-level mounted prefix.
+    assert (
+        _resolve_root_model(
+            exc=object(),
+            loc=("body", "input"),
+            request=_fake_request("/api/v1/embeddings"),
+        )
+        is EmbeddingRequest
+    )
+    # Deeply nested mount.
+    assert (
+        _resolve_root_model(
+            exc=object(),
+            loc=("body", "input"),
+            request=_fake_request("/proxy/foo/v1/responses/anything"),
+        )
+        is ResponsesRequest
+    )
+    # Substring attack rejection: ``/v1/embeddings-foo`` MUST NOT match.
+    assert (
+        _resolve_root_model(
+            exc=object(),
+            loc=("body", "input"),
+            request=_fake_request("/v1/embeddings-foo"),
+        )
+        # Falls back to the field-name probe; ``input`` is registered
+        # on EmbeddingRequest first in our registration order so this
+        # SHOULD return EmbeddingRequest — but the relevant check is
+        # that the path-probe segment alignment didn't false-positive
+        # on the trailing ``-foo``. Verify by checking a path that has
+        # NO canonical segment at all:
+        is not None
+    )
+    assert (
+        _resolve_root_model(
+            exc=object(),
+            loc=("body", "completely_unknown_field"),
+            request=_fake_request("/v1/embeddings-foo"),
+        )
+        # No segment match + no field-name match → None.
+        is None
+    )
+
+
+def test_path_matches_canonical_prefix_rejects_substring_attacks():
+    """Direct unit check on ``_path_matches_canonical_prefix`` —
+    catches future regressions where someone replaces the segment-
+    aware walk with a naive ``in`` / ``startswith`` check (codex r4
+    BLOCKING).
+    """
+    from vllm_mlx.middleware.exception_handlers import (
+        _path_matches_canonical_prefix,
+    )
+
+    # Exact + strict sub-path.
+    assert _path_matches_canonical_prefix("/v1/embeddings", "/v1/embeddings")
+    assert _path_matches_canonical_prefix("/v1/embeddings/anything", "/v1/embeddings")
+    # Mounted prefix.
+    assert _path_matches_canonical_prefix("/api/v1/embeddings", "/v1/embeddings")
+    assert _path_matches_canonical_prefix(
+        "/proxy/foo/v1/embeddings/x", "/v1/embeddings"
+    )
+    # Substring attacks REJECTED.
+    assert not _path_matches_canonical_prefix("/v1/embeddings-foo", "/v1/embeddings")
+    assert not _path_matches_canonical_prefix("/v1/embeddingsfoo", "/v1/embeddings")
+    assert not _path_matches_canonical_prefix("/foo/v1/embeddingsbar", "/v1/embeddings")
+    # No match at all.
+    assert not _path_matches_canonical_prefix("/v2/embeddings", "/v1/embeddings")
+    assert not _path_matches_canonical_prefix("/v1/completions", "/v1/embeddings")
+
+
 def test_descend_field_picks_correct_union_arm_via_hint():
     """Codex r3 BLOCKING #2: ``ResponsesRequest.input`` is the union
     ``str | list[ResponseInputItem]``. ``_descend_field`` must use the
