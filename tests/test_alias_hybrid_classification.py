@@ -212,7 +212,53 @@ def test_moe_marker_qwen35_36_path_resolves_to_hybrid(hf_path: str) -> None:
 # =============================================================================
 
 
-def test_enrich_respects_is_hybrid_explicit_against_arrays_cache() -> None:
+@pytest.fixture
+def stub_arrays_cache(monkeypatch):
+    """Inject a hermetic stub for ``mlx_lm.models.cache.ArraysCache``.
+
+    The real ``ArraysCache`` is an ``mx.array``-backed structure whose
+    import path (``mlx_lm.models.cache``) eagerly initializes the Metal
+    device. On headless / no-Metal hosts (CI x86 runners, Linux build
+    boxes) that import raises
+    ``RuntimeError: [metal::load_device] No Metal device available``
+    BEFORE the probe contract is exercised, which would make this
+    regression guard environment-flaky.
+
+    We swap a stub module into ``sys.modules['mlx_lm.models.cache']``
+    so the ``from mlx_lm.models.cache import ArraysCache`` import inside
+    ``enrich_model_config`` resolves to a plain class. ``isinstance``
+    against this same class drives the probe's hybrid-promotion branch.
+    """
+    import sys
+    import types
+
+    # Build a minimal stub module that exposes a class named ``ArraysCache``.
+    stub_cache_module = types.ModuleType("mlx_lm.models.cache")
+
+    class ArraysCache:  # noqa: D401 — stub mirroring upstream class
+        """Stub stand-in for the linear-attention cache marker class."""
+
+        def __init__(self, *args, **kwargs):
+            pass
+
+    stub_cache_module.ArraysCache = ArraysCache
+
+    # Ensure parent packages exist so the dotted import resolves cleanly
+    # even if mlx_lm hasn't been imported at all in this test session.
+    if "mlx_lm" not in sys.modules:
+        monkeypatch.setitem(sys.modules, "mlx_lm", types.ModuleType("mlx_lm"))
+    if "mlx_lm.models" not in sys.modules:
+        monkeypatch.setitem(
+            sys.modules, "mlx_lm.models", types.ModuleType("mlx_lm.models")
+        )
+    monkeypatch.setitem(sys.modules, "mlx_lm.models.cache", stub_cache_module)
+
+    return ArraysCache
+
+
+def test_enrich_respects_is_hybrid_explicit_against_arrays_cache(
+    stub_arrays_cache,
+) -> None:
     """r6-A R6-C1 boot-path guard (codex r1 IMPORTANT).
 
     ``enrich_model_config``'s runtime probe sees ``ArraysCache`` layers
@@ -226,8 +272,13 @@ def test_enrich_respects_is_hybrid_explicit_against_arrays_cache() -> None:
     alone (only ``supports_spec_decode`` is forced off, which is a
     separate safety contract — spec decode is unsafe on
     linear-attention weights regardless of the routing decision).
+
+    Hermeticity (codex r2 IMPORTANT): ``mlx_lm.models.cache`` is stubbed
+    via the ``stub_arrays_cache`` fixture so this test does NOT require
+    a Metal device — the contract is between ``enrich_model_config``
+    and the ``ArraysCache`` marker class, not the underlying MLX arrays.
     """
-    from mlx_lm.models.cache import ArraysCache
+    ArraysCache = stub_arrays_cache
 
     class HybridCacheModel:
         def make_cache(self):
@@ -259,13 +310,16 @@ def test_enrich_respects_is_hybrid_explicit_against_arrays_cache() -> None:
     )
 
 
-def test_enrich_promotes_when_explicit_flag_unset() -> None:
+def test_enrich_promotes_when_explicit_flag_unset(stub_arrays_cache) -> None:
     """Counterpart to ``test_enrich_respects_is_hybrid_explicit_*``: a
     caller that didn't set the explicit flag MUST still see the runtime
     probe promote ``is_hybrid=True``. The suppression is opt-in, not a
     blanket disable — legacy callers / brand-new HF paths without an
-    alias profile rely on the safety-net promotion."""
-    from mlx_lm.models.cache import ArraysCache
+    alias profile rely on the safety-net promotion.
+
+    Hermetic via the same ``stub_arrays_cache`` fixture (no Metal
+    device required)."""
+    ArraysCache = stub_arrays_cache
 
     class HybridCacheModel:
         def make_cache(self):
