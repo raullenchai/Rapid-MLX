@@ -403,18 +403,8 @@ def _recover_partial_tool_args(
         "</arg_value>",
     )
 
-    def _position_in_wire_span(idx: int) -> bool:
-        """Is ``idx`` inside (or immediately after) a known tool-wire
-        opener? We don't require a balanced closer — the qwen3 leak
-        shape often has no clean closer.
-
-        codex r6 NIT: bound the search by the nearest known
-        opener/closer occurrence rather than a fixed lookback. We
-        find the LATEST opener at position ``op_pos < idx`` and the
-        LATEST closer at position ``cl_pos < idx``; ``idx`` is in
-        the span iff ``op_pos`` exists AND ``op_pos > cl_pos``
-        (so the most recent opener was not yet closed before ``idx``).
-        """
+    def _open_wire_span_start(idx: int) -> int | None:
+        """Return the nearest still-open wire opener before ``idx``."""
         prefix = text[:idx]
         op_pos = -1
         for opener in _WIRE_SPAN_OPENERS:
@@ -428,7 +418,30 @@ def _recover_partial_tool_args(
             pos = prefix.rfind(closer)
             if pos > cl_pos:
                 cl_pos = pos
-        return op_pos > cl_pos
+        return op_pos if op_pos >= 0 and op_pos > cl_pos else None
+
+    def _next_wire_span_closer(idx: int) -> int | None:
+        """Return the nearest known wire closer after ``idx``."""
+        close_pos: int | None = None
+        for closer in _WIRE_SPAN_CLOSERS:
+            pos = text.find(closer, idx)
+            if pos != -1 and (close_pos is None or pos < close_pos):
+                close_pos = pos
+        return close_pos
+
+    def _position_in_wire_span(idx: int) -> bool:
+        """Is ``idx`` inside (or immediately after) a known tool-wire
+        opener? We don't require a balanced closer — the qwen3 leak
+        shape often has no clean closer.
+
+        codex r6 NIT: bound the search by the nearest known
+        opener/closer occurrence rather than a fixed lookback. We
+        find the LATEST opener at position ``op_pos < idx`` and the
+        LATEST closer at position ``cl_pos < idx``; ``idx`` is in
+        the span iff ``op_pos`` exists AND ``op_pos > cl_pos``
+        (so the most recent opener was not yet closed before ``idx``).
+        """
+        return _open_wire_span_start(idx) is not None
 
     def _name_pairs_with(idx: int, expected: str) -> bool:
         """Does a ``"name": "<expected>"`` (or ``"name":"<expected>"``)
@@ -455,24 +468,32 @@ def _recover_partial_tool_args(
         if not expected:
             return True  # No constraint when caller doesn't pass one.
 
-        # Backward bound: the closer of (previous "arguments"
-        # occurrence + len) or the nearest wire-opener literal
-        # backward, or ``idx - 512`` as a hard fallback so a wire
-        # body with no opener literal still bounds the scan.
-        prev_args_end = text.rfind('"arguments"', 0, idx)
-        if prev_args_end != -1:
-            backward_bound = prev_args_end + len('"arguments"')
+        # Backward bound: if ``idx`` is inside a known wire span, use
+        # that span's opener. This admits verbose DeepSeek V3.1 output
+        # between ``<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>`` and the
+        # later JSON ``"arguments"`` object without relying on a fixed
+        # byte lookback. If no opener is known, fall back to the
+        # previous arguments marker to keep adjacent JSON blocks from
+        # cross-pairing.
+        span_start = _open_wire_span_start(idx)
+        if span_start is not None:
+            backward_bound = span_start
         else:
-            backward_bound = max(0, idx - 512)
+            prev_args_end = text.rfind('"arguments"', 0, idx)
+            backward_bound = (
+                prev_args_end + len('"arguments"') if prev_args_end != -1 else 0
+            )
         # Forward bound: the next "arguments" marker or 256 bytes
         # forward. We cap forward TIGHTER than backward because the
         # canonical wire shape ``{"name":"X","arguments":{...}}``
         # always has ``"name"`` BEFORE ``"arguments"``.
         next_args_idx = text.find('"arguments"', idx + len('"arguments"'))
+        next_closer_idx = _next_wire_span_closer(idx)
+        forward_bound = n
         if next_args_idx != -1:
-            forward_bound = next_args_idx
-        else:
-            forward_bound = min(n, idx + 256)
+            forward_bound = min(forward_bound, next_args_idx)
+        if next_closer_idx is not None:
+            forward_bound = min(forward_bound, next_closer_idx)
         window = text[backward_bound:forward_bound]
         escaped = re.escape(expected)
         # Accept TWO wire shapes for the paired ``name`` literal:
@@ -745,13 +766,6 @@ _TOOL_WIRE_PAYLOAD_HINT_RE = re.compile(
     r"(?:[\"'](?:name|arguments)[\"']\s*:|\{[^{}]{0,2048}\})",
     re.DOTALL,
 )
-_TOOL_WIRE_ORPHAN_CLOSER_RE = re.compile(
-    r"(?:</tool_call>|</function>|</parameter>|<｜tool▁calls▁end｜>|"
-    r"<｜tool▁call▁end｜>|</minimax:tool_call>|</invoke>|</arg_value>|"
-    r"<\|tool_calls_section_end\|>|\[/TOOL_CALLS\])"
-)
-
-
 def _contains_structural_tool_wire_leak(text: str | None) -> bool:
     """Return True when known wire markers appear as tool-wire residue.
 
@@ -768,8 +782,6 @@ def _contains_structural_tool_wire_leak(text: str | None) -> bool:
         if re.search(opener_re.pattern + r".*?" + closer_re.pattern, text, re.DOTALL):
             return True
     if _CROSS_FAMILY_SPAN_RE.search(text):
-        return True
-    if _TOOL_WIRE_ORPHAN_CLOSER_RE.search(text):
         return True
     for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
         match = marker_re.search(text)
@@ -2772,11 +2784,19 @@ async def _create_chat_completion_impl(
         isinstance(request.tool_choice, dict)
         and request.tool_choice.get("type") == "function"
     )
+    _raw_text_for_reasoning = output.raw_text or output.text
+    _raw_has_structural_wire = _contains_structural_tool_wire_leak(
+        _raw_text_for_reasoning
+    )
     _wire_scrub_active = (
         _is_forced_choice
         and request.tools
         and bool(tool_calls)
-        and _contains_structural_tool_wire_leak(cleaned_text)
+        and _contains_tool_wire_literal(cleaned_text)
+        and (
+            _contains_structural_tool_wire_leak(cleaned_text)
+            or _raw_has_structural_wire
+        )
     )
     # codex r6 BLOCKING #2: scrub the user-visible ``cleaned_text``
     # only. Do NOT mutate ``raw_text`` before it reaches the reasoning
@@ -2803,7 +2823,7 @@ async def _create_chat_completion_impl(
         # Any wire-literal scrub above only touched user-visible
         # ``cleaned_text`` — reasoning extraction operates on the
         # untouched ``raw_text``.
-        raw_text=output.raw_text or output.text,
+        raw_text=_raw_text_for_reasoning,
         cleaned_text=cleaned_text,
         tool_calls=tool_calls,
         reasoning_parser=cfg.reasoning_parser,
@@ -2836,7 +2856,11 @@ async def _create_chat_completion_impl(
         _is_forced_choice
         and request.tools
         and bool(tool_calls)
-        and _contains_structural_tool_wire_leak(reasoning_text)
+        and _contains_tool_wire_literal(reasoning_text)
+        and (
+            _contains_structural_tool_wire_leak(reasoning_text)
+            or _raw_has_structural_wire
+        )
     )
     if _reasoning_wire_scrub_active and reasoning_text:
         reasoning_text = _scrub_tool_wire_literals(reasoning_text)

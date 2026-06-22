@@ -1117,6 +1117,23 @@ def test_codex_r2_blocking_deepseek_envelope_counts_as_wire_span():
     assert parsed == {"city": "Tokyo", "units": "c"}
 
 
+def test_codex_r7_deepseek_verbose_span_pairs_name_without_fixed_lookback():
+    """DeepSeek name pairing is bounded by the open wire span, not 512 bytes."""
+
+    verbose_metadata = "x" * 900
+    raw = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_weather"
+        f"<｜tool▁sep｜>{verbose_metadata}"
+        '{"arguments":{"city":"Tokyo","units":"c"}}'
+        "<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+    )
+    got = _recover_partial_tool_args(raw, expected_name="get_weather")
+    assert got is not None
+    import json as _json
+
+    assert _json.loads(got) == {"city": "Tokyo", "units": "c"}
+
+
 # -----------------------------------------------------------------------
 # codex r6 BLOCKING #1 — gate scrub on actual wire-leak detection
 # -----------------------------------------------------------------------
@@ -1210,6 +1227,9 @@ def test_codex_r7_structural_leak_detector_ignores_plain_marker_mentions():
     prose = "I cannot call tools here, but the literal token is <tool_call>."
     assert _contains_tool_wire_literal(prose)
     assert not _contains_structural_tool_wire_leak(prose)
+    closer_prose = "Use </function> to close XML in this example."
+    assert _contains_tool_wire_literal(closer_prose)
+    assert not _contains_structural_tool_wire_leak(closer_prose)
     assert _contains_structural_tool_wire_leak(
         '<tool_call>{"name":"add_numbers","arguments":{"a":1}}</function>'
     )
@@ -1227,6 +1247,33 @@ def test_codex_r7_synth_forced_clean_marker_prose_not_scrubbed():
             super().__init__(text=raw, raw_text=raw)
 
     engine = _CleanMarkerMentionEngine()
+    client = _make_client(engine, tool_call_parser="hermes")
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "add 1 and 2"}],
+            "tools": _SOLO_TOOL,
+            "tool_choice": "required",
+            "max_tokens": 64,
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    msg = resp.json()["choices"][0]["message"]
+    assert msg.get("tool_calls"), msg
+    assert msg.get("content") == raw
+
+
+def test_codex_r7_synth_forced_clean_closer_prose_not_scrubbed():
+    """A lone closer token in ordinary prose is also not enough to scrub."""
+
+    raw = "Use </function> to close XML in this example."
+
+    class _CleanCloserMentionEngine(_RecordingEngine):
+        def __init__(self):
+            super().__init__(text=raw, raw_text=raw)
+
+    engine = _CleanCloserMentionEngine()
     client = _make_client(engine, tool_call_parser="hermes")
     resp = client.post(
         "/v1/chat/completions",
