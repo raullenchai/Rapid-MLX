@@ -500,18 +500,15 @@ async def create_response(request: Request):
             _ctx_messages = _prepare_messages_for_context_check(engine, openai_request)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
-        except Exception:
-            _ctx_messages = None
-        if _ctx_messages is not None:
-            enforce_context_length_for_messages(
-                engine,
-                _ctx_messages,
-                tools=openai_request.tools,
-                max_tokens=_resolve_max_tokens(
-                    openai_request.max_tokens,
-                    _resolve_enable_thinking(openai_request),
-                ),
-            )
+        enforce_context_length_for_messages(
+            engine,
+            _ctx_messages,
+            tools=openai_request.tools,
+            max_tokens=_resolve_max_tokens(
+                openai_request.max_tokens,
+                _resolve_enable_thinking(openai_request),
+            ),
+        )
 
         if responses_request.stream:
             _admission_committed = True

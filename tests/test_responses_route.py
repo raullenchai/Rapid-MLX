@@ -382,6 +382,29 @@ class TestResponsesNonStream:
         sent = engine.calls[-1].messages
         assert sent[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,abc"
 
+    def test_context_precheck_unexpected_error_is_not_swallowed(
+        self, responses_client, monkeypatch
+    ):
+        from vllm_mlx.routes import responses as responses_route
+
+        client = responses_client.client
+
+        def _raise_unexpected(_engine, _openai_request):
+            raise RuntimeError("context precheck bug")
+
+        monkeypatch.setattr(
+            responses_route,
+            "_prepare_messages_for_context_check",
+            _raise_unexpected,
+        )
+
+        with pytest.raises(RuntimeError, match="context precheck bug"):
+            client.post(
+                "/v1/responses",
+                json=_payload(),
+                headers={"Authorization": "Bearer test-secret"},
+            )
+
     def test_mllm_message_prepare_accepts_object_style_messages(self):
         """Responses MLLM path must handle the object-style messages accepted
         by the text path instead of assuming every message is dict-convertible.

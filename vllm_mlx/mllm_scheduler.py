@@ -726,7 +726,11 @@ class MLLMScheduler:
                 # detokenizer contract. Production detokenizers
                 # return str; this fallback keeps legacy tests and
                 # defensive adapters on the same stop path.
-                new_text = tokenizer.decode([response.token])
+                new_text = (
+                    ""
+                    if finish_reason == "stop"
+                    else tokenizer.decode([response.token])
+                )
 
             output_new_text = new_text
             output_output_text = ""
