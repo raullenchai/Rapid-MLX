@@ -45,6 +45,29 @@ _MIN_MEMORY_BYTES = 100 * _BYTES_PER_MB  # Minimum 100MB
 _MAX_ENTRIES_FALLBACK = 50  # Fallback if memory detection fails
 
 
+def _fsync_file(path: str) -> None:
+    """Flush a file's contents to disk.
+
+    R8-M7 codex r1 BLOCKING #3: ``_fsync_dir`` alone is insufficient —
+    the dir fsync only commits directory metadata (file entries +
+    names), not the file body. A file whose contents are still in the
+    page cache can survive a dir-fsync rename and surface as empty
+    / partial on a hard reset. This helper opens the file read-only
+    and calls ``os.fsync`` to force the body durable BEFORE the
+    rename commits.
+
+    Opens read-only so we don't disturb the file's mtime / atime;
+    fsync on a read-only fd is allowed on POSIX (some platforms
+    require write but Linux/macOS accept either). Errors propagate
+    so the caller can decide non-fatal vs hard-fail.
+    """
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _fsync_dir(path: str) -> None:
     """Flush directory metadata to disk.
 
@@ -1514,12 +1537,45 @@ class MemoryAwarePrefixCache:
                     persist_cache,
                     metadata={"num_tokens": str(len(tokens_key))},
                 )
+                # R8-M7 codex r1 BLOCKING #3: durably commit the
+                # safetensors file. ``mx.save_safetensors`` (which
+                # ``save_prompt_cache`` calls) writes through to the
+                # kernel page cache but does not fsync — under
+                # SIGTERM-driven shutdown the body can still be in
+                # cache when the dir rename publishes its name,
+                # leaving a renamed entry with empty/partial contents
+                # on a hard reset / power loss. Open + fsync after
+                # the write so the file body hits durable storage
+                # BEFORE the rename. Open errors are non-fatal —
+                # they may indicate the file already vanished, and
+                # the subsequent verify loop already catches that.
+                try:
+                    _fsync_file(entry_path)
+                except OSError as fs_err:
+                    logger.debug(
+                        f"[cache_persist] fsync({entry_path}) failed: {fs_err}; "
+                        "continuing — verify-loop will catch real file loss"
+                    )
                 # Save tokens separately (can be 100K+ ints → binary is smaller).
                 import array as _array
 
                 arr = _array.array("i", tokens_key)  # 32-bit signed ints
                 with open(tokens_path, "wb") as f:
                     arr.tofile(f)
+                    # R8-M7 codex r1 BLOCKING #3 follow-up: fsync the
+                    # tokens sidecar too. tokens.bin and the
+                    # safetensors are validated together at load time
+                    # (size-cross-check), so a durable safetensors
+                    # paired with a buffered-only tokens.bin would
+                    # surface as corruption.
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError as fs_err:
+                        logger.debug(
+                            f"[cache_persist] fsync({tokens_path}) failed: "
+                            f"{fs_err}; continuing"
+                        )
 
                 # Record the per-layer cache class names so loaders can
                 # gate on cache-type compatibility (#198 BUG B). Read from
@@ -1629,6 +1685,15 @@ class MemoryAwarePrefixCache:
         try:
             with open(index_path, "w") as f:
                 json.dump(index, f, indent=2)
+                # R8-M7 codex r1 BLOCKING #3: fsync the file fd so its
+                # contents (not just metadata) hit durable storage before
+                # the rename commits. Without this, the rename can
+                # publish a name that points at an empty/partial file
+                # because the page cache hasn't flushed yet. The dir
+                # fsync below covers directory-entry durability; this
+                # fsync covers the file body itself.
+                f.flush()
+                os.fsync(f.fileno())
         except OSError as e:
             # Catch the broader OSError (FileNotFoundError if dir vanished,
             # PermissionError if cache_dir was suddenly chmod'd, ENOSPC if
@@ -1727,9 +1792,17 @@ class MemoryAwarePrefixCache:
                     "stale .new from failed rename"
                 )
 
-        # Drop the now-redundant .old. Errors here are non-fatal:
-        # next save's pre-clean will catch anything we miss.
-        if os.path.exists(old_dir):
+        # Drop the now-redundant .old — but ONLY if the new snapshot
+        # made it into cache_dir. Codex round-1 BLOCKING: pre-fix this
+        # rmtree ran unconditionally, so a commit-phase failure that
+        # left ``.new`` orphan + ``.old`` valid would then DESTROY the
+        # last known-good snapshot before returning False — silently
+        # downgrading "recoverable via load_from_disk" to "no cache
+        # at all". Keep ``.old`` when rename did not commit so the
+        # standard recovery path (``_has_valid_index(old_dir)``) can
+        # restore it on next boot. Errors are non-fatal: next save's
+        # pre-clean will catch anything we leave behind.
+        if rename_committed and os.path.exists(old_dir):
             shutil.rmtree(old_dir, ignore_errors=True)
 
         dt = _time.monotonic() - t0

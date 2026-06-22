@@ -388,6 +388,211 @@ async def test_healthz_p99_under_8way_streaming_stays_under_budget():
 # ---------------------------------------------------------------------------
 
 
+class TestFastPathServesRequest:
+    """Direct proof that the middleware — not the router — answers
+    eligible probe hits. Codex round-1 BLOCKING: without an
+    inner-app-recorder test, ``test_healthz_p99_under_8way_streaming``
+    would silently pass even if ``install_probe_fastpath_middleware``
+    became a no-op, because the FastAPI router itself answers the
+    request quickly in-process. The tests below pin the
+    middleware-vs-router decision.
+    """
+
+    def test_fastpath_serves_healthz_without_invoking_inner_app(self):
+        """The fast-path returns a 200+JSON without dispatching to
+        the inner ASGI app. We wrap the middleware around a recorder
+        inner app: if the recorder ever sees a healthz scope, the
+        fast-path did not intercept.
+        """
+        originals = _patch_config(engine=None, model_name="recorder", ready=True)
+        try:
+            inner_calls: list[dict] = []
+
+            async def _inner(scope, receive, send):
+                inner_calls.append(scope)
+                # If the fast-path is broken and we get here, emit a
+                # minimal 500 so the test can distinguish "router
+                # answered" from "fast-path answered" cleanly.
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 500,
+                        "headers": [(b"content-type", b"text/plain")],
+                    }
+                )
+                await send({"type": "http.response.body", "body": b"inner-app"})
+
+            mw = ProbeFastPathMiddleware(_inner)
+            captured: list[dict] = []
+
+            async def _send(msg):
+                captured.append(msg)
+
+            async def _receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            scope = {
+                "type": "http",
+                "method": "GET",
+                "path": "/healthz",
+                "raw_path": b"/healthz",
+                "headers": [],
+                "query_string": b"",
+            }
+
+            asyncio.run(mw(scope, _receive, _send))
+
+            # Fast-path served — inner app was NEVER called.
+            assert inner_calls == [], (
+                "fast-path must serve /healthz directly; inner app saw "
+                f"{len(inner_calls)} scope(s)"
+            )
+            # Exactly two ASGI sends (start + body).
+            assert len(captured) == 2
+            assert captured[0]["type"] == "http.response.start"
+            assert captured[0]["status"] == 200
+            assert captured[1]["type"] == "http.response.body"
+            body = json.loads(captured[1]["body"])
+            assert body == {
+                "status": "healthy",
+                "ready": True,
+                "model_loaded": False,
+                "model_name": "recorder",
+            }
+        finally:
+            _restore_config(originals)
+
+    def test_fastpath_serves_livez_without_invoking_inner_app(self):
+        """Same shape as the healthz proof, for /livez."""
+        inner_calls: list[dict] = []
+
+        async def _inner(scope, receive, send):
+            inner_calls.append(scope)
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 500,
+                    "headers": [(b"content-type", b"text/plain")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b"inner-app"})
+
+        mw = ProbeFastPathMiddleware(_inner)
+        captured: list[dict] = []
+
+        async def _send(msg):
+            captured.append(msg)
+
+        async def _receive():
+            return {"type": "http.request", "body": b"", "more_body": False}
+
+        scope = {
+            "type": "http",
+            "method": "GET",
+            "path": "/livez",
+            "raw_path": b"/livez",
+            "headers": [],
+            "query_string": b"",
+        }
+        asyncio.run(mw(scope, _receive, _send))
+        assert inner_calls == []
+        assert len(captured) == 2
+        assert captured[0]["status"] == 200
+        assert json.loads(captured[1]["body"]) == {"status": "alive"}
+
+    def test_fastpath_delegates_to_inner_app_on_origin_header(self):
+        """A request with Origin must fall through so the (outer) CORS
+        middleware can attach ACAO. Pin this by recording inner-app
+        invocation.
+        """
+        originals = _patch_config(engine=None, model_name="cors-route", ready=True)
+        try:
+            inner_calls: list[dict] = []
+
+            async def _inner(scope, receive, send):
+                inner_calls.append(scope)
+                await send(
+                    {
+                        "type": "http.response.start",
+                        "status": 200,
+                        "headers": [(b"content-type", b"application/json")],
+                    }
+                )
+                await send(
+                    {
+                        "type": "http.response.body",
+                        "body": b'{"served_by":"inner"}',
+                    }
+                )
+
+            mw = ProbeFastPathMiddleware(_inner)
+            captured: list[dict] = []
+
+            async def _send(msg):
+                captured.append(msg)
+
+            async def _receive():
+                return {"type": "http.request", "body": b"", "more_body": False}
+
+            scope = {
+                "type": "http",
+                "method": "GET",
+                "path": "/healthz",
+                "raw_path": b"/healthz",
+                "headers": [(b"origin", b"https://browser.example")],
+                "query_string": b"",
+            }
+            asyncio.run(mw(scope, _receive, _send))
+            # The inner app was called (CORS fall-through worked).
+            assert len(inner_calls) == 1
+            assert inner_calls[0]["path"] == "/healthz"
+            # And the inner app's body was forwarded.
+            body_msgs = [m for m in captured if m["type"] == "http.response.body"]
+            assert any(b'"served_by":"inner"' in m["body"] for m in body_msgs)
+        finally:
+            _restore_config(originals)
+
+    def test_fastpath_delegates_to_inner_app_on_non_get(self):
+        """POST/PUT/DELETE on /healthz fall through — pin via
+        inner-app invocation."""
+        inner_calls: list[dict] = []
+
+        async def _inner(scope, receive, send):
+            inner_calls.append(scope)
+            await send(
+                {
+                    "type": "http.response.start",
+                    "status": 405,
+                    "headers": [(b"content-type", b"text/plain")],
+                }
+            )
+            await send({"type": "http.response.body", "body": b"method-not-allowed"})
+
+        mw = ProbeFastPathMiddleware(_inner)
+        captured: list[dict] = []
+
+        async def _send(msg):
+            captured.append(msg)
+
+        async def _receive():
+            return {"type": "http.request", "body": b"{}", "more_body": False}
+
+        for method in ("POST", "PUT", "DELETE", "PATCH"):
+            inner_calls.clear()
+            captured.clear()
+            scope = {
+                "type": "http",
+                "method": method,
+                "path": "/healthz",
+                "raw_path": b"/healthz",
+                "headers": [],
+                "query_string": b"",
+            }
+            asyncio.run(mw(scope, _receive, _send))
+            assert len(inner_calls) == 1, f"{method} should fall through"
+            assert captured[0]["status"] == 405
+
+
 class TestFastPathASGIShape:
     def test_middleware_passes_through_non_http_scopes(self):
         """Lifespan + websocket scopes go straight to the inner app."""

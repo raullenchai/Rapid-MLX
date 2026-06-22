@@ -1899,6 +1899,77 @@ def test_fsync_dir_works_on_real_directory(tmp_path):
     _fsync_dir(str(tmp_path))
 
 
+def test_fsync_file_works_on_real_file(tmp_path):
+    """The per-file fsync helper works on a vanilla tmp file.
+
+    R8-M7 codex r1 BLOCKING #3: ``_fsync_dir`` only covers directory
+    metadata; ``_fsync_file`` covers the file body. Pin both so a
+    future refactor that drops one or the other (or breaks the
+    fd-lifecycle in either) surfaces here.
+    """
+    from vllm_mlx.memory_cache import _fsync_file
+
+    p = tmp_path / "blob.bin"
+    p.write_bytes(b"x" * 4096)
+    _fsync_file(str(p))
+
+
+def test_save_to_disk_preserves_old_dir_when_commit_fails(tmp_path, monkeypatch):
+    """R8-M7 codex r1 BLOCKING #1 regression: when the new-snapshot
+    rename does not commit, the previous good snapshot (``.old``)
+    must be kept on disk so load_from_disk can recover via the
+    ``_has_valid_index(old_dir)`` path. Pre-fix this PR's ``.old``
+    rmtree ran unconditionally, destroying the last known-good
+    snapshot before returning False.
+    """
+    import vllm_mlx.memory_cache as _mc
+
+    cache_dir = tmp_path / "snap"
+    new_dir = tmp_path / "snap.new"
+    old_dir = tmp_path / "snap.old"
+    # Session 1: clean save (so cache_dir exists for session 2's
+    # rename-1 to push it to .old).
+    c1 = fresh_cache()
+    c1.store(list(range(5)), make_kvcache(num_tokens=5))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Session 2: build a new entry, fail rename 2 + its recovery
+    # retry, observe that .old survives so a subsequent
+    # load_from_disk can promote it.
+    c2 = fresh_cache()
+    c2.store(list(range(10, 18)), make_kvcache(num_tokens=8, fill=2.0))
+
+    original_rename = os.rename
+
+    def _fail_new_to_cache_dir(src, dst):
+        if str(dst) == str(cache_dir):
+            raise OSError("simulated rename-to-cache_dir failure")
+        return original_rename(src, dst)
+
+    monkeypatch.setattr(_mc.os, "rename", _fail_new_to_cache_dir)
+    result = c2.save_to_disk(str(cache_dir))
+    monkeypatch.setattr(_mc.os, "rename", original_rename)
+
+    assert result is False
+    # The crucial assertion: ``.old`` was NOT rmtree'd because the
+    # rename didn't commit. load_from_disk's recovery path can
+    # promote either ``.new`` or fall back to ``.old``.
+    assert old_dir.exists(), (
+        "BLOCKING regression — .old destroyed when commit failed; "
+        "last known-good snapshot lost"
+    )
+    assert (old_dir / "index.json").exists()
+
+    # And the recovery path actually works: a fresh load promotes
+    # ``.new`` (the partial new snapshot) — the .old preservation
+    # is a belt-and-suspenders for the case where .new is itself
+    # corrupt or partially written, which the existing
+    # ``_has_valid_index(old_dir)`` branch in load_from_disk handles.
+    c3 = fresh_cache()
+    loaded = c3.load_from_disk(str(cache_dir))
+    assert loaded == 1
+
+
 def test_clean_save_load_roundtrip_after_r8m7_hardening(tmp_path):
     """End-to-end: the R8-M7 hardening must not regress the clean-flush
     path. A save with no signal pressure, no rename failures, and no
