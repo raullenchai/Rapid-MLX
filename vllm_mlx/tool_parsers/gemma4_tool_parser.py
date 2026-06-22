@@ -246,6 +246,14 @@ def _try_prose_recover_tool_call(text: str, tools: list[dict]) -> dict | None:
             props = params.get("properties")
             if isinstance(props, dict):
                 allowed_keys = {k for k in props if isinstance(k, str)}
+        # Union ``required`` into the allowed set so a schema whose
+        # ``required`` list contains keys not repeated in
+        # ``properties`` can still recover. (codex pr_validate
+        # round-3 NIT — strict schemas usually declare every key
+        # twice, but free-form schemas don't, and dropping required
+        # args mid-filter is the wrong direction.)
+        if allowed_keys is not None and required:
+            allowed_keys = allowed_keys | {r for r in required}
         for match in matches:
             candidates.append((match.start(), fn, name, required, allowed_keys))
 
@@ -263,6 +271,32 @@ def _try_prose_recover_tool_call(text: str, tools: list[dict]) -> dict | None:
     # rejecting ramble that mentions ``add`` once and later
     # mentions an unrelated ``a=…`` many sentences later.
     PROSE_WINDOW_BYTES = 300
+
+    # Call-intent gate — codex pr_validate round-3 BLOCKING:
+    # a benign answer like "I considered `add`. Anyway, x. Separately
+    # a=13 and b=29." could be turned into a tool call because the
+    # 3-sentence window walk reaches the ``a=13, b=29`` and the
+    # required-args check passes. Require an explicit call-intent
+    # verb phrase ("call", "use", "invoke", "apply", "execute", "run")
+    # within a small left-context window before the tool name so the
+    # model has actually *said* it is calling the tool, not just
+    # mentioned it.
+    CALL_INTENT_LEFT_CTX = 60
+    CALL_INTENT_RE = re.compile(
+        r"\b("
+        r"call(?:ing|ed)?|"
+        r"use(?:s|d|ing)?|"
+        r"using|"
+        r"invoke(?:s|d|ing)?|"
+        r"invoking|"
+        r"apply(?:ing)?|"
+        r"execute(?:s|d)?|"
+        r"executing|"
+        r"run(?:s|ning)?|"
+        r"trigger(?:s|ed|ing)?"
+        r")\b",
+        re.IGNORECASE,
+    )
 
     # Helper — scan ``window`` for declared key=value pairs, dropping
     # the tool name itself and any key not in ``allowed_keys`` (when
@@ -294,6 +328,19 @@ def _try_prose_recover_tool_call(text: str, tools: list[dict]) -> dict | None:
         return found
 
     for name_start, fn, name, required, allowed_keys in candidates:
+        # Call-intent gate: require a "call / use / invoke / apply
+        # / execute / run / trigger" verb in the CALL_INTENT_LEFT_CTX
+        # chars immediately before the name mention. (codex
+        # pr_validate round-3 BLOCKING.) Without this, a sentence
+        # like "I considered `add`." would qualify the mention as
+        # a candidate and the later args would falsely complete a
+        # call. The verb must sit just before the name — a verb in
+        # an earlier sentence ("I called the doctor. Then I
+        # mentioned `add`.") would be too far away.
+        left_ctx_start = max(0, name_start - CALL_INTENT_LEFT_CTX)
+        left_ctx = text[left_ctx_start:name_start]
+        if CALL_INTENT_RE.search(left_ctx) is None:
+            continue
         # Search a BOUNDED window after the name mention, capped at
         # PROSE_WINDOW_BYTES. Forward-only scanning preserves the
         # "call X with args" ordering AND avoids dragging in

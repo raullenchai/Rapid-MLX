@@ -278,3 +278,65 @@ def test_prose_case_sensitive_name_match():
     prose = "I should call ADD with a=13 and b=29."
     out = _try_prose_recover_tool_call(prose, [ADD_TOOL])
     assert out is None
+
+
+# ---------------------------------------------------------------------------
+# codex pr_validate round-3 regression
+# ---------------------------------------------------------------------------
+
+
+def test_prose_mention_without_call_intent_returns_none():
+    """Round-3 BLOCKING-2: a prose that MENTIONS a tool but does not
+    say it is *calling* the tool must not recover, even when args
+    appear in the same window.
+
+    Codex's example: "I considered `add`. Anyway, x. Separately
+    a=13 and b=29." — ``add`` is mentioned but the model never
+    committed to calling it. The args appear later but are unrelated.
+    """
+    prose = "I considered `add`. Anyway, x. Separately a=13 and b=29."
+    out = _try_prose_recover_tool_call(prose, [ADD_TOOL])
+    assert out is None
+
+
+def test_prose_call_intent_variants_accepted():
+    """The call-intent gate must accept synonyms of "call":
+    use / using / invoke / invoking / apply / execute / run /
+    trigger / calling / called."""
+    for intent in [
+        "I should call the `add` tool with a=13 and b=29.",
+        "I will use the `add` tool with a=13 and b=29.",
+        "Using `add` tool with a=13 and b=29.",
+        "Invoking `add` with a=13 and b=29.",
+        "Applying `add` with a=13 and b=29.",
+        "Execute `add` with a=13 and b=29.",
+        "Running `add` with a=13 and b=29.",
+        "Calling `add` with a=13 and b=29.",
+    ]:
+        out = _try_prose_recover_tool_call(intent, [ADD_TOOL])
+        assert out is not None, f"expected recovery for prose: {intent!r}"
+        assert json.loads(out["arguments"]) == {"a": 13, "b": 29}
+
+
+def test_prose_recovery_with_required_not_in_properties():
+    """Round-3 NIT: a schema whose ``required`` list contains keys
+    not repeated in ``properties`` (a free-form schema construct)
+    must still recover those required keys from prose. The
+    allowed-keys set is the UNION of properties + required."""
+    weird_tool = {
+        "type": "function",
+        "function": {
+            "name": "compute",
+            "parameters": {
+                "type": "object",
+                # ``x`` is required but not declared in properties.
+                "properties": {"y": {"type": "integer"}},
+                "required": ["x"],
+            },
+        },
+    }
+    prose = "Calling compute with x=7."
+    out = _try_prose_recover_tool_call(prose, [weird_tool])
+    assert out is not None
+    assert out["name"] == "compute"
+    assert json.loads(out["arguments"]) == {"x": 7}
