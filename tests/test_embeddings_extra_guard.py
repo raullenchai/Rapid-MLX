@@ -850,54 +850,48 @@ class TestEmbeddingModelAliasResolution:
             "and re-introduce the D-EMBED-ALIAS regression."
         )
 
-        # Body must be exactly two statements:
-        #   from .cli import _load_embedding_model_or_exit
-        #   _load_embedding_model_or_exit(args, load_embedding_model)
+        # Codex r6 NIT: pin only that the branch CONTAINS a call to
+        # ``_load_embedding_model_or_exit(args, load_embedding_model)``
+        # rather than the whole body shape — harmless instrumentation
+        # (logging, a guard clause, a feature-flag check) inside the
+        # branch shouldn't fail this test. The contract we care about
+        # is: the helper IS called from inside this branch, with the
+        # canonical ``(args, load_embedding_model)`` argument pair.
         body = target_if.body
-        assert len(body) == 2, (
-            "if args.embedding_model body must be exactly the lazy import "
-            "+ helper call; got "
-            f"{len(body)} statement(s). Either restore the two-line block "
-            "or update this assertion with the new wiring + matching parity "
-            "test for the unified CLI."
+        helper_calls = [
+            node
+            for node in ast.walk(ast.Module(body=body, type_ignores=[]))
+            if isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Name)
+            and node.func.id == "_load_embedding_model_or_exit"
+        ]
+        assert helper_calls, (
+            "if args.embedding_model branch must call "
+            "_load_embedding_model_or_exit so the alias-resolution + "
+            "ModelNotFoundError translation path stays single-sourced "
+            "with the unified `rapid-mlx serve` CLI. The call is gone — "
+            "the D-EMBED-ALIAS regression is back."
         )
-
-        stmt_import, stmt_call = body
-        assert (
-            isinstance(stmt_import, ast.ImportFrom)
-            and stmt_import.module == "cli"
-            and stmt_import.level == 1
-            and any(
-                alias.name == "_load_embedding_model_or_exit"
-                for alias in stmt_import.names
-            )
-        ), (
-            "First statement of `if args.embedding_model:` must be "
-            "`from .cli import _load_embedding_model_or_exit` so the "
-            "alias-resolution helper is sourced from the same module the "
-            "unified `rapid-mlx serve` CLI uses."
-        )
-
-        assert isinstance(stmt_call, ast.Expr) and isinstance(
-            stmt_call.value, ast.Call
-        ), "Second statement must be the helper CALL, not a re-binding."
-        call = stmt_call.value
-        assert (
-            isinstance(call.func, ast.Name)
-            and call.func.id == "_load_embedding_model_or_exit"
-        ), (
-            "Second statement must invoke `_load_embedding_model_or_exit` "
-            "(not a wrapper / not a renamed copy)."
-        )
-        assert len(call.args) == 2, (
-            "Helper invocation must pass exactly (args, load_embedding_model)."
-        )
-        first_arg, second_arg = call.args
-        assert isinstance(first_arg, ast.Name) and first_arg.id == "args"
-        assert (
-            isinstance(second_arg, ast.Name) and second_arg.id == "load_embedding_model"
-        ), (
-            "Second arg must be the module-level `load_embedding_model` "
-            "symbol from vllm_mlx/server.py — not a renamed import — so "
-            "the spy/patch path actually reaches the same loader."
+        # AT LEAST ONE of those calls must be the canonical
+        # ``(args, load_embedding_model)`` shape (defensive — if the
+        # branch grew an instrumentation wrapper that also called the
+        # helper with different args we'd still pass).
+        canonical = False
+        for call in helper_calls:
+            if len(call.args) != 2:
+                continue
+            a, b = call.args
+            if (
+                isinstance(a, ast.Name)
+                and a.id == "args"
+                and isinstance(b, ast.Name)
+                and b.id == "load_embedding_model"
+            ):
+                canonical = True
+                break
+        assert canonical, (
+            "_load_embedding_model_or_exit must be called with "
+            "(args, load_embedding_model) — the second arg pins the "
+            "loader to the module-level `server.load_embedding_model` "
+            "symbol so a future renamed/inlined import can't divert it."
         )

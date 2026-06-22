@@ -841,11 +841,25 @@ def _validation_error_response(
         loc, last_field = _render_loc_for_envelope(exc, raw_loc, request)
         msg = err.get("msg", "validation error")
         # Model-level ``value_error`` (e.g. the NaN/inf scrubber that
-        # runs ``mode='before'``) lands with ``loc=()`` — the field
-        # name is only in the message string. Pull it back out IFF
-        # the leading token matches a schema-owned field, so we never
-        # surface attacker-controlled bytes.
-        if last_field is None and not loc and err.get("type") == "value_error":
+        # runs ``mode='before'``) lands with ``loc=()`` on the raw
+        # ``PydanticValidationError`` path OR ``loc=("body",)`` on the
+        # FastAPI-wrapped ``RequestValidationError`` path — both
+        # render to an empty path in the envelope. The field name is
+        # only in the message string. Pull it back out IFF the leading
+        # token matches a schema-owned field, so we never surface
+        # attacker-controlled bytes.
+        #
+        # Codex r6 BLOCKING: trigger on the *raw_loc* shape directly
+        # so a future change to the renderer that no longer collapses
+        # ``("body",)`` to ``""`` doesn't silently break this path.
+        # The two raw shapes are: empty tuple (raw ValidationError) or
+        # the single ``("body",)`` tuple (FastAPI-wrapped).
+        is_body_only_raw_loc = raw_loc == () or raw_loc == ("body",)
+        if (
+            last_field is None
+            and is_body_only_raw_loc
+            and err.get("type") == "value_error"
+        ):
             root_cls = _resolve_root_model(exc, raw_loc, request)
             recovered = _extract_field_from_value_error_msg(msg, root_cls)
             if recovered is not None:
