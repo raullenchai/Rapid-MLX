@@ -2027,6 +2027,12 @@ async def _create_chat_completion_impl(
         # Per-request reasoning cap (upstream vLLM PR #20859 backport).
         # None → back-compat no-op.
         reasoning_max_tokens=getattr(request, "reasoning_max_tokens", None),
+        # r5-D — finalize-on-truncation shared plug needs to know if
+        # generation was cut short so it can re-classify an unclosed
+        # think buffer as ``reasoning_content`` instead of leaking it
+        # into ``content``. ``None`` keeps the pre-r5-D behaviour on
+        # any caller that hasn't been threaded yet.
+        finish_reason=getattr(output, "finish_reason", None),
     )
 
     # Process response_format if specified (after reasoning parser cleaned the text)

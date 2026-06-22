@@ -143,6 +143,20 @@ class MiniMaxReasoningParser(ReasoningParser):
                 reasoning = parts[0].replace("<think>", "").strip()
                 content = parts[1].strip() if len(parts) > 1 else None
                 return reasoning or None, content or None
+            # r5-D finalize-on-truncation: ``<think>`` opener but no
+            # closer — model was cut mid-thought by
+            # ``finish_reason="length"``. Pre-fix, the buffer fell
+            # through to the heuristic checks below which neither
+            # matched ``_DIRECT_CONTENT_RE`` (no code-fence/JSON
+            # opener) nor ``_REASONING_START_RE`` (the literal
+            # ``<think>`` is not in the bare-text alternation), so
+            # the parser returned ``(None, model_output)`` — leaking
+            # the scratchpad (with the ``<think>`` tag bytes) into
+            # ``content``. Strip the opener and route to reasoning.
+            if "<think>" in model_output:
+                _, _, after = model_output.partition("<think>")
+                reasoning = after.strip() or None
+                return reasoning, None
 
         # Check for direct content (no reasoning)
         if self._DIRECT_CONTENT_RE.match(model_output):
@@ -277,6 +291,30 @@ class MiniMaxReasoningParser(ReasoningParser):
         self._transition_pos = max(0, len(self._buffer) - 20)
         # Flush entire buffer as reasoning
         return DeltaMessage(reasoning=current_text)
+
+    def is_open_in_think(self, accumulated_text: str) -> bool:
+        """r5-D — minimax unclosed-``<think>`` detection.
+
+        MiniMax sometimes emits an explicit ``<think>…</think>`` block
+        (see the explicit-handling branch in ``extract_reasoning``).
+        When ``finish_reason="length"`` truncates before the closer
+        arrives, the non-streaming first-pass routes everything to
+        ``content`` because the heuristic ``_REASONING_START_RE``
+        does not match a literal ``<think>``-leading buffer and the
+        ``_DIRECT_CONTENT_RE`` does not list it either — leaking the
+        scratchpad bytes verbatim (including the tag bytes) into
+        ``content``.
+
+        Open-in-think signal: an explicit opener with no matching
+        closer. The MiniMax heuristic preamble shape (no tag, just
+        "The user asks…") is intentionally NOT routed here — the
+        parser's normal heuristic split owns that case and the route
+        cannot distinguish a chatty answer-opener from a thought
+        preamble without the explicit tag.
+        """
+        if not accumulated_text:
+            return False
+        return "<think>" in accumulated_text and "</think>" not in accumulated_text
 
     def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
         """

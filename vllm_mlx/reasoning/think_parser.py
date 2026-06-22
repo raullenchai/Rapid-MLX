@@ -72,6 +72,36 @@ class BaseThinkingReasoningParser(ReasoningParser):
         self._held_tag_suffix_len = 0
         self._streaming_phase = None
 
+    def is_open_in_think(self, accumulated_text: str) -> bool:
+        """Return True iff the accumulated text shows an opened but
+        not-yet-closed ``<think>``-style block (the truncation-mid-think
+        shape).
+
+        r5-D shared finalize-on-truncation contract: the route invokes
+        this on ``finish_reason="length"`` to decide whether the
+        unclosed buffer should be routed to ``reasoning_content``
+        (open-in-think) or kept as ``content`` (think already closed
+        OR never opened). The classic shape is
+        ``<think>…``-without-``</think>`` — either the model emitted
+        the start token autonomously (``<think>`` at the head) OR the
+        chat template pre-injected it and we are observing an implicit
+        unclosed thought.
+
+        Note: explicit-start callers — qwen3 / deepseek-r1 / glm4 /
+        vibethinker — share this implementation. Subclasses that only
+        need a different policy for the no-tag autonomous-think shape
+        (Qwen3 ``enable_thinking=True`` Case-4) can override and
+        consult their own out-of-band signal.
+        """
+        if not accumulated_text:
+            return False
+        if self.start_token in accumulated_text and (
+            self.end_token not in accumulated_text
+        ):
+            # Classic mid-think: opener arrived but closer never did.
+            return True
+        return False
+
     def extract_reasoning(
         self,
         model_output: str,

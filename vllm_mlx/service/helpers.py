@@ -163,6 +163,7 @@ def _finalize_content_and_reasoning(
     engine_reasoning_text: str = "",
     enable_thinking: bool | None = None,
     reasoning_max_tokens: int | None = None,
+    finish_reason: str | None = None,
 ) -> tuple[str, str | None]:
     """Compute final ``content`` + ``reasoning_text`` after tool parsing.
 
@@ -273,6 +274,47 @@ def _finalize_content_and_reasoning(
             return cleaned_text or "", _truncate_reasoning_only(
                 engine_reasoning_text, reasoning_max_tokens
             )
+        # r5-D autonomous-mode plug (F-DGF-V080-B-9, 2026-06-21):
+        # ``engine_reasoning_text`` populated + ``finish_reason="length"``
+        # + parser sees the buffer as ``is_open_in_think`` OR the parser
+        # decided the buffer is autonomous-think (no tag in
+        # ``cleaned_text`` but engine token-router classified the bytes
+        # as reasoning) → route ``cleaned_text`` to nothing; the engine
+        # reasoning is already in ``engine_reasoning_text``. Pre-fix
+        # the cleaned_text was passed through verbatim and the same
+        # bytes shipped as BOTH ``content`` and ``reasoning_content``
+        # (the B-9 leak repro for glm4 autonomous mode).
+        #
+        # Gate carefully so we don't blank legitimate post-think
+        # answers: when the engine routes reasoning AND ``cleaned_text``
+        # still carries reasoning-shaped bytes (parser indicates
+        # ``is_open_in_think`` OR engine reasoning literally appears
+        # as a prefix of cleaned_text), it's the autonomous-mode
+        # leak.
+        if (
+            finish_reason == "length"
+            and cleaned_text
+            and cleaned_text.strip()
+            and reasoning_parser is not None
+        ):
+            is_open_in_think_attr = getattr(
+                reasoning_parser, "is_open_in_think", None
+            )
+            parser_open = False
+            if callable(is_open_in_think_attr):
+                try:
+                    parser_open = bool(is_open_in_think_attr(cleaned_text))
+                except Exception:
+                    parser_open = False
+            engine_prefix_match = bool(
+                engine_reasoning_text
+                and isinstance(engine_reasoning_text, str)
+                and cleaned_text.strip() == engine_reasoning_text.strip()
+            )
+            if parser_open or engine_prefix_match:
+                return "", _truncate_reasoning_only(
+                    engine_reasoning_text, reasoning_max_tokens
+                )
         return _apply_reasoning_cap(
             cleaned_text,
             engine_reasoning_text,
@@ -402,6 +444,105 @@ def _finalize_content_and_reasoning(
         # route.)
         if new_cleaned is not None:
             cleaned_text = new_cleaned
+        # r5-D shared finalize-on-truncation plug (F-DGF-V080-B-7 /
+        # F-DGF-V080-B-9, 2026-06-21). When the model was cut by
+        # ``finish_reason="length"`` AND the parser's first pass
+        # routed the buffer as ``(None, buffer)`` (the leak shape)
+        # AND the parser's family-specific ``is_open_in_think`` says
+        # the buffer ended inside an unclosed reasoning span, route
+        # the buffer to ``reasoning_content`` via the shared
+        # ``finalize_truncation`` helper. This catches the
+        # parser-side gaps the per-parser plugs above (#575 /
+        # truncated-``<think>``) miss because their gates differ:
+        #
+        # * gemma4 (B-7): channel-token format. Pre-fix
+        #   ``extract_reasoning`` fell through to "no thinking tags
+        #   — all content" and the route's downstream rescue
+        #   duplicated the same bytes into both fields (the
+        #   132/128/512-char identical-dup repro). gemma4's own
+        #   ``extract_reasoning`` now routes correctly on the
+        #   parser-side (see ``gemma4_parser.py``); this branch is
+        #   the route-side safety net.
+        # * glm4 autonomous mode (B-9): glm4's chat template does
+        #   NOT pre-inject ``<think>``, so a model that decided not
+        #   to emit the tag and got truncated mid-thought leaves no
+        #   tag in ``cleaned_text``. The parser returns ``(None,
+        #   buffer)`` and ``first_parse_was_truncated_think``
+        #   (which requires ``<think>`` in text_to_parse) does NOT
+        #   fire. The engine's token-level ``OutputRouter`` may
+        #   have populated ``engine_reasoning_text`` from the
+        #   structural think tokens though — that's the
+        #   out-of-band signal we use here.
+        # * minimax (cross-sweep): same explicit-``<think>``-opener
+        #   gap as gemma4; the parser-side fix handles the common
+        #   case and this branch is the safety net.
+        #
+        # The plug is gated to fire ONLY on ``finish_reason ==
+        # "length"`` so happy-path ``finish_reason="stop"`` flows
+        # are byte-identical pre/post. The
+        # ``first_parse_was_truncated_think`` plug below still
+        # owns its explicit-``<think>``-in-cleaned-text case.
+        if (
+            finish_reason == "length"
+            and cleaned_text
+            and not first_parse_was_truncated_think
+        ):
+            is_open_in_think = getattr(
+                reasoning_parser, "is_open_in_think", None
+            )
+            open_in_think = False
+            if callable(is_open_in_think):
+                try:
+                    # Probe the FRESH cleaned_text. When the parser
+                    # returned ``(reasoning, None)`` (e.g. gemma4 mid-
+                    # thought, fixed parser-side), ``cleaned_text`` is
+                    # still the raw text including the unclosed
+                    # opener — exactly the buffer ``is_open_in_think``
+                    # is designed to inspect. When the parser returned
+                    # ``(None, raw)`` (glm4 autonomous mode), the
+                    # ``cleaned_text`` is also the raw buffer (the
+                    # ``new_cleaned`` assignment above doesn't
+                    # alter it).
+                    open_in_think = bool(is_open_in_think(cleaned_text))
+                except Exception:
+                    # Third-party parser threw on the probe — fall
+                    # back to "not open-in-think" so we don't
+                    # introduce a regression vs. the old leak shape
+                    # (which clients are at least used to seeing).
+                    open_in_think = False
+            # Out-of-band engine-router evidence: a populated
+            # ``engine_reasoning_text`` here is impossible because
+            # the engine-routed branch returned early at the top of
+            # the function — but we DEFENSIVELY honour the signal
+            # so future re-orderings of this function don't silently
+            # regress the glm4 autonomous-mode rescue.
+            if not open_in_think and engine_reasoning_text:
+                open_in_think = True
+            if open_in_think:
+                from ..reasoning import finalize_truncation
+
+                # When the parser already extracted reasoning (e.g.
+                # gemma4 mid-thought parser-side fix), it stripped the
+                # marker bytes and placed the clean buffer in
+                # ``reasoning_text``. Prefer that over rerouting the
+                # raw ``cleaned_text`` (which still has the marker
+                # bytes). Only when ``reasoning_text`` is empty do we
+                # fall back to rerouting the raw buffer through the
+                # helper.
+                if reasoning_text:
+                    cleaned_text = ""
+                else:
+                    routed_reasoning, routed_content = finalize_truncation(
+                        True, cleaned_text
+                    )
+                    cleaned_text = routed_content or ""
+                    reasoning_text = routed_reasoning or reasoning_text
+                # Drop overflow rather than re-leak into content —
+                # see ``_truncate_reasoning_only`` for the rationale
+                # mirroring the explicit truncated-think plug.
+                return cleaned_text, _truncate_reasoning_only(
+                    reasoning_text, reasoning_max_tokens
+                )
         # #575 leak-plug: when ``enable_thinking=True`` AND the
         # parser's FIRST parse routed the whole no-tag output to
         # reasoning (Case-4 fallback path), the original
@@ -704,6 +845,24 @@ def _rescue_silent_drop_from_reasoning(
     ):
         return final_content
     if finish_reason == "length" and reasoning_is_case4:
+        return final_content
+    # r5-D (F-DGF-V080-B-7, 2026-06-21): gemma4 channel-token analog
+    # of the truncated-``<think>`` gate above. When generation is cut
+    # mid-thought-channel (``<|channel>thought\n…``-without-
+    # ``<channel|>``), the reasoning trace is NOT the final answer —
+    # surfacing it as ``content`` per the #569 rescue would feed the
+    # desktop client the SAME bytes as ``reasoning_content`` (the
+    # 132/128/512-char identical-dup repro that this PR closes).
+    # Skip the rescue and let the client see ``content=null`` so it
+    # can detect "model ran out of budget mid-thought" via
+    # ``finish_reason="length"`` — symmetric with the
+    # truncated-``<think>`` and D-HARMONY-LEAK gates.
+    if (
+        finish_reason == "length"
+        and raw_text
+        and "<|channel>thought" in raw_text
+        and "<channel|>" not in raw_text[raw_text.rfind("<|channel>thought") :]
+    ):
         return final_content
     # D-HARMONY-LEAK (2026-06-21): harmony-channel analog of the
     # truncated-``<think>`` gate above. The gpt-oss family (and any

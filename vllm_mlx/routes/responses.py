@@ -802,6 +802,10 @@ async def _non_stream(
         # Forwarded from ``ResponsesRequest.reasoning_max_tokens`` via
         # the Responses → OpenAI adapter. None → no cap (back-compat).
         reasoning_max_tokens=getattr(openai_request, "reasoning_max_tokens", None),
+        # r5-D shared finalize-on-truncation plug — see chat.py for
+        # the rationale. Forwarded so the /v1/responses path picks up
+        # the same gemma4 / glm4 / minimax fixes.
+        finish_reason=getattr(output, "finish_reason", None),
     )
 
     final_content = None
