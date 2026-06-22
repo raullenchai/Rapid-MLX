@@ -44,6 +44,12 @@ if __name__ == "__main__":
     # floor that pre-dated thinking-block emission in v0.6.56.
     _MAX_TOKENS_SHORT = 256
     _MAX_TOKENS_LONG = 384
+    # Qwen3.5 35B can spend the whole 384-token cap in thinking on
+    # streaming count prompts, leaving Anthropic SDK's text_stream empty
+    # even though the transport and SSE event shape are healthy. Keep
+    # the streaming smoke focused on route/SDK compatibility by giving
+    # reasoning models enough headroom to reach visible text.
+    _MAX_TOKENS_STREAM = 768
 
     # === 1. Plain message ===
     print("=== Test 1: Plain message ===")
@@ -105,7 +111,7 @@ if __name__ == "__main__":
         chunks = []
         with client.messages.stream(
             model=MODEL_ID,
-            max_tokens=_MAX_TOKENS_LONG,
+            max_tokens=_MAX_TOKENS_STREAM,
             messages=[
                 {"role": "user", "content": "Count from 1 to 5, comma-separated."}
             ],
