@@ -437,15 +437,30 @@ def _recover_partial_tool_args(
         else:
             forward_bound = min(n, idx + 256)
         window = text[backward_bound:forward_bound]
-        # Accept ``"name": "<expected>"`` with optional whitespace.
-        # ``re.escape`` keeps the name literal even if it contains
-        # regex metacharacters.
         escaped = re.escape(expected)
-        pair_re = re.compile(
+        # Accept TWO wire shapes for the paired ``name`` literal:
+        #
+        # 1. ``"name": "<expected>"`` — the JSON-bodied wire shape
+        #    (hermes / qwen3 / qwen3coder / nemotron-with-JSON /
+        #    most parsers).
+        # 2. ``<｜tool▁call▁begin｜><expected><｜tool▁sep｜>`` — the
+        #    DeepSeek V3.1 wire shape, where the name is NOT
+        #    JSON-quoted; it sits between the V3.1 call-begin and
+        #    sep markers. Without this shape recovery rejects every
+        #    legitimate DeepSeek arg body (codex r5 BLOCKING #1).
+        #
+        # Both forms are searched; either match is sufficient.
+        json_pair_re = re.compile(
             r'"name"\s*:\s*"' + escaped + r'"',
             re.DOTALL,
         )
-        return pair_re.search(window) is not None
+        if json_pair_re.search(window):
+            return True
+        deepseek_pair_re = re.compile(
+            r"<｜tool▁call▁begin｜>\s*" + escaped + r"\s*<｜tool▁sep｜>",
+            re.DOTALL,
+        )
+        return deepseek_pair_re.search(window) is not None
 
     # Collect every parseable candidate, tagged with whether it sits
     # inside a wire span.

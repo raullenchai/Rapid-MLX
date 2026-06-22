@@ -1034,16 +1034,29 @@ def test_codex_r3_nit_recover_handles_pretty_print_whitespace():
 def test_codex_r2_blocking_deepseek_envelope_counts_as_wire_span():
     """DeepSeek's V3.1 envelope markers also qualify as wire spans —
     a prose mention before the envelope must not beat the real call
-    inside."""
+    inside.
+
+    codex r5 BLOCKING #2 — exercise production behaviour by passing
+    ``expected_name`` (the synth always supplies it via
+    ``_synthesize_forced_tool_call``). The V3.1 wire shape uses
+    ``<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>``, NOT JSON-quoted
+    ``"name":"NAME"``, so the recovery's name-pair gate has to
+    recognise the DeepSeek shape too.
+    """
     raw = (
         'Documentation note: "arguments" usually look like {"city": "X"}.\n'
         "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>get_weather"
         '<｜tool▁sep｜>{"arguments":{"city":"Tokyo","units":"c"}}'
         "<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
     )
-    got = _recover_partial_tool_args(raw)
-    assert got is not None
+    # End-to-end via the synth helper (matches production).
+    tc = _synthesize_forced_tool_call("get_weather", raw_text=raw)
     import json as _json
 
+    args = _json.loads(tc.function.arguments)
+    assert args == {"city": "Tokyo", "units": "c"}
+    # Also exercise the direct recovery API with the expected name.
+    got = _recover_partial_tool_args(raw, expected_name="get_weather")
+    assert got is not None
     parsed = _json.loads(got)
     assert parsed == {"city": "Tokyo", "units": "c"}
