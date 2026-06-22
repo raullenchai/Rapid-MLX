@@ -50,6 +50,11 @@ if __name__ == "__main__":
     # the streaming smoke focused on route/SDK compatibility by giving
     # reasoning models enough headroom to reach visible text.
     _MAX_TOKENS_STREAM = 768
+    # Qwen3.6 can spend the old 200-token tool cap entirely in thinking
+    # after deciding which tool/input to use. Keep this smoke focused on
+    # Anthropic SDK tool-call compatibility by allowing the model to finish
+    # the actual tool-call emission.
+    _MAX_TOKENS_TOOL = 768
 
     # === 1. Plain message ===
     print("=== Test 1: Plain message ===")
@@ -131,7 +136,7 @@ if __name__ == "__main__":
     try:
         r = client.messages.create(
             model=MODEL_ID,
-            max_tokens=200,
+            max_tokens=_MAX_TOKENS_TOOL,
             tools=[
                 {
                     "name": "get_weather",
