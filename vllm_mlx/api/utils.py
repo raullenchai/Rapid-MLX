@@ -1121,13 +1121,10 @@ def _content_to_text(content) -> str:
                 else item
             )
             if isinstance(data, dict) and data.get("type") in (
+                "text",
                 "input_text",
                 "output_text",
             ):
-                text = data.get("text", "")
-                parts.append(text if isinstance(text, str) else "")
-                continue
-            if isinstance(data, dict) and data.get("type") == "text":
                 text = data.get("text", "")
                 parts.append(text if isinstance(text, str) else "")
         return "\n".join(parts)

@@ -768,6 +768,8 @@ class MLLMScheduler:
                     max_stop_len = max(len(s) for s in stop_params)
                     keep = max(0, max_stop_len - 1)
                     request.stop_tail = request.stop_text[-keep:] if keep else ""
+                    request.output_text = request.stop_text
+                    output.output_text = request.output_text
                 prev_text_len = request.stop_text_len
                 if stop_params and new_text:
                     max_stop_len = max(len(s) for s in stop_params)
