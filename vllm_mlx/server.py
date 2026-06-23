@@ -228,6 +228,25 @@ _embedding_model_locked: str | None = None  # Set when --embedding-model is used
 _api_key: str | None = None
 _auth_warning_logged: bool = False
 
+
+def _resolve_api_key(argv_value: str | None) -> str | None:
+    """Resolve the effective API key with env-var fallback.
+
+    Argv-inline (``--api-key X``) wins for backwards-compat with
+    existing scripts; otherwise we fall back to the ``RAPID_MLX_API_KEY``
+    env var. The env-var form keeps the bearer key out of ``argv``
+    (visible to ``ps -ef`` for any local user) — this is the path
+    rapid-desktop's sidecar shim uses to avoid the codex BLOCKER #3
+    "bearer-in-shell-history" leak.
+
+    Exposed at module scope (not buried inside ``main()``) so the
+    env-fallback contract is directly unit-testable without booting
+    a model — a regression here is the bug the dogfood-v0.8.2 finding
+    #3 exposed, so a test-via-the-real-code path matters.
+    """
+    return argv_value or os.environ.get("RAPID_MLX_API_KEY")
+
+
 # Per-request body size cap (DoS defense). 0 disables. Resolved from
 # CLI ``--max-request-bytes`` / ``RAPID_MLX_MAX_REQUEST_BYTES`` and
 # pushed into ``ServerConfig.max_request_bytes`` via ``_sync_config``;
@@ -1850,8 +1869,10 @@ Examples:
     global _api_key, _default_timeout, _rate_limiter
     global _default_temperature, _default_top_p, _default_top_k
     # Env-fallback for the bearer key: keep it out of argv where
-    # ``ps -ef`` would leak it. Inline value wins for backwards-compat.
-    _api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
+    # ``ps -ef`` would leak it. ``_resolve_api_key`` is the single
+    # SSOT for the policy (inline-wins, env-fallback) — see its
+    # docstring for the dogfood-v0.8.2 finding #3 context.
+    _api_key = _resolve_api_key(args.api_key)
     _default_timeout = args.timeout
     if args.default_temperature is not None:
         _default_temperature = args.default_temperature

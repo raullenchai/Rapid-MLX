@@ -1100,8 +1100,11 @@ def serve_command(args):
     # Configure server security settings. ``RAPID_MLX_API_KEY`` env var
     # is the secret-friendly form ``rapid-mlx share`` uses to avoid
     # exposing the key in argv; inline ``--api-key`` overrides it for
-    # backwards-compat with existing scripts.
-    server._api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
+    # backwards-compat with existing scripts. ``_resolve_api_key`` is
+    # the single SSOT — both this entrypoint and the ``vllm_mlx.server``
+    # ``python -m`` entry call into it, so a future policy tweak (e.g.
+    # a deprecation warning when argv is used) lands in one place.
+    server._api_key = server._resolve_api_key(args.api_key)
     server._default_timeout = args.timeout
 
     # Per-request body-size cap. Resolution order:
@@ -1345,10 +1348,12 @@ def serve_command(args):
         features.append(f"tools: {args.tool_call_parser}{bias_info}")
     if args.reasoning_parser:
         features.append(f"reasoning: {args.reasoning_parser}")
-    # Banner mirrors the effective auth state: ``args.api_key`` covers
-    # the inline-CLI case, the env-var covers the rapid-desktop sidecar
-    # path that avoids putting the bearer on argv (visible to ``ps``).
-    if args.api_key or os.environ.get("RAPID_MLX_API_KEY"):
+    # Banner mirrors the effective auth state via the same SSOT the
+    # server reads from. Pre-fix this line said ``if args.api_key`` —
+    # a sidecar that set env-only saw ``auth: off`` printed even though
+    # ``verify_api_key`` was enforcing. ``_resolve_api_key`` keeps the
+    # banner and the actual enforcement aligned.
+    if server._resolve_api_key(args.api_key):
         features.append("auth: on")
     if args.rate_limit > 0:
         features.append(f"rate-limit: {args.rate_limit}/min")
