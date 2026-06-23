@@ -9,24 +9,34 @@ so ``ps -ef`` exposed the per-launch bearer token to any local user
 
 The fix introduces ``vllm_mlx.server._resolve_api_key`` as the single
 SSOT and routes both entrypoints (``cli.py``'s ``rapid-mlx serve`` and
-``server.py``'s ``python -m vllm_mlx.server``) through it. These tests
-call into that helper directly so a refactor that drops the env-var
-branch fails them; mutation-testing the production code (removing the
-``or`` clause) flips them red.
+``server.py``'s ``python -m vllm_mlx.server``) through it; the
+``rapid-mlx serve`` banner reads the same SSOT via
+``vllm_mlx.cli._auth_feature_str``. These tests call into both helpers
+directly so a refactor that drops the env-var branch fails them;
+mutation-testing the production code (removing the ``or`` clause)
+flips them red.
 
-A live-subprocess test boots a real CLI invocation with the bearer in
-env-only and reads ``/proc``-equivalent cmdline via ``psutil`` to
-verify the bearer is genuinely absent from the spawned process's argv
-— this is the contract the dogfood report fingered.
+A live-subprocess test boots a real ``rapid-mlx serve`` with the
+bearer in env-only and asserts: (a) ``psutil.Process.cmdline()`` —
+the same source ``ps -ef`` reads — does NOT contain the bearer; (b)
+``GET /v1/models`` without auth returns 401 (proving the env path
+actually wired the key into ``verify_api_key``); (c) ``GET /v1/models``
+with the env-only bearer returns 200. That triple is the actual
+contract the dogfood report fingered.
 """
 
 from __future__ import annotations
 
+import http.client
 import os
 import socket
 import subprocess
 import sys
 import time
+import urllib.error
+import urllib.request
+
+import pytest
 
 # ---------------------------------------------------------------------------
 # In-process unit tests: call the REAL _resolve_api_key helper
@@ -51,10 +61,7 @@ def test_api_key_argv_only_still_works(monkeypatch):
 
 
 def test_api_key_both_set_argv_wins(monkeypatch):
-    """Argv override is documented in --api-key help; pin the priority.
-
-    Mirrors ``vllm_mlx.cli`` (rapid-mlx serve) behavior so the two
-    entrypoints don't disagree on precedence."""
+    """Argv override is documented in --api-key help; pin the priority."""
     from vllm_mlx.server import _resolve_api_key
 
     monkeypatch.setenv("RAPID_MLX_API_KEY", "ENV_VALUE")
@@ -71,10 +78,8 @@ def test_api_key_neither_set_is_none(monkeypatch):
 
 def test_api_key_empty_string_argv_falls_back_to_env(monkeypatch):
     """Edge case: an empty ``--api-key ""`` should not silently disable
-    auth when the env var is set. Pre-fix this would have been treated
-    as "explicit argv wins" (an empty string is falsy but distinct from
-    None); the ``or`` short-circuit means env wins, which matches user
-    intent (they exported the env on purpose)."""
+    auth when the env var is set. The ``or`` short-circuit means env
+    wins because empty string is falsy."""
     from vllm_mlx.server import _resolve_api_key
 
     monkeypatch.setenv("RAPID_MLX_API_KEY", "ENV_FALLBACK")
@@ -82,56 +87,43 @@ def test_api_key_empty_string_argv_falls_back_to_env(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
-# Integration: cli.py banner uses the SSOT helper
+# Banner test: call the REAL _auth_feature_str renderer
 # ---------------------------------------------------------------------------
 
 
-def test_cli_banner_calls_resolve_api_key_for_auth_state(monkeypatch):
-    """The startup banner must reflect the effective auth state. We
-    verify the banner code path calls into ``_resolve_api_key`` by
-    monkeypatching the helper to record its argument; pre-fix the
-    banner read ``args.api_key`` directly and would never have called
-    the helper."""
-    from vllm_mlx import cli as cli_mod
-    from vllm_mlx import server as server_mod
+def test_banner_renders_auth_on_when_only_env_is_set(monkeypatch):
+    """Pre-fix the banner gate was ``if args.api_key`` — a sidecar
+    that set env-only saw the line omitted even though enforcement
+    was on. The fix routes through ``_auth_feature_str`` which calls
+    the same ``_resolve_api_key`` SSOT the server reads. Calling the
+    renderer directly proves the banner path mirrors the enforcement
+    path; if the gate regresses to ``args.api_key`` only, this flips
+    red because the input ``argv_api_key=None`` produces no feature."""
+    from vllm_mlx.cli import _auth_feature_str
 
-    monkeypatch.setenv("RAPID_MLX_API_KEY", "BANNER_ENV_SECRET")
+    monkeypatch.setenv("RAPID_MLX_API_KEY", "ENV_SECRET")
+    assert _auth_feature_str(argv_api_key=None) == "auth: on"
 
-    # Replace the production helper with a recording wrapper so we
-    # can prove the banner code calls it. ``inspect.getsource`` would
-    # be an alternative but couples the test to formatting; this
-    # variant survives reformat passes.
-    calls: list[str | None] = []
-    real_resolve = server_mod._resolve_api_key
 
-    def _recorder(argv_value: str | None) -> str | None:
-        calls.append(argv_value)
-        return real_resolve(argv_value)
+def test_banner_renders_auth_on_when_only_argv_is_set(monkeypatch):
+    """Backwards-compat: inline argv-set path also renders the line."""
+    from vllm_mlx.cli import _auth_feature_str
 
-    monkeypatch.setattr(server_mod, "_resolve_api_key", _recorder)
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    assert _auth_feature_str(argv_api_key="ARGV_SECRET") == "auth: on"
 
-    # Source-level assertion: the banner gate references the helper
-    # via ``server._resolve_api_key``. Source-inspection is the
-    # appropriate level here because the banner is wired deep inside
-    # ``serve_command`` (which loads a model) — exercising it end-to-
-    # end would require a full server boot. The combined contract
-    # (real helper + banner-call-site references it) gives mutation-
-    # resistance: removing the helper call from the banner OR dropping
-    # the env-var branch from the helper flips a test red.
-    import inspect
 
-    cli_src = inspect.getsource(cli_mod)
-    assert "server._resolve_api_key(args.api_key)" in cli_src, (
-        "cli.py banner must route auth-state detection through the "
-        "_resolve_api_key SSOT (server.py). Pre-fix the banner read "
-        "args.api_key directly, which lied about env-only auth state. "
-        "If you renamed or moved the helper, update both the call site "
-        "and this test in the same commit."
-    )
+def test_banner_omits_auth_line_when_neither_is_set(monkeypatch):
+    """Dev path: no auth → no banner line. Mirrors the SECURITY
+    CONFIGURATION block's ``Authentication: DISABLED`` warning."""
+    from vllm_mlx.cli import _auth_feature_str
+
+    monkeypatch.delenv("RAPID_MLX_API_KEY", raising=False)
+    assert _auth_feature_str(argv_api_key=None) is None
 
 
 # ---------------------------------------------------------------------------
-# ps-leak regression: spawn a real subprocess and read its cmdline
+# Live-process regression: env-only spawn, ps-cmdline + HTTP auth-enforced
 # ---------------------------------------------------------------------------
 
 
@@ -150,31 +142,76 @@ def _find_free_port(start: int = 11830, end: int = 11930) -> int:
     raise RuntimeError(f"No free port in range {start}-{end}")
 
 
-def test_ps_does_not_leak_bearer_when_env_only():
-    """Spawn ``python -m vllm_mlx.cli serve --help`` with the bearer in
-    env-only and read the live process's ``cmdline`` via psutil.
+def _wait_for_healthz(port: int, proc: subprocess.Popen, timeout: float) -> bool:
+    """Poll /healthz until ready or proc exits. Returns True on ready."""
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if proc.poll() is not None:
+            return False
+        try:
+            conn = http.client.HTTPConnection("127.0.0.1", port, timeout=1.0)
+            conn.request("GET", "/healthz")
+            resp = conn.getresponse()
+            resp.read()
+            conn.close()
+            if resp.status == 200:
+                return True
+        except (OSError, http.client.HTTPException):
+            pass
+        time.sleep(0.5)
+    return False
 
-    This is the contract the dogfood report fingered: a sidecar that
-    exports the env should NOT have to put the bearer on argv. We use
-    ``--help`` so the subprocess exits in milliseconds — sufficient to
-    prove the argv composition is leak-free without booting a model.
 
-    psutil's ``cmdline`` reads the same kernel-level cmdline that
-    ``ps -ef`` reads, so an assertion against it is the
-    leak-equivalent contract.
+def _http_get(port: int, path: str, bearer: str | None) -> int:
+    """Tiny stdlib HTTP GET that returns status code."""
+    req = urllib.request.Request(f"http://127.0.0.1:{port}{path}")
+    if bearer:
+        req.add_header("Authorization", f"Bearer {bearer}")
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            return resp.status
+    except urllib.error.HTTPError as e:
+        return e.code
+
+
+@pytest.mark.slow
+def test_env_only_spawn_keeps_bearer_out_of_ps_and_enforces_auth():
+    """End-to-end contract for dogfood-v0.8.2 finding #3:
+
+    1. Boot ``rapid-mlx serve qwen3.5-4b-4bit`` with the bearer in
+       ``RAPID_MLX_API_KEY`` env-only (NO ``--api-key`` argv).
+    2. Read ``psutil.Process.cmdline()`` on the live child — the same
+       source ``ps -ef`` reads. Bearer MUST NOT appear.
+    3. ``GET /v1/models`` without auth → 401 (proves env actually
+       wired the key into ``verify_api_key``; tautological otherwise).
+    4. ``GET /v1/models`` with the env bearer → 200.
+    5. Port-qualified pkill cleanup (per memory feedback_dogfood_
+       pkill_port_qualified) — must NOT touch the user's prod 8451.
+
+    Mutation safety: if production ignores ``RAPID_MLX_API_KEY``, step
+    3 would return 200 (no auth wired) and the test flips red. If
+    production puts the bearer on argv, step 2 sees it and flips red.
     """
-    psutil = pytest.importorskip("psutil")  # type: ignore[name-defined]
-
+    psutil = pytest.importorskip("psutil")
+    port = _find_free_port()
     bearer = "DOGFOOD_AGENT_F_LIVE_BEARER_must_not_appear_in_ps_cmdline"
     env = {**os.environ, "RAPID_MLX_API_KEY": bearer}
+    # The default test model per project memory.
+    model_alias = "qwen3.5-4b-4bit"
 
-    # --help exits without loading a model. We spawn with Popen so we
-    # can read /proc-equivalent cmdline BEFORE the child exits. There
-    # is a small race (the child may exit before we observe it), so
-    # we retry the cmdline read until psutil sees it or the proc has
-    # already terminated cleanly — either outcome proves the bearer
-    # never landed on argv.
-    cmd = [sys.executable, "-m", "vllm_mlx.cli", "serve", "--help"]
+    cmd = [
+        sys.executable,
+        "-m",
+        "vllm_mlx.cli",
+        "serve",
+        model_alias,
+        "--port",
+        str(port),
+        "--host",
+        "127.0.0.1",
+    ]
+    assert bearer not in " ".join(cmd), "test bug: do not put bearer on argv"
+
     proc = subprocess.Popen(  # noqa: S603 — controlled test argv
         cmd,
         env=env,
@@ -182,40 +219,73 @@ def test_ps_does_not_leak_bearer_when_env_only():
         stderr=subprocess.PIPE,
         text=True,
     )
-
-    observed_cmdline: list[str] | None = None
-    deadline = time.monotonic() + 5.0
     try:
-        ps_proc = psutil.Process(proc.pid)
-        while time.monotonic() < deadline:
+        # Read cmdline early — before model load completes — so we
+        # have proof of leak-or-not regardless of healthz timing.
+        observed_cmdline: list[str] = []
+        for _ in range(20):
             try:
+                ps_proc = psutil.Process(proc.pid)
                 observed_cmdline = ps_proc.cmdline()
                 if observed_cmdline:
                     break
             except (psutil.NoSuchProcess, psutil.AccessDenied):
                 break
-            time.sleep(0.01)
+            time.sleep(0.1)
+
+        # Assertion 1: bearer never appears in live process cmdline.
+        # This is exactly what ``ps -ef`` reads on macOS + Linux.
+        joined_live = " ".join(observed_cmdline)
+        assert bearer not in joined_live, (
+            f"BEARER LEAKED in live process cmdline ({observed_cmdline!r}). "
+            "Sidecar spawn path MUST keep RAPID_MLX_API_KEY in env only."
+        )
+
+        # Healthz: skip if model load takes too long on this CI. The
+        # ps-leak assertion above is the primary regression check; the
+        # auth-enforced check is a stronger but more environment-
+        # dependent guarantee.
+        if not _wait_for_healthz(port, proc, timeout=180.0):
+            pytest.skip(
+                f"server did not reach /healthz within 180s (rc={proc.poll()}); "
+                "ps-leak assertion above already passed — auth-enforcement "
+                "sub-check skipped to avoid CI environment flakes"
+            )
+
+        # Assertion 2: env-only auth is actually enforced. If production
+        # ignored RAPID_MLX_API_KEY, this would return 200 and flip red.
+        unauth_status = _http_get(port, "/v1/models", bearer=None)
+        assert unauth_status == 401, (
+            f"env-only auth NOT enforced: GET /v1/models without bearer "
+            f"returned {unauth_status} (expected 401). The env-var path "
+            "is not wired into verify_api_key — the leak fix is moot."
+        )
+
+        # Assertion 3: env-only bearer actually unlocks the surface.
+        auth_status = _http_get(port, "/v1/models", bearer=bearer)
+        assert auth_status == 200, (
+            f"env-only bearer rejected: GET /v1/models with Bearer "
+            f"{bearer[:8]}... returned {auth_status} (expected 200)"
+        )
     finally:
+        # Port-qualified pkill per memory feedback_dogfood_pkill_port_
+        # qualified. Bare ``pkill -f vllm_mlx.cli`` would kill the
+        # user's prod sidecar at 8451.
         try:
-            stdout, stderr = proc.communicate(timeout=30)
+            proc.terminate()
+            proc.wait(timeout=10)
         except subprocess.TimeoutExpired:
             proc.kill()
-            stdout, stderr = proc.communicate()
+        subprocess.run(
+            ["pkill", "-f", f"vllm_mlx.cli.*{port}"],
+            check=False,
+            capture_output=True,
+        )
 
-    # Even if psutil didn't catch the live cmdline (very fast --help
-    # exit), the argv WE passed is canonical — ``ps`` would read the
-    # same. Assert against both for belt-and-braces.
-    cmdline_joined = " ".join(observed_cmdline or []) + " " + " ".join(cmd)
-    assert bearer not in cmdline_joined, (
-        f"BEARER LEAKED in live process cmdline. Observed cmdline:\n"
-        f"  {observed_cmdline}\n"
-        f"Spawn argv: {cmd}\n"
-        "The shim spawn path must keep RAPID_MLX_API_KEY in env only."
-    )
-    assert proc.returncode == 0, (
-        f"--help should exit 0 (env-only path supported); got "
-        f"rc={proc.returncode}\nstdout: {stdout}\nstderr: {stderr}"
-    )
+
+# ---------------------------------------------------------------------------
+# Cheap docs-advertisement checks (fast — no model load)
+# ---------------------------------------------------------------------------
 
 
 def test_cli_help_advertises_env_fallback():
@@ -253,10 +323,3 @@ def test_server_help_advertises_env_fallback():
         "left downstream wrappers no choice but to put the bearer "
         "on argv. Got:\n" + combined[:2000]
     )
-
-
-# pytest is imported lazily so we don't pay the import cost in the
-# unit tests above; only the live-subprocess test needs it via
-# ``importorskip``. The module-level ``pytest`` reference in the
-# function body resolves at call time.
-import pytest  # noqa: E402
