@@ -497,14 +497,19 @@ def _serve_audio_mode(args, entry) -> None:
 
     # Stamp the resolved model id so the audio routes find the same
     # alias mapping the registry has. ``server._model_alias`` is read
-    # by ``/v1/models`` to surface the operator-facing alias name.
-    if hasattr(args, "_original_alias"):
+    # by ``/v1/models`` to surface the operator-facing alias name;
+    # ``server._model_name`` / ``server._model_path`` populate
+    # ``ServerConfig.model_name`` / ``model_path`` so /v1/models lists
+    # the served audio model (codex r1 HIGH #1 follow-up).
+    if hasattr(args, "_original_alias") and args._original_alias is not None:
         server._model_alias = args._original_alias
     else:
         # No prior alias hop (e.g. user passed a full HF id). Use the
         # short alias from the registry so /v1/models still shows the
         # friendly name, not the bare HF path.
         server._model_alias = entry.alias
+    server._model_name = entry.hf_id
+    server._model_path = entry.hf_id
 
     # Mirror the text path's security configuration. Audio routes use
     # the SAME middleware stack as chat/embeddings — the same env vars
@@ -532,6 +537,17 @@ def _serve_audio_mode(args, entry) -> None:
     server.configure_cors_from_env(args.cors_origins)
     if args.rate_limit > 0:
         server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
+
+    # CRITICAL: copy the just-set server globals into the
+    # ServerConfig singleton the middleware actually reads.
+    # ``server.load_model`` does this on the text path (calls
+    # ``_sync_config`` after wiring globals); the audio path skips
+    # ``load_model`` so we must call it explicitly here. Without this
+    # sync the auth middleware reads ``cfg.api_key`` (still ``None``
+    # because nothing populated it) instead of ``server._api_key``,
+    # so ``rapid-mlx serve kokoro --api-key SECRET`` would silently
+    # accept unauthenticated /v1/audio/* requests. Codex r1 HIGH #1.
+    server._sync_config()
 
     # Print the resolution banner so the operator sees what loaded.
     family_tag = f"[audio:{entry.type}]"

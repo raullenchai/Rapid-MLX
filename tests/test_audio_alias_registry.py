@@ -487,7 +487,94 @@ class TestBootGuardStillFires:
 
 
 # ---------------------------------------------------------------------------
-# F) rapid-mlx models advertises the audio surface
+# F) audio-serve-mode must sync server globals into ServerConfig
+# ---------------------------------------------------------------------------
+
+
+class TestAudioServeModeSyncsServerConfig:
+    """Codex r1 HIGH #1: ``_serve_audio_mode`` MUST call
+    ``server._sync_config()`` so the ``ServerConfig`` singleton that
+    the auth middleware reads from is populated with ``_api_key``,
+    ``_max_request_bytes``, ``_model_name``, etc. — exactly what
+    ``server.load_model`` does on the text path. Skipping this sync
+    means ``rapid-mlx serve kokoro --api-key SECRET`` would silently
+    accept unauthenticated /v1/audio/* requests because the
+    middleware reads ``cfg.api_key`` (still ``None``) instead of
+    ``server._api_key``.
+    """
+
+    def test_api_key_propagates_to_server_config(self):
+        """``--api-key`` must reach ``ServerConfig.api_key`` in audio mode."""
+        from vllm_mlx import cli, server
+        from vllm_mlx.config import get_config
+
+        # Clear any inherited state.
+        cfg = get_config()
+        cfg.api_key = None
+        server._api_key = None
+
+        with (
+            patch.object(cli, "_run_uvicorn"),
+            patch.object(cli, "_port_preflight_or_die"),
+        ):
+            args = _make_serve_args("kokoro")
+            args.api_key = "SECRET-r10c1"
+            cli.serve_command(args)
+
+        # The middleware reads from get_config(), not from server._api_key.
+        assert get_config().api_key == "SECRET-r10c1", (
+            "R10-C1 audio-serve-mode regression: ``--api-key`` did "
+            "NOT reach ``ServerConfig.api_key`` — the auth middleware "
+            "reads from the config singleton, so the audio endpoints "
+            "would be effectively unauthenticated. Codex r1 HIGH #1."
+        )
+
+    def test_model_name_propagates_to_server_config(self):
+        """``/v1/models`` reads ``cfg.model_name`` / ``cfg.model_alias``
+        — audio mode must populate both so the audio model shows up
+        in the listing."""
+        from vllm_mlx import cli, server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.model_name = None
+        cfg.model_alias = None
+        server._model_name = None
+        server._model_alias = None
+
+        with (
+            patch.object(cli, "_run_uvicorn"),
+            patch.object(cli, "_port_preflight_or_die"),
+        ):
+            args = _make_serve_args("kokoro")
+            cli.serve_command(args)
+
+        # model_name = resolved HF id, model_alias = friendly short name.
+        assert get_config().model_name == "mlx-community/Kokoro-82M-bf16"
+        assert get_config().model_alias == "kokoro"
+
+    def test_max_request_bytes_propagates_to_server_config(self):
+        """``--max-request-bytes`` must reach the config singleton."""
+        from vllm_mlx import cli, server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.max_request_bytes = 8 * 1024 * 1024  # default
+        server._max_request_bytes = 8 * 1024 * 1024
+
+        with (
+            patch.object(cli, "_run_uvicorn"),
+            patch.object(cli, "_port_preflight_or_die"),
+        ):
+            args = _make_serve_args("kokoro")
+            args.max_request_bytes = 16 * 1024 * 1024
+            cli.serve_command(args)
+
+        assert get_config().max_request_bytes == 16 * 1024 * 1024
+
+
+# ---------------------------------------------------------------------------
+# G) rapid-mlx models advertises the audio surface
 # ---------------------------------------------------------------------------
 
 
