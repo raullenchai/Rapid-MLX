@@ -220,13 +220,9 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
                 # ``--host ""`` shows up as ``0.0.0.0`` rather than a
                 # confusing bare quote.
                 display_host = probe_host or "0.0.0.0"
+                print(f"\n  Error: Port {port} is already in use on {display_host}.")
                 print(
-                    f"\n  Error: Port {port} is already in use "
-                    f"on {display_host}."
-                )
-                print(
-                    f"  Try a different port: rapid-mlx serve "
-                    f"{model} --port {port + 1}"
+                    f"  Try a different port: rapid-mlx serve {model} --port {port + 1}"
                 )
                 sys.exit(1)
 
@@ -4560,7 +4556,7 @@ Examples:
         default="127.0.0.1",
         help=(
             "Host to bind (default: 127.0.0.1, loopback-only). Pass "
-            "0.0.0.0 (or \"\") to expose the server on every "
+            '0.0.0.0 (or "") to expose the server on every '
             "interface (LAN reachable) — only do this once the "
             "bearer-auth posture has been reviewed. The wildcard "
             "bind also widens the PortSweep collision window: macOS "

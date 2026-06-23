@@ -166,16 +166,13 @@ def test_preflight_rejects_wildcard_when_loopback_already_bound(capsys):
         blocked_port = blocker.getsockname()[1]
 
         with pytest.raises(SystemExit) as exc:
-            cli._port_preflight_or_die(
-                "0.0.0.0", blocked_port, model="qwen3.5-4b-4bit"
-            )
+            cli._port_preflight_or_die("0.0.0.0", blocked_port, model="qwen3.5-4b-4bit")
 
     assert exc.value.code == 1
     err_out = capsys.readouterr().out
     assert "already in use" in err_out
     assert "127.0.0.1" in err_out, (
-        f"pre-flight error must name the colliding host 127.0.0.1, "
-        f"got: {err_out!r}"
+        f"pre-flight error must name the colliding host 127.0.0.1, got: {err_out!r}"
     )
 
 
