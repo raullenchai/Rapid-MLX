@@ -514,9 +514,31 @@ def is_audio_model_alias(model_name: str | None) -> bool:
     A non-string / empty value short-circuits to False so the boot
     guard never crashes the CLI on a missing ``args.model`` (the
     serve command rejects that case earlier with its own error).
+
+    R10-C1: registry-first. :mod:`vllm_mlx.audio.registry` is the
+    authoritative source of truth (every entry's HF id was verified
+    on hf.co at registry-introduction time). The legacy substring
+    match against :data:`_AUDIO_ALIAS_TOKENS` is preserved as a
+    fallback for HF ids of audio engines that haven't yet been added
+    to the registry (third-party Whisper / Parakeet ports, future
+    mlx-community uploads). Both checks are case-insensitive.
     """
     if not isinstance(model_name, str) or not model_name:
         return False
+    # Registry hit — authoritative, no substring guessing required.
+    # Late-import so a base install that never reaches the audio path
+    # doesn't pay the JSON read at module import time.
+    try:
+        from .registry import is_audio_name
+
+        if is_audio_name(model_name):
+            return True
+    except Exception:
+        # Registry load failed (malformed JSON, missing file in a
+        # partial install). Fall through to the substring fallback so
+        # a busted registry doesn't deafen the boot guard — the legacy
+        # surface still catches the common aliases.
+        pass
     lc = model_name.lower()
     return any(tok in lc for tok in _AUDIO_ALIAS_TOKENS)
 
