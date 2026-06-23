@@ -458,6 +458,64 @@ def _validate_seed(v) -> int | None:
     return v
 
 
+# R10-H5 (R9-H3 carry) — closed set of values accepted by OpenAI's
+# ``reasoning_effort`` parameter. Pre-fix BOTH ``/v1/chat/completions``
+# and ``/v1/responses`` silently accepted any value (string, int, list,
+# null, garbage like ``"banana"``) with HTTP 200 — the field was
+# undeclared on the request schema, so Pydantic dropped it before the
+# adapter or postprocessor saw it (sven r10-R1 + vlad r10-R1). That
+# means clients passing ``reasoning_effort="none"`` to suppress thinking
+# (IDE assistants on low-token budgets) got the silent no-op + 32-token
+# reasoning_tokens regression Sven called out as R10-CRIT3. Declaring
+# the field with this closed-set validator now means:
+#
+#   * valid value → flows through to the request body for downstream
+#     consumers (today still a no-op at the engine layer; future work
+#     translates it into ``reasoning_max_tokens`` headroom);
+#   * invalid value → clean 400 with the supported set listed.
+#
+# The set mirrors OpenAI's public docs (gpt-5/o-series spec): ``minimal``
+# was added Aug 2025 alongside ``low``/``medium``/``high``; ``none`` is
+# the rapid-mlx-specific "suppress thinking entirely" alias that the
+# desktop UI surfaces, kept here so SDK clients that learned it don't
+# 400. Anthropic Claude's ``thinking.type`` enum is intentionally NOT
+# included — that's a different surface (the Anthropic adapter handles
+# its own translation).
+_VALID_REASONING_EFFORTS: tuple[str, ...] = (
+    "none",
+    "minimal",
+    "low",
+    "medium",
+    "high",
+)
+
+
+def _validate_reasoning_effort(v):
+    """Pin ``reasoning_effort`` to the OpenAI-spec closed set.
+
+    Accepts ``None`` (the field's default — no preference signalled)
+    unchanged. Any other shape (int, list, dict, ``True``/``False``,
+    case-variant strings, garbage strings) raises ``ValueError`` so
+    Pydantic surfaces a 400. The route layer is free to translate the
+    accepted string into a ``reasoning_max_tokens`` cap or a system-
+    prompt hint — that translation lives outside the schema layer.
+
+    Codex-pattern note: bool is a subclass of int, so the ``isinstance(v,
+    bool)`` check has to run BEFORE the string check (no risk here
+    because the string check is first in the chain). The error message
+    enumerates the legal set so SDK consumers see exactly what to send.
+    """
+    if v is None:
+        return None
+    if isinstance(v, str) and v in _VALID_REASONING_EFFORTS:
+        return v
+    raise ValueError(
+        "reasoning_effort must be one of "
+        f"{list(_VALID_REASONING_EFFORTS)} or null "
+        f"(got {type(v).__name__}={v!r})."
+    )
+
+
 # Fields that must reject NaN / ±inf BEFORE pydantic coerces them onto a
 # typed ``float | None`` slot. Pydantic v2's default ``ValidationError``
 # embeds ``input_value`` in the error dict; when the bad value is
@@ -887,11 +945,103 @@ class ToolCall(BaseModel):
 _FUNCTION_NAME_PATTERN = re.compile(r"^[a-zA-Z0-9_-]{1,64}$")
 
 
+# R10-H6 (R9-H4 carry) — accepted ``type`` aliases for the Computer-Use
+# tool surface on the chat lane. Mirrors the Responses-lane alias map
+# (``vllm_mlx/api/responses_adapter.py``) so the SDK-shorthand
+# ``tools=[{"type":"computer_use"}]`` works on /v1/chat/completions
+# too — pre-fix only /v1/responses normalised the alias and chat
+# 400'd with ``tools.0.function: Field required`` (Mira r10-R1
+# R10-HIGH3, vlad r10-R1 R10-HIGH3). The canonical Computer-Use shape
+# is a synthetic ``function`` tool named ``computer`` so the UI-TARS
+# tool parser (which always emits ``function.name == "computer"``)
+# sees a matching entry; ``_synthesize_computer_use_function`` runs
+# the same translation the Responses adapter applies at
+# ``_convert_tools``.
+_COMPUTER_USE_TYPE_ALIASES: frozenset[str] = frozenset(
+    {
+        "computer_use",
+        "computer_use_preview",
+        "computer_20251022",
+    }
+)
+
+
+def _synthesize_computer_use_function(tool_data: dict) -> dict:
+    """Build the canonical ``function`` dict for a Computer-Use shorthand
+    tool entry. Mirror of the Responses-lane translation in
+    ``responses_adapter._convert_tools`` so downstream chat-route code
+    sees ONE shape regardless of which alias the client sent.
+
+    ``display_width`` / ``display_height`` / ``environment`` hints are
+    placed under ``_computer_use`` on the parameters dict — the chat
+    template / system-prompt builder picks them up to ground the model
+    on the actual screen geometry, matching the Responses lane.
+    """
+    geometry: dict = {
+        "type": "object",
+        "properties": {
+            "display_width": {"type": "integer"},
+            "display_height": {"type": "integer"},
+            "environment": {"type": "string"},
+        },
+        "_computer_use": {
+            "display_width": tool_data.get("display_width"),
+            "display_height": tool_data.get("display_height"),
+            "environment": tool_data.get("environment"),
+        },
+    }
+    return {
+        "name": "computer",
+        "description": "Computer-Use (UI-TARS) GUI action tool",
+        "parameters": geometry,
+    }
+
+
 class ToolDefinition(BaseModel):
     """Definition of a tool that can be called by the model."""
 
     type: str = "function"
-    function: dict
+    # R10-H6: ``function`` is optional at the wire level so the
+    # Computer-Use shorthand (``{"type":"computer_use_preview"}``)
+    # parses. The ``_normalize_computer_use_shorthand`` model_validator
+    # below synthesises the canonical function dict when ``type`` is
+    # a Computer-Use alias, so downstream code (``ToolDefinition.function``,
+    # parser, chat-route) reads exactly one shape. For the canonical
+    # ``type == "function"`` path, the function field is still required —
+    # the ``_validate_function_name`` validator below raises when it's
+    # missing/empty (preserving the F-035 contract).
+    function: dict | None = None
+
+    # R10-H6 (R9-H4 carry) — Computer-Use shorthand normalisation.
+    # Runs BEFORE ``_validate_function_name`` so the synthetic
+    # ``function`` dict the F-035 regex check sees is the canonical
+    # ``computer`` shape, not the missing-field shape the client sent.
+    # ``mode="before"`` would require returning a dict; the
+    # ``model_validator(mode="after")`` style would re-run after
+    # ``_validate_function_name`` 422'd. The cleanest split is a
+    # ``mode="before"`` raw-dict normaliser PLUS the canonical-path
+    # name validator below — see test_tool_definition_computer_use_shorthand
+    # in tests/test_chat_route_tool_choice_enforcement.py for the
+    # parity matrix.
+    @model_validator(mode="before")
+    @classmethod
+    def _normalize_computer_use_shorthand(cls, data):
+        if not isinstance(data, dict):
+            return data
+        ttype = data.get("type")
+        if (
+            isinstance(ttype, str)
+            and ttype in _COMPUTER_USE_TYPE_ALIASES
+            and not data.get("function")
+        ):
+            # Canonicalise the type so downstream readers (engine
+            # plumbing, postprocessor, finalize path) see exactly
+            # ``"function"`` — mirrors the Responses adapter's
+            # ``_canonicalize_tool_type`` + ``_convert_tools`` pair.
+            data = dict(data)
+            data["type"] = "function"
+            data["function"] = _synthesize_computer_use_function(data)
+        return data
 
     # F-035 / F-146: reject malformed ``function.name`` at the schema
     # layer. Pre-fix:
@@ -1368,6 +1518,18 @@ class ChatCompletionRequest(BaseModel):
     # think before answering. Distinct from ``max_tokens`` (which caps the
     # overall completion length). ``None`` = no cap, model decides.
     reasoning_max_tokens: int | None = None
+    # R10-H5 (R9-H3 carry) — OpenAI ``reasoning_effort`` knob. Declared
+    # so Pydantic stops silently dropping it (sven r10-R1 + vlad r10-R1
+    # both confirmed every value 200'd because the field was undeclared).
+    # Validated against ``_VALID_REASONING_EFFORTS`` via the
+    # ``_validate_reasoning_effort_field`` validator below so int / list
+    # / null / case-variant / garbage strings produce a clean 400.
+    # Today the value is accepted-but-not-yet-translated at the engine
+    # layer (a follow-up wires ``"none"`` through to ``enable_thinking
+    # =False`` and ``low/medium/high`` to ``reasoning_max_tokens``
+    # tiers); the schema-layer validation is the hard surface so SDK
+    # clients see the contract round-trip.
+    reasoning_effort: str | None = None
     # Number of completions (only n=1 supported). F-155: the route used
     # to reject ``n > 1`` only, so ``n=0`` / ``n=-1`` slipped through
     # and HTTP 200'd with a single choice — asymmetric with the
@@ -1543,6 +1705,18 @@ class ChatCompletionRequest(BaseModel):
     @classmethod
     def _validate_seed_field(cls, v) -> int | None:
         return _validate_seed(v)
+
+    # R10-H5 (R9-H3 carry) — closed-set gate on ``reasoning_effort``.
+    # ``mode="before"`` so non-string wire forms (int, list, dict,
+    # bool, null) are rejected with a clear envelope BEFORE Pydantic's
+    # union dispatch surfaces a generic "Input should be a valid
+    # string" error pointing at the wrong arm. Mirrored on the
+    # Responses surface (``ResponsesRequest._validate_reasoning_effort``)
+    # so /v1/chat/completions and /v1/responses share one contract.
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _validate_reasoning_effort_field(cls, v):
+        return _validate_reasoning_effort(v)
 
     # Belt-and-braces: catches non-finite values that bypass the
     # raw-dict path (e.g. ``ChatCompletionRequest(temperature=nan)``
@@ -1912,6 +2086,19 @@ class CompletionRequest(BaseModel):
     # Unbounded at the request layer (codex round-6); backend uint32
     # narrowing happens in ``make_seeded_sampler``.
     seed: int | None = None
+    # R10-H4 (R9-H2 carry) — ``response_format`` on legacy completions.
+    # Vlad r10-R1 + Bo r10-R1: ``/v1/completions`` with
+    # ``response_format={"type":"json_object"}`` silently accepted the
+    # field then ignored it (HTTP 200 with markdown ``` ```json `` fences
+    # in the ``text`` reply); PR #844's streaming-fence path only ran on
+    # ``/v1/chat/completions``. Declaring the field here means Pydantic
+    # stops dropping it AND the field_validator below catches malformed
+    # shapes via the same ``_validate_response_format_raw`` helper the
+    # chat lane uses, so /v1/completions and /v1/chat/completions share
+    # one schema contract. The route layer (``routes/completions.py``)
+    # consumes this field and runs the chat-style fence-strip /
+    # JSON-extraction on both the sync and streaming output paths.
+    response_format: ResponseFormat | dict | None = None
 
     # F-011: NaN/inf scrub + finite belt-and-braces, exactly mirroring
     # ChatCompletionRequest. See the rationale block at the top of
@@ -1920,6 +2107,12 @@ class CompletionRequest(BaseModel):
     @classmethod
     def _scrub_nonfinite_sampling(cls, data):
         return _scrub_nonfinite_sampling_raw(data)
+
+    # R10-H4: response_format validation shares one helper with chat.
+    @field_validator("response_format", mode="before")
+    @classmethod
+    def _validate_response_format(cls, v):
+        return _validate_response_format_raw(v)
 
     @field_validator(
         "temperature",

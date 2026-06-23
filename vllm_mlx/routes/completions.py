@@ -19,6 +19,7 @@ from ..api.models import (
     PromptTokensDetails,
     Usage,
 )
+from ..api.utils import extract_json_from_response
 from ..config import get_config
 from ..middleware.auth import check_rate_limit, verify_api_key
 from ..service.helpers import (
@@ -387,6 +388,28 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
             if request.echo:
                 final_text = prompt + final_text
 
+            # R10-H4 (R9-H2 carry) — chat-lane parity for
+            # ``response_format=json_object`` / ``json_schema`` on the
+            # sync ``/v1/completions`` path. Pre-fix the field was
+            # silently dropped (PR #844 wired the streaming fence-strip
+            # only on /v1/chat/completions); vlad r10-R1 + bo r10-R1
+            # confirmed the leak with markdown ``` ```json `` fences in
+            # the ``text`` reply. The chat lane peels the wrapper via
+            # ``extract_json_from_response`` at finalize time; mirror
+            # that here BEFORE the legacy-logprobs alignment block so
+            # the ``text_offset`` cursor lines up against the wire-
+            # canonical (post-fence-strip) ``text`` field. Echo
+            # responses are passed through unchanged because the prompt
+            # prefix is NOT JSON.
+            if request.response_format and final_text and not request.echo:
+                rf_type = (
+                    getattr(request.response_format, "type", None)
+                    if not isinstance(request.response_format, dict)
+                    else request.response_format.get("type")
+                )
+                if rf_type in ("json_object", "json_schema"):
+                    final_text = extract_json_from_response(final_text)
+
             # Build the legacy logprobs payload per OpenAI spec: four
             # parallel arrays keyed positionally per generated token.
             # ``echo + logprobs`` is rejected upstream (see route
@@ -559,6 +582,32 @@ async def stream_completion(
     # down at the chunk-build site.
     _final_usage = None
 
+    # R10-H4 (R9-H2 carry) — chat-lane parity for json-mode streaming.
+    # Pre-fix the streaming path emitted raw tokens that decoded as
+    # ``Just the JSON.\nAnswer:\n{"answer":42}\n\n```json\n{"answer":42}\n``` ``
+    # joined on the wire (vlad r10-R1 + bo r10-R1). The chat lane runs
+    # a full state-machine fence-strip in ``StreamingPostProcessor``;
+    # the legacy completions surface uses a simpler model — buffer the
+    # text chunks AND run ``extract_json_from_response`` at finalize,
+    # emitting one consolidated content delta + the finish marker.
+    # Trade-off: clients lose per-token streaming granularity in
+    # json-mode (acceptable; structured-output clients don't pipeline
+    # partial JSON anyway), but they ALSO never see the markdown
+    # wrapper that the non-stream path strips. Echo / logprobs flows
+    # bypass this scrub: echo prepends the raw prompt (not JSON), and
+    # legacy logprobs needs per-chunk text alignment with the tokens
+    # array — both are incompatible with the post-hoc fence-strip.
+    _json_mode = False
+    if request.response_format and not request.echo and not want_logprobs:
+        rf_type = (
+            getattr(request.response_format, "type", None)
+            if not isinstance(request.response_format, dict)
+            else request.response_format.get("type")
+        )
+        _json_mode = rf_type in ("json_object", "json_schema")
+    _buffered_text = ""
+    _buffered_finish_reason: str | None = None
+
     async for output in engine.stream_generate(
         prompt=prompt,
         max_tokens=_resolve_max_tokens(request.max_tokens),
@@ -567,6 +616,13 @@ async def stream_completion(
         stop=request.stop,
         **extended_kwargs,
     ):
+        if _json_mode:
+            # Buffer the text and finish_reason; emit at stream end.
+            _buffered_text += output.new_text or ""
+            if output.finished:
+                _final_usage = get_usage(output)
+                _buffered_finish_reason = output.finish_reason
+            continue
         choice = {
             "index": 0,
             "text": output.new_text,
@@ -629,6 +685,33 @@ async def stream_completion(
         if output.finished:
             _final_usage = get_usage(output)
         yield f"data: {json.dumps(data)}\n\n"
+
+    # R10-H4: json-mode buffered emit. Run ``extract_json_from_response``
+    # on the assembled text (mirrors the non-stream sync path), then
+    # ship a single consolidated text delta followed by a finish
+    # marker. The chat lane's streaming state-machine variant is
+    # overkill here — legacy completions has no reasoning/tool channel
+    # and clients consuming json-mode don't expect partial-JSON
+    # streaming anyway.
+    if _json_mode:
+        cleaned = extract_json_from_response(_buffered_text) if _buffered_text else ""
+        # Emit content + finish in a single chunk for symmetry with
+        # the non-stream sync path; if the buffer is empty (model
+        # produced no output), still emit a finish-only chunk so the
+        # client sees the terminal marker.
+        final_choice = {
+            "index": 0,
+            "text": cleaned,
+            "finish_reason": _buffered_finish_reason or "stop",
+        }
+        final_data = {
+            "id": completion_id,
+            "object": "text_completion",
+            "created": created_ts,
+            "model": model_name,
+            "choices": [final_choice],
+        }
+        yield f"data: {json.dumps(final_data)}\n\n"
 
     # Dedicated trailing usage chunk (OpenAI spec — empty ``choices``,
     # populated ``usage``). Only emitted when the caller opted in via

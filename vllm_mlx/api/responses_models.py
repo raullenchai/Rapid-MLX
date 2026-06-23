@@ -20,9 +20,11 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import (
     _TOP_K_SENTINEL_CAP,
+    _VALID_REASONING_EFFORTS,
     StreamOptions,
     _validate_nonnegative_int,
     _validate_positive_int,
+    _validate_reasoning_effort,
     _validate_seed,
 )
 
@@ -173,11 +175,57 @@ class ResponsesRequest(BaseModel):
     # three OpenAI-surface lanes (chat / responses / legacy completions)
     # under one contract — no copy-pasted thresholds to drift.
     top_k: int | None = None
+    # R10-H5 (R9-H3 carry) — OpenAI Responses spec exposes
+    # ``reasoning.effort`` (nested under the ``reasoning`` dict). Some
+    # SDK clients also send the chat-completions-shape top-level
+    # ``reasoning_effort`` field; declare it here so Pydantic stops
+    # silently dropping it. Both surfaces are validated by the
+    # ``_validate_reasoning_effort_*`` validators below — the top-level
+    # field via field_validator (closed-set string), and the nested
+    # ``reasoning.effort`` via a model_validator (mode="before") that
+    # runs the same check on the dict member. Sven r10-R1 + vlad
+    # r10-R1: every value (int / list / null / case-variant / garbage
+    # string) 200'd on this surface pre-fix.
+    reasoning_effort: str | None = None
 
     @field_validator("seed", mode="before")
     @classmethod
     def _validate_seed_field(cls, v) -> int | None:
         return _validate_seed(v)
+
+    # R10-H5 (R9-H3 carry) — mirror of
+    # ``ChatCompletionRequest._validate_reasoning_effort_field``. Closed
+    # set; nulls flow through.
+    @field_validator("reasoning_effort", mode="before")
+    @classmethod
+    def _validate_reasoning_effort_field(cls, v):
+        return _validate_reasoning_effort(v)
+
+    # R10-H5 (R9-H3 carry) — canonical Responses-spec surface validates
+    # ``reasoning.effort`` (nested). Runs in ``mode="before"`` so the
+    # raw payload is gated BEFORE the ``reasoning`` dict is coerced
+    # onto the schema. Closed-set ``_VALID_REASONING_EFFORTS`` matches
+    # the top-level shorthand so both wire forms accept the same set.
+    @model_validator(mode="before")
+    @classmethod
+    def _validate_reasoning_dict_effort(cls, data):
+        if not isinstance(data, dict):
+            return data
+        reasoning = data.get("reasoning")
+        if not isinstance(reasoning, dict):
+            return data
+        if "effort" not in reasoning:
+            return data
+        effort = reasoning["effort"]
+        if effort is None:
+            return data
+        if isinstance(effort, str) and effort in _VALID_REASONING_EFFORTS:
+            return data
+        raise ValueError(
+            "reasoning.effort must be one of "
+            f"{list(_VALID_REASONING_EFFORTS)} or null "
+            f"(got {type(effort).__name__}={effort!r})."
+        )
 
     @field_validator("top_k", mode="before")
     @classmethod

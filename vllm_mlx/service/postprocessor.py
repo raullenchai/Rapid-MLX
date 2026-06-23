@@ -12,6 +12,7 @@ import copy
 import json
 import logging
 import os
+import re
 import uuid
 from typing import TYPE_CHECKING
 from unittest.mock import Mock
@@ -297,6 +298,23 @@ class StreamingPostProcessor:
         self.accumulated_reasoning = ""
         self.tool_calls_detected = False
         self.tool_markup_possible = False
+        # R10-C8 (Mira r10-R1): tool-prose-prefix hold-back. When the
+        # request declares ``tools`` and the model emits a UI-TARS-style
+        # natural-language preamble like ``"Tool: get_weather\n
+        # Parameters: location=Paris\n"`` BEFORE the structured
+        # ``delta.tool_calls`` chunk, those prose tokens used to leak
+        # into ``delta.content`` and clients rendering content live saw
+        # garbage prefixing the tool dispatch. Buffer content events
+        # that match the ``^(Tool|Action|Function):`` prefix pattern;
+        # release the buffer either when a tool_call arrives (discard,
+        # because the model just confirmed it was tool-prose) OR when
+        # the buffer grows past ``_TOOL_PROSE_MAX_HOLD`` bytes (release
+        # as legitimate prose so a model legitimately discussing the
+        # word "Tool:" isn't censored). ``_tool_prose_buffer`` is the
+        # staging area; ``_tool_prose_active`` is the state latch.
+        # Both fields are no-ops when ``tools_requested`` is False.
+        self._tool_prose_buffer: str = ""
+        self._tool_prose_active: bool = False
         # Monotonic counter for structured tool-call indices across the
         # whole response. Each TOOL_CALL channel ``GenerationOutput`` may
         # carry a single structured call; if multiple chunks fire
@@ -333,6 +351,35 @@ class StreamingPostProcessor:
         # cleared on ``reset()``.
         self._no_index_admitted_id: str | None = None
         self._no_index_admitted_name: str | None = None
+        # R10-H2 (Sven r10-R1): single-call enforcement under forced
+        # ``tool_choice={"type":"function","function":{"name":X}}``.
+        # The OpenAI spec mandates that a forced named tool_choice
+        # produces exactly ONE tool_call for the chosen function;
+        # pre-fix the streaming postprocessor admitted every anchor
+        # that matched the forced name, so models that re-emitted the
+        # same call shape across two chunks (qwen3-bf16 reasoning
+        # scratch + final emit) shipped TWO indices to the wire with
+        # different ``call_id`` values for the same function. Agent
+        # loops then executed the tool twice.
+        #
+        # State: ``_forced_anchor_admitted_id`` records the id of the
+        # FIRST admitted anchor for the forced choice. Subsequent
+        # anchors whose ``id`` matches are re-emissions of the same
+        # call (cumulative-arguments parsers — same call_id, growing
+        # arguments JSON) and pass through. Subsequent anchors with
+        # DIFFERENT ``id`` values are duplicate calls — dropped per
+        # the OpenAI single-call spec. ``None`` value means "no
+        # forced anchor admitted yet"; once set, the latch is
+        # monotonic for the rest of the request. Reset only at
+        # ``reset()`` between requests.
+        #
+        # When an admitted anchor has no ``id`` field at all (some
+        # parsers emit only ``index``+``function.name``), we use the
+        # sentinel ``""`` to record "admitted but identity unknown"
+        # — the next anchor without an id matches by sentinel; an
+        # anchor WITH an id but a different value is treated as a
+        # new call (cap-violating).
+        self._forced_anchor_admitted_id: str | None = None
         # Tracks whether the MOST RECENT anchor delta (one carrying a
         # fresh ``id`` / function ``name`` / new ``index``) was DROPPED
         # because the cap was full. Subsequent argument-only no-index
@@ -1056,6 +1103,166 @@ class StreamingPostProcessor:
         self._json_fence_tail = ""
         return tail
 
+    # R10-C8 (Mira r10-R1) — UI-TARS-style tool-prose-prefix scrubber.
+    #
+    # Mira's r10 dogfood evidence (E SSE) shows the chat lane streaming
+    # 12 plain-content chunks like ``"Tool"``, ``":"``, ``" get"``,
+    # ``"_weather"``, ``"\n"``, ``"Parameters"``, ``":"``, ``" location"``,
+    # ``"="``, ``"Paris"``, ``"\n"`` BEFORE the single structured
+    # ``delta.tool_calls`` chunk. A client rendering ``delta.content``
+    # live shows garbage prefixing the actual tool call. The wire-scrub
+    # from PR #806 only filters ``<tool_call>...</tool_call>`` literal
+    # spans; the UI-TARS action parser's natural-language preamble
+    # falls through to the standard content path.
+    #
+    # Strategy: lightweight buffer-and-emit state machine. When tools
+    # are requested AND a content event matches a tool-prose-prefix
+    # pattern, hold it back. Discard the buffer when a tool_call event
+    # arrives in the same stream (the model just confirmed the prose
+    # was a tool-dispatch preamble). Release the buffer back to the
+    # wire when the buffer exceeds the cap (a model legitimately
+    # discussing ``"Tool: foo"`` in prose isn't censored). Active
+    # ONLY when ``tools_requested`` is True so non-tool requests pay
+    # zero overhead.
+    #
+    # The pattern set is intentionally narrow — only the UI-TARS /
+    # function-calling stylesheet prefixes that have NO other plausible
+    # plain-prose use at the start of a streamed reply. Each entry is
+    # a compiled regex that must match the FULL leading content
+    # buffer (re.match anchored at position 0).
+    _TOOL_PROSE_PREFIX_RES: tuple = (
+        # ``Tool: <name>\nParameters: ...`` (UI-TARS evidence — Mira E)
+        re.compile(r"^(?:Tool|Action|Function)\s*:\s*[A-Za-z_][A-Za-z0-9_-]*", re.DOTALL),
+        # Bare ``Tool:`` / ``Action:`` / ``Function:`` with no name yet —
+        # the prose hasn't progressed to the name token yet but the
+        # opener is unambiguous.
+        re.compile(r"^(?:Tool|Action|Function)\s*:\s*$", re.DOTALL),
+        # Partial prefix while the name token is still streaming
+        # (chunk boundary split ``"Tool"`` ``":"`` ``" get_weather"``).
+        re.compile(r"^(?:Tool|Action|Function)$", re.DOTALL),
+        re.compile(r"^(?:Tool|Action|Function)\s*$", re.DOTALL),
+    )
+    # Soft cap on buffer growth. The longest plausible UI-TARS preamble
+    # is ``Tool: <name>\nParameters: <kv-pairs>\n`` — for a 64-char name
+    # plus 256 chars of param prose that's ~330 bytes. 512 leaves slack
+    # for parser variants without holding back legitimate prose
+    # indefinitely.
+    _TOOL_PROSE_MAX_HOLD: int = 512
+
+    def _matches_tool_prose_prefix(self, text: str) -> bool:
+        """True iff ``text`` matches a tool-dispatch prose preamble.
+
+        Used to gate hold-back: a buffer that no longer matches any of
+        the patterns is released back to the wire because the model
+        moved on to legitimate content. A buffer that grows past
+        ``_TOOL_PROSE_MAX_HOLD`` is also released (the tool parser
+        clearly isn't going to consume it).
+        """
+        if not text:
+            return False
+        for pattern in self._TOOL_PROSE_PREFIX_RES:
+            if pattern.match(text):
+                return True
+        return False
+
+    def _filter_events_for_tool_prose(
+        self, events: list[StreamEvent]
+    ) -> list[StreamEvent]:
+        """Hold back tool-prose-prefix content events; discard on tool_call.
+
+        Walks the event list once. ``content`` events extend the
+        prose buffer when (a) the buffer is empty and the content
+        matches a prose-prefix pattern, OR (b) the buffer is non-
+        empty (we're already inside a hold). ``tool_call`` events
+        clear the buffer (the model confirmed the prose was a tool-
+        dispatch preamble — discard so it never reaches the wire,
+        matching the R10-M4 ``\\n\\n`` trailing whitespace requirement).
+        Other event types pass through unchanged.
+
+        When the held buffer grows past ``_TOOL_PROSE_MAX_HOLD`` OR no
+        longer matches any prefix pattern (the model moved on to
+        legitimate prose), flush it as a single content event in the
+        position the LAST content event would have occupied. This
+        preserves event ordering for downstream consumers.
+
+        No-op when ``tools_requested`` is False — non-tool requests
+        pay zero cost. R10-M4 trailing-whitespace handling: when the
+        buffer trails with ``\\n\\n`` AND a tool_call is later detected,
+        the buffer (including the trailing whitespace) is discarded
+        as part of the prose preamble — no separate scrubber needed.
+        """
+        if not self.tools_requested:
+            return events
+
+        from dataclasses import replace as _dc_replace
+
+        out: list[StreamEvent] = []
+        for ev in events:
+            if ev.type == "tool_call":
+                # Tool call confirmed — every byte we held was a
+                # dispatch preamble. Discard the buffer and pass the
+                # tool_call through. ``_tool_prose_active`` stays
+                # latched True so later content events in the same
+                # turn (e.g. an explanatory tail the parser surfaces)
+                # also get the prefix check, but most parsers go
+                # straight to ``finish`` after the call so this is a
+                # short-lived state.
+                self._tool_prose_buffer = ""
+                out.append(ev)
+                continue
+            if ev.type != "content":
+                out.append(ev)
+                continue
+            chunk = ev.content or ""
+            # R10-M4: when the prose buffer is non-empty AND this
+            # chunk is just trailing whitespace, fold it into the
+            # buffer so a later tool_call discards it too. The
+            # alternative (emit ``"\\n\\n"`` to the wire) is the
+            # exact leak r10-R1 surfaced on the canonical-tag scrub.
+            combined = self._tool_prose_buffer + chunk
+            if self._tool_prose_active or self._matches_tool_prose_prefix(combined):
+                self._tool_prose_active = True
+                self._tool_prose_buffer = combined
+                # Soft cap — release as legitimate prose if we held
+                # too much. A model legitimately discussing the word
+                # ``Tool:`` in prose passes through here.
+                if (
+                    len(self._tool_prose_buffer) > self._TOOL_PROSE_MAX_HOLD
+                    or not self._matches_tool_prose_prefix(self._tool_prose_buffer)
+                ):
+                    released = self._tool_prose_buffer
+                    self._tool_prose_buffer = ""
+                    self._tool_prose_active = False
+                    out.append(_dc_replace(ev, content=released))
+                # Else: keep holding; emit nothing for this chunk.
+                continue
+            out.append(ev)
+        return out
+
+    def _flush_tool_prose_buffer(self) -> str:
+        """Drain the tool-prose buffer at stream end.
+
+        Called from ``finalize()`` so a held buffer that never saw a
+        matching tool_call IS released to the client (the model
+        legitimately ended a turn with ``"Tool: ...\\n"`` prose —
+        rare, but censoring it would be a silent drop).
+        """
+        if not self.tools_requested:
+            return ""
+        # If a tool_call was detected this turn, every byte we held
+        # was a dispatch preamble — drop it silently. This is the
+        # canonical R10-C8 + R10-M4 path: model emitted the prose
+        # preamble, parser surfaced the structured call, prose is
+        # discarded as wire residue.
+        if self.tool_calls_detected:
+            self._tool_prose_buffer = ""
+            self._tool_prose_active = False
+            return ""
+        tail = self._tool_prose_buffer
+        self._tool_prose_buffer = ""
+        self._tool_prose_active = False
+        return tail
+
     @staticmethod
     def _create_reasoning_parser(cfg: ServerConfig):
         """Create a per-request reasoning parser instance."""
@@ -1347,6 +1554,32 @@ class StreamingPostProcessor:
         name = _get(fn, "name")
         return name if isinstance(name, str) and name else None
 
+    def _is_tool_choice_required(self) -> bool:
+        """Return True iff the request set ``tool_choice="required"``.
+
+        R10-H3 (Sven r10-R1): under ``tool_choice="required"`` the model
+        is forced to emit at least one tool_call, but the OpenAI spec
+        still requires every emitted call's ``arguments`` to be a JSON-
+        object-encoded string. Pre-fix the streaming postprocessor
+        applied no argument validation in this mode, so reasoning
+        models occasionally streamed raw token sequences (``"20230805"``,
+        ``"☉ Paris"``) into the ``arguments`` field. Clients running
+        ``json.loads(arguments)`` then bailed mid-agent-loop.
+
+        Helper kept SEPARATE from ``_forced_tool_choice_name`` so the
+        forced-named-choice path (single-call enforcement, name match)
+        and the ``required``-but-flexible path (any tool, args must
+        still be objects) don't conflate.
+        """
+        req = self.request
+        if req is None:
+            return False
+        if isinstance(req, dict):
+            tc = req.get("tool_choice")
+        else:
+            tc = getattr(req, "tool_choice", None)
+        return tc == "required"
+
     @staticmethod
     def _forced_tool_choice_arguments_violate_object_root(args_str: str | None) -> bool:
         """Return True when a finalized anchor's ``arguments`` value
@@ -1407,37 +1640,51 @@ class StreamingPostProcessor:
         return not isinstance(parsed, dict)
 
     def _apply_forced_tool_choice_filter(self, tool_calls: list[dict]) -> list[dict]:
-        """Suppress streaming tool_calls deltas that violate a forced
-        ``tool_choice`` named-function contract.
+        """Suppress streaming tool_calls deltas that violate the
+        ``tool_choice`` contract (forced named, or ``"required"``).
 
-        Two drop conditions, both required by the OpenAI spec:
+        Drop conditions enforced per the OpenAI spec:
 
-        1. **Wrong function**: an anchor delta naming a function other
-           than the forced choice. This catches harmony / gemma4
-           channel-routed calls to other tools the model speculated
-           on but the client never requested.
+        1. **Wrong function** (forced-name mode only): an anchor delta
+           naming a function other than the forced choice. This catches
+           harmony / gemma4 channel-routed calls to other tools the
+           model speculated on but the client never requested.
 
-        2. **Schema-violating arguments**: an anchor whose
-           ``arguments`` is non-empty AND does not parse as a JSON
-           OBJECT. The OpenAI spec mandates ``arguments`` be a JSON-
-           encoded string and tool schemas are object-shaped
+        2. **Schema-violating arguments** (forced-name AND required): an
+           anchor whose ``arguments`` is non-empty AND does not parse
+           as a JSON OBJECT. The OpenAI spec mandates ``arguments`` be
+           a JSON-encoded string and tool schemas are object-shaped
            (``{"type":"object","properties":{…}}``); a bare integer
-           ``"1234567890"`` or string ``"☉ Paris output"`` is the
-           model's scratch-pad — not a real call. Captures the
+           ``"1234567890"`` / ``"20230805"`` or string ``"☉ Paris output"``
+           is the model's scratch-pad — not a real call. Captures the
            F-200 reasoning-model scratch leak that the MiniMax tool-
-           markup redirect promoted into structured deltas.
+           markup redirect promoted into structured deltas, AND the
+           R10-H3 (Sven r10-R1) ``tool_choice="required"`` token-string
+           leak on qwen3-bf16.
+
+        3. **Single-call cap** (forced-name mode only): once an anchor
+           has been admitted for the forced choice, every subsequent
+           anchor is dropped. R10-H2 (Sven r10-R1) — pre-fix, qwen3
+           streaming sometimes emitted two anchor deltas with the same
+           function name and DIFFERENT ``call_id`` values; openai-agents
+           and claude-agents loops then executed the tool twice. The
+           OpenAI spec for forced named-function mode is "exactly one
+           tool_call for the named function". ``tool_choice="required"``
+           is NOT subject to this cap (parallel multi-tool dispatch is
+           legal there); the argument-shape gate above still applies.
 
         Argument-fragment continuation deltas (no name, no id) pass
         through unconditionally — the parallel-cap layer already
         tracks ``_no_index_last_dropped`` so fragments routed to a
         dropped anchor are suppressed.
 
-        No-op when no forced ``tool_choice`` name is set: the request
-        is in auto / required / unset mode, and multi-tool and
-        flexible-argument flows must keep working.
+        No-op when ``tool_choice`` is unset / ``"auto"`` / ``"none"``:
+        the auto-mode flows must keep working without per-anchor
+        post-filtering.
         """
         forced_name = self._forced_tool_choice_name()
-        if not forced_name:
+        required_mode = self._is_tool_choice_required()
+        if not forced_name and not required_mode:
             return tool_calls
         filtered: list[dict] = []
         for tc in tool_calls:
@@ -1452,9 +1699,13 @@ class StreamingPostProcessor:
             anchor_name = wrapped_name or flat_name
             if anchor_name is None:
                 # Continuation fragment — defer to cap-layer routing.
+                # When the prior anchor for this forced choice was
+                # dropped (wrong name, schema-violating args, or
+                # single-call cap hit), ``_no_index_last_dropped`` is
+                # set and the cap layer suppresses these fragments too.
                 filtered.append(tc)
                 continue
-            if anchor_name != forced_name:
+            if forced_name and anchor_name != forced_name:
                 # Wrong function — suppress this anchor and tell the
                 # cap layer to drop its fragment continuations.
                 self._no_index_last_dropped = True
@@ -1475,11 +1726,63 @@ class StreamingPostProcessor:
             )
             args_str = wrapped_args if wrapped_args is not None else flat_args
             if self._forced_tool_choice_arguments_violate_object_root(args_str):
-                # F-200 root case: ``arguments`` parsed as JSON but
-                # the root type is not ``object``. Schema-violating —
-                # drop the anchor and route fragments to drop.
+                # F-200 root case + R10-H3 (Sven r10-R1): ``arguments``
+                # parsed as JSON but the root type is not ``object``
+                # (raw token sequence ``"20230805"``, bare integer,
+                # bare string). Schema-violating — drop the anchor and
+                # route fragments to drop. Equally important under
+                # forced ``tool_choice``: surfacing a malformed call
+                # to clients causes their ``json.loads(arguments)`` to
+                # break the agent loop. Silent drop here is preferred
+                # over surfacing a broken contract.
                 self._no_index_last_dropped = True
                 continue
+            # R10-H2 (Sven r10-R1): single-call enforcement under
+            # forced ``tool_choice={"type":"function","function":
+            # {"name":X}}``. Once an anchor for the forced choice has
+            # been admitted, every NEW anchor (different ``id``) is
+            # dropped — the OpenAI spec mandates exactly one tool_call
+            # for a forced named choice. Pre-fix qwen3 / hermes
+            # streaming sometimes emitted the same call shape twice
+            # (scratch + final) with two distinct ``call_id`` values
+            # and agent loops (openai-agents, claude-agents) executed
+            # the tool twice.
+            #
+            # The latch keys on the admitted ``id``: cumulative
+            # argument-update parsers re-emit the same anchor
+            # (same ``id``, growing arguments JSON) on every delta;
+            # those re-emissions MUST pass through so the parallel-
+            # cap layer can route them as continuations of the
+            # admitted call. Round-10 of the parallel-cap codex review
+            # already wired the no-index re-emission path; the
+            # forced-choice latch mirrors that contract by id-match.
+            #
+            # ``tool_choice="required"`` is NOT subject to the
+            # single-call latch: the spec only mandates "at least one
+            # tool call", so multi-tool parallel dispatch is legal in
+            # that mode. The argument-shape gate above still fires for
+            # required, but the count gate stays open.
+            if forced_name and self._forced_anchor_admitted_id is not None:
+                anchor_id = (
+                    tc.get("id")
+                    if isinstance(tc.get("id"), str) and tc.get("id")
+                    else ""
+                )
+                if anchor_id != self._forced_anchor_admitted_id:
+                    # Duplicate call — different id from the admitted
+                    # one. Drop the anchor and route its fragment
+                    # continuations to drop via the cap layer.
+                    self._no_index_last_dropped = True
+                    continue
+                # Same id — cumulative re-emission of the admitted
+                # call's growing arguments JSON. Pass through.
+            elif forced_name:
+                anchor_id = (
+                    tc.get("id")
+                    if isinstance(tc.get("id"), str) and tc.get("id")
+                    else ""
+                )
+                self._forced_anchor_admitted_id = anchor_id
             filtered.append(tc)
         return filtered
 
@@ -1725,6 +2028,10 @@ class StreamingPostProcessor:
         self.accumulated_reasoning = ""
         self.tool_calls_detected = False
         self.tool_markup_possible = False
+        # R10-C8: clear the tool-prose hold-back so a re-used processor
+        # doesn't ship the prior turn's buffered preamble bytes.
+        self._tool_prose_buffer = ""
+        self._tool_prose_active = False
         self._think_prefix_sent = False
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
@@ -1754,6 +2061,10 @@ class StreamingPostProcessor:
         self._no_index_admitted_id = None
         self._no_index_admitted_name = None
         self._no_index_last_dropped = False
+        # R10-H2: clear the forced-anchor latch on reset so a re-used
+        # processor doesn't carry the prior request's admit state into
+        # the next forced-choice stream.
+        self._forced_anchor_admitted_id = None
         # Per-request reasoning-cap counters reset to baseline. The
         # configured cap itself (``self._reasoning_max_tokens``) is
         # immutable — it was set at __init__ from the request.
@@ -1857,7 +2168,16 @@ class StreamingPostProcessor:
         # short-circuit there. Tool-call deltas and reasoning_content
         # are untouched (the fence only ever shows up in plain content
         # for json_mode requests).
-        return self._filter_events_for_json_fence(events)
+        events = self._filter_events_for_json_fence(events)
+        # R10-C8 (Mira r10-R1) — UI-TARS-style tool-prose-prefix
+        # hold-back. Runs AFTER the json-fence filter so the two
+        # buffers can't interfere; runs BEFORE the caller's wire
+        # emission so prose preambles like ``"Tool: get_weather\n
+        # Parameters: location=Paris\n"`` are suppressed when the
+        # parser surfaces the structured call in the same turn.
+        # No-op when ``tools_requested`` is False.
+        events = self._filter_events_for_tool_prose(events)
+        return events
 
     def _process_channel_routed(
         self, delta_text: str, output: GenerationOutput
@@ -2853,6 +3173,31 @@ class StreamingPostProcessor:
         # the LAST content/finish event in this batch so JSON bytes
         # never sit after a terminal marker (codex r4 BLOCKING #2).
         events = self._filter_events_for_json_fence(events, drain_tail=True)
+
+        # R10-C8: run the tool-prose-prefix filter on the finalize
+        # events too — the route's mid-stream emitter has already
+        # decided whether to ship structured tool_calls, so the
+        # buffer's discard/release predicate is now fully informed.
+        # ``_flush_tool_prose_buffer`` drops the buffer when
+        # ``tool_calls_detected`` (the buffer was a dispatch preamble)
+        # and otherwise releases it as legitimate trailing prose.
+        events = self._filter_events_for_tool_prose(events)
+        tail = self._flush_tool_prose_buffer()
+        if tail:
+            # Merge into the last finish/content event so the prose
+            # tail doesn't sit AFTER a terminal marker. Same shape
+            # as the json-fence drain merge above.
+            from dataclasses import replace as _dc_replace
+
+            merged = False
+            for i in range(len(events) - 1, -1, -1):
+                if events[i].type in ("finish", "content"):
+                    prev = events[i].content or ""
+                    events[i] = _dc_replace(events[i], content=prev + tail)
+                    merged = True
+                    break
+            if not merged:
+                events.append(StreamEvent(type="content", content=tail))
 
         return events
 
