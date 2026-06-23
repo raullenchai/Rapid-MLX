@@ -623,6 +623,91 @@ class TestReasoningParserComplete:
         assert reasoning is None
         assert content == ""
 
+    def test_r10m1_enable_thinking_false_bypasses_preamble_split(self):
+        """R10-M1 (Mira r10-R1, 2026-06-23): when the client sets
+        ``enable_thinking=False`` the parser MUST treat the whole
+        buffer as plain content and surface it via the content channel.
+        Pre-fix the flag was accepted "for protocol compatibility" but
+        completely ignored — so a ``Thought: ...\\nAction: ...`` buffer
+        produced the SAME ``(reasoning, content)`` split whether or not
+        the off-flag was set, defeating the override.
+
+        Companion test
+        ``test_r10m1_enable_thinking_true_still_splits`` locks in that
+        the historic behaviour survives when the flag is ``True`` or
+        ``None`` (the default).
+        """
+        text = (
+            "Thought: I need to click search.\n"
+            "Action: click(point='<point>200 300</point>')"
+        )
+        reasoning, content = self.p.extract_reasoning(text, enable_thinking=False)
+        assert reasoning is None
+        # Whole buffer surfaces as content (the tool parser downstream
+        # still extracts ``Action: ...`` from it).
+        assert content == text
+
+    def test_r10m1_enable_thinking_false_with_think_wrapper(self):
+        """R10-M1: shape #5 (``<think>...</think><answer>``) ALSO
+        bypasses when ``enable_thinking=False`` — the off-flag is a
+        request-level "skip reasoning surfacing", not a wrapper-shape
+        specific rule. Pre-fix this returned the ``<think>`` body as
+        reasoning_content; post-fix the whole buffer is content."""
+        text = "<think>I should answer.</think>The answer is 42."
+        reasoning, content = self.p.extract_reasoning(text, enable_thinking=False)
+        assert reasoning is None
+        assert content == text
+
+    @pytest.mark.parametrize("flag", [None, True])
+    def test_r10m1_enable_thinking_true_still_splits(self, flag):
+        """R10-M1 regression guard: ``enable_thinking=True`` and the
+        default (``None``) keep the historic preamble split. The
+        off-flag bypass is scoped exclusively to ``False``."""
+        text = (
+            "Thought: I need to click search.\n"
+            "Action: click(point='<point>200 300</point>')"
+        )
+        reasoning, content = self.p.extract_reasoning(text, enable_thinking=flag)
+        assert reasoning is not None
+        assert "I need to click search" in reasoning
+        assert content is not None
+        assert content.startswith("Action:")
+
+    def test_r10m1_streaming_enable_thinking_false_routes_to_content(self):
+        """R10-M1 streaming: ``set_enable_thinking(False)`` on the
+        parser instance makes ``extract_reasoning_streaming`` route
+        every delta byte to ``delta.content`` regardless of the
+        ``Thought:`` / ``<think>`` opener pattern. Defense in depth so
+        a unit-level call (no postprocessor dispatcher) still honours
+        the off-flag."""
+        self.p.set_enable_thinking(False)
+        prev = ""
+        contents = []
+        reasonings = []
+        for d in ["Thought: ", "I should answer.", "\n\n", "The answer is 4."]:
+            cur = prev + d
+            msg = self.p.extract_reasoning_streaming(prev, cur, d)
+            prev = cur
+            if msg is None:
+                continue
+            if getattr(msg, "content", None):
+                contents.append(msg.content)
+            if getattr(msg, "reasoning", None):
+                reasonings.append(msg.reasoning)
+        assert reasonings == []
+        assert "".join(contents) == "Thought: I should answer.\n\nThe answer is 4."
+
+    def test_r10m1_set_enable_thinking_cleared_on_reset(self):
+        """R10-M1: ``reset_state()`` clears the per-request
+        ``_enable_thinking`` override so a re-used parser instance
+        doesn't carry the prior request's off-flag into a fresh stream
+        (the dispatcher re-propagates via ``set_enable_thinking`` after
+        the reset)."""
+        self.p.set_enable_thinking(False)
+        assert self.p._enable_thinking is False
+        self.p.reset_state()
+        assert self.p._enable_thinking is None
+
     def test_bpe_markers_pass_through_untouched(self):
         # Regression guard: if a buggy upstream pipeline forwards raw
         # byte-level BPE artifacts (``Ġ`` for space, ``Ċ`` for newline)

@@ -153,6 +153,26 @@ class UiTarsReasoningParser(ReasoningParser):
         # — see ``_EXIT_PREDICATES``).
         self._in_reasoning = False
         self._in_content = False
+        # R10-M1 (2026-06-23): per-request ``enable_thinking`` override.
+        # When set to ``False`` via ``set_enable_thinking`` the streaming
+        # path treats the whole buffer as plain content and skips the
+        # preamble-opener detection. Defense in depth so a future
+        # postprocessor refactor that calls ``extract_reasoning_streaming``
+        # outside the ``_should_route_through_reasoning`` gate still
+        # honours the off-flag — and so unit tests can exercise the
+        # parser directly without depending on the dispatcher.
+        self._enable_thinking: bool | None = None
+
+    def set_enable_thinking(self, enable_thinking: bool | None) -> None:
+        """Record the request-level ``enable_thinking`` override.
+
+        R10-M1: called by the streaming dispatcher (postprocessor) at
+        request-construction time. ``None`` and ``True`` keep the
+        historic preamble-splitting behaviour; ``False`` makes
+        ``extract_reasoning_streaming`` route every byte to
+        ``delta.content`` until end-of-stream.
+        """
+        self._enable_thinking = enable_thinking
 
     # ------------------------------------------------------------------
     # Complete-response API
@@ -164,13 +184,36 @@ class UiTarsReasoningParser(ReasoningParser):
     ) -> tuple[str | None, str | None]:
         """Split a complete UI-TARS response into (reasoning, content).
 
-        ``enable_thinking`` is accepted for protocol compatibility with the
-        base class but ignored — the UI-TARS prompt always elicits the
-        Thought: preamble unless the request explicitly used the
-        Grounding template (no preamble, action-only). In that case the
-        regex simply fails to match and we return ``(None, model_output)``.
+        ``enable_thinking`` is honoured: when the client explicitly sets
+        ``enable_thinking=False`` (chat_template_kwargs) the parser
+        treats the whole buffer as plain content and surfaces it via
+        the ``content`` channel — the user asked the model to skip
+        thinking and answer directly, so any ``Thought:`` / ``<think>``
+        preamble the checkpoint emits anyway (UI-TARS is post-trained
+        on the format and frequently ignores the off-flag) MUST NOT be
+        moved to ``reasoning_content``. R10-M1 (Mira r10-R1, 2026-06-23):
+        the pre-fix path documented the flag as "accepted for protocol
+        compatibility but ignored", which made the response shape
+        identical with and without the flag — defeating the purpose of
+        the override.
+
+        When ``enable_thinking is None`` or ``True`` the parser keeps
+        the historic behaviour (run the preamble regex, split into
+        reasoning / content). The UI-TARS prompt usually elicits the
+        ``Thought:`` preamble; if the request used the Grounding
+        template (no preamble, action-only) the regex simply fails to
+        match and we return ``(None, model_output)``.
         """
         if not model_output:
+            return None, model_output
+
+        # R10-M1: enable_thinking=False bypass — entire buffer is
+        # content, no reasoning split. The Action-lane tool parser
+        # downstream still extracts ``Action: ...`` lines from the
+        # content; this bypass only suppresses the reasoning-channel
+        # surfacing of the ``Thought:`` / ``Reflection:`` / ``<think>``
+        # prelude.
+        if enable_thinking is False:
             return None, model_output
 
         m = _PREAMBLE_RE.match(model_output)
@@ -226,6 +269,15 @@ class UiTarsReasoningParser(ReasoningParser):
         """
         if not delta_text:
             return None
+
+        # R10-M1 (2026-06-23): honour ``enable_thinking=False``. The
+        # client opted the request out of reasoning surfacing; route
+        # every delta byte to ``content`` and latch ``_in_content`` so
+        # the finalize hook doesn't re-flush. ``set_enable_thinking``
+        # is called by the dispatcher at request-construction time.
+        if self._enable_thinking is False:
+            self._in_content = True
+            return DeltaMessage(content=delta_text)
 
         # Already past the preamble — all remaining bytes are content.
         if self._in_content:
@@ -535,6 +587,12 @@ class UiTarsReasoningParser(ReasoningParser):
     def reset_state(self) -> None:
         self._in_reasoning = False
         self._in_content = False
+        # R10-M1: clear the per-request override so a re-used parser
+        # instance doesn't carry the prior request's flag into a fresh
+        # stream. The dispatcher calls ``set_enable_thinking`` after
+        # this reset, so a no-op default (None) is the correct
+        # post-reset state.
+        self._enable_thinking = None
 
     def finalize_streaming(
         self,

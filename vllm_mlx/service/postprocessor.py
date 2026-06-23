@@ -250,6 +250,25 @@ class StreamingPostProcessor:
         # decision doesn't oscillate as the accumulator grows past the
         # opener.
         self._explicit_think_seen = False
+        # R10-C7 (2026-06-23): one-way latch tracking whether the
+        # ``_process_standard`` path has already emitted plain content
+        # for this request. Once True, ``_should_route_through_reasoning``
+        # refuses to promote a mid-content ``<think>`` token back into
+        # the reasoning lane — the R8-M2 head-of-buffer anchor relies
+        # on ``accumulated_text`` reflecting everything streamed so far,
+        # but ``_process_standard`` does NOT mutate ``accumulated_text``
+        # (only ``_process_with_reasoning`` does, at lines 2158/2163).
+        # Without this latch, a plain answer that mentions a literal
+        # ``<think>`` token (e.g. "Reply with ```<think>``` as code")
+        # would, after the FIRST plain-content chunk was emitted via
+        # ``_process_standard`` (accumulator still empty), see the
+        # subsequent ``<think>`` chunk's ``probe = "" + "<think>..."``
+        # match ``head.startswith("<think>")`` and latch ``_explicit_think_seen``,
+        # rerouting the rest of the response to ``delta.reasoning``.
+        # Mira r10-R1 root cause for the post-r8-C regression. The
+        # latch is reset by ``reset_for_new_request`` so a re-used
+        # processor doesn't carry the prior request's state.
+        self._standard_content_observed = False
 
         # Per-request parser instances — each streaming request gets its
         # own parser to avoid state corruption under concurrent
@@ -265,6 +284,27 @@ class StreamingPostProcessor:
             self.reasoning_parser = self._create_reasoning_parser(cfg)
         else:
             self.reasoning_parser = cfg.reasoning_parser  # None or injected mock
+
+        # R10-M1 (2026-06-23): propagate the request-level
+        # ``enable_thinking`` to parsers that expose ``set_enable_thinking``
+        # (UI-TARS). Defense in depth so the streaming bypass survives a
+        # future dispatcher refactor that calls
+        # ``extract_reasoning_streaming`` outside the
+        # ``_should_route_through_reasoning`` gate. Parsers that don't
+        # expose the setter (qwen3 / deepseek_r1 / gemma4 / harmony /
+        # gpt_oss / think_parser) are unaffected — they consume
+        # ``enable_thinking`` via the non-streaming ``extract_reasoning``
+        # kwarg path or via their own template-driven branching.
+        if self.reasoning_parser is not None:
+            _set = getattr(self.reasoning_parser, "set_enable_thinking", None)
+            if callable(_set):
+                try:
+                    _set(enable_thinking)
+                except Exception:
+                    # Setter is best-effort — a buggy override must not
+                    # block request construction. The non-stream extract
+                    # path still honours the flag explicitly.
+                    pass
 
         self._tool_parser_request_local = False
         if cfg.tool_call_parser:
@@ -1172,6 +1212,18 @@ class StreamingPostProcessor:
             return True
         if self._explicit_think_seen:
             return True
+        # R10-C7 (2026-06-23): if ``_process_standard`` has already
+        # emitted plain content for this request, refuse to promote
+        # any subsequent ``<think>`` token into the reasoning lane.
+        # ``self.accumulated_text`` is NOT updated by the standard
+        # path (only ``_process_with_reasoning`` mutates it at lines
+        # 2158/2163), so the r8-C head-of-buffer anchor below would
+        # otherwise evaluate against an empty accumulator and treat
+        # mid-content ``<think>`` as a fresh reasoning opener. Mira
+        # r10-R1 root cause. The latch is one-way and cleared at
+        # ``reset_for_new_request`` time.
+        if self._standard_content_observed:
+            return False
         probe = self.accumulated_text + (delta_text or "")
         # Codex r8-C round-2 MED: anchor the complete-token branch at
         # the FIRST non-whitespace bytes, matching the split-prefix
@@ -1763,9 +1815,25 @@ class StreamingPostProcessor:
         # R8-M2: clear the explicit-think latch so a re-used processor
         # doesn't carry the prior request's promotion into this one.
         self._explicit_think_seen = False
+        # R10-C7: clear the plain-content-emitted latch so the next
+        # request's first chunk is evaluated against a genuinely empty
+        # accumulator (mirrors the ``accumulated_text = ""`` reset).
+        self._standard_content_observed = False
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
+            # R10-M1: ``reset_state`` clears the parser's per-request
+            # ``enable_thinking`` override; re-propagate the dispatcher's
+            # captured value so a re-used processor continues to honour
+            # the off-flag after a reset (the ``StreamingPostProcessor``
+            # itself is bound to ONE request, but the contract here is
+            # symmetric with the ``__init__`` propagation).
+            _set = getattr(self.reasoning_parser, "set_enable_thinking", None)
+            if callable(_set):
+                try:
+                    _set(self.enable_thinking)
+                except Exception:
+                    pass
         if self.tool_parser and self._tool_parser_request_local:
             self.tool_parser.reset()
 
@@ -2491,6 +2559,11 @@ class StreamingPostProcessor:
                     if mixed_content:
                         mixed_content = sanitize_output(mixed_content)
                     if mixed_content:
+                        # R10-C7: mixed content+tool deltas also count
+                        # as standard-path plain-content emission for
+                        # the router-latch (see
+                        # ``_should_route_through_reasoning``).
+                        self._standard_content_observed = True
                         events.append(
                             StreamEvent(type="content", content=mixed_content)
                         )
@@ -2561,9 +2634,17 @@ class StreamingPostProcessor:
                 content = None
 
         # When finish_reason is set, emit ONE finish event with content merged in.
-        # Never emit separate content + finish events — that would cause
+        # Never enable separate content + finish events — that would cause
         # double-emission of the same content and duplicate logprobs.
         if finish_reason:
+            # R10-C7: latch on real plain-content emission so a later
+            # ``<think>`` token in this same request can't be misclassified
+            # as a head-of-buffer reasoning opener by the router (see
+            # ``_should_route_through_reasoning``). Set only when we
+            # actually emit plain-content bytes — empty content (e.g.
+            # finish-only) MUST NOT latch.
+            if content:
+                self._standard_content_observed = True
             return [
                 StreamEvent(
                     type="finish",
@@ -2573,6 +2654,8 @@ class StreamingPostProcessor:
                 )
             ]
         if content:
+            # R10-C7: see comment on the finish branch above.
+            self._standard_content_observed = True
             return [StreamEvent(type="content", content=content)]
         return []
 
