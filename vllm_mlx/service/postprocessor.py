@@ -3059,12 +3059,33 @@ class StreamingPostProcessor:
                 # (codex r1 BLOCKING: filtering by name alone leaks
                 # a same-name scratch call with primitive args).
                 _forced_name = self._forced_tool_choice_name()
+                _required_mode = self._is_tool_choice_required()
                 if _forced_name:
                     _filtered_calls = [
                         tc
                         for tc in result.tool_calls
                         if tc.get("name") == _forced_name
                         and not self._forced_tool_choice_arguments_violate_object_root(
+                            tc.get("arguments")
+                        )
+                    ]
+                elif _required_mode:
+                    # r10-J round-4 (codex r4 HIGH #1): for
+                    # ``tool_choice="required"`` ``_forced_tool_choice_name``
+                    # returns None (no specific function pinned), so the
+                    # pre-fix branch passed every recovered call through.
+                    # That reopened the malformed-args leak the streaming
+                    # ``_apply_forced_tool_choice_filter`` was meant to
+                    # close — finalize-recovered calls with
+                    # ``arguments="20230805"`` (bare-string root) reached
+                    # the client despite ``required`` semantics. Apply
+                    # the same object-root gate here. No name constraint
+                    # in required mode (multi-tool parallel is legal),
+                    # only the schema-shape gate.
+                    _filtered_calls = [
+                        tc
+                        for tc in result.tool_calls
+                        if not self._forced_tool_choice_arguments_violate_object_root(
                             tc.get("arguments")
                         )
                     ]
@@ -3108,12 +3129,27 @@ class StreamingPostProcessor:
                     # same-name scratch calls with primitive / list
                     # ``arguments`` leak through.
                     _forced_name = self._forced_tool_choice_name()
+                    _required_mode = self._is_tool_choice_required()
                     if _forced_name:
                         fb_tcs = [
                             tc
                             for tc in fb_tcs
                             if tc.function.name == _forced_name
                             and not self._forced_tool_choice_arguments_violate_object_root(
+                                tc.function.arguments
+                            )
+                        ]
+                    elif _required_mode:
+                        # r10-J round-4 — twin of the
+                        # ``extract_tool_calls`` recovery branch above:
+                        # cross-format fallback under ``required`` must
+                        # also drop primitive-args recovered calls so
+                        # the contract is symmetric across the two
+                        # finalize recovery paths.
+                        fb_tcs = [
+                            tc
+                            for tc in fb_tcs
+                            if not self._forced_tool_choice_arguments_violate_object_root(
                                 tc.function.arguments
                             )
                         ]

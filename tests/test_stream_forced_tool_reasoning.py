@@ -398,6 +398,91 @@ class TestForcedToolChoiceFilter:
         out = pp._apply_forced_tool_choice_filter(calls)
         assert out == calls
 
+
+class TestRequiredModeFilter:
+    """r10-J round-4 — codex r4 HIGH #1.
+
+    Required-mode (``tool_choice="required"``) admits any tool but
+    every recovered call must still produce a JSON-object
+    ``arguments`` string. Pre-fix the streaming filter caught this
+    via ``_apply_forced_tool_choice_filter`` (object-root gate
+    bypasses ``forced_name is None``), but the finalize fallback
+    paths in ``postprocessor.py:3061+`` only applied the gate when
+    ``_forced_tool_choice_name()`` returned a named function — so
+    fallback-recovered ``arguments="20230805"`` reached the client
+    despite required semantics.
+
+    Round-4 added a ``_is_tool_choice_required()`` arm to BOTH the
+    ``extract_tool_calls`` recovery branch and the cross-format
+    fallback branch. These tests pin both with direct calls to
+    ``_apply_forced_tool_choice_filter`` (the streaming twin of the
+    finalize gate, sharing the same object-root helper) — full
+    finalize-path coverage is exercised by the broader integration
+    suite.
+    """
+
+    @staticmethod
+    def _required_request():
+        return {
+            "tool_choice": "required",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {"type": "object"},
+                    },
+                },
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "search",
+                        "parameters": {"type": "object"},
+                    },
+                },
+            ],
+        }
+
+    def test_required_mode_helper_detects_required(self):
+        pp = StreamingPostProcessor(_make_cfg(), request=self._required_request())
+        assert pp._is_tool_choice_required() is True
+
+    def test_required_mode_helper_skips_auto(self):
+        pp = StreamingPostProcessor(_make_cfg(), request=_auto_request())
+        assert pp._is_tool_choice_required() is False
+
+    def test_required_mode_drops_primitive_arguments_via_streaming_gate(self):
+        """The streaming gate (``_apply_forced_tool_choice_filter``)
+        already drops primitive-args calls under required mode — this
+        is the contract the finalize fallback now mirrors. Pins that
+        the gate engaged via the object-root check is intact regardless
+        of whether the call carries a name (required allows ANY name).
+        """
+        pp = StreamingPostProcessor(_make_cfg(), request=self._required_request())
+        out = pp._apply_forced_tool_choice_filter(
+            [
+                # Required mode, bare-string args — drop.
+                {"function": {"name": "search", "arguments": '"20230805"'}},
+                # Required mode, object args — keep.
+                {"function": {"name": "search", "arguments": '{"q":"x"}'}},
+            ]
+        )
+        assert len(out) == 1
+        assert out[0]["function"]["arguments"] == '{"q":"x"}'
+
+    def test_required_mode_continuation_finalized_non_object_dropped(self):
+        """Continuation fragment with FINALIZED non-object root under
+        required mode — round-3 already extended the
+        anchor_name=None branch to drop these. Pin under required-mode
+        request shape (codex r4 specifically called out required as the
+        forced_name-None case)."""
+        pp = StreamingPostProcessor(_make_cfg(), request=self._required_request())
+        out = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": '"20230805"'}}]
+        )
+        assert out == []
+        assert pp._no_index_last_dropped is True
+
     def test_passes_anchor_with_no_arguments_yet(self):
         """First chunk often carries just ``name`` + ``id`` with empty
         / missing arguments — body streams in later fragments. Must
