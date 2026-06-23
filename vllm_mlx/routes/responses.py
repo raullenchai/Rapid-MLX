@@ -1235,45 +1235,56 @@ async def _stream_responses(
     start_time = time.perf_counter()
     served_model = cfg.model_name or responses_request.model
 
+    # R10-C3: openai-python event models mark ``sequence_number`` as
+    # required on every Responses-API event. Monotonic counter starting
+    # at 0, incremented per yielded event. Wrap ``_sse`` via a helper so
+    # the bookkeeping stays in one place.
+    _seq = [0]
+
+    def _emit(event: str, data: dict) -> str:
+        data["sequence_number"] = _seq[0]
+        _seq[0] += 1
+        return _sse(event, data)
+
     # response.created — Codex needs this before any deltas.
-    yield _sse(
+    # R10-C3: include the same top-level fields the non-streaming response
+    # object carries (``parallel_tool_calls`` / ``tool_choice`` / ``tools``)
+    # so consumers like openai-python ``Response.model_validate`` accept
+    # the streaming payload too. ``output`` starts empty and is rebuilt
+    # below before ``response.completed`` is emitted.
+    _initial_response_payload = {
+        "id": response_id,
+        "object": "response",
+        "created_at": created_at,
+        "status": "in_progress",
+        "model": served_model,
+        "output": [],
+        "parallel_tool_calls": bool(responses_request.parallel_tool_calls),
+        "tool_choice": responses_request.tool_choice or "auto",
+        "tools": responses_request.tools or [],
+    }
+    yield _emit(
         "response.created",
         {
             "type": "response.created",
-            "response": {
-                "id": response_id,
-                "object": "response",
-                "created_at": created_at,
-                "status": "in_progress",
-                "model": served_model,
-                "output": [],
-            },
+            "response": _initial_response_payload,
         },
     )
-    # r6-A R6-H7: ``response.in_progress`` between ``response.created``
-    # and the first ``response.output_item.added`` is mandated by the
-    # OpenAI Responses SSE spec. The official ``openai-python`` SDK
-    # transitions internal state on it (the consumer sets
-    # ``Response.status="in_progress"`` here, separate from the initial
-    # "queued"-style ``created`` event), so skipping the event leaves
-    # the SDK's parser in a half-initialized state until the message
-    # item lands — which can cause SDK consumers to mis-thread the
-    # surface (Sasha R2 captured this on Codex CLI). Emit it
-    # immediately after ``response.created`` and before any text /
-    # tool-call events. The payload mirrors ``created`` because no
+    # R10-C3: the OpenAI Responses SSE spec mandates ``response.in_progress``
+    # between ``response.created`` and the first ``response.output_item.added``.
+    # The ``openai-python`` SDK transitions internal state on it (sets
+    # ``Response.status="in_progress"`` separately from the initial
+    # ``created`` event), so skipping the event leaves the SDK's parser in
+    # a half-initialized state until the message item lands — which causes
+    # ``AsyncResponseStreamManager`` to crash when ``response.completed``
+    # arrives without the intermediate transition. Sven r10-R1 captured
+    # exactly this on 0.8.11. Payload mirrors ``created`` because no
     # generation state has changed yet, just the lifecycle marker.
-    yield _sse(
+    yield _emit(
         "response.in_progress",
         {
             "type": "response.in_progress",
-            "response": {
-                "id": response_id,
-                "object": "response",
-                "created_at": created_at,
-                "status": "in_progress",
-                "model": served_model,
-                "output": [],
-            },
+            "response": _initial_response_payload,
         },
     )
     try:
@@ -1387,6 +1398,14 @@ async def _stream_responses(
         message_item_id: str | None = None
         message_output_index: int | None = None
         message_open = False
+        # R10-C3: track whether the ``output_text`` content_part has been
+        # opened so the streaming sequence emits ``response.content_part.added``
+        # exactly once per message item — required by the OpenAI Responses
+        # SSE spec between ``output_item.added`` and the first
+        # ``output_text.delta``. Without it, the openai-python SDK's
+        # ``AsyncResponseStream`` fails to materialize the output_text
+        # part and the final ``response.completed`` consumer raises.
+        content_part_open = False
 
         # Per-request reasoning parser instance (matches anthropic.py).
         reasoning_parser = None
@@ -1453,12 +1472,6 @@ async def _stream_responses(
             _reasoning_cap_hit = True
             return text[:keep_chars], text[keep_chars:], True
 
-        # Yuki F8 (0.8.5 dogfood): track whether the content_part has
-        # been opened so the streaming sequence emits
-        # ``response.content_part.added`` exactly once per message item
-        # (before the first text delta).
-        content_part_open = False
-
         async def _open_message_item() -> list[str]:
             """Emit response.output_item.added + response.content_part.added.
 
@@ -1466,11 +1479,12 @@ async def _stream_responses(
             The bookkeeping for ``message_open`` / ``content_part_open``
             lives here so the open/close pair stays symmetric.
 
-            Yuki F8: the OpenAI Responses SSE spec puts
-            ``response.content_part.added`` between the message item-
-            added event and the first text delta. Pre-0.8.5 this event
-            was missing; clients gating UI state on it never saw the
-            ``output_text`` block open.
+            R10-C3 / Yuki F8: the OpenAI Responses SSE spec puts
+            ``response.content_part.added`` between the message item-added
+            event and the first text delta. Pre-fix this event was missing;
+            the openai-python SDK's ``AsyncResponseStreamManager`` therefore
+            never materialized the ``output_text`` content part and the
+            terminal ``response.completed`` consumer raised on missing state.
             """
             nonlocal \
                 message_item_id, \
@@ -1482,7 +1496,7 @@ async def _stream_responses(
             message_open = True
             content_part_open = True
             return [
-                _sse(
+                _emit(
                     "response.output_item.added",
                     {
                         "type": "response.output_item.added",
@@ -1496,7 +1510,7 @@ async def _stream_responses(
                         },
                     },
                 ),
-                _sse(
+                _emit(
                     "response.content_part.added",
                     {
                         "type": "response.content_part.added",
@@ -1530,7 +1544,7 @@ async def _stream_responses(
                 for ev in await _open_message_item():
                     yield ev
             accumulated_text += delta
-            yield _sse(
+            yield _emit(
                 "response.output_text.delta",
                 {
                     "type": "response.output_text.delta",
@@ -1538,6 +1552,11 @@ async def _stream_responses(
                     "output_index": message_output_index,
                     "content_index": 0,
                     "delta": delta,
+                    # R10-C3: openai-python ``ResponseTextDeltaEvent`` marks
+                    # ``logprobs`` as required. The Responses lane doesn't
+                    # surface logprobs (Codex CLI doesn't render them) so
+                    # always emit an empty array — spec-compliant absent.
+                    "logprobs": [],
                 },
             )
 
@@ -1568,7 +1587,7 @@ async def _stream_responses(
                 for ev in await _open_message_item():
                     yield ev
             accumulated_text += joined
-            yield _sse(
+            yield _emit(
                 "response.output_text.delta",
                 {
                     "type": "response.output_text.delta",
@@ -1576,6 +1595,11 @@ async def _stream_responses(
                     "output_index": message_output_index,
                     "content_index": 0,
                     "delta": joined,
+                    # R10-C3: openai-python ``ResponseTextDeltaEvent`` marks
+                    # ``logprobs`` as required. The Responses lane doesn't
+                    # surface logprobs (Codex CLI doesn't render them) so
+                    # always emit an empty array — spec-compliant absent.
+                    "logprobs": [],
                 },
             )
 
@@ -1995,7 +2019,7 @@ async def _stream_responses(
             else:
                 err_code = "tool_choice_unfulfilled"
                 err_msg = str(err_detail)
-            yield _sse(
+            yield _emit(
                 "response.failed",
                 {
                     "type": "response.failed",
@@ -2029,15 +2053,30 @@ async def _stream_responses(
         async for ev in _flush_deferred_text_if_no_synthesis(_synthesis_fired):
             yield ev
 
+        # R10-C3: track the final ``output[]`` array so ``response.completed``
+        # carries the full reconstructed response object. Sven r10-R1 captured
+        # 0.8.11 emitting a completed payload with no ``output`` field at all
+        # — that broke the openai-python SDK's response-object materialization
+        # because ``Response.output`` is a required list field. Mirror what the
+        # non-streaming path emits via ``openai_to_responses`` so streaming
+        # and non-streaming consumers see the same final shape.
+        completed_output: list[dict] = []
+
         # Close the message item if we ever opened it.
         if message_open:
-            # Yuki F8 (0.8.5 dogfood): emit ``response.output_text.done``
-            # AND ``response.content_part.done`` BEFORE the message item
-            # ``done`` event so clients gating UI on those events
-            # actually see them — pre-0.8.5 only the broader
-            # ``response.output_item.done`` fired.
+            message_content_block = {
+                "type": "output_text",
+                "text": accumulated_text,
+                "annotations": [],
+            }
+            # R10-C3 / Yuki F8 (0.8.5 dogfood): emit
+            # ``response.output_text.done`` AND ``response.content_part.done``
+            # BEFORE the message item ``done`` event — required by the
+            # OpenAI Responses SSE spec. The openai-python SDK marks the
+            # output_text part as finalized on ``content_part.done`` and
+            # raises if ``output_item.done`` arrives without it.
             if content_part_open:
-                yield _sse(
+                yield _emit(
                     "response.output_text.done",
                     {
                         "type": "response.output_text.done",
@@ -2045,43 +2084,39 @@ async def _stream_responses(
                         "output_index": message_output_index,
                         "content_index": 0,
                         "text": accumulated_text,
+                        # R10-C3: openai-python ``ResponseTextDoneEvent``
+                        # marks ``logprobs`` as required (same as the
+                        # delta event). Empty array — spec-compliant absent.
+                        "logprobs": [],
                     },
                 )
-                yield _sse(
+                yield _emit(
                     "response.content_part.done",
                     {
                         "type": "response.content_part.done",
                         "item_id": message_item_id,
                         "output_index": message_output_index,
                         "content_index": 0,
-                        "part": {
-                            "type": "output_text",
-                            "text": accumulated_text,
-                            "annotations": [],
-                        },
+                        "part": message_content_block,
                     },
                 )
                 content_part_open = False
-            yield _sse(
+            message_item_payload = {
+                "type": "message",
+                "id": message_item_id,
+                "status": "completed",
+                "role": "assistant",
+                "content": [message_content_block],
+            }
+            yield _emit(
                 "response.output_item.done",
                 {
                     "type": "response.output_item.done",
                     "output_index": message_output_index,
-                    "item": {
-                        "type": "message",
-                        "id": message_item_id,
-                        "status": "completed",
-                        "role": "assistant",
-                        "content": [
-                            {
-                                "type": "output_text",
-                                "text": accumulated_text,
-                                "annotations": [],
-                            }
-                        ],
-                    },
+                    "item": message_item_payload,
                 },
             )
+            completed_output.append(message_item_payload)
 
         # Ana C-06 (0.8.5 dogfood): when the request used Computer-Use,
         # translate ``function.name == "computer"`` tool_calls into the
@@ -2091,12 +2126,101 @@ async def _stream_responses(
 
         tool_output_index = (message_output_index + 1) if message_open else 0
         for tc in tool_calls or []:
+            # R10-C3: inline the tool-call event triplet here (instead of
+            # delegating to ``_emit_function_call_item`` / ``_emit_computer_call_item``)
+            # so the ``completed_output`` array can be populated with the
+            # finalized ``done`` item — needed for the terminal
+            # ``response.completed.response.output[]`` payload. The inlined
+            # logic uses the route-local ``_emit`` helper (monotonic
+            # sequence numbers) instead of the module-level ``_sse`` the
+            # helpers used to call.
             if uses_computer_use and (tc.function.name or "") == "computer":
-                async for ev in _emit_computer_call_item(tc, tool_output_index):
-                    yield ev
+                # Lazy import mirrors ``_emit_computer_call_item`` to avoid
+                # a circular import at module load time.
+                from ..api.responses_adapter import _parse_computer_action
+
+                cu_id = f"cu_{uuid.uuid4().hex[:24]}"
+                action = _parse_computer_action(tc.function.arguments or "")
+                yield _emit(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": tool_output_index,
+                        "item": {
+                            "type": "computer_call",
+                            "id": cu_id,
+                            "call_id": tc.id,
+                            "status": "in_progress",
+                            "action": action,
+                            "pending_safety_checks": [],
+                        },
+                    },
+                )
+                cu_done_item = {
+                    "type": "computer_call",
+                    "id": cu_id,
+                    "call_id": tc.id,
+                    "status": "completed",
+                    "action": action,
+                    "pending_safety_checks": [],
+                }
+                yield _emit(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": tool_output_index,
+                        "item": cu_done_item,
+                    },
+                )
+                completed_output.append(cu_done_item)
             else:
-                async for ev in _emit_function_call_item(tc, tool_output_index):
-                    yield ev
+                fc_id = f"fc_{uuid.uuid4().hex[:24]}"
+                yield _emit(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": tool_output_index,
+                        "item": {
+                            "type": "function_call",
+                            "id": fc_id,
+                            "call_id": tc.id,
+                            "name": tc.function.name,
+                            "arguments": "",
+                            "status": "in_progress",
+                        },
+                    },
+                )
+                # Codex CLI accepts the args as a single delta — we don't
+                # have token-by-token streaming for tool_call arguments in
+                # the underlying engine yet, so emit the whole JSON string
+                # at once. Codex concatenates these the same way regardless
+                # of chunk count.
+                yield _emit(
+                    "response.function_call_arguments.delta",
+                    {
+                        "type": "response.function_call_arguments.delta",
+                        "item_id": fc_id,
+                        "output_index": tool_output_index,
+                        "delta": tc.function.arguments or "",
+                    },
+                )
+                fc_done_item = {
+                    "type": "function_call",
+                    "id": fc_id,
+                    "call_id": tc.id,
+                    "name": tc.function.name,
+                    "arguments": tc.function.arguments or "",
+                    "status": "completed",
+                }
+                yield _emit(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": tool_output_index,
+                        "item": fc_done_item,
+                    },
+                )
+                completed_output.append(fc_done_item)
             tool_output_index += 1
 
         # H-06 (codex r2): the streaming /v1/responses path is
@@ -2140,7 +2264,7 @@ async def _stream_responses(
                 "(accumulated_text empty, no tool_calls, completion_tokens=0); "
                 "surfacing as response.failed"
             )
-            yield _sse(
+            yield _emit(
                 "response.failed",
                 {
                     "type": "response.failed",
@@ -2180,12 +2304,15 @@ async def _stream_responses(
             "input_tokens": prompt_tokens,
             "output_tokens": completion_tokens,
             "total_tokens": prompt_tokens + completion_tokens,
+            # R10-C3: openai-python ``ResponseUsage`` marks these two
+            # ``*_details`` blocks as required, so always emit them. Empty
+            # objects are the documented absent-details shape.
+            "input_tokens_details": {
+                "cached_tokens": cached_tokens_clamped if cached_tokens_clamped else 0,
+            },
+            "output_tokens_details": {"reasoning_tokens": 0},
         }
-        if cached_tokens_clamped:
-            usage_payload["input_tokens_details"] = {
-                "cached_tokens": cached_tokens_clamped
-            }
-        yield _sse(
+        yield _emit(
             "response.completed",
             {
                 "type": "response.completed",
@@ -2195,7 +2322,18 @@ async def _stream_responses(
                     "created_at": created_at,
                     "status": "completed",
                     "model": served_model,
+                    # R10-C3: include the full reconstructed ``output`` array
+                    # so the openai-python SDK can materialize the final
+                    # Response object. Pre-fix this field was missing and the
+                    # SDK raised on ``Response.output`` validation.
+                    "output": completed_output,
                     "usage": usage_payload,
+                    # R10-C3: mirror the non-streaming response shape — the
+                    # SDK's ``Response`` model marks these three fields
+                    # required and rejects the payload without them.
+                    "parallel_tool_calls": bool(responses_request.parallel_tool_calls),
+                    "tool_choice": responses_request.tool_choice or "auto",
+                    "tools": responses_request.tools or [],
                 },
             },
         )
@@ -2213,7 +2351,7 @@ async def _stream_responses(
         # a half-stream-then-EOF; matches how the OpenAI cloud
         # Responses API closes errored streams.
         logger.exception("Responses stream failed: %s", e)
-        yield _sse(
+        yield _emit(
             "response.failed",
             {
                 "type": "response.failed",
