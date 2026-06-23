@@ -3,8 +3,62 @@
 rapid-mlx supports audio processing using [mlx-audio](https://github.com/Blaizzy/mlx-audio), providing:
 
 - **STT (Speech-to-Text)**: Whisper, Parakeet
-- **TTS (Text-to-Speech)**: Kokoro, Chatterbox, VibeVoice, VoxCPM
+- **TTS (Text-to-Speech)**: Kokoro, Chatterbox, VibeVoice, VoxCPM, Dia
 - **Audio Processing**: SAM-Audio (voice separation)
+
+## Supported Aliases (R10-C1)
+
+`rapid-mlx serve <alias>` recognizes the audio alias surface below and routes the request to the audio engines (skipping the text-LM loader). Both the short alias and the full HuggingFace id work — pasting a full HF id from `mlx-community/...` of an audio model takes the audio path automatically.
+
+| Alias | Type | HuggingFace id |
+| --- | --- | --- |
+| `kokoro` (aka `kokoro-82m`, `kokoro-82m-bf16`) | TTS | `mlx-community/Kokoro-82M-bf16` |
+| `kokoro-4bit` / `kokoro-82m-4bit` | TTS | `mlx-community/Kokoro-82M-4bit` |
+| `kokoro-8bit` / `kokoro-82m-8bit` | TTS | `mlx-community/Kokoro-82M-8bit` |
+| `chatterbox` | TTS | `mlx-community/chatterbox-turbo-fp16` |
+| `chatterbox-4bit` | TTS | `mlx-community/chatterbox-turbo-4bit` |
+| `vibevoice` / `vibevoice-realtime` | TTS | `mlx-community/VibeVoice-Realtime-0.5B-4bit` |
+| `voxcpm` | TTS | `mlx-community/VoxCPM1.5` |
+| `dia` | TTS | `mlx-community/Dia-1.6B-4bit` |
+| `whisper` / `whisper-1` / `whisper-large-v3` | STT | `mlx-community/whisper-large-v3-mlx` |
+| `whisper-large-v3-turbo` | STT | `mlx-community/whisper-large-v3-turbo` |
+| `whisper-medium` / `-small` / `-base` / `-tiny` | STT | `mlx-community/whisper-{size}-mlx` |
+| `parakeet` / `parakeet-tdt-0.6b` | STT | `mlx-community/parakeet-tdt-0.6b-v2` |
+| `parakeet-v3` / `parakeet-tdt-0.6b-v3` | STT | `mlx-community/parakeet-tdt-0.6b-v3` |
+
+Run `rapid-mlx models` to see the full live list (the section header reads "Audio models" with `[audio:tts]` / `[audio:stt]` tags).
+
+Audio engines load lazily on the first `/v1/audio/*` request — `rapid-mlx serve` returns as soon as the FastAPI app is bound, with no boot-time weight download.
+
+### TTS quick start
+
+```bash
+# Boot the server with Kokoro
+rapid-mlx serve kokoro
+# Synthesize speech (OpenAI-compatible)
+curl -s http://localhost:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model": "kokoro", "input": "Hello from rapid-mlx", "voice": "af_heart"}' \
+  --output hello.wav
+```
+
+### STT quick start
+
+```bash
+# Boot with Whisper
+rapid-mlx serve whisper-large-v3
+# Transcribe (OpenAI-compatible)
+curl -s http://localhost:8000/v1/audio/transcriptions \
+  -F "model=whisper-large-v3" \
+  -F "file=@speech.mp3"
+```
+
+If `mlx-audio` is missing, the boot guard exits with rc=2 and the install hint:
+
+```
+error: model 'kokoro' is an audio alias and requires the optional `mlx-audio` dependency (shipped with the [audio] extra).
+Install with: pip install 'rapid-mlx[audio]'
+```
 
 ## Installation
 

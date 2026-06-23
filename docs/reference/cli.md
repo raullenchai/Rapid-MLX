@@ -97,7 +97,17 @@ rapid-mlx serve qwen3.5-9b-4bit \
   --api-key your-secret-key \
   --rate-limit 60 \
   --timeout 120
+
+# Audio models (requires the [audio] extra) — see docs/guides/audio.md
+rapid-mlx serve kokoro                    # TTS via /v1/audio/speech
+rapid-mlx serve whisper-large-v3          # STT via /v1/audio/transcriptions
+rapid-mlx serve parakeet                  # English STT (NVIDIA Parakeet)
+rapid-mlx serve mlx-community/Kokoro-82M-bf16   # Full HF id also routes to audio
 ```
+
+#### Audio aliases (R10-C1)
+
+Pass any of the audio aliases listed in `rapid-mlx models` (the "Audio models" section) to serve the audio-only `/v1/audio/*` endpoints. The audio path skips the text-LM loader entirely — engines load lazily on the first request. See the [audio guide](../guides/audio.md) for the full TTS / STT alias matrix and quickstart examples.
 
 ### Security
 

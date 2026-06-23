@@ -424,6 +424,192 @@ def _resolve_embedding_alias(name: str) -> tuple[str, bool]:
     return resolved, resolved != name
 
 
+def _resolve_audio_model_for_serve(model_name: str):
+    """Resolve a model name to an audio registry entry, if it's audio.
+
+    R10-C1: pre-fix ``serve_command`` had a boot guard (rc=2 when
+    ``[audio]`` extra missing) but ZERO resolution logic for audio
+    aliases. Short aliases like ``kokoro``/``whisper`` then fell into
+    ``_ensure_model_downloaded`` and 404'd at HF, while full HF ids
+    of audio models (``mlx-community/Kokoro-82M-bf16``) downloaded
+    successfully but crashed in ``mlx_lm.load_model`` because they
+    have no safetensors. Bo r10-R1: 0/8 audio aliases boot on 0.8.11.
+
+    The fix routes audio names through a SEPARATE serve path that
+    skips the text-model loader entirely. This helper returns the
+    resolved registry entry (so the dispatcher knows the HF id, type,
+    family, voice list) or ``None`` if the name isn't audio. ``None``
+    falls through to the legacy text path unchanged — text-model boot
+    paths must not regress.
+    """
+    from .audio.registry import resolve_audio_alias
+
+    return resolve_audio_alias(model_name)
+
+
+def _serve_audio_mode(args, entry) -> None:
+    """Bind the audio-only serve path for a resolved registry entry.
+
+    R10-C1 audio-serve-mode. Pre-fix every ``rapid-mlx serve kokoro``
+    crash-looped because the text-model boot path was the ONLY path:
+
+    1. ``_ensure_model_downloaded(args.model)`` queried HF for the
+       short alias and 404'd — there's no ``hf.co/kokoro`` repo.
+    2. Even when the user supplied a full HF id, ``load_model``
+       (text path) called ``mlx_lm.load_model`` which expects
+       safetensors. Audio repos ship npz/mlx weights, so the loader
+       crashed with "no safetensors found".
+    3. ``pflash.validate_model_support`` and the parser auto-detection
+       both consult ``args.model`` assuming it's a text-LM alias —
+       a wrong tool for audio.
+
+    The audio-serve-mode bypasses all of the above:
+
+    * Print the resolved alias -> HF id banner so the operator sees
+      the same alias-resolution UX they get for text models.
+    * Stamp the resolved HF id on ``args.model`` so the audio routes
+      treat it as a known engine (``STT_MODEL_ALIASES`` /
+      ``TTS_MODEL_ALIASES`` map both the short and full forms).
+    * Capture the alias on ``server._model_alias`` so ``/v1/models``
+      advertises it.
+    * Configure server security knobs (api-key, body-size cap, CORS)
+      the SAME way the text path does — audio endpoints share the
+      same middleware stack.
+    * Skip the text-LM loader. The audio engines are loaded LAZILY
+      on the first request by the route handlers (``STTEngine.load``
+      / ``TTSEngine.load``), so there's nothing to boot at startup —
+      and a Kokoro/Whisper weight download mid-boot would only add
+      cold-start latency without buying anything.
+    * Run uvicorn with the same FastAPI ``app`` text models use; the
+      ``/v1/audio/*`` routes are already mounted on it.
+    """
+    import os
+    import sys
+
+    # Late imports — audio mode runs on the lighter base install +
+    # ``[audio]`` extra; we don't want the text-LM engine machinery to
+    # boot until / unless it's actually needed.
+    from . import server
+    from .middleware.auth import configure_rate_limiter
+    from .server import app
+
+    uvicorn_log_level = server.configure_logging(args.log_level)
+
+    # Stamp the resolved model id so the audio routes find the same
+    # alias mapping the registry has. ``server._model_alias`` is read
+    # by ``/v1/models`` to surface the operator-facing alias name;
+    # ``server._model_name`` / ``server._model_path`` populate
+    # ``ServerConfig.model_name`` / ``model_path`` so /v1/models lists
+    # the served audio model (codex r1 HIGH #1 follow-up).
+    if hasattr(args, "_original_alias") and args._original_alias is not None:
+        server._model_alias = args._original_alias
+    else:
+        # No prior alias hop (e.g. user passed a full HF id). Use the
+        # short alias from the registry so /v1/models still shows the
+        # friendly name, not the bare HF path.
+        server._model_alias = entry.alias
+    server._model_name = entry.hf_id
+    server._model_path = entry.hf_id
+
+    # Mirror the text path's security configuration. Audio routes use
+    # the SAME middleware stack as chat/embeddings — the same env vars
+    # and CLI flags govern auth + body-size caps + CORS. Diverging
+    # here would silently weaken the deployment posture for anyone who
+    # added ``--api-key`` to their ``rapid-mlx serve kokoro`` command.
+    server._api_key = server._resolve_api_key(args.api_key)
+    server._default_timeout = args.timeout
+
+    _max_body_arg = getattr(args, "max_request_bytes", None)
+    if _max_body_arg is not None:
+        server._max_request_bytes = max(0, int(_max_body_arg))
+    else:
+        _env = os.environ.get("RAPID_MLX_MAX_REQUEST_BYTES", "").strip()
+        if _env:
+            try:
+                server._max_request_bytes = max(0, int(_env))
+            except ValueError:
+                server._max_request_bytes = 8 * 1024 * 1024
+
+    # Body-receive timeout — same env-driven hook the text path uses.
+    _apply_body_receive_timeout_env(server)
+
+    # CORS — same friendly default the text path uses.
+    server.configure_cors_from_env(args.cors_origins)
+    if args.rate_limit > 0:
+        server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
+
+    # CRITICAL: copy the just-set server globals into the
+    # ServerConfig singleton the middleware actually reads.
+    # ``server.load_model`` does this on the text path (calls
+    # ``_sync_config`` after wiring globals); the audio path skips
+    # ``load_model`` so we must call it explicitly here. Without this
+    # sync the auth middleware reads ``cfg.api_key`` (still ``None``
+    # because nothing populated it) instead of ``server._api_key``,
+    # so ``rapid-mlx serve kokoro --api-key SECRET`` would silently
+    # accept unauthenticated /v1/audio/* requests. Codex r1 HIGH #1.
+    server._sync_config()
+
+    # Print the resolution banner so the operator sees what loaded.
+    family_tag = f"[audio:{entry.type}]"
+    shown_alias = getattr(args, "_original_alias", args.model)
+    print()
+    print(f"  Audio mode: {shown_alias} → {entry.hf_id} {family_tag}")
+    if entry.type == "tts" and entry.default_voice:
+        print(f"  Default voice: {entry.default_voice}")
+    if entry.type == "stt" and entry.languages:
+        print(f"  Languages: {entry.languages}")
+    print(
+        "  Audio engines load lazily on the first /v1/audio/* request "
+        "(no boot-time weight download)."
+    )
+
+    # Stamp the bind source-of-truth so the lifespan "Ready:" banner
+    # prints the right URL. Mirrors the text-path block.
+    host_display = "localhost" if args.host == "0.0.0.0" else args.host
+    listen_fd = getattr(args, "listen_fd", None)
+
+    # Port preflight — same friendly "port already in use" probe the
+    # text path runs. Skip in --listen-fd mode (the supervisor owns
+    # the socket; binding here would race). Mirrors the rationale on
+    # the text-path call site.
+    if listen_fd is None:
+        _port_preflight_or_die(args.host, args.port, model=args.model)
+
+    if listen_fd is not None:
+        print(
+            f"  Starting server on inherited fd {listen_fd} "
+            "(audio routes ready immediately)"
+        )
+    else:
+        print(
+            f"  Starting server on http://{host_display}:{args.port} "
+            "(audio routes ready immediately)"
+        )
+
+    from vllm_mlx._version_check import print_staleness_warning_if_any
+    from vllm_mlx.config import get_config
+
+    print_staleness_warning_if_any()
+    print()
+
+    _cfg = get_config()
+    _cfg.bind_host = None
+    _cfg.bind_port = None
+    _cfg.bind_listen_fd = None
+    if listen_fd is None:
+        _cfg.bind_host = host_display
+        _cfg.bind_port = args.port
+    else:
+        _cfg.bind_listen_fd = listen_fd
+
+    # Use sys.stdout.flush so the banner lands before uvicorn's own
+    # startup logs interleave — operators expect to see the audio
+    # banner FIRST.
+    sys.stdout.flush()
+
+    _run_uvicorn(app, args, uvicorn_log_level)
+
+
 def _load_embedding_model_or_exit(args, load_fn) -> None:
     """Pre-load ``--embedding-model`` with the H-08 install guard and
     the D-EMBED-ALIAS alias-resolution + clean error-wrapping path.
@@ -1030,6 +1216,37 @@ def serve_command(args):
 
     if is_audio_model_alias(getattr(args, "model", None)):
         require_audio_or_exit(args.model)
+
+    # R10-C1: AUDIO-SERVE-MODE FORK. The boot guard above only checks
+    # that the ``[audio]`` extra is installed — it doesn't route the
+    # alias anywhere. Pre-R10 every short alias (``kokoro``, ``whisper``,
+    # ``parakeet``...) fell through to ``_ensure_model_downloaded``
+    # and 404'd at HF, while full HF ids of audio models downloaded
+    # successfully but then crashed inside ``mlx_lm.load_model``
+    # because audio repos don't ship safetensors. Bo r10-R1: 0/8 audio
+    # aliases boot on 0.8.11 (codex r8-A r3 predicted this exact shape).
+    #
+    # The fix is a clean fork: if the registry resolves the model to
+    # an audio entry, route to ``_serve_audio_mode`` (which skips
+    # ``_ensure_model_downloaded``, the text loader, pflash, parser
+    # detection, etc.) and return. Everything below this block remains
+    # untouched for the text path so text-model boot does NOT regress.
+    audio_entry = _resolve_audio_model_for_serve(getattr(args, "model", None))
+    if audio_entry is not None:
+        # Stamp the alias hop so /v1/models, telemetry, and the banner
+        # all show the same name pair. ``_original_alias`` is set by
+        # the main() alias resolver for text models; we mirror that
+        # contract here for audio.
+        if not hasattr(args, "_original_alias") or args._original_alias is None:
+            args._original_alias = args.model
+        # Replace the alias on args.model with the resolved HF id so
+        # any downstream code that reads ``args.model`` (eg. session
+        # telemetry, ps_command) sees a real repo path. The audio
+        # routes still accept both forms because the registry's
+        # reverse HF-id index covers full ids too.
+        args.model = audio_entry.hf_id
+        _serve_audio_mode(args, audio_entry)
+        return
 
     # Interactive auto-upgrade prompt — when serve runs interactively and a
     # newer release is available, ask once before booting the model. Honors
@@ -2738,11 +2955,47 @@ def models_command(args):
         print(row)
 
     print(sep)
+
+    # R10-C1: audio alias section. Pre-R10 ``rapid-mlx models`` listed
+    # zero audio aliases because they don't live in ``aliases.json``
+    # (which only carries text-LM profiles). Users had no in-tool way
+    # to discover ``kokoro`` / ``whisper-large-v3`` / ``parakeet`` —
+    # they had to read the docs site. Now the audio registry
+    # (vllm_mlx/audio/aliases.json) feeds the same table so
+    # ``rapid-mlx models`` is the canonical "what can I serve?" view
+    # across every lane.
+    try:
+        from vllm_mlx.audio.registry import list_audio_aliases
+
+        audio_entries = list_audio_aliases()
+    except Exception:
+        # A malformed audio registry must NOT break the text alias
+        # listing — silently degrade by skipping the audio section.
+        audio_entries = []
+
+    if audio_entries:
+        print()
+        print(f"  Audio models ({len(audio_entries)} aliases)")
+        audio_sep = "  " + "─" * width
+        print(audio_sep)
+        audio_header = f"  {'Alias':<24} {'Kind':<10} {'Family':<12} {'HF id':<40}"
+        print(audio_header)
+        print(audio_sep)
+        for entry in audio_entries:
+            kind_tag = f"[audio:{entry.type}]"
+            print(
+                f"  {entry.alias:<24} {kind_tag:<10} "
+                f"{entry.family:<12} {entry.hf_id:<40}"
+            )
+        print(audio_sep)
+
     print()
     print("  Tip: `rapid-mlx info <alias>` for the full per-model profile")
     print("       `rapid-mlx pull <alias>` to download")
     print("       `rapid-mlx chat <alias>` for an interactive REPL")
     print("       `rapid-mlx serve <alias>` for an OpenAI-compatible server")
+    if audio_entries:
+        print("       `rapid-mlx serve kokoro|whisper-large-v3|parakeet` for audio")
     print()
 
 

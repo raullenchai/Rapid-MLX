@@ -1,0 +1,192 @@
+{
+  "_comment": "R10-C1 audio alias registry. Single source of truth for short alias -> HuggingFace repo id mapping. Every entry's hf_id has been verified resolvable on https://huggingface.co/api/models/<id> at registry-introduction time. Add new entries by hand, then run tests/test_audio_alias_registry.py::test_every_hf_id_resolves locally (network-gated) to confirm before merging.",
+
+  "kokoro": {
+    "type": "tts",
+    "hf_id": "mlx-community/Kokoro-82M-bf16",
+    "family": "kokoro",
+    "default_voice": "af_heart",
+    "notes": "Default Kokoro 82M (bf16). Drop-in OpenAI-style TTS."
+  },
+  "kokoro-82m": {
+    "type": "tts",
+    "hf_id": "mlx-community/Kokoro-82M-bf16",
+    "family": "kokoro",
+    "default_voice": "af_heart",
+    "notes": "Long-form alias for ``kokoro`` — same HF id."
+  },
+  "kokoro-82m-bf16": {
+    "type": "tts",
+    "hf_id": "mlx-community/Kokoro-82M-bf16",
+    "family": "kokoro",
+    "default_voice": "af_heart",
+    "notes": "Explicit bf16 quant of Kokoro 82M."
+  },
+  "kokoro-82m-4bit": {
+    "type": "tts",
+    "hf_id": "mlx-community/Kokoro-82M-4bit",
+    "family": "kokoro",
+    "default_voice": "af_heart",
+    "notes": "4-bit quant of Kokoro 82M — smaller download, mild quality drop."
+  },
+  "kokoro-82m-8bit": {
+    "type": "tts",
+    "hf_id": "mlx-community/Kokoro-82M-8bit",
+    "family": "kokoro",
+    "default_voice": "af_heart",
+    "notes": "8-bit quant of Kokoro 82M."
+  },
+  "kokoro-4bit": {
+    "type": "tts",
+    "hf_id": "mlx-community/Kokoro-82M-4bit",
+    "family": "kokoro",
+    "default_voice": "af_heart",
+    "notes": "Short-form 4-bit alias."
+  },
+  "kokoro-8bit": {
+    "type": "tts",
+    "hf_id": "mlx-community/Kokoro-82M-8bit",
+    "family": "kokoro",
+    "default_voice": "af_heart",
+    "notes": "Short-form 8-bit alias."
+  },
+
+  "chatterbox": {
+    "type": "tts",
+    "hf_id": "mlx-community/chatterbox-turbo-fp16",
+    "family": "chatterbox",
+    "default_voice": "default",
+    "notes": "Multilingual expressive TTS. Voice cloning via reference audio."
+  },
+  "chatterbox-4bit": {
+    "type": "tts",
+    "hf_id": "mlx-community/chatterbox-turbo-4bit",
+    "family": "chatterbox",
+    "default_voice": "default",
+    "notes": "4-bit quant of Chatterbox Turbo."
+  },
+
+  "vibevoice": {
+    "type": "tts",
+    "hf_id": "mlx-community/VibeVoice-Realtime-0.5B-4bit",
+    "family": "vibevoice",
+    "default_voice": "default",
+    "notes": "Realtime low-latency TTS, 0.5B 4bit."
+  },
+  "vibevoice-realtime": {
+    "type": "tts",
+    "hf_id": "mlx-community/VibeVoice-Realtime-0.5B-4bit",
+    "family": "vibevoice",
+    "default_voice": "default",
+    "notes": "Long-form alias for ``vibevoice``."
+  },
+
+  "voxcpm": {
+    "type": "tts",
+    "hf_id": "mlx-community/VoxCPM1.5",
+    "family": "voxcpm",
+    "default_voice": "default",
+    "notes": "Chinese/English high-quality TTS (CPM-based)."
+  },
+
+  "dia": {
+    "type": "tts",
+    "hf_id": "mlx-community/Dia-1.6B-4bit",
+    "family": "dia",
+    "default_voice": "default",
+    "notes": "Dia 1.6B multi-speaker dialogue TTS (4-bit). Best-effort — covered by the audio probe but mlx_audio support is experimental; report bugs upstream if synth fails."
+  },
+
+  "whisper": {
+    "type": "stt",
+    "hf_id": "mlx-community/whisper-large-v3-mlx",
+    "family": "whisper",
+    "languages": "multilingual",
+    "notes": "Bare ``whisper`` -> largest-v3. Matches OpenAI's ``whisper-1`` placeholder."
+  },
+  "whisper-1": {
+    "type": "stt",
+    "hf_id": "mlx-community/whisper-large-v3-mlx",
+    "family": "whisper",
+    "languages": "multilingual",
+    "notes": "OpenAI-spec id from the legacy Whisper API. Same destination as ``whisper-large-v3``."
+  },
+  "whisper-large-v3": {
+    "type": "stt",
+    "hf_id": "mlx-community/whisper-large-v3-mlx",
+    "family": "whisper",
+    "languages": "multilingual",
+    "notes": "Whisper large-v3 (multilingual, 99+ languages)."
+  },
+  "whisper-large-v3-turbo": {
+    "type": "stt",
+    "hf_id": "mlx-community/whisper-large-v3-turbo",
+    "family": "whisper",
+    "languages": "multilingual",
+    "notes": "Whisper large-v3 turbo (faster decode, slight quality drop)."
+  },
+  "whisper-medium": {
+    "type": "stt",
+    "hf_id": "mlx-community/whisper-medium-mlx",
+    "family": "whisper",
+    "languages": "multilingual",
+    "notes": "Whisper medium."
+  },
+  "whisper-small": {
+    "type": "stt",
+    "hf_id": "mlx-community/whisper-small-mlx",
+    "family": "whisper",
+    "languages": "multilingual",
+    "notes": "Whisper small."
+  },
+  "whisper-base": {
+    "type": "stt",
+    "hf_id": "mlx-community/whisper-base-mlx",
+    "family": "whisper",
+    "languages": "multilingual",
+    "notes": "Whisper base."
+  },
+  "whisper-tiny": {
+    "type": "stt",
+    "hf_id": "mlx-community/whisper-tiny-mlx",
+    "family": "whisper",
+    "languages": "multilingual",
+    "notes": "Whisper tiny (smallest, fastest, lowest accuracy)."
+  },
+
+  "parakeet": {
+    "type": "stt",
+    "hf_id": "mlx-community/parakeet-tdt-0.6b-v2",
+    "family": "parakeet",
+    "languages": "en",
+    "notes": "NVIDIA Parakeet TDT 0.6B v2 (English, fastest STT)."
+  },
+  "parakeet-tdt-0.6b": {
+    "type": "stt",
+    "hf_id": "mlx-community/parakeet-tdt-0.6b-v2",
+    "family": "parakeet",
+    "languages": "en",
+    "notes": "Long-form alias for ``parakeet``."
+  },
+  "parakeet-tdt-0.6b-v2": {
+    "type": "stt",
+    "hf_id": "mlx-community/parakeet-tdt-0.6b-v2",
+    "family": "parakeet",
+    "languages": "en",
+    "notes": "Parakeet TDT 0.6B v2."
+  },
+  "parakeet-v3": {
+    "type": "stt",
+    "hf_id": "mlx-community/parakeet-tdt-0.6b-v3",
+    "family": "parakeet",
+    "languages": "en",
+    "notes": "Parakeet TDT 0.6B v3."
+  },
+  "parakeet-tdt-0.6b-v3": {
+    "type": "stt",
+    "hf_id": "mlx-community/parakeet-tdt-0.6b-v3",
+    "family": "parakeet",
+    "languages": "en",
+    "notes": "Parakeet TDT 0.6B v3."
+  }
+}
