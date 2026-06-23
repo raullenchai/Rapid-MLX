@@ -6,7 +6,7 @@
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--host` | Server host address | `0.0.0.0` |
+| `--host` | Server host address (loopback-only by default; pass `0.0.0.0` to expose on LAN) | `127.0.0.1` |
 | `--port` | Server port | `8000` |
 | `--max-tokens` | Default max tokens | `32768` |
 | `--default-temperature` | Default temperature when not specified in request | None |

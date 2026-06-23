@@ -151,6 +151,82 @@ def _apply_body_receive_timeout_env(server_mod, *, logger=None) -> None:
         server_mod._body_receive_timeout_seconds = 15.0
 
 
+def _wildcard_host_aliases() -> frozenset[str]:
+    """Strings that name "bind on every interface" rather than a single
+    address. Python's ``socket.bind(("", N))`` and ``socket.bind(("0.0.0.0",
+    N))`` are equivalent for IPv4; uvicorn historically treats both the
+    empty string and ``0.0.0.0`` the same way. We treat them as a single
+    class for the loopback-collision pre-flight (codex round-1 MAJOR on
+    PR #848: original gate only matched ``"0.0.0.0"`` so ``--host ""``
+    could still re-open the dual-bind ambiguity).
+
+    Kept as a function rather than a module constant so the test suite
+    can monkey-patch it in case a future host alias (e.g. ``"::"`` once we
+    grow IPv6 pre-flight) needs to land without touching every call site.
+    """
+    return frozenset({"0.0.0.0", ""})
+
+
+def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
+    """Probe ``(host, port)`` AND — when ``host`` is a wildcard alias —
+    additionally probe ``("127.0.0.1", port)``. Print a friendly error
+    and ``sys.exit(1)`` on the first collision.
+
+    Why both: macOS / Linux let a wildcard listener (``0.0.0.0`` or
+    ``""``) coexist with a more-specific loopback listener
+    (``127.0.0.1``) on the same port. v0.8.2 dogfood finding #2
+    reproduced the resulting PortSweep bypass: ``nc -l 127.0.0.1 11812``
+    + ``rapid-mlx serve --port 11812`` BOTH succeed, and
+    ``curl 127.0.0.1:11812/healthz`` returns HTTP 000 (kernel routes
+    loopback to nc, not rapid-mlx). The fix is to explicitly probe the
+    loopback address whenever the requested bind is wider than loopback.
+
+    Extracted from ``serve_command`` so the legacy
+    ``python -m vllm_mlx.server`` entrypoint can call it too without
+    duplicating the wildcard-alias / probe-loop logic — codex round-1
+    MAJOR on PR #848 (the dogfood-CLI fix had to land on both supported
+    entrypoints to actually close the bypass).
+
+    ``::1`` is intentionally NOT probed: macOS treats v4 and v6 loopback
+    as distinct stacks, and uvicorn's IPv4 bind never collides with an
+    IPv6 listener.
+    """
+    import socket
+
+    wildcards = _wildcard_host_aliases()
+    if host in wildcards:
+        # Probe the requested wildcard FIRST (so a LAN-side port
+        # collision still surfaces the user-supplied host name in the
+        # error), then probe 127.0.0.1 to catch the loopback shadow.
+        hosts_to_probe: tuple[str, ...] = (host, "127.0.0.1")
+    else:
+        hosts_to_probe = (host,)
+
+    for probe_host in hosts_to_probe:
+        # ``with`` guarantees the preflight socket is closed on every
+        # exit path — including OSError during ``bind``. The previous
+        # form called ``_sock.close()`` only on the success branch,
+        # which leaked the fd whenever the bind raised (e.g. when
+        # running under a test harness that catches ``SystemExit``).
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+            _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                _sock.bind((probe_host, port))
+            except OSError:
+                # Surface the host we actually collided on so the user
+                # can distinguish "LAN port busy" from "loopback port
+                # already claimed by another rapid-mlx / nc / proxy".
+                # Use the empty-string-friendly display name so
+                # ``--host ""`` shows up as ``0.0.0.0`` rather than a
+                # confusing bare quote.
+                display_host = probe_host or "0.0.0.0"
+                print(f"\n  Error: Port {port} is already in use on {display_host}.")
+                print(
+                    f"  Try a different port: rapid-mlx serve {model} --port {port + 1}"
+                )
+                sys.exit(1)
+
+
 def _run_uvicorn(app, args, log_level: str) -> None:
     """Dispatch into ``uvicorn.run`` with the kwargs that match the
     current ``--listen-fd`` / ``--host``/``--port`` mode.
@@ -1535,23 +1611,13 @@ def serve_command(args):
     # and handed us the fd. There is no host/port for us to check, and any
     # bind we attempt here would race or collide with the inherited socket.
     if getattr(args, "listen_fd", None) is None:
-        import socket
-
-        # ``with`` here guarantees the preflight socket is closed on every
-        # exit path — including OSError during ``bind``. The previous form
-        # called ``_sock.close()`` only on the success branch, which leaked
-        # the fd whenever the bind raised (e.g. when running under a test
-        # harness that catches ``SystemExit``).
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
-            _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            try:
-                _sock.bind((args.host, args.port))
-            except OSError:
-                print(f"\n  Error: Port {args.port} is already in use.")
-                print(
-                    f"  Try a different port: rapid-mlx serve {args.model} --port {args.port + 1}"
-                )
-                sys.exit(1)
+        # Shared helper so the legacy ``python -m vllm_mlx.server``
+        # entrypoint (vllm_mlx/server.py) can call the same probe
+        # without duplicating the wildcard-alias / loopback-shadow
+        # logic. See ``_port_preflight_or_die`` for why we probe both
+        # the requested host AND 127.0.0.1 when the requested host is
+        # a wildcard alias.
+        _port_preflight_or_die(args.host, args.port, model=args.model)
 
     # Check disk space before downloading model
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))
@@ -4485,7 +4551,22 @@ Examples:
         ),
     )
     serve_parser.add_argument(
-        "--host", type=str, default="0.0.0.0", help="Host to bind"
+        "--host",
+        type=str,
+        default="127.0.0.1",
+        help=(
+            "Host to bind (default: 127.0.0.1, loopback-only). Pass "
+            '0.0.0.0 (or "") to expose the server on every '
+            "interface (LAN reachable) — only do this once the "
+            "bearer-auth posture has been reviewed. The wildcard "
+            "bind also widens the PortSweep collision window: macOS "
+            "lets a wildcard listener coexist with a more-specific "
+            "(127.0.0.1) listener on the same port, so a second "
+            "server may start and silently shadow the first on the "
+            "loopback path. The pre-flight bind check below probes "
+            "127.0.0.1 explicitly whenever --host is a wildcard "
+            "alias to keep that bypass closed."
+        ),
     )
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
     # Socket activation — let an external supervisor (launchd, systemd,

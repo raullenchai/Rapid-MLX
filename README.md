@@ -833,7 +833,7 @@ Also: a fused single-kernel sampler (faster than mlx-vlm's, identical sampling m
 | Flag | Description | Default |
 |------|-------------|---------|
 | `<model>` | HuggingFace model name, local path, or alias (positional arg) | *(required)* |
-| `--host` | Host to bind to | `0.0.0.0` |
+| `--host` | Host to bind to (loopback-only by default; pass `0.0.0.0` to expose on LAN) | `127.0.0.1` |
 | `--port` | Port to bind to | `8000` |
 | `--max-tokens` | Default max tokens for generation | `32768` |
 
