@@ -1642,6 +1642,48 @@ class StreamingPostProcessor:
             return True
         return not isinstance(parsed, dict)
 
+    @staticmethod
+    def _continuation_arguments_definitively_non_object(args_str: str | None) -> bool:
+        """Narrower twin of
+        ``_forced_tool_choice_arguments_violate_object_root`` for
+        argument-only continuation fragments.
+
+        Continuations carry partial bytes — the FULL ``arguments``
+        string is built across multiple deltas by the cap+merge layer.
+        A finalized-anchor predicate (which treats "close >= open"
+        as garbage to drop) is too strict here: a legitimate closing
+        fragment such as ``ris"}`` of the split ``{"city":"Pa`` /
+        ``ris"}`` pair has more ``}`` than ``{`` and the
+        finalized-anchor helper would WRONGLY drop it — truncating an
+        otherwise-valid forced/required tool call. Codex r10-J r5
+        HIGH #1 caught the regression.
+
+        Continuations get the conservative predicate: drop ONLY when
+        the fragment ALONE parses as valid JSON AND its root is
+        non-object. Every parse-failure case (partial, balanced-but-
+        broken, bare prose) passes through — the cap layer routes
+        the fragment into the admitted anchor, and the
+        finalized-anchor gate at the end of the stream catches any
+        genuine non-object root after the full string is assembled.
+
+        Trade-off acknowledged: a stream that emits a *finalized*
+        bare-string ``"20230805"`` AS a continuation (no name on the
+        delta) will pass through this gate — but the streaming
+        finalized-anchor branch already caught that case in the
+        prior delta that carried the name, and the multi-round
+        finalize fallback (round-4) covers any recovery path. The
+        cost of being conservative here is a possible duplicate
+        sanity-check by the merge layer; the cost of being strict
+        is silently truncating valid split-JSON streams.
+        """
+        if not args_str or not args_str.strip():
+            return False
+        try:
+            parsed = json.loads(args_str)
+        except (ValueError, TypeError):
+            return False
+        return not isinstance(parsed, dict)
+
     def _apply_forced_tool_choice_filter(self, tool_calls: list[dict]) -> list[dict]:
         """Suppress streaming tool_calls deltas that violate the
         ``tool_choice`` contract (forced named, or ``"required"``).
@@ -1737,7 +1779,16 @@ class StreamingPostProcessor:
                     else None
                 )
                 cont_args = wrapped_args if wrapped_args is not None else flat_args
-                if self._forced_tool_choice_arguments_violate_object_root(cont_args):
+                # r10-J round-5 (codex r5 HIGH #1): use the narrower
+                # continuation-specific predicate, NOT the finalized-
+                # anchor one. The finalized-anchor predicate treats
+                # "balanced-but-broken" / "more } than {" as garbage
+                # to drop, which over-rotates a legitimate split-JSON
+                # closing fragment (``ris"}`` half of ``{"city":"Pa``
+                # / ``ris"}``) into "drop". The continuation helper
+                # only drops when the fragment ALONE parses as a
+                # confirmed JSON non-object root.
+                if self._continuation_arguments_definitively_non_object(cont_args):
                     self._no_index_last_dropped = True
                     continue
                 filtered.append(tc)

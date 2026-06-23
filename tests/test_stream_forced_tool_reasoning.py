@@ -365,16 +365,78 @@ class TestForcedToolChoiceFilter:
         )
         assert pp._no_index_last_dropped is True
 
-    def test_drops_continuation_with_bare_unquoted_text(self):
-        """Same gate, bare unquoted text variant (the codex r2
-        BLOCKING #1 / phi-4 ``<think>`` panic shape applied at the
-        continuation level)."""
+    def test_passes_bare_text_continuation_for_merge_layer(self):
+        """r10-J round-5 trade-off (codex r5 HIGH #1).
+
+        Round-3 wrongly dropped bare unquoted text continuations at
+        the streaming-gate layer. Round-5 narrowed the continuation
+        predicate to ONLY drop on confirmed JSON non-object roots —
+        bare prose ``Paris output output`` fails ``json.loads`` and
+        is therefore indistinguishable at this layer from a middle
+        fragment of a legitimate split JSON string. We must pass it
+        through so split-arg streams aren't truncated.
+
+        Safety net: the cap+merge layer assembles fragments back
+        into the full ``arguments`` string of the admitted anchor,
+        and the finalized-anchor gate runs at finalize time over
+        that assembled string. If the merged result is still bare
+        prose (no closing brace ever arrived), the finalize-side
+        ``_forced_tool_choice_arguments_violate_object_root`` (which
+        retains the strict balanced-but-broken classifier) drops
+        the full call before it ships to the client. Coverage of
+        that finalize-side drop lives in the cross-format fallback
+        tests under TestStreamForcedReasoningEndToEnd below.
+        """
         pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
         out = pp._apply_forced_tool_choice_filter(
             [{"function": {"arguments": "Paris output output"}}]
         )
-        assert out == []
-        assert pp._no_index_last_dropped is True
+        assert len(out) == 1
+        assert pp._no_index_last_dropped is False
+
+    def test_passes_closing_fragment_of_split_args(self):
+        """r10-J round-5 — codex r5 HIGH #1 regression guard.
+
+        Streaming parsers commonly split JSON arguments across
+        deltas: first ``{"city":"Pa``, then ``ris"}``. The opening
+        fragment has more ``{`` than ``}`` and the round-3 helper
+        passes it through (unbalanced = partial). The CLOSING
+        fragment has more ``}`` than ``{`` — the pre-round-5 helper
+        wrongly classified it as "balanced-but-broken garbage" and
+        dropped it, truncating an otherwise-valid forced or
+        required tool call.
+
+        Post-round-5: continuations use the narrower
+        ``_continuation_arguments_definitively_non_object`` predicate
+        which only drops on confirmed JSON-non-object roots. Both
+        halves of a split must pass through.
+        """
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        # Opening fragment — { > } — already-known-good.
+        out_open = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": '{"city":"Pa'}}]
+        )
+        assert len(out_open) == 1, "opening fragment wrongly dropped"
+        # Closing fragment — } > { — REGRESSION from round-3 if dropped.
+        out_close = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": 'ris"}'}}]
+        )
+        assert len(out_close) == 1, (
+            "closing fragment of split JSON args wrongly dropped — the "
+            "continuation predicate must not over-rotate balanced-but-"
+            "broken garbage onto legitimate split-JSON continuations "
+            "(codex r10-J r5 HIGH #1)."
+        )
+
+    def test_passes_middle_fragment_of_three_way_split(self):
+        """Defense-in-depth: a middle fragment like ``"PARI`` (no
+        braces at all, bare bytes mid-string) must also pass — the
+        cap+merge layer is what reassembles the full string."""
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        out = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": '"PARI'}}]
+        )
+        assert len(out) == 1
 
     def test_drops_continuation_with_array_root_arguments(self):
         """Array-root variant — ``[1,2,3]`` parses as JSON but the
