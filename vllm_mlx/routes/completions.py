@@ -193,6 +193,51 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     }
                 },
             )
+    # R10-J (codex r10-G/H r2 HIGH #1): ``response_format={"type":
+    # "json_schema"}`` on the legacy ``/v1/completions`` lane is NOT
+    # actually enforced. The route only post-strips fences via
+    # ``extract_json_from_response`` (R10-H4); it does NOT route through
+    # guided generation (``extract_json_schema_for_guided``) and does
+    # NOT validate the output against the schema. A caller setting
+    # ``json_schema.strict=true`` therefore gets HTTP 200 with
+    # schema-INVALID text — the silent ``strict=true`` violation class
+    # the chat lane already 400s on (see ``routes/chat.py`` r3
+    # BLOCKING #2 + ``is_strict_json_schema`` enforcement).
+    #
+    # Wiring guided generation through the legacy completions lane is
+    # a separate refactor (the lane never had FSM constraints; chat
+    # owns the strict path). The conservative, spec-correct fix is to
+    # reject ``json_schema`` here with a 400 that points callers at
+    # the chat lane. ``json_object`` keeps working — it has no schema
+    # to validate, the fence-strip is sufficient — so this is a
+    # surgical close of the strict-schema gap only.
+    if request.response_format is not None and request.logprobs is None:
+        rf_type = (
+            getattr(request.response_format, "type", None)
+            if not isinstance(request.response_format, dict)
+            else request.response_format.get("type")
+        )
+        if rf_type == "json_schema":
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format=json_schema is not supported "
+                            "on the legacy /v1/completions lane: this "
+                            "route does not route through guided "
+                            "generation and cannot enforce strict=true "
+                            "schema validation. Use /v1/chat/completions "
+                            "for json_schema (it owns the strict path), "
+                            "or send response_format=json_object on "
+                            "/v1/completions if loose JSON is acceptable."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "unsupported_response_format",
+                        "param": "response_format",
+                    }
+                },
+            )
     engine = get_engine(request.model)
 
     # Pre-flight admission gate (C4). Reservation is released by the
