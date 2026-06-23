@@ -13,6 +13,8 @@ import hashlib
 import inspect
 import json
 import logging
+import os
+import threading
 import uuid
 from collections.abc import AsyncIterator
 
@@ -161,6 +163,7 @@ def _finalize_content_and_reasoning(
     engine_reasoning_text: str = "",
     enable_thinking: bool | None = None,
     reasoning_max_tokens: int | None = None,
+    finish_reason: str | None = None,
 ) -> tuple[str, str | None]:
     """Compute final ``content`` + ``reasoning_text`` after tool parsing.
 
@@ -271,6 +274,45 @@ def _finalize_content_and_reasoning(
             return cleaned_text or "", _truncate_reasoning_only(
                 engine_reasoning_text, reasoning_max_tokens
             )
+        # r5-D autonomous-mode plug (F-DGF-V080-B-9, 2026-06-21):
+        # ``engine_reasoning_text`` populated + ``finish_reason="length"``
+        # + parser sees the buffer as ``is_open_in_think`` OR the parser
+        # decided the buffer is autonomous-think (no tag in
+        # ``cleaned_text`` but engine token-router classified the bytes
+        # as reasoning) → route ``cleaned_text`` to nothing; the engine
+        # reasoning is already in ``engine_reasoning_text``. Pre-fix
+        # the cleaned_text was passed through verbatim and the same
+        # bytes shipped as BOTH ``content`` and ``reasoning_content``
+        # (the B-9 leak repro for glm4 autonomous mode).
+        #
+        # Gate carefully so we don't blank legitimate post-think
+        # answers: when the engine routes reasoning AND ``cleaned_text``
+        # still carries reasoning-shaped bytes (parser indicates
+        # ``is_open_in_think`` OR engine reasoning literally appears
+        # as a prefix of cleaned_text), it's the autonomous-mode
+        # leak.
+        if (
+            finish_reason == "length"
+            and cleaned_text
+            and cleaned_text.strip()
+            and reasoning_parser is not None
+        ):
+            is_open_in_think_attr = getattr(reasoning_parser, "is_open_in_think", None)
+            parser_open = False
+            if callable(is_open_in_think_attr):
+                try:
+                    parser_open = bool(is_open_in_think_attr(cleaned_text))
+                except Exception:
+                    parser_open = False
+            engine_prefix_match = bool(
+                engine_reasoning_text
+                and isinstance(engine_reasoning_text, str)
+                and cleaned_text.strip() == engine_reasoning_text.strip()
+            )
+            if parser_open or engine_prefix_match:
+                return "", _truncate_reasoning_only(
+                    engine_reasoning_text, reasoning_max_tokens
+                )
         return _apply_reasoning_cap(
             cleaned_text,
             engine_reasoning_text,
@@ -400,6 +442,103 @@ def _finalize_content_and_reasoning(
         # route.)
         if new_cleaned is not None:
             cleaned_text = new_cleaned
+        # r5-D shared finalize-on-truncation plug (F-DGF-V080-B-7 /
+        # F-DGF-V080-B-9, 2026-06-21). When the model was cut by
+        # ``finish_reason="length"`` AND the parser's first pass
+        # routed the buffer as ``(None, buffer)`` (the leak shape)
+        # AND the parser's family-specific ``is_open_in_think`` says
+        # the buffer ended inside an unclosed reasoning span, route
+        # the buffer to ``reasoning_content`` via the shared
+        # ``finalize_truncation`` helper. This catches the
+        # parser-side gaps the per-parser plugs above (#575 /
+        # truncated-``<think>``) miss because their gates differ:
+        #
+        # * gemma4 (B-7): channel-token format. Pre-fix
+        #   ``extract_reasoning`` fell through to "no thinking tags
+        #   — all content" and the route's downstream rescue
+        #   duplicated the same bytes into both fields (the
+        #   132/128/512-char identical-dup repro). gemma4's own
+        #   ``extract_reasoning`` now routes correctly on the
+        #   parser-side (see ``gemma4_parser.py``); this branch is
+        #   the route-side safety net.
+        # * glm4 autonomous mode (B-9): glm4's chat template does
+        #   NOT pre-inject ``<think>``, so a model that decided not
+        #   to emit the tag and got truncated mid-thought leaves no
+        #   tag in ``cleaned_text``. The parser returns ``(None,
+        #   buffer)`` and ``first_parse_was_truncated_think``
+        #   (which requires ``<think>`` in text_to_parse) does NOT
+        #   fire. The engine's token-level ``OutputRouter`` may
+        #   have populated ``engine_reasoning_text`` from the
+        #   structural think tokens though — that's the
+        #   out-of-band signal we use here.
+        # * minimax (cross-sweep): same explicit-``<think>``-opener
+        #   gap as gemma4; the parser-side fix handles the common
+        #   case and this branch is the safety net.
+        #
+        # The plug is gated to fire ONLY on ``finish_reason ==
+        # "length"`` so happy-path ``finish_reason="stop"`` flows
+        # are byte-identical pre/post. The
+        # ``first_parse_was_truncated_think`` plug below still
+        # owns its explicit-``<think>``-in-cleaned-text case.
+        if (
+            finish_reason == "length"
+            and cleaned_text
+            and not first_parse_was_truncated_think
+        ):
+            is_open_in_think = getattr(reasoning_parser, "is_open_in_think", None)
+            open_in_think = False
+            if callable(is_open_in_think):
+                try:
+                    # Probe the FRESH cleaned_text. When the parser
+                    # returned ``(reasoning, None)`` (e.g. gemma4 mid-
+                    # thought, fixed parser-side), ``cleaned_text`` is
+                    # still the raw text including the unclosed
+                    # opener — exactly the buffer ``is_open_in_think``
+                    # is designed to inspect. When the parser returned
+                    # ``(None, raw)`` (glm4 autonomous mode), the
+                    # ``cleaned_text`` is also the raw buffer (the
+                    # ``new_cleaned`` assignment above doesn't
+                    # alter it).
+                    open_in_think = bool(is_open_in_think(cleaned_text))
+                except Exception:
+                    # Third-party parser threw on the probe — fall
+                    # back to "not open-in-think" so we don't
+                    # introduce a regression vs. the old leak shape
+                    # (which clients are at least used to seeing).
+                    open_in_think = False
+            # Out-of-band engine-router evidence: a populated
+            # ``engine_reasoning_text`` here is impossible because
+            # the engine-routed branch returned early at the top of
+            # the function — but we DEFENSIVELY honour the signal
+            # so future re-orderings of this function don't silently
+            # regress the glm4 autonomous-mode rescue.
+            if not open_in_think and engine_reasoning_text:
+                open_in_think = True
+            if open_in_think:
+                from ..reasoning import finalize_truncation
+
+                # When the parser already extracted reasoning (e.g.
+                # gemma4 mid-thought parser-side fix), it stripped the
+                # marker bytes and placed the clean buffer in
+                # ``reasoning_text``. Prefer that over rerouting the
+                # raw ``cleaned_text`` (which still has the marker
+                # bytes). Only when ``reasoning_text`` is empty do we
+                # fall back to rerouting the raw buffer through the
+                # helper.
+                if reasoning_text:
+                    cleaned_text = ""
+                else:
+                    routed_reasoning, routed_content = finalize_truncation(
+                        True, cleaned_text
+                    )
+                    cleaned_text = routed_content or ""
+                    reasoning_text = routed_reasoning or reasoning_text
+                # Drop overflow rather than re-leak into content —
+                # see ``_truncate_reasoning_only`` for the rationale
+                # mirroring the explicit truncated-think plug.
+                return cleaned_text, _truncate_reasoning_only(
+                    reasoning_text, reasoning_max_tokens
+                )
         # #575 leak-plug: when ``enable_thinking=True`` AND the
         # parser's FIRST parse routed the whole no-tag output to
         # reasoning (Case-4 fallback path), the original
@@ -579,6 +718,38 @@ def _apply_reasoning_cap(
     return cleaned_text, truncated
 
 
+def _should_start_in_thinking(chat_template: str, enable_thinking: bool | None) -> bool:
+    """Shared predicate: does this chat template start the assistant
+    response inside an implicit ``<think>`` block?
+
+    Some thinking-capable chat templates include ``<think>`` in the
+    generated assistant prefix instead of emitting it as a normal
+    output token. In that case the streaming router needs to start in
+    thinking mode so tokens before ``</think>`` are emitted as
+    reasoning deltas (Anthropic thinking_delta, Responses thinking
+    event, OpenAI delta.reasoning_content).
+
+    When thinking is explicitly disabled, the template marker is only
+    stale capability metadata for routing purposes: direct answer
+    tokens should be emitted as text. Otherwise the client receives a
+    message with only a thinking block and no text result.
+
+    Codex round-9 BLOCKING (PR #799): this helper used to live in
+    ``routes/anthropic.py`` and ``routes/responses.py`` as duplicate
+    private functions, plus an inline reimplementation in
+    ``routes/chat.py`` that hard-coded the same ``"<think>"`` +
+    ``"add_generation_prompt"`` substring check. The three copies
+    could drift apart silently — chat completions could misclassify
+    prompt-injected thinking templates that Anthropic / Responses
+    correctly detect. Hoist to the shared service layer so every
+    route uses the same predicate and the contract has a single
+    source of truth.
+    """
+    if enable_thinking is False:
+        return False
+    return "<think>" in chat_template and "add_generation_prompt" in chat_template
+
+
 def _rescue_silent_drop_from_reasoning(
     final_content: str | None,
     reasoning_text: str | None,
@@ -587,6 +758,8 @@ def _rescue_silent_drop_from_reasoning(
     raw_text: str | None = None,
     *,
     reasoning_is_case4: bool = False,
+    matched_stop: str | None = None,
+    prompt_thinking_active: bool = False,
 ) -> str | None:
     """Issue #569: never silently drop an assistant turn.
 
@@ -664,46 +837,298 @@ def _rescue_silent_drop_from_reasoning(
     if not reasoning_text or not reasoning_text.strip():
         return final_content
     # 2026-06-17 VibeThinker live test: when the model was truncated
-    # mid-thought (``finish_reason="length"``) with an unclosed
-    # ``<think>`` opener in ``raw_text``, the reasoning trace is NOT
-    # the final answer — it's an interrupted chain of thought. Surfacing
-    # it as ``content`` per the #569 rescue would feed the client the
-    # SAME bytes as ``reasoning_content`` and break the "content is the
-    # final answer" contract. Skip the rescue and let the client see
-    # ``content=null`` so they can detect "model ran out of budget
-    # before producing an answer" via the ``finish_reason="length"``
-    # signal — symmetric with how OpenAI's o1 / o3 behave on truncated
-    # reasoning.
+    # D-STOP-THINK rescue gate. The #569 rescue normally copies
+    # reasoning-only output into ``content`` so clients do not see an
+    # empty assistant turn. Do not run that rescue when the empty content
+    # is a known interrupted-thought shape; otherwise the same thought
+    # bytes appear in both ``content`` and ``reasoning_content``.
     #
-    # Gate on BOTH ``finish_reason="length"`` AND raw_text opening with
-    # an unclosed ``<think>``. Other ``finish_reason="length"`` cases
-    # (e.g. a non-thinking model truncated mid-answer where reasoning
-    # was empty but content was building) still get rescued — the
-    # opener check is the discriminator.
+    # Current suppression matrix:
     #
-    # Also gate on the helper-Case-4 signal (``reasoning_is_case4``)
-    # passed from the route — covers the PR #715-bundle live-test
-    # repro where VibeThinker is asked a no-tool no-think prompt:
-    # the chat template doesn't pre-inject ``<think>``, the model
-    # answers in plain prose (no ``<think>`` token emitted), but the
-    # route still defaults ``enable_thinking=True`` for the family.
-    # The parser's Case-4 fallback routes the WHOLE output to
-    # reasoning AND the helper blanks ``cleaned_text=""``. The
-    # ``raw_text`` opener check then misses (raw_text doesn't start
-    # with ``<think>``), and the rescue without the Case-4 signal
-    # mistakes the no-content state for a #569 silent drop and
-    # surfaces the reasoning as content — duplicating the trace
-    # byte-identically. The Case-4 signal stops that.
+    # finish | raw starts unclosed <think> | case4 | matched_stop | prompt think | suppress
+    # length | yes                         | *     | *            | *            | yes
+    # length | no                          | yes   | *            | true         | yes
+    # length | no                          | yes   | *            | false        | no
+    # stop   | yes                         | *     | set          | *            | yes
+    # stop   | no                          | yes   | set          | true         | yes
+    # stop   | no                          | yes   | set/none     | false        | no
+    # stop   | no                          | no    | *            | *            | no
+    #
+    # ``case4`` means the parser routed a no-tag output wholly to
+    # reasoning. For case4 we require the route's
+    # ``prompt_thinking_active`` signal so a direct answer truncated by
+    # ``max_tokens`` or by a user stop string still rescues to content.
+    truncated_mid_think = (
+        # Explicit-opener under length OR stop: raw_text proves
+        # an in-progress ``<think>`` was truncated.
+        #
+        # Codex round-12 BLOCKING (PR #799): REVERTS round-11's
+        # unconditional ``stop`` arm. Round-11 widened the
+        # suppression on the ``stop`` arm to fire regardless of
+        # ``matched_stop`` because the streaming chat path can lose
+        # ``matched_stop`` between sampler and helper — but that
+        # widening dropped the #569 silent-drop rescue for a model
+        # that voluntarily ends after emitting ``<think>just a
+        # thought`` (no closing ``</think>``, no user stop fired).
+        # The helper's contract is "never silently drop an
+        # assistant turn"; a natural-EOS in-progress thought must
+        # still rescue. Fix: ``length`` stays unconditional (length
+        # is unambiguously truncation); ``stop`` requires
+        # ``matched_stop is not None`` so only engine-initiated
+        # trims suppress, natural EOS falls through to the rescue
+        # path. The matched_stop-propagation concern from r11 is
+        # addressed at the call sites (chat.py streaming now
+        # accumulates ``output.matched_stop`` per chunk, mirroring
+        # responses.py / anthropic.py).
+        (
+            finish_reason == "length"
+            and raw_text
+            and raw_text.lstrip().startswith("<think>")
+            and "</think>" not in raw_text
+        )
+        or (
+            finish_reason == "stop"
+            and matched_stop is not None
+            and raw_text
+            and raw_text.lstrip().startswith("<think>")
+            and "</think>" not in raw_text
+        )
+        # Case-4 + length + prompt_thinking_active: parser routed the
+        # whole body to reasoning (helper-Case-4 signal) and the route
+        # says the chat template injected thinking, so ``length`` means
+        # max_tokens cut an implicit thought. Without the template signal
+        # this is just a non-thinking answer truncated mid-content, and
+        # the #569 rescue must surface it instead of silently dropping it.
+        or (finish_reason == "length" and reasoning_is_case4 and prompt_thinking_active)
+        # Case-4 + stop + matched_stop + prompt_thinking_active:
+        # codex round-5 BLOCKING — matched_stop alone with
+        # Case-4 under finish=stop is NOT enough to identify the
+        # D-STOP-THINK shape. A casual answer like ``"The answer
+        # is STOP"`` under ``stop=["STOP"]`` ALSO has matched_stop
+        # set but is NOT chain-of-thought. Require the route-
+        # supplied ``prompt_thinking_active`` boolean (chat
+        # template injected ``<think>`` AND ``enable_thinking`` is
+        # non-False) as the secondary discriminator. Symmetric
+        # with the parser-level ``finalize_streaming`` AND-of-
+        # signals contract.
+        or (
+            finish_reason == "stop"
+            and reasoning_is_case4
+            and matched_stop is not None
+            and prompt_thinking_active
+        )
+    )
+    if truncated_mid_think:
+        return final_content
+    # r5-D (F-DGF-V080-B-7, 2026-06-21): gemma4 channel-token analog
+    # of the truncated-``<think>`` gate above. When generation is cut
+    # mid-thought-channel (``<|channel>thought\n…``-without-
+    # ``<channel|>``), the reasoning trace is NOT the final answer —
+    # surfacing it as ``content`` per the #569 rescue would feed the
+    # desktop client the SAME bytes as ``reasoning_content`` (the
+    # 132/128/512-char identical-dup repro that this PR closes).
+    # Skip the rescue and let the client see ``content=null`` so it
+    # can detect "model ran out of budget mid-thought" via
+    # ``finish_reason="length"`` — symmetric with the
+    # truncated-``<think>`` and D-HARMONY-LEAK gates.
     if (
         finish_reason == "length"
         and raw_text
-        and raw_text.lstrip().startswith("<think>")
-        and "</think>" not in raw_text
+        and "<|channel>thought" in raw_text
+        and "<channel|>" not in raw_text[raw_text.rfind("<|channel>thought") :]
     ):
         return final_content
-    if finish_reason == "length" and reasoning_is_case4:
+    # D-HARMONY-LEAK (2026-06-21): harmony-channel analog of the
+    # truncated-``<think>`` gate above. The gpt-oss family (and any
+    # Harmony-encoding tokenizer) emits ``<|channel|>analysis<|message|>
+    # …<|end|><|channel|>final<|message|>…<|return|>`` as the wire
+    # contract for a complete reasoning-then-answer turn — the
+    # ``<|channel|>analysis<|message|>`` opener is the analysis-channel
+    # start marker and ``<|channel|>final<|message|>`` is the
+    # final-channel start marker (the user-visible answer). When
+    # generation is cut short BEFORE the final-channel opener appears
+    # (max_tokens cut mid-analysis OR ``stop:["X"]`` matched a stop-
+    # string that happens to land in the analysis body), the engine
+    # has correctly routed the analysis bytes into ``reasoning_text``
+    # and left ``content`` empty — exactly the silent-drop shape this
+    # rescue was designed to fix. But the analysis body is NOT the
+    # model's final answer, so promoting it to ``content`` ships the
+    # SAME bytes in both fields (``content == reasoning_content``
+    # mojibake) — the bug filed as D-HARMONY-LEAK. Gate the rescue
+    # on the harmony state machine: when raw_text shows an analysis-
+    # channel opener but NO final-channel opener, we are structurally
+    # mid-state-machine and the rescue must NOT fire. The gate is
+    # finish_reason-AGNOSTIC because both repros (max_tokens=length
+    # AND stop-string match=stop) produce the same broken shape —
+    # letting the rescue fire on either would re-leak the analysis
+    # body into ``content``.
+    #
+    # Codex r1 BLOCKING #1: an earlier revision exempted any raw_text
+    # carrying ``<|call|>`` (commentary tool-call terminator) under
+    # the assumption the upstream ``tool_calls`` branch would catch
+    # it. That assumption is unsafe — if the tool-call parser failed
+    # to extract a structured call (malformed args, downstream filter
+    # dropping the entry, ``tool_calls`` not threaded into this
+    # helper at all by a third-party caller), the analysis body
+    # would still leak as user-visible content. Suppress the rescue
+    # for ANY harmony "analysis without final" state and rely on the
+    # earlier ``if tool_calls:`` branch to preserve parsed tool
+    # calls — that branch already returns the original
+    # ``final_content`` so a populated ``tool_calls`` list never
+    # reaches this point. When the model DID reach the final channel
+    # (final-marker present), control already returned through the
+    # happy-path early-exit above, so no override is needed for that
+    # case.
+    if (
+        raw_text
+        and "<|channel|>analysis<|message|>" in raw_text
+        and "<|channel|>final<|message|>" not in raw_text
+    ):
         return final_content
     return reasoning_text
+
+
+# ---------------------------------------------------------------------------
+# H-01 / R-01: reasoning-cutoff sentinel (opt-in)
+# ---------------------------------------------------------------------------
+#
+# When a reasoning model (qwen3, deepseek_r1, phi-4-mini-reasoning, glm4,
+# gemma4, vibethinker, …) is called with a low ``max_tokens`` budget and
+# generation is cut short BEFORE ``</think>`` (or the harmony final-channel
+# marker), the parser-wide rule pinned by D-STOP-THINK + D-HARMONY-LEAK is
+# "route everything to ``reasoning_content`` and leave ``content``
+# null/empty" — the in-progress thought trace is NOT the final answer, so
+# promoting it to ``content`` would ship byte-identical bytes in both
+# fields (the leak shape those PRs explicitly closed).
+#
+# History: H-01 (PR #802, 2026-06-21) introduced an opt-OUT sentinel that
+# was injected into ``content`` by default to give SDK consumers a literal
+# "truncated, raise max_tokens" cue instead of an empty bubble.
+#
+# R-01 (0.8.5 dogfood, this commit): operator policy reverses the default.
+# Synthesizing a placeholder text block that the model never produced is
+# treated as harmful injection — every transport already carries an
+# unambiguous truncation signal:
+#
+#   * /v1/chat/completions  → ``finish_reason="length"``
+#   * /v1/responses         → ``status="incomplete"`` +
+#                              ``output_tokens_details.reasoning_tokens``
+#   * /v1/messages          → ``stop_reason="max_tokens"`` +
+#                              ``thinking`` content block
+#
+# Clients that DO want the legacy literal-text cue (e.g. chat UIs that do
+# not render the structured truncation fields) can re-enable the sentinel
+# on a single envelope field via ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1``
+# (or ``true`` / ``on`` / ``yes`` / ``enabled``). The helper is preserved
+# as a single source of truth so the OpenAI chat lane, the Responses lane,
+# and the Anthropic adapter cannot drift apart.
+#
+# Scope (unchanged across the flip):
+#
+# * Fires ONLY when the env var explicitly enables the notice.
+# * Fires ONLY on ``finish_reason="length"`` (NOT on ``"stop"`` —
+#   stop-string mid-think is D-STOP-THINK's exact case, where the strict
+#   null contract must hold and the caller can re-request to drive the
+#   model past the stop string).
+# * Fires ONLY when ``content`` is empty/None AND ``reasoning_text`` is
+#   non-empty — the silent-drop shape clients actually trip on. Happy-
+#   path (closed ``</think>answer`` split) flows untouched.
+# * Fires ONLY when no ``tool_calls`` were extracted — tool-only responses
+#   legitimately ship ``content=None`` per the OpenAI spec.
+#
+# Single source of truth — both the OpenAI ``/v1/chat/completions``
+# non-stream + stream paths AND the Anthropic ``/v1/messages`` adapter
+# AND the ``/v1/responses`` adapter call this helper, so the user-visible
+# behaviour cannot drift between surfaces. (The streaming path, when the
+# env knob is on, emits the sentinel as one final-chunk ``delta.content``
+# event, not per-token, so no token-by-token leak of the sentinel string
+# itself.)
+
+#: Literal sentinel surfaced to ``content`` when the env-opt-in is set AND
+#: generation is cut short mid-think on ``finish_reason="length"``. Kept
+#: short and unambiguous so agentic clients can pattern-match if they
+#: want to auto-retry with a larger ``max_tokens``.
+REASONING_CUTOFF_SENTINEL = "[truncated — reasoning incomplete; raise max_tokens]"
+
+#: Env var values that EXPLICITLY ENABLE the sentinel notice (R-01 flip:
+#: default is now OFF). Anything outside this set — including unset —
+#: keeps the strict-null behaviour (no synthetic text injection).
+_CUTOFF_NOTICE_ENABLED_VALUES = frozenset({"1", "true", "on", "yes", "enabled"})
+
+
+def _cutoff_notice_enabled() -> bool:
+    """Whether the cutoff sentinel is enabled for this process.
+
+    R-01 flip: default is OFF. The structured truncation signal carried by
+    every transport (``finish_reason="length"`` /
+    ``status="incomplete"`` / ``stop_reason="max_tokens"``) is the
+    canonical truncation cue. The literal sentinel is opt-in via
+    ``RAPID_MLX_REASONING_CUTOFF_NOTICE``.
+
+    Reads the env var on each call so test harnesses can flip the gate
+    per-request via ``monkeypatch.setenv`` without restarting the
+    process. The cost is negligible (``os.environ.get`` is a dict
+    lookup) and matches how every other ``RAPID_MLX_*`` env-gated knob
+    is read in this module.
+
+    Accepted enable values (case-insensitive, surrounding whitespace
+    stripped): ``"1"`` / ``"true"`` / ``"on"`` / ``"yes"`` /
+    ``"enabled"``. Anything else — including unset, the empty string,
+    ``"0"``, ``"false"``, ``"no"``, ``"off"``, ``"disabled"``, or any
+    arbitrary unrecognised value — leaves the sentinel disabled.
+    """
+    raw = os.environ.get("RAPID_MLX_REASONING_CUTOFF_NOTICE")
+    if raw is None:
+        return False  # R-01: default OFF
+    return raw.strip().lower() in _CUTOFF_NOTICE_ENABLED_VALUES
+
+
+def _apply_reasoning_cutoff_notice(
+    final_content: str | None,
+    reasoning_text: str | None,
+    tool_calls: list | None,
+    finish_reason: str | None,
+) -> str | None:
+    """H-01: surface a clearly-marked sentinel when generation was cut
+    short mid-think and the strict rescue path left ``content`` empty.
+
+    Runs AFTER ``_rescue_silent_drop_from_reasoning`` — its job is the
+    UX rescue for the cases the silent-drop rescue deliberately
+    SUPPRESSED (truncated ``<think>``, harmony analysis-without-final,
+    Case-4 no-tag fallback). All those cases share the same observable
+    shape: ``finish_reason="length"`` + empty content + non-empty
+    reasoning + no tool calls. The sentinel is parser-independent
+    literal text, so promoting it can NEVER re-introduce the
+    D-STOP-THINK / D-HARMONY-LEAK leak (we are NOT mirroring the
+    reasoning trace — that's the explicit anti-pattern those PRs
+    closed).
+
+    Returns ``final_content`` unchanged when:
+    * the env var disables the notice
+    * ``finish_reason`` is anything other than ``"length"`` (stop-string
+      cut mid-think hits the D-STOP-THINK regression guard — strict
+      null wins)
+    * ``final_content`` already carries a non-whitespace payload
+    * ``tool_calls`` were extracted (OpenAI-spec ``content=None`` path)
+    * ``reasoning_text`` is empty / whitespace (nothing to signal — the
+      model produced nothing semantically, which is a different bug
+      class and shouldn't get a "raise max_tokens" hint)
+
+    Otherwise returns the sentinel constant. The caller writes it into
+    ``message.content`` (non-stream) or the final SSE
+    ``delta.content`` chunk (stream).
+    """
+    if not _cutoff_notice_enabled():
+        return final_content
+    if finish_reason != "length":
+        return final_content
+    if final_content and final_content.strip():
+        return final_content
+    if tool_calls:
+        return final_content
+    if not reasoning_text or not reasoning_text.strip():
+        return final_content
+    return REASONING_CUTOFF_SENTINEL
 
 
 # OpenAI-spec closed enum for ``response_format.type``. Any value outside
@@ -901,7 +1326,19 @@ _TOOL_USE_SYSTEM_SUFFIX = (
     "a reasonable default exists. Do NOT explain what you will do — just do it. "
     "Be direct and concise in your responses. "
     "Do NOT think out loud or show your reasoning process. "
-    "Give direct answers only — no preamble like 'The user asks...' or 'Let me think...'."
+    "Give direct answers only — no preamble like 'The user asks...' or 'Let me think...'. "
+    # D-TOOLCHOICE-R1 T1: DeepSeek-R1 distills (and other reasoning
+    # models) under ``tool_choice="auto"`` will happily HALLUCINATE
+    # the result of a tool they were never told existed — emit
+    # ``"The current temperature in Tokyo is 24°C"`` while the only
+    # weather data they have is whatever the user typed. The
+    # earlier "use a tool immediately" clause does not cover this:
+    # the model can interpret "use a tool" as "include a tool-shaped
+    # answer". This clause is a HARD floor: if you didn't actually
+    # call a tool, you must not claim a tool result.
+    "If you do NOT call a tool, do NOT fabricate the contents of any tool's response — "
+    "answer only from what you actually know. Do NOT print fake JSON, fake API responses, "
+    "or sentences that begin with 'Tool returned:' / 'Tool output:' / 'The API returned'."
 )
 
 # Tool-use system prompt for ``tool_choice="required"`` (#468). Strict
@@ -941,6 +1378,67 @@ def _resolve_model_name(request_model: str | None) -> str:
     return request_model
 
 
+def _aliases_match(a: str, b: str) -> bool:
+    """Return True when ``a`` and ``b`` refer to the same model.
+
+    Both sides run through the shared ``resolve_model()`` alias registry
+    so that the short alias (``embeddinggemma-300m-6bit``) and the full
+    HF id (``mlx-community/embeddinggemma-300m-6bit``) compare equal —
+    same one-source-of-truth rule used at boot time.
+
+    Used by ``/v1/embeddings`` + ``/v1/audio/*`` request handlers to
+    accept either form the client happens to send. Pre-fix the routes
+    did literal string equality against ``cfg.embedding_model_locked``
+    (set to the resolved HF path at boot), so a client that legitimately
+    sent the short alias listed in ``/v1/models`` ate a 400.
+    """
+    if a == b:
+        return True
+    if not a or not b:
+        return False
+    from ..model_aliases import resolve_model
+
+    try:
+        return resolve_model(a) == resolve_model(b)
+    except Exception:  # noqa: BLE001 — registry I/O must never 500 the route
+        return False
+
+
+def _resolve_request_alias_or_default(
+    request_model: str | None, locked: str | None
+) -> str | None:
+    """Map a request-supplied ``model`` field to the server-locked id.
+
+    Single source of truth for the OpenAI-canonical ``"default"``
+    placeholder + alias-aware comparison used by every
+    request-time route (``/v1/embeddings``, ``/v1/audio/*``,
+    ``/v1/chat/completions``-style routes that don't run the full
+    registry probe).
+
+    Resolution rules:
+
+    * ``request_model`` is ``None`` / ``""`` / ``"default"`` → return
+      ``locked`` verbatim. The OpenAI SDK + LangChain + LlamaIndex
+      all default to ``"default"`` when the caller hasn't picked a
+      specific model id; rejecting it breaks drop-in compatibility.
+    * ``request_model`` resolves (via ``resolve_model``) to the same
+      id as ``locked`` → return ``locked``. Accepts both the short
+      alias and the full HF path so the user-facing ``--<flag>``
+      value, the ``/v1/models`` listing, and the request body don't
+      have to be byte-for-byte identical to match.
+    * Otherwise → return ``None``. Caller decides the rejection
+      envelope (404 vs 400) because the canonical shape differs
+      between embeddings and audio routes (#805 envelope rules).
+    """
+    if locked is None:
+        return None
+    if not request_model or request_model == "default":
+        return locked
+    if _aliases_match(request_model, locked):
+        return locked
+    return None
+
+
 def _resolve_max_tokens(
     request_value: int | None, enable_thinking: bool | None = None
 ) -> int:
@@ -954,16 +1452,19 @@ def _resolve_max_tokens(
     and the server scheduled ``max_tokens=2088``. v0.6.63 onboarding
     sweep finding #2.
 
-    The thinking budget still applies when the client did NOT specify
-    ``max_tokens`` (server default in effect): reasoning models need
-    headroom to think *and* respond, and the server-side default is
-    the right place to bake that in.
+    The thinking budget applies only when neither the client nor the
+    operator specified a cap. If the default came from
+    ``serve --max-tokens`` (or another explicit operator setting), that
+    value is also a hard upper bound and must not receive additive
+    headroom.
     """
     if request_value is not None:
         # Hard cap per client contract.
         return request_value
     cfg = get_config()
     base = cfg.default_max_tokens
+    if cfg.default_max_tokens_is_explicit:
+        return base
     if enable_thinking is False:
         return base
     if cfg.reasoning_parser_name and base > 0 and base < 4096:
@@ -1989,12 +2490,230 @@ def _resolve_sync_scheduler_for_abort(engine):
     else:
         inner = getattr(engine, "_engine", None)
         if inner is not None:
+            # ``engine._engine.scheduler`` — synthetic test-stub shape
+            # where AsyncEngineCore-like is stubbed with a direct
+            # ``.scheduler`` attribute. Kept for back-compat with the
+            # existing pre-D-M01 test corpus.
             inner_sched = getattr(inner, "scheduler", None)
             if inner_sched is not None:
                 abort = getattr(inner_sched, "abort_request", None)
                 if abort is not None and not asyncio.iscoroutinefunction(abort):
                     return abort
+            # D-M01-DEAD (0.8.2 dogfood): the PRODUCTION ``rapid-mlx
+            # serve`` shape is ``BatchedEngine._engine`` →
+            # ``AsyncEngineCore.engine`` → ``EngineCore.scheduler``.
+            # ``AsyncEngineCore`` does NOT expose ``.scheduler``
+            # directly — its scheduler lives behind ``self.engine``
+            # which is an ``EngineCore``. Without this extra hop the
+            # sync resolver returns ``None`` on every real production
+            # engine and ``_force_abort_request`` falls into the
+            # async fallback. That fallback awaits
+            # ``EngineCore.abort_request`` which interleaves
+            # ``scheduler.abort_request`` + ``_cleanup_request``
+            # (which wipes the lifetime ledger), racing the
+            # attribution helper and causing the 2x over-count +
+            # flat-zero via_disconnect sub-counter that three
+            # 0.8.2 personas independently reported.
+            #
+            # Mirror the same deep-path walk
+            # ``_resolve_disconnect_abort_recorder`` already does so
+            # the sync abort and the attribution call resolve to the
+            # SAME ``Scheduler`` instance on every backend shape.
+            inner_engine = getattr(inner, "engine", None)
+            if inner_engine is not None:
+                deep_sched = getattr(inner_engine, "scheduler", None)
+                if deep_sched is not None:
+                    abort = getattr(deep_sched, "abort_request", None)
+                    if abort is not None and not asyncio.iscoroutinefunction(abort):
+                        return abort
     return None
+
+
+def _resolve_disconnect_abort_recorder(engine):
+    """M-01: walk the engine backend graph and return the bound
+    ``record_disconnect_abort`` method of the active-path scheduler.
+
+    Codex r2 NIT: returns the BOUND METHOD, not the scheduler object,
+    so the call site stays one expression
+    (``recorder(rid)``) without having to know which attribute name
+    to look up. The name is honest about that — earlier draft was
+    ``_resolve_scheduler_for_cancel_attribution`` which suggested a
+    scheduler object would be returned.
+
+    The cancel-attribution sub-counter lives on the same scheduler
+    where the public-API total counter lives, so the resolver must
+    follow the active-path gate (``_is_mllm``). We deliberately keep
+    this separate from ``_resolve_sync_scheduler_for_abort`` (which
+    gates on ``not iscoroutinefunction(abort_request)``) because the
+    sub-counter is a sync-only method wholly independent of the abort
+    path — re-using the abort resolver would skip schedulers that
+    expose a fine sync ``record_disconnect_abort`` but happen to have
+    an async ``abort_request`` shim.
+
+    Production text path walks one extra level versus the abort
+    resolver: ``BatchedEngine._engine`` is ``AsyncEngineCore`` (which
+    does NOT expose ``.scheduler`` directly) and the actual
+    ``Scheduler`` lives at ``BatchedEngine._engine.engine.scheduler``
+    (``AsyncEngineCore`` wraps ``EngineCore`` via ``self.engine``).
+    The abort resolver doesn't dig that deep because
+    ``AsyncEngineCore`` has its own async ``abort_request`` shim and
+    falls through to the public-async fallback — but the
+    attribution counter must NOT fall back because the sub-counter
+    only lives on ``Scheduler``. Without this extra hop the
+    via_disconnect series would stay flat through every real
+    production disconnect (Mei + Yana surfaced the cancel-rate
+    counter; the operator would still have no way to see whether
+    the bulk of cancels came from disconnect vs. timeout vs.
+    explicit /cancel).
+
+    Returns ``None`` if no scheduler in the active backend exposes
+    the method, in which case the helper-layer caller silently
+    no-ops (older schedulers without M-01 simply don't surface the
+    sub-counter, the total counter on the route side still defaults
+    to zero).
+    """
+    # M-01 codex r7 BLOCKING #2: when ``_is_mllm`` is set we MUST
+    # honor it before falling back to a direct ``engine.scheduler``
+    # — otherwise a dual-shaped engine (one that exposes
+    # ``.scheduler`` for the text path AND ``_mllm_scheduler`` for
+    # the MLLM path, depending on which backend is active) will
+    # mis-attribute disconnects to the text scheduler when the
+    # MLLM path is the live one. The check pattern is the same as
+    # the abort resolver's codex r2 BLOCKING #1 fix — active-path
+    # gate first, plain-engine fallback last.
+    is_mllm_flag = getattr(engine, "_is_mllm", None)
+    if is_mllm_flag is True:
+        mllm = getattr(engine, "_mllm_scheduler", None)
+        if mllm is not None:
+            recorder = getattr(mllm, "record_disconnect_abort", None)
+            if recorder is not None:
+                return recorder
+    elif is_mllm_flag is False:
+        inner = getattr(engine, "_engine", None)
+        if inner is not None:
+            # ``engine._engine.scheduler`` — matches the abort
+            # resolver shape (used by every test stub today).
+            inner_sched = getattr(inner, "scheduler", None)
+            if inner_sched is not None:
+                recorder = getattr(inner_sched, "record_disconnect_abort", None)
+                if recorder is not None:
+                    return recorder
+            # ``engine._engine.engine.scheduler`` — the production
+            # ``BatchedEngine`` over ``AsyncEngineCore`` shape. The
+            # extra hop is where AsyncEngineCore wraps EngineCore.
+            inner_engine = getattr(inner, "engine", None)
+            if inner_engine is not None:
+                deep_sched = getattr(inner_engine, "scheduler", None)
+                if deep_sched is not None:
+                    recorder = getattr(deep_sched, "record_disconnect_abort", None)
+                    if recorder is not None:
+                        return recorder
+    # Plain-engine fallback: only used when ``_is_mllm`` is absent
+    # (older / external engine shapes that pre-date BatchedEngine).
+    # Distinct from ``is_mllm_flag is False`` above, which means
+    # "explicitly text-active on a BatchedEngine".
+    direct_scheduler = getattr(engine, "scheduler", None)
+    if direct_scheduler is not None:
+        recorder = getattr(direct_scheduler, "record_disconnect_abort", None)
+        if recorder is not None:
+            return recorder
+    return None
+
+
+# M-01 / D-M01-DEAD: once-per-engine-type ledger for the unresolved-
+# engine warning. Without this dedupe, an operator running on an
+# engine shape the resolvers don't yet recognise would see one
+# warning per ABORT — at 1 cancel/second that's 86,400 warnings/day,
+# enough to drown the disconnect_guard log signal entirely. The
+# warning is informational ("which backend shape do the resolvers
+# need to learn") so once-per-engine-type is the right cardinality.
+# Bounded by the number of distinct engine classes in the process,
+# typically 1.
+_unresolved_engine_logged: set[tuple[str, str]] = set()
+_unresolved_engine_lock = threading.Lock()
+
+
+def _unresolved_engine_dedupe_key(engine_cls: type) -> tuple[str, str]:
+    """Codex r11 NIT: dedupe by the fully-qualified class identity
+    so two distinct unresolved engine classes that happen to share
+    a leaf name (e.g. ``mod_a.BatchedEngine`` vs.
+    ``mod_b.BatchedEngine``) do NOT suppress each other's warning.
+    ``__qualname__`` covers nested classes; pairing with
+    ``__module__`` makes the key bijective with the class identity
+    for any sensibly-defined production class. Falling back to the
+    class object itself for stragglers (lambda-defined / no
+    qualname) would also work but a tuple is cheaper to hash and
+    easier to inspect in a heap dump.
+    """
+    module = getattr(engine_cls, "__module__", "<unknown>") or "<unknown>"
+    qualname = getattr(engine_cls, "__qualname__", engine_cls.__name__)
+    return (module, qualname)
+
+
+def _record_disconnect_abort_on_scheduler(engine, request_id) -> None:
+    """M-01 attribution helper — bumps the disconnect sub-counter on
+    whichever active-path scheduler owns this ``request_id``.
+
+    Wraps the resolver in a try/except so the cancel-attribution path
+    never leaks back into ``_force_abort_request``. The total counter
+    is already incremented inside ``Scheduler.abort_request`` the
+    moment the sync entry returns True, so failure of this attribution
+    helper at worst leaves the (total - disconnect) gap one larger
+    than reality — never breaks the abort itself.
+
+    D-M01-DEAD (0.8.2 dogfood): the previous implementation silently
+    no-op'd when ``_resolve_disconnect_abort_recorder`` returned
+    ``None``. That swallow-with-no-log let PR #783 ship without
+    catching that the production ``BatchedEngine`` over
+    ``AsyncEngineCore`` shape exposed no recorder — three personas
+    independently observed flat-zero ``via_disconnect_total`` on
+    PyPI 0.8.2. The WARNING below (rate-limited to once-per-engine-
+    type so it doesn't drown the log under sustained cancel traffic)
+    ensures the next engine-shape change cannot silently regress the
+    sub-counter again. The high-cardinality ``request_id`` is logged
+    at DEBUG only — codex r10 NIT.
+    """
+    try:
+        recorder = _resolve_disconnect_abort_recorder(engine)
+        if recorder is None:
+            engine_cls = type(engine)
+            dedupe_key = _unresolved_engine_dedupe_key(engine_cls)
+            # Display name is "module.qualname" so the operator log
+            # carries the full backend identity, not a leaf name that
+            # might collide across modules.
+            engine_display = f"{dedupe_key[0]}.{dedupe_key[1]}"
+            should_warn = False
+            with _unresolved_engine_lock:
+                if dedupe_key not in _unresolved_engine_logged:
+                    _unresolved_engine_logged.add(dedupe_key)
+                    should_warn = True
+            if should_warn:
+                logger.warning(
+                    "[disconnect_guard] no record_disconnect_abort recorder "
+                    "found on engine type=%s — via_disconnect sub-counter "
+                    "WILL NOT advance for aborts routed through this engine. "
+                    "This indicates an unrecognised engine shape; the "
+                    "resolvers in _resolve_disconnect_abort_recorder + "
+                    "_resolve_sync_scheduler_for_abort must learn the new "
+                    "backend graph. Further occurrences for this engine "
+                    "type will be suppressed at DEBUG.",
+                    engine_display,
+                )
+            else:
+                logger.debug(
+                    "[disconnect_guard] no recorder for engine type=%s "
+                    "(request_id=%s) — warning already emitted",
+                    engine_display,
+                    str(request_id)[:12] if request_id else request_id,
+                )
+            return
+        recorder(request_id)
+    except Exception:  # pragma: no cover - belt-and-suspenders
+        logger.warning(
+            "[disconnect_guard] record_disconnect_abort raised; "
+            "via_disconnect sub-counter may under-count this abort",
+            exc_info=True,
+        )
 
 
 def _force_abort_request(engine, request_id_holder) -> bool:
@@ -2044,6 +2763,19 @@ def _force_abort_request(engine, request_id_holder) -> bool:
                 f"[disconnect_guard] force-abort scheduler.abort_request("
                 f"{str(request_id)[:12]}) -> {result}"
             )
+            # M-01: attribute the abort to client disconnect so
+            # ``rapid_mlx_requests_cancelled_via_disconnect_total`` ticks
+            # alongside the total. We bump only when the sync entry
+            # actually accepted the abort (``result == True``) — the
+            # scheduler returns False for unknown ids and we must not
+            # over-count those. The disconnect_guard fires
+            # ``_force_abort_request`` from up to three branches per
+            # disconnect (disconnect/GeneratorExit/finally), so the
+            # scheduler-side ``_disconnect_abort_ids`` set provides
+            # the once-per-request de-dup. Observability only — never
+            # let a counter-side error mask the actual abort.
+            if result:
+                _record_disconnect_abort_on_scheduler(engine, request_id)
             return True
         # No sync path resolved — the engine is wrapping its scheduler
         # behind an async-only ``abort_request``. Best-effort fire-and-
@@ -2056,7 +2788,55 @@ def _force_abort_request(engine, request_id_holder) -> bool:
         if public_abort is not None:
             result = public_abort(request_id)
             if asyncio.iscoroutine(result):
-                asyncio.ensure_future(result)
+                # M-01 codex r1 BLOCKING #1: attribution MUST chain on
+                # the abort result, not fire-and-forget. Pre-fix this
+                # path called ``_record_disconnect_abort_on_scheduler``
+                # IMMEDIATELY after scheduling the coroutine, so a
+                # stale / unknown ``request_id`` (which makes
+                # ``Scheduler.abort_request`` return False and skip
+                # the total counter) would still tick the sub-counter
+                # — corrupting the (total - via_disconnect) gap
+                # operators rely on for cause attribution. The fix:
+                # wrap the coroutine in an awaiter that records ONLY
+                # after the awaited abort returns truthy. The
+                # ``ensure_future`` still keeps the disconnect path
+                # synchronous (we don't await it here), but the
+                # eventual coroutine resolution is now the gate for
+                # the sub-counter.
+                attribution_engine = engine
+
+                async def _await_and_record(coro=result, rid=request_id):
+                    try:
+                        accepted = await coro
+                    except Exception:  # pragma: no cover - belt-and-suspenders
+                        logger.warning(
+                            "[disconnect_guard] async force-abort raised; "
+                            "via_disconnect sub-counter NOT advanced for "
+                            f"{str(rid)[:12]}",
+                            exc_info=True,
+                        )
+                        return
+                    if accepted:
+                        _record_disconnect_abort_on_scheduler(attribution_engine, rid)
+                    else:
+                        # Codex r2 NIT #3: surface the "abort coroutine
+                        # returned False" path to operators. Without
+                        # this log, a stale holder (request_id reused
+                        # or already finished by the time the
+                        # disconnect_guard fired) silently leaves the
+                        # ``via_disconnect`` sub-counter behind the
+                        # total, and the operator-facing
+                        # (total - via_disconnect) gap drifts with no
+                        # diagnostic trail. INFO-level — the sync
+                        # path also INFO-logs its rejected aborts.
+                        logger.info(
+                            "[disconnect_guard] async force-abort returned "
+                            "False for %s; via_disconnect sub-counter NOT "
+                            "advanced (stale holder / already finished?)",
+                            str(rid)[:12],
+                        )
+
+                asyncio.ensure_future(_await_and_record())
                 logger.warning(
                     f"[disconnect_guard] force-abort fell back to async "
                     f"engine.abort_request({str(request_id)[:12]}); the "
@@ -2072,6 +2852,11 @@ def _force_abort_request(engine, request_id_holder) -> bool:
                 f"[disconnect_guard] force-abort engine.abort_request("
                 f"{str(request_id)[:12]}) -> {result}"
             )
+            # Sync public-abort path (no coroutine to schedule) —
+            # attribute disconnect symmetric with the sync-scheduler
+            # branch above when the engine accepted the abort.
+            if result:
+                _record_disconnect_abort_on_scheduler(engine, request_id)
             return True
     except Exception:
         logger.warning(
@@ -2673,8 +3458,9 @@ def enforce_context_length_for_messages(
     *,
     tools: list | None = None,
     max_tokens: int | None = None,
-) -> None:
-    """Run the context-length gate for a chat-style request.
+) -> int | None:
+    """Run the context-length gate for a chat-style request and return
+    the rendered prompt's token count (``None`` on permissive-skip paths).
 
     Renders the prompt through the engine's chat template (same path
     used by ``BatchedEngine.build_prompt``), counts the tokens, then
@@ -2682,6 +3468,17 @@ def enforce_context_length_for_messages(
     tokenization step in a permissive try-except so a metadata edge
     case (e.g. unloaded engine on a route stub) doesn't 500 — the
     downstream scheduler still has its own validation.
+
+    Returns the integer prompt-token count so callers that already pay
+    the build_prompt + tokenize cost can reuse it (e.g. Anthropic
+    streaming usage's ``message_start.input_tokens`` plumbing). Returns
+    ``None`` when the render or tokenization was skipped — MLLM engine,
+    no ``build_prompt`` attribute, empty rendered prompt, or
+    tokenizer-returned-zero — so callers can distinguish "no estimate
+    available" from "real zero count" without re-parsing a sentinel
+    overload (codex r4 NIT on PR #807). Existing call sites that
+    discard the return value keep working unchanged — this is an
+    additive contract change.
 
     Scoped to text-only engines: MLLM models accept image / video /
     audio inputs whose token cost is computed by the multimodal
@@ -2693,10 +3490,10 @@ def enforce_context_length_for_messages(
     applies regardless of which compatibility surface the client uses.
     """
     if getattr(engine, "is_mllm", False):
-        return
+        return None
     build_prompt = getattr(engine, "build_prompt", None)
     if build_prompt is None:
-        return
+        return None
     try:
         prompt = build_prompt(messages, tools=tools)
     except HTTPException:
@@ -2721,13 +3518,14 @@ def enforce_context_length_for_messages(
                 status_code=400,
                 detail=f"Chat template error: {err_msg}",
             )
-        return
+        return None
     if not prompt:
-        return
+        return None
     prompt_tokens = count_prompt_tokens(engine, prompt)
     if prompt_tokens <= 0:
-        return
+        return None
     enforce_context_length(engine, prompt_tokens, max_tokens=max_tokens)
+    return prompt_tokens
 
 
 def enforce_context_length_for_prompt(

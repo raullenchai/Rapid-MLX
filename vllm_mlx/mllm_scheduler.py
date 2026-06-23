@@ -20,6 +20,7 @@ Architecture:
 
 import asyncio
 import logging
+import threading
 import time
 import uuid
 from collections import deque
@@ -117,10 +118,36 @@ class MLLMRequest:
     output_text: str = ""
     output_tokens: list[int] = field(default_factory=list)
     finish_reason: str | None = None
+    stop_tail: str = ""
+    stop_text: str = ""
+    stop_text_len: int = 0
 
     # Token counts
     num_prompt_tokens: int = 0
     num_output_tokens: int = 0
+
+
+def _find_stop_match_in_new_window(
+    text: str, new_text_start_len: int, stop_params: list[str]
+) -> tuple[int, str] | None:
+    """Find stops that overlap the newly searchable suffix of ``text``."""
+    if not stop_params:
+        return None
+    max_stop_len = max(len(s) for s in stop_params)
+    keep = max(0, max_stop_len - 1)
+    window_base = max(0, new_text_start_len - keep)
+    stop_window = text[window_base:]
+    match: tuple[int, str] | None = None
+    for stop_str in stop_params:
+        if not stop_str:
+            continue
+        search_from = max(0, new_text_start_len - window_base - len(stop_str) + 1)
+        local_idx = stop_window.find(stop_str, search_from)
+        if local_idx != -1:
+            global_idx = window_base + local_idx
+            if match is None or global_idx < match[0]:
+                match = (global_idx, stop_str)
+    return match
 
 
 @dataclass
@@ -245,6 +272,29 @@ class MLLMScheduler:
         # Thread-safe set for deferred aborts (event loop → executor thread).
         # CPython GIL guarantees set.add() and set.pop() are atomic.
         self._pending_abort_ids: set[str] = set()
+        # M-01 codex r2 BLOCKING #2: lifetime de-dup ledger for the
+        # total cancellation counter. Mirror of
+        # ``Scheduler._cancelled_request_ids`` — see that comment for
+        # the rationale (TL;DR: ``_pending_abort_ids`` drains every
+        # step so it's the wrong ledger to dedupe a lifetime counter
+        # against).
+        self._cancelled_request_ids: set[str] = set()
+        # M-01: once-per-request guard for the disconnect-cause
+        # sub-counter. Mirrors ``Scheduler._disconnect_abort_ids`` —
+        # the helper-layer ``_force_abort_request`` may fire two or
+        # three times per disconnect (disconnect branch + GeneratorExit
+        # branch + finally belt-and-suspenders) so the sub-counter
+        # needs its own de-dup set instead of leaning on
+        # ``_pending_abort_ids`` which drains every step.
+        self._disconnect_abort_ids: set[str] = set()
+        # M-01 codex r1 BLOCKING #4/#5: same atomicity rationale as
+        # ``Scheduler._cancel_counter_lock`` — the check-add-increment
+        # for both the total and via_disconnect counters must be
+        # serialized across threads. MLLM-active engines reach this
+        # path from the same disconnect_guard multi-branch fire AND
+        # the explicit cancel route, so the concurrency surface is
+        # identical.
+        self._cancel_counter_lock = threading.Lock()
         # Aborted request IDs that need queue signaling (executor → event loop).
         self._aborted_queue_ids: set[str] = set()
 
@@ -261,6 +311,12 @@ class MLLMScheduler:
         self.num_requests_processed = 0
         self.total_prompt_tokens = 0
         self.total_completion_tokens = 0
+        # M-01: cancellation observability — mirror of the text-path
+        # scheduler counters so /metrics renders a stable series on
+        # MLLM-active engines. See ``Scheduler.__init__`` for the full
+        # rationale. Observability only — abort semantics unchanged.
+        self.num_requests_cancelled = 0
+        self.num_requests_cancelled_via_disconnect = 0
 
     def _get_stop_tokens(self) -> set[int]:
         """Get stop token IDs from tokenizer.
@@ -389,7 +445,24 @@ class MLLMScheduler:
             video_max_frames=video_max_frames,
         )
 
-        self.requests[request_id] = request
+        # D-M01-2X (0.8.2 dogfood, codex r10 BLOCKING follow-up):
+        # mirror the text-path ``Scheduler.add_request`` ledger
+        # clear, gated on the same critical section as the
+        # ``self.requests[...] = request`` commit. Earlier clears
+        # would erase the prior lifetime's dedupe even when
+        # ``SamplingParams(...)``, ``MLLMRequest(...)``, or any
+        # other request-construction step subsequently raised —
+        # re-opening the double-count window for the OLD
+        # lifetime should a late ``abort_request`` arrive between
+        # the failed admit and the next successful one. The
+        # ledgers are otherwise lifetime-persistent across the
+        # abort+cleanup window; see
+        # ``Scheduler.remove_finished_request`` docstring for the
+        # multi-branch race repro the persistence plugs.
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.discard(request_id)
+            self._disconnect_abort_ids.discard(request_id)
+            self.requests[request_id] = request
         self.waiting.append(request)
 
         logger.debug(
@@ -423,17 +496,52 @@ class MLLMScheduler:
         # running, or already pending abort (idempotent double-cancel). We
         # do NOT count ``finished_req_ids`` — the route contract is
         # "404 when already finished".
-        if (
-            request_id in self.requests
-            or request_id in self.request_id_to_uid
-            or request_id in self.running
-            or request_id in self._pending_abort_ids
-        ):
+        # M-01 codex r1 BLOCKING #4 + r2 BLOCKING #2 + r6 BLOCKING #2:
+        # membership check AND check-add-increment serialized under
+        # the same lock to close the stale-admission race against
+        # ``_do_abort_request`` clearing the dedupe ledgers. See
+        # ``Scheduler.abort_request`` for the full rationale.
+        with self._cancel_counter_lock:
+            if not (
+                request_id in self.requests
+                or request_id in self.request_id_to_uid
+                or request_id in self.running
+                or request_id in self._pending_abort_ids
+            ):
+                logger.debug("Rejected abort for unknown MLLM request_id")
+                return False
+            already_counted = request_id in self._cancelled_request_ids
+            self._cancelled_request_ids.add(request_id)
             self._pending_abort_ids.add(request_id)
-            logger.debug(f"Enqueued abort for request {request_id}")
-            return True
-        logger.debug("Rejected abort for unknown MLLM request_id")
-        return False
+            if not already_counted:
+                self.num_requests_cancelled += 1
+        logger.debug(f"Enqueued abort for request {request_id}")
+        return True
+
+    def record_disconnect_abort(self, request_id: str) -> None:
+        """M-01: attribute a previously-accepted abort to client disconnect.
+
+        Mirrors ``Scheduler.record_disconnect_abort`` so MLLM-active
+        engines surface the same ``via_disconnect`` sub-counter on
+        /metrics. See that method's docstring for the once-per-request
+        semantics, lock-based atomicity contract (codex r1 BLOCKING
+        #5), and thread-safety guarantees.
+
+        Codex r7 NIT #3: gate on ``_cancelled_request_ids`` so the
+        ``via_disconnect_total <= cancelled_total`` dashboard
+        invariant holds by construction even on programmer error.
+        """
+        try:
+            if not request_id:
+                return
+            with self._cancel_counter_lock:
+                if request_id not in self._cancelled_request_ids:
+                    return
+                if request_id not in self._disconnect_abort_ids:
+                    self._disconnect_abort_ids.add(request_id)
+                    self.num_requests_cancelled_via_disconnect += 1
+        except Exception:  # pragma: no cover - belt-and-suspenders
+            pass
 
     def _process_pending_aborts(self) -> None:
         """Drain and execute pending abort requests.
@@ -479,9 +587,23 @@ class MLLMScheduler:
         if request is not None:
             request.status = RequestStatus.FINISHED_ABORTED
         self.finished_req_ids.add(request_id)
-        self.requests.pop(request_id, None)
 
-        self._detokenizer_pool.pop(request_id, None)
+        # D-M01-2X + D-M01-DEAD (0.8.2 dogfood): do NOT discard the
+        # dedupe ledgers — keep them lifetime-persistent. Mirrors
+        # the same fix applied to ``Scheduler.remove_finished_request``
+        # in the text path. See that docstring for the full repro of
+        # the disconnect_guard multi-branch fire race that wiping
+        # these ledgers opens up. The MLLM path has the SAME race
+        # surface (disconnect_guard fires from up to three branches,
+        # each may invoke ``abort_request`` against the MLLM
+        # scheduler) — so keeping the ledger persistent here is
+        # required for the dashboard invariant
+        # ``via_disconnect_total <= cancelled_total`` and the
+        # "exactly one tick per abort" contract that three personas
+        # independently observed broken on PyPI 0.8.2.
+        with self._cancel_counter_lock:
+            self.requests.pop(request_id, None)
+            self._detokenizer_pool.pop(request_id, None)
 
         # Do NOT write to output_queues here — this may run on the
         # executor thread where asyncio.Queue is not safe.  Mark for
@@ -597,25 +719,231 @@ class MLLMScheduler:
                 if resp_pt > 0:
                     request.num_prompt_tokens = resp_pt
 
-            # Append token to request
-            request.output_tokens.append(response.token)
+            token_is_control_stop_token = bool(
+                getattr(response, "token_is_stop_token", False)
+            )
+
+            # Append generated content tokens to request state. Backend
+            # EOS/control stop ids are scheduler control signals, not user
+            # output, so they must not appear in output_token_ids either.
+            if not token_is_control_stop_token:
+                request.output_tokens.append(response.token)
             request.num_output_tokens = len(request.output_tokens)
 
+            finish_reason = response.finish_reason
+
             # Decode the new token using streaming detokenizer (UTF-8 safe).
-            # Skip stop tokens — they are not content.
-            if response.finish_reason == "stop":
+            # Backend EOS/control stop tokens are not decoded. Backend
+            # responses that finish with normal text still detokenize so
+            # the rolling matcher can keep visible text before a user stop.
+            had_detok = request_id in self._detokenizer_pool
+            if not had_detok:
+                if hasattr(tokenizer, "detokenizer"):
+                    detok = tokenizer.detokenizer
+                else:
+                    detok = NaiveStreamingDetokenizer(tokenizer)
+                detok.reset()
+                self._detokenizer_pool[request_id] = detok
+            detok = self._detokenizer_pool[request_id]
+            stop_params = [s for s in request.stop if s] if request.stop else []
+            if token_is_control_stop_token:
                 new_text = ""
             else:
-                if request_id not in self._detokenizer_pool:
-                    if hasattr(tokenizer, "detokenizer"):
-                        detok = tokenizer.detokenizer
-                    else:
-                        detok = NaiveStreamingDetokenizer(tokenizer)
-                    detok.reset()
-                    self._detokenizer_pool[request_id] = detok
-                detok = self._detokenizer_pool[request_id]
                 detok.add_token(response.token)
                 new_text = detok.last_segment
+            detok_finalized = False
+            if finish_reason is not None and (
+                stop_params or token_is_control_stop_token
+            ):
+                baseline_prefix = (
+                    request.stop_text if request.stop_text else request.output_text
+                )
+                baseline_text = baseline_prefix + (
+                    new_text if isinstance(new_text, str) else ""
+                )
+                detok.finalize()
+                detok_finalized = True
+                finalized_text = detok.text
+                if isinstance(finalized_text, str) and finalized_text.startswith(
+                    baseline_text
+                ):
+                    new_text = finalized_text[len(baseline_text) :]
+                    if baseline_text:
+                        new_text = baseline_text[len(baseline_prefix) :] + new_text
+            if not isinstance(new_text, str):
+                # Unit-test mocks may not implement the streaming
+                # detokenizer contract. Production detokenizers
+                # return str; this fallback keeps legacy tests and
+                # defensive adapters on the same stop path.
+                new_text = (
+                    ""
+                    if token_is_control_stop_token
+                    else tokenizer.decode([response.token])
+                )
+
+            output_new_text = new_text
+            output_output_text = ""
+            output_finished = False
+            output_finish_reason: str | None = None
+            output_matched_stop: str | None = None
+
+            stop_trimmed = False
+            if (finish_reason != "stop" or new_text) and stop_params:
+                if (
+                    not had_detok
+                    and request.stop_text_len == 0
+                    and not request.stop_tail
+                    and len(request.output_tokens) > 1
+                ):
+                    # Direct scheduler tests and defensive adapters can
+                    # enter here with historical output_tokens but no
+                    # streaming detokenizer state. Seed from a one-time
+                    # full decode only for that no-detok legacy shape.
+                    # If a detokenizer already exists, empty new_text means
+                    # it is buffering partial bytes; offsets must wait for
+                    # the detokenizer to emit text.
+                    request.stop_text = tokenizer.decode(request.output_tokens[:-1])
+                    request.stop_text_len = len(request.stop_text)
+                    max_stop_len = max(len(s) for s in stop_params)
+                    keep = max(0, max_stop_len - 1)
+                    request.stop_tail = request.stop_text[-keep:] if keep else ""
+                    request.output_text = request.stop_text
+                    output_output_text = request.output_text
+                prev_text_len = request.stop_text_len
+                if stop_params and new_text:
+                    max_stop_len = max(len(s) for s in stop_params)
+                    keep = max(0, max_stop_len - 1)
+                    previous_seen_len = len(request.stop_text)
+                    streamed_so_far = request.stop_text + new_text
+                    match = _find_stop_match_in_new_window(
+                        streamed_so_far, previous_seen_len, stop_params
+                    )
+                    if match is not None:
+                        idx, stop_str = match
+                        finish_reason = "stop"
+                        output_finish_reason = finish_reason
+                        # H-03: pin WHICH user-supplied stop fired so
+                        # the Anthropic adapter can surface
+                        # ``stop_reason="stop_sequence"`` +
+                        # ``stop_sequence: <str>`` per the public spec.
+                        # Mirrors the text-scheduler companion change so
+                        # MLLM-backed ``/v1/messages`` traffic gets the
+                        # same surface as the text path.
+                        output_matched_stop = stop_str
+                        # Emit only the valid prefix before the stop marker
+                        # in new_text so streaming clients don't lose content.
+                        visible_text = streamed_so_far[:idx]
+                        output_new_text = visible_text[prev_text_len:]
+                        request.output_text = visible_text
+                        output_output_text = visible_text
+                        request.stop_text = streamed_so_far
+                        request.stop_text_len = len(streamed_so_far)
+                        request.stop_tail = ""
+                        stop_trimmed = True
+                    else:
+                        request.stop_text = streamed_so_far
+                        if finish_reason is not None:
+                            safe_upto = len(request.stop_text)
+                        else:
+                            safe_upto = max(0, len(request.stop_text) - keep)
+                        output_new_text = request.stop_text[
+                            request.stop_text_len : safe_upto
+                        ]
+                        request.stop_text_len = safe_upto
+                        request.stop_tail = (
+                            (
+                                ""
+                                if finish_reason is not None
+                                else request.stop_text[-keep:]
+                            )
+                            if keep
+                            else ""
+                        )
+                        request.output_text = request.stop_text[:safe_upto]
+                        output_output_text = request.output_text
+                elif stop_params:
+                    # ``new_text`` may be empty while the detokenizer is
+                    # holding an incomplete byte sequence. Preserve the
+                    # existing tail and wait for a real text segment.
+                    pass
+            else:
+                if finish_reason != "stop" or new_text:
+                    request.output_text += new_text
+                    output_output_text = request.output_text
+                else:
+                    output_new_text = ""
+                    output_output_text = request.output_text
+
+            # Check if finished
+            if finish_reason is not None:
+                if (
+                    not stop_trimmed
+                    and stop_params
+                    and request.stop_text
+                    and request.stop_text_len < len(request.stop_text)
+                ):
+                    match = _find_stop_match_in_new_window(
+                        request.stop_text, request.stop_text_len, stop_params
+                    )
+                    if match is not None:
+                        idx, stop_str = match
+                        finish_reason = "stop"
+                        output_finish_reason = finish_reason
+                        visible_text = request.stop_text[:idx]
+                        output_new_text = visible_text[
+                            request.stop_text_len : len(visible_text)
+                        ]
+                        request.output_text = visible_text
+                        output_output_text = visible_text
+                        request.stop_text_len = len(request.stop_text)
+                        request.stop_tail = ""
+                        output_matched_stop = stop_str
+                        stop_trimmed = True
+                if (
+                    not stop_trimmed
+                    and stop_params
+                    and request.stop_text
+                    and request.stop_text_len < len(request.stop_text)
+                ):
+                    held_text = request.stop_text[request.stop_text_len :]
+                    request.stop_text_len = len(request.stop_text)
+                    output_new_text += held_text
+                    request.output_text += held_text
+                    output_output_text = request.output_text
+                if finish_reason == "stop":
+                    request.status = RequestStatus.FINISHED_STOPPED
+                elif finish_reason == "length":
+                    request.status = RequestStatus.FINISHED_LENGTH_CAPPED
+
+                output_finished = True
+                output_finish_reason = finish_reason
+                finished_ids.add(request_id)
+
+                # Use trimmed output if set by stop-string check, else
+                # finalize streaming detokenizer for full output.
+                # Use explicit flag instead of string truthiness — empty string
+                # is a valid trimmed result (stop at position 0).
+                if stop_trimmed or finish_reason == "stop":
+                    output_output_text = request.output_text
+                else:
+                    detok = self._detokenizer_pool.get(request_id)
+                    if detok is not None:
+                        if not detok_finalized:
+                            detok.finalize()
+                        output_output_text = detok.text
+                    else:
+                        output_output_text = tokenizer.decode(request.output_tokens)
+                    request.output_text = output_output_text
+                request.finish_reason = finish_reason
+                self._detokenizer_pool.pop(request_id, None)
+
+                self.total_completion_tokens += request.num_output_tokens
+                self.num_requests_processed += 1
+
+                logger.debug(
+                    f"Request {request_id} finished: {finish_reason}, "
+                    f"{request.num_output_tokens} tokens"
+                )
 
             # output_token_ids is a live reference (not a defensive copy):
             # consumers read it synchronously; the per-decode list() was O(n).
@@ -629,93 +957,23 @@ class MLLMScheduler:
             # text path's ``RequestOutput.logprobs`` field exactly so the
             # downstream ``_extract_streaming_token_logprobs`` extractor
             # works unmodified for both paths.
-            output = RequestOutput(
-                request_id=request_id,
-                new_token_ids=[response.token],
-                new_text=new_text,
-                output_token_ids=request.output_tokens,
-                prompt_tokens=request.num_prompt_tokens,
-                completion_tokens=request.num_output_tokens,
-                logprobs=getattr(response, "logprobs", None),
-            )
-
-            # Check text-based stop sequences against the full decoded
-            # output. ``tokenizer.decode(request.output_tokens)`` re-
-            # decodes the entire token list each step (O(T) per step) —
-            # equivalent to the text scheduler's IncrementalDecoder-
-            # backed surface, but built up from the cumulative token
-            # list. The MLLM streaming detokenizer
-            # (``NaiveStreamingDetokenizer``) only carries the
-            # current-segment slice in its ``.text`` property, so it
-            # is NOT equivalent to a fresh full decode — the stop
-            # check must use the full decode.
-            finish_reason = response.finish_reason
-            stop_trimmed = False
-            if finish_reason is None and request.stop:
-                decoded_so_far = tokenizer.decode(request.output_tokens)
-                for stop_str in request.stop:
-                    if stop_str and stop_str in decoded_so_far:
-                        finish_reason = "stop"
-                        # H-03: pin WHICH user-supplied stop fired so
-                        # the Anthropic adapter can surface
-                        # ``stop_reason="stop_sequence"`` +
-                        # ``stop_sequence: <str>`` per the public spec.
-                        # Mirrors the text-scheduler companion change so
-                        # MLLM-backed ``/v1/messages`` traffic gets the
-                        # same surface as the text path.
-                        output.matched_stop = stop_str
-                        # Trim output at stop string
-                        idx = decoded_so_far.index(stop_str)
-                        request.output_text = decoded_so_far[:idx]
-                        stop_trimmed = True
-                        # Emit only the valid prefix before the stop marker
-                        # in new_text so streaming clients don't lose content.
-                        # Compute what was already streamed vs the trimmed total.
-                        prev_text = tokenizer.decode(request.output_tokens[:-1])
-                        trimmed_total = decoded_so_far[:idx]
-                        if len(trimmed_total) > len(prev_text):
-                            output.new_text = trimmed_total[len(prev_text) :]
-                        else:
-                            output.new_text = ""
-                        break
-
-            # Check if finished
-            if finish_reason is not None:
-                if finish_reason == "stop":
-                    request.status = RequestStatus.FINISHED_STOPPED
-                elif finish_reason == "length":
-                    request.status = RequestStatus.FINISHED_LENGTH_CAPPED
-
-                output.finished = True
-                output.finish_reason = finish_reason
-                finished_ids.add(request_id)
-
-                # Use trimmed output if set by stop-string check, else
-                # finalize streaming detokenizer for full output.
-                # Use explicit flag instead of string truthiness — empty string
-                # is a valid trimmed result (stop at position 0).
-                if stop_trimmed:
-                    output.output_text = request.output_text
-                else:
-                    detok = self._detokenizer_pool.get(request_id)
-                    if detok is not None:
-                        detok.finalize()
-                        output.output_text = detok.text
-                    else:
-                        output.output_text = tokenizer.decode(request.output_tokens)
-                    request.output_text = output.output_text
-                request.finish_reason = finish_reason
-                self._detokenizer_pool.pop(request_id, None)
-
-                self.total_completion_tokens += request.num_output_tokens
-                self.num_requests_processed += 1
-
-                logger.debug(
-                    f"Request {request_id} finished: {finish_reason}, "
-                    f"{request.num_output_tokens} tokens"
+            outputs.append(
+                RequestOutput(
+                    request_id=request_id,
+                    new_token_ids=[]
+                    if token_is_control_stop_token
+                    else [response.token],
+                    new_text=output_new_text,
+                    output_token_ids=request.output_tokens,
+                    output_text=output_output_text,
+                    finished=output_finished,
+                    finish_reason=output_finish_reason,
+                    prompt_tokens=request.num_prompt_tokens,
+                    completion_tokens=request.num_output_tokens,
+                    logprobs=getattr(response, "logprobs", None),
+                    matched_stop=output_matched_stop,
                 )
-
-            outputs.append(output)
+            )
 
         return outputs, finished_ids
 
@@ -977,14 +1235,149 @@ class MLLMScheduler:
             )
             self._owns_step_executor = True
         loop = asyncio.get_running_loop()
+        # The currently in-flight step ``concurrent.futures.Future``
+        # (None when the loop is between steps). Lets the ``finally``
+        # block wait on THIS specific future with a bounded timeout
+        # instead of issuing a blocking ``shutdown(wait=True)`` second
+        # join that no asyncio cancel can unblock (codex r3 BLOCKING #1).
+        self._inflight_step_cf: concurrent.futures.Future | None = None
 
         try:
             while self._running:
                 try:
                     if self.has_requests():
-                        output = await loop.run_in_executor(
-                            self._step_executor, self._step_no_queue
-                        )
+                        # MEMORY guideline (knowledge/gotchas.md):
+                        # "asyncio Future cancel does NOT stop executor
+                        # thread — use ``executor.submit`` +
+                        # ``cf.cancelled()`` gate, not ``run_in_executor``".
+                        #
+                        # The prior shape was
+                        # ``await loop.run_in_executor(self._step_executor,
+                        # self._step_no_queue)``. On loop cancellation
+                        # (``self._running`` flipped or task cancelled
+                        # during shutdown) the asyncio-side Future flipped
+                        # to CANCELLED immediately but the executor thread
+                        # kept running ``_step_no_queue`` against
+                        # ``BatchGenerator`` state that the shutdown path
+                        # then races to tear down — exactly the
+                        # "Aborting orphaned MLLM request" / mllm-step
+                        # zombie shape Ana flagged in the C-04 recon
+                        # (R3 in /tmp/dogfood-085/c04-recon.md).
+                        #
+                        # Mirror the proven pattern from
+                        # ``engine_core.py:855``: hold the underlying
+                        # ``concurrent.futures.Future`` directly, await it
+                        # via ``asyncio.wrap_future``, and gate any
+                        # post-cancel cleanup on ``cf.cancelled()`` so we
+                        # only ever consume an ``output`` that actually
+                        # came back from the executor thread.
+                        # Codex r8 BLOCKING #1: ``submit()`` itself can
+                        # raise synchronously if the executor was
+                        # already shut down (e.g. shutdown raced ahead
+                        # of this call). Guard the submit so
+                        # ``_inflight_step_cf`` is never left dangling
+                        # and the scheduler loop breaks cleanly instead
+                        # of retrying against a dead executor.
+                        try:
+                            cf = self._step_executor.submit(self._step_no_queue)
+                        except RuntimeError as _submit_exc:
+                            logger.warning(
+                                "MLLM scheduler executor rejected new work "
+                                "(%s); breaking step loop for clean shutdown",
+                                _submit_exc,
+                            )
+                            self._inflight_step_cf = None
+                            break
+                        # Stash so the ``finally`` block can wait on
+                        # THIS specific in-flight cf with a bounded
+                        # timeout instead of starting an
+                        # uncancellable ``shutdown(wait=True)`` second
+                        # join (codex r3 BLOCKING #1). The reference is
+                        # cleared on the success path below; the cancel
+                        # path preserves it for the outer
+                        # ``finally``-block drain; the non-cancel
+                        # ``Exception`` path is handled by the explicit
+                        # ``except Exception`` arm a few lines down
+                        # which clears it before re-raising (codex r6
+                        # BLOCKING #2).
+                        self._inflight_step_cf = cf
+                        try:
+                            output = await asyncio.wrap_future(cf, loop=loop)
+                        except asyncio.CancelledError:
+                            # The asyncio side is cancelled; the executor
+                            # may already be running (or completed).
+                            # ``asyncio.wrap_future`` will have called
+                            # ``cf.cancel()`` — succeeds only if the work
+                            # had not started yet. If the work DID start,
+                            # let it run to completion silently so it
+                            # doesn't race the shutdown teardown of
+                            # ``BatchGenerator``/``self._step_executor``.
+                            # We deliberately do NOT call
+                            # ``cf.result()`` here because the outer
+                            # ``finally`` block will wait on
+                            # ``self._inflight_step_cf`` with a
+                            # bounded timeout (codex r3 BLOCKING #1
+                            # follow-up) and then ``shutdown(wait=False,
+                            # cancel_futures=True)`` the executor. The
+                            # drain done-callback below logs any
+                            # executor-side exception under DEBUG.
+                            if not cf.cancelled():
+
+                                def _drain_step_result(_future: Any) -> None:
+                                    # Surface any executor-side
+                                    # exception at DEBUG so silent
+                                    # errors during shutdown still
+                                    # leave a trail without spamming
+                                    # the log on normal cancel.
+                                    #
+                                    # Codex r5 BLOCKING #1: catch
+                                    # ``Exception`` (not
+                                    # ``BaseException``). Letting
+                                    # ``KeyboardInterrupt`` /
+                                    # ``SystemExit`` / ``GeneratorExit``
+                                    # propagate is the correct
+                                    # behaviour during shutdown — the
+                                    # callback runs on the executor
+                                    # thread, where those exception
+                                    # types signal interpreter-level
+                                    # teardown that nothing in this
+                                    # path should be swallowing.
+                                    try:
+                                        _future.result()
+                                    except Exception as _exc:
+                                        logger.debug(
+                                            "MLLM step exception during"
+                                            " cancellation drain: %r",
+                                            _exc,
+                                        )
+
+                                cf.add_done_callback(_drain_step_result)
+                            raise
+                        except Exception:
+                            # Codex r6 BLOCKING #2: a non-cancel
+                            # ``Exception`` raised by ``_step_no_queue``
+                            # (executor-side) propagates through
+                            # ``wrap_future``. Clear ``_inflight_step_cf``
+                            # before re-raising so the outer
+                            # ``except Exception`` arm at the loop level
+                            # (which logs + retries) doesn't leave a
+                            # done()-but-still-recorded reference for
+                            # the eventual ``finally`` block to chase.
+                            # The cf is already done() at this point,
+                            # so the outer-finally drain would no-op
+                            # against it, but clearing here keeps the
+                            # contract clean: ``_inflight_step_cf`` is
+                            # non-None only when there's actually
+                            # outstanding executor work that the
+                            # shutdown path might need to drain.
+                            self._inflight_step_cf = None
+                            raise
+
+                        # Successful step → clear the inflight reference
+                        # so the ``finally`` block sees an empty slot
+                        # once the loop has exited the
+                        # ``has_requests()`` branch on this iteration.
+                        self._inflight_step_cf = None
 
                         # Distribute outputs to queues ON the event loop thread
                         # (asyncio.Queue is not thread-safe).
@@ -1003,10 +1396,127 @@ class MLLMScheduler:
                     logger.error(f"Error in MLLM process loop: {e}")
                     await asyncio.sleep(0.1)
         finally:
+            cancel_to_reraise: asyncio.CancelledError | None = None
             if self._step_executor is not None:
                 if getattr(self, "_owns_step_executor", True):
-                    self._step_executor.shutdown(wait=False)
+                    # Codex r1 BLOCKING #3 + codex r2/r3 BLOCKING follow-ups:
+                    # bound the teardown WITHOUT relying on
+                    # ``shutdown(wait=True)`` (an uncancellable blocking
+                    # join that no asyncio timeout can stop). Instead
+                    # wait on THIS step's specific ``cf`` via
+                    # ``asyncio.wrap_future`` with a bounded timeout,
+                    # then drop the executor reference with
+                    # ``shutdown(wait=False)`` regardless of outcome:
+                    #
+                    #   * Happy path — the in-flight step (if any)
+                    #     completes within ``_drain_secs``. ``cf``
+                    #     finishes, ``BatchGenerator``/``scheduler``
+                    #     state was mutated by the step EXACTLY ONCE,
+                    #     and the subsequent ``shutdown(wait=False)``
+                    #     only has the (empty) submit queue left to
+                    #     drain. The "Aborting orphaned MLLM request"
+                    #     race C-04 §3.R3 flagged is closed.
+                    #   * Wedged path — the in-flight step is stuck
+                    #     (Metal driver hang, etc.). The
+                    #     ``asyncio.wait_for`` times out after
+                    #     ``_drain_secs``, we log a WARNING, and the
+                    #     follow-on ``shutdown(wait=False,
+                    #     cancel_futures=True)`` releases the executor
+                    #     reference. The worker thread is left to its
+                    #     wedged state (we can't unwedge it from
+                    #     Python), but lifespan shutdown makes
+                    #     progress — exactly the bounded-shutdown
+                    #     guarantee codex r3 BLOCKING #1 demanded.
+                    #   * No in-flight step — the wait_for is a no-op
+                    #     against an already-resolved (or never-set)
+                    #     future.
+                    _drain_secs = 5.0
+                    inflight = self._inflight_step_cf
+                    self._inflight_step_cf = None
+                    # Codex r5 BLOCKING #2: split exception handling so
+                    # ``asyncio.CancelledError`` propagates after we
+                    # release the executor reference. A second-cancel
+                    # storm (caller invoked ``stop()`` mid-shutdown
+                    # and the lifespan task got cancelled again) MUST
+                    # surface back to the caller — swallowing it leaves
+                    # ``stop()`` blocked on the unfinished
+                    # ``_processing_task``. ``cancel_to_reraise`` is
+                    # declared at the top of the ``finally`` block so
+                    # the re-raise sits outside the
+                    # ``_owns_step_executor`` branch.
+                    if (
+                        inflight is not None
+                        and not inflight.done()
+                        and not inflight.cancelled()
+                    ):
+                        # Codex r8 BLOCKING #2: ``asyncio.wait_for``
+                        # cancels the awaitable on timeout, and
+                        # cancelling an ``asyncio.wrap_future``
+                        # propagates ``cancel()`` to the underlying
+                        # ``concurrent.futures.Future``. For a
+                        # step that's queued-but-not-started, that
+                        # cancel succeeds and discards the work —
+                        # violating the surrounding comment's
+                        # contract ("the step either finishes once
+                        # or is abandoned only when wedged"). The
+                        # observed silent-data-loss shape would be:
+                        # a final scheduled step is queued; lifespan
+                        # shutdown fires; the timeout cancels the
+                        # CF; the step never runs; an inflight
+                        # generation completes with truncated
+                        # output because its kv-fetch never
+                        # happened. ``asyncio.shield`` prevents the
+                        # timeout's cancellation from propagating
+                        # to the inner ``wrap_future`` — the
+                        # awaitable is cancelled at the wait_for
+                        # boundary but the wrapped CF is left
+                        # alone. The shutdown still proceeds in
+                        # bounded time (drain returns or
+                        # TimeoutError fires), and the executor
+                        # is torn down with ``wait=False`` below
+                        # so the worker thread is released
+                        # regardless.
+                        wrapped = asyncio.wrap_future(inflight, loop=loop)
+                        try:
+                            await asyncio.wait_for(
+                                asyncio.shield(wrapped),
+                                timeout=_drain_secs,
+                            )
+                        except TimeoutError:
+                            # Wedged step — operator-visible WARNING.
+                            logger.warning(
+                                "MLLM step exceeded %.1fs drain budget"
+                                " during shutdown; abandoning the"
+                                " worker thread and proceeding with"
+                                " non-blocking executor teardown",
+                                _drain_secs,
+                            )
+                        except asyncio.CancelledError as exc:
+                            # Re-raise AFTER releasing the executor
+                            # reference below (the executor cleanup is
+                            # non-blocking, so we can do it on the
+                            # exit path without losing the cancel
+                            # signal to the caller).
+                            cancel_to_reraise = exc
+                        except Exception as exc:
+                            # Executor-side raise — log only; this
+                            # path is best-effort observability and
+                            # must not mask the real shutdown trigger.
+                            logger.debug("MLLM step in-flight drain ended with %r", exc)
+                    try:
+                        self._step_executor.shutdown(wait=False, cancel_futures=True)
+                    except Exception:  # pragma: no cover — defensive
+                        logger.debug(
+                            "MLLM step executor shutdown raised", exc_info=True
+                        )
                 self._step_executor = None
+            if cancel_to_reraise is not None:
+                # Surface the cancellation to whatever is awaiting
+                # ``_processing_task`` (typically
+                # ``MLLMScheduler.stop`` -> outer FastAPI lifespan).
+                # We've already cleaned up the executor reference, so
+                # the re-raise leaves no resource leak.
+                raise cancel_to_reraise
 
     async def add_request_async(
         self,
@@ -1161,6 +1671,14 @@ class MLLMScheduler:
             "num_requests_processed": self.num_requests_processed,
             "total_prompt_tokens": self.total_prompt_tokens,
             "total_completion_tokens": self.total_completion_tokens,
+            # M-01: cancellation observability — mirror of the text
+            # scheduler stats so the same /metrics renderer surfaces a
+            # flat-line zero on MLLM-active engines that never see an
+            # abort. See ``Scheduler.get_stats`` for the full rationale.
+            "num_requests_cancelled": self.num_requests_cancelled,
+            "num_requests_cancelled_via_disconnect": (
+                self.num_requests_cancelled_via_disconnect
+            ),
         }
 
         if self.batch_generator is not None:
@@ -1198,6 +1716,17 @@ class MLLMScheduler:
         self.request_id_to_uid.clear()
         self.uid_to_request_id.clear()
         self._detokenizer_pool.clear()
+        # M-01 codex r2/r8: drop the cancellation lifetime ledgers
+        # alongside the in-flight state. The Prometheus counters
+        # themselves are NOT zeroed (lifetime-cumulative contract).
+        # Codex r8 BLOCKING #1 ordering: clear AFTER the abort loop
+        # so a concurrent ``record_disconnect_abort`` for an
+        # in-flight request can't interleave inconsistently, AND
+        # under the lock so the clear is atomic against any
+        # concurrent abort-path mutation.
+        with self._cancel_counter_lock:
+            self._cancelled_request_ids.clear()
+            self._disconnect_abort_ids.clear()
 
         if self.batch_generator is not None:
             self.batch_generator.close()

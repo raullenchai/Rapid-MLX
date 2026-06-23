@@ -4,7 +4,10 @@
 import json
 from unittest.mock import MagicMock
 
+import pytest
+
 from vllm_mlx.service.postprocessor import StreamingPostProcessor
+from vllm_mlx.tool_parsers.llama_tool_parser import LlamaToolParser
 
 
 def _make_cfg(**overrides):
@@ -281,6 +284,36 @@ class TestStreamingPostProcessorToolCalls:
         # a test explicitly opts into a non-empty held suffix.
         parser.flush_held_content.return_value = ""
         return parser
+
+    def test_init_does_not_reset_injected_tool_parser_cache(self):
+        parser = LlamaToolParser()
+        assert parser.has_pending_tool_call("ordinary assistant prose " * 32) is False
+
+        cfg = _make_cfg(tool_parser_instance=parser)
+        StreamingPostProcessor(cfg)
+
+        assert parser.has_pending_tool_call('different prefix {"name": "search"')
+
+    def test_init_accepts_injected_tool_parser_without_reset(self):
+        parser = MagicMock()
+        del parser.reset
+
+        cfg = _make_cfg(tool_parser_instance=parser)
+
+        StreamingPostProcessor(cfg)
+
+    def test_init_rejects_uncloneable_injected_tool_parser(self):
+        class UncloneableParser:
+            def __copy__(self):
+                raise TypeError("cannot copy")
+
+            def __deepcopy__(self, memo):
+                raise TypeError("cannot deepcopy")
+
+        cfg = _make_cfg(tool_parser_instance=UncloneableParser())
+
+        with pytest.raises(RuntimeError, match="could not be cloned safely"):
+            StreamingPostProcessor(cfg)
 
     def test_tool_markup_suppresses_content(self):
         """Content is suppressed while inside tool markup."""

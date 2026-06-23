@@ -198,6 +198,7 @@ _model_path: str | None = (
     None  # Actual model path (for cache dir, not affected by --served-model-name)
 )
 _default_max_tokens: int = 4096
+_default_max_tokens_is_explicit: bool = False
 _thinking_token_budget: int = 2048  # Extra tokens added for thinking models
 _default_timeout: float = 1800.0  # Default request timeout in seconds (30 minutes)
 _default_temperature: float | None = None  # Set via --default-temperature
@@ -313,6 +314,41 @@ async def lifespan(app: FastAPI):
     """FastAPI lifespan for startup/shutdown events."""
     global _engine, _mcp_manager
 
+    # Install process-death observability BEFORE any executor is created.
+    # Two complementary mechanisms (codex r3 NIT clarification):
+    #
+    #   * ``faulthandler.enable()`` installs an async-signal-safe
+    #     C-level handler for SIGSEGV / SIGBUS / SIGILL / SIGFPE /
+    #     SIGABRT — i.e. all the crash signals MLX / Metal C extensions
+    #     can raise. The handler writes a Python traceback to stderr
+    #     before the interpreter dies. SIGABRT is owned ONLY by
+    #     faulthandler — it is intentionally NOT in our
+    #     ``signal.signal`` chain (a Python-level handler there would
+    #     call ``logging``, which is not async-signal-safe and would
+    #     downgrade the abort-path observability).
+    #
+    #   * A chained ``signal.signal`` handler for SIGTERM and SIGHUP
+    #     only. The handler logs a single WARNING line, dumps
+    #     ``faulthandler.dump_traceback(all_threads=True)``, then
+    #     chains to uvicorn's prior ``handle_exit`` (so graceful
+    #     shutdown still runs) or, when the prior was ``SIG_DFL``
+    #     (e.g. SIGHUP under uvicorn, which does not capture SIGHUP),
+    #     restores SIG_DFL + ``raise_signal`` so the kernel-level
+    #     terminate-by-default fires after the log line lands.
+    #
+    # Mirrors C-04 recon §3.R1 + §3.R2 (``/tmp/dogfood-085/c04-recon.md``)
+    # — three persona logs from the 0.8.5 dogfood ran exclusively in the
+    # "process disappeared between two stdout writes" shape with no
+    # traceback, no shutdown banner, no crash report. Without these hooks
+    # the operator cannot tell SIGKILL (un-catchable) from SIGTERM
+    # (catchable but currently invisible) from a Metal segfault. The
+    # install is idempotent + safe off the main thread (returns False
+    # rather than raising), so re-entry from test harnesses and embedded-
+    # uvicorn contexts is tolerated.
+    from ._signal_observability import install_signal_observability
+
+    install_signal_observability()
+
     # GC control: raise thresholds to reduce GC frequency with large models
     if _gc_control:
         gc.set_threshold(100_000, 50, 50)
@@ -408,6 +444,49 @@ async def lifespan(app: FastAPI):
     if mcp_config:
         await init_mcp(mcp_config)
 
+    # F-K-CAPABILITIES-OMIT-AUDIO: run a deep audio-lane dry-run so
+    # the per-lane status surfaces on ``/v1/models`` capability tags
+    # BEFORE the first user request lands on a degraded backend. The
+    # existing shallow probe only checks ``mlx_audio`` importability;
+    # a model that loads but can't generate output (F-K-WHISPER-500
+    # shape) still passed the shallow probe and 500'd at first use.
+    #
+    # Off by default to keep cold-start fast for text-only deploys —
+    # turn on via ``RAPID_MLX_AUDIO_DEEP_PROBE=1`` when running an
+    # audio-serving build. The dry-run is non-fatal: any failure is
+    # caught inside ``deep_probe_audio_lane`` and recorded as
+    # ``degraded`` / ``missing``; the lifespan completes regardless
+    # so a torn audio backend doesn't block server boot.
+    #
+    # Codex r2 NIT #3: call ``deep_probe_audio_lane`` unconditionally
+    # (even when ``mlx_audio`` is missing) so ``/v1/models`` carries
+    # ``audio_lanes={"stt":"missing","tts":"missing"}`` on bare
+    # installs. The prior branch short-circuited on ``find_spec``
+    # and ``audio_lanes`` came back ``null``, hiding the "no audio
+    # extra installed" state from operators using the field for
+    # health. ``deep_probe_audio_lane`` already runs the shallow
+    # presence check internally and records the missing-extra
+    # status via the same code path the route's 503 envelope uses.
+    # Codex r3 NIT #2: lowercase the env value before comparing so
+    # ``RAPID_MLX_AUDIO_DEEP_PROBE=False`` (capital F) and ``NO``
+    # (uppercase) are treated as falsy, not truthy. Mirrors the
+    # convention used by every other ``RAPID_MLX_*`` boolean knob.
+    _audio_deep_probe = os.environ.get("RAPID_MLX_AUDIO_DEEP_PROBE", "").strip().lower()
+    if _audio_deep_probe and _audio_deep_probe not in ("0", "false", "no"):
+        try:
+            from .audio.probe import deep_probe_audio_lane as _deep_probe
+
+            logger.info("Running deep audio probe (STT + TTS dry-run)...")
+            _stt_status = _deep_probe("stt")
+            _tts_status = _deep_probe("tts")
+            logger.info(
+                "Audio lane status — stt=%s, tts=%s",
+                _stt_status.get("status"),
+                _tts_status.get("status"),
+            )
+        except Exception as _audio_err:  # noqa: BLE001
+            logger.warning("Deep audio probe failed (non-fatal): %s", _audio_err)
+
     # All slow startup work done. Flip the readiness flag so /health/ready
     # starts returning 200. Anything that races a request before this point
     # would otherwise hit a not-yet-warmed engine.
@@ -495,9 +574,58 @@ install_audio_body_limit_middleware(app)
 # is not trampled by the generic 8 MiB JSON cap), and the limit lookup
 # (ServerConfig.max_request_bytes, overridable via --max-request-bytes /
 # RAPID_MLX_MAX_REQUEST_BYTES).
+# SECURITY: blanket request-body JSON nesting-depth cap across all
+# /v1/* JSON routes. Defends against the D-DEEP-JSON DoS pattern where
+# a ~10 KB body of ``{"a":{"a":…}}`` 1000 levels deep blew the Python
+# recursion limit inside Pydantic's body validator and surfaced as
+# HTTP 500 on every body-binding route (chat / completions /
+# embeddings / messages / responses). See middleware/body_depth.py
+# for the design rationale; the cap is read from
+# ``RAPID_MLX_MAX_BODY_DEPTH`` per request (default 64) so a test
+# fixture mutating the env takes effect immediately. Installed BEFORE
+# the size cap so the size cap ends up OUTERMOST at request time
+# (Starlette stacks middleware in reverse install order). That way a
+# 100 MB body gets bounced for size before this middleware ever sees
+# it — the depth gate is only reached for bodies that already pass
+# the size cap.
+from .middleware.body_depth import install_request_body_depth_middleware  # noqa: E402
+
+install_request_body_depth_middleware(app)
+
 from .middleware.body_size import install_request_body_limit_middleware  # noqa: E402
 
 install_request_body_limit_middleware(app)
+
+# R8-H6: ASGI fast-path for ``GET /healthz`` + ``GET /livez``.
+#
+# Stack ordering note (codex r3 NIT clarification): Starlette stacks
+# user middleware in REVERSE install order — last install runs FIRST
+# per request. The fast-path is installed here (after the body-size +
+# body-depth + audio middlewares), so it sits OUTSIDE those three at
+# request time. ``cli.configure_cors_from_env`` runs LATER (at boot,
+# after this module loads) and ALSO uses ``app.add_middleware``, so
+# CORS lands OUTSIDE the fast-path when it's enabled. That ordering
+# is intentional + acceptable:
+#
+#   * Starlette's CORSMiddleware short-circuits with a single
+#     ``await self.app(scope, receive, send)`` when the request
+#     carries no ``Origin`` header — and k8s / supervisord / Docker /
+#     systemd probes do not send Origin. So for the probe slice that
+#     this fast-path targets, the CORS layer is effectively a
+#     1-microsecond pass-through; the fast-path still answers the
+#     probe without touching the router, dependency graph, or
+#     response serialization.
+#   * Browser cross-origin hits (which DO carry Origin) take the
+#     fall-through path inside the fast-path (``_has_origin`` returns
+#     True), reach CORSMiddleware on the way back out via the inner
+#     app's response, and ship with the correct ACAO header.
+#
+# Among the body-size + body-depth + audio middlewares, the fast-path
+# IS outermost — and those middlewares already early-return for GET
+# requests anyway, so the probe path was never paying for them.
+from .middleware.probe_fastpath import install_probe_fastpath_middleware  # noqa: E402
+
+install_probe_fastpath_middleware(app)
 
 # CORS configuration — configurable via --cors-origins CLI flag and the
 # ``RAPID_MLX_CORS_*`` env-var family (F-090 / F-091). The previous default
@@ -985,7 +1113,7 @@ def load_model(
     model_name: str,
     scheduler_config=None,
     stream_interval: int = 1,
-    max_tokens: int = 32768,
+    max_tokens: int | None = None,
     force_mllm: bool = False,
     gpu_memory_utilization: float = 0.90,
     prefill_step_size: int | None = None,
@@ -996,6 +1124,7 @@ def load_model(
     served_model_name: str | None = None,
     mtp: bool = False,
     *,
+    max_tokens_is_explicit: bool | None = None,
     force_text: bool = False,
     force_hybrid: bool = False,
     no_hybrid: bool = False,
@@ -1011,7 +1140,12 @@ def load_model(
         model_name: HuggingFace model name or local path
         scheduler_config: Scheduler config for BatchedEngine
         stream_interval: Tokens to batch before streaming
-        max_tokens: Default max tokens for generation
+        max_tokens: Default max tokens for generation. ``None`` uses the
+            programmatic default.
+        max_tokens_is_explicit: True when max_tokens came from an explicit
+            operator setting such as ``serve --max-tokens``. When omitted,
+            programmatic callers that pass ``max_tokens`` are treated as
+            explicit while callers that omit it keep the implicit default.
         force_mllm: Force loading as MLLM even if not auto-detected
         gpu_memory_utilization: Fraction of device memory (0.0-1.0, default 0.90)
         prefill_step_size: DEPRECATED — pass via
@@ -1035,6 +1169,12 @@ def load_model(
             escape hatches for ``ModelConfig.supports_spec_decode``
             auto-detection. Mutually exclusive.
     """
+    max_tokens_was_supplied = max_tokens is not None
+    if max_tokens is None:
+        max_tokens = 32768
+    if max_tokens_is_explicit is None:
+        max_tokens_is_explicit = max_tokens_was_supplied
+
     if prefill_step_size is not None:
         import warnings
 
@@ -1057,12 +1197,14 @@ def load_model(
         _model_name, \
         _model_path, \
         _default_max_tokens, \
+        _default_max_tokens_is_explicit, \
         _tool_parser_instance, \
         _cloud_router, \
         _alias_recommended_sampling, \
         _generation_config_sampling
 
     _default_max_tokens = max_tokens
+    _default_max_tokens_is_explicit = max_tokens_is_explicit
     _model_path = model_name
     _model_name = served_model_name or model_name
     _tool_parser_instance = None
@@ -1278,6 +1420,7 @@ def _sync_config() -> None:
     cfg.model_path = _model_path
     cfg.inference_lock = None  # legacy, unused with BatchedEngine
     cfg.default_max_tokens = _default_max_tokens
+    cfg.default_max_tokens_is_explicit = _default_max_tokens_is_explicit
     cfg.default_timeout = _default_timeout
     cfg.default_temperature = _default_temperature
     cfg.default_top_p = _default_top_p
@@ -1552,7 +1695,7 @@ Examples:
     parser.add_argument(
         "--max-tokens",
         type=int,
-        default=4096,
+        default=None,
         help="Default max tokens for generation (caps when client sends None)",
     )
     parser.add_argument(
@@ -1618,7 +1761,11 @@ Examples:
         "--embedding-model",
         type=str,
         default=None,
-        help="Pre-load an embedding model at startup (e.g. mlx-community/all-MiniLM-L6-v2-4bit)",
+        help=(
+            "Pre-load an embedding model at startup (e.g. "
+            "mlx-community/all-MiniLM-L6-v2-4bit). Requires the "
+            "[embeddings] extra: pip install 'rapid-mlx[embeddings]'."
+        ),
     )
     parser.add_argument(
         "--default-temperature",
@@ -1672,6 +1819,20 @@ Examples:
     )
 
     args = parser.parse_args()
+
+    # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
+    # fire BEFORE logging configuration and the security/banner side
+    # effects below. Pre-fix on this entrypoint the probe ran AFTER the
+    # parser-init log lines and the security summary, then the user
+    # saw "error: --embedding-model requires the [embeddings] extra"
+    # interleaved with banner output and exit-2 — Diego logged this
+    # as a warning-and-fall-through. Hoisting the probe puts the
+    # error first with nothing else on stderr/stdout before it.
+    if getattr(args, "embedding_model", None):
+        from .embedding import require_mlx_embeddings_or_exit
+
+        require_mlx_embeddings_or_exit()
+
     uvicorn_log_level = configure_logging(args.log_level)
 
     # Set global configuration
@@ -1770,8 +1931,19 @@ Examples:
         _reasoning_parser_name = args.reasoning_parser
         logger.info(f"Reasoning parser enabled: {args.reasoning_parser}")
 
-    # Pre-load embedding model if specified
-    load_embedding_model(args.embedding_model, lock=True)
+    # Pre-load embedding model if specified. The H-08 guard already
+    # fired at the top of this function (F-H08-INCOMPLETE fix); by the
+    # time we reach this point either ``args.embedding_model`` is None
+    # or ``mlx_embeddings`` is importable. The shared helper re-probes
+    # defensively as belt-and-braces and also performs the D-EMBED-ALIAS
+    # alias-resolution + ModelNotFoundError translation so behaviour
+    # matches the unified ``rapid-mlx serve`` path exactly. Lazy import
+    # to avoid a circular at module-load time (cli imports server in
+    # ``serve_command``; server imports cli only inside this branch).
+    if args.embedding_model:
+        from .cli import _load_embedding_model_or_exit
+
+        _load_embedding_model_or_exit(args, load_embedding_model)
 
     # Build a SchedulerConfig so user-supplied flags on this standalone entry
     # (`python -m vllm_mlx.server` / `mise run`) reach the engine. Pre-0.6.52
@@ -1804,6 +1976,10 @@ Examples:
     )
 
     # Load model before starting server
+    _max_tokens_is_explicit = args.max_tokens is not None
+    if args.max_tokens is None:
+        args.max_tokens = 4096
+
     if args.mllm and args.no_mllm:
         parser.error("--mllm and --no-mllm are mutually exclusive")
     if getattr(args, "force_hybrid", False) and getattr(args, "no_hybrid", False):
@@ -1823,6 +1999,7 @@ Examples:
         args.model,
         scheduler_config=scheduler_config,
         max_tokens=args.max_tokens,
+        max_tokens_is_explicit=_max_tokens_is_explicit,
         force_mllm=args.mllm,
         force_text=args.no_mllm,
         cloud_model=args.cloud_model,

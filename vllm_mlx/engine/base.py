@@ -138,6 +138,20 @@ class BaseEngine(ABC):
     def preserve_native_tool_format(self, value: bool) -> None:
         self._preserve_native_tool_format = value
 
+    @property
+    def supports_completion_logprobs(self) -> bool:
+        """Whether legacy completions can extract per-token logprobs.
+
+        The `/v1/completions` logprobs path consumes streaming
+        generation chunks plus the tokenizer to map token ids back to
+        strings. Expose that as an engine capability so routes do not
+        probe for optional methods with `hasattr(engine, ...)`.
+        """
+        stream_generate = getattr(self, "stream_generate", None)
+        return getattr(self, "tokenizer", None) is not None and callable(
+            stream_generate
+        )
+
     def generate_warmup(self) -> None:  # noqa: B027 — intentional no-op default
         """Run a minimal generation to compile Metal shaders.
 

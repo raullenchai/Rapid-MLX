@@ -56,6 +56,20 @@ class ModelConfig:
     # corrupted output (see evals/results/SUFFIX_POC_REPORT.md).
     is_hybrid: bool = False
 
+    # r6-A R6-C1: when the alias profile (or an explicit caller) pins
+    # ``is_hybrid``, ``enrich_model_config``'s runtime ArraysCache probe
+    # MUST NOT one-way-flip the value to True. Without this gate, dense
+    # Qwen3.5 / Qwen3.6 aliases whose JSON declares ``is_hybrid=false``
+    # still got promoted to hybrid at boot because ``make_cache()``
+    # returns linear-attention layers — re-enabling the throttle +
+    # prefix-boundary snapshot path that wedges ``rapid-mlx serve
+    # qwen3.5-4b-4bit`` with ``metal::malloc`` Resource-limit (499000)
+    # errors. Default ``False`` preserves the legacy safety-net behaviour
+    # for aliases / serve targets that haven't opted into the explicit
+    # contract; the probe still promotes ``is_hybrid`` to True when the
+    # cache type indicates linear attention.
+    is_hybrid_explicit: bool = False
+
     # ``supports_spec_decode`` controls SuffixDecoding / draft-model
     # speculative decoding. Disabled for hybrid models because the
     # batched-verify path through GatedDeltaNet derails generation.
@@ -141,6 +155,25 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
         ),
     ),
+    # UI-TARS (ByteDance) — Qwen2-VL / Qwen2.5-VL based GUI-agent VLM.
+    # Wire format is the literal ``Action: verb(kwargs)`` Computer-Use
+    # shape (see vllm_mlx.tool_parsers.ui_tars_tool_parser). MUST come
+    # BEFORE any generic Qwen2/Qwen2.5 pattern would otherwise match —
+    # full HF paths like ``mlx-community/UI-TARS-7B-DPO-4bit`` should
+    # resolve here, not to the generic Qwen3 fallback.
+    (
+        re.compile(r"ui[-_]?tars", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="ui_tars",
+            reasoning_parser="ui_tars",
+            is_hybrid=False,
+            # UI-TARS uses Qwen2-VL/Qwen2.5-VL mrope; spec decode hasn't
+            # been benched on the VLM variant. Keep off until verified
+            # to avoid silent quality regressions (mirrors the gemma 3n
+            # / phi-3.5 conservative defaults).
+            supports_spec_decode=False,
+        ),
+    ),
     # Qwopus (Qwen3.5 distilled with Claude Opus reasoning) — hybrid base
     (
         re.compile(r"qwopus", re.IGNORECASE),
@@ -195,9 +228,17 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             supports_spec_decode=False,
         ),
     ),
-    # Qwen3.6 — hybrid GatedDeltaNet, XML tool format
+    # Qwen3.6 MoE (A3B / A10B / generic MoE markers) — hybrid
+    # GatedDeltaNet + sparse experts, XML tool format. r6-A R6-C1: the
+    # earlier bare ``qwen3\.6`` regex also fired on the DENSE 27B variant
+    # (mlx-community/Qwen3.6-27B-4bit, model_type=qwen3_5), which carries
+    # GatedDeltaNet layers but wedges on metal::malloc when the engine
+    # opts into the hybrid throttle + prefix-boundary snapshot path. The
+    # MoE-marker gate keeps the hybrid stamp ON for the A3B (35B) MoE
+    # variants that actually need it, while the dense 27B falls through
+    # to the generic Qwen3 fallback (pure-attention contract).
     (
-        re.compile(r"qwen3\.6", re.IGNORECASE),
+        re.compile(r"qwen3\.6.*(a3b|a10b|moe)", re.IGNORECASE),
         ModelConfig(
             tool_call_parser="qwen3_coder_xml",
             reasoning_parser="qwen3",
@@ -205,15 +246,45 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             supports_spec_decode=False,
         ),
     ),
-    # Qwen3.5 — hybrid GatedDeltaNet (model_type=qwen3_5). Must come
-    # before the generic Qwen3 regex.
+    # Qwen3.6 dense (non-MoE) — same XML tool format, but NOT hybrid for
+    # routing purposes (see the MoE branch above for the r6-A R6-C1
+    # rationale: dense GatedDeltaNet variants wedge under the hybrid
+    # scheduler path on Metal).
     (
-        re.compile(r"qwen3\.5", re.IGNORECASE),
+        re.compile(r"qwen3\.6", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="qwen3_coder_xml",
+            reasoning_parser="qwen3",
+        ),
+    ),
+    # Qwen3.5 MoE (A3B / A10B / generic MoE markers) — hybrid
+    # GatedDeltaNet + sparse experts (model_type=qwen3_5_moe). Must come
+    # before the generic Qwen3 regex. r6-A R6-C1: the prior bare
+    # ``qwen3\.5`` regex also stamped DENSE variants
+    # (mlx-community/Qwen3.5-4B-MLX-4bit, model_type=qwen3_5) as hybrid,
+    # which surfaces as a ``metal::malloc`` Resource-limit (499000) wedge
+    # on every generation step — the hybrid scheduler's allocation
+    # pattern is incompatible with the dense GatedDeltaNet cache layout
+    # at the 4B/9B/27B sizes. Restricting the hybrid stamp to MoE markers
+    # keeps the A3B (35B) / A10B (122B) variants on the correct path
+    # while dense siblings fall through to the generic Qwen3 fallback.
+    (
+        re.compile(r"qwen3\.5.*(a3b|a10b|moe)", re.IGNORECASE),
         ModelConfig(
             tool_call_parser="hermes",
             reasoning_parser="qwen3",
             is_hybrid=True,
             supports_spec_decode=False,
+        ),
+    ),
+    # Qwen3.5 dense (non-MoE) — same hermes tool format, but NOT hybrid
+    # for routing purposes (see the MoE branch above for the r6-A R6-C1
+    # rationale).
+    (
+        re.compile(r"qwen3\.5", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="hermes",
+            reasoning_parser="qwen3",
         ),
     ),
     # Qwen3-Coder (older, pure-attention) — not Coder-Next
@@ -504,6 +575,12 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             reasoning_parser=profile.reasoning_parser,
             default_max_tokens=profile.default_max_tokens,
             is_hybrid=profile.is_hybrid,
+            # r6-A R6-C1: thread the explicit-pin flag so
+            # ``enrich_model_config`` can honour aliases that have
+            # deliberately marked their model as non-hybrid even when
+            # the upstream ``make_cache()`` returns linear-attention
+            # layers (qwen3_5 dense weights).
+            is_hybrid_explicit=profile.is_hybrid_explicit,
             supports_spec_decode=profile.supports_spec_decode,
             suffix_decoding_tier=profile.suffix_decoding_tier,
             suffix_bench_speedup=speedup,
@@ -545,18 +622,39 @@ def enrich_model_config(cfg: ModelConfig | None, model: Any) -> ModelConfig:
     # Probe for ArraysCache (used by linear-attention layers — Qwen3.5
     # GatedDeltaNet, Qwen3-Next, Mamba). Same pattern that engine_core
     # has been using; consolidate it here.
+    #
+    # r6-A R6-C1: when the alias profile (or an explicit caller) pinned
+    # ``is_hybrid_explicit=True``, the probe's hybrid promotion is
+    # suppressed — the JSON/CLI is the authoritative source of truth and
+    # the boot path must not silently override it. ``supports_spec_decode``
+    # is still forced off when ArraysCache is present so the drafter
+    # never wires up against a linear-attention model regardless of the
+    # routing decision (which is a separate safety contract). Without
+    # this gate, dense Qwen3.5 / Qwen3.6 aliases that declared
+    # ``is_hybrid=false`` were silently re-promoted to hybrid at boot,
+    # which is the path that wedges metal::malloc on the 4B variant.
     try:
         if hasattr(model, "make_cache"):
             from mlx_lm.models.cache import ArraysCache
 
             test_cache = model.make_cache()
             if any(isinstance(c, ArraysCache) for c in test_cache):
-                if not cfg.is_hybrid or cfg.supports_spec_decode:
-                    logger.info(
-                        "Runtime probe: model has ArraysCache layers — "
-                        "marking as hybrid, disabling spec decode"
-                    )
-                cfg = replace(cfg, is_hybrid=True, supports_spec_decode=False)
+                if cfg.is_hybrid_explicit:
+                    if cfg.supports_spec_decode:
+                        logger.info(
+                            "Runtime probe: model has ArraysCache layers — "
+                            "honouring is_hybrid_explicit=True (keeping "
+                            "is_hybrid=%s), forcing supports_spec_decode=False",
+                            cfg.is_hybrid,
+                        )
+                        cfg = replace(cfg, supports_spec_decode=False)
+                else:
+                    if not cfg.is_hybrid or cfg.supports_spec_decode:
+                        logger.info(
+                            "Runtime probe: model has ArraysCache layers — "
+                            "marking as hybrid, disabling spec decode"
+                        )
+                    cfg = replace(cfg, is_hybrid=True, supports_spec_decode=False)
     except Exception as e:  # noqa: BLE001
         logger.debug(f"ArraysCache probe failed (non-fatal): {e!r}")
 

@@ -1,6 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """Chat completion endpoints — /v1/chat/completions."""
 
+import asyncio
 import gc
 import json
 import logging
@@ -25,11 +26,18 @@ from ..api.models import (
     TokenLogProb,
     Usage,
 )
+from ..api.response_format_metrics import (
+    incr_strict_request,
+    incr_strict_violation,
+)
 from ..api.tool_calling import (
     build_json_system_prompt,
+    check_schema_validity,
     convert_tools_for_template,
     extract_json_schema_for_guided,
+    is_strict_json_schema,
     parse_json_output,
+    validate_output_against_schema,
 )
 from ..api.utils import (
     clean_output_text,
@@ -38,6 +46,7 @@ from ..api.utils import (
     extract_multimodal_content,
     sanitize_output,
     strip_thinking_tags,
+    validate_content_blocks_for_capabilities,
 )
 from ..config import get_config
 from ..engine import GenerationOutput
@@ -46,6 +55,7 @@ from ..service.helpers import (
     _TOOL_USE_REQUIRED_SUFFIX,
     _TOOL_USE_SYSTEM_SUFFIX,
     SSE_RESPONSE_HEADERS,
+    _apply_reasoning_cutoff_notice,
     _build_usage,
     _check_admission_or_503,
     _disconnect_guard,
@@ -64,6 +74,7 @@ from ..service.helpers import (
     _resolve_temperature,
     _resolve_top_p,
     _scan_messages_for_lone_surrogates,
+    _should_start_in_thinking,
     _tool_use_required_named_suffix,
     _validate_model_name,
     _validate_response_format,
@@ -73,10 +84,10 @@ from ..service.helpers import (
     enable_thinking_warning_header,
     enforce_context_length_for_messages,
     get_engine,
-    get_usage,
 )
 
 logger = logging.getLogger(__name__)
+_SAFE_DEEPSEEK_TOOL_NAME_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 router = APIRouter()
 
@@ -191,13 +202,818 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
         # corrupt the wire envelope or inject extra fields. Codex r4
         # BLOCKING — direct f-string interpolation was vulnerable.
         return f'<tool_call>\n{{"name": {json.dumps(function_name)}, "arguments": '
+    # D-TOOLCHOICE-R1 T2: DeepSeek-R1 distill + ``deepseek_v31`` /
+    # ``deepseek_r1_0528`` parsers share the V3.1 wire shape
+    # ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜><｜tool▁calls▁end｜>``.
+    # Pre 0.8.3, this family fell through to ``None`` here — so
+    # ``tool_choice="required"`` with a single tool only ever produced
+    # the post-parse ``_synthesize_forced_tool_call`` fallback (empty
+    # ``arguments="{}"``). With the prefix in place, the model picks up
+    # inside the envelope and emits real arguments that
+    # ``extract_tool_calls`` parses cleanly (verified by
+    # ``DeepSeekV31ToolParser.extract_tool_calls`` on the assembled
+    # ``<...begin>name<sep>{...}<...end>...end>`` payload).
+    #
+    # The two registered aliases (``deepseek_v31``, ``deepseek_r1_0528``)
+    # share one parser class; both get the same prefix. ``deepseek``
+    # (V1) is intentionally NOT listed — that parser's envelope is
+    # different and shares the marker tokens, but the body shape is
+    # not auto-detected (see ``deepseek_tool_parser.py``).
+    _verified_deepseek_v31_parsers = {
+        "deepseek_v31",
+        "deepseek_r1_0528",
+    }
+    if parser_name in _verified_deepseek_v31_parsers:
+        # V3.1 body: ``NAME<sep>{json}``. The model continues with the
+        # arguments object and closer. The name is interpolated raw
+        # because the V3.1 body is NOT JSON-bodied at this position —
+        # it is a literal ``NAME<sep>`` split, so ``json.dumps`` would
+        # wrap the name in quotes and break the wire.
+        #
+        # codex r1 BLOCKING #2: a tool name that itself contains a
+        # DeepSeek envelope marker would corrupt the wire AND could
+        # let a downstream parser re-interpret the suffix as an extra
+        # tool call. Upstream validates names against ``request.tools``
+        # but not against the wire-token set, so we gate here as
+        # defense-in-depth. Hitting any marker returns ``None`` (clean
+        # degradation to the post-parse synthesis fallback) rather
+        # than emitting a corrupt prefix.
+        if not _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(function_name):
+            return None
+        return (
+            f"<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>{function_name}<｜tool▁sep｜>"
+        )
     # Channel-routed (harmony / gemma4) and parsers whose wire shape
     # we have NOT audited: no prefix injection. The post-parse
     # synthesis path remains as a fallback (``_synthesize_forced_tool_call``).
     return None
 
 
-def _synthesize_forced_tool_call(name: str, arguments: str = "{}"):
+def _recover_partial_tool_args(
+    raw_text: str | None, expected_name: str | None = None
+) -> str | None:
+    """Best-effort recovery of a JSON arguments object from a malformed
+    model response under ``tool_choice="required"``.
+
+    Designed for the D-TOOLCHOICE-R1 T3 case: qwen3 + tool_choice=
+    required emits something like ::
+
+        <tool_call>
+        {"name": "add_numbers", "arguments": 4128, 7591}
+        </parameter>
+        </function>
+        </tool_call>
+
+    where the parser's strict pattern fails (``arguments`` is not a
+    JSON object) so the chat route synthesises a call with empty
+    ``"{}"`` arguments. The empty-args result is uselessly opaque for
+    the client — but the raw text itself often contains enough signal
+    to reconstruct *something* better than ``"{}"``. Two recovery
+    routes are tried, both bounded so a hostile or genuinely
+    unparseable response degrades safely back to ``None``:
+
+    1. **Strict object body.** If the raw text contains a literal
+       ``"arguments":`` followed by a balanced JSON object, return
+       that object's text. This handles the common case where the
+       model emitted valid JSON but failed an outer wrapper (closing
+       tag missing, wrong wrapper element).
+
+    2. **No structural recovery possible.** Return ``None``. The
+       caller falls back to the existing ``"{}"`` default.
+
+    Intentionally narrow: we do NOT try to coerce the malformed
+    qwen3 shape ``"arguments": 4128, 7591`` into a positional-args
+    interpretation — there is no schema-agnostic way to map two bare
+    integers to named parameters without guessing. The fallback to
+    ``"{}"`` plus a downstream ``_validate_tool_call_params`` warning
+    is the right contract for that case (the client retries with a
+    clearer prompt or a named-function ``tool_choice``).
+
+    codex r4 BLOCKING #1: when ``expected_name`` is provided, also
+    verify that the recovered candidate is paired with a
+    ``"name": "<expected>"`` field in the same wire span. Without
+    this gate, a synth for a named ``tool_choice`` whose target is
+    ``"my_target"`` could pick up an unrelated
+    ``{"name": "other_tool", "arguments": {...}}`` block elsewhere
+    in the response and ship ``other_tool``'s args under the
+    forced target's name — a subtle correctness bug because the
+    synthesized call's ``function.name`` would not match the args'
+    intended schema. We REQUIRE a name match within a 512-byte
+    window of the ``"arguments"`` marker (covers a typical inner
+    wire body), and FALL BACK to ``"{}"`` (return ``None``) when no
+    match exists.
+    """
+    if not raw_text:
+        return None
+    text = raw_text
+    n = len(text)
+
+    # Wire markers that signal a real tool-call body. When at least
+    # one occurrence of ``"arguments":`` sits INSIDE such a span,
+    # restrict the search to those — the prose example before the
+    # wire span (e.g. a docstring quoting the JSON shape) is then
+    # ignored entirely. When NONE of the occurrences are inside a
+    # wire span, fall back to scanning the full text (handles the
+    # bare-JSON case where the model emitted a raw call with no
+    # wrapper).
+    #
+    # codex r2 BLOCKING: previously this returned the FIRST
+    # parseable ``"arguments": {...}``; a docstring-style leading
+    # example (``the JSON shape is "arguments": {"a": 0}``) would
+    # then beat the actual malformed call further down the response
+    # and we'd ship the example's arguments to the client. The fix
+    # uses two heuristics in order:
+    #
+    #   1. PREFER any candidate INSIDE a tool-call wire span
+    #      (``<tool_call>...``, ``<function=...>``, DeepSeek envelope
+    #      markers, ``[TOOL_CALLS]``, ``<|python_tag|>``). Among
+    #      those, pick the LAST parseable one (most-recent intent).
+    #   2. If no candidates land inside a wire span, accept the LAST
+    #      parseable candidate anywhere in the text — still
+    #      preferring "later" because the tool wire is conventionally
+    #      at the end of a response.
+    _WIRE_SPAN_OPENERS = (
+        "<tool_call>",
+        "<function=",
+        "<function>",
+        "<｜tool▁calls▁begin｜>",
+        "<｜tool▁call▁begin｜>",
+        "[TOOL_CALLS]",
+        "<|python_tag|>",
+        "<|tool_calls_section_begin|>",
+        "<minimax:tool_call>",
+        "<invoke",
+        "<arg_key>",
+    )
+
+    def _scan_balanced_object_at(start_brace: int) -> tuple[int, str] | None:
+        """Return ``(end_offset, raw_object_text)`` if the substring
+        starting at ``start_brace`` is a balanced JSON object,
+        ``None`` otherwise. Cap 8 KiB to avoid burning CPU on a
+        malformed giant payload.
+        """
+        depth = 0
+        in_string = False
+        escape = False
+        pos = start_brace
+        scan_end = min(n, start_brace + 8192)
+        while pos < scan_end:
+            ch = text[pos]
+            if escape:
+                escape = False
+            elif in_string:
+                if ch == "\\":
+                    escape = True
+                elif ch == '"':
+                    in_string = False
+            else:
+                if ch == '"':
+                    in_string = True
+                elif ch == "{":
+                    depth += 1
+                elif ch == "}":
+                    depth -= 1
+                    if depth == 0:
+                        return (pos + 1, text[start_brace : pos + 1])
+            pos += 1
+        return None
+
+    # Closer counterparts (used to bound the wire-span lookback so
+    # pretty-printed / verbose wire bodies aren't misclassified as
+    # outside-wire just because their opener sits >256 bytes back).
+    # codex r6 NIT: a fixed 256-byte lookback caused valid
+    # wrapped calls with verbose metadata before ``"arguments":`` to
+    # lose priority to a later prose example. We now bound the search
+    # by the nearest known closer instead — if no closer sits between
+    # the most recent opener and ``idx``, ``idx`` IS inside the span,
+    # regardless of how far back the opener is.
+    _WIRE_SPAN_CLOSERS = (
+        "</tool_call>",
+        "</function>",
+        "<｜tool▁calls▁end｜>",
+        "<｜tool▁call▁end｜>",
+        "[/TOOL_CALLS]",
+        "<|tool_calls_section_end|>",
+        "</minimax:tool_call>",
+        "</invoke>",
+        "</arg_value>",
+    )
+
+    def _open_wire_span_start(idx: int) -> int | None:
+        """Return the nearest still-open wire opener before ``idx``."""
+        prefix = text[:idx]
+        op_pos = -1
+        for opener in _WIRE_SPAN_OPENERS:
+            pos = prefix.rfind(opener)
+            if pos > op_pos:
+                op_pos = pos
+        if op_pos < 0:
+            return None
+        cl_pos = -1
+        for closer in _WIRE_SPAN_CLOSERS:
+            pos = prefix.rfind(closer)
+            if pos > cl_pos:
+                cl_pos = pos
+        return op_pos if op_pos >= 0 and op_pos > cl_pos else None
+
+    def _next_wire_span_closer(idx: int) -> int | None:
+        """Return the nearest known wire closer after ``idx``."""
+        close_pos: int | None = None
+        for closer in _WIRE_SPAN_CLOSERS:
+            pos = text.find(closer, idx)
+            if pos != -1 and (close_pos is None or pos < close_pos):
+                close_pos = pos
+        return close_pos
+
+    def _position_in_wire_span(idx: int) -> bool:
+        """Is ``idx`` inside (or immediately after) a known tool-wire
+        opener? We don't require a balanced closer — the qwen3 leak
+        shape often has no clean closer.
+
+        codex r6 NIT: bound the search by the nearest known
+        opener/closer occurrence rather than a fixed lookback. We
+        find the LATEST opener at position ``op_pos < idx`` and the
+        LATEST closer at position ``cl_pos < idx``; ``idx`` is in
+        the span iff ``op_pos`` exists AND ``op_pos > cl_pos``
+        (so the most recent opener was not yet closed before ``idx``).
+        """
+        return _open_wire_span_start(idx) is not None
+
+    def _name_pairs_with(idx: int, expected: str) -> bool:
+        """Does a ``"name": "<expected>"`` (or ``"name":"<expected>"``)
+        sit in the SAME wire-call block as the ``"arguments"``
+        occurrence at ``idx``?
+
+        Heuristic: the per-call block is bounded by the nearest
+        wire opener BEFORE ``idx`` (we never look past it for a
+        ``"name"`` literal) and either the previous ``"arguments"``
+        marker OR the start of the surrounding text — whichever is
+        closer. Forward we cap at the next ``"arguments"`` or 256
+        bytes. This intentionally restricts the search to the
+        ``"name"`` literal that belongs to THE SAME wire body as
+        ``idx``, so an unrelated call's ``"name"`` further up the
+        response never matches.
+
+        codex r4 BLOCKING #1: the wire-span check alone is not enough
+        because a response can contain multiple wire spans each
+        with a different ``"name"``. We MUST verify the pairing,
+        and the window MUST be tight enough to separate inline
+        blocks (a fixed ±512-byte window let adjacent blocks pollute
+        each other's pairing).
+        """
+        if not expected:
+            return True  # No constraint when caller doesn't pass one.
+
+        # Backward bound: if ``idx`` is inside a known wire span, use
+        # that span's opener. This admits verbose DeepSeek V3.1 output
+        # between ``<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>`` and the
+        # later JSON ``"arguments"`` object without relying on a fixed
+        # byte lookback. If no opener is known, fall back to the
+        # previous arguments marker to keep adjacent JSON blocks from
+        # cross-pairing.
+        span_start = _open_wire_span_start(idx)
+        if span_start is not None:
+            backward_bound = span_start
+        else:
+            prev_args_end = text.rfind('"arguments"', 0, idx)
+            object_start = text.rfind("{", 0, idx)
+            fallback_bound = (
+                prev_args_end + len('"arguments"') if prev_args_end != -1 else 0
+            )
+            backward_bound = max(fallback_bound, object_start)
+        # Forward bound: the next "arguments" marker or 256 bytes
+        # forward. We cap forward TIGHTER than backward because the
+        # canonical wire shape ``{"name":"X","arguments":{...}}``
+        # always has ``"name"`` BEFORE ``"arguments"``.
+        next_args_idx = text.find('"arguments"', idx + len('"arguments"'))
+        next_closer_idx = (
+            _next_wire_span_closer(idx) if span_start is not None else None
+        )
+        forward_bound = n
+        if next_args_idx != -1:
+            forward_bound = min(forward_bound, next_args_idx)
+        if next_closer_idx is not None:
+            forward_bound = min(forward_bound, next_closer_idx)
+        window = text[backward_bound:forward_bound]
+        escaped = re.escape(expected)
+        # Accept TWO wire shapes for the paired ``name`` literal:
+        #
+        # 1. ``"name": "<expected>"`` — the JSON-bodied wire shape
+        #    (hermes / qwen3 / qwen3coder / nemotron-with-JSON /
+        #    most parsers).
+        # 2. ``<｜tool▁call▁begin｜><expected><｜tool▁sep｜>`` — the
+        #    DeepSeek V3.1 wire shape, where the name is NOT
+        #    JSON-quoted; it sits between the V3.1 call-begin and
+        #    sep markers. Without this shape recovery rejects every
+        #    legitimate DeepSeek arg body (codex r5 BLOCKING #1).
+        #
+        # Both forms are searched; either match is sufficient.
+        json_pair_re = re.compile(
+            r'"name"\s*:\s*"' + escaped + r'"',
+            re.DOTALL,
+        )
+        if json_pair_re.search(window):
+            return True
+        if not _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(expected):
+            return False
+        deepseek_begin = "<｜tool▁call▁begin｜>"
+        deepseek_sep = "<｜tool▁sep｜>"
+        search_pos = 0
+        while True:
+            begin = window.find(deepseek_begin, search_pos)
+            if begin == -1:
+                return False
+            name_start = begin + len(deepseek_begin)
+            sep = window.find(deepseek_sep, name_start)
+            if sep == -1:
+                return False
+            if window[name_start:sep] == expected:
+                return True
+            search_pos = sep + len(deepseek_sep)
+
+    # Collect every parseable candidate, tagged with whether it sits
+    # inside a wire span.
+    candidates_in_wire: list[str] = []
+    candidates_outside_wire: list[str] = []
+    search_start = 0
+    while search_start < n:
+        args_marker_idx = text.find('"arguments"', search_start)
+        if args_marker_idx == -1:
+            break
+        # codex r3 NIT: the previous fixed 20-char window for the
+        # colon rejected valid JSON like
+        # ``"arguments"    \n   :   {...}`` (lots of pretty-print
+        # whitespace). Walk past whitespace from the end of the
+        # ``"arguments"`` token and then require ``:`` — no
+        # arbitrary cap.
+        pos = args_marker_idx + len('"arguments"')
+        while pos < n and text[pos] in " \t\n\r":
+            pos += 1
+        if pos >= n or text[pos] != ":":
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        # Skip whitespace after the colon, looking for the object opener.
+        pos += 1
+        while pos < n and text[pos] in " \t\n\r":
+            pos += 1
+        if pos >= n or text[pos] != "{":
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        scan = _scan_balanced_object_at(pos)
+        if scan is None:
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        obj_end, candidate = scan
+        try:
+            parsed = json.loads(candidate)
+        except (json.JSONDecodeError, ValueError):
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        if not isinstance(parsed, dict):
+            search_start = args_marker_idx + len('"arguments"')
+            continue
+        # codex r4 BLOCKING #1: when an expected name is set, only
+        # accept this candidate if a matching ``"name"`` literal
+        # sits within the same wire body. Otherwise we'd pick up
+        # an unrelated tool's args and ship them under the forced
+        # target's name.
+        if expected_name and not _name_pairs_with(args_marker_idx, expected_name):
+            search_start = obj_end
+            continue
+        canonical = json.dumps(parsed, ensure_ascii=False)
+        if _position_in_wire_span(args_marker_idx):
+            candidates_in_wire.append(canonical)
+        else:
+            candidates_outside_wire.append(canonical)
+        search_start = obj_end
+
+    # Prefer candidates INSIDE a wire span (the real tool call); fall
+    # back to outside-wire candidates only when no wire-span match
+    # existed. Within each pool, pick the LAST (rightmost) candidate
+    # — the tool wire is conventionally at the end of the response,
+    # so "last" is "most recent" and most likely to be the actual
+    # call rather than a leading example.
+    if candidates_in_wire:
+        return candidates_in_wire[-1]
+    if candidates_outside_wire:
+        return candidates_outside_wire[-1]
+    return None
+
+
+# Parser-wire literal markers that MUST be scrubbed from ``content`` /
+# ``reasoning_content`` when ``tool_choice="required"`` synthesises a
+# call to recover from a malformed model emission (D-TOOLCHOICE-R1 T3).
+# Without this scrub, the model's failed tool-call attempt — literal
+# ``<tool_call>...`` text the parser couldn't extract — leaks into
+# both user-visible fields.
+#
+# Each entry is ``(opener_regex, closer_regex_or_None)``. The scrubber
+# is two-phase:
+#
+#   1. **Balanced pairs**: when both opener and closer are present,
+#      strip the entire span ``opener…closer``. Non-greedy so
+#      consecutive blocks each get their own match.
+#   2. **Unmatched standalone markers**: any opener/closer literal
+#      that survives phase 1 (e.g. an orphan ``</function>`` or a
+#      stray ``<tool_call>`` with no closer because the model
+#      truncated mid-body) gets stripped as a bare token.
+#
+# Critically, phase 2 strips ONLY the marker bytes themselves — it
+# does NOT delete from the orphan opener to EOF. Codex r1 BLOCKING #1
+# caught this: the prior ``opener.*?(?:closer|\Z)`` pattern would eat
+# all trailing reasoning/prose whenever the model emitted an unclosed
+# opener mid-thought. The new two-phase split preserves trailing
+# content while still scrubbing the marker itself, so a model
+# response shaped like ``<tool_call>{junk}</tool_call>then prose``
+# yields ``then prose`` and ``<tool_call>{junk}\nthen prose`` yields
+# ``{junk}\nthen prose`` (the body is left for the reasoning parser
+# to consume, but the visible ``<tool_call>`` marker is gone).
+#
+# The list covers every wire opener/closer pair we know about
+# (hermes / qwen3coder / nemotron / deepseek / glm / minimax /
+# mistral / kimi / llama / harmony / gemma4 / xlam / functionary /
+# granite / seed_oss / vibethinker named-XML). Adding a parser is a
+# one-line addition.
+_TOOL_WIRE_BALANCED_PAIRS = (
+    # Hermes / qwen3 JSON-bodied wire
+    (re.compile(r"<tool_call>", re.DOTALL), re.compile(r"</tool_call>", re.DOTALL)),
+    # Nemotron-style XML body + bare ``<function=NAME>...``
+    (re.compile(r"<function=[^>]*>", re.DOTALL), re.compile(r"</function>", re.DOTALL)),
+    (re.compile(r"<function>", re.DOTALL), re.compile(r"</function>", re.DOTALL)),
+    # DeepSeek V3 / V3.1 / R1-0528 envelope
+    (
+        re.compile(r"<｜tool▁calls▁begin｜>", re.DOTALL),
+        re.compile(r"<｜tool▁calls▁end｜>", re.DOTALL),
+    ),
+    (
+        re.compile(r"<｜tool▁call▁begin｜>", re.DOTALL),
+        re.compile(r"<｜tool▁call▁end｜>", re.DOTALL),
+    ),
+    # GLM-4 / GLM-4.7 wrapper
+    (re.compile(r"<arg_key>", re.DOTALL), re.compile(r"</arg_value>", re.DOTALL)),
+    # Minimax
+    (
+        re.compile(r"<minimax:tool_call>", re.DOTALL),
+        re.compile(r"</minimax:tool_call>", re.DOTALL),
+    ),
+    (re.compile(r"<invoke\b[^>]*>", re.DOTALL), re.compile(r"</invoke>", re.DOTALL)),
+    # Kimi section markers
+    (
+        re.compile(r"<\|tool_calls_section_begin\|>", re.DOTALL),
+        re.compile(r"<\|tool_calls_section_end\|>", re.DOTALL),
+    ),
+    # Mistral
+    (
+        re.compile(r"\[TOOL_CALLS\]", re.DOTALL),
+        re.compile(r"\[/TOOL_CALLS\]", re.DOTALL),
+    ),
+)
+_TOOL_WIRE_BALANCED_SPAN_RES = tuple(
+    re.compile(opener_re.pattern + r".*?" + closer_re.pattern, re.DOTALL)
+    for opener_re, closer_re in _TOOL_WIRE_BALANCED_PAIRS
+)
+
+
+# Standalone marker tokens that must be stripped even when their
+# matching counterpart never arrived. Includes the qwen3 stray
+# ``</parameter>`` (closing-only marker; no opener counterpart in
+# any tool wire we model) and the Llama python-tag (opener-only).
+_TOOL_WIRE_STANDALONE_MARKERS = (
+    re.compile(r"<tool_call>"),
+    re.compile(r"</tool_call>"),
+    re.compile(r"<function=[^>]*>"),
+    re.compile(r"<function>"),
+    re.compile(r"</function>"),
+    re.compile(r"</?parameter[^>]*>"),
+    re.compile(r"<｜tool▁calls▁begin｜>"),
+    re.compile(r"<｜tool▁calls▁end｜>"),
+    re.compile(r"<｜tool▁call▁begin｜>"),
+    re.compile(r"<｜tool▁call▁end｜>"),
+    re.compile(r"<｜tool▁sep｜>"),
+    re.compile(r"<arg_key>"),
+    re.compile(r"</arg_value>"),
+    re.compile(r"<minimax:tool_call>"),
+    re.compile(r"</minimax:tool_call>"),
+    re.compile(r"<invoke\b[^>]*>"),
+    re.compile(r"</invoke>"),
+    re.compile(r"<\|python_tag\|>"),
+    re.compile(r"<\|tool_calls_section_begin\|>"),
+    re.compile(r"<\|tool_calls_section_end\|>"),
+    re.compile(r"\[TOOL_CALLS\]"),
+    re.compile(r"\[/TOOL_CALLS\]"),
+)
+
+
+# Cross-family opener/closer set — used by phase 1.5 to catch the
+# qwen3-style mixed-closer leak where the model emits ``<tool_call>``
+# but closes with ``</function>`` (or some other unrelated closer).
+# Any opener-to-any-closer span gets stripped in one sweep. The list
+# is the union of opener and closer regex patterns we already track
+# in ``_TOOL_WIRE_BALANCED_PAIRS`` plus the always-orphan ones.
+#
+# This is bounded — phase 1.5 only fires when an opener appears AND
+# any closer-class marker appears later in the text. If neither
+# qualifies, the span is left for phase 2's marker-only strip.
+_CROSS_FAMILY_OPENERS = "|".join(
+    [
+        r"<tool_call>",
+        r"<function=[^>]*>",
+        r"<function>",
+        r"<｜tool▁calls▁begin｜>",
+        r"<｜tool▁call▁begin｜>",
+        r"<minimax:tool_call>",
+        r"<invoke\b[^>]*>",
+        r"<arg_key>",
+        r"<\|tool_calls_section_begin\|>",
+        r"\[TOOL_CALLS\]",
+    ]
+)
+_CROSS_FAMILY_CLOSERS = "|".join(
+    [
+        r"</tool_call>",
+        r"</function>",
+        r"</parameter>",
+        r"<｜tool▁calls▁end｜>",
+        r"<｜tool▁call▁end｜>",
+        r"</minimax:tool_call>",
+        r"</invoke>",
+        r"</arg_value>",
+        r"<\|tool_calls_section_end\|>",
+        r"\[/TOOL_CALLS\]",
+    ]
+)
+# Non-greedy ``opener…any-closer`` — catches the qwen3 ``<tool_call>``
+# + ``</function>`` cross-family leak that the strict same-family
+# pairs in phase 1 don't match.
+_CROSS_FAMILY_SPAN_RE = re.compile(
+    rf"(?:{_CROSS_FAMILY_OPENERS}).*?(?:{_CROSS_FAMILY_CLOSERS})",
+    re.DOTALL,
+)
+
+
+# codex r6 BLOCKING #1 — leak detector. Used to tighten the
+# forced/required scrub gate so that we only scrub when the
+# parser's ``cleaned_text`` ACTUALLY contains wire-marker literals.
+# A successful forced call whose ``cleaned_text`` is e.g. ``"OK"``
+# does not get its content rewritten, which protects legitimate
+# assistant prose that happens to mention ``<tool_call>`` etc.
+#
+# The detector is intentionally a cheap substring/regex sweep —
+# it returns True on the FIRST match of any wire marker we know
+# about. If new parser wires are added, they only need to be
+# registered in ``_TOOL_WIRE_STANDALONE_MARKERS`` for the detector
+# to pick them up (same source-of-truth as the scrub itself).
+def _contains_tool_wire_literal(text: str | None) -> bool:
+    """Return True iff ``text`` contains any known tool-wire marker
+    (opener, closer, separator). Used by the chat route to decide
+    whether the forced/required scrub gate should fire on a
+    parser-extracted (non-synth) tool call.
+    """
+    if not text:
+        return False
+    for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+        if marker_re.search(text):
+            return True
+    return False
+
+
+_TOOL_WIRE_PAYLOAD_HINT_RE = re.compile(r"[\"'](?:name|arguments)[\"']\s*:")
+
+
+def _balanced_json_end(text: str, start: int, *, max_scan: int = 8192) -> int | None:
+    """Return the exclusive end offset of a balanced JSON-ish object."""
+    if start < 0 or start >= len(text) or text[start] != "{":
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    stop = min(len(text), start + max_scan)
+    for i in range(start, stop):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return i + 1
+    return None
+
+
+def _payload_object_after_marker(
+    text: str,
+    marker_end: int,
+    window_end: int,
+) -> tuple[int, int] | None:
+    """Return adjacent JSON payload bounds after a wire marker, if any."""
+    pos = marker_end
+    while pos < window_end and text[pos] in " \t\r\n":
+        pos += 1
+    if pos >= window_end or text[pos] != "{":
+        return None
+    object_end = _balanced_json_end(text, pos)
+    if object_end is None or object_end > window_end:
+        return None
+    payload = text[pos:object_end]
+    if not _TOOL_WIRE_PAYLOAD_HINT_RE.search(payload):
+        return None
+    return pos, object_end
+
+
+def _span_has_tool_payload_object(span: str) -> bool:
+    object_start = span.find("{")
+    while object_start != -1:
+        object_end = _balanced_json_end(span, object_start)
+        if object_end is not None:
+            payload = span[object_start:object_end]
+            if _TOOL_WIRE_PAYLOAD_HINT_RE.search(payload):
+                return True
+            object_start = span.find("{", object_end)
+        else:
+            object_start = span.find("{", object_start + 1)
+    return False
+
+
+def _contains_structural_tool_wire_leak(text: str | None) -> bool:
+    """Return True when known wire markers appear as tool-wire residue.
+
+    ``_contains_tool_wire_literal`` intentionally answers the broad
+    question "is any marker token present?"  That is too destructive as
+    a scrub gate because ordinary prose can discuss the literal
+    ``<tool_call>`` token. This predicate is stricter: it requires a
+    balanced/cross-family wire span, or a marker next to JSON/tool-call
+    payload hints (``name`` / ``arguments`` / compact object body).
+    """
+    if not text:
+        return False
+    for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
+        match = balanced_re.search(text)
+        if match and _span_has_tool_payload_object(match.group(0)):
+            return True
+    cross_match = _CROSS_FAMILY_SPAN_RE.search(text)
+    if cross_match and _span_has_tool_payload_object(cross_match.group(0)):
+        return True
+    for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+        match = marker_re.search(text)
+        if not match:
+            continue
+        window_end = min(len(text), match.end() + 2048)
+        if _payload_object_after_marker(text, match.end(), window_end) is not None:
+            return True
+    return False
+
+
+def _is_tool_wire_marker_only(text: str | None) -> bool:
+    """True when ``text`` has markers but no non-marker payload/prose."""
+    if not text or not _contains_tool_wire_literal(text):
+        return False
+    result = text
+    for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+        result = marker_re.sub("", result)
+    return not result.strip()
+
+
+def _scrub_visible_tool_wire_leaks(text: str | None) -> str:
+    """Scrub structural wire residue while preserving marker examples.
+
+    Unlike ``_scrub_tool_wire_literals`` this is safe for route-visible
+    fields: prose such as ``"Use <tool_call>...</tool_call>"`` stays
+    intact because it has no tool payload hint. Actual malformed wire
+    spans and marker-only leftovers are removed.
+    """
+    if not text:
+        return text or ""
+    result = text
+    # DeepSeek V3.1 orphan fragment:
+    # ``<｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{...}`` without a closer.
+    # Remove the whole fragment so the opener/name prefix cannot leak
+    # when the separator-adjacent JSON payload is scrubbed below.
+    deepseek_begin = "<｜tool▁call▁begin｜>"
+    deepseek_sep = "<｜tool▁sep｜>"
+    search_pos = 0
+    while True:
+        begin = result.find(deepseek_begin, search_pos)
+        if begin == -1:
+            break
+        sep = result.find(deepseek_sep, begin + len(deepseek_begin))
+        if sep == -1:
+            search_pos = begin + len(deepseek_begin)
+            continue
+        next_begin = result.find(deepseek_begin, begin + len(deepseek_begin), sep)
+        if next_begin != -1:
+            search_pos = next_begin
+            continue
+        payload_bounds = _payload_object_after_marker(
+            result,
+            sep + len(deepseek_sep),
+            min(len(result), sep + len(deepseek_sep) + 2048),
+        )
+        if payload_bounds is None:
+            search_pos = begin + len(deepseek_begin)
+            continue
+        _, object_end = payload_bounds
+        result = result[:begin] + result[object_end:]
+        search_pos = begin
+    for balanced_re in _TOOL_WIRE_BALANCED_SPAN_RES:
+        result = balanced_re.sub(
+            lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
+            result,
+        )
+    result = _CROSS_FAMILY_SPAN_RE.sub(
+        lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
+        result,
+    )
+    for _ in range(4):
+        changed = False
+        for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+            pieces: list[str] = []
+            last = 0
+            for match in marker_re.finditer(result):
+                window_end = min(len(result), match.end() + 2048)
+                pieces.append(result[last : match.start()])
+                payload_bounds = _payload_object_after_marker(
+                    result, match.end(), window_end
+                )
+                if payload_bounds is not None:
+                    _, object_end = payload_bounds
+                    last = object_end
+                    changed = True
+                    continue
+                pieces.append(match.group(0))
+                last = match.end()
+            if pieces:
+                pieces.append(result[last:])
+                result = "".join(pieces)
+        if not changed:
+            break
+    if _is_tool_wire_marker_only(result):
+        result = _scrub_tool_wire_literals(result)
+    return re.sub(r"\s+", " ", result).strip()
+
+
+def _scrub_tool_wire_literals(text: str | None) -> str:
+    """Strip every known parser-wire opener/closer marker from
+    ``text`` in three phases. Returns a whitespace-collapsed result
+    so we don't leave a void where the wire used to live.
+
+    Phases:
+
+      1. **Same-family balanced spans** — strip every balanced
+         ``opener…closer`` span from the same parser family
+         (``<tool_call>...</tool_call>``,
+         ``<｜tool▁calls▁begin｜>...<｜tool▁calls▁end｜>``, etc.).
+      2. **Cross-family spans** — strip any-opener-to-any-closer
+         spans the model emitted with mismatched wires (the qwen3
+         ``<tool_call>{...}</function>`` shape — codex r3 BLOCKING #1).
+      3. **Standalone markers** — orphan opener or closer literals
+         that survived phases 1+2 get scrubbed as bare tokens
+         WITHOUT eating surrounding text (codex r1 BLOCKING #1
+         preserved-trailing-text invariant).
+
+    Idempotent: safe to call on text that has no wire literals (the
+    regex sweep is a no-op). Called by the chat route ONLY when
+    ``tool_choice="required"`` synthesises (or recovers args for) a
+    call from a malformed wire — i.e. when the model's text output
+    contained tool-call markers the parser couldn't extract from.
+    """
+    if not text:
+        return text or ""
+    result = text
+    # Phase 1: same-family balanced opener…closer spans.
+    for opener_re, closer_re in _TOOL_WIRE_BALANCED_PAIRS:
+        balanced = re.compile(opener_re.pattern + r".*?" + closer_re.pattern, re.DOTALL)
+        result = balanced.sub("", result)
+    # Phase 1.5 (cross-family): catches ``<tool_call>{...}</function>``
+    # and similar mismatched-closer shapes the strict same-family
+    # pairs above don't match. Without this, the malformed body
+    # between the opener and the unrelated closer survives as
+    # ``content`` (codex r3 BLOCKING #1).
+    result = _CROSS_FAMILY_SPAN_RE.sub(
+        lambda m: "" if _span_has_tool_payload_object(m.group(0)) else m.group(0),
+        result,
+    )
+    # Phase 2: strip standalone marker tokens (orphan opener OR
+    # orphan closer that survived phases 1+1.5). ONLY the marker
+    # bytes are removed; surrounding text is preserved.
+    for marker_re in _TOOL_WIRE_STANDALONE_MARKERS:
+        result = marker_re.sub("", result)
+    # Collapse any runs of whitespace left by the strip. Preserves
+    # single-space separation between surrounding prose words.
+    return re.sub(r"\s+", " ", result).strip()
+
+
+def _synthesize_forced_tool_call(
+    name: str, arguments: str = "{}", *, raw_text: str | None = None
+):
     """Build a single ``ToolCall`` for a forced ``tool_choice`` whose
     text parser surfaced no calls (#571).
 
@@ -214,23 +1030,132 @@ def _synthesize_forced_tool_call(name: str, arguments: str = "{}"):
     client forces a tool call, the response MUST carry one. To restore
     symmetry we synthesise a tool_call server-side when the target tool
     is unambiguous (named-function, or ``"required"`` with a single
-    tool). Arguments default to ``"{}"`` because we have no signal
-    about what the model intended to pass; downstream
-    ``_validate_tool_call_params`` logs a warning when required
-    parameters are missing, mirroring the diagnostic surface clients
-    already see for model-generated calls with bad arguments. The
-    contract guarantee is "a tool_call is present", not "the arguments
-    are correct".
+    tool).
+
+    D-TOOLCHOICE-R1 T3: pre 0.8.3, ``arguments`` defaulted to ``"{}"``
+    unconditionally. When the model actually emitted a JSON object
+    body the strict parser couldn't extract from (qwen3 malformed
+    inner shape, model leaking unclosed tags, etc.) the empty-args
+    fallback shipped a uselessly opaque call. ``raw_text`` is now
+    consulted first: if it contains a recoverable ``"arguments": {...}``
+    object we use THAT instead of ``"{}"``. Downstream
+    ``_validate_tool_call_params`` still gates schema compliance; the
+    contract guarantee is "a tool_call is present", and now also "the
+    arguments are as close to what the model intended as we can
+    structurally recover".
     """
     # Lazy import — ToolCall / FunctionCall live alongside the request
     # model in ``api.models``. The lazy form keeps the synthesis path
     # scoped to forced-choice requests; the common case pays nothing.
     from ..api.models import FunctionCall, ToolCall
 
+    # Try the partial-recovery path first; only fall back to the
+    # caller-provided default (``"{}"`` or an upstream override) when
+    # the raw text yields nothing structurally parseable. Pass the
+    # synth target ``name`` as ``expected_name`` so recovery rejects
+    # ``"arguments"`` candidates paired with a DIFFERENT tool's
+    # ``"name"`` literal (codex r4 BLOCKING #1).
+    recovered = _recover_partial_tool_args(raw_text, expected_name=name)
+    final_args = recovered if recovered is not None else arguments
+
     return ToolCall(
         id=f"call_{uuid.uuid4().hex[:8]}",
         type="function",
-        function=FunctionCall(name=name, arguments=arguments),
+        function=FunctionCall(name=name, arguments=final_args),
+    )
+
+
+def _normalize_ui_tars_tcs_for_chat(tool_calls: list | None) -> list | None:
+    """Apply UI-TARS Computer-Use spec keys to a streaming-shaped tool_calls list.
+
+    The streaming postprocessor surfaces tool_calls as a list of dicts
+    in OpenAI-streaming shape (``{"index","id","type","function":{
+    "name","arguments"}}``); the cross-format fallback path
+    (``finalize_tool_calls``) and the terminal-chunk merge path use
+    the same shape. Centralising the per-entry normalisation here
+    keeps the three streaming sites (mid-stream emit, terminal merge,
+    synthetic fallback) byte-identical with the non-stream chat
+    response builder — without it the streaming path would emit the
+    parser-native ``point`` shape while the non-stream path emitted
+    the spec ``coordinate`` shape (r7-A R7-H1).
+
+    Gated on ``function.name == "computer"`` so vanilla function tools
+    whose arguments carry a key named ``point`` are passed through
+    verbatim. A None / empty input passes through.
+    """
+    if not tool_calls:
+        return tool_calls
+    from ..tool_parsers.ui_tars_tool_parser import (
+        normalize_ui_tars_chat_tool_call_arguments,
+    )
+
+    out = []
+    for tc in tool_calls:
+        if not isinstance(tc, dict):
+            out.append(tc)
+            continue
+        fn = tc.get("function") or {}
+        name = fn.get("name")
+        args = fn.get("arguments")
+        if not isinstance(args, str):
+            out.append(tc)
+            continue
+        new_args = normalize_ui_tars_chat_tool_call_arguments(args, name)
+        if new_args is args:
+            out.append(tc)
+            continue
+        # Shallow-copy so the upstream postprocessor's structures are
+        # not mutated under the caller's feet (defense-in-depth in case
+        # the same event is referenced elsewhere).
+        new_tc = dict(tc)
+        new_fn = dict(fn)
+        new_fn["arguments"] = new_args
+        new_tc["function"] = new_fn
+        out.append(new_tc)
+    return out
+
+
+def _is_harmony_cut_short_stream(
+    reasoning_parser,
+    accumulated_reasoning: str,
+    accumulated_text: str,
+    tool_calls_detected: bool,
+) -> bool:
+    """D-HARMONY-LEAK gate predicate, factored for direct test reuse.
+
+    Returns True when the streaming postprocessor state matches the
+    harmony "analysis without final" cut-short shape: an active
+    ``HarmonyReasoningParser`` saw reasoning tokens, no content
+    tokens have been streamed, AND no commentary tool call was
+    detected on any chunk. The streaming chat route uses this to
+    decide whether to synthesise a harmony-marked ``raw_text`` so the
+    shared rescue helper's gate fires uniformly across the streaming
+    and non-streaming surfaces.
+
+    Codex r1 BLOCKING #2 (PR #794): plumbing ``tool_calls_detected``
+    keeps a tool-call-only stream from being misclassified as
+    analysis-without-final — the cap-exhaust path in
+    ``StreamingPostProcessor._process_channel_routed`` sets
+    ``tool_calls_detected=True`` even when ``fallback_tool_calls``
+    arrives empty, and a wrongly-fired harmony gate there would not
+    suppress visible bytes but WOULD lose the channel-state signal
+    for any future caller that gates on the synthetic raw shape.
+
+    Codex r2 BLOCKING (PR #794): extracted to a module-level helper
+    so ``tests/test_harmony_finalize.py`` exercises the SAME code
+    object the streaming chat route uses, not a local re-implementation
+    of the predicate.
+    """
+    rp_is_harmony = (
+        type(reasoning_parser).__name__ == "HarmonyReasoningParser"
+        if reasoning_parser is not None
+        else False
+    )
+    return bool(
+        rp_is_harmony
+        and accumulated_reasoning
+        and not accumulated_text
+        and not tool_calls_detected
     )
 
 
@@ -823,40 +1748,20 @@ async def _create_chat_completion_impl(
     else:
         _cloud_original_messages = None
 
-    # Reject image/video/audio content when the loaded model has no
-    # multimodal head. Without this guard ``extract_multimodal_content``
-    # silently drops the media parts on the text-only path and the model
-    # hallucinates (R9P1: 600M text model returned "a red rose" for
-    # arbitrary images; iter12 onboarding: text-only model claimed
-    # "no audio attached" while silently dropping ``audio_url``).
-    if not engine.is_mllm:
-        for _msg in request.messages:
-            _content = (
-                _msg.content if hasattr(_msg, "content") else _msg.get("content", "")
-            )
-            if isinstance(_content, list):
-                for _item in _content:
-                    _item_type = (
-                        _item.type
-                        if hasattr(_item, "type")
-                        else (_item.get("type", "") if isinstance(_item, dict) else "")
-                    )
-                    if _item_type in (
-                        "image_url",
-                        "image",
-                        "video",
-                        "video_url",
-                        "audio_url",
-                        "audio",
-                        "input_audio",
-                    ):
-                        raise HTTPException(
-                            status_code=400,
-                            detail=(
-                                f"Model '{cfg.model_name}' does not support "
-                                "image, video, or audio inputs."
-                            ),
-                        )
+    # Content blocks must either reach a capable model path or be rejected
+    # before generation. Text-only models reject all media; MLLM/VLM models
+    # accept image/video but this server has no chat audio lane, so audio is
+    # still a request-time 400 instead of being ignored by prompt rendering.
+    try:
+        validate_content_blocks_for_capabilities(
+            request.messages,
+            model_name=cfg.model_name,
+            allow_image=engine.is_mllm,
+            allow_video=engine.is_mllm,
+            allow_audio=False,
+        )
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
     # For MLLM models, keep original messages with embedded images
     if engine.is_mllm:
@@ -907,6 +1812,30 @@ async def _create_chat_completion_impl(
                 messages[i]["role"] = "system"
             else:
                 m.role = "system"
+
+    # Dogfood C-05 / r5-B C-09 fix: auto-prepend the canonical UI-TARS
+    # Computer-Use action-API system prompt for the ``ui_tars`` parser
+    # family — **tool-coupled** (only when the request actually
+    # declares a Computer-Use tool). PR #812 wired the parser by alias
+    # regex but never injected the sysprompt the model is post-trained
+    # on; the C-05 fix then injected on every UI-TARS request, which
+    # broke plain-text and JSON-mode prompts (F-R1-L: ``2+2`` came
+    # back as a phantom click). r5-B threads ``tools=request.tools``
+    # through so the helper's tool-coupled gate decides: NO computer
+    # tool → no injection → model answers in prose / JSON. The helper
+    # is also idempotent (skips when the user already pasted the
+    # sysprompt) and honors ``tool_choice="none"`` (skips so the
+    # model emits plain prose — dogfood C-07).
+    from ..tool_parsers.ui_tars_tool_parser import (
+        maybe_inject_ui_tars_system_prompt as _maybe_inject_ui_tars_sysprompt,
+    )
+
+    messages = _maybe_inject_ui_tars_sysprompt(
+        messages,
+        tool_call_parser=cfg.tool_call_parser,
+        tool_choice=tc,
+        tools=request.tools,
+    )
 
     # Auto-inject system prompt suffix for tool use and/or reasoning control.
     # ``tool_choice="required"`` (and the specific-function form) gets a
@@ -1278,6 +2207,99 @@ async def _create_chat_completion_impl(
     # waybarrios#548.
     use_guided = False
     json_schema = None
+    # H-06: strict mode means the OpenAI contract REQUIRES the model
+    # output to validate against the schema. Pre-fix, ``strict=true``
+    # was suggestion-only — the route dropped the flag at
+    # ``build_json_system_prompt`` time and let the engine emit
+    # whatever the model produced. Distinguish the two modes here so
+    # the rest of the function can react.
+    strict_mode = is_strict_json_schema(response_format)
+
+    # Codex r3 BLOCKING #2 + defense-in-depth: ``strict=true`` with
+    # tools set (the route's existing ``if response_format and not
+    # request.tools`` gate below skips the guided dispatch when
+    # tools are present) used to fall through silently — strict
+    # mode would never trigger the gate and the model would emit
+    # unconstrained tokens. Compute the schema BEFORE the tools
+    # gate so the strict-malformed and strict+tools cases both
+    # fail closed (400) instead of failing open (silent 200).
+    # ``_validate_response_format`` already rejects ``schema={}``
+    # at body-parse time but this is the defense-in-depth gate
+    # that closes any future bypass (e.g. a refactor that moves
+    # the validate-response_format call after this point).
+    if strict_mode:
+        _strict_schema_check = extract_json_schema_for_guided(response_format)
+        if not _strict_schema_check:
+            incr_strict_request()
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format.json_schema.strict=true "
+                            "requires a non-empty "
+                            "response_format.json_schema.schema. The "
+                            "request set strict=true but the schema "
+                            "field is missing or empty — the strict "
+                            "contract cannot be enforced without one."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "strict_schema_required",
+                        "param": "response_format.json_schema.schema",
+                    }
+                },
+            )
+        # Codex r4 NIT #5: validate the user-supplied schema BEFORE
+        # generation so an invalid JSON Schema (e.g. ``type:"objct"``
+        # typo) surfaces as a 400 ``invalid_strict_schema`` —
+        # pointing at the client's malformed input — instead of
+        # falling into the post-decode validator and surfacing as
+        # a 502 ``strict_schema_violation`` (server-side breach
+        # shape). The check covers both the strict route and the
+        # /v1/responses entry below via the same helper.
+        _schema_ok, _schema_err = check_schema_validity(_strict_schema_check)
+        if not _schema_ok:
+            incr_strict_request()
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format.json_schema.schema is not "
+                            f"a valid JSON Schema document: {_schema_err}. "
+                            "Fix the schema and retry."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "invalid_strict_schema",
+                        "param": "response_format.json_schema.schema",
+                    }
+                },
+            )
+        if request.tools:
+            # Strict + tools is mutually exclusive on this engine:
+            # the constrained-decoding path is grammar-driven and
+            # cannot coexist with the tool-call grammar. OpenAI's
+            # cloud API treats this combination as 400 too. Surface
+            # the conflict explicitly so clients see the choice.
+            incr_strict_request()
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format.json_schema.strict=true "
+                            "cannot be combined with 'tools' — the "
+                            "constrained-decoding grammar is mutually "
+                            "exclusive with the tool-call grammar. "
+                            "Drop one or the other and retry."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "strict_with_tools_unsupported",
+                        "param": "response_format.json_schema.strict",
+                    }
+                },
+            )
+
     if response_format and not request.tools:
         json_schema = extract_json_schema_for_guided(response_format)
         if json_schema:
@@ -1290,19 +2312,55 @@ async def _create_chat_completion_impl(
             # #500 and the v0.6.70 hotfix and have no role now that the
             # contract is explicit.
             use_guided = engine.supports_guided_generation
-            if use_guided:
+            if strict_mode:
+                # Tick the strict-request counter BEFORE the 400 gate so
+                # operators can see traffic shape even on installs that
+                # are missing the [guided] extra. The violations counter
+                # is incremented separately if jsonschema.validate ever
+                # rejects a guided response post-decode.
+                incr_strict_request()
+                if not use_guided:
+                    # OpenAI's structured-output spec treats strict=true
+                    # as a hard contract — the response MUST validate
+                    # against the schema. Without outlines we cannot
+                    # make that guarantee, so 400 is the correct shape
+                    # (and matches what OpenAI returns when a model
+                    # doesn't support strict structured outputs).
+                    # Envelope is hand-rolled here to match the H-17
+                    # sanitized 400 shape that the global exception
+                    # handlers emit for malformed bodies; clients keying
+                    # off ``error.code`` see ``guided_extra_required``
+                    # so an SDK can decode the install hint
+                    # programmatically.
+                    raise HTTPException(
+                        status_code=400,
+                        detail={
+                            "error": {
+                                "message": (
+                                    "response_format.json_schema.strict=true "
+                                    "requires the [guided] optional extra. "
+                                    "Install with: pip install "
+                                    "'rapid-mlx[guided]'"
+                                ),
+                                "type": "invalid_request_error",
+                                "code": "guided_extra_required",
+                                "param": "response_format.json_schema.strict",
+                            }
+                        },
+                    )
+                logger.info(
+                    "Using guided generation for JSON schema enforcement (strict=true)"
+                )
+            elif use_guided:
                 logger.info("Using guided generation for JSON schema enforcement")
             else:
                 # Surface the silent-degradation case: client asked for
-                # json_schema strict mode but the engine can't enforce it
-                # (most commonly: the user installed `rapid-mlx` without
-                # the `[guided]` extra, so outlines is unavailable). The
-                # request will still be served with unconstrained
-                # decoding, but the schema contract is NOT being honored
-                # — without this warning, the client sees garbage
-                # (e.g. the model thinks for max_tokens and never emits
-                # JSON) with no diagnostic signal. v0.6.63 onboarding
-                # sweep finding #5.
+                # json_schema response_format but the engine can't
+                # enforce it (most commonly: the user installed
+                # `rapid-mlx` without the `[guided]` extra). When
+                # ``strict=false`` the OpenAI contract is suggestion-only
+                # so we fall through to prompt-injection (existing
+                # behavior). When ``strict=true`` we 400 above.
                 logger.warning(
                     "json_schema response_format requested but guided "
                     "generation is unavailable (engine="
@@ -1364,7 +2422,12 @@ async def _create_chat_completion_impl(
             return StreamingResponse(
                 _disconnect_guard(
                     stream_chat_completion_guided(
-                        engine, messages, request, json_schema, **chat_kwargs
+                        engine,
+                        messages,
+                        request,
+                        json_schema,
+                        strict_mode=strict_mode,
+                        **chat_kwargs,
                     ),
                     raw_request,
                     engine=engine,
@@ -1473,7 +2536,55 @@ async def _create_chat_completion_impl(
                     raw_request,
                     timeout=timeout,
                 )
+            except HTTPException:
+                raise
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                # These belong to the outer route's standard
+                # timeout / cancellation envelopes — NOT to the
+                # strict-contract breach shape. Let them propagate
+                # unchanged so the 408 / 499 / 503 mapping kicks in.
+                raise
             except Exception as guided_err:
+                # Codex r6 BLOCKING parity (non-streaming chat path):
+                # under strict=true, falling back to ``engine.chat``
+                # IS the H-06 hole — the buffered post-decode validator
+                # at line ~1752 below would catch it as a 502 if the
+                # unconstrained output happened to mis-validate, but
+                # if it coincidentally validates the client receives
+                # an unconstrained response under a ``strict=true``
+                # contract the server never honored. Refuse the
+                # fallback under strict mode, surface the breach as
+                # 502 ``strict_schema_violation`` directly.
+                if strict_mode:
+                    incr_strict_violation()
+                    logger.warning(
+                        "Strict json_schema guided generation failed; "
+                        "refusing to fall back to unconstrained because "
+                        "strict=true: %s",
+                        guided_err,
+                    )
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "error": {
+                                "message": (
+                                    "strict response_format could not be "
+                                    "honored: the constrained-decoding path "
+                                    f"raised {type(guided_err).__name__} "
+                                    "before producing any output. The "
+                                    "server refuses to fall back to "
+                                    "unconstrained generation because the "
+                                    "client asked for strict=true. "
+                                    "Investigate the server logs and the "
+                                    "rapid_mlx_response_format_strict_"
+                                    "violations_total metric."
+                                ),
+                                "type": "api_error",
+                                "code": "strict_schema_violation",
+                                "param": "response_format.json_schema",
+                            }
+                        },
+                    ) from guided_err
                 logger.warning(
                     f"Guided generation failed, falling back to standard: {guided_err}"
                 )
@@ -1548,6 +2659,49 @@ async def _create_chat_completion_impl(
         f"Chat completion: {output.completion_tokens} tokens in {elapsed:.2f}s ({tokens_per_sec:.1f} tok/s)"
     )
 
+    # H-06: when the client asked for strict json_schema mode and we
+    # routed through guided decoding, validate the buffered text
+    # against the schema. Outlines should make this unreachable; a
+    # non-zero ``rapid_mlx_response_format_strict_violations_total``
+    # rate signals that the constrained-decoding path silently
+    # degraded (e.g. ``generate_with_schema`` swallowed an outlines
+    # API change and fell back to ``self.chat(...)``).
+    #
+    # Codex r2 BLOCKING #3: under the strict contract, returning a
+    # known schema-invalid 200 body is itself a contract violation —
+    # the OpenAI ``strict=true`` semantics promise the response
+    # validates. Surface as 502 (upstream/internal contract failed)
+    # so clients using ``chat.completions.parsed`` see the error
+    # instead of silently consuming garbage that ``model_validate``
+    # then rejects with a confusing stack-trace far from the source.
+    # The violations counter still ticks before we raise so the
+    # operator sees both the rate AND the error response.
+    if strict_mode and use_guided and json_schema and output is not None:
+        ok, err = validate_output_against_schema(output.text or "", json_schema)
+        if not ok:
+            incr_strict_violation()
+            logger.warning(
+                "Strict json_schema response failed post-decode validation: %s",
+                err,
+            )
+            raise HTTPException(
+                status_code=502,
+                detail={
+                    "error": {
+                        "message": (
+                            "strict response_format violated: model output "
+                            f"did not validate against the supplied schema ({err}). "
+                            "This indicates the constrained-decoding path silently "
+                            "degraded; investigate the server logs and the "
+                            "rapid_mlx_response_format_strict_violations_total metric."
+                        ),
+                        "type": "api_error",
+                        "code": "strict_schema_violation",
+                        "param": "response_format.json_schema",
+                    }
+                },
+            )
+
     # Parse tool calls from output using configured parser.
     # ``output.tool_calls`` is non-None when the engine's
     # ``OutputRouter`` already produced structured ``[{"name",
@@ -1561,6 +2715,25 @@ async def _create_chat_completion_impl(
     cleaned_text, tool_calls = _parse_tool_calls_with_parser(
         output.text, request, structured_tool_calls=engine_tool_calls
     )
+
+    # r7-A R7-H1: UI-TARS chat-lane coordinate-key parity. The parser
+    # emits canonical ``point`` / ``start_point`` / ``end_point``; the
+    # OpenAI Computer-Use spec uses ``coordinate`` (single-point) and
+    # ``path=[{"x","y"}, …]`` (drag). The Anthropic + Responses lanes
+    # already normalize at their adapters (``api/anthropic_adapter.py``,
+    # ``api/responses_adapter.py``); the chat lane was missed in r6-B
+    # and surfaced the parser-native shape, breaking parity. Gated on
+    # ``function.name == "computer"`` so vanilla function tools whose
+    # arguments happen to carry a ``point`` key are untouched.
+    if tool_calls:
+        from ..tool_parsers.ui_tars_tool_parser import (
+            normalize_ui_tars_chat_tool_call_arguments,
+        )
+
+        for _tc in tool_calls:
+            _tc.function.arguments = normalize_ui_tars_chat_tool_call_arguments(
+                _tc.function.arguments, _tc.function.name
+            )
 
     # Honor ``parallel_tool_calls=false`` by capping the parsed list at one.
     # No decoder-level enforcement exists, so this is a post-parse trim — the
@@ -1606,11 +2779,17 @@ async def _create_chat_completion_impl(
                     logger.warning(
                         "tool_choice='required' on a parser-only path produced "
                         "no tool_calls; synthesising a call to the sole "
-                        "available tool %r with empty arguments to honor the "
-                        "OpenAI tool_call-guaranteed contract (#571).",
+                        "available tool %r (recovering arguments from raw "
+                        "text where possible) to honor the OpenAI tool_call-"
+                        "guaranteed contract (#571).",
                         _solo_name,
                     )
-                    tool_calls = [_synthesize_forced_tool_call(_solo_name)]
+                    tool_calls = [
+                        _synthesize_forced_tool_call(
+                            _solo_name,
+                            raw_text=output.raw_text or output.text,
+                        )
+                    ]
             if not tool_calls:
                 raise HTTPException(
                     status_code=422,
@@ -1668,12 +2847,17 @@ async def _create_chat_completion_impl(
                 if not _names and _target_is_submitted:
                     logger.warning(
                         "tool_choice pinned function %r on a parser-only path "
-                        "produced no tool_calls; synthesising a call with "
-                        "empty arguments to honor the OpenAI tool_call-"
-                        "guaranteed contract (#571).",
+                        "produced no tool_calls; synthesising a call (recovering "
+                        "arguments from raw text where possible) to honor the "
+                        "OpenAI tool_call-guaranteed contract (#571).",
                         _target,
                     )
-                    tool_calls = [_synthesize_forced_tool_call(_target)]
+                    tool_calls = [
+                        _synthesize_forced_tool_call(
+                            _target,
+                            raw_text=output.raw_text or output.text,
+                        )
+                    ]
                 elif not _names and not _target_is_submitted:
                     # Codex R1 BLOCKING (#675): named tool_choice points
                     # at a function that is not in ``request.tools`` —
@@ -1704,6 +2888,84 @@ async def _create_chat_completion_impl(
     if tool_calls and request.tools:
         _validate_tool_call_params(tool_calls, request.tools)
 
+    # D-TOOLCHOICE-R1 T3: scrub wire-marker leftovers from the
+    # response text. Two trigger conditions:
+    #
+    #   (a) the post-parse path SYNTHESISED a forced tool call
+    #       (parser couldn't extract from a malformed wire body), OR
+    #   (b) the parser DID extract a call but ``tool_choice="required"``
+    #       was set AND the raw wire had cross-family / orphan markers
+    #       the parser's cleanup left behind (e.g. qwen3 emits
+    #       ``<tool_call>{json}</function>`` — hermes recovers the JSON
+    #       but the trailing ``</function>`` survives as content).
+    #
+    # Both conditions imply the model attempted a tool call and any
+    # wire literals in the output are junk by definition. The scrub
+    # is parser-agnostic so adding a new parser doesn't reopen the
+    # leak; codex r3 BLOCKING #2 caught case (b) — even the
+    # recover-args path needs the scrub.
+    # codex r4 BLOCKING #2: the broad gate ``tool_choice is not None``
+    # also fired on ``tool_choice="auto"``, where a model legitimately
+    # may emit prose alongside a tool call that contains XML/tool
+    # marker text (e.g. discussing the tool wire format in the prose).
+    # Narrow to forced/required modes only — that's where the wire
+    # leakage is structurally known to be junk by construction:
+    #   - ``tool_choice="required"`` — model was FORCED to call,
+    #     so any wire-shaped leftovers are by-products of that forcing.
+    #   - ``tool_choice={"type":"function","function":{"name":X}}`` —
+    #     same forcing semantics.
+    # ``"auto"`` and ``"none"`` keep the prior pre-0.8.3 behaviour —
+    # cleaned_text is the parser's authoritative output.
+    # codex r6 BLOCKING #1: gate scrub on the presence of an actual
+    # wire-marker leak in ``cleaned_text``, not on every successful
+    # forced/required call. A clean parser-extracted call whose
+    # ``cleaned_text`` is plain prose (even prose that legitimately
+    # discusses ``<tool_call>``) keeps its content unmodified —
+    # which it MUST, because the scrub is destructive (rewrites the
+    # user-visible field).
+    #
+    # The final firing condition is intentionally stricter than "a
+    # forced call exists": forced synthesis can also happen when a
+    # model ignores ``tool_choice="required"`` and emits ordinary
+    # prose. Scrub only when the visible text contains STRUCTURAL
+    # parser-wire residue, not merely a literal token mention.
+    _is_forced_choice = request.tool_choice == "required" or (
+        isinstance(request.tool_choice, dict)
+        and request.tool_choice.get("type") == "function"
+    )
+    _raw_text_for_reasoning = output.raw_text or output.text
+    _raw_has_structural_wire = _contains_structural_tool_wire_leak(
+        _raw_text_for_reasoning
+    )
+
+    def _should_scrub_visible_wire(
+        text: str | None, *, allow_raw_context: bool = True
+    ) -> bool:
+        return (
+            _is_forced_choice
+            and request.tools
+            and bool(tool_calls)
+            and _contains_tool_wire_literal(text)
+            and (
+                _contains_structural_tool_wire_leak(text)
+                or (allow_raw_context and _raw_has_structural_wire)
+            )
+        )
+
+    _wire_scrub_active = _should_scrub_visible_wire(cleaned_text)
+    # codex r6 BLOCKING #2: scrub the user-visible ``cleaned_text``
+    # only. Do NOT mutate ``raw_text`` before it reaches the reasoning
+    # parser — pretty-printed reasoning bodies may legitimately
+    # contain wire-shaped tokens (e.g. when the reasoning describes
+    # the tool wire format), and rewriting them ahead of extraction
+    # truncates / collapses reasoning content. The reasoning parser
+    # operates on the original ``output.raw_text`` and only its
+    # post-extraction visible output is candidate for re-scrubbing
+    # (handled by ``_finalize_content_and_reasoning`` returning
+    # ``cleaned_text`` that we never mutate after this block).
+    if _wire_scrub_active:
+        cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
+
     # Extract reasoning content. extract_reasoning() is stateless (pure regex
     # on full text), so the singleton is safe here unlike the streaming variant.
     # The tool_calls vs no-tool_calls split is encapsulated in
@@ -1711,7 +2973,12 @@ async def _create_chat_completion_impl(
     # the same orchestration without re-implementing it.
     cleaned_text_before_helper = cleaned_text
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
-        raw_text=output.raw_text or output.text,
+        # codex r6 BLOCKING #2: pass the ORIGINAL raw text so the
+        # reasoning parser sees the bytes the engine actually emitted.
+        # Any wire-literal scrub above only touched user-visible
+        # ``cleaned_text`` — reasoning extraction operates on the
+        # untouched ``raw_text``.
+        raw_text=_raw_text_for_reasoning,
         cleaned_text=cleaned_text,
         tool_calls=tool_calls,
         reasoning_parser=cfg.reasoning_parser,
@@ -1733,7 +3000,17 @@ async def _create_chat_completion_impl(
         # Per-request reasoning cap (upstream vLLM PR #20859 backport).
         # None → back-compat no-op.
         reasoning_max_tokens=getattr(request, "reasoning_max_tokens", None),
+        # r5-D — finalize-on-truncation shared plug needs to know if
+        # generation was cut short so it can re-classify an unclosed
+        # think buffer as ``reasoning_content`` instead of leaking it
+        # into ``content``. ``None`` keeps the pre-r5-D behaviour on
+        # any caller that hasn't been threaded yet.
+        finish_reason=getattr(output, "finish_reason", None),
     )
+    if _should_scrub_visible_wire(cleaned_text, allow_raw_context=False):
+        cleaned_text = _scrub_visible_tool_wire_leaks(cleaned_text)
+    if _should_scrub_visible_wire(reasoning_text) and reasoning_text:
+        reasoning_text = _scrub_visible_tool_wire_leaks(reasoning_text)
 
     # Process response_format if specified (after reasoning parser cleaned the text)
     if response_format and not tool_calls:
@@ -1811,6 +3088,25 @@ async def _create_chat_completion_impl(
             and cfg.reasoning_parser is not None
             and not (getattr(output, "reasoning_text", "") or "")
         )
+        # D-STOP-THINK codex round-5 BLOCKING (PR #799): compute
+        # ``prompt_thinking_active`` from the chat template +
+        # resolved enable_thinking. Required by the helper's
+        # Case-4 + stop + matched_stop arm to discriminate
+        # prompt-injected mid-think from a casual stop-terminated
+        # answer.
+        #
+        # Codex round-9 BLOCKING (PR #799): use the SHARED
+        # ``_should_start_in_thinking`` predicate from
+        # ``service.helpers`` instead of inlining the substring
+        # check. Single source of truth — drift across routes is
+        # impossible by construction.
+        _chat_template_str = ""
+        _tok = getattr(engine, "tokenizer", None)
+        if _tok and hasattr(_tok, "chat_template"):
+            _chat_template_str = _tok.chat_template or ""
+        prompt_thinking_active = _should_start_in_thinking(
+            _chat_template_str, resolved_thinking
+        )
         final_content = _rescue_silent_drop_from_reasoning(
             final_content,
             reasoning_text,
@@ -1818,6 +3114,24 @@ async def _create_chat_completion_impl(
             finish_reason=finish_reason,
             raw_text=output.raw_text or output.text,
             reasoning_is_case4=reasoning_is_case4,
+            matched_stop=getattr(output, "matched_stop", None),
+            prompt_thinking_active=prompt_thinking_active,
+        )
+        # R-01 (was H-01): opt-IN cutoff sentinel. By default the helper
+        # is a no-op — the structured truncation signal
+        # (``finish_reason="length"`` + ``reasoning_content`` populated)
+        # is enough for SDK consumers, and synthesizing a literal text
+        # block the model never produced is harmful injection. Callers
+        # who DO want the legacy literal-text cue can opt back in via
+        # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1``. The helper itself owns
+        # ALL the predicates (env opt-in, finish_reason, content
+        # emptiness, tool-call gate, reasoning presence) so this call
+        # site stays trivial.
+        final_content = _apply_reasoning_cutoff_notice(
+            final_content,
+            reasoning_text,
+            tool_calls,
+            finish_reason,
         )
 
     # Build logprobs for response if requested
@@ -1915,8 +3229,22 @@ async def stream_chat_completion(
         _sse_suffix = "}}]}\n\n"
 
         def _fast_sse_chunk(text: str, field: str = "content") -> str:
-            """Build SSE chunk JSON directly, bypassing Pydantic serialization."""
+            """Build SSE chunk JSON directly, bypassing Pydantic serialization.
+
+            r7-A R7-H2 — when ``field == "reasoning_content"`` emit
+            BOTH ``reasoning_content`` (legacy field name, retained for
+            one release as a deprecation window) AND ``reasoning`` (the
+            OpenAI spec field name). This mirrors the non-stream
+            ``AssistantMessage._serialize_assistant_message`` contract
+            so stream + non-stream parity holds — clients reading
+            either key see the same value.
+            """
             escaped = json.dumps(text)
+            if field == "reasoning_content":
+                return (
+                    f'{_sse_prefix}"reasoning_content":{escaped},'
+                    f'"reasoning":{escaped}{_sse_suffix}'
+                )
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
         # First chunk with role
@@ -1988,6 +3316,20 @@ async def stream_chat_completion(
         # silently drop the tool call (#v0.6.63 onboarding sweep finding #3).
         buffered_finish: tuple | None = None
 
+        # D-STOP-THINK codex round-6 BLOCKING (PR #799):
+        # accumulate ``output.matched_stop`` from streamed chunks so the
+        # post-loop ``_rescue_silent_drop_from_reasoning`` call below sees
+        # the prompt-injected user stop string even when the SAMPLER
+        # surfaced it on a non-finish chunk (i.e. ``finish_event.matched_stop``
+        # is ``None`` but an earlier ``output`` carried the value). Mirrors
+        # the same accumulator in ``routes/responses.py:452/602``. Without
+        # this, prompt-injected stop-mid-think streams look like
+        # ``matched_stop=None`` and the silent-drop rescue would still
+        # leak the reasoning trace into ``delta.content`` — the exact
+        # D-STOP-THINK leak this PR is supposed to gate at the parser
+        # boundary.
+        stream_matched_stop: str | None = None
+
         # Stream content — PostProcessor handles reasoning/tool/sanitize.
         # ``is_streaming=True`` is consumed by DiffusionEngine to disable
         # the gemma4 wire-marker carve-out in ``skip_special_token_ids``:
@@ -2015,6 +3357,17 @@ async def stream_chat_completion(
             if hasattr(output, "cached_tokens") and output.cached_tokens:
                 cached_tokens = output.cached_tokens
 
+            # D-STOP-THINK codex round-6 BLOCKING accumulator (PR #799).
+            # Capture the last non-empty ``matched_stop`` we see across
+            # streamed chunks. The sampler stamps ``matched_stop`` on
+            # whichever chunk crossed the stop boundary; the buffered
+            # ``finish_event`` often arrives without it because the
+            # post-processor splits finish from data. Mirrors
+            # ``routes/responses.py:602``.
+            _chunk_matched_stop = getattr(output, "matched_stop", None)
+            if _chunk_matched_stop:
+                stream_matched_stop = _chunk_matched_stop
+
             for event in processor.process_chunk(output):
                 if event.type == "content":
                     if not want_logprobs:
@@ -2041,6 +3394,15 @@ async def stream_chat_completion(
                     yield _fast_sse_chunk(event.reasoning, "reasoning_content")
 
                 elif event.type == "tool_call":
+                    # r7-A R7-H1: streaming-lane parity with the
+                    # non-stream chat path. The same
+                    # ``normalize_ui_tars_chat_tool_call_arguments``
+                    # helper runs here so per-delta tool_call
+                    # arguments emit the OpenAI Computer-Use spec
+                    # keys (``coordinate`` / ``path``) instead of the
+                    # parser-native ``point``. Gated on
+                    # ``function.name == "computer"`` inside the helper.
+                    _normalized_tcs = _normalize_ui_tars_tcs_for_chat(event.tool_calls)
                     chunk = ChatCompletionChunk(
                         id=response_id,
                         created=_sse_created,
@@ -2048,24 +3410,41 @@ async def stream_chat_completion(
                         choices=[
                             ChatCompletionChunkChoice(
                                 delta=ChatCompletionChunkDelta(
-                                    tool_calls=event.tool_calls,
+                                    tool_calls=_normalized_tcs,
                                 ),
                                 finish_reason=event.finish_reason,
                             )
                         ],
-                        # Usage placement: when ``stream_options.include_usage``
-                        # is True, usage MUST appear ONLY in the dedicated
-                        # trailing chunk per the OpenAI streaming spec.
-                        # Without ``include_usage``, legacy clients expect it
-                        # on the finish chunk.
-                        usage=(
-                            None
-                            if include_usage
-                            else (get_usage(output) if output.finished else None)
-                        ),
+                        # Usage placement (OpenAI streaming spec, D-SSE-USAGE):
+                        # ``usage`` MUST appear ONLY when the caller opted
+                        # in via ``stream_options.include_usage=true``,
+                        # and then ONLY in the dedicated trailing chunk
+                        # (this finish chunk carries ``null`` so it
+                        # serializes as ``"usage": null`` per spec). When
+                        # ``include_usage`` is false / unset, the field
+                        # is omitted from every chunk — LangChain /
+                        # AI-SDK / vercel-ai-stream parsers double-count
+                        # token totals when usage shows up unexpectedly.
+                        usage=None,
                     )
                     _tc_sse = f"data: {chunk.model_dump_json(exclude_none=True)}\n\n"
-                    logger.info(f"[SSE-TC] {_tc_sse.strip()[:300]}")
+                    # Dogfood F-R2-05 + codex r5 NIT #3: previously
+                    # emitted at INFO, which leaked user-action coords
+                    # + tool_call JSON into the server log on every
+                    # Computer-Use turn (UI-TARS, Anthropic computer
+                    # tool, etc.). Now DEBUG, AND redacted: log only
+                    # the chunk metadata (tool_call count + finish
+                    # reason), never the raw ``arguments`` JSON.
+                    # Operators who need full payloads can capture
+                    # the wire stream upstream; the application log
+                    # should not be a covert PII channel.
+                    _tc_count = len(event.tool_calls or [])
+                    _tc_finish = event.finish_reason or "-"
+                    logger.debug(
+                        "[SSE-TC] tool_calls.count=%d finish_reason=%s",
+                        _tc_count,
+                        _tc_finish,
+                    )
                     yield _tc_sse
 
                 elif event.type == "finish":
@@ -2094,7 +3473,12 @@ async def stream_chat_completion(
         finalize_content_parts: list[str] = []
         for event in processor.finalize():
             if event.type == "tool_call":
-                fallback_tool_calls.extend(event.tool_calls or [])
+                # r7-A R7-H1: normalize before append so terminal-merge
+                # + synthetic-fallback emit sites don't need to know
+                # about the UI-TARS spec-key contract.
+                fallback_tool_calls.extend(
+                    _normalize_ui_tars_tcs_for_chat(event.tool_calls) or []
+                )
             elif event.type == "content" and event.content:
                 finalize_content_parts.append(event.content)
         finalize_content = "".join(finalize_content_parts)
@@ -2209,11 +3593,60 @@ async def stream_chat_completion(
                         processor.accumulated_reasoning + processor.accumulated_text
                     )
                 )
-                synthetic_raw = (
-                    "<think>" + processor.accumulated_reasoning
-                    if saw_open_no_close
-                    else processor.accumulated_reasoning or ""
+                # D-HARMONY-LEAK (2026-06-21): harmony-streaming mirror
+                # of the truncated-``<think>`` synthetic raw above. On
+                # gpt-oss / Harmony streaming, the engine token-routes
+                # via ``OutputRouter`` so ``output.channel="reasoning"``
+                # arrives in the postprocessor pre-split — the literal
+                # ``<|channel|>analysis<|message|>`` opener is consumed
+                # as a state transition by ``HarmonyStreamingRouter``
+                # and never lands in ``accumulated_reasoning``. The
+                # streaming counterpart of the bug: when generation
+                # cuts short before a final channel emerges (max_tokens
+                # mid-analysis OR a stop string matching mid-analysis),
+                # ``accumulated_text`` stays empty and the rescue would
+                # promote the analysis trace to ``delta.content`` —
+                # shipping byte-identical content + reasoning_content
+                # to the client. Synthesise a harmony-marked raw_text
+                # so the helper's new harmony-shape gate (analysis
+                # marker present, final marker absent) fires uniformly
+                # across both the streaming and non-streaming surfaces.
+                # Gated on the parser type so the synthetic only fires
+                # for Harmony — gemma-4 / qwen families still rely on
+                # their existing rescue paths.
+                #
+                # Codex r1 BLOCKING #2: the empty-content + non-empty-
+                # reasoning shape ALSO matches a tool-call-only stream
+                # where the parallel-tool-calls cap dropped every
+                # commentary entry (``tool_calls_detected=True`` set on
+                # the cap-exhaust path but ``fallback_tool_calls`` may
+                # arrive empty and ``finish_event.finish_reason`` may
+                # be something other than ``"tool_calls"`` on the
+                # router-cap path before the buffered-finish gate
+                # fires). Plumb ``processor.tool_calls_detected``
+                # through so a commentary-call stream is not
+                # misclassified as analysis-without-final and
+                # accidentally suppressed via the harmony gate —
+                # tool-call-only responses legitimately ship
+                # ``content=None`` per the OpenAI spec and the gate
+                # would only change zero-byte output here, but
+                # honouring the explicit channel signal keeps the
+                # synthetic_raw discrimination accurate.
+                harmony_cut_short = _is_harmony_cut_short_stream(
+                    rp,
+                    processor.accumulated_reasoning,
+                    processor.accumulated_text,
+                    processor.tool_calls_detected,
                 )
+                if harmony_cut_short:
+                    synthetic_raw = (
+                        "<|channel|>analysis<|message|>"
+                        + processor.accumulated_reasoning
+                    )
+                elif saw_open_no_close:
+                    synthetic_raw = "<think>" + processor.accumulated_reasoning
+                else:
+                    synthetic_raw = processor.accumulated_reasoning or ""
                 # PR #715 bundle, fuzz finding C: streaming Case-4
                 # mirror of the non-streaming detection. When the
                 # parser never saw a ``<think>``/``</think>`` token
@@ -2230,6 +3663,39 @@ async def stream_chat_completion(
                     and processor.accumulated_reasoning
                     and not processor.accumulated_text
                 )
+                # D-STOP-THINK codex round-5 BLOCKING (PR #799):
+                # compute ``prompt_thinking_active`` for the streaming
+                # rescue too — mirrors the non-streaming gate. The
+                # streaming function doesn't have ``resolved_thinking``
+                # in scope (it's a separate function from the
+                # non-streaming caller), so re-resolve here from the
+                # request.
+                #
+                # Codex round-9 BLOCKING (PR #799): use the SHARED
+                # ``_should_start_in_thinking`` predicate from
+                # ``service.helpers`` instead of inlining the substring
+                # check. Single source of truth — drift across the
+                # non-streaming and streaming paths is impossible by
+                # construction.
+                _stream_resolved_thinking = _resolve_enable_thinking(request)
+                _chat_template_str_stream = ""
+                _tok_stream = getattr(engine, "tokenizer", None)
+                if _tok_stream and hasattr(_tok_stream, "chat_template"):
+                    _chat_template_str_stream = _tok_stream.chat_template or ""
+                prompt_thinking_active_stream = _should_start_in_thinking(
+                    _chat_template_str_stream, _stream_resolved_thinking
+                )
+                # D-STOP-THINK codex round-6 BLOCKING (PR #799):
+                # prefer the per-chunk accumulator over
+                # ``finish_event.matched_stop`` because the sampler may
+                # stamp the matched stop string on an earlier chunk that
+                # was NOT the terminal finish event. Falling back to
+                # ``finish_event.matched_stop`` preserves backward
+                # compatibility with engines that only stamp it on
+                # finish (BatchedEngine).
+                _effective_matched_stop = stream_matched_stop or getattr(
+                    finish_event, "matched_stop", None
+                )
                 rescued_content = _rescue_silent_drop_from_reasoning(
                     terminal_content or None,
                     processor.accumulated_reasoning,
@@ -2237,6 +3703,8 @@ async def stream_chat_completion(
                     finish_reason=finish_event.finish_reason,
                     raw_text=synthetic_raw,
                     reasoning_is_case4=reasoning_is_case4_stream,
+                    matched_stop=_effective_matched_stop,
+                    prompt_thinking_active=prompt_thinking_active_stream,
                 )
                 # The helper returns the rescued reasoning ONLY when
                 # all four predicates pass (empty/whitespace content,
@@ -2253,6 +3721,34 @@ async def stream_chat_completion(
                         "tool calls; surfacing %d-char reasoning trace as "
                         "content",
                         len(terminal_content),
+                    )
+            # R-01 (was H-01) streaming mirror: helper is opt-IN. When
+            # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1`` AND the SSE rescue
+            # above did NOT promote reasoning into ``terminal_content``
+            # (strict null path won — truncated ``<think>`` / harmony
+            # analysis-without-final / Case-4 no-tag), emit the literal
+            # cutoff sentinel as ONE final-chunk ``delta.content`` event
+            # so streaming SDK consumers see the same signal as their
+            # non-streaming counterparts. Per-token reasoning deltas have
+            # already been sent during the loop; this is a single
+            # extra-bytes-on-the-final-chunk event, NOT a per-token
+            # mirror of the reasoning trace (D-STOP-THINK regression
+            # guard). Default-off: no event is emitted unless the env
+            # knob is set. Gating logic matches the non-streaming call
+            # site — the helper owns it.
+            if not has_any_tool_calls and not structured_output_requested:
+                cutoff_content = _apply_reasoning_cutoff_notice(
+                    terminal_content or None,
+                    processor.accumulated_reasoning,
+                    None,
+                    finish_event.finish_reason,
+                )
+                if cutoff_content and cutoff_content != (terminal_content or None):
+                    terminal_content = cutoff_content
+                    logger.info(
+                        "[SSE-CUTOFF-H01] terminal chunk content empty + "
+                        "finish=length + reasoning present; surfacing "
+                        "cutoff sentinel as content"
                     )
             final_chunk = ChatCompletionChunk(
                 id=response_id,
@@ -2275,12 +3771,11 @@ async def stream_chat_completion(
                         logprobs=_build_chunk_logprobs(finish_output),
                     )
                 ],
-                # See "Usage placement" note on the tool_call branch.
-                usage=(
-                    None
-                    if include_usage
-                    else (get_usage(finish_output) if finish_output.finished else None)
-                ),
+                # See "Usage placement" note on the tool_call branch
+                # (D-SSE-USAGE). When ``include_usage`` is false / unset
+                # the field is omitted from this terminal chunk; the
+                # dedicated trailing usage chunk is suppressed too.
+                usage=None,
             )
             yield f"data: {final_chunk.model_dump_json(exclude_none=True)}\n\n"
         elif fallback_tool_calls or finalize_content:
@@ -2373,6 +3868,8 @@ async def stream_chat_completion_guided(
     messages: list,
     request: ChatCompletionRequest,
     json_schema: dict,
+    *,
+    strict_mode: bool = False,
     **kwargs,
 ) -> AsyncIterator[str]:
     """Stream chat completion with json_schema constrained decoding.
@@ -2434,18 +3931,24 @@ async def stream_chat_completion_guided(
         # we would emit one giant content chunk at the end —
         # defeating SSE for clients/proxies that rely on early chunks
         # (codex Round 2 finding).
+        # Codex r5 BLOCKING parity: prevent a kwargs collision with
+        # the explicit ``raise_on_failure=True`` below. If ``kwargs``
+        # ever contained ``raise_on_failure`` it would TypeError
+        # ("got multiple values for keyword argument") before
+        # constrained decoding ran, and the outer ``except Exception``
+        # arm would mistranslate that operator-wiring bug as a
+        # guided-generation failure (silent fallback to unconstrained
+        # streaming, which IS the case strict callers cannot
+        # tolerate). Sanitize so the strict caller OWNS the value.
+        _guided_kwargs = {k: v for k, v in kwargs.items() if k != "raise_on_failure"}
         try:
             output = await engine.generate_with_schema(
                 messages=messages,
                 json_schema=json_schema,
                 raise_on_failure=True,
-                **kwargs,
+                **_guided_kwargs,
             )
         except Exception as guided_err:
-            logger.warning(
-                "Guided streaming generation failed, falling back to "
-                f"unconstrained streaming: {guided_err}"
-            )
             # Log only the schema's top-level shape, not the full body —
             # user-supplied schemas may embed PII (default values),
             # internal endpoint names, or be megabytes large. Keys +
@@ -2459,6 +3962,49 @@ async def stream_chat_completion_guided(
             )
             logger.debug(
                 f"Problematic schema shape: keys={_schema_keys} required={_required}"
+            )
+            # Codex r6 BLOCKING: under strict=true the fallback to
+            # unconstrained ``stream_chat_completion`` IS the H-06 hole
+            # we're closing — clients asked for a contract and we
+            # silently degraded to best-effort, just over SSE instead
+            # of buffered. The post-decode validator below never runs
+            # because we ``return`` from the fallback before reaching
+            # it. Fix: when ``strict_mode`` is set, translate the
+            # guided exception into the canonical SSE error envelope
+            # (mirror of the post-decode shape) + DONE, and DO NOT
+            # enter the unconstrained fallback.
+            if strict_mode:
+                incr_strict_violation()
+                logger.warning(
+                    "Strict json_schema streaming guided generation "
+                    "failed; refusing to fall back to unconstrained "
+                    "streaming because strict=true: %s",
+                    guided_err,
+                )
+                _err_envelope = {
+                    "error": {
+                        "message": (
+                            "strict response_format could not be honored: "
+                            "the constrained-decoding path raised "
+                            f"{type(guided_err).__name__} before producing "
+                            "any output. The server refuses to fall back "
+                            "to unconstrained streaming because the client "
+                            "asked for strict=true. Investigate the server "
+                            "logs and the "
+                            "rapid_mlx_response_format_strict_violations_total "
+                            "metric."
+                        ),
+                        "type": "api_error",
+                        "code": "strict_schema_violation",
+                        "param": "response_format.json_schema",
+                    }
+                }
+                yield f"data: {json.dumps(_err_envelope)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+            logger.warning(
+                "Guided streaming generation failed, falling back to "
+                f"unconstrained streaming: {guided_err}"
             )
             # Forward the pre-computed response_id + _sse_created so the
             # fallback stream's chunks share id/created with this outer
@@ -2477,11 +4023,54 @@ async def stream_chat_completion_guided(
                 yield chunk
             return
 
+        content = output.text or ""
+
+        # H-06 (codex r2): validate the buffered guided output BEFORE
+        # emitting any SSE chunks for strict requests. The streaming
+        # path here is a synthesized stream over a buffered output —
+        # ``generate_with_schema`` returns a single GenerationOutput
+        # rather than a token stream — so we still have a window to
+        # convert a strict-contract violation into a clean error
+        # SSE envelope instead of letting the schema-invalid bytes
+        # reach the client.
+        #
+        # Outlines should make this unreachable; the violations
+        # counter ticks regardless so operators see both the rate
+        # AND the error response. We emit a single SSE error chunk
+        # carrying the canonical OpenAI envelope, then DONE — clients
+        # parsing the SSE stream see the error before any role/content
+        # chunks land.
+        if strict_mode and json_schema:
+            ok, err = validate_output_against_schema(content, json_schema)
+            if not ok:
+                incr_strict_violation()
+                logger.warning(
+                    "Strict json_schema response failed post-decode "
+                    "validation (streaming): %s",
+                    err,
+                )
+                _err_envelope = {
+                    "error": {
+                        "message": (
+                            "strict response_format violated: model output "
+                            f"did not validate against the supplied schema ({err}). "
+                            "This indicates the constrained-decoding path silently "
+                            "degraded; investigate the server logs and the "
+                            "rapid_mlx_response_format_strict_violations_total metric."
+                        ),
+                        "type": "api_error",
+                        "code": "strict_schema_violation",
+                        "param": "response_format.json_schema",
+                    }
+                }
+                yield f"data: {json.dumps(_err_envelope)}\n\n"
+                yield "data: [DONE]\n\n"
+                return
+
         # Success path: synthesize SSE stream from the buffered output.
         # First chunk with role.
         yield f'{_sse_prefix}"role":"assistant"{_sse_suffix}'
 
-        content = output.text or ""
         if content:
             yield f'{_sse_prefix}"content":{json.dumps(content)}{_sse_suffix}'
 
@@ -2504,31 +4093,20 @@ async def stream_chat_completion_guided(
         # engine emits (DeepSeek pr_validate round 3 finding).
         finish_reason = getattr(output, "finish_reason", None)
 
-        # Final chunk with finish_reason. Usage placement:
+        # Final chunk with finish_reason. Usage placement
+        # (OpenAI streaming spec, D-SSE-USAGE):
         #  - When ``stream_options.include_usage`` is True, usage MUST
-        #    appear ONLY in the dedicated usage chunk below (per the
-        #    OpenAI spec; emitting it in both places would have clients
-        #    that aggregate usage double-count). DeepSeek review caught
-        #    the duplication on first pass.
-        #  - When False, attach usage to the finish chunk so a client
-        #    that doesn't set ``include_usage`` still receives token
-        #    counts in the final delta (matches the legacy behavior of
-        #    ``stream_chat_completion`` and the non-streaming response
-        #    shape).
-        finish_usage = (
-            None
-            if include_usage
-            else Usage(
-                prompt_tokens=prompt_tokens,
-                completion_tokens=completion_tokens,
-                total_tokens=prompt_tokens + completion_tokens,
-                prompt_tokens_details=(
-                    PromptTokensDetails(cached_tokens=cached_tokens)
-                    if cached_tokens
-                    else None
-                ),
-            )
-        )
+        #    appear ONLY in the dedicated usage chunk below (this finish
+        #    chunk carries ``null`` so it serializes consistently per
+        #    spec; emitting it in both places had clients that
+        #    aggregate usage double-count).
+        #  - When False / unset, the field is omitted from EVERY chunk.
+        #    The legacy behavior of attaching usage to the finish chunk
+        #    when ``include_usage`` was unset was the D-SSE-USAGE bug:
+        #    LangChain / AI-SDK / vercel-ai-stream parsers double-count
+        #    token totals when usage appears on chunks the spec does
+        #    not allow. Clients that want usage MUST opt in.
+        finish_usage = None
         # ``created`` must be passed explicitly: the SSE prefix-style
         # chunks above already share ``_sse_created`` (computed once at
         # the top of the helper). ``ChatCompletionChunk.created`` has

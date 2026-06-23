@@ -46,6 +46,44 @@ GEMMA4_QUOTED_VAL_PATTERN = re.compile(r'<\|"\|>(.*?)<\|"\|>', re.DOTALL)
 # Match a bare key:value pair (key, then anything up to , or end-of-string)
 GEMMA4_KV_BARE_PATTERN = re.compile(r"(\w+)\s*:\s*([^,]+?)(?=\s*,|\s*$)")
 
+# r5-E F-DGF-V080-B-8: prose-fallback recovery patterns. Gemma 4 at
+# low temperature (~0.1) intermittently emits prose describing the
+# tool intent ("I should call the `add` tool with a=13 and b=29.")
+# instead of emitting the structured ``<|tool_call>call:NAME{...}<tool_call|>``
+# wire form. Trace verdict (see commit body): NEITHER parser pattern
+# miss (the regex above correctly catches every structured emission)
+# NOR template tool injection miss (the chat template renders
+# ``<|tool>declaration:NAME{...}<tool|>`` verbatim and the model has
+# the schema). The model just chose to think-aloud through the
+# ``<|channel>thought`` channel without ever transitioning to the
+# tool_call channel — pure LLM decoding edge case.
+#
+# Defence-in-depth: when the structured form misses AND the request
+# carried a ``tools`` array, look for the model's tool-intent prose
+# and recover the call. The matcher is gated on three conjunctive
+# checks (every false alarm we measured was caught by at least one):
+#
+#   1. The prose mentions a tool name FROM THE REQUEST (verbatim,
+#      with optional backticks/quotes). Natural prose almost never
+#      names an arbitrary user-supplied identifier exactly.
+#   2. The prose contains ``key=value`` (or ``key: value``)
+#      assignments for EVERY required parameter on that tool. This
+#      is the strong signal — the model lays out the args even
+#      when it forgets to wrap them in the channel form.
+#   3. The whole prose passage stays inside a single sentence /
+#      80-char window of the tool-name mention so a long natural
+#      paragraph that happens to contain ``add`` and an unrelated
+#      ``a=`` assignment elsewhere is not collaterally captured.
+#
+# A miss leaves the prose in ``content`` unchanged — there's no
+# silent degradation if the recovery doesn't fire.
+GEMMA4_PROSE_KV_PATTERN = re.compile(
+    r"(\b\w+)\s*[=:]\s*"
+    # value: quoted string, numeric, or bare token up to comma /
+    # whitespace boundary. Backticked / quoted strings are unwrapped.
+    r"(?:`([^`]+)`|\"([^\"]*)\"|'([^']*)'|(-?\d+(?:\.\d+)?)|([A-Za-z_][\w-]*))"
+)
+
 
 def _parse_gemma4_args(args_str: str) -> dict[str, Any]:
     """Parse Gemma 4's argument format into a dict.
@@ -92,6 +130,230 @@ def _generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
+def _extract_request_tools(request: Any) -> list[dict]:
+    """Pull the ``tools`` list off a request in either dict or attr form.
+
+    The parser is called from two paths: the non-streaming finalize
+    (request is a ``ChatCompletionRequest`` model_dump dict, see
+    ``vllm_mlx/service/helpers.py``) and a few unit-test paths that pass
+    raw dicts. Returns ``[]`` when no usable tools list is found.
+    """
+    if request is None:
+        return []
+    tools = None
+    if isinstance(request, dict):
+        tools = request.get("tools")
+    else:
+        tools = getattr(request, "tools", None)
+    if not isinstance(tools, list):
+        return []
+    return [t for t in tools if isinstance(t, dict)]
+
+
+def _coerce_prose_value(quoted: tuple) -> Any:
+    """Convert a ``GEMMA4_PROSE_KV_PATTERN`` value capture tuple into
+    a JSON-friendly Python value.
+
+    The tuple positions are ``(backtick, dquote, squote, number, bare)``
+    — at most one is non-empty per match. Numerics are parsed as JSON
+    literals so ``a=3`` becomes ``int(3)``, ``rate=0.5`` becomes
+    ``float(0.5)``; everything else is returned as a string so the
+    JSON emitted to the wire stays valid.
+    """
+    backtick, dquote, squote, number, bare = quoted
+    if number:
+        try:
+            return json.loads(number)
+        except (json.JSONDecodeError, ValueError):
+            return number
+    # Each alternation arm is either ``None`` (didn't match) or a
+    # captured string (matched). Walk the priority order and return
+    # the FIRST non-None piece.
+    for piece in (backtick, dquote, squote, bare):
+        if piece is not None:
+            return piece
+    return ""
+
+
+def _try_prose_recover_tool_call(text: str, tools: list[dict]) -> dict | None:
+    r"""Recover a structured tool call from prose like
+    ``"I should call the \`add\` tool with a=13 and b=29."`` (r5-E
+    F-DGF-V080-B-8). Returns ``{"id","name","arguments"}`` on hit, or
+    ``None`` on miss / no clear winner.
+
+    Conservative gating (see the rationale block above
+    ``GEMMA4_PROSE_KV_PATTERN``):
+
+      * The text must mention a tool by its exact name (within a
+        wrapper of optional backticks / single / double quotes).
+      * The text must contain a ``key=value`` (or ``key: value``)
+        assignment for every required parameter on that tool — a
+        partial match is treated as ``None`` (model probably hadn't
+        finished the call, or the parameters are unrelated).
+      * On multiple candidate tools, take the one whose name appears
+        first AND whose required-params are all matched in the
+        window after the name. Ambiguity → return None.
+
+    Returns the structured form the caller (``extract_tool_calls``)
+    expects: ``{"id": <str>, "name": <str>, "arguments": <json str>}``.
+    """
+    if not tools or not text:
+        return None
+    # Carry per-mention: (name_start, fn, name, required[], allowed_keys_or_None)
+    # We index by EVERY name occurrence (not just the first) so a
+    # prose like "using the `add` tool. I should call the `add` tool
+    # with a=13 and b=29." can recover from the SECOND mention even
+    # when the first mention's bounded window has no key=value pairs.
+    # ``allowed_keys_or_None`` is the set of declared parameter keys
+    # from ``parameters.properties`` (None means "schema doesn't
+    # declare properties — accept anything", which preserves
+    # behaviour for tools defined with a free-form schema).
+    candidates: list[tuple[int, dict, str, list[str], set[str] | None]] = []
+    for tool in tools:
+        fn = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(fn, dict):
+            continue
+        name = fn.get("name")
+        if not isinstance(name, str) or not name:
+            continue
+        # Match the name as a standalone token (after optional
+        # backticks / quotes). Don't use a plain substring search:
+        # that would match a parameter called ``add`` inside an
+        # unrelated tool's signature.
+        # Allow surrounding ``\`add\```, ``"add"``, ``'add'``, or
+        # the bare word at a word boundary.
+        # Case-sensitive: OpenAI tool spec says function names are
+        # case-sensitive identifiers, so a model writing ``ADD`` when
+        # the registered tool is ``add`` is NOT a confident call.
+        # (codex pr_validate NIT-5)
+        # Leading negative lookbehind ``(?<![\w-])``: prevent a tool
+        # named ``add`` from matching suffixes like ``foo_add`` or
+        # ``my-add`` if their identifier text happens to sit near
+        # unrelated ``a=`` / ``b=`` prose. (codex round-2 NIT.)
+        name_re = re.compile(
+            r"(?<![\w-])(?:`|\"|')?" + re.escape(name) + r"(?:`|\"|')?\b",
+        )
+        matches = list(name_re.finditer(text))
+        if not matches:
+            continue
+        params = fn.get("parameters") if isinstance(fn, dict) else None
+        required: list[str] = []
+        allowed_keys: set[str] | None = None
+        if isinstance(params, dict):
+            req = params.get("required")
+            if isinstance(req, list):
+                required = [r for r in req if isinstance(r, str)]
+            props = params.get("properties")
+            if isinstance(props, dict):
+                allowed_keys = {k for k in props if isinstance(k, str)}
+        for match in matches:
+            candidates.append((match.start(), fn, name, required, allowed_keys))
+
+    if not candidates:
+        return None
+    # Try mentions in document order. If two tools tie on start
+    # position (unlikely — names would have to be identical), the
+    # first one in ``tools`` wins.
+    candidates.sort(key=lambda c: c[0])
+
+    # Window bound — codex pr_validate BLOCKING-1: scanning to
+    # end-of-text turned multi-sentence answers into false positives.
+    # 300 chars after the name mention covers any realistic gemma4
+    # tool prose (e.g. "call `add` with a=13 and b=29") while
+    # rejecting ramble that mentions ``add`` once and later
+    # mentions an unrelated ``a=…`` many sentences later.
+    PROSE_WINDOW_BYTES = 300
+
+    # Helper — scan ``window`` for declared key=value pairs, dropping
+    # the tool name itself and any key not in ``allowed_keys`` (when
+    # the schema declares properties). Returns the recovered
+    # ``{key: value}`` dict for THIS window.
+    def _scan_window(window: str, name: str, allowed_keys: set[str] | None):
+        found: dict[str, Any] = {}
+        for kv in GEMMA4_PROSE_KV_PATTERN.finditer(window):
+            key = kv.group(1)
+            value = _coerce_prose_value(kv.groups()[1:])
+            # Skip captures whose "key" is actually the tool name
+            # itself (``name=add``) — that's the name mention, not
+            # an argument assignment.
+            if key.lower() == name.lower():
+                continue
+            # Drop keys not declared in the tool schema. (codex
+            # pr_validate r1 BLOCKING-2: strict tool servers reject
+            # unknown args, so silently filter here rather than
+            # forward `result=42` from `call add with a=13,
+            # result=42`.)
+            if allowed_keys is not None and key not in allowed_keys:
+                continue
+            # First mention wins: a prose like "a=13" then later
+            # "a=14" most likely the second is a correction; pick
+            # the first, which matches the model's earliest stated
+            # intent (the prose is the model's reasoning, so the
+            # earliest commitment is the most reliable).
+            found.setdefault(key, value)
+        return found
+
+    for name_start, fn, name, required, allowed_keys in candidates:
+        # Search a BOUNDED window after the name mention, capped at
+        # PROSE_WINDOW_BYTES. Forward-only scanning preserves the
+        # "call X with args" ordering AND avoids dragging in
+        # unrelated key=value pairs far from the call site.
+        window_end = min(len(text), name_start + PROSE_WINDOW_BYTES)
+        bounded = text[name_start:window_end]
+
+        # Walk sentence boundaries within the bounded window. Start
+        # with the first sentence; if required args are still missing
+        # AND we are still under PROSE_WINDOW_BYTES, extend to the
+        # next sentence boundary, up to a small max-sentence cap.
+        # This handles the codex round-2 BLOCKING case
+        # ``call add with a=13. b=29.``: the first sentence has only
+        # ``a=13`` and we need to peek into the next sentence to find
+        # ``b=29``. Capping at 3 sentences keeps the conservative
+        # behaviour: "..mentioned add. Long unrelated paragraph.
+        # ...a=42, b=99." still won't recover because the boundary
+        # walk stops well before the later sentence.
+        MAX_SENTENCES = 3
+        sentence_ends = [m.end() for m in re.finditer(r"[.!?](?:\s|$)", bounded)]
+        # Always include the full bounded window as the final
+        # fallback so a single-sentence prose without trailing
+        # punctuation (``call add with a=13 and b=29``) still works.
+        if not sentence_ends or sentence_ends[-1] < len(bounded):
+            sentence_ends.append(len(bounded))
+        # Cap.
+        sentence_ends = sentence_ends[:MAX_SENTENCES]
+
+        found: dict[str, Any] = {}
+        for window_end_idx in sentence_ends:
+            window = bounded[:window_end_idx]
+            found = _scan_window(window, name, allowed_keys)
+            # If all required args have been collected — accept now.
+            if required and all(r in found for r in required):
+                break
+            # If no required args (schema doesn't declare any) and we
+            # found at least one key — accept (the prose did commit
+            # to a key=value, that's enough for a free-form tool).
+            if not required and found:
+                break
+
+        if required and not all(r in found for r in required):
+            # Required params missing across ALL sentence-expansion
+            # attempts — not a confident recovery on THIS mention.
+            # Continue to later mentions (e.g. the canonical "using
+            # the `add` tool. I should call the `add` tool with
+            # a=13 and b=29." has TWO `add` mentions; the second one
+            # has the args, so we skip the first and succeed on the
+            # second).
+            continue
+        if not found:
+            continue
+        return {
+            "id": _generate_tool_id(),
+            "name": name,
+            "arguments": json.dumps(found),
+        }
+    return None
+
+
 @ToolParserManager.register_module(["gemma4", "gemma_4"])
 class Gemma4ToolParser(ToolParser):
     """
@@ -131,6 +393,35 @@ class Gemma4ToolParser(ToolParser):
         matches = list(GEMMA4_TOOL_PATTERN.finditer(model_output))
 
         if not matches:
+            # r5-E F-DGF-V080-B-8: structured form missed. Try the
+            # prose-fallback recovery before giving up — gemma4 at
+            # low temperature intermittently describes the tool
+            # intent in prose ("I should call the `add` tool with
+            # a=13 and b=29.") instead of emitting the
+            # ``<|tool_call>`` channel form. The recovery is gated
+            # by ``request.tools`` so an unrelated chat that happens
+            # to contain ``a=13`` prose cannot trigger a false
+            # tool_call.
+            recovered = _try_prose_recover_tool_call(
+                model_output, _extract_request_tools(request)
+            )
+            if recovered is not None:
+                return ExtractedToolCallInformation(
+                    tools_called=True,
+                    tool_calls=[recovered],
+                    # Drop the prose content — keeping it would
+                    # double-render the model's stated intent as
+                    # both ``message.content`` and the tool call,
+                    # surfacing as ``"I should call..."`` text +
+                    # the call in the OpenAI response shape. That
+                    # shape is wrong: the OpenAI spec is content OR
+                    # tool_calls, not both verbatim. (The route
+                    # layer ``parallel_tool_calls=false`` and
+                    # ``finish_reason=tool_calls`` invariants both
+                    # assume ``content`` is empty / falsy on a
+                    # tool-call path.)
+                    content=None,
+                )
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=model_output
             )

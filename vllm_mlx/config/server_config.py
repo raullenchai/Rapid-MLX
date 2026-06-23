@@ -53,6 +53,11 @@ class ServerConfig:
 
     # --- Defaults ---
     default_max_tokens: int = 4096
+    # True when ``default_max_tokens`` came from an explicit operator
+    # setting such as ``serve --max-tokens``. In that case it is a hard
+    # output cap even for thinking models; only implicit server defaults
+    # may receive reasoning headroom.
+    default_max_tokens_is_explicit: bool = False
     thinking_token_budget: int = 2048
     # 1800s (30 min) matches vLLM and most OpenAI-compat proxy
     # defaults. The old 300s default silently truncated reasoning

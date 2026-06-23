@@ -6,6 +6,7 @@ This module provides the abstract base class for reasoning parsers that extract
 thinking/reasoning content from model outputs (e.g., <think>...</think> tags).
 """
 
+import inspect
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from typing import Any
@@ -119,7 +120,12 @@ class ReasoningParser(ABC):
         pass
 
     def finalize_streaming(  # noqa: B027
-        self, accumulated_text: str
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
     ) -> "DeltaMessage | None":
         """
         Finalize streaming and return optional correction chunk.
@@ -130,8 +136,133 @@ class ReasoningParser(ABC):
 
         Args:
             accumulated_text: Complete accumulated text from the stream.
+            matched_stop: When non-None, indicates the engine truncated
+                the output because a user-supplied stop string matched
+                (scheduler.py:3673). Combined with
+                ``prompt_thinking_active=True`` this is the
+                D-STOP-THINK signal: the chat template injected
+                ``<think>\\n`` so the opener never reaches the parser,
+                yet the model WAS in active thinking mode when the
+                user stop fired. ``matched_stop`` alone is NOT
+                sufficient — a casual answer like ``"The answer is
+                STOP"`` under ``stop=["STOP"]`` also has
+                ``matched_stop`` set but is not chain-of-thought.
+            prompt_thinking_active: True when the request's
+                ``enable_thinking`` resolved to non-False AND the
+                chat template contains a ``<think>`` injection (the
+                same boolean ``_should_start_in_thinking`` computes in
+                routes/anthropic.py). Combined with ``matched_stop``
+                this distinguishes "model is thinking via injected
+                template, user stop trimmed mid-thought" (route to
+                reasoning) from "model is answering casually, the
+                stop string is part of the literal answer" (flip to
+                content).
+            finish_reason: D-STOP-THINK codex round-6 BLOCKING (PR #799).
+                When ``"length"`` AND ``prompt_thinking_active=True``,
+                this is the ``max_tokens``-cut analogue of stop-mid-think:
+                the model was thinking via the injected template and the
+                budget ran out before ``</think>`` was emitted. Subclasses
+                MUST route the accumulated bytes to ``reasoning`` (not
+                ``content``) under this condition — otherwise the same
+                reasoning trace leaks into both channels, exactly the
+                D-STOP-THINK bug this PR closes.
 
         Returns:
             DeltaMessage correction chunk, or None if no correction needed.
         """
         pass
+
+    # ------------------------------------------------------------------
+    # r5-D — finalize-on-truncation hook (shared across parser families)
+    # ------------------------------------------------------------------
+    #
+    # When the non-streaming aggregator finishes with
+    # ``finish_reason="length"`` and the parser was still mid-think (the
+    # closing sentinel — ``</think>``, ``<channel|>``, harmony
+    # ``<|end|>`` — never arrived), the default ``extract_reasoning``
+    # routing on several parsers leaked the in-progress thought into
+    # ``content`` (glm4 autonomous, minimax <think>-opener) or duplicated
+    # it across both fields (gemma4 ``<|channel>thought``). Each parser
+    # SHOULD return True from ``is_open_in_think`` when its accumulated
+    # buffer indicates a not-yet-closed reasoning state so the route's
+    # finalize layer can re-classify the buffer as ``reasoning_content``
+    # and set ``content=None``. The default implementation returns False
+    # so non-thinking parsers (ui_tars, models that never opened a think
+    # span) keep current behaviour.
+    #
+    # See ``finalize_truncation`` below for the shared router and the
+    # ``gemma4`` / ``glm4`` / ``minimax`` / ``think_parser`` overrides
+    # for the family-specific marker checks.
+    def is_open_in_think(self, accumulated_text: str) -> bool:  # noqa: B027
+        """Return True iff ``accumulated_text`` ends inside an
+        unclosed reasoning span this parser would route as reasoning.
+
+        Default: ``False`` (no-think / safe fallback). Subclasses with
+        explicit think markers (``<think>``, ``<|channel>thought``,
+        Harmony analysis) override and inspect their own tags.
+        """
+        del accumulated_text  # noqa: F841 — default is no-think
+        return False
+
+
+def finalize_streaming_compat(
+    parser: ReasoningParser,
+    accumulated_text: str,
+    *,
+    matched_stop: str | None = None,
+    prompt_thinking_active: bool = False,
+    finish_reason: str | None = None,
+) -> DeltaMessage | None:
+    """Call ``finalize_streaming`` without breaking legacy parsers."""
+    params = inspect.signature(parser.finalize_streaming).parameters
+    supports_kwargs = any(
+        p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
+    )
+    supports_new_args = supports_kwargs or {
+        "matched_stop",
+        "prompt_thinking_active",
+        "finish_reason",
+    }.issubset(params)
+    if supports_new_args:
+        return parser.finalize_streaming(
+            accumulated_text,
+            matched_stop=matched_stop,
+            prompt_thinking_active=prompt_thinking_active,
+            finish_reason=finish_reason,
+        )
+    return parser.finalize_streaming(accumulated_text)
+
+
+def finalize_truncation(
+    open_in_think: bool, buffer: str | None
+) -> tuple[str | None, str | None]:
+    """Route an unclosed reasoning buffer at ``finish_reason="length"``.
+
+    Shared finalize-on-truncation helper invoked by the non-streaming
+    aggregator (``vllm_mlx/service/helpers.py::_finalize_content_and_reasoning``)
+    when a reasoning parser's first-pass ``extract_reasoning`` would
+    otherwise emit ``(None, buffer)`` (content leak) or
+    ``(buffer, buffer)`` (duplication). Each parser exposes the
+    family-specific open-in-think check via ``is_open_in_think``; the
+    router itself is parser-agnostic.
+
+    The contract is symmetric:
+
+    * ``open_in_think=True``  → ``(reasoning_content=buffer,
+      content=None)`` — everything in the buffer was inside the
+      think tag.
+    * ``open_in_think=False`` → ``(reasoning_content=None,
+      content=buffer)`` — think already closed (or never opened);
+      the buffer is plain content.
+
+    Empty / ``None`` buffer short-circuits to ``(None, None)`` so
+    callers do not need to guard the empty case at the call site.
+
+    Returns ``(reasoning_content, final_content)``. Either may be
+    ``None``.
+    """
+    if not buffer:
+        return None, None
+    if open_in_think:
+        return buffer, None
+    return None, buffer

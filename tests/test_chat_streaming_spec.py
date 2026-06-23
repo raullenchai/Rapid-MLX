@@ -18,8 +18,17 @@ that the 2026-05-20 ≥20B onboarding sweep caught on qwen3.5-35b-8bit
    True, the finish chunk AND the dedicated trailing chunk both carried
    the same usage payload, double-counting tokens for aggregating
    clients. Fixed by setting ``usage=None`` on the finish chunk when
-   ``include_usage`` is True; legacy (``include_usage`` unset) keeps
-   usage on the finish chunk for bare clients.
+   ``include_usage`` is True.
+
+3. **D-SSE-USAGE (v0.8.2)** — when ``stream_options.include_usage`` is
+   False / unset, the finish chunk still carried a populated ``usage``
+   block. Per the OpenAI streaming spec, ``usage`` is opt-in and MUST
+   be omitted from every chunk unless the caller passes
+   ``include_usage=true``. LangChain / AI-SDK / vercel-ai-stream
+   parsers double-count token totals when the field appears on
+   non-opt-in streams. The old "usage on finish chunk for bare clients"
+   accommodation has been removed — see
+   ``tests/test_stream_include_usage_honored.py`` for the full matrix.
 
 Bug A (streaming tool-parser coverage gap) is pinned by
 ``test_streaming_tool_fallback_catches_non_canonical_format``: the
@@ -219,11 +228,16 @@ def test_non_guided_streaming_usage_only_in_dedicated_chunk_when_include_usage_t
     )
 
 
-def test_non_guided_streaming_usage_stays_on_finish_chunk_by_default():
-    """Defensive: clients that DON'T set ``include_usage`` rely on the
-    legacy behavior of receiving usage on the finish chunk. The Bug B
-    fix only applies when ``include_usage=True``; the default path must
-    stay backwards-compatible.
+def test_non_guided_streaming_omits_usage_when_include_usage_unset():
+    """D-SSE-USAGE regression: when ``stream_options`` is omitted (or
+    ``include_usage=false``), the OpenAI streaming spec requires the
+    ``usage`` field to be absent from EVERY SSE chunk — not just the
+    dedicated trailing one. Pre-v0.8.2 the finish chunk carried a
+    populated ``usage`` block on bare requests, which LangChain /
+    AI-SDK / vercel-ai-stream parsers treated as the canonical totals
+    AND then double-counted when a downstream proxy upgraded the
+    request with ``include_usage=true`` and the dedicated chunk also
+    landed.
     """
     engine = _PlainStreamEngine(deltas=["one", " two."])
     client = _make_client(engine)
@@ -245,12 +259,22 @@ def test_non_guided_streaming_usage_stays_on_finish_chunk_by_default():
     usage_only_events = [e for e in events if not e.get("choices") and e.get("usage")]
 
     assert len(finish_events) == 1
-    assert finish_events[0].get("usage") is not None, (
-        "finish chunk MUST carry usage when include_usage is unset — "
-        "matches legacy behavior for bare clients"
+    assert finish_events[0].get("usage") is None, (
+        "finish chunk MUST NOT carry usage when include_usage is unset — "
+        "OpenAI streaming spec requires opt-in via stream_options"
     )
     assert usage_only_events == [], (
         "no dedicated usage chunk when include_usage is unset"
+    )
+    # Stronger: the ``usage`` KEY must be absent from every chunk —
+    # a regression that serializes ``"usage": null`` would slip past a
+    # truthiness check but is itself non-spec for the unset path
+    # (codex review caught the same gap in
+    # ``test_stream_include_usage_honored.py``).
+    any_usage_key = [e for e in events if "usage" in e]
+    assert any_usage_key == [], (
+        f"no SSE chunk may carry the usage KEY when include_usage is "
+        f"unset; got {len(any_usage_key)} chunk(s) with the key"
     )
 
 

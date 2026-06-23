@@ -122,17 +122,22 @@ def test_responses_request_rejects_bool_seed():
         ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=True)
 
 
-def test_responses_request_accepts_negative_seed():
-    """Codex round-6 BLOCKING regression guard. The OpenAI Responses
-    API surface accepts any integer ``seed``; rapid-mlx must not 422
-    on negative seeds (or 64-bit positive ones) — that would break
-    compatibility with clients passing the documented unbounded
-    integer range. Narrowing to mlx-core's uint32 happens later in
-    ``make_seeded_sampler``."""
+def test_responses_request_rejects_negative_seed():
+    """r5-E B-8 tightening. Codex round-6's "any integer" contract was
+    too permissive for the silent-correctness hazard the DGF-v080
+    sweep caught: a caller that passes ``seed=-1`` as a sentinel
+    actually pins ``seed=0xFFFFFFFF`` after the downstream bit-fold,
+    so two requests with "no seed" intent produce identical sequences.
+
+    The r5-E B-8 fix keeps the codex round-6 upper-end contract
+    intact (64-bit positive seeds still pass — see
+    ``test_responses_request_accepts_above_uint32_seed`` below) and
+    only rejects the negative form. Same fix on chat / completions /
+    responses for cross-surface parity."""
     from vllm_mlx.api.responses_models import ResponsesRequest
 
-    req = ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=-1)
-    assert req.seed == -1
+    with pytest.raises(ValidationError):
+        ResponsesRequest(model="qwen3-0.6b-8bit", input="hi", seed=-1)
 
 
 def test_responses_request_accepts_above_uint32_seed():
@@ -159,26 +164,30 @@ def test_seed_accepts_zero():
     assert req.seed == 0
 
 
-def test_seed_accepts_negative():
-    """Codex round-6 BLOCKING regression guard.
+def test_seed_rejects_negative():
+    """r5-E B-8 tightening.
 
-    OpenAI's spec documents ``seed`` as an unbounded integer (their
-    Python SDK ships ``seed: Optional[int]`` with no range), so the
-    request-model layer must NOT 422 on negative seeds. Backend
-    narrowing to mlx-core's uint32 PRNG key range is applied
-    deterministically downstream in ``make_seeded_sampler`` via
-    ``seed & 0xFFFFFFFF`` — Python's well-defined ``int.__and__`` on
-    negatives makes the fold round-trip cleanly.
+    Codex round-6 originally accepted negative seeds and folded them
+    via ``seed & 0xFFFFFFFF`` in ``make_seeded_sampler``. That kept
+    compatibility with clients passing arbitrary 64-bit ints — but
+    silently mapped ``seed=-1`` (a common sentinel for "no
+    determinism guarantee" in third-party SDKs) onto the perfectly
+    valid uint32 key ``0xFFFFFFFF``. Two requests with the same "no
+    seed" intent therefore produced identical sequences, the exact
+    silent-correctness hazard ``cycle-DGF-v080`` (V2 sweep) flagged.
 
-    Pre-fix (round 5): ``Field(ge=0)`` rejected this with a 422 and
-    broke compatibility for the OpenAI-documented surface.
-    """
-    req = ChatCompletionRequest(
-        model="qwen3-0.6b-8bit",
-        messages=[{"role": "user", "content": "hi"}],
-        seed=-1,
-    )
-    assert req.seed == -1
+    The r5-E fix narrows the request-layer accept envelope to ``int
+    >= 0 | None`` while keeping every other codex round-6 promise
+    (large positive seeds still pass — see
+    ``test_seed_accepts_above_uint32`` — and the downstream uint32
+    fold is unchanged for positive values). Negative seeds now 422
+    instead of silently mapping to a different state."""
+    with pytest.raises(ValidationError):
+        ChatCompletionRequest(
+            model="qwen3-0.6b-8bit",
+            messages=[{"role": "user", "content": "hi"}],
+            seed=-1,
+        )
 
 
 def test_seed_accepts_above_uint32():

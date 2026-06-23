@@ -226,11 +226,18 @@ def test_chat_streaming_with_include_usage_carries_cached_tokens_in_dedicated_ch
     assert details["cached_tokens"] == 128
 
 
-def test_chat_streaming_without_include_usage_carries_cached_tokens_on_finish_chunk():
-    """Without ``stream_options.include_usage``, bare clients still
-    expect usage on the finish chunk (legacy behavior). The new
-    ``cached_tokens`` field must survive the same route through the
-    ``Usage(...)`` inline constructor as the existing fields do.
+def test_chat_streaming_without_include_usage_omits_usage_block_entirely():
+    """D-SSE-USAGE regression: when the caller does NOT pass
+    ``stream_options.include_usage=true``, the OpenAI streaming spec
+    requires the ``usage`` field (including its ``cached_tokens``
+    subfield) to be absent from every SSE chunk. Pre-v0.8.2 the finish
+    chunk carried a populated ``usage`` block — encoded here as the
+    accommodation for "legacy bare clients" — which LangChain /
+    AI-SDK / vercel-ai-stream parsers double-counted. The new contract
+    is opt-in: clients that want cached_tokens on the streaming wire
+    must pass ``include_usage=true`` and read the dedicated trailing
+    chunk (covered by
+    ``test_chat_streaming_with_include_usage_carries_cached_tokens_in_dedicated_chunk``).
     """
     engine = _CacheReportingChatEngine(prompt_tokens=200, cached_tokens=128)
     client = _make_chat_client(engine)
@@ -250,13 +257,15 @@ def test_chat_streaming_without_include_usage_carries_cached_tokens_on_finish_ch
         e for e in events for c in e.get("choices", []) if c.get("finish_reason")
     ]
     assert len(finish_events) == 1
-    usage = finish_events[0].get("usage")
-    assert usage is not None, (
-        "finish chunk must carry usage when include_usage is unset"
+    assert finish_events[0].get("usage") is None, (
+        "finish chunk MUST NOT carry usage when include_usage is unset"
     )
-    details = usage.get("prompt_tokens_details")
-    assert details is not None
-    assert details["cached_tokens"] == 128
+    any_usage_key = [e for e in events if "usage" in e]
+    assert any_usage_key == [], (
+        f"no SSE chunk may carry the usage KEY when include_usage is "
+        f"unset; got {len(any_usage_key)} chunk(s) with the key "
+        f'(includes regressions to ``"usage": null``)'
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -264,9 +273,10 @@ def test_chat_streaming_without_include_usage_carries_cached_tokens_on_finish_ch
 # ---------------------------------------------------------------------------
 
 
-def test_completions_streaming_final_chunk_omits_null_detail_fields():
-    """Pin the wire shape of the streaming ``/v1/completions`` final
-    usage chunk: with no cache hit and no reasoning split, the JSON
+def test_completions_streaming_dedicated_usage_chunk_omits_null_detail_fields():
+    """Pin the wire shape of the streaming ``/v1/completions`` dedicated
+    usage chunk (emitted only when ``include_usage=true`` per
+    D-SSE-USAGE): with no cache hit and no reasoning split, the JSON
     payload's ``usage`` block must NOT carry literal ``null``
     ``prompt_tokens_details`` or ``completion_tokens_details`` keys.
     ``model_dump(exclude_none=True)`` drops them; bare ``model_dump()``
@@ -285,6 +295,7 @@ def test_completions_streaming_final_chunk_omits_null_detail_fields():
             "prompt": "Hello",
             "max_tokens": 32,
             "stream": True,
+            "stream_options": {"include_usage": True},
         },
     )
     assert resp.status_code == 200, resp.text
@@ -305,10 +316,11 @@ def test_completions_streaming_final_chunk_omits_null_detail_fields():
     assert usage["total_tokens"] == 202
 
 
-def test_completions_streaming_final_chunk_includes_cached_tokens_when_hit():
-    """Sibling assertion: when there IS a cache hit, the streaming
-    final usage chunk DOES include ``prompt_tokens_details`` with the
-    populated count — `exclude_none=True` only suppresses null
+def test_completions_streaming_dedicated_usage_chunk_includes_cached_tokens_when_hit():
+    """Sibling assertion: when there IS a cache hit AND the caller
+    opted in via ``stream_options.include_usage=true``, the streaming
+    dedicated usage chunk DOES include ``prompt_tokens_details`` with
+    the populated count — `exclude_none=True` only suppresses null
     fields, not populated ones.
     """
     engine = _CacheReportingCompletionEngine(prompt_tokens=200, cached_tokens=128)
@@ -321,6 +333,7 @@ def test_completions_streaming_final_chunk_includes_cached_tokens_when_hit():
             "prompt": "Hello",
             "max_tokens": 32,
             "stream": True,
+            "stream_options": {"include_usage": True},
         },
     )
     assert resp.status_code == 200, resp.text

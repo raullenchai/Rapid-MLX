@@ -49,6 +49,7 @@ class _GenerationOutput:
 
 class _Engine:
     preserve_native_tool_format = False
+    is_mllm = False
 
     def __init__(self):
         self.calls: list[SimpleNamespace] = []
@@ -129,6 +130,7 @@ def responses_client(monkeypatch):
 
     from vllm_mlx.config import reset_config
     from vllm_mlx.middleware.auth import rate_limiter
+    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
     from vllm_mlx.routes.responses import router
 
     cfg = reset_config()
@@ -142,6 +144,13 @@ def responses_client(monkeypatch):
     rate_limiter._requests.clear()
 
     app = FastAPI()
+    # H-17: mirror production wiring — the route relies on the global
+    # ``pydantic.ValidationError`` handler to map bad bodies to the
+    # sanitized 400 envelope. The earlier fixture omitted handler
+    # install and the route's now-removed per-route ``try/except`` was
+    # producing the 400 instead, which masked the leak this fixture is
+    # meant to gate against.
+    install_exception_handlers(app)
     app.include_router(router)
     yield SimpleNamespace(
         client=TestClient(app),
@@ -194,7 +203,13 @@ class TestResponsesAuth:
         response = client.post("/v1/responses", json=_payload())
 
         assert response.status_code == 401
-        assert response.json()["detail"] == "API key required"
+        # H-17: fixture now installs the global exception handlers
+        # (mirror production). Auth ``HTTPException(detail="...")`` is
+        # wrapped in the canonical OpenAI envelope by
+        # ``_http_error_response`` — assert the new shape, not the raw
+        # FastAPI default ``{"detail": "..."}`` that fixture-less tests
+        # would have seen.
+        assert response.json()["error"]["message"] == "API key required"
         assert engine.calls == []
 
     def test_rejects_invalid_bearer(self, responses_client):
@@ -289,6 +304,268 @@ class TestResponsesNonStream:
         assert first_role == "system"
         assert first_content == "You are Codex."
 
+    def test_input_image_reaches_mllm_engine_as_multimodal_content(
+        self, responses_client
+    ):
+        client = responses_client.client
+        engine = responses_client.engine
+        engine.is_mllm = True
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this"},
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,abc",
+                            },
+                        ],
+                    }
+                ],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 200, response.text
+        sent = engine.calls[-1].messages
+        content = sent[0]["content"]
+        assert isinstance(content, list)
+        assert [part["type"] for part in content] == ["text", "image_url"]
+        assert content[1]["image_url"]["url"] == "data:image/png;base64,abc"
+
+    def test_mllm_context_precheck_counts_text_without_image_payload(
+        self, responses_client, monkeypatch
+    ):
+        from vllm_mlx.routes import responses as responses_route
+
+        client = responses_client.client
+        engine = responses_client.engine
+        engine.is_mllm = True
+        captured = {}
+
+        def _capture_context_messages(_engine, messages, **_kwargs):
+            captured["messages"] = messages
+
+        monkeypatch.setattr(
+            responses_route,
+            "enforce_context_length_for_messages",
+            _capture_context_messages,
+        )
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this"},
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,abc",
+                            },
+                        ],
+                    }
+                ],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert captured["messages"] == [{"role": "user", "content": "Describe this"}]
+        sent = engine.calls[-1].messages
+        assert sent[0]["content"][1]["image_url"]["url"] == "data:image/png;base64,abc"
+
+    def test_context_precheck_unexpected_error_is_not_swallowed(
+        self, responses_client, monkeypatch
+    ):
+        from vllm_mlx.routes import responses as responses_route
+
+        client = responses_client.client
+
+        def _raise_unexpected(_engine, _openai_request):
+            raise RuntimeError("context precheck bug")
+
+        monkeypatch.setattr(
+            responses_route,
+            "_prepare_messages_for_context_check",
+            _raise_unexpected,
+        )
+
+        with pytest.raises(RuntimeError, match="context precheck bug"):
+            client.post(
+                "/v1/responses",
+                json=_payload(),
+                headers={"Authorization": "Bearer test-secret"},
+            )
+
+    def test_mllm_message_prepare_accepts_normalized_object_style_messages(self):
+        """Responses MLLM path accepts Chat-normalized object-style messages."""
+        from vllm_mlx.routes.responses import _prepare_messages_for_engine
+
+        msg = SimpleNamespace(
+            role="user",
+            content=[
+                {"type": "text", "text": "Describe this"},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,abc"},
+                },
+            ],
+        )
+        request = SimpleNamespace(messages=[msg])
+        engine = SimpleNamespace(is_mllm=True)
+
+        sent = _prepare_messages_for_engine(engine, request)
+
+        assert sent == [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe this"},
+                    {
+                        "type": "image_url",
+                        "image_url": {"url": "data:image/png;base64,abc"},
+                    },
+                ],
+            }
+        ]
+
+    def test_mllm_message_prepare_rejects_raw_responses_content_blocks(self):
+        from vllm_mlx.routes.responses import _prepare_messages_for_engine
+
+        msg = SimpleNamespace(
+            role="user",
+            content=[
+                {"type": "input_text", "text": "Describe this"},
+                {"type": "input_image", "image_url": "data:image/png;base64,abc"},
+            ],
+        )
+        request = SimpleNamespace(messages=[msg])
+        engine = SimpleNamespace(is_mllm=True)
+
+        with pytest.raises(ValueError, match="must be normalized"):
+            _prepare_messages_for_engine(engine, request)
+
+    def test_message_prepare_defaults_missing_native_tool_flag(self):
+        from vllm_mlx.routes.responses import _prepare_messages_for_engine
+
+        request = SimpleNamespace(messages=[{"role": "user", "content": "hi"}])
+
+        assert _prepare_messages_for_engine(
+            SimpleNamespace(is_mllm=False), request
+        ) == [{"role": "user", "content": "hi"}]
+
+    def test_input_image_rejected_on_text_only_engine(self, responses_client):
+        client = responses_client.client
+        engine = responses_client.engine
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [
+                            {"type": "input_text", "text": "Describe this"},
+                            {
+                                "type": "input_image",
+                                "image_url": "data:image/png;base64,abc",
+                            },
+                        ],
+                    }
+                ],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 400, response.text
+        body = response.json()
+        msg = body.get("detail") or body.get("error", {}).get("message", "")
+        assert "image inputs" in msg
+        assert engine.calls == []
+
+    @pytest.mark.parametrize(
+        ("content_part", "expected"),
+        [
+            ({"type": "input_text"}, "input_text.text is required"),
+            (
+                {"type": "input_text", "text": ""},
+                "input_text.text must be a non-empty string",
+            ),
+            ({"type": "output_text"}, "output_text.text is required"),
+            (
+                {"type": "input_audio", "input_audio": {"data": "base64data"}},
+                "input_audio content blocks are not supported",
+            ),
+        ],
+    )
+    def test_malformed_text_content_block_returns_400_not_empty_prompt(
+        self, responses_client, content_part, expected
+    ):
+        client = responses_client.client
+        engine = responses_client.engine
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": [content_part],
+                    }
+                ],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 400, response.text
+        body = response.json()
+        msg = body.get("detail") or body.get("error", {}).get("message", "")
+        assert expected in msg
+        assert engine.calls == []
+
+    @pytest.mark.parametrize(
+        ("content", "expected"),
+        [
+            (None, "Responses message content is required"),
+            ([], "Responses message content must not be empty"),
+        ],
+    )
+    def test_empty_message_content_returns_400_not_empty_prompt(
+        self, responses_client, content, expected
+    ):
+        client = responses_client.client
+        engine = responses_client.engine
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(
+                input=[
+                    {
+                        "type": "message",
+                        "role": "user",
+                        "content": content,
+                    }
+                ],
+            ),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 400, response.text
+        body = response.json()
+        msg = body.get("detail") or body.get("error", {}).get("message", "")
+        assert expected in msg
+        assert engine.calls == []
+
 
 # ---------------------------------------------------------------------------
 # Codex model-name bypass (parallel to #557 claude-* bypass)
@@ -349,7 +626,10 @@ class TestStatelessGate:
         )
 
         assert response.status_code == 400
-        assert "previous_response_id" in response.json()["detail"]
+        # H-17: fixture installs the global exception handlers (mirror
+        # production), so the route's ``HTTPException`` is wrapped in
+        # the canonical OpenAI envelope by ``_http_error_response``.
+        assert "previous_response_id" in response.json()["error"]["message"]
         # Engine must not have been called.
         assert engine.calls == []
 

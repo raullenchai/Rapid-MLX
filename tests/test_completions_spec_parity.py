@@ -58,6 +58,12 @@ def _build_completions_app(patch_cfg, monkeypatch, *, engine_factory=None):
     app.include_router(comp_route.router)
 
     engine = engine_factory() if engine_factory else MagicMock()
+    cap = getattr(engine, "supports_completion_logprobs", None)
+    if not isinstance(cap, bool):
+        engine.supports_completion_logprobs = (
+            callable(getattr(engine, "stream_generate", None))
+            and getattr(engine, "tokenizer", None) is not None
+        )
     patch_cfg(
         engine=engine,
         model_name="stub-model",
@@ -478,12 +484,183 @@ class TestLogprobsEngineCapability:
     without a ``tokenizer`` must NOT crash with 500 when a client
     sends ``logprobs:N`` — return a controlled 501 instead."""
 
+    def test_structural_fallback_supports_non_base_engine(self):
+        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+
+        class _Engine:
+            tokenizer = object()
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+        assert _engine_supports_completion_logprobs(_Engine()) is True
+
+    def test_sync_callable_capability_is_evaluated(self):
+        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+
+        class _Engine:
+            tokenizer = object()
+            called = False
+
+            def supports_completion_logprobs(self):
+                self.called = True
+                return True
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+        engine = _Engine()
+        assert _engine_supports_completion_logprobs(engine) is True
+        assert engine.called is True
+
+    def test_sync_callable_false_capability_is_evaluated(self):
+        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+
+        class _Engine:
+            tokenizer = object()
+
+            def supports_completion_logprobs(self):
+                return False
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+        assert _engine_supports_completion_logprobs(_Engine()) is False
+
+    def test_non_bool_capability_attribute_is_unsupported(self):
+        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+
+        class _Engine:
+            tokenizer = object()
+            supports_completion_logprobs = object()
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+        assert _engine_supports_completion_logprobs(_Engine()) is False
+
+    def test_async_callable_capability_is_not_invoked(self):
+        from vllm_mlx.routes.completions import _engine_supports_completion_logprobs
+
+        class _Engine:
+            tokenizer = object()
+            called = False
+
+            async def supports_completion_logprobs(self):
+                self.called = True
+                return True
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+        engine = _Engine()
+        assert _engine_supports_completion_logprobs(engine) is False
+        assert engine.called is False
+
+    def test_bound_stream_generate_supports_base_capability(self):
+        from vllm_mlx.engine.base import BaseEngine
+
+        class _Engine(BaseEngine):
+            tokenizer = object()
+
+            @property
+            def model_name(self):
+                return "stub"
+
+            @property
+            def is_mllm(self):
+                return False
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+            async def generate(self, *_a, **_kw):
+                return None
+
+            async def chat(self, *_a, **_kw):
+                return None
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+            async def stream_chat(self, *_a, **_kw):
+                if False:
+                    yield None
+
+            def get_model_info(self):
+                return {}
+
+            def build_prompt(self, *_a, **_kw):
+                return ""
+
+            def estimate_new_tokens(self, *_a, **_kw):
+                return (0, 0)
+
+        assert _Engine().supports_completion_logprobs is True
+
+    def test_missing_tokenizer_base_capability_returns_false(self):
+        from vllm_mlx.engine.base import BaseEngine
+
+        class _Engine(BaseEngine):
+            @property
+            def model_name(self):
+                return "stub"
+
+            @property
+            def is_mllm(self):
+                return False
+
+            @property
+            def tokenizer(self):
+                raise AttributeError("tokenizer not initialized")
+
+            async def start(self):
+                pass
+
+            async def stop(self):
+                pass
+
+            async def generate(self, *_a, **_kw):
+                return None
+
+            async def chat(self, *_a, **_kw):
+                return None
+
+            async def stream_generate(self, *_a, **_kw):
+                if False:
+                    yield None
+
+            async def stream_chat(self, *_a, **_kw):
+                if False:
+                    yield None
+
+            def get_model_info(self):
+                return {}
+
+            def build_prompt(self, *_a, **_kw):
+                return ""
+
+            def estimate_new_tokens(self, *_a, **_kw):
+                return (0, 0)
+
+        assert _Engine().supports_completion_logprobs is False
+
     def test_engine_without_stream_generate_returns_501(
         self, patched_config, monkeypatch
     ):
         def _factory():
             class _NoStreamEngine:
                 tokenizer = object()
+                supports_completion_logprobs = False
 
                 async def generate(self, *_a, **_kw):
                     return _StubGenerationOutput()

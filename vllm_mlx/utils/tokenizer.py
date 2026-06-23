@@ -38,6 +38,189 @@ def _needs_tokenizer_fallback(model_name: str) -> bool:
 RAPID_EXTRA_EOS_ATTR = "_rapid_extra_eos_token_ids"
 
 
+# Characters that mark a *broken* GPT-2 byte-level BPE decode path.
+# When ``tokenizer.decode([id])`` leaks any of these, the underlying
+# fast-tokenizer ``decoder`` is mis-configured (typically a Llama
+# SentencePiece decoder paired with a Qwen3 / GPT-2 byte-level BPE
+# vocab — see ``repair_byte_level_decoder`` docstring for the
+# full diagnosis). The repair probe samples a known byte-level pretty
+# token and asserts the decode is clean before declaring the tokenizer
+# healthy.
+_BYTE_LEVEL_MOJIBAKE_MARKERS: tuple[str, ...] = (
+    "Ġ",  # 'Ġ' — GPT-2 byte-level encoding of space
+    "Ċ",  # 'Ċ' — GPT-2 byte-level encoding of newline
+    "ĉ",  # 'ĉ' — GPT-2 byte-level encoding of tab
+)
+
+
+def repair_byte_level_decoder(tokenizer) -> bool:
+    """Repair a mis-configured byte-level BPE decoder in place.
+
+    Bug D-DETOK-BPE (rapid-mlx 0.7/0.8 series): every DeepSeek-R1
+    distill on Qwen3 / Llama bases (``mlx-community/DeepSeek-R1-0528-
+    Qwen3-8B-4bit``, ``DeepSeek-R1-Distill-Qwen-32B-4bit``, etc.) ships
+    a ``tokenizer_config.json`` declaring ``tokenizer_class:
+    LlamaTokenizerFast``. The Rust fast tokenizer is loaded with the
+    correct GPT-2 ``ByteLevel`` *encoder* (so encode is fine), but
+    transformers' ``LlamaTokenizerFast`` then *overrides* the decoder
+    chain with the SentencePiece convention::
+
+        Sequence([Replace("▁", " "), ByteFallback(), Fuse(),
+                  Strip(" ", start=1, stop=0)])
+
+    even though the vocab uses GPT-2 byte-level pretty tokens (``Ġ``,
+    ``Ċ``, ``âĢľ``, ``Â°``…). Result: ``tokenizer.decode([6771])``
+    returns ``"ĠLet"`` instead of ``" Let"``, so every byte-level pretty
+    token leaks **verbatim** into ``reasoning_content``, ``content``,
+    streaming ``delta.*`` fields, and ``/v1/completions[0].text``. This
+    happens at the tokenizer layer, *not* per-parser, which is why all
+    user-facing surfaces (chat stream, chat non-stream, raw completions)
+    are affected on every affected alias.
+
+    The repair: detect the mismatch by probing a token whose pretty form
+    starts with ``Ġ`` or ``Ċ`` (we use the first vocab id whose
+    ``convert_ids_to_tokens`` output begins with such a marker), and if
+    ``decode([id])`` still contains the marker, swap the live
+    ``backend_tokenizer.decoder`` for a plain GPT-2 ``ByteLevel`` decoder.
+    The vocab itself is correct — only the decoder side needs swapping.
+
+    Idempotent: a second call on a healthy tokenizer is a no-op.
+
+    Returns ``True`` if a repair was applied, ``False`` otherwise.
+
+    Note: also unwraps ``mlx_lm.tokenizer_utils.TokenizerWrapper`` —
+    ``decode`` is forwarded to ``_tokenizer`` via ``__getattr__`` so
+    patching the inner backend is sufficient; both the wrapper's own
+    ``decode`` callers and the raw HF ``decode`` callers see the fix.
+    """
+    if tokenizer is None:
+        return False
+
+    # Three tokenizer shapes flow through Rapid-MLX:
+    # 1. ``mlx_lm.tokenizer_utils.TokenizerWrapper`` — wraps an HF
+    #    tokenizer; ``decode`` is forwarded via ``__getattr__``.
+    # 2. ``transformers.PreTrainedTokenizerFast`` (and subclasses,
+    #    including ``LlamaTokenizerFast``) — the canonical HF fast
+    #    shape; the Rust backend lives on ``backend_tokenizer``.
+    # 3. Slow / pure-Python HF tokenizers — no Rust backend, byte-level
+    #    handling is built in to the slow decoder, so no repair needed.
+    #
+    # The mlx-lm wrapper *also* has a ``_tokenizer`` attribute, but on
+    # an HF fast tokenizer ``_tokenizer`` is the raw Rust ``Tokenizer``
+    # object (no ``backend_tokenizer``). We probe both candidates and
+    # pick the one that exposes ``backend_tokenizer``.
+    candidates = [tokenizer]
+    if hasattr(tokenizer, "_tokenizer"):
+        candidates.append(tokenizer._tokenizer)
+    inner = next(
+        (c for c in candidates if hasattr(c, "backend_tokenizer")),
+        None,
+    )
+    if inner is None:
+        # Slow / pure-Python tokenizer — no Rust decoder to swap. The
+        # slow decoder paths handle byte-level natively, so this branch
+        # is healthy by construction.
+        return False
+    backend = inner.backend_tokenizer
+
+    # Find a probe id whose pretty token starts with a byte-level marker.
+    # We scan the *entire* vocab (codex r2 NIT) — a 4 KB id prefix cap
+    # silently skips valid byte-level vocabs whose byte tokens all live
+    # past id 4096 (e.g. tokenizers that pack specials + reserved ids
+    # ahead of the BPE merges). The scan walks the dict from
+    # ``get_vocab()`` (token→id), which is O(vocab) one-shot and short-
+    # circuits on the first match — no per-id ``convert_ids_to_tokens``
+    # round-trip, so even a 200k-entry vocab probes in <5 ms.
+    probe_id: int | None = None
+    probe_pretty: str | None = None
+    try:
+        vocab = inner.get_vocab()
+    except Exception:
+        return False
+    # ``get_vocab`` returns ``{pretty: id}``. Sort by id so the probe
+    # is deterministic across HF tokenizer versions (some return dicts
+    # in insertion order, others in hash order).
+    for pretty, tid in sorted(vocab.items(), key=lambda kv: kv[1]):
+        if not isinstance(pretty, str):
+            continue
+        if any(pretty.startswith(m) for m in _BYTE_LEVEL_MOJIBAKE_MARKERS):
+            probe_id = tid
+            probe_pretty = pretty
+            break
+
+    if probe_id is None:
+        # Not a byte-level vocab — nothing to repair.
+        return False
+
+    try:
+        decoded = inner.decode([probe_id], skip_special_tokens=False)
+    except Exception:
+        return False
+
+    if not any(m in decoded for m in _BYTE_LEVEL_MOJIBAKE_MARKERS):
+        # Decoder is already correct.
+        return False
+
+    # Decoder is broken: swap in a plain ByteLevel decoder. Save the
+    # original so we can restore it on verification failure (codex r1
+    # BLOCKING: a "revert" comment that doesn't actually revert leaves
+    # an unverified mutation in place).
+    original_decoder = backend.decoder
+    try:
+        from tokenizers import decoders as _decoders
+
+        backend.decoder = _decoders.ByteLevel()
+    except Exception as exc:  # noqa: BLE001 — defensive only
+        logger.warning(
+            "repair_byte_level_decoder: failed to swap decoder on %s: %s",
+            type(inner).__name__,
+            exc,
+        )
+        return False
+
+    # Verify the swap actually fixed the decode. If the model genuinely
+    # uses a non-ByteLevel pretty token (unlikely on real models), put
+    # the original decoder back so we don't silently corrupt output.
+    try:
+        verify = inner.decode([probe_id], skip_special_tokens=False)
+    except Exception:
+        verify = decoded
+    if any(m in verify for m in _BYTE_LEVEL_MOJIBAKE_MARKERS):
+        # Restore the original decoder — if ByteLevel can't clear the
+        # mojibake either, the vocab is in a shape we don't understand
+        # and changing the decoder is a net behaviour change. Honour
+        # the "non-destructive on unknown vocab" contract by undoing
+        # the swap before returning False.
+        try:
+            backend.decoder = original_decoder
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "repair_byte_level_decoder: could not restore original "
+                "decoder on %s after failed verification: %s",
+                type(inner).__name__,
+                exc,
+            )
+        logger.warning(
+            "repair_byte_level_decoder: swap did not clear mojibake on %s "
+            "(probe id=%d pretty=%r decoded=%r); restored original decoder",
+            type(inner).__name__,
+            probe_id,
+            probe_pretty,
+            verify,
+        )
+        return False
+
+    logger.info(
+        "repair_byte_level_decoder: swapped %s.backend_tokenizer.decoder to "
+        "ByteLevel (probe id=%d pretty=%r -> decoded=%r)",
+        type(inner).__name__,
+        probe_id,
+        probe_pretty,
+        verify,
+    )
+    return True
+
+
 def augment_eos_token_ids_from_generation_config(
     tokenizer, model_path_or_name: str
 ) -> None:
@@ -317,6 +500,7 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
                 if mp is not None:
                     _apply_chat_template_sidecar(mp, tokenizer)
             augment_eos_token_ids_from_generation_config(tokenizer, model_name)
+            repair_byte_level_decoder(tokenizer)
             return model, tokenizer
         except Exception as e:
             # Fall back to our wrapper for older mlx-lm versions
@@ -346,6 +530,7 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
             if mp is not None:
                 _apply_chat_template_sidecar(mp, tokenizer)
         augment_eos_token_ids_from_generation_config(tokenizer, model_name)
+        repair_byte_level_decoder(tokenizer)
         return model, tokenizer
     except ValueError as e:
         # Fallback for models with non-standard tokenizers, OR newer model_types
@@ -395,6 +580,7 @@ def _load_strict_false(model_name: str, tokenizer_config: dict = None):
     _try_inject_mtp(model, model_path, config)
     _apply_chat_template_sidecar(model_path, tokenizer)
     augment_eos_token_ids_from_generation_config(tokenizer, str(model_path))
+    repair_byte_level_decoder(tokenizer)
     return model, tokenizer
 
 
@@ -468,6 +654,7 @@ def _load_non_strict(model_name: str, tokenizer_config: dict = None):
     tokenizer = load_tokenizer(model_path, tokenizer_config or {})
     _apply_chat_template_sidecar(model_path, tokenizer)
     augment_eos_token_ids_from_generation_config(tokenizer, str(model_path))
+    repair_byte_level_decoder(tokenizer)
     return model, tokenizer
 
 
@@ -539,6 +726,7 @@ def _load_with_tokenizer_fallback(model_name: str):
             tokenizer.chat_template = DEFAULT_CHATML_TEMPLATE
             logger.info("Using default ChatML chat template")
 
+        repair_byte_level_decoder(tokenizer)
         logger.info("Tokenizer loaded via fallback successfully")
         return model, tokenizer
     else:

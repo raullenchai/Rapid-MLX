@@ -119,7 +119,12 @@ def test_list_profiles_returns_rich_dataclass_view() -> None:
     assert p.hf_path == "mlx-community/Qwen3.5-4B-MLX-4bit"
     assert p.tool_call_parser == "hermes"
     assert p.reasoning_parser == "qwen3"
-    assert p.is_hybrid is True
+    # r6-A R6-C1: dense Qwen3.5-4B is no longer hybrid (the metal::malloc
+    # wedge surface). The MoE A3B siblings retain ``is_hybrid=True`` —
+    # see ``test_qwen35_dense_aliases_not_hybrid`` for the symmetrical
+    # guard.
+    assert p.is_hybrid is False
+    assert p.is_hybrid_explicit is True
     assert p.supports_spec_decode is False
 
     # qwen3-0.6b-8bit — canonical smoke-test model, registered as a
@@ -160,7 +165,11 @@ def test_resolve_profile_by_hf_path_reverse_lookup() -> None:
     p = resolve_profile("mlx-community/Qwen3.5-4B-MLX-4bit")
     assert p is not None
     assert p.tool_call_parser == "hermes"
-    assert p.is_hybrid is True
+    # r6-A R6-C1: dense Qwen3.5-4B is no longer hybrid (see
+    # ``test_list_profiles_returns_rich_dataclass_view`` for the
+    # rationale block).
+    assert p.is_hybrid is False
+    assert p.is_hybrid_explicit is True
 
 
 def test_resolve_profile_returns_none_for_unknown() -> None:
@@ -179,7 +188,11 @@ def test_detect_model_config_prefers_alias_profile_over_regex() -> None:
     cfg = detect_model_config("qwen3.5-4b-4bit")
     assert cfg is not None
     assert cfg.tool_call_parser == "hermes"
-    assert cfg.is_hybrid is True
+    # r6-A R6-C1: dense Qwen3.5-4B is now non-hybrid in the alias
+    # profile AND the regex fallback. ``is_hybrid_explicit=True`` is
+    # threaded through to gate the runtime ArraysCache probe.
+    assert cfg.is_hybrid is False
+    assert cfg.is_hybrid_explicit is True
     assert cfg.supports_spec_decode is False
 
 
@@ -308,18 +321,42 @@ def test_invalid_value_raises_with_alias_name(tmp_path) -> None:
 # ---- Cross-family granularity (the whole point of the refactor) ----------
 
 
-def test_qwen35_family_aliases_share_hybrid_flag() -> None:
-    """All qwen3.5-* aliases currently share the same regex profile —
-    they should also share it after migration. This is the regression
-    guard: if someone bumps just one variant's tier without bumping the
-    others, this test will catch the inconsistency that a per-alias
-    schema enables."""
+def test_qwen35_family_split_dense_vs_moe_hybrid_flag() -> None:
+    """r6-A R6-C1: post-fix, the qwen3.5-* family splits on the hybrid
+    flag — dense variants (4B/9B/27B non-A3B) are ``is_hybrid=False``
+    (the metal::malloc wedge surface), MoE A3B/A10B variants stay
+    ``is_hybrid=True``. The split is intentional and load-bearing: it
+    keeps the dense path off the hybrid scheduler while preserving the
+    MoE A3B/A10B routing the prefix-boundary snapshot was originally
+    written for. ``supports_spec_decode=False`` continues to hold across
+    the entire family because the underlying architecture (GatedDeltaNet
+    layers in both dense and MoE) still rules out spec decode regardless
+    of the routing choice.
+    """
     profiles = list_profiles()
     family = {a: p for a, p in profiles.items() if a.startswith("qwen3.5-")}
     assert len(family) == 10
-    flags = {(p.is_hybrid, p.supports_spec_decode) for p in family.values()}
-    assert flags == {(True, False)}, (
-        f"qwen3.5-* family disagrees on capability flags: {flags}"
+    # supports_spec_decode is uniformly False across the entire
+    # qwen3.5-* family — that contract is unchanged.
+    assert {p.supports_spec_decode for p in family.values()} == {False}, (
+        f"qwen3.5-* family disagrees on supports_spec_decode: "
+        f"{[(a, p.supports_spec_decode) for a, p in family.items()]}"
+    )
+    # The hybrid flag now splits on MoE markers. Pin the partition so
+    # accidentally re-flipping a dense alias to is_hybrid=True trips
+    # CI rather than waiting for another dogfood report.
+    dense = {a for a, p in family.items() if not p.is_hybrid and not p.is_moe}
+    moe_hybrid = {a for a, p in family.items() if p.is_hybrid and p.is_moe}
+    assert dense | moe_hybrid == set(family), (
+        f"qwen3.5-* family includes an alias that is neither dense-"
+        f"non-hybrid nor moe-hybrid: "
+        f"{set(family) - dense - moe_hybrid}"
+    )
+    # Every dense alias must pin is_hybrid_explicit=True so the runtime
+    # probe respects the JSON declaration.
+    missing_explicit = [a for a in dense if not family[a].is_hybrid_explicit]
+    assert not missing_explicit, (
+        f"qwen3.5-* dense aliases missing is_hybrid_explicit=True: {missing_explicit}"
     )
 
 

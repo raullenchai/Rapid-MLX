@@ -13,10 +13,13 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from .models import (
+    _TOP_K_SENTINEL_CAP,
+    StreamOptions,
     _enforce_max_generation_tokens_ceiling,
     _scrub_nonfinite_sampling_raw,
     _validate_finite_in_range,
     _validate_nonnegative_int,
+    _validate_positive_int,
 )
 
 # =============================================================================
@@ -24,12 +27,52 @@ from .models import (
 # =============================================================================
 
 
+# D-ANTHRO-VALIDATION F4 — Known Anthropic content-block ``type``
+# values. Used by ``AnthropicContentBlock._validate_block_shape`` to
+# reject unknown types at the schema layer (pre-fix, an unknown type
+# like ``{"type":"weirdblock", "data":1}`` slipped past the loose
+# ``type: str`` declaration and Pydantic accepted the request — the
+# model then received empty content and returned 200 with garbage
+# output). The Anthropic spec accepts exactly these on the request
+# surface; assistant-only ``thinking`` is included so request-side
+# echoes of prior assistant turns parse (cross-role compat is enforced
+# separately on ``AnthropicMessage``).
+_ANTHROPIC_CONTENT_BLOCK_TYPES: frozenset[str] = frozenset(
+    {"text", "image", "tool_use", "tool_result", "thinking", "document"}
+)
+
+
+# D-ANTHRO-VALIDATION F4 — per-type required field maps. Each tuple
+# names the fields that MUST carry a non-None value for a block of
+# that type to be well-formed. Pre-fix:
+#
+# * ``{type:"text"}`` (no ``text``) returned 200 with the model
+#   running on empty content (Sergei F4 evidence).
+# * ``{type:"tool_use"}`` (no ``id``/``name``/``input``) likewise.
+# * ``{type:"tool_result"}`` (no ``tool_use_id``/``content``) likewise.
+#
+# Anthropic's real backend 400s every one of these with a typed
+# ``invalid_request_error``; mirror that here at the schema layer so
+# the contract is enforced uniformly across non-stream / stream / and
+# /v1/responses parallel routes.
+_ANTHROPIC_BLOCK_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
+    "text": ("text",),
+    "tool_use": ("id", "name", "input"),
+    "tool_result": ("tool_use_id", "content"),
+    "thinking": ("thinking",),
+    "image": ("source",),
+    "document": ("source",),
+}
+
+
 class AnthropicContentBlock(BaseModel):
     """A content block in an Anthropic message."""
 
-    type: str  # "text", "image", "tool_use", "tool_result"
+    type: str  # see ``_ANTHROPIC_CONTENT_BLOCK_TYPES``
     # text block
     text: str | None = None
+    # thinking block (echoed assistant block; assistant-only on inputs)
+    thinking: str | None = None
     # tool_use block
     id: str | None = None
     name: str | None = None
@@ -38,7 +81,7 @@ class AnthropicContentBlock(BaseModel):
     tool_use_id: str | None = None
     content: str | list[Any] | None = None
     is_error: bool | None = None
-    # image block
+    # image / document block
     source: dict | None = None
 
     @field_validator("text", mode="before")
@@ -62,6 +105,54 @@ class AnthropicContentBlock(BaseModel):
         raise ValueError(
             f"content[].text must be a string (got {type(value).__name__})"
         )
+
+    @model_validator(mode="after")
+    def _validate_block_shape(self) -> "AnthropicContentBlock":
+        """D-ANTHRO-VALIDATION F4 — reject unknown / underspecified
+        content blocks at the schema layer.
+
+        Pre-fix, ``AnthropicContentBlock`` accepted ANY ``type`` string
+        and treated every payload field as optional, so:
+
+        * ``{"type":"text"}`` (no ``text``) → 200 OK, model ran on
+          empty content.
+        * ``{"type":"weirdblock"}`` → 200 OK, unknown block silently
+          dropped.
+        * ``{"type":"tool_use"}`` (no ``id``/``name``/``input``) → 200
+          OK, malformed tool call sent to the engine.
+
+        The spec is explicit: every Anthropic content block has a known
+        ``type`` discriminator and a per-type set of required fields.
+        Reject unknown types (so a typo or an SDK-version mismatch
+        produces a clear 400 with a list of allowed types) and reject
+        missing required fields (so a buggy client during the
+        OpenAI→Anthropic migration sees the validation gap instead of
+        a 200 with garbage output).
+
+        Implemented as a single ``model_validator(mode="after")`` so
+        every type-check fires once per block — discriminated-union
+        Pydantic would split the model into per-type classes but that
+        would also force every existing call-site (anthropic_adapter,
+        the streaming router, the tests) to deal with a Union[...]
+        narrowing surface. A single validator on the unified shape is
+        less churn and produces the same client-visible 400.
+        """
+        block_type = self.type
+        if block_type not in _ANTHROPIC_CONTENT_BLOCK_TYPES:
+            allowed = sorted(_ANTHROPIC_CONTENT_BLOCK_TYPES)
+            raise ValueError(
+                f"content[].type {block_type!r} is not a recognized "
+                f"Anthropic content block type. Allowed types: {allowed}."
+            )
+        required = _ANTHROPIC_BLOCK_REQUIRED_FIELDS.get(block_type, ())
+        missing = [field for field in required if getattr(self, field) is None]
+        if missing:
+            field_list = ", ".join(missing)
+            raise ValueError(
+                f"content[].type={block_type!r} is missing required "
+                f"field(s): {field_list}."
+            )
+        return self
 
     @model_validator(mode="after")
     def _validate_image_source_type(self) -> "AnthropicContentBlock":
@@ -90,11 +181,72 @@ class AnthropicContentBlock(BaseModel):
         return self
 
 
+# D-ANTHRO-VALIDATION F10 — role-block compatibility matrix.
+#
+# The Anthropic spec defines which content-block types can appear in
+# which role. Pre-fix every block type was accepted in every role, so:
+#
+# * A user-role message could carry a ``thinking`` block (assistant-
+#   only on the spec), and the request went through with 200 OK.
+#   Adversarial clients could "smuggle" synthesized thinking into the
+#   conversation; well-meaning buggy clients silently sent garbage.
+# * An assistant-role message could carry a ``tool_result`` block
+#   (user-only on the spec) — same 200-with-garbage outcome.
+#
+# The matrix below pins the per-role allowed types. Enforced on
+# ``AnthropicMessage._validate_role_block_compat`` (a single
+# model_validator on the message shape so both routes — /v1/messages
+# and any future Anthropic-shaped surface — inherit the contract).
+_ANTHROPIC_ROLE_ALLOWED_BLOCK_TYPES: dict[str, frozenset[str]] = {
+    "user": frozenset({"text", "image", "tool_result", "document"}),
+    "assistant": frozenset({"text", "tool_use", "thinking"}),
+    # System-role messages are conventionally a string on the request
+    # surface (the ``AnthropicRequest.system`` field), but a few client
+    # libraries pass them as a message with role="system" and
+    # content=[{type:"text",...}]. Allow text-only there.
+    "system": frozenset({"text"}),
+}
+
+
 class AnthropicMessage(BaseModel):
     """A message in an Anthropic conversation."""
 
-    role: str  # "user" | "assistant"
+    role: str  # "user" | "assistant" | (rarely) "system"
     content: str | list[AnthropicContentBlock]
+
+    @model_validator(mode="after")
+    def _validate_role_block_compat(self) -> "AnthropicMessage":
+        """D-ANTHRO-VALIDATION F10 — enforce role-block compatibility.
+
+        Reject blocks that don't belong to the message's role (e.g.
+        ``thinking`` on user, ``tool_result`` on assistant). Unknown
+        roles get a 400 too (the upstream chat-route rejects them but
+        the Anthropic surface previously accepted any role string).
+
+        Codex round-1 BLOCKING: the unknown-role gate has to fire
+        BEFORE the string-content early return, otherwise
+        ``{"role":"wizard","content":"hi"}`` slips through. The
+        per-block-type loop is what's bypassed on string content (no
+        blocks to iterate), but the role itself still needs to be one
+        of the recognized Anthropic roles.
+        """
+        allowed = _ANTHROPIC_ROLE_ALLOWED_BLOCK_TYPES.get(self.role)
+        if allowed is None:
+            raise ValueError(
+                f"role {self.role!r} is not recognized. Allowed roles: "
+                f"{sorted(_ANTHROPIC_ROLE_ALLOWED_BLOCK_TYPES.keys())}."
+            )
+        if isinstance(self.content, str):
+            return self
+        for block in self.content:
+            block_type = block.type
+            if block_type not in allowed:
+                raise ValueError(
+                    f"content[].type={block_type!r} is not allowed in a "
+                    f"{self.role!r}-role message. Allowed block types for "
+                    f"role={self.role!r}: {sorted(allowed)}."
+                )
+        return self
 
 
 class AnthropicToolDef(BaseModel):
@@ -196,9 +348,31 @@ class AnthropicRequest(BaseModel):
     """Request for Anthropic Messages API."""
 
     model: str
-    messages: list[AnthropicMessage]
+    # D-ANTHRO-VALIDATION F11 — ``messages`` must be a non-empty array.
+    # Pre-fix, ``messages=[]`` fell through to the route handler which
+    # then dereferenced ``messages[0]`` deep inside the adapter and
+    # raised an unhandled exception → 500 ``Internal server error``.
+    # Anthropic's real backend (and our own ``/v1/messages/count_tokens``
+    # sub-route) return 400 ``invalid_request_error`` for the same
+    # input. Enforce at the schema layer so streaming + non-streaming
+    # both inherit the contract.
+    messages: list[AnthropicMessage] = Field(..., min_length=1)
     system: str | list[dict] | None = None
     max_tokens: int  # Required in Anthropic API
+    # R7-H4: cross-route parity — Anthropic clients sometimes forward
+    # the OpenAI ``stream_options.include_usage`` field (the
+    # Anthropic-compat shim is a drop-in for OpenAI SDKs that use the
+    # Anthropic SDK's transport). Pre-R7-H4 the field was undeclared
+    # so Pydantic silently dropped any value; that gave
+    # ``stream_options={"include_usage":"yes"}`` an HTTP-200 free
+    # pass while the chat / completions surfaces correctly 422'd.
+    # Declaring with the shared ``StreamOptions`` model routes the
+    # strict-bool gate through one validator. The Anthropic route
+    # does not emit a trailing-usage SSE chunk on its own
+    # ``message_delta`` shape (usage is in-band); the field is
+    # accepted-but-ignored, parity with ``metadata``. The strict-
+    # bool gate is the load-bearing piece for the r7 sweep.
+    stream_options: StreamOptions | None = None
     # H-10: Anthropic spec narrows ``temperature`` to ``[0, 1]`` (the
     # OpenAI ``[0, 2]`` range is a different surface). Pre-H-10 this
     # field had no Field bound AND no finite check — a NaN ``temperature``
@@ -272,10 +446,37 @@ class AnthropicRequest(BaseModel):
         )
 
     # H-10: ``top_k`` range gate — mirrors the OpenAI surfaces.
+    # r5-E B-7: upper-bound sentinel cap (see ``models._TOP_K_SENTINEL_CAP``).
     @field_validator("top_k", mode="before")
     @classmethod
     def _validate_top_k(cls, v) -> int | None:
-        return _validate_nonnegative_int(v, field_name="top_k")
+        return _validate_nonnegative_int(
+            v, max_value=_TOP_K_SENTINEL_CAP, field_name="top_k"
+        )
+
+    # R7-M3: shared ``>= 1`` gate on the (required) ``max_tokens``
+    # field. Pre-R7-M3 the Anthropic schema typed it ``int`` (no
+    # ``ge=`` bound) so wire values like ``-5`` slipped through to
+    # the engine, which produced one token and stopped — silent-
+    # correctness hazard same shape as ``seed=-1``. The Anthropic
+    # public API rejects ``max_tokens <= 0`` (400
+    # ``invalid_request_error``) so this matches the upstream
+    # contract. The downstream ``_enforce_max_generation_tokens_ceiling``
+    # model_validator already covers the upper-bound gate when
+    # ``RAPID_MLX_MAX_GENERATION_TOKENS`` is set.
+    @field_validator("max_tokens", mode="before")
+    @classmethod
+    def _validate_max_tokens(cls, v) -> int:
+        out = _validate_positive_int(v, field_name="max_tokens")
+        # Anthropic spec: ``max_tokens`` is REQUIRED. ``None`` is not
+        # a legal wire form (the field is declared as a bare ``int``).
+        # ``_validate_positive_int`` permits ``None`` for parity with
+        # the optional-field cases (chat / completions), but on this
+        # surface we must keep that out of the typed slot so Pydantic
+        # surfaces the standard "field required" error if absent.
+        if out is None:
+            raise ValueError("max_tokens is required on /v1/messages")
+        return out
 
     # M-03 (#742 follow-up): the Anthropic Messages spec only accepts
     # four ``tool_choice.type`` values — ``auto``, ``any``, ``tool``,

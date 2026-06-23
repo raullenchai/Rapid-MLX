@@ -148,6 +148,15 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # ``rapid-mlx share`` local-port override for the spawned serve
         # subprocess. UX knob; not consulted by the engine or scheduler.
         "RAPID_MLX_SHARE_PORT",
+        # Operator request-shape safety cap for nested tool schemas.
+        # Bounds validation recursion only; never chooses model/routing.
+        "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH",
+        # Operator request-shape safety cap for nested JSON bodies.
+        # Bounds validation recursion only; never chooses model/routing.
+        "RAPID_MLX_MAX_BODY_DEPTH",
+        # Operator ceiling for accepted generation token budgets.
+        # Request validation policy only; never chooses model/routing.
+        "RAPID_MLX_MAX_GENERATION_TOKENS",
         # ``rapid-mlx share`` one-click chat-link override. Picks which
         # frontend URL the banner advertises (defaults to
         # https://chat.rapidmlx.com). Pure UX knob; consulted only by
@@ -187,6 +196,18 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # equivalents) escalate to SIGKILL and orphan ``<cache_dir>.new/``.
         # Pure deadline knob — never selects model, parser, or tier.
         "RAPID_MLX_PREFIX_CACHE_SHUTDOWN_BUDGET",
+        # R6-H6 prefix-cache memory ceiling (bytes). Read by
+        # ``MemoryCacheConfig.compute_memory_limit`` and consumed by
+        # ``MemoryAwarePrefixCache._max_memory``. The 0.8.7 dogfood found
+        # the default 20%-of-RAM heuristic let the cache balloon to 31 GB
+        # before any eviction fired; this env var lets ops bound the cache
+        # to a known ceiling so both
+        # ``rapid_mlx_prefix_cache_evictions_total`` (LRU-on-cap inside
+        # the cache) and ``rapid_mlx_prefix_cache_pressure_evictions_total``
+        # (the scheduler's cache-self-pressure trigger) tick on real
+        # eviction activity. Pure capacity knob — never selects a model,
+        # parser, or routing tier.
+        "RAPID_MLX_PREFIX_CACHE_MAX_BYTES",
         # Sandbox root for the KV cache export/import HTTP API (issue #476).
         # Default ``~/.cache/rapid-mlx/cache_exports/``. All caller-supplied
         # paths to ``/v1/cache/{export,import,info}`` must resolve inside
@@ -235,6 +256,32 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_CORS_ALLOW_HEADERS",
         "RAPID_MLX_CORS_MAX_AGE",
         "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
+        # R-01 (was H-01) cutoff sentinel opt-IN. Pure UX knob — default
+        # OFF after the R-01 dogfood reversal: every transport already
+        # carries an unambiguous structured truncation signal
+        # (``finish_reason="length"`` / ``status="incomplete"`` /
+        # ``stop_reason="max_tokens"``), so synthesizing a literal text
+        # block the model never produced is treated as harmful
+        # injection. Callers who DO want the legacy literal-text cue
+        # can re-enable it on a single envelope field via
+        # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1`` (or
+        # ``true`` / ``on`` / ``yes`` / ``enabled``). Never selects a
+        # model, parser, or routing tier; consumed only by
+        # ``vllm_mlx.service.helpers._cutoff_notice_enabled`` to decide
+        # whether the sentinel notice is surfaced. See PR
+        # fix/r01-truncated-injection-cross-route.
+        "RAPID_MLX_REASONING_CUTOFF_NOTICE",
+        # F-K-CAPABILITIES-OMIT-AUDIO opt-in deep audio probe (boolean
+        # flag). When set to a truthy value, the lifespan hook runs a
+        # tiny dry-run inference on each audio lane (STT + TTS) so
+        # ``/v1/models`` can surface ``audio_lanes`` status reflecting
+        # the real backend health (a degraded Whisper backend that
+        # 500s at first request would otherwise look healthy on the
+        # listing). Pure observability/health knob — never selects a
+        # model, parser, or routing tier. Consumed only by
+        # ``vllm_mlx/server.py``'s lifespan to decide whether to fire
+        # the deep probe at boot.
+        "RAPID_MLX_AUDIO_DEEP_PROBE",
     }
 )
 

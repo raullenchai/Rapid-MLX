@@ -2,6 +2,7 @@
 
 import os
 import sys
+from collections.abc import Mapping
 
 import httpx as _httpx
 from langchain_core.messages import HumanMessage, SystemMessage
@@ -31,6 +32,27 @@ llm = ChatOpenAI(
 # load path with an empty mapping and the gate reporting "No test results
 # found (missing 'results' dict or all tests skipped)".
 results: dict[str, str] = {}
+
+
+def _is_guided_extra_required_error(exc: BaseException) -> bool:
+    """Return true for rapid-mlx's structured-output capability error."""
+    response = getattr(exc, "response", None)
+    if response is None:
+        return False
+    try:
+        payload = response.json()
+    except Exception:
+        return False
+    if not isinstance(payload, Mapping):
+        return False
+    error = payload.get("error")
+    if not isinstance(error, Mapping):
+        return False
+    return error.get("code") == "guided_extra_required"
+
+
+def _is_ok_result(value: str) -> bool:
+    return value == "PASS" or value == "SKIP: rapid-mlx[guided] not installed"
 
 
 def _run_tests() -> None:
@@ -156,13 +178,22 @@ def _run_tests() -> None:
         print(f"PASS: {r}")
         results["6_structured"] = "PASS"
     except Exception as e:
-        print(f"FAIL: {e}")
-        results["6_structured"] = f"FAIL: {str(e)[:120]}"
+        if _is_guided_extra_required_error(e):
+            message = "SKIP: rapid-mlx[guided] not installed"
+            print(message)
+            results["6_structured"] = message
+        else:
+            print(f"FAIL: {e}")
+            results["6_structured"] = f"FAIL: {str(e)[:120]}"
 
     # === Summary ===
     print("\n" + "=" * 50)
     passed = sum(1 for v in results.values() if v == "PASS")
-    print(f"LangChain: {passed}/{len(results)} passed")
+    skipped = sum(1 for v in results.values() if v.startswith("SKIP:"))
+    if skipped:
+        print(f"LangChain: {passed}/{len(results)} passed, {skipped} skipped")
+    else:
+        print(f"LangChain: {passed}/{len(results)} passed")
     for k, v in results.items():
         print(f"  {k}: {v[:120]}")
 
@@ -178,5 +209,4 @@ _UNDER_PYTEST = "_pytest" in sys.modules or "PYTEST_CURRENT_TEST" in os.environ
 if not _UNDER_PYTEST:
     _run_tests()
     if __name__ == "__main__":
-        _passed = sum(1 for v in results.values() if v == "PASS")
-        exit(0 if _passed == len(results) else 1)
+        exit(0 if all(_is_ok_result(v) for v in results.values()) else 1)

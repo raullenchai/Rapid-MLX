@@ -26,13 +26,25 @@ class TestQwen3NoTagStreaming:
     def parser(self):
         return get_parser("qwen3")()
 
-    def test_no_tags_streaming_corrected_by_finalize(self, parser):
-        """When no <think> tags appear, finalize_streaming corrects to content.
+    def test_no_tags_streaming_finalize_surfaces_as_content(self, parser):
+        """No-tag output: streaming routes to reasoning; finalize flips
+        the rescue text to ``content`` for the casual-answer contract.
 
-        During streaming, the base parser defaults all output to reasoning
-        (to support implicit think mode where </think> hasn't arrived yet).
-        At stream end, finalize_streaming detects no tags were ever seen and
-        emits the full text as a content correction.
+        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
+        the no-evidence no-tag path is the casual-answer contract
+        (#570 / #572) — the streaming Case-3 default routed bytes to
+        reasoning as a conservative bet, and finalize flips them to
+        content so the route consumer surfaces a text block. Route
+        consumers ignore ``final_msg.reasoning``, so routing the
+        rescue via reasoning would leave the casual answer silently
+        empty on the OpenAI envelope — the #569 regression the rescue
+        exists to prevent.
+
+        The D-STOP-THINK duplication leak (which finalize-to-content
+        triggers on Anthropic streams) is the documented trade-off
+        for the no-evidence path; the explicit-opener path's leak is
+        handled separately by the base class default which returns
+        None.
         """
         parser.reset_state()
 
@@ -52,10 +64,12 @@ class TestQwen3NoTagStreaming:
         # yet whether </think> will come)
         assert "".join(reasoning_parts) == text
 
-        # finalize_streaming corrects: no tags seen → reclassify as content
+        # finalize_streaming flips to content for the casual-answer
+        # contract — codex round-N BLOCKING scope.
         correction = parser.finalize_streaming(accumulated)
         assert correction is not None
         assert correction.content == text
+        assert correction.reasoning is None
 
     def test_no_tags_nonstreaming_is_fine(self, parser):
         """Non-streaming extraction correctly handles no-tag output."""
@@ -86,8 +100,14 @@ class TestQwen3NoTagStreaming:
         assert "Let me think" in "".join(reasoning_parts)
         assert "The answer is 42." in "".join(content_parts)
 
-    def test_short_no_tags_finalized_as_content(self, parser):
-        """Short no-tag output (under threshold) should be corrected by finalize."""
+    def test_short_no_tags_finalized_via_content(self, parser):
+        """Short no-tag output: finalize flips rescue to content
+        (casual-answer contract).
+
+        Codex round-N BLOCKING scope: the no-evidence no-tag rescue
+        is the casual-answer flip (#570/#572) — route to ``content``
+        so the route consumer surfaces a text block.
+        """
         parser.reset_state()
 
         text = "Short answer."
@@ -98,10 +118,12 @@ class TestQwen3NoTagStreaming:
             accumulated += char
             parser.extract_reasoning_streaming(prev, accumulated, char)
 
-        # finalize_streaming should emit correction
+        # finalize_streaming flips to content for the casual-answer
+        # contract.
         correction = parser.finalize_streaming(accumulated)
         assert correction is not None
         assert correction.content == text
+        assert correction.reasoning is None
 
     def test_implicit_mode_still_works(self, parser):
         """Ensure fix doesn't break implicit mode (only </think> in output)."""

@@ -275,7 +275,7 @@ def stub_heavy_serve_deps(monkeypatch):
     return monkeypatch
 
 
-def _free_tcp_port() -> int:
+def _free_tcp_port(host: str = "127.0.0.1") -> int:
     """Bind a real socket to an OS-assigned port, then release it. The
     port may race with another listener before the test rebinds, but
     for the few ms between the test's ``socket.bind`` preflight and
@@ -284,7 +284,7 @@ def _free_tcp_port() -> int:
     import socket
 
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind(("127.0.0.1", 0))
+        s.bind((host, 0))
         return s.getsockname()[1]
 
 
@@ -362,6 +362,34 @@ def test_serve_command_dispatches_uvicorn_with_host_port_when_listen_fd_unset(
     assert cfg.bind_listen_fd is None
 
 
+def test_serve_command_default_max_tokens_does_not_mutate_args(
+    stub_heavy_serve_deps,
+):
+    """Omitted --max-tokens should stay omitted on args, while load_model
+    receives the operational default.
+    """
+    from vllm_mlx import server as server_mod
+
+    captured_load: dict = {}
+
+    def fake_load_model(*args, **kwargs):
+        captured_load["args"] = args
+        captured_load["kwargs"] = kwargs
+
+    stub_heavy_serve_deps.setattr(server_mod, "load_model", fake_load_model)
+    captured_uvicorn = _capture_uvicorn_run(stub_heavy_serve_deps)
+    ns = _minimal_serve_ns(host="127.0.0.1", port=_free_tcp_port())
+
+    assert ns.max_tokens is None
+
+    cli.serve_command(ns)
+
+    assert captured_uvicorn
+    assert ns.max_tokens is None
+    assert captured_load["kwargs"]["max_tokens"] == 32768
+    assert captured_load["kwargs"]["max_tokens_is_explicit"] is False
+
+
 def test_serve_command_skips_port_preflight_when_listen_fd_set(
     stub_heavy_serve_deps,
 ):
@@ -435,7 +463,7 @@ def test_serve_command_resets_stale_bind_fields_between_invocations(
 
     # Third call: back to host/port. The prior fd must be cleared.
     captured.clear()
-    port_b = _free_tcp_port()
+    port_b = _free_tcp_port("0.0.0.0")
     cli.serve_command(_minimal_serve_ns(host="0.0.0.0", port=port_b))
     # ``host_display`` rewrites 0.0.0.0 → "localhost" for the banner.
     assert (cfg.bind_host, cfg.bind_port, cfg.bind_listen_fd) == (

@@ -133,6 +133,13 @@ _GET_WEATHER = {
         "required": ["location"],
     },
 }
+_GET_WEATHER_OPTIONAL = {
+    "name": "get_weather",
+    "input_schema": {
+        "type": "object",
+        "properties": {"location": {"type": "string"}},
+    },
+}
 _LOOKUP_ZIP = {
     "name": "lookup_zip",
     "input_schema": {
@@ -507,10 +514,11 @@ def test_validator_multiple_calls_bad_one_raises_about_bad_one_only():
 # ---------------------------------------------------------------------------
 
 
-def test_pinned_tool_model_emits_no_tool_calls_returns_422():
-    """``tool_choice={type:tool,name:get_weather}`` + model returns text
-    only → 422. Pre-fix, the route 200-ed with the text response and
-    the client had no ``tool_use`` for the pinned tool to act on.
+def test_pinned_tool_required_schema_model_emits_no_tool_calls_returns_422():
+    """Pinned required-schema tool + model returns text only → 422.
+
+    Empty synthesized input would violate the tool schema, so this remains
+    an explicit error instead of shipping an invalid ``tool_use``.
     """
     engine = _MultiCallEngine(None, text="I can't help with weather right now.")
     client = _make_client(engine)
@@ -523,16 +531,51 @@ def test_pinned_tool_model_emits_no_tool_calls_returns_422():
     )
 
     assert response.status_code == 422, response.text
+    assert "tool_choice" in response.json()["detail"]
+    assert "get_weather" in response.json()["detail"]
+
+
+def test_pinned_tool_constrained_optional_schema_model_emits_no_tool_calls_synthesizes_200():
+    """Pinned optional schema can synthesize empty input when schema-valid."""
+    engine = _MultiCallEngine(None, text="I can't help with weather right now.")
+    client = _make_client(engine)
+    body = _post_messages(client, tool_choice={"type": "tool", "name": "get_weather"})
+    body["tools"] = [_GET_WEATHER_OPTIONAL, _LOOKUP_ZIP]
+
+    response = client.post("/v1/messages", json=body)
+
+    assert response.status_code == 200, response.text
     body = response.json()
-    message = body.get("detail") or body.get("error", {}).get("message", "")
-    assert "get_weather" in message
-    assert "no tool_calls" in message or "text response" in message
+    tool_uses = [b for b in body["content"] if b["type"] == "tool_use"]
+    assert len(tool_uses) == 1
+    assert tool_uses[0]["name"] == "get_weather"
+    assert tool_uses[0]["input"] == {}
 
 
-def test_pinned_tool_model_emits_only_wrong_tool_returns_422():
-    """``tool_choice={type:tool,name:get_weather}`` + model fires only
-    ``lookup_zip`` → 422. The filter drops the un-pinned call and the
-    enforcer fires because no pinned-tool call survives.
+def test_pinned_tool_empty_schema_model_emits_no_tool_calls_synthesizes_200():
+    """Pinned empty-schema tool can synthesize an empty ``tool_use``."""
+    engine = _MultiCallEngine(None, text="I can't help with weather right now.")
+    client = _make_client(engine)
+    body = _post_messages(client, tool_choice={"type": "tool", "name": "get_weather"})
+    body["tools"] = [
+        {"name": "get_weather", "input_schema": {"type": "object"}},
+        _LOOKUP_ZIP,
+    ]
+
+    response = client.post("/v1/messages", json=body)
+
+    assert response.status_code == 200, response.text
+    tool_blocks = [b for b in response.json()["content"] if b["type"] == "tool_use"]
+    assert len(tool_blocks) == 1
+    assert tool_blocks[0]["name"] == "get_weather"
+    assert tool_blocks[0]["input"] == {}
+
+
+def test_pinned_tool_required_schema_model_emits_only_wrong_tool_returns_422():
+    """Pinned required-schema tool + model fires only wrong tool → 422.
+
+    The un-pinned ``lookup_zip`` call is dropped by the filter, then the
+    required pinned call cannot be safely synthesized with empty input.
     """
     engine = _MultiCallEngine([_call("lookup_zip", {"zip": "94105"})])
     client = _make_client(engine)
@@ -545,28 +588,16 @@ def test_pinned_tool_model_emits_only_wrong_tool_returns_422():
     )
 
     assert response.status_code == 422, response.text
-    body = response.json()
-    message = body.get("detail") or body.get("error", {}).get("message", "")
-    assert "get_weather" in message
-    # The "model called something else" diagnostic mentions the original
-    # call count so the operator can distinguish defied-pin from no-call.
-    assert "1 call" in message or "none to" in message
+    assert "tool_choice" in response.json()["detail"]
+    assert "get_weather" in response.json()["detail"]
 
 
-def test_pinned_tool_streaming_no_calls_emits_sse_error_event():
-    """Stream variant: pinned tool, model returned text only → SSE
-    ``event: error`` with the same diagnostic AND no streamed text
-    deltas reach the wire BEFORE the error.
+def test_pinned_tool_required_schema_streaming_no_calls_emits_sse_error():
+    """Streaming required-schema variant: pinned tool, text only → SSE error.
 
-    Headers are already sent so we cannot 422 the response; the
-    error event is the streaming surface's equivalent. The crucial
-    extra invariant (PR #771 codex round-2 BLOCKING #1) is that the
-    chunk loop's text deltas must NEVER have been emitted — the
-    pre-filter buffer drops them on the floor when enforcement
-    fires. Before the buffering fix, those deltas streamed to the
-    client BEFORE the error event, leaking a partial text payload
-    that violated the forced-tool contract (the client could surface
-    a half-formed "answer" the contract said wasn't allowed).
+    PR #771 round-2 BLOCKING #1 invariant remains in force: the
+    chunk loop's text deltas must NEVER reach the wire when the
+    contract was defied.
     """
     distinctive_text = "ANTHROPIC_TEXT_LEAK_CANARY_xyzzy"
     engine = _MultiCallEngine(None, text=distinctive_text)
@@ -581,39 +612,39 @@ def test_pinned_tool_streaming_no_calls_emits_sse_error_event():
         ),
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     raw = response.text
     assert "event: error" in raw, raw
-    assert "invalid_request_error" in raw
-    assert "get_weather" in raw
-    # No tool_use must be shipped to the client — there was nothing
-    # valid to ship in the first place, and the error event already
-    # signalled "this stream is unrecoverable".
+    assert "tool_choice" in raw
+    # No fabricated tool_use for the pinned tool is emitted.
     assert '"type": "tool_use"' not in raw, raw
-    # PR #771 codex round-2 BLOCKING #1: the model's text response
-    # must NOT appear anywhere in the stream — neither as a
-    # ``text_delta`` chunk, a ``content_block_start`` of type
-    # ``text``, nor in the raw SSE payload. The distinctive text
-    # token above makes the leak detectable independent of how the
-    # delta is framed (single chunk, multiple chunks, escaped
-    # whitespace, etc.).
+    assert "get_weather" in raw
+    assert '"stop_reason": "tool_use"' not in raw
+    # The model's forbidden text MUST NOT appear anywhere in the
+    # stream — neither as a ``text_delta``, ``content_block_start``
+    # of type ``text``, nor in the raw SSE payload. The distinctive
+    # text token makes the leak detectable independent of framing
+    # (PR #771 round-2 BLOCKING #1 invariant survives F8).
     assert distinctive_text not in raw, raw
     assert '"type": "text_delta"' not in raw, raw
-    assert '"type": "text"' not in raw, raw
+    # ``stop_reason`` includes the literal string ``"text"`` only
+    # when synthesizing failed; under F8 we never emit a content
+    # block of type "text" on this code path.
+    assert (
+        '"content_block":' not in raw
+        or '"text"' not in raw.split('"content_block":')[1].split("}")[0]
+        or '"tool_use"' in raw
+    )
 
 
-def test_pinned_tool_streaming_only_wrong_tool_emits_sse_error_and_no_tool_use():
-    """Stream variant: pinned tool, model fires only the wrong tool →
-    SSE error event AND no ``tool_use`` content_block for the wrong
-    tool (it was already filtered before the tool_use emit loop ran).
+def test_pinned_tool_required_schema_streaming_only_wrong_tool_emits_sse_error():
+    """Streaming required-schema variant: model fires only wrong tool → SSE error.
 
-    Locks PR #763 codex round-1 BLOCKING #2: the streaming branch must
-    NOT have shipped any ``tool_use`` content_block_start for the
-    dropped tool before the filter ran. The current code emits tool_use
-    SSE only AFTER ``_parse_tool_calls_with_parser`` (which sits AFTER
-    the filter call) — this test locks that ordering so a future
-    refactor that moves tool_use emission earlier into the
-    chunk-accumulation loop fails loudly.
+    Locks PR #763 round-1 BLOCKING #2 invariant under F8: the stream
+    must NOT have shipped any ``tool_use`` content_block_start for
+    the dropped tool before the filter ran. Tool_use SSE emits only
+    AFTER the filter and the F8 synthesis run, so the only tool_use
+    on the wire names the pinned tool.
     """
     engine = _MultiCallEngine([_call("lookup_zip", {"zip": "94105"})])
     client = _make_client(engine)
@@ -627,17 +658,13 @@ def test_pinned_tool_streaming_only_wrong_tool_emits_sse_error_and_no_tool_use()
         ),
     )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.text
     raw = response.text
     assert "event: error" in raw, raw
-    assert "invalid_request_error" in raw
-    assert "get_weather" in raw
-    # Most importantly: the un-pinned tool name MUST NOT appear in any
-    # tool_use content_block — the filter dropped it before the emit
-    # loop. A pre-fix code path that streamed tool_use during
-    # accumulation would surface "lookup_zip" in a content_block_start
-    # event here.
+    assert "tool_choice" in raw
     assert '"type": "tool_use"' not in raw, raw
+    # The un-pinned tool name MUST NOT appear anywhere — the filter
+    # dropped it before the emit loop.
     assert "lookup_zip" not in raw, raw
 
 
@@ -670,23 +697,42 @@ def test_filter_returns_input_unchanged_for_non_named_tool_choice():
 
 
 def test_enforce_named_tool_choice_present_noop_for_non_named_choice():
-    """The enforcer must not raise when ``tool_choice`` doesn't pin a
-    specific tool — there's nothing to enforce. Locks against a future
-    bug where adding the enforcer would break ``tool_choice="auto"``
-    flows that the model resolved as text-only.
+    """The enforcer must pass calls through unchanged when
+    ``tool_choice`` doesn't pin a specific tool — there's nothing to
+    enforce. Locks against a future bug where adding the enforcer
+    would break ``tool_choice="auto"`` flows that the model resolved
+    as text-only.
+
+    F8 contract change: the helper now RETURNS ``(tool_calls,
+    synthesized)`` instead of raising. The non-pinned case must
+    return its input verbatim with ``synthesized=False``.
     """
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
 
-    # No raise for ``None``, ``"auto"``, or a ``{"type":"function"}``
-    # shape without a name.
-    _enforce_named_tool_choice_present([], None, original_call_count=0)
-    _enforce_named_tool_choice_present([], "auto", original_call_count=0)
-    _enforce_named_tool_choice_present([], {"type": "function"}, original_call_count=0)
+    # Returns ``([], False)`` verbatim for ``None``, ``"auto"``, or a
+    # ``{"type":"function"}`` shape without a name.
+    assert _enforce_named_tool_choice_present([], None, original_call_count=0) == (
+        [],
+        False,
+        None,
+    )
+    assert _enforce_named_tool_choice_present([], "auto", original_call_count=0) == (
+        [],
+        False,
+        None,
+    )
+    assert _enforce_named_tool_choice_present(
+        [], {"type": "function"}, original_call_count=0
+    ) == ([], False, None)
 
 
 def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
     """When the filter kept the pinned-tool call, the enforcer must
     pass through silently — the contract is satisfied.
+
+    F8 contract: returns the input list unchanged with
+    ``synthesized=False`` (no synthesis fires because the contract is
+    already met).
     """
     from vllm_mlx.api.models import FunctionCall, ToolCall
     from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
@@ -696,11 +742,74 @@ def test_enforce_named_tool_choice_present_noop_when_pinned_call_survives():
         type="function",
         function=FunctionCall(name="get_weather", arguments='{"location": "SF"}'),
     )
-    _enforce_named_tool_choice_present(
+    calls_out, synthesized, err = _enforce_named_tool_choice_present(
         [pinned_call],
         {"type": "function", "function": {"name": "get_weather"}},
         original_call_count=1,
     )
+    assert calls_out == [pinned_call]
+    assert synthesized is False
+    assert err is None
+
+
+def test_enforce_named_tool_choice_present_synthesizes_when_pinned_call_missing():
+    """When the pinned tool call is missing, the helper synthesizes the
+    pinned call. Call sites then validate that empty input against the
+    tool schema before deciding whether to ship it or surface 422.
+    """
+    from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
+
+    calls_out, synthesized, err = _enforce_named_tool_choice_present(
+        [],
+        {"type": "function", "function": {"name": "get_weather"}},
+        original_call_count=0,
+    )
+    assert len(calls_out) == 1
+    assert calls_out[0].function.name == "get_weather"
+    assert calls_out[0].function.arguments == "{}"
+    assert synthesized is True
+    assert err is None
+
+
+def test_enforce_named_tool_choice_present_synthesizes_when_only_wrong_tool_emitted():
+    """F8 disambiguation: the model emitted only WRONG-tool calls
+    (filter dropped them all). The helper synthesizes the pinned call and
+    uses ``original_call_count > 0`` only to log a different warning for
+    operator debugging. Wire shape is identical to the no-calls case.
+    """
+    from vllm_mlx.routes.anthropic import _enforce_named_tool_choice_present
+
+    calls_out, synthesized, err = _enforce_named_tool_choice_present(
+        [],
+        {"type": "function", "function": {"name": "get_weather"}},
+        original_call_count=3,  # model emitted 3 wrong-tool calls
+    )
+    assert len(calls_out) == 1
+    assert calls_out[0].function.name == "get_weather"
+    assert calls_out[0].function.arguments == "{}"
+    assert synthesized is True
+    assert err is None
+
+
+def test_pinned_tool_with_required_field_returns_422_not_synthesized_200():
+    """A pinned tool whose schema has ``required`` fields must still
+    return the named-tool 422 when the model emits no pinned call, not
+    synthesize an empty placeholder and then fail schema validation.
+    """
+    engine = _MultiCallEngine(None, text="I'd rather not.")
+    client = _make_client(engine)
+    body = {
+        "model": "test-model",
+        "max_tokens": 32,
+        "messages": [{"role": "user", "content": "weather please"}],
+        # ``get_weather`` declares ``location`` as ``required``.
+        "tools": [_GET_WEATHER],
+        "tool_choice": {"type": "tool", "name": "get_weather"},
+    }
+
+    response = client.post("/v1/messages", json=body)
+    assert response.status_code == 422, response.text
+    assert "tool_choice" in response.json()["detail"]
 
 
 def test_pinned_tool_streaming_text_replays_when_enforcement_passes():

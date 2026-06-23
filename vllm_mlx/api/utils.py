@@ -629,6 +629,17 @@ MLLM_PATTERNS = [
     "InternVL",  # InternVL
     "deepseek-vl",
     "DeepSeek-VL",  # DeepSeek-VL
+    # UI-TARS (ByteDance) — Qwen2-VL / Qwen2.5-VL based GUI-agent VLM.
+    # The model id ``UI-TARS-…`` does not match the generic ``-VL-`` pattern
+    # (the VL part is in the underlying architecture, not the public name),
+    # so list it explicitly. Without this entry, ``is_mllm_model`` returns
+    # False on full HF paths like ``mlx-community/UI-TARS-1.5-7B-4bit``
+    # and the engine boots the text-only path, breaking the screenshot+
+    # instruction contract every UI-TARS deployment needs.
+    "UI-TARS",
+    "ui-tars",
+    "UI_TARS",
+    "ui_tars",
 ]
 
 
@@ -947,6 +958,197 @@ def decode_inline_tool_call_arguments(messages: list[dict]) -> None:
 # Multimodal Content Extraction
 # =============================================================================
 
+TEXT_CONTENT_TYPES = {"text", "input_text", "output_text"}
+IMAGE_CONTENT_TYPES = {"image_url", "image", "input_image"}
+VIDEO_CONTENT_TYPES = {"video", "video_url"}
+AUDIO_CONTENT_TYPES = {"audio_url", "audio", "input_audio"}
+MEDIA_CONTENT_TYPES = IMAGE_CONTENT_TYPES | VIDEO_CONTENT_TYPES | AUDIO_CONTENT_TYPES
+KNOWN_CONTENT_TYPES = TEXT_CONTENT_TYPES | MEDIA_CONTENT_TYPES
+SUPPORTED_INPUT_AUDIO_FORMATS = {
+    "wav",
+    "mp3",
+    "flac",
+    "ogg",
+    "opus",
+    "pcm",
+    "m4a",
+    "webm",
+}
+
+
+def _content_part_to_dict(item) -> dict:
+    """Return a plain dict for a content part, or raise on malformed shape."""
+    if hasattr(item, "model_dump"):
+        item = item.model_dump(exclude_none=True)
+    elif hasattr(item, "dict"):
+        item = {k: v for k, v in item.dict().items() if v is not None}
+
+    if not isinstance(item, dict):
+        raise ValueError(f"content blocks must be objects (got {type(item).__name__})")
+    item_type = item.get("type")
+    if not isinstance(item_type, str) or not item_type:
+        raise ValueError("content block is missing required string field 'type'")
+    if item_type not in KNOWN_CONTENT_TYPES:
+        raise ValueError(f"Unsupported content block type: {item_type!r}")
+    return item
+
+
+def _require_string(value, field_name: str) -> str:
+    if not isinstance(value, str) or value == "":
+        raise ValueError(
+            f"{field_name} must be a non-empty string (got {type(value).__name__})"
+        )
+    return value
+
+
+def _extract_object_url(item: dict, field_name: str) -> str:
+    value = item.get(field_name)
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"{field_name} must be an object with required field 'url' "
+            f"(got {type(value).__name__})"
+        )
+    return _require_string(value.get("url"), f"{field_name}.url")
+
+
+def _validate_content_part_payload(item: dict) -> None:
+    item_type = item["type"]
+    if item_type in TEXT_CONTENT_TYPES:
+        if "text" not in item:
+            raise ValueError(f"{item_type}.text is required")
+        text = item.get("text")
+        if not isinstance(text, str):
+            if item_type in {"input_text", "output_text"}:
+                raise ValueError(
+                    f"{item_type}.text must be a string (got {type(text).__name__})"
+                )
+            raise ValueError(
+                f"content[].text must be a non-empty string (got {type(text).__name__})"
+            )
+        if text == "" and item_type in {"input_text", "output_text"}:
+            raise ValueError(f"{item_type}.text must be a non-empty string")
+    elif item_type == "image_url":
+        _extract_object_url(item, "image_url")
+    elif item_type == "input_image":
+        image_url = item.get("image_url")
+        if isinstance(image_url, dict):
+            _require_string(image_url.get("url"), "input_image.image_url.url")
+        else:
+            _require_string(image_url, "input_image.image_url")
+    elif item_type == "image":
+        _require_string(item.get("image", item.get("url")), "image")
+    elif item_type == "video":
+        _require_string(item.get("video", item.get("url")), "video")
+    elif item_type == "video_url":
+        _extract_object_url(item, "video_url")
+    elif item_type == "audio_url":
+        _extract_object_url(item, "audio_url")
+    elif item_type == "audio":
+        _require_string(item.get("audio", item.get("url")), "audio")
+    elif item_type == "input_audio":
+        value = item.get("input_audio")
+        if not isinstance(value, dict):
+            raise ValueError(
+                "input_audio must be an object with required fields 'data' "
+                "and 'format'; input_audio.format is required"
+            )
+        _require_string(value.get("data"), "input_audio.data")
+        if "format" not in value:
+            raise ValueError("input_audio.format is required")
+        # Validation is intentionally non-mutating; downstream code that
+        # consumes audio blocks should normalize casing at its own boundary.
+        audio_format = _require_string(
+            value.get("format"), "input_audio.format"
+        ).lower()
+        if audio_format not in SUPPORTED_INPUT_AUDIO_FORMATS:
+            raise ValueError(
+                "input_audio.format must be one of "
+                f"{sorted(SUPPORTED_INPUT_AUDIO_FORMATS)}"
+            )
+
+
+def validate_content_blocks_for_capabilities(
+    messages: list,
+    *,
+    model_name: str,
+    allow_image: bool,
+    allow_video: bool,
+    allow_audio: bool = False,
+) -> None:
+    """Reject content blocks the active model/path cannot preserve."""
+    for msg in messages:
+        if isinstance(msg, dict):
+            content = msg.get("content")
+        else:
+            content = getattr(msg, "content", None)
+        if not isinstance(content, list):
+            continue
+        for raw_item in content:
+            item = _content_part_to_dict(raw_item)
+            item_type = item["type"]
+            _validate_content_part_payload(item)
+            if item_type in TEXT_CONTENT_TYPES:
+                continue
+            if item_type in IMAGE_CONTENT_TYPES and allow_image:
+                continue
+            if item_type in VIDEO_CONTENT_TYPES and allow_video:
+                continue
+            if item_type == "input_audio" and allow_audio:
+                continue
+
+            if item_type in AUDIO_CONTENT_TYPES:
+                detail = (
+                    "audio inputs in this shape; only input_audio is supported"
+                    if allow_audio
+                    else "audio inputs"
+                )
+            elif item_type in IMAGE_CONTENT_TYPES:
+                detail = "image inputs"
+            elif item_type in VIDEO_CONTENT_TYPES:
+                detail = "video inputs"
+            else:
+                detail = f"{item_type!r} content blocks"
+            raise ValueError(f"Model '{model_name}' does not support {detail}.")
+
+
+def normalize_responses_content_part(item) -> dict:
+    """Convert a Responses input content item into Chat content-part shape."""
+    data = item.model_dump(exclude_none=True) if hasattr(item, "model_dump") else item
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"Responses content blocks must be objects (got {type(data).__name__})"
+        )
+    item_type = data.get("type")
+    if item_type in ("input_text", "output_text"):
+        if "text" not in data:
+            raise ValueError(f"{item_type}.text is required")
+        text = data.get("text")
+        if not isinstance(text, str):
+            raise ValueError(
+                f"{item_type}.text must be a string (got {type(text).__name__})"
+            )
+        if text == "":
+            raise ValueError(f"{item_type}.text must be a non-empty string")
+        return {"type": "text", "text": text}
+    if item_type == "input_image":
+        image_url = data.get("image_url")
+        if isinstance(image_url, dict):
+            normalized_image_url = {
+                key: value
+                for key, value in image_url.items()
+                if key in {"url", "detail"}
+            }
+            _require_string(
+                normalized_image_url.get("url"), "input_image.image_url.url"
+            )
+        else:
+            url = _require_string(image_url, "input_image.image_url")
+            normalized_image_url = {"url": url}
+        return {"type": "image_url", "image_url": normalized_image_url}
+    if item_type == "input_audio":
+        raise ValueError("Responses input_audio content blocks are not supported")
+    raise ValueError(f"Unsupported Responses content block type: {item_type!r}")
+
 
 def _content_to_text(content) -> str:
     """Extract text from content that can be str, list[ContentPart], or None."""
@@ -957,12 +1159,18 @@ def _content_to_text(content) -> str:
     if isinstance(content, list):
         parts = []
         for item in content:
-            if hasattr(item, "model_dump"):
-                item = item.model_dump(exclude_none=True)
-            elif hasattr(item, "dict"):
-                item = {k: v for k, v in item.dict().items() if v is not None}
-            if isinstance(item, dict) and item.get("type") == "text":
-                parts.append(item.get("text", ""))
+            data = (
+                item.model_dump(exclude_none=True)
+                if hasattr(item, "model_dump")
+                else item
+            )
+            if isinstance(data, dict) and data.get("type") in (
+                "text",
+                "input_text",
+                "output_text",
+            ):
+                text = data.get("text", "")
+                parts.append(text if isinstance(text, str) else "")
         return "\n".join(parts)
     return str(content)
 
@@ -1117,36 +1325,46 @@ def extract_multimodal_content(
             # Multimodal message - extract text and media
             text_parts = []
             for item in content:
-                # Handle both Pydantic models and dicts
-                if hasattr(item, "model_dump"):
-                    item = item.model_dump(exclude_none=True)
-                elif hasattr(item, "dict"):
-                    item = {k: v for k, v in item.dict().items() if v is not None}
-
+                item = _content_part_to_dict(item)
+                _validate_content_part_payload(item)
                 item_type = item.get("type", "")
 
-                if item_type == "text":
+                if item_type in TEXT_CONTENT_TYPES:
                     text_parts.append(item.get("text", ""))
 
                 elif item_type == "image_url":
-                    img_url = item.get("image_url", {})
-                    if isinstance(img_url, str):
-                        images.append(img_url)
-                    elif isinstance(img_url, dict):
-                        images.append(img_url.get("url", ""))
+                    images.append(_extract_object_url(item, "image_url"))
 
                 elif item_type == "image":
-                    images.append(item.get("image", item.get("url", "")))
+                    images.append(
+                        _require_string(item.get("image", item.get("url")), "image")
+                    )
+
+                elif item_type == "input_image":
+                    image_url = item.get("image_url")
+                    if isinstance(image_url, dict):
+                        images.append(
+                            _require_string(
+                                image_url.get("url"), "input_image.image_url.url"
+                            )
+                        )
+                    else:
+                        images.append(
+                            _require_string(image_url, "input_image.image_url")
+                        )
 
                 elif item_type == "video":
-                    videos.append(item.get("video", item.get("url", "")))
+                    videos.append(
+                        _require_string(item.get("video", item.get("url")), "video")
+                    )
 
                 elif item_type == "video_url":
-                    vid_url = item.get("video_url", {})
-                    if isinstance(vid_url, str):
-                        videos.append(vid_url)
-                    elif isinstance(vid_url, dict):
-                        videos.append(vid_url.get("url", ""))
+                    videos.append(_extract_object_url(item, "video_url"))
+
+                elif item_type in AUDIO_CONTENT_TYPES:
+                    raise ValueError(
+                        "Audio content blocks are not supported on this path."
+                    )
 
             # Combine text parts
             combined_text = "\n".join(text_parts) if text_parts else ""

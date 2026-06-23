@@ -22,6 +22,7 @@ from vllm_mlx.api.utils import (
     extract_multimodal_content,
     is_mllm_model,
     is_vlm_model,
+    validate_content_blocks_for_capabilities,
 )
 
 
@@ -560,6 +561,23 @@ class TestExtractMultimodalContent:
         assert images == ["https://example.com/img.png"]
         assert videos == []
 
+    def test_responses_text_blocks_are_extracted_as_text(self):
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "input_text", "text": "question"},
+                    {"type": "output_text", "text": "prior answer"},
+                ],
+            )
+        ]
+
+        processed, images, videos = extract_multimodal_content(messages)
+
+        assert processed == [{"role": "user", "content": "question\nprior answer"}]
+        assert images == []
+        assert videos == []
+
     def test_multimodal_with_dict_image_url(self):
         messages = [
             Message(
@@ -575,6 +593,26 @@ class TestExtractMultimodalContent:
         ]
         processed, images, videos = extract_multimodal_content(messages)
         assert images == ["data:image/png;base64,abc"]
+
+    def test_multimodal_with_input_image(self):
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "input_text", "text": "Describe this"},
+                    {
+                        "type": "input_image",
+                        "image_url": {"url": "data:image/png;base64,abc"},
+                    },
+                ],
+            )
+        ]
+
+        processed, images, videos = extract_multimodal_content(messages)
+
+        assert processed == [{"role": "user", "content": "Describe this"}]
+        assert images == ["data:image/png;base64,abc"]
+        assert videos == []
 
     def test_multimodal_with_string_image_url_rejected(self):
         """F-065: the bare-string ``image_url`` shorthand was
@@ -627,6 +665,65 @@ class TestExtractMultimodalContent:
         ]
         processed, images, videos = extract_multimodal_content(messages)
         assert videos == ["https://example.com/v.mp4"]
+
+    def test_unknown_content_block_rejected_not_empty_prompt(self):
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Use this block"},
+                    {"type": "document_url", "document_url": {"url": "doc.pdf"}},
+                ],
+            )
+        ]
+
+        with pytest.raises(ValueError, match="Unsupported content block type"):
+            extract_multimodal_content(messages)
+
+    def test_chat_image_url_string_rejected_not_responses_shorthand(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "Describe"},
+                    {"type": "image_url", "image_url": "data:image/png;base64,abc"},
+                ],
+            }
+        ]
+
+        with pytest.raises(ValueError, match="image_url must be an object"):
+            extract_multimodal_content(messages)
+
+    def test_malformed_image_block_rejected_not_empty_prompt(self):
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Describe"},
+                    {"type": "image_url", "image_url": {}},
+                ],
+            )
+        ]
+
+        with pytest.raises(ValueError, match="image_url.url"):
+            extract_multimodal_content(messages)
+
+    def test_audio_content_block_rejected_not_silently_dropped(self):
+        messages = [
+            Message(
+                role="user",
+                content=[
+                    {"type": "text", "text": "Transcribe"},
+                    {
+                        "type": "audio_url",
+                        "audio_url": {"url": "https://example.com/a.wav"},
+                    },
+                ],
+            )
+        ]
+
+        with pytest.raises(ValueError, match="Audio content blocks"):
+            extract_multimodal_content(messages)
 
     def test_multimodal_with_string_video_url_rejected(self):
         """F-065 mirror surface: bare-string ``video_url`` was
@@ -856,12 +953,142 @@ class TestContentToText:
         ]
         assert _content_to_text(parts) == "foo"
 
+    def test_list_of_unknown_dicts_ignored(self):
+        parts = [
+            {},
+            {"type": "future_block", "text": "ignored"},
+            {"type": "text", "text": "foo"},
+        ]
+        assert _content_to_text(parts) == "foo"
+
+    def test_list_of_responses_text_dicts(self):
+        parts = [
+            {"type": "input_text", "text": "foo"},
+            {"type": "output_text", "text": "bar"},
+            {"type": "input_image", "image_url": "http://img"},
+        ]
+        assert _content_to_text(parts) == "foo\nbar"
+
     def test_list_with_no_text_parts(self):
         parts = [{"type": "image_url", "image_url": "http://img"}]
         assert _content_to_text(parts) == ""
 
     def test_empty_list(self):
         assert _content_to_text([]) == ""
+
+
+class TestValidateContentBlocksForCapabilities:
+    def test_chat_text_block_rejects_missing_text(self):
+        messages = [{"role": "user", "content": [{"type": "text"}]}]
+
+        with pytest.raises(ValueError, match="text\\.text is required"):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="chat-model",
+                allow_image=False,
+                allow_video=False,
+            )
+
+    def test_chat_text_block_allows_empty_text(self):
+        messages = [{"role": "user", "content": [{"type": "text", "text": ""}]}]
+
+        validate_content_blocks_for_capabilities(
+            messages,
+            model_name="chat-model",
+            allow_image=False,
+            allow_video=False,
+        )
+
+    def test_chat_text_block_rejects_explicit_null_text(self):
+        messages = [{"role": "user", "content": [{"type": "text", "text": None}]}]
+
+        with pytest.raises(ValueError, match="content\\[\\]\\.text must be"):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="chat-model",
+                allow_image=False,
+                allow_video=False,
+            )
+
+    def test_responses_text_blocks_are_valid_text_content(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {"type": "input_text", "text": "question"},
+                    {"type": "output_text", "text": "prior answer"},
+                ],
+            }
+        ]
+
+        validate_content_blocks_for_capabilities(
+            messages,
+            model_name="chat-model",
+            allow_image=False,
+            allow_video=False,
+        )
+
+    def test_input_audio_requires_format_even_when_audio_allowed(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": "base64data"},
+                    }
+                ],
+            }
+        ]
+
+        with pytest.raises(ValueError, match="input_audio\\.format"):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="audio-model",
+                allow_image=False,
+                allow_video=False,
+                allow_audio=True,
+            )
+
+    def test_input_audio_allowed_when_audio_capability_enabled(self):
+        messages = [
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "input_audio",
+                        "input_audio": {"data": "base64data", "format": "wav"},
+                    }
+                ],
+            }
+        ]
+
+        validate_content_blocks_for_capabilities(
+            messages,
+            model_name="audio-model",
+            allow_image=False,
+            allow_video=False,
+            allow_audio=True,
+        )
+
+    @pytest.mark.parametrize(
+        "content_part",
+        [
+            {"type": "audio_url", "audio_url": {"url": "https://example.com/a.wav"}},
+            {"type": "audio", "audio": "base64data"},
+        ],
+    )
+    def test_audio_url_and_audio_rejected_even_when_audio_allowed(self, content_part):
+        messages = [{"role": "user", "content": [content_part]}]
+
+        with pytest.raises(ValueError, match="only input_audio is supported"):
+            validate_content_blocks_for_capabilities(
+                messages,
+                model_name="audio-model",
+                allow_image=False,
+                allow_video=False,
+                allow_audio=True,
+            )
 
 
 class TestGptOssSpecialTokens:

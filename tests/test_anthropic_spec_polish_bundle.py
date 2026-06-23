@@ -1,0 +1,479 @@
+# SPDX-License-Identifier: Apache-2.0
+"""D-ANTHRO-SPEC-POLISH route-level tests (F7 + F12).
+
+This module covers the route-level behavior the adapter unit tests in
+``test_anthropic_adapter.py`` can't reach:
+
+* **F7** — ``tool_choice={"type":"none"}`` must drop ``tools`` from
+  the engine's ``chat_kwargs`` so the chat template never injects
+  tool definitions into the prompt. Adapter-level coverage in
+  ``test_anthropic_adapter.py`` locks the input contract; this file
+  locks the wire-through-to-engine path.
+
+* **F12** — ``/v1/messages/count_tokens`` must apply the SAME chat
+  template that ``/v1/messages`` applies before tokenizing, so the
+  count matches ``usage.input_tokens`` exactly. Pre-fix the count
+  consistently under-reported by ~5 tokens (Sergei evidence, delta=-5
+  across 5 unrelated prompts).
+
+Both surfaces share a single ``_RecordingEngine`` so we can assert on
+exactly what ``build_prompt`` saw — the F-220 chat-route test pattern
+applied to the Anthropic route.
+"""
+
+from __future__ import annotations
+
+from typing import Any
+
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from vllm_mlx.config import reset_config
+from vllm_mlx.engine.base import GenerationOutput
+from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+from vllm_mlx.routes.anthropic import router as anthropic_router
+
+
+class _StubTokenizer:
+    """Trivial tokenizer that returns one token per word + a constant
+    per-render boilerplate so we can distinguish "raw text encoded"
+    from "chat-template-rendered prompt encoded".
+
+    The chat template prefix accounts for the per-turn role tokens
+    (``<|im_start|>user`` etc.) that the qwen3 template emits.
+    """
+
+    chat_template = "<|im_start|>{{ messages }}<|im_end|>"
+    bos_token = None
+
+    def encode(self, text, add_special_tokens=True):  # noqa: ARG002
+        return list(range(len(text.split())))
+
+
+class _RecordingEngine:
+    """Records every ``chat()`` and ``build_prompt()`` call so tests
+    can assert on the kwargs the route delivered.
+
+    ``build_prompt`` returns a string with a 5-token "boilerplate"
+    prefix so a downstream tokenizer encode will count both the user
+    content tokens AND the per-turn template overhead — modeling the
+    real qwen3 template behavior that exposes the F12 delta.
+    """
+
+    preserve_native_tool_format = False
+    is_mllm = False
+    supports_guided_generation = False
+    tokenizer = _StubTokenizer()
+
+    def __init__(self):
+        self.last_chat_kwargs: dict[str, Any] | None = None
+        self.last_messages: Any = None
+        self.last_build_prompt_kwargs: dict[str, Any] | None = None
+        self.last_build_prompt_messages: Any = None
+
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        self.last_build_prompt_messages = messages
+        self.last_build_prompt_kwargs = {
+            "tools": tools,
+            "enable_thinking": enable_thinking,
+        }
+        # Per-turn role overhead = 5 stub tokens (mirrors the qwen3
+        # template's ``<|im_start|>user\n...<|im_end|>\n
+        # <|im_start|>assistant\n`` boilerplate).
+        body = " ".join(
+            m.get("content", "") if isinstance(m, dict) else "" for m in messages
+        )
+        return f"role role role role role {body}"
+
+    async def chat(self, messages, **kwargs):
+        self.last_messages = messages
+        self.last_chat_kwargs = kwargs
+        return GenerationOutput(
+            text="ok",
+            raw_text="ok",
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="stop",
+        )
+
+
+def _make_client(engine: _RecordingEngine) -> TestClient:
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.tool_call_parser = None  # ensure no extra suffix injection
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(anthropic_router)
+    return TestClient(app)
+
+
+_TOOLS_FIXTURE = [
+    {
+        "name": "get_weather",
+        "description": "Get current weather",
+        "input_schema": {
+            "type": "object",
+            "properties": {"city": {"type": "string"}},
+            "required": ["city"],
+        },
+    }
+]
+
+
+# ===========================================================================
+# F7 — tool_choice={"type":"none"} strips tools from the engine call.
+# ===========================================================================
+
+
+def test_f7_tool_choice_none_strips_tools_from_engine_kwargs():
+    """F7: when the client sets ``tool_choice={"type":"none"}``, the
+    engine must NOT see ``tools`` in its ``chat_kwargs``. Pre-fix the
+    adapter forwarded tools verbatim, the chat template injected them
+    into the system prompt, and the model emitted a partial
+    ``<tool_call>{...}`` marker that leaked into the response text
+    (Sergei repro F7).
+
+    Single source of truth: the fix lives in the adapter (drops
+    ``tools`` when ``tool_choice == "none"``), so any future route
+    that consumes ``openai_request.tools`` after the adapter runs is
+    automatically covered.
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "none"},
+            "messages": [{"role": "user", "content": "what's the weather in Tokyo?"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    assert engine.last_chat_kwargs is not None
+    # ``tools`` either absent or None on the engine call.
+    tools_seen = engine.last_chat_kwargs.get("tools")
+    assert not tools_seen, (
+        f"tool_choice='none' must strip tools from engine call; "
+        f"got tools={tools_seen!r}"
+    )
+
+
+def test_f7_tool_choice_none_response_has_no_tool_use_block():
+    """F7 wire-level: the response content list must NOT carry any
+    ``tool_use`` block when ``tool_choice="none"``. Even if a defiant
+    model wrote raw ``<tool_call>{...}`` text (now impossible because
+    tools were stripped), the parser layer would still drop the
+    ``tool_use`` block under ``tool_choice="none"``.
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "none"},
+            "messages": [{"role": "user", "content": "weather in Tokyo?"}],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    tool_use_blocks = [
+        b for b in body.get("content", []) if b.get("type") == "tool_use"
+    ]
+    assert tool_use_blocks == [], body
+
+
+def test_f7_tool_choice_none_text_has_no_tool_call_marker():
+    """F7 leak-check regression (codex r2 NIT): use a stub engine that
+    simulates the Sergei-repro symptom — when the chat() kwargs carry
+    ``tools``, the engine emits a raw ``<tool_call>{...}`` marker as
+    text (mirroring qwen3-0.6b-8bit's behavior); when the kwargs
+    carry NO ``tools``, the engine emits clean text.
+
+    This means:
+    * ``tool_choice="none"`` (adapter strips tools) → no marker in
+      the wire response. The Sergei repro stays fixed.
+    * Without the adapter strip (a regression would re-introduce
+      tools into kwargs) → the marker WOULD reach the wire,
+      surfacing the leak the F7 fix is meant to prevent.
+
+    The previous test used ``_RecordingEngine`` whose ``chat()``
+    always returns ``"ok"``, so the assertion would have passed even
+    if tools were silently injected. The new stub exercises the
+    actual leak path.
+    """
+
+    class _LeakyOnToolsEngine(_RecordingEngine):
+        async def chat(self, messages, **kwargs):
+            self.last_messages = messages
+            self.last_chat_kwargs = kwargs
+            # Simulates the qwen3-0.6b-8bit symptom: when the model
+            # sees tools, it starts emitting a ``<tool_call>`` marker
+            # but gets cut off by max_tokens, leaking the partial
+            # marker into the text block.
+            tools_seen = kwargs.get("tools")
+            if tools_seen:
+                leak = '<tool_call>\n{"name": "get_weather", "arguments": {"city'
+            else:
+                leak = "I cannot help with that."
+            return GenerationOutput(
+                text=leak,
+                raw_text=leak,
+                prompt_tokens=4,
+                completion_tokens=10,
+                finished=True,
+                finish_reason="stop",
+            )
+
+    engine = _LeakyOnToolsEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "none"},
+            "messages": [{"role": "user", "content": "weather in Tokyo?"}],
+        },
+    )
+    assert resp.status_code == 200
+    body = resp.json()
+    # With the adapter strip in place, the engine sees no tools,
+    # emits clean text, and the wire response has no marker. A
+    # regression that forwarded tools verbatim would trigger the
+    # ``leak`` branch and surface the marker here.
+    full_text = "\n".join(
+        blk.get("text", "")
+        for blk in body.get("content", [])
+        if blk.get("type") == "text"
+    )
+    assert "<tool_call>" not in full_text, (
+        f"tool_choice=none leaked <tool_call> marker into text block; "
+        f"engine saw tools={engine.last_chat_kwargs.get('tools')!r}"
+    )
+
+    # Sanity countercheck: re-issue the SAME request WITHOUT
+    # ``tool_choice`` so the adapter does NOT strip tools. The leaky
+    # engine now sees tools and emits the marker — locks the
+    # negative path so the assertion above is actually
+    # discriminating (otherwise the test would pass even on a stub
+    # that never leaks at all).
+    engine2 = _LeakyOnToolsEngine()
+    client2 = _make_client(engine2)
+    resp2 = client2.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "tools": _TOOLS_FIXTURE,
+            "messages": [{"role": "user", "content": "weather in Tokyo?"}],
+        },
+    )
+    assert resp2.status_code == 200
+    full_text2 = "\n".join(
+        blk.get("text", "")
+        for blk in resp2.json().get("content", [])
+        if blk.get("type") == "text"
+    )
+    assert "<tool_call>" in full_text2, (
+        f"countercheck failed: leaky engine should have leaked marker when "
+        f"tools were not stripped, but text was {full_text2!r}"
+    )
+
+
+def test_f7_tool_choice_auto_keeps_tools():
+    """Negative control: ``tool_choice="auto"`` (the default) leaves
+    tools intact so the model can still call them. Locks against an
+    over-eager strip that would silently disable all tool use."""
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/messages",
+        json={
+            "model": "test-model",
+            "max_tokens": 32,
+            "tools": _TOOLS_FIXTURE,
+            "tool_choice": {"type": "auto"},
+            "messages": [{"role": "user", "content": "weather"}],
+        },
+    )
+    assert resp.status_code == 200
+    tools_seen = engine.last_chat_kwargs.get("tools")
+    assert tools_seen, (
+        f"tool_choice='auto' must keep tools on engine call; got tools={tools_seen!r}"
+    )
+
+
+# ===========================================================================
+# F12 — count_tokens applies the same chat template as /v1/messages.
+# ===========================================================================
+
+
+def test_f12_count_tokens_applies_chat_template():
+    """F12: ``/v1/messages/count_tokens`` must run the request through
+    ``engine.build_prompt`` so the chat template's per-turn role
+    boilerplate (``<|im_start|>user`` etc.) is counted. Pre-fix it
+    tokenized each text segment in isolation and consistently
+    under-reported by ~5 tokens (Sergei repro F12 across 5 prompts).
+
+    Probe: the stub ``build_prompt`` adds a 5-token "role" prefix to
+    any rendered prompt. If the route correctly delegates to
+    ``build_prompt``, the count includes those 5 tokens. If the route
+    falls back to the legacy per-segment count, those 5 tokens are
+    missing.
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/messages/count_tokens",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hello world"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    body = resp.json()
+    # Pre-fix count: 2 tokens ("hello world" → 2 stub tokens).
+    # Post-fix count: 2 + 5 = 7 stub tokens (5 role-prefix tokens
+    # plus the 2 content tokens) — proving build_prompt ran.
+    assert body["input_tokens"] == 7, (
+        f"count_tokens should apply the chat template; expected 7, got {body}"
+    )
+    # The stub engine recorded the build_prompt call — direct
+    # evidence the route delegated to the template path.
+    assert engine.last_build_prompt_messages is not None
+
+
+def test_f12_count_tokens_matches_messages_usage_input_tokens():
+    """F12 parity: the count must equal ``usage.input_tokens`` for an
+    identical request, end-to-end through both routes.
+
+    Uses a chat() mock that reports ``prompt_tokens`` derived from
+    the rendered prompt the route actually built (read back from
+    the recording engine's ``last_chat_kwargs``) — so a regression
+    that skipped ``build_prompt`` in count_tokens would surface as
+    a delta between the two responses' token counts. Pre-fix this
+    delta was the per-turn role-token boilerplate (~5 tokens for
+    qwen3 templates, Sergei evidence F12).
+
+    Codex r1 NIT: previously this test asserted on the count_tokens
+    value alone (==9) and never actually compared to /v1/messages
+    usage; the parity claim in the docstring was a documentation-
+    only invariant. Now both responses are read and compared
+    directly.
+    """
+
+    class _PromptReportingEngine(_RecordingEngine):
+        """Variant of ``_RecordingEngine`` that reports
+        ``prompt_tokens`` from the actual rendered prompt — same
+        path /v1/messages' real engine takes. Lets us assert the
+        wire-level parity contract directly rather than via the
+        stub's known boilerplate cost.
+        """
+
+        async def chat(self, messages, **kwargs):
+            self.last_messages = messages
+            self.last_chat_kwargs = kwargs
+            # Render the same prompt the count_tokens path would render
+            # so the two surfaces' token counts are derived from the
+            # same string. Mirrors what ``BatchedEngine.chat``
+            # internally does via ``_apply_chat_template``.
+            rendered = self.build_prompt(messages, tools=kwargs.get("tools"))
+            prompt_tokens = len(self.tokenizer.encode(rendered))
+            return GenerationOutput(
+                text="ok",
+                raw_text="ok",
+                prompt_tokens=prompt_tokens,
+                completion_tokens=1,
+                finished=True,
+                finish_reason="stop",
+            )
+
+    engine = _PromptReportingEngine()
+    client = _make_client(engine)
+
+    # Same body to both endpoints (minus max_tokens which count_tokens
+    # doesn't require).
+    body = {
+        "model": "test-model",
+        "messages": [{"role": "user", "content": "a quick brown fox"}],
+    }
+    r1 = client.post(
+        "/v1/messages",
+        json={**body, "max_tokens": 5},
+    )
+    r2 = client.post("/v1/messages/count_tokens", json=body)
+    assert r1.status_code == 200, r1.text
+    assert r2.status_code == 200, r2.text
+    # The wire-level parity contract: both surfaces report the same
+    # input_token count for the same rendered prompt. Pre-fix the
+    # count_tokens path under-reported by the role-prefix overhead.
+    messages_input = r1.json()["usage"]["input_tokens"]
+    count_tokens_input = r2.json()["input_tokens"]
+    assert count_tokens_input == messages_input, (
+        f"count_tokens={count_tokens_input} must equal /v1/messages "
+        f"usage.input_tokens={messages_input} for the same rendered prompt"
+    )
+    # Sanity: the count is non-trivial (excludes a fallback-to-zero
+    # bug where both endpoints report 0).
+    assert count_tokens_input > 0
+
+
+def test_f12_count_tokens_excludes_role_overhead_on_fallback():
+    """Legacy fallback path: when ``build_prompt`` is unavailable
+    (e.g. on a test stub that doesn't expose it), the count falls
+    back to the per-segment tokenizer encode. Documents the
+    fallback semantics so a future refactor doesn't silently drop
+    the fallback.
+
+    Setup a minimal stub WITHOUT ``build_prompt`` and verify the
+    response is a non-error count (the historical contract holds
+    on test stubs).
+    """
+
+    class _NoBuildPromptEngine:
+        preserve_native_tool_format = False
+        is_mllm = False
+        supports_guided_generation = False
+        tokenizer = _StubTokenizer()
+        # Deliberately omit ``build_prompt``.
+
+    engine = _NoBuildPromptEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/messages/count_tokens",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hello world"}],
+        },
+    )
+    assert resp.status_code == 200
+    # Fallback path: 2 content tokens, no role overhead.
+    assert resp.json()["input_tokens"] == 2
+
+
+def test_f12_count_tokens_without_max_tokens_does_not_422():
+    """F12 spec parity: ``/v1/messages/count_tokens`` accepts requests
+    WITHOUT ``max_tokens`` (Anthropic's spec). The adapter shim we
+    use internally to reuse ``AnthropicRequest`` must not surface a
+    ``max_tokens`` requirement to the count_tokens caller.
+    """
+    engine = _RecordingEngine()
+    client = _make_client(engine)
+    resp = client.post(
+        "/v1/messages/count_tokens",
+        json={
+            "model": "test-model",
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text

@@ -8,6 +8,8 @@ These are pure logic tests with no MLX dependency.
 
 import json
 
+import pytest
+
 from vllm_mlx.api.anthropic_adapter import (
     _convert_message,
     _convert_stop_reason,
@@ -15,7 +17,43 @@ from vllm_mlx.api.anthropic_adapter import (
     _convert_tool_choice,
     anthropic_to_openai,
     openai_to_anthropic,
+    to_anthropic_tool_use_id,
 )
+
+
+def assert_tool_use_id_shape(id_str: str) -> None:
+    """Single source-of-truth assertion for the Anthropic-spec
+    ``tool_use.id`` prefix (F9). Every test that asserts on a
+    ``tool_use.id`` shape across the codebase should use this helper
+    so the prefix contract has one place to update if Anthropic ever
+    widens it. ``toolu_`` is verbatim from Anthropic's public
+    examples (see https://docs.anthropic.com/en/api/messages).
+
+    The tail contract is intentionally PERMISSIVE — we only assert
+    the prefix + non-empty tail. The ``to_anthropic_tool_use_id``
+    helper has its OWN idempotency branch that passes a pre-existing
+    ``toolu_*`` id through unchanged (so an engine that natively
+    minted a non-hex tail flows through), and the mint path uses
+    ``secrets.token_hex`` (locked separately by
+    ``test_to_anthropic_tool_use_id_mints_fresh_when_missing`` in
+    this file). Asserting hex here would force callers to filter
+    their upstream-supplied ids, which the F9 codex r1 NIT flagged
+    as over-tightening.
+    """
+    assert isinstance(id_str, str), (
+        f"tool_use.id must be a string (got {type(id_str).__name__})"
+    )
+    assert id_str.startswith("toolu_"), (
+        f"tool_use.id must start with 'toolu_' (Anthropic spec); "
+        f"got {id_str!r}. OpenAI-style 'call_<hex>' ids leak the "
+        f"underlying adapter and break clients that regex on the "
+        f"prefix. See ``to_anthropic_tool_use_id`` for the single "
+        f"source of truth."
+    )
+    tail = id_str[len("toolu_") :]
+    assert tail, f"tool_use.id tail must be non-empty (got {id_str!r})"
+
+
 from vllm_mlx.api.anthropic_models import (
     AnthropicContentBlock,
     AnthropicMessage,
@@ -197,19 +235,40 @@ class TestConvertMessage:
         assert result[0].role == "tool"
         assert result[0].content == "line one\nline two"
 
-    def test_tool_result_with_none_content(self):
+    def test_tool_result_with_empty_string_content(self):
+        """D-ANTHRO-VALIDATION F4 update: ``tool_result`` blocks now
+        require a ``content`` field at construction time (the spec
+        requires non-None content). Test the adapter still emits the
+        right shape for the legal ``content=""`` case — the
+        ``content=None`` pre-fix shape is rejected at the schema
+        layer with a clear ``is missing required field(s): content``
+        error instead of silently being treated as an empty string."""
         msg = AnthropicMessage(
             role="user",
             content=[
                 AnthropicContentBlock(
                     type="tool_result",
                     tool_use_id="call_1",
-                    content=None,
+                    content="",
                 ),
             ],
         )
         result = _convert_message(msg)
         assert result[0].content == ""
+
+    def test_tool_result_with_none_content_rejected_at_construction(self):
+        """D-ANTHRO-VALIDATION F4: ``content=None`` on a tool_result
+        block 422s at schema layer with the named-field message —
+        replaces the pre-fix silent-empty-string fallback."""
+        from pydantic import ValidationError
+
+        with pytest.raises(ValidationError) as exc_info:
+            AnthropicContentBlock(
+                type="tool_result",
+                tool_use_id="call_1",
+                content=None,
+            )
+        assert "is missing required field(s): content" in str(exc_info.value)
 
     def test_assistant_with_tool_use(self):
         msg = AnthropicMessage(
@@ -769,3 +828,328 @@ class TestOpenaiToAnthropic:
         text_blocks = [b for b in result.content if b.type == "text"]
         assert len(text_blocks) == 1
         assert text_blocks[0].text == "real answer"
+
+
+# ===========================================================================
+# F9 — Anthropic-spec ``toolu_`` prefix on every ``tool_use.id``.
+# ===========================================================================
+
+
+class TestAnthropicToolUseIdPrefix:
+    """F9 — every ``tool_use.id`` emitted on the ``/v1/messages``
+    surface must use Anthropic's ``toolu_<hex>`` prefix. Pre-fix the
+    adapter passed OpenAI-style ``call_<hex>`` through verbatim,
+    leaking the underlying conversion (Sergei evidence: id="call_fdc47973").
+
+    The fix is at the adapter (single source of truth, not at every
+    tool_parser emit site). Cross-route audit: ``/v1/chat/completions``
+    and ``/v1/responses`` keep ``call_<hex>`` (OpenAI parity); only
+    ``/v1/messages`` rewrites.
+    """
+
+    def test_to_anthropic_tool_use_id_rewrites_call_prefix(self):
+        """The helper preserves the hex tail so call-id correlation
+        across logs still works after the rewrite."""
+        assert to_anthropic_tool_use_id("call_abcd1234") == "toolu_abcd1234"
+
+    def test_to_anthropic_tool_use_id_passes_through_toolu_prefix(self):
+        """An id that already carries ``toolu_<hex>`` survives unchanged —
+        idempotency lets the helper be applied at multiple boundaries
+        without double-rewriting. Codex r4 BLOCKING #1 tightened the
+        contract to require a hex tail (``[0-9a-fA-F]+``), so the
+        canonical form below is the one that actually round-trips.
+        """
+        assert (
+            to_anthropic_tool_use_id("toolu_abcd1234deadbeefcafef00d")
+            == "toolu_abcd1234deadbeefcafef00d"
+        )
+
+    def test_to_anthropic_tool_use_id_mints_fresh_when_missing(self):
+        """Anthropic's public examples carry ~24 hex chars after the
+        prefix; mint a fresh id when the caller hands us nothing
+        usable so the wire response never carries an empty id."""
+        out = to_anthropic_tool_use_id(None)
+        assert_tool_use_id_shape(out)
+        assert len(out[len("toolu_") :]) == 24
+
+    def test_to_anthropic_tool_use_id_mints_fresh_for_non_hex_tail(self):
+        """Codex r4 BLOCKING #1: a ``call_`` prefix with a non-hex
+        tail (e.g. ``call_unknown_prefix_!!!``) is malformed — the
+        Anthropic contract is ``toolu_<hex>``, so we must NOT echo
+        the malformed tail. The helper falls through to a fresh
+        ``toolu_<24-hex>`` mint instead.
+        """
+        out = to_anthropic_tool_use_id("call_unknown_prefix_!!!")
+        assert_tool_use_id_shape(out)
+        tail = out[len("toolu_") :]
+        # Fresh-mint shape — never the malformed input echoed back.
+        assert len(tail) == 24, (
+            f"non-hex call_ tail must mint a 24-hex tail; got {out!r}"
+        )
+        assert "unknown_prefix" not in out
+        assert "!" not in out
+
+    def test_to_anthropic_tool_use_id_mints_fresh_for_non_hex_toolu_tail(self):
+        """Codex r4 BLOCKING #1: same guard on the ``toolu_``
+        pass-through branch — a future caller passing
+        ``toolu_unknown_prefix_!!!`` (e.g. an upstream that minted
+        an id with non-hex chars) is treated as malformed and
+        replaced with a fresh ``toolu_<24-hex>`` mint."""
+        out = to_anthropic_tool_use_id("toolu_unknown_prefix_!!!")
+        assert_tool_use_id_shape(out)
+        tail = out[len("toolu_") :]
+        assert len(tail) == 24, (
+            f"non-hex toolu_ tail must mint a 24-hex tail; got {out!r}"
+        )
+        assert "unknown_prefix" not in out
+        assert "!" not in out
+
+    def test_to_anthropic_tool_use_id_mints_fresh_on_empty_tail(self):
+        """Codex r2 BLOCKING #3: ``"call_"`` (empty tail) and
+        ``"toolu_"`` (empty tail) are degenerate inputs that the
+        pre-fix preserved verbatim, producing the invalid empty-tail
+        ``"toolu_"`` id. The helper now mints a fresh
+        ``toolu_<24-hex>`` id for both, matching the documented
+        "missing or unusable IDs must be freshly minted" contract.
+        """
+        for degenerate in ("call_", "toolu_"):
+            out = to_anthropic_tool_use_id(degenerate)
+            assert_tool_use_id_shape(out)
+            tail = out[len("toolu_") :]
+            assert len(tail) == 24, (
+                f"empty-tail input {degenerate!r} should mint a 24-hex tail; "
+                f"got {out!r}"
+            )
+        # An id with a foreign prefix gets a fresh mint.
+        foreign = to_anthropic_tool_use_id("x_abc")
+        assert_tool_use_id_shape(foreign)
+
+    def test_tool_use_id_uses_toolu_prefix_at_adapter(self):
+        """Integration: ``openai_to_anthropic`` rewrites every
+        ``tool_use.id`` to ``toolu_<hex>`` (single source of truth,
+        F9). Locks the adapter-layer fix against regressions where
+        a future change to ``openai_to_anthropic`` would leak the
+        OpenAI prefix back to clients.
+        """
+        tc = ToolCall(
+            id="call_fdc47973",
+            type="function",
+            function=FunctionCall(name="search", arguments='{"q": "x"}'),
+        )
+        choice = ChatCompletionChoice(
+            message=AssistantMessage(content=None, tool_calls=[tc]),
+            finish_reason="tool_calls",
+        )
+        resp = ChatCompletionResponse(model="default", choices=[choice], usage=Usage())
+        result = openai_to_anthropic(resp, "default")
+        tool_blocks = [b for b in result.content if b.type == "tool_use"]
+        assert len(tool_blocks) == 1
+        assert_tool_use_id_shape(tool_blocks[0].id)
+        # Hex tail preserved across the rewrite — operator-side
+        # correlation works.
+        assert tool_blocks[0].id == "toolu_fdc47973"
+
+    def test_tool_use_id_already_toolu_passes_through(self):
+        """When upstream already mints ``toolu_<hex>`` (e.g. a future
+        engine that natively produces Anthropic IDs), don't rewrite.
+        The hex-tail guard (codex r4 BLOCKING #1) means the value
+        below must use the canonical ``[0-9a-fA-F]+`` shape to
+        round-trip — a non-hex placeholder would now be rejected and
+        replaced with a fresh mint.
+        """
+        upstream_id = "toolu_abcd1234deadbeefcafef00d"
+        tc = ToolCall(
+            id=upstream_id,
+            type="function",
+            function=FunctionCall(name="search", arguments="{}"),
+        )
+        choice = ChatCompletionChoice(
+            message=AssistantMessage(content=None, tool_calls=[tc]),
+            finish_reason="tool_calls",
+        )
+        resp = ChatCompletionResponse(model="default", choices=[choice], usage=Usage())
+        result = openai_to_anthropic(resp, "default")
+        tool_blocks = [b for b in result.content if b.type == "tool_use"]
+        assert tool_blocks[0].id == upstream_id
+
+
+# ===========================================================================
+# F7 — ``tool_choice={"type":"none"}`` strips tools at the adapter so
+# the chat template never injects tool definitions into the prompt.
+# ===========================================================================
+
+
+class TestToolChoiceNoneStripsTools:
+    """F7 — when the client sets ``tool_choice={"type":"none"}``, the
+    adapter MUST drop tools from the ``ChatCompletionRequest`` it
+    constructs so the downstream chat template doesn't inject tool
+    definitions into the prompt. Without this the model still sees
+    the tool in the system prompt, decides to call it, and emits a
+    raw ``<tool_call>{...}`` marker that leaks into the response
+    text block (Sergei repro F7).
+
+    Single source of truth: applied at the adapter, not at the
+    parser / output layer. The fix is parser-independent.
+    """
+
+    def _make_request(self, **kwargs):
+        defaults = {
+            "model": "test",
+            "messages": [AnthropicMessage(role="user", content="hi")],
+            "max_tokens": 100,
+        }
+        defaults.update(kwargs)
+        return AnthropicRequest(**defaults)
+
+    def test_tool_choice_none_drops_tools(self):
+        req = self._make_request(
+            tools=[
+                AnthropicToolDef(
+                    name="get_weather",
+                    description="weather",
+                    input_schema={
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                    },
+                )
+            ],
+            tool_choice={"type": "none"},
+        )
+        result = anthropic_to_openai(req)
+        assert result.tools is None, (
+            f"tool_choice=none must strip tools; got {result.tools!r}"
+        )
+        # The tool_choice field is still forwarded so downstream
+        # consumers branching on it can see the original signal.
+        assert result.tool_choice == "none"
+
+    def test_tool_choice_auto_keeps_tools(self):
+        """Negative control: ``auto`` leaves tools intact."""
+        req = self._make_request(
+            tools=[
+                AnthropicToolDef(
+                    name="get_weather",
+                    input_schema={"type": "object"},
+                )
+            ],
+            tool_choice={"type": "auto"},
+        )
+        result = anthropic_to_openai(req)
+        assert result.tools is not None
+        assert len(result.tools) == 1
+
+    def test_tool_choice_any_keeps_tools(self):
+        """Negative control: ``any`` (Anthropic) → ``required``
+        (OpenAI) leaves tools intact."""
+        req = self._make_request(
+            tools=[
+                AnthropicToolDef(
+                    name="get_weather",
+                    input_schema={"type": "object"},
+                )
+            ],
+            tool_choice={"type": "any"},
+        )
+        result = anthropic_to_openai(req)
+        assert result.tools is not None
+        assert result.tool_choice == "required"
+
+    def test_tool_choice_specific_tool_keeps_tools(self):
+        """Negative control: pinning a specific tool keeps the tool
+        list intact (the downstream route filter handles the
+        "pinned tool not in tools" 400 case)."""
+        req = self._make_request(
+            tools=[
+                AnthropicToolDef(
+                    name="get_weather",
+                    input_schema={"type": "object"},
+                )
+            ],
+            tool_choice={"type": "tool", "name": "get_weather"},
+        )
+        result = anthropic_to_openai(req)
+        assert result.tools is not None
+
+
+# ===========================================================================
+# F6 — wire response excludes None-valued fields (no ``null`` leakage).
+# ===========================================================================
+
+
+class TestAnthropicResponseExcludesNullFields:
+    """F6 — strict TypeScript clients / JSON-schema validators trip on
+    ``null``-valued fields the spec says ``field?: T | undefined``.
+    Anthropic's real API omits inapplicable fields entirely; we mirror
+    that by serializing via ``model_dump_json(exclude_none=True)`` in
+    the route.
+
+    These tests pin the response model's shape so a future field
+    addition (declared ``Optional`` and defaulting to ``None``) can't
+    silently re-introduce the wire-level null leak Sergei's F6 repro
+    flagged. Route-level serialization is also tested below.
+    """
+
+    def test_basic_response_serialization_excludes_none(self):
+        """A response with only ``input_tokens`` + ``output_tokens`` in
+        usage and a single text block must serialize to JSON with no
+        ``null`` values anywhere."""
+        msg = AssistantMessage(content="hi")
+        choice = ChatCompletionChoice(message=msg, finish_reason="stop")
+        resp = ChatCompletionResponse(
+            model="default",
+            choices=[choice],
+            usage=Usage(prompt_tokens=5, completion_tokens=2),
+        )
+        result = openai_to_anthropic(resp, "default")
+        body = result.model_dump(exclude_none=True)
+        # No null top-level keys.
+        for key, val in body.items():
+            assert val is not None, (
+                f"top-level key {key!r} serialized as None; "
+                "exclude_none should have stripped it"
+            )
+        # No null usage fields.
+        for key, val in body.get("usage", {}).items():
+            assert val is not None, f"usage key {key!r} serialized as None"
+        # No null content-block fields.
+        for blk in body.get("content", []):
+            for key, val in blk.items():
+                assert val is not None, f"content block key {key!r} serialized as None"
+
+    def test_wire_json_has_no_literal_null(self):
+        """Belt-and-braces: dump as JSON and grep for the literal
+        ``": null`` substring. A client running ``r.model_dump(
+        exclude_unset=True)`` should see ONLY the fields the server
+        actually populated."""
+        msg = AssistantMessage(content="hi")
+        choice = ChatCompletionChoice(message=msg, finish_reason="stop")
+        resp = ChatCompletionResponse(
+            model="default",
+            choices=[choice],
+            usage=Usage(prompt_tokens=5, completion_tokens=2),
+        )
+        result = openai_to_anthropic(resp, "default")
+        wire_json = result.model_dump_json(exclude_none=True)
+        assert ": null" not in wire_json and ":null" not in wire_json, (
+            f"wire JSON leaked a literal null: {wire_json[:500]}"
+        )
+
+    def test_tool_use_response_has_no_null_fields(self):
+        """Same invariant on a response that includes a ``tool_use``
+        block — locks the F9 rewrite path against introducing
+        spurious null fields on the way through."""
+        tc = ToolCall(
+            id="call_abc12345",
+            type="function",
+            function=FunctionCall(name="search", arguments='{"q": "x"}'),
+        )
+        choice = ChatCompletionChoice(
+            message=AssistantMessage(content="Searching...", tool_calls=[tc]),
+            finish_reason="tool_calls",
+        )
+        resp = ChatCompletionResponse(model="default", choices=[choice], usage=Usage())
+        result = openai_to_anthropic(resp, "default")
+        wire_json = result.model_dump_json(exclude_none=True)
+        assert ": null" not in wire_json and ":null" not in wire_json, (
+            f"tool_use wire JSON leaked a null: {wire_json[:500]}"
+        )

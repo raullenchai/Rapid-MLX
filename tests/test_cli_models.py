@@ -40,21 +40,29 @@ def test_models_command_shows_capability_columns():
         assert header in out, f"column header {header!r} missing"
 
 
-def test_models_command_renders_hybrid_marker_for_qwen35():
-    """Hybrid models (e.g. qwen3.5-4b-4bit) must show '✗ hybrid' + tier 'n/a'.
+def test_models_command_renders_hybrid_marker_for_qwen35_moe():
+    """Hybrid MoE models (e.g. qwen3.5-35b-4bit, the A3B variant) must
+    show '✗ hybrid' + tier 'n/a'.
+
+    r6-A R6-C1: the test was previously written against the DENSE
+    ``qwen3.5-4b-4bit`` alias, which we've now flipped to non-hybrid (it
+    was the metal::malloc wedge surface). The CLI column contract is the
+    same — only the surface alias changes — so pivot to the A3B MoE
+    Qwen3.5 variant which still legitimately wears the hybrid marker.
 
     The point of the column is to spare users an `info` round-trip when
     deciding whether spec-decode/suffix-decode will help. Trust the gate.
     """
     out = _capture_models_output()
     profiles = list_profiles()
-    qwen35_4b = profiles.get("qwen3.5-4b-4bit")
-    assert qwen35_4b is not None, "qwen3.5-4b-4bit alias missing — fixture drift"
-    assert qwen35_4b.is_hybrid, "qwen3.5-4b-4bit should still be is_hybrid=True"
+    qwen35_moe = profiles.get("qwen3.5-35b-4bit")
+    assert qwen35_moe is not None, "qwen3.5-35b-4bit alias missing — fixture drift"
+    assert qwen35_moe.is_hybrid, (
+        "qwen3.5-35b-4bit (A3B MoE) should remain is_hybrid=True"
+    )
 
-    # Find the qwen3.5-4b-4bit row and confirm the hybrid markers.
-    matches = [line for line in out.splitlines() if "qwen3.5-4b-4bit " in line]
-    assert matches, "no row found for qwen3.5-4b-4bit"
+    matches = [line for line in out.splitlines() if "qwen3.5-35b-4bit " in line]
+    assert matches, "no row found for qwen3.5-35b-4bit"
     row = matches[0]
     assert "✗ hybrid" in row, f"expected '✗ hybrid' marker in row: {row!r}"
     assert "n/a" in row, f"expected suffix tier 'n/a' in row: {row!r}"

@@ -87,6 +87,8 @@ class ExtractedToolCallInformation:
 #                           </arguments></function>  VibeThinker auto-emit
 #                           (F-042); distinct from ``function_bare`` which
 #                           uses the inline ``<function=NAME>`` attribute form.
+#   ui_tars_action        — Action: verb(kwargs)  UI-TARS GUI-agent action
+#                           lines, normalized to ``computer`` tool_calls.
 WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
     {
         "tool_call_json",
@@ -108,6 +110,7 @@ WIRE_FORMAT_LABELS: frozenset[str] = frozenset(
         "deepseek_native",
         "deepseek_v31_native",
         "qwen3_coder_xml_named",
+        "ui_tars_action",
     }
 )
 

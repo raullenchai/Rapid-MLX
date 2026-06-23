@@ -45,6 +45,65 @@ _MIN_MEMORY_BYTES = 100 * _BYTES_PER_MB  # Minimum 100MB
 _MAX_ENTRIES_FALLBACK = 50  # Fallback if memory detection fails
 
 
+def _fsync_file(path: str) -> None:
+    """Flush a file's contents to disk.
+
+    R8-M7 codex r1 BLOCKING #3: ``_fsync_dir`` alone is insufficient —
+    the dir fsync only commits directory metadata (file entries +
+    names), not the file body. A file whose contents are still in the
+    page cache can survive a dir-fsync rename and surface as empty
+    / partial on a hard reset. This helper opens the file read-only
+    and calls ``os.fsync`` to force the body durable BEFORE the
+    rename commits.
+
+    Opens read-only so we don't disturb the file's mtime / atime;
+    fsync on a read-only fd is allowed on POSIX (some platforms
+    require write but Linux/macOS accept either). Errors propagate
+    so the caller can decide non-fatal vs hard-fail.
+    """
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
+def _fsync_dir(path: str) -> None:
+    """Flush directory metadata to disk.
+
+    R8-M7: the persist commit phase relies on ``os.rename`` being
+    atomic relative to a subsequent crash. POSIX guarantees
+    rename-atomicity at the metadata level, but the contents of the
+    files INSIDE the staging dir (entry safetensors + index.json) may
+    still be buffered in the kernel page cache when the rename
+    commits. Without ``fsync`` on the directory, a power loss / OOM
+    kill / kernel panic between the rename and the periodic flush
+    can leave the renamed dir pointing at empty / partial files —
+    observed on Linux ext4 with ``data=writeback`` mount option;
+    macOS APFS is more conservative but the fsync is still a
+    correctness invariant.
+
+    POSIX-only; on Windows there is no equivalent directory fsync
+    (the filesystem journals dir metadata differently) and we
+    silently no-op. The caller catches OSError, so an unsupported
+    platform doesn't break the save.
+
+    Implementation detail: open with ``O_RDONLY`` because ``O_DIRECTORY``
+    is not available on every platform (and Python's ``os.open`` does
+    accept opening a dir RDONLY on POSIX). ``os.fsync`` on the
+    returned fd is what flushes the dir's metadata journal entry.
+    """
+    if not hasattr(os, "O_DIRECTORY") and os.name == "nt":
+        # Windows: no directory-fsync equivalent. The recovery path
+        # in load_from_disk is the fall-back; skip silently.
+        return
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _adapt_should_abort(predicate):
     """Adapt a ``should_abort`` predicate to the one-arg contract.
 
@@ -289,6 +348,53 @@ def _get_available_memory() -> int:
         return 0
 
 
+# Name of the env var operators set to bound the prefix-cache memory.
+# Exported so the metrics route, config dumps, and the tests can refer
+# to a single canonical string.
+PREFIX_CACHE_MAX_BYTES_ENV = "RAPID_MLX_PREFIX_CACHE_MAX_BYTES"
+
+
+def _resolve_env_cache_max_bytes() -> int:
+    """Read ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` from the environment.
+
+    Returns the parsed integer when the env var is set to a positive
+    integer; ``0`` for any other shape (unset, blank, non-integer, or
+    non-positive). The caller treats ``0`` as "no override" and falls
+    through to the legacy heuristic. Out-of-shape values are logged
+    once per process so a misconfigured operator gets a visible
+    diagnostic without flooding subsequent reconfigs.
+    """
+    raw = os.environ.get(PREFIX_CACHE_MAX_BYTES_ENV)
+    if raw is None:
+        return 0
+    raw = raw.strip()
+    if not raw:
+        return 0
+    try:
+        value = int(raw)
+    except ValueError:
+        global _ENV_CACHE_MAX_BYTES_PARSE_WARNED
+        if not _ENV_CACHE_MAX_BYTES_PARSE_WARNED:
+            _ENV_CACHE_MAX_BYTES_PARSE_WARNED = True
+            logger.warning(
+                "%s=%r is not a valid integer; ignoring and falling back "
+                "to the heuristic limit.",
+                PREFIX_CACHE_MAX_BYTES_ENV,
+                raw,
+            )
+        return 0
+    if value <= 0:
+        return 0
+    return value
+
+
+# Once-per-process flag so an operator who set ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES``
+# to garbage (e.g. ``"5GB"`` instead of bytes) sees the warning once and
+# the cache silently falls through to the heuristic instead of spamming
+# the log on every reconfig.
+_ENV_CACHE_MAX_BYTES_PARSE_WARNED = False
+
+
 def _array_memory(arr) -> int:
     """
     Estimate array memory from shape+dtype without triggering lazy eval.
@@ -426,9 +532,36 @@ class MemoryCacheConfig:
         """
         Compute the memory limit in bytes.
 
+        Resolution order (first hit wins):
+          1. ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` env var — operator
+             override for ops who need to bound the cache to a known
+             ceiling regardless of system RAM (R6-H6 fix from the
+             0.8.7 dogfood: the default 20% of available RAM let the
+             cache balloon to 31 GB on a large-memory host before any
+             eviction fired). Accepts a plain integer (bytes); invalid
+             / non-positive values fall through to the next step so a
+             misconfigured operator gets the legacy default rather
+             than a hard server failure.
+          2. ``MemoryCacheConfig.max_memory_mb`` — programmatic
+             override set by callers (CLI / config plumbing).
+          3. ``max_memory_percent`` × available RAM (default 20%).
+          4. ``max_memory_percent`` × 8 GiB fallback when psutil is
+             unavailable.
+
         Returns:
             Memory limit in bytes.
         """
+        env_override = _resolve_env_cache_max_bytes()
+        if env_override > 0:
+            # The env override is an OPERATOR ceiling — we trust it
+            # verbatim. NOT clamped to ``_MIN_MEMORY_BYTES`` because
+            # that floor only exists to keep the heuristic 20% × RAM
+            # path from underestimating on a memory-starved host. An
+            # operator who explicitly set a small value wants the
+            # small value (e.g. test fixtures that drive eviction
+            # against a deterministic cap).
+            return env_override
+
         if self.max_memory_mb is not None:
             return self.max_memory_mb * _BYTES_PER_MB
 
@@ -474,6 +607,17 @@ class CacheStats:
             "tokens_saved": self.tokens_saved,
             "current_memory_mb": round(self.current_memory_bytes / _BYTES_PER_MB, 2),
             "max_memory_mb": round(self.max_memory_bytes / _BYTES_PER_MB, 2),
+            # R7-M1 (dogfood-088 Talia r2): raw-byte fields surface the
+            # cap + current usage in the unit the Prometheus gauges
+            # ``rapid_mlx_prefix_cache_cap_bytes`` and
+            # ``rapid_mlx_prefix_cache_current_bytes`` consume. The
+            # MB-rounded fields above stay (existing dashboards depend
+            # on them) but Prometheus prefers raw bytes for byte-unit
+            # series (see "Base units" in the Prometheus naming
+            # conventions doc). Both rows are static-cost — they read
+            # ints already tracked on this stats object.
+            "current_memory_bytes": int(self.current_memory_bytes),
+            "max_memory_bytes": int(self.max_memory_bytes),
             "memory_utilization": round(self.memory_utilization, 4),
             "entry_count": self.entry_count,
         }
@@ -1393,12 +1537,45 @@ class MemoryAwarePrefixCache:
                     persist_cache,
                     metadata={"num_tokens": str(len(tokens_key))},
                 )
+                # R8-M7 codex r1 BLOCKING #3: durably commit the
+                # safetensors file. ``mx.save_safetensors`` (which
+                # ``save_prompt_cache`` calls) writes through to the
+                # kernel page cache but does not fsync — under
+                # SIGTERM-driven shutdown the body can still be in
+                # cache when the dir rename publishes its name,
+                # leaving a renamed entry with empty/partial contents
+                # on a hard reset / power loss. Open + fsync after
+                # the write so the file body hits durable storage
+                # BEFORE the rename. Open errors are non-fatal —
+                # they may indicate the file already vanished, and
+                # the subsequent verify loop already catches that.
+                try:
+                    _fsync_file(entry_path)
+                except OSError as fs_err:
+                    logger.debug(
+                        f"[cache_persist] fsync({entry_path}) failed: {fs_err}; "
+                        "continuing — verify-loop will catch real file loss"
+                    )
                 # Save tokens separately (can be 100K+ ints → binary is smaller).
                 import array as _array
 
                 arr = _array.array("i", tokens_key)  # 32-bit signed ints
                 with open(tokens_path, "wb") as f:
                     arr.tofile(f)
+                    # R8-M7 codex r1 BLOCKING #3 follow-up: fsync the
+                    # tokens sidecar too. tokens.bin and the
+                    # safetensors are validated together at load time
+                    # (size-cross-check), so a durable safetensors
+                    # paired with a buffered-only tokens.bin would
+                    # surface as corruption.
+                    f.flush()
+                    try:
+                        os.fsync(f.fileno())
+                    except OSError as fs_err:
+                        logger.debug(
+                            f"[cache_persist] fsync({tokens_path}) failed: "
+                            f"{fs_err}; continuing"
+                        )
 
                 # Record the per-layer cache class names so loaders can
                 # gate on cache-type compatibility (#198 BUG B). Read from
@@ -1508,6 +1685,15 @@ class MemoryAwarePrefixCache:
         try:
             with open(index_path, "w") as f:
                 json.dump(index, f, indent=2)
+                # R8-M7 codex r1 BLOCKING #3: fsync the file fd so its
+                # contents (not just metadata) hit durable storage before
+                # the rename commits. Without this, the rename can
+                # publish a name that points at an empty/partial file
+                # because the page cache hasn't flushed yet. The dir
+                # fsync below covers directory-entry durability; this
+                # fsync covers the file body itself.
+                f.flush()
+                os.fsync(f.fileno())
         except OSError as e:
             # Catch the broader OSError (FileNotFoundError if dir vanished,
             # PermissionError if cache_dir was suddenly chmod'd, ENOSPC if
@@ -1519,22 +1705,121 @@ class MemoryAwarePrefixCache:
             )
             return False
 
+        # R8-M7 (dogfood-089 Talia r1/r2): the commit phase is the
+        # narrow window where a SIGTERM-driven shutdown can leave
+        # ``cache_dir`` absent + ``.new/`` orphaned + load_from_disk
+        # then fails to recover because the load was never called
+        # (e.g. SIGKILL hit before next boot's lifespan, or the next
+        # boot raced its own save-to-disk and pre-cleaned ``.new``).
+        # Wrap the two-rename swap in a try/except that, on ANY
+        # failure mid-commit, attempts a self-recovery promotion of
+        # ``.new`` to ``cache_dir`` so the on-disk state is never
+        # left in the "cache_dir missing, .new present, .old present"
+        # window for longer than this method's own scope. Without
+        # this, a transient OSError between the two renames (e.g.
+        # PermissionError from a fs-event-driven antivirus touching
+        # cache_dir mid-rename, observed on macOS Spotlight rebuilds)
+        # would silently lose the just-saved snapshot the next time
+        # save_to_disk runs and pre-cleans ``.new`` + ``.old``.
+        #
+        # The fsync on the staging dir before the rename forces the
+        # index.json + entry files' metadata into the journal so the
+        # rename commits the right contents. Without it, a kernel
+        # crash between the rename and the periodic fs flush can
+        # leave the renamed dir referencing not-yet-written contents
+        # (observed on Linux ext4 with ``data=writeback``; macOS APFS
+        # is more conservative but the fsync is still a correctness
+        # invariant). We fsync the dir, not individual files, because
+        # the entry-file write already returns from
+        # ``mx.save_safetensors`` only after the kernel queues the
+        # write — and the dir fsync covers the index.json + the
+        # entries' rename-into-place metadata.
+        try:
+            _fsync_dir(new_dir)
+        except OSError as fsync_err:
+            # fsync failures on the staging dir are a soft signal —
+            # log + proceed. The rename below may still work; if it
+            # doesn't, the recovery branch picks up the pieces.
+            logger.debug(
+                f"[cache_persist] fsync({new_dir}) failed: {fsync_err}; "
+                "continuing with rename"
+            )
+
         # Atomic-ish directory swap. If we crash between the two renames,
         # load_from_disk's recovery path (see below) handles it.
-        if os.path.exists(cache_dir):
-            os.rename(cache_dir, old_dir)
-        os.rename(new_dir, cache_dir)
-        if os.path.exists(old_dir):
+        rename_committed = False
+        try:
+            if os.path.exists(cache_dir):
+                os.rename(cache_dir, old_dir)
+            os.rename(new_dir, cache_dir)
+            rename_committed = True
+        except OSError as rename_err:
+            # R8-M7: one of the two renames raised. Attempt
+            # in-process recovery so the next load_from_disk
+            # — which may not happen for hours if the operator
+            # doesn't reboot — doesn't have to. Three cases:
+            #   * cache_dir absent, .new present (rename 2 failed
+            #     before cache_dir was created): retry rename 2.
+            #   * cache_dir absent, .old present, .new present
+            #     (rename 1 succeeded, rename 2 failed): same retry,
+            #     and clean .old if rename 2 then succeeds.
+            #   * cache_dir present, .new present (rename 1 failed):
+            #     keep cache_dir, drop .new (already-committed
+            #     snapshot is the safer choice; the next save
+            #     attempt will rebuild .new from current state).
+            logger.warning(
+                f"[cache_persist] commit-phase rename raised "
+                f"({rename_err}); attempting in-process recovery"
+            )
+            if not os.path.exists(cache_dir) and os.path.exists(new_dir):
+                try:
+                    os.rename(new_dir, cache_dir)
+                    rename_committed = True
+                    logger.warning("[cache_persist] recovered: .new -> cache_dir")
+                except OSError as retry_err:
+                    logger.error(
+                        f"[cache_persist] recovery rename failed "
+                        f"({retry_err}); cache_dir absent, .new orphan "
+                        f"— next load_from_disk will promote .new"
+                    )
+            elif os.path.exists(cache_dir) and os.path.exists(new_dir):
+                # cache_dir survived rename 1 failure; keep it and
+                # drop the staging dir so a future save doesn't
+                # pre-clean a still-meaningful .new.
+                shutil.rmtree(new_dir, ignore_errors=True)
+                logger.warning(
+                    "[cache_persist] kept existing cache_dir, dropped "
+                    "stale .new from failed rename"
+                )
+
+        # Drop the now-redundant .old — but ONLY if the new snapshot
+        # made it into cache_dir. Codex round-1 BLOCKING: pre-fix this
+        # rmtree ran unconditionally, so a commit-phase failure that
+        # left ``.new`` orphan + ``.old`` valid would then DESTROY the
+        # last known-good snapshot before returning False — silently
+        # downgrading "recoverable via load_from_disk" to "no cache
+        # at all". Keep ``.old`` when rename did not commit so the
+        # standard recovery path (``_has_valid_index(old_dir)``) can
+        # restore it on next boot. Errors are non-fatal: next save's
+        # pre-clean will catch anything we leave behind.
+        if rename_committed and os.path.exists(old_dir):
             shutil.rmtree(old_dir, ignore_errors=True)
 
         dt = _time.monotonic() - t0
         tail = " (partial — shutdown deadline hit)" if aborted_early else ""
-        logger.info(
-            f"[cache_persist] SAVED {saved}/{total_entries} entries "
-            f"to {cache_dir} in {dt:.1f}s "
-            f"({self._current_memory / _BYTES_PER_MB:.0f}MB total){tail}"
-        )
-        return saved > 0
+        if rename_committed:
+            logger.info(
+                f"[cache_persist] SAVED {saved}/{total_entries} entries "
+                f"to {cache_dir} in {dt:.1f}s "
+                f"({self._current_memory / _BYTES_PER_MB:.0f}MB total){tail}"
+            )
+        else:
+            logger.warning(
+                f"[cache_persist] partial commit after {dt:.1f}s — "
+                f"{saved}/{total_entries} entries written but rename "
+                f"did not complete; load_from_disk recovery required"
+            )
+        return saved > 0 and rename_committed
 
     def load_from_disk(self, cache_dir: str) -> int:
         """Load cache entries from disk.

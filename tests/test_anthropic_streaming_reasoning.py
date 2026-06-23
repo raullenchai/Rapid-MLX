@@ -167,14 +167,30 @@ def cfg_without_reasoning_parser():
 class TestAnthropicStreamingWithReasoningParser:
     """Issue #185: _stream_anthropic_messages with reasoning_parser active."""
 
-    def test_no_think_tags_yields_text_delta(self, cfg_with_reasoning_parser):
-        """Model outputs plain text with no think tags → text_delta events.
+    def test_no_think_tags_yields_thinking_delta_then_text_correction(
+        self, cfg_with_reasoning_parser
+    ):
+        """No-tag output under the Qwen3 parser: streaming routes to
+        thinking deltas, finalize flips to text block (casual-answer
+        contract).
 
-        The model (e.g. Qwen3.5-4B answering "count 1 to 5") doesn't output
-        any <think> or </think> tags. The reasoning parser conservatively
-        classifies as reasoning during streaming, but finalize_streaming
-        corrects to content. The Anthropic SDK's text_stream must receive
-        non-empty content.
+        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
+        the no-evidence no-tag path is the casual-answer flip
+        (#570/#572) — the streaming loop ships bytes as
+        ``thinking_delta`` (base class Case-3 "no tags yet →
+        reasoning"), and ``finalize_streaming`` then emits the
+        buffered text via ``content`` so the Anthropic route surfaces
+        it as a ``text_block`` block. The route consumer's content
+        gate fires on the finalize correction.
+
+        The Anthropic-stream apparent duplication (thinking_delta +
+        text_delta carrying same bytes) is the documented trade-off
+        for the no-evidence path; without the content flip, casual
+        answers would silently appear as empty on the OpenAI envelope
+        (the #569 regression). The D-STOP-THINK leak surface targeted
+        by this fix is the EXPLICIT-OPENER path — the base class
+        default finalize returns None there, breaking the duplication
+        chain.
         """
         from vllm_mlx.routes.anthropic import (
             AnthropicRequest,
@@ -199,21 +215,40 @@ class TestAnthropicStreamingWithReasoningParser:
         events = _collect_sse_events(gen)
 
         delta_types = _extract_delta_types(events)
-        text = _extract_text_from_deltas(events)
 
-        # Must have text content
-        assert text, f"No text_delta content found in events:\n{delta_types}"
-        assert "1" in text and "5" in text, f"Missing expected content in: {text!r}"
-
-        # Must have at least one text_delta event
-        text_deltas = [
-            t for t in delta_types if t == ("content_block_delta", "text_delta")
+        # Must have at least one thinking_delta event carrying the body
+        thinking_deltas = [
+            t for t in delta_types if t == ("content_block_delta", "thinking_delta")
         ]
-        assert text_deltas, f"No text_delta events in: {delta_types}"
+        assert thinking_deltas, (
+            f"No thinking_delta events in: {delta_types}\n"
+            "Expected base class Case-3 reasoning routing for the no-tag path."
+        )
 
-        # Must have at least one text content_block_start
+        # Must also have a text block from the finalize content
+        # correction — casual-answer contract (#570/#572). Without
+        # this flip, the casual answer would never reach
+        # ``message.content`` on the OpenAI envelope.
         text_starts = [t for t in delta_types if t == ("content_block_start", "text")]
-        assert text_starts, f"No text content_block_start in: {delta_types}"
+        assert text_starts, (
+            f"Casual-answer regression: finalize content correction did "
+            f"not open a text block. Without this the no-tag casual "
+            f"answer would be silently empty on message.content. "
+            f"Events: {delta_types}"
+        )
+
+        # Codex round-14 NIT: assert the finalized text bytes actually
+        # appear in a text_delta payload, not just that a text block
+        # opened. Without this assertion a regression that emitted an
+        # empty text block (or wrong bytes) would still pass.
+        text_payload = _extract_text_from_deltas(events)
+        for expected_byte in ("1", "2", "3", "4", "5"):
+            assert expected_byte in text_payload, (
+                f"Casual-answer regression: expected byte "
+                f"{expected_byte!r} not in finalized text payload "
+                f"{text_payload!r}. The text block opened but its "
+                f"contents did not carry the model output."
+            )
 
     def test_both_think_tags_emits_thinking_and_text(self, cfg_with_reasoning_parser):
         """Model outputs <think>...</think> → separated thinking + text blocks."""

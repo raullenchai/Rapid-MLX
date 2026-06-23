@@ -391,6 +391,7 @@ def anthropic_client(monkeypatch):
 
     from vllm_mlx.config import reset_config
     from vllm_mlx.middleware.auth import rate_limiter
+    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
     from vllm_mlx.routes.anthropic import router
 
     cfg = reset_config()
@@ -406,6 +407,12 @@ def anthropic_client(monkeypatch):
     rate_limiter._requests.clear()
 
     app = FastAPI()
+    # H-17: mirror production wiring — the route relies on the global
+    # ``pydantic.ValidationError`` handler to map malformed payloads to
+    # the sanitized 400 envelope. Without the install, manually-built
+    # ``AnthropicRequest(**body)`` raises the raw exception and bubbles
+    # to a 500.
+    install_exception_handlers(app)
     app.include_router(router)
     yield SimpleNamespace(client=TestClient(app), engine=cfg.engine)
 
@@ -476,9 +483,14 @@ class TestRouteOutputConfigSurface:
             json=_payload(output_config={"format": {"type": "regex", "schema": {}}}),
         )
         assert resp.status_code == 400
-        detail = resp.json()["detail"]
-        assert "json_schema" in detail
-        assert "/v1/messages" in detail
+        # H-17: production wires the canonical envelope via
+        # ``install_exception_handlers`` — the route's ``HTTPException``
+        # surfaces as ``{"error": {"message": ...}}``, not as the
+        # FastAPI default ``{"detail": ...}``. Fixture was updated to
+        # install the global handlers; assert the real shape here.
+        message = resp.json()["error"]["message"]
+        assert "json_schema" in message
+        assert "/v1/messages" in message
         # The engine must NOT have been invoked for a 400.
         assert anthropic_client.engine.calls == []
 
@@ -488,7 +500,9 @@ class TestRouteOutputConfigSurface:
             json=_payload(output_config={"format": {"type": "json_schema"}}),
         )
         assert resp.status_code == 400
-        assert "schema" in resp.json()["detail"]
+        # H-17: see ``test_unknown_format_type_returns_400`` — envelope
+        # shape is the canonical ``error.message`` once handlers wire.
+        assert "schema" in resp.json()["error"]["message"]
         assert anthropic_client.engine.calls == []
 
     def test_invalid_schema_type_returns_400(self, anthropic_client):

@@ -8,6 +8,8 @@ dependency. Mirrors the test shape of test_anthropic_adapter.py.
 
 import json
 
+import pytest
+
 from vllm_mlx.api.models import (
     AssistantMessage,
     ChatCompletionChoice,
@@ -85,17 +87,23 @@ class TestConvertTools:
         assert td.function["description"] == "Get weather"
         assert td.function["parameters"]["properties"] == {"city": {"type": "string"}}
 
-    def test_drops_non_function_tools(self):
-        tools = _convert_tools(
-            [
-                {"type": "function", "name": "real_one"},
-                {"type": "web_search"},
-                {"type": "code_interpreter"},
-                {"type": "image_generation"},
-            ]
-        )
-        assert tools is not None and len(tools) == 1
-        assert tools[0].function["name"] == "real_one"
+    def test_unsupported_tool_types_raise_400(self):
+        """Yuki F13 (0.8.5 dogfood): unsupported tool types now raise a
+        clean 400 instead of silently dropping. The chat/anthropic lanes
+        already 400; the /v1/responses lane now matches.
+        """
+        from fastapi import HTTPException
+
+        for unsupported in ("web_search", "code_interpreter", "image_generation"):
+            with pytest.raises(HTTPException) as exc_info:
+                _convert_tools(
+                    [
+                        {"type": "function", "name": "real_one"},
+                        {"type": unsupported},
+                    ]
+                )
+            assert exc_info.value.status_code == 400
+            assert "unsupported_tool_type" in str(exc_info.value.detail)
 
     def test_drops_function_without_name(self):
         tools = _convert_tools([{"type": "function", "description": "no name"}])
@@ -253,6 +261,163 @@ class TestResponsesToOpenai:
         assert "part one" in chat.messages[0].content
         assert "part two" in chat.messages[0].content
 
+    def test_input_image_is_preserved_as_chat_multimodal_content(self):
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="user",
+                    content=[
+                        ResponsesContentItem(type="input_text", text="Describe this"),
+                        ResponsesContentItem(
+                            type="input_image",
+                            image_url="data:image/png;base64,abc",
+                        ),
+                    ],
+                ),
+            ],
+        )
+        chat = responses_to_openai(req)
+
+        assert len(chat.messages) == 1
+        content = chat.messages[0].content
+        assert isinstance(content, list)
+        assert content[0].type == "text"
+        assert content[0].text == "Describe this"
+        assert content[1].type == "image_url"
+        assert content[1].image_url.url == "data:image/png;base64,abc"
+
+    def test_input_image_preserves_image_url_options(self):
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem.model_construct(
+                    type="message",
+                    role="user",
+                    content=[
+                        {
+                            "type": "input_image",
+                            "image_url": {
+                                "url": "data:image/png;base64,abc",
+                                "detail": "high",
+                                "unexpected": "ignored",
+                            },
+                        },
+                    ],
+                )
+            ],
+        )
+
+        chat = responses_to_openai(req)
+
+        image_url = chat.messages[0].content[0].image_url
+        assert image_url.url == "data:image/png;base64,abc"
+        assert image_url.detail == "high"
+        assert not hasattr(image_url, "unexpected")
+
+    def test_malformed_responses_content_block_does_not_become_empty_prompt(self):
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="user",
+                    content=[ResponsesContentItem(type="input_image")],
+                ),
+            ],
+        )
+
+        with pytest.raises(ValueError, match="input_image.image_url"):
+            responses_to_openai(req)
+
+    def test_input_audio_content_block_rejected_on_responses_path(self):
+        req = ResponsesRequest.model_construct(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem.model_construct(
+                    type="message",
+                    role="user",
+                    content=[
+                        {
+                            "type": "input_audio",
+                            "input_audio": {"data": "AAAA", "format": "wav"},
+                        }
+                    ],
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match="input_audio content blocks"):
+            responses_to_openai(req)
+
+    @pytest.mark.parametrize(
+        ("content", "match"),
+        [
+            (None, "Responses message content is required"),
+            ([], "Responses message content must not be empty"),
+        ],
+    )
+    def test_empty_message_content_does_not_become_empty_prompt(self, content, match):
+        req = ResponsesRequest.model_construct(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem.model_construct(
+                    type="message",
+                    role="user",
+                    content=content,
+                )
+            ],
+        )
+
+        with pytest.raises(ValueError, match=match):
+            responses_to_openai(req)
+
+    def test_empty_string_message_content_is_preserved(self):
+        req = ResponsesRequest.model_construct(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem.model_construct(
+                    type="message",
+                    role="user",
+                    content="",
+                )
+            ],
+        )
+
+        chat = responses_to_openai(req)
+
+        assert chat.messages[0].role == "user"
+        assert chat.messages[0].content == ""
+
+    @pytest.mark.parametrize(
+        ("content_item", "match"),
+        [
+            (ResponsesContentItem(type="input_text"), "input_text.text is required"),
+            (
+                ResponsesContentItem(type="input_text", text=""),
+                "input_text.text must be a non-empty string",
+            ),
+            (ResponsesContentItem(type="output_text"), "output_text.text is required"),
+        ],
+    )
+    def test_malformed_text_content_block_does_not_become_empty_prompt(
+        self, content_item, match
+    ):
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="user",
+                    content=[content_item],
+                ),
+            ],
+        )
+
+        with pytest.raises(ValueError, match=match):
+            responses_to_openai(req)
+
     def test_merge_system_messages_defends_list_content(self):
         # Directly exercise the defensive `_to_text(list)` path that the
         # public `responses_to_openai` flow cannot reach today (because
@@ -347,7 +512,8 @@ class TestResponsesToOpenai:
         assert chat.messages[0].content == ("You are the base agent.\n\nBe terse.")
         # All other messages preserved in order.
         assert chat.messages[1].role == "user"
-        assert chat.messages[1].content == "Hi"
+        assert chat.messages[1].content[0].type == "text"
+        assert chat.messages[1].content[0].text == "Hi"
 
     def test_message_input_item(self):
         req = ResponsesRequest(
@@ -363,7 +529,25 @@ class TestResponsesToOpenai:
         chat = responses_to_openai(req)
         assert len(chat.messages) == 1
         assert chat.messages[0].role == "user"
-        assert chat.messages[0].content == "Hello"
+        assert chat.messages[0].content[0].type == "text"
+        assert chat.messages[0].content[0].text == "Hello"
+
+    def test_message_input_item_string_content_uses_text_part_validation(self):
+        req = ResponsesRequest(
+            model="gpt-5",
+            input=[
+                ResponsesInputItem(
+                    type="message",
+                    role="user",
+                    content="Hello",
+                ),
+            ],
+        )
+        chat = responses_to_openai(req)
+        assert len(chat.messages) == 1
+        assert chat.messages[0].role == "user"
+        assert chat.messages[0].content[0].type == "text"
+        assert chat.messages[0].content[0].text == "Hello"
 
     def test_message_input_joins_multiple_text_parts(self):
         req = ResponsesRequest(
@@ -380,7 +564,10 @@ class TestResponsesToOpenai:
             ],
         )
         chat = responses_to_openai(req)
-        assert chat.messages[0].content == "line one\nline two"
+        assert [part.text for part in chat.messages[0].content] == [
+            "line one",
+            "line two",
+        ]
 
     def test_output_text_content_replays_assistant(self):
         # Codex echoes prior assistant turns as type=message role=assistant
@@ -399,7 +586,8 @@ class TestResponsesToOpenai:
         )
         chat = responses_to_openai(req)
         assert chat.messages[0].role == "assistant"
-        assert chat.messages[0].content == "prior reply"
+        assert chat.messages[0].content[0].type == "text"
+        assert chat.messages[0].content[0].text == "prior reply"
 
     def test_function_call_input_item_becomes_assistant_with_tool_calls(self):
         req = ResponsesRequest(
@@ -471,7 +659,7 @@ class TestResponsesToOpenai:
         )
         chat = responses_to_openai(req)
         assert len(chat.messages) == 1
-        assert chat.messages[0].content == "Hi"
+        assert chat.messages[0].content[0].text == "Hi"
 
     def test_unknown_item_types_silently_dropped(self):
         req = ResponsesRequest(
@@ -487,6 +675,7 @@ class TestResponsesToOpenai:
         )
         chat = responses_to_openai(req)
         assert len(chat.messages) == 1
+        assert chat.messages[0].content[0].text == "Hi"
 
     def test_sampling_fields_forwarded(self):
         req = ResponsesRequest(

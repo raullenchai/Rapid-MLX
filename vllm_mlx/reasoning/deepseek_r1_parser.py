@@ -149,28 +149,78 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
 
         return result
 
-    def finalize_streaming(self, accumulated_text: str) -> DeltaMessage | None:
+    def finalize_streaming(
+        self,
+        accumulated_text: str,
+        *,
+        matched_stop: str | None = None,
+        prompt_thinking_active: bool = False,
+        finish_reason: str | None = None,
+    ) -> DeltaMessage | None:
         """
         Finalize streaming output.
 
-        If no tags were ever seen and the output was short (under threshold),
-        the base class would have classified it all as reasoning. Emit a
-        correction to reclassify as content.
+        Codex round-4 BLOCKING fix (PR #799 review): ``matched_stop``
+        alone is NOT enough to identify prompt-injected mid-think.
+        A casual answer like ``"The answer is STOP"`` under
+        ``stop=["STOP"]`` ALSO has matched_stop set but is not
+        chain-of-thought.
+
+        Codex round-6 BLOCKING fix (PR #799 review): ``max_tokens`` cuts
+        mid-think share the same accumulator state as stop-mid-think,
+        so ``finish_reason="length" AND prompt_thinking_active`` is the
+        third D-STOP-THINK signal — without it, the no-tag short answer
+        arm would flip to content even though the model was thinking via
+        the injected template.
+
+        Discriminator (AND of route-supplied signals):
+
+        * ``finish_reason="length"`` AND prompt_thinking_active →
+          D-STOP-THINK max_tokens-cut shape → route to reasoning.
+        * ``matched_stop`` set AND prompt_thinking_active → D-STOP-THINK
+          stop-cut shape → route to reasoning.
+        * Otherwise → casual answer (or no-evidence path) → flip to
+          content per #570/#572 so the route consumer surfaces a
+          text block.
+
+        The D-STOP-THINK explicit-opener path is still handled by the
+        base class default ``finalize_streaming`` which returns None:
+        the short-no-tag arm below does NOT fire there because
+        ``_saw_any_tag`` becomes True after the literal ``<think>``.
 
         Args:
             accumulated_text: Complete accumulated text from stream.
+            matched_stop: User-supplied stop string that fired, or
+                None for natural EOS / max_tokens.
+            prompt_thinking_active: True when the chat template
+                injected ``<think>`` AND ``enable_thinking`` is non-
+                False — i.e. the model was actually in thinking mode.
+            finish_reason: Engine finish reason for this turn. Used to
+                disambiguate max_tokens cuts (``"length"``) from natural
+                EOS (``"stop"``) when ``matched_stop`` is None.
 
         Returns:
             DeltaMessage correction, or None if no correction needed.
         """
-        if (
-            not self._saw_any_tag
-            and accumulated_text
-            and len(accumulated_text) < self.NO_TAG_CONTENT_THRESHOLD
-        ):
-            # Short no-tag output was misclassified as reasoning.
-            # Return correction: emit as content. The caller should
-            # yield a chunk that moves reasoning → content.
+        if not self._saw_any_tag and accumulated_text:
+            if finish_reason == "length" and prompt_thinking_active:
+                # Prompt-injected mid-think + max_tokens cut — route to
+                # reasoning to suppress D-STOP-THINK duplication. This
+                # must run before the no-tag content threshold: long
+                # prompt-injected thoughts are still thoughts when a real
+                # truncation signal arrives.
+                return DeltaMessage(reasoning=accumulated_text)
+            if matched_stop is not None and prompt_thinking_active:
+                # Prompt-injected mid-think shape — route to reasoning
+                # to suppress D-STOP-THINK duplication. Same
+                # above-threshold rationale as the length arm.
+                return DeltaMessage(reasoning=accumulated_text)
+            if len(accumulated_text) >= self.NO_TAG_CONTENT_THRESHOLD:
+                return None
+            # Casual no-tag answer (or max_tokens cut, or stop without
+            # active thinking) — flip to content per #570/#572.
+            # Without this the casual answer would be silently empty
+            # on message.content.
             return DeltaMessage(content=accumulated_text)
         return None
 

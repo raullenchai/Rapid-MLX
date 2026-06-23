@@ -20,6 +20,7 @@ class TestServerConfig:
         assert cfg.engine is None
         assert cfg.model_name is None
         assert cfg.default_max_tokens == 4096
+        assert cfg.default_max_tokens_is_explicit is False
         assert cfg.thinking_token_budget == 2048
         # Bumped 300 → 1800 (PR H22): 5min default silently truncated
         # reasoning generations and 30B+ greedy decodes.
@@ -57,11 +58,13 @@ class TestServerConfig:
         cfg.model_name = "test-model"
         cfg.api_key = "secret"
         cfg.default_max_tokens = 8192
+        cfg.default_max_tokens_is_explicit = True
 
         assert cfg.engine == "fake-engine"
         assert cfg.model_name == "test-model"
         assert cfg.api_key == "secret"
         assert cfg.default_max_tokens == 8192
+        assert cfg.default_max_tokens_is_explicit is True
 
 
 # ======================================================================

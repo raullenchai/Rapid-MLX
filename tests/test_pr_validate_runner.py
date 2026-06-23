@@ -16,11 +16,14 @@ data over the network and is not unit-testable here.
 
 from __future__ import annotations
 
+import subprocess
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
 
 from scripts.pr_validate.base import Step, StepResult
+from scripts.pr_validate.context import Context
 from scripts.pr_validate.runner import run_pipeline
 from scripts.pr_validate.steps.fetch import FetchStep
 
@@ -190,6 +193,32 @@ class TestFailFast:
         assert rc == 0
         assert "## [step_a]" in captured.err
         assert "## [step_b]" in captured.err
+
+    def test_run_pipeline_uses_unique_artifact_dir(
+        self, repo_root_cwd, tmp_path, monkeypatch, capsys
+    ):
+        """Repeated runs for the same PR must not read old failure logs."""
+        from scripts.pr_validate import runner as runner_mod
+
+        work_root = tmp_path / "pr_validate"
+        stale_dir = work_root / "pr-999"
+        stale_dir.mkdir(parents=True, exist_ok=True)
+        stale_file = stale_dir / "agent-old-failure.log"
+        stale_file.write_text("FAIL: stale previous run\n")
+
+        def fake_context(*args, **kwargs):
+            ctx = Context(*args, **kwargs)
+            ctx.work_dir = work_root
+            return ctx
+
+        monkeypatch.setattr(runner_mod, "Context", fake_context)
+
+        rc = run_pipeline(pr_number=999, steps=_fake_pipeline([("step_a", "pass")]))
+        captured = capsys.readouterr()
+
+        assert rc == 0
+        assert stale_file.exists()
+        assert f"artifacts → {work_root}/pr-999/run-" in captured.err
 
     def test_skip_steps_can_drop_fetch_but_pipeline_still_runs(
         self, repo_root_cwd, capsys
@@ -440,3 +469,472 @@ class TestSelectModels:
             f"match expected — check overrides:{qwen36.model_id} in "
             "golden_models.yaml"
         )
+
+    def test_real_yaml_skips_diffusiongemma_quality_agents(self):
+        """diffusiongemma is a text-diffusion stress/tool-parser smoke
+        target, not a hard correctness oracle for generic agent prompts."""
+        from scripts.pr_validate.steps.stress_e2e_bench import _load_registry
+
+        registry = _load_registry()
+        agents = {a["name"]: a for a in registry["agents"]}
+        model_id = "mlx-community/diffusiongemma-26B-A4B-it-4bit"
+
+        assert model_id in agents["anthropic_sdk"].get("skip_for_models", [])
+        assert model_id in agents["langchain"].get("skip_for_models", [])
+
+
+class TestStressPreexistingClassification:
+    @staticmethod
+    def _ctx(tmp_path: Path, monkeypatch) -> Context:
+        (tmp_path / "pyproject.toml").write_text("[project]\nname = 'fake'\n")
+        monkeypatch.chdir(tmp_path)
+        ctx = Context(pr_number=123)
+        ctx.work_dir = tmp_path / "artifacts"
+        ctx.work_dir.mkdir()
+        ctx.base_sha = "base-sha"
+        return ctx
+
+    @staticmethod
+    def _registry() -> dict:
+        return {
+            "families": [
+                {
+                    "family": "toy",
+                    "candidates": [
+                        {
+                            "id": "toy/model",
+                            "ram_gb_required": 1,
+                            "quality_tier": "golden",
+                        }
+                    ],
+                }
+            ],
+            "agents": [],
+        }
+
+    @staticmethod
+    @contextmanager
+    def _fake_server(choice, ctx):  # type: ignore[no-untyped-def]
+        yield str(ctx.artifact_path(f"server-{choice.model_id.replace('/', '--')}.log"))
+
+    def test_pr_stress_failure_is_nonblocking_when_base_also_fails(
+        self, tmp_path, monkeypatch
+    ):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        monkeypatch.setattr(step_mod, "_load_registry", self._registry)
+        monkeypatch.setattr(step_mod, "_available_ram_gb", lambda: 64.0)
+        monkeypatch.setattr(step_mod, "_server", self._fake_server)
+        monkeypatch.setattr(
+            step_mod,
+            "_run_stress",
+            lambda _ctx, _choice: {
+                "status": "fail",
+                "summary": "7/8 passed",
+                "artifact": "stress.log",
+            },
+        )
+        monkeypatch.setattr(
+            step_mod,
+            "_run_base_check",
+            lambda _ctx, _choice, _kind, _agent: {
+                "status": "fail",
+                "summary": "7/8 passed on base",
+                "artifact": "base-stress.log",
+                "executed": True,
+            },
+        )
+        monkeypatch.setattr(
+            step_mod,
+            "_run_bench",
+            lambda _ctx, _choice: {
+                "status": "pass",
+                "summary": "bench ok",
+                "artifact": "bench.json",
+            },
+        )
+
+        result = step_mod.StressE2EBenchStep().run(self._ctx(tmp_path, monkeypatch))
+
+        assert result.status == "pass"
+        assert "pre-existing" in result.summary
+        assert any("[PRE-EXISTING] stress on toy/model" in f for f in result.findings)
+        assert not any("[BLOCKING] stress on toy/model" in f for f in result.findings)
+
+    def test_pr_stress_failure_blocks_when_base_passes(self, tmp_path, monkeypatch):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        monkeypatch.setattr(step_mod, "_load_registry", self._registry)
+        monkeypatch.setattr(step_mod, "_available_ram_gb", lambda: 64.0)
+        monkeypatch.setattr(step_mod, "_server", self._fake_server)
+        monkeypatch.setattr(
+            step_mod,
+            "_run_stress",
+            lambda _ctx, _choice: {
+                "status": "fail",
+                "summary": "7/8 passed",
+                "artifact": "stress.log",
+            },
+        )
+        monkeypatch.setattr(
+            step_mod,
+            "_run_base_check",
+            lambda _ctx, _choice, _kind, _agent: {
+                "status": "pass",
+                "summary": "8/8 passed on base",
+                "artifact": "base-stress.log",
+                "executed": True,
+            },
+        )
+        monkeypatch.setattr(
+            step_mod,
+            "_run_bench",
+            lambda _ctx, _choice: {
+                "status": "pass",
+                "summary": "bench ok",
+                "artifact": "bench.json",
+            },
+        )
+
+        result = step_mod.StressE2EBenchStep().run(self._ctx(tmp_path, monkeypatch))
+
+        assert result.status == "fail"
+        assert any("[BLOCKING] stress on toy/model" in f for f in result.findings)
+
+    def test_base_skip_is_inconclusive_and_blocks(self, tmp_path, monkeypatch):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        monkeypatch.setattr(step_mod, "_load_registry", self._registry)
+        monkeypatch.setattr(step_mod, "_available_ram_gb", lambda: 64.0)
+        monkeypatch.setattr(step_mod, "_server", self._fake_server)
+        monkeypatch.setattr(
+            step_mod,
+            "_run_stress",
+            lambda _ctx, _choice: {
+                "status": "fail",
+                "summary": "7/8 passed",
+                "artifact": "stress.log",
+                "executed": True,
+            },
+        )
+        monkeypatch.setattr(
+            step_mod,
+            "_run_base_check",
+            lambda _ctx, _choice, _kind, _agent: {
+                "status": "skip",
+                "summary": "script missing",
+                "executed": False,
+            },
+        )
+        monkeypatch.setattr(
+            step_mod,
+            "_run_bench",
+            lambda _ctx, _choice: {
+                "status": "pass",
+                "summary": "bench ok",
+                "artifact": "bench.json",
+                "executed": True,
+            },
+        )
+
+        result = step_mod.StressE2EBenchStep().run(self._ctx(tmp_path, monkeypatch))
+
+        assert result.status == "fail"
+        assert any("base skip: script missing" in f for f in result.findings)
+
+    def test_collected_failures_are_attributed_when_bench_crashes(
+        self, tmp_path, monkeypatch
+    ):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        monkeypatch.setattr(step_mod, "_load_registry", self._registry)
+        monkeypatch.setattr(step_mod, "_available_ram_gb", lambda: 64.0)
+        monkeypatch.setattr(step_mod, "_server", self._fake_server)
+        monkeypatch.setattr(
+            step_mod,
+            "_run_stress",
+            lambda _ctx, _choice: {
+                "status": "fail",
+                "summary": "7/8 passed",
+                "artifact": "stress.log",
+                "executed": True,
+            },
+        )
+        monkeypatch.setattr(
+            step_mod,
+            "_run_base_check",
+            lambda _ctx, _choice, _kind, _agent: {
+                "status": "fail",
+                "summary": "7/8 passed on base",
+                "artifact": "base-stress.log",
+                "executed": True,
+            },
+        )
+
+        def crashing_bench(_ctx, _choice):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr(step_mod, "_run_bench", crashing_bench)
+
+        result = step_mod.StressE2EBenchStep().run(self._ctx(tmp_path, monkeypatch))
+
+        assert result.status == "fail"
+        assert any("[PRE-EXISTING] stress on toy/model" in f for f in result.findings)
+        assert any("[BLOCKING] bench on toy/model" in f for f in result.findings)
+
+    def test_agent_skip_is_not_sent_to_base_check(self, tmp_path, monkeypatch):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        registry = self._registry()
+        registry["agents"] = [{"name": "missing", "script": "missing.py"}]
+
+        def fail_if_called(*_args, **_kwargs):
+            raise AssertionError("skip must not trigger base check")
+
+        monkeypatch.setattr(step_mod, "_load_registry", lambda: registry)
+        monkeypatch.setattr(step_mod, "_available_ram_gb", lambda: 64.0)
+        monkeypatch.setattr(step_mod, "_server", self._fake_server)
+        monkeypatch.setattr(
+            step_mod,
+            "_run_stress",
+            lambda _ctx, _choice: {
+                "status": "pass",
+                "summary": "8/8 passed",
+                "artifact": "stress.log",
+            },
+        )
+        monkeypatch.setattr(step_mod, "_run_base_check", fail_if_called)
+        monkeypatch.setattr(
+            step_mod,
+            "_run_bench",
+            lambda _ctx, _choice: {
+                "status": "pass",
+                "summary": "bench ok",
+                "artifact": "bench.json",
+            },
+        )
+
+        result = step_mod.StressE2EBenchStep().run(self._ctx(tmp_path, monkeypatch))
+
+        assert result.status == "pass"
+
+    def test_run_base_check_uses_base_worktree_cwd_and_pythonpath(
+        self, tmp_path, monkeypatch
+    ):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        ctx = self._ctx(tmp_path, monkeypatch)
+        choice = step_mod.ModelChoice(
+            family="toy",
+            model_id="toy/model",
+            ram_gb_required=1,
+            quality_tier="golden",
+            extra_args=[],
+        )
+        subprocess_calls = []
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            subprocess_calls.append((cmd, kwargs))
+            if cmd[:3] == ["git", "worktree", "add"]:
+                assert not Path(cmd[4]).exists()
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        @contextmanager
+        def fake_server(
+            _choice, _ctx, *, repo_root, artifact_prefix="", isolate_pythonpath=False
+        ):
+            captured["server_repo_root"] = repo_root
+            captured["server_prefix"] = artifact_prefix
+            captured["server_isolated"] = isolate_pythonpath
+            yield "base-server.log"
+
+        def fake_stress(
+            _ctx,
+            _choice,
+            *,
+            repo_root=None,
+            artifact_prefix="",
+            isolate_pythonpath=False,
+        ):
+            captured["stress_repo_root"] = repo_root
+            captured["stress_prefix"] = artifact_prefix
+            captured["stress_isolated"] = isolate_pythonpath
+            return {"status": "pass", "summary": "8/8 passed", "artifact": "base.log"}
+
+        monkeypatch.setattr(step_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(step_mod, "_server_in_repo", fake_server)
+        monkeypatch.setattr(step_mod, "_run_stress", fake_stress)
+
+        result = step_mod._run_base_check(ctx, choice, "stress", None)
+
+        assert result["status"] == "pass"
+        assert subprocess_calls[0][0][:3] == ["git", "worktree", "add"]
+        assert subprocess_calls[0][1]["cwd"] == str(ctx.repo_root)
+        assert captured["server_repo_root"] == captured["stress_repo_root"]
+        assert captured["server_repo_root"].name.startswith("pr_validate_stress_base_")
+        assert captured["server_prefix"] == "base-stress-"
+        assert captured["stress_prefix"] == "base-stress-"
+        assert captured["server_isolated"] is True
+        assert captured["stress_isolated"] is True
+
+    def test_run_base_check_without_base_ref_is_inconclusive(
+        self, tmp_path, monkeypatch
+    ):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        ctx = self._ctx(tmp_path, monkeypatch)
+        ctx.base_sha = None
+        ctx.base_branch = None
+
+        def fail_if_called(*_args, **_kwargs):
+            raise AssertionError("missing base ref must not create a worktree")
+
+        monkeypatch.setattr(step_mod.subprocess, "run", fail_if_called)
+
+        choice = step_mod.ModelChoice(
+            family="toy",
+            model_id="toy/model",
+            ram_gb_required=1,
+            quality_tier="golden",
+            extra_args=[],
+        )
+        result = step_mod._run_base_check(ctx, choice, "stress", None)
+
+        assert result["status"] == "error"
+        assert result["summary"] == "base check failed: base ref unavailable"
+        assert result["executed"] is False
+
+    def test_run_base_check_prunes_if_worktree_remove_fails(
+        self, tmp_path, monkeypatch
+    ):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        ctx = self._ctx(tmp_path, monkeypatch)
+        choice = step_mod.ModelChoice(
+            family="toy",
+            model_id="toy/model",
+            ram_gb_required=1,
+            quality_tier="golden",
+            extra_args=[],
+        )
+        commands = []
+
+        def fake_run(cmd, **kwargs):
+            commands.append(cmd)
+            if cmd[:3] == ["git", "worktree", "remove"]:
+                return subprocess.CompletedProcess(cmd, 1, stdout="", stderr="stale")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        @contextmanager
+        def fake_server(*_args, **_kwargs):
+            yield "base-server.log"
+
+        monkeypatch.setattr(step_mod.subprocess, "run", fake_run)
+        monkeypatch.setattr(step_mod, "_server_in_repo", fake_server)
+        monkeypatch.setattr(
+            step_mod,
+            "_run_stress",
+            lambda *_args, **_kwargs: {
+                "status": "pass",
+                "summary": "8/8 passed",
+                "artifact": "base.log",
+                "executed": True,
+            },
+        )
+
+        result = step_mod._run_base_check(ctx, choice, "stress", None)
+
+        assert result["status"] == "pass"
+        assert ["git", "worktree", "prune"] in commands
+
+    def test_repo_python_env_prefers_supplied_worktree(self, tmp_path, monkeypatch):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        monkeypatch.setenv("PYTHONPATH", "/existing/path")
+
+        env = step_mod._repo_python_env(tmp_path)
+
+        assert env["PYTHONPATH"].split(":")[:2] == [str(tmp_path), "/existing/path"]
+
+    def test_repo_python_env_can_isolate_existing_pythonpath(
+        self, tmp_path, monkeypatch
+    ):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        monkeypatch.setenv("PYTHONPATH", "/pr/checkout:/dependency/path")
+
+        env = step_mod._repo_python_env(tmp_path, isolate_existing=True)
+
+        assert env["PYTHONPATH"] == str(tmp_path)
+
+    def test_run_stress_uses_isolated_pythonpath_for_base_worktree(
+        self, tmp_path, monkeypatch
+    ):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        ctx = self._ctx(tmp_path, monkeypatch)
+        base_tree = tmp_path / "base-tree"
+        base_tree.mkdir()
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            captured["cwd"] = kwargs["cwd"]
+            captured["pythonpath"] = kwargs["env"]["PYTHONPATH"]
+            return subprocess.CompletedProcess(cmd, 0, stdout="8/8 passed\n", stderr="")
+
+        monkeypatch.setenv("PYTHONPATH", "/pr/checkout:/dependency/path")
+        monkeypatch.setattr(step_mod.subprocess, "run", fake_run)
+
+        choice = step_mod.ModelChoice(
+            family="toy",
+            model_id="toy/model",
+            ram_gb_required=1,
+            quality_tier="golden",
+            extra_args=[],
+        )
+        result = step_mod._run_stress(
+            ctx,
+            choice,
+            repo_root=base_tree,
+            isolate_pythonpath=True,
+        )
+
+        assert result["status"] == "pass"
+        assert captured["cmd"][:2] == ["python3.12", "scripts/stress_test.py"]
+        assert captured["cwd"] == str(base_tree)
+        assert captured["pythonpath"] == str(base_tree)
+
+    def test_tail_text_truncates_at_word_boundary(self):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        text = "alpha beta gamma delta epsilon"
+
+        assert step_mod._tail_text(text, limit=18) == "... delta epsilon"
+        assert step_mod._tail_text("short text", limit=50) == "short text"
+
+
+class TestLangChainGuidedCapabilityHandling:
+    def test_guided_extra_error_is_skip_eligible(self):
+        from tests.integrations import test_langchain
+
+        class _Response:
+            @staticmethod
+            def json():
+                return {"error": {"code": "guided_extra_required"}}
+
+        class _GuidedExtraError(Exception):
+            response = _Response()
+
+        assert test_langchain._is_guided_extra_required_error(_GuidedExtraError())
+        assert test_langchain._is_ok_result("SKIP: rapid-mlx[guided] not installed")
+        assert not test_langchain._is_ok_result("SKIP: unrelated future check")
+
+    def test_unrelated_langchain_error_still_fails(self):
+        from tests.integrations import test_langchain
+
+        assert not test_langchain._is_guided_extra_required_error(
+            RuntimeError("guided_extra_required appeared in unrelated text")
+        )
+        assert not test_langchain._is_ok_result("FAIL: schema mismatch")

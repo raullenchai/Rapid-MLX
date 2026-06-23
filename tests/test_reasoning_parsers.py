@@ -363,12 +363,28 @@ class TestDeepSeekR1:
         assert result.reasoning == short
 
     def test_finalize_short_no_tag_correction(self):
-        """Short output without tags gets corrected from reasoning to content."""
+        """Short output without tags surfaces via content (casual answer).
+
+        Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
+        the no-evidence no-tag rescue is the casual-answer contract
+        (#570/#572) — flip to ``content`` so the route consumer
+        surfaces a text block. Route consumers ignore
+        ``final_msg.reasoning``, so routing the rescue text via
+        reasoning would never reach the wire (the bytes already
+        shipped as reasoning during streaming would be the only
+        visible trace, and casual answers must show in
+        ``message.content`` to satisfy the OpenAI envelope contract).
+
+        The D-STOP-THINK duplication leak is the EXPLICIT-OPENER path
+        — that's handled by the base class default finalize which
+        returns None, breaking the duplication chain.
+        """
         self.parser.reset_state()
         self.parser._saw_any_tag = False
         result = self.parser.finalize_streaming("short answer")
         assert result is not None
         assert result.content == "short answer"
+        assert result.reasoning is None
 
     def test_finalize_long_no_tag_no_correction(self):
         """Long output without tags: no correction (already handled by threshold)."""
@@ -1891,17 +1907,31 @@ class TestQwen3:
 
     def test_finalize_streaming_bare_think_preamble_routes_to_reasoning(self):
         # Streaming counterpart: when the chat template injected
-        # ``<think>`` and the model was truncated mid-thought before
-        # ``</think>``, ``finalize_streaming`` previously emitted a
-        # correction with the full text as ``content``. With the
-        # bare-text fallback it surfaces in ``reasoning`` instead.
+        # ``<think>`` and a real truncation signal fired
+        # (matched_stop set OR finish_reason="length") AND
+        # ``prompt_thinking_active=True``, the ``finalize_streaming``
+        # correction surfaces the trace via ``reasoning`` to suppress
+        # D-STOP-THINK duplication with the bytes already shipped on
+        # the reasoning channel.
+        #
+        # Codex round-8 BLOCKING refinement (PR #799): the saw-prefix
+        # branch only routes to reasoning under a real truncation
+        # signal — natural EOS now correctly flips to content per
+        # the #569 silent-drop rescue.
+        #
+        # Codex round-10 BLOCKING refinement (PR #799): the AND-of-
+        # signals gate now also requires ``prompt_thinking_active``
+        # — without it, a literal model-emitted ``<think>`` opener
+        # flips to content per the symmetric no-prefix discriminator.
         parser = Qwen3ReasoningParser()
         accumulated = (
             "<think>Here's a thinking process:\n\n"
             "1. Analyze the user's request.\n"
             "2. Compare options."
         )
-        result = parser.finalize_streaming(accumulated)
+        result = parser.finalize_streaming(
+            accumulated, matched_stop="STOP", prompt_thinking_active=True
+        )
         assert result is not None
         assert result.reasoning is not None
         assert "thinking process" in result.reasoning
@@ -1914,34 +1944,44 @@ class TestQwen3:
         )
         assert result is None
 
-    def test_finalize_streaming_bare_preamble_without_think_prefix_routes_to_content(
-        self,
-    ):
-        # Codex r3 BLOCKING symmetry: ``finalize_streaming`` has no
-        # ``enable_thinking`` kwarg, so the leading ``<think>`` token
-        # is the only evidence the stream is in thinking mode. Without
-        # that evidence, a bare-text preamble in the accumulated text
-        # is more likely a casual answer opener (the user asked the
-        # model to "explain your thinking process") than an actual
-        # truncated thought trace. Pre-fix the streaming side fired
-        # the bare-text fallback regardless of context and silently
-        # routed valid non-thinking answers into the dead-code
-        # ``reasoning`` channel — the route consumer ignores
-        # ``final_msg.reasoning`` so the answer never reached the
-        # client. Symmetric with the explicit-False gate in
-        # ``extract_reasoning``.
+    def test_finalize_streaming_bare_preamble_routes_to_reasoning(self):
+        """The bare-preamble scratchpad-label fallback (#570) routes
+        the rescue text to reasoning — the label IS think-mode
+        evidence even without an explicit ``<think>`` opener.
+        """
         parser = Qwen3ReasoningParser()
+        # The exact bare-preamble label form (#570): "thinking process"
+        # immediately followed by ``:`` is the scratchpad signal.
         result = parser.finalize_streaming(
+            "Here's a thinking process: first I sorted the items, "
+            "then I picked the largest."
+        )
+        assert result is not None
+        assert result.content is None
+        assert result.reasoning is not None
+        assert "thinking process" in result.reasoning
+
+    def test_finalize_streaming_no_prefix_no_preamble_routes_to_content(self):
+        """Codex round-N BLOCKING scope (D-STOP-THINK PR #799 review):
+        the no-``<think>``-prefix no-bare-preamble path is the
+        casual-answer flip (#570/#572) — finalize routes the rescue
+        text to ``content`` so the route consumer surfaces a text
+        block. Without this flip, casual answers (no scratchpad
+        label, no explicit opener) would never reach
+        ``message.content`` on the OpenAI envelope.
+        """
+        parser = Qwen3ReasoningParser()
+        text = (
             "Here's a thinking process I followed to solve the puzzle: "
             "first I sorted the items, then I picked the largest."
         )
+        result = parser.finalize_streaming(text)
+        # No explicit ``<think>`` opener AND the bare-preamble regex
+        # requires ``thinking process`` immediately followed by ``:``
+        # (this text has ``I followed`` in between), so the
+        # casual-answer content flip applies.
         assert result is not None
-        # ``content`` because the lack of a leading ``<think>`` means
-        # the streaming Case-3 default reasoning emission was wrong
-        # and the correction belongs in the content channel — the
-        # same protocol the parser used pre-#570 for the no-evidence
-        # branch.
-        assert result.content is not None
+        assert result.content == text
         assert result.reasoning is None
 
     def test_bare_thinking_label_without_process_no_longer_matches(self):

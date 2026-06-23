@@ -171,6 +171,53 @@ def _coerce_number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _render_response_format_counters() -> list[str]:
+    """Render the H-06 strict-mode counters as Prometheus lines.
+
+    Pulled into its own helper so the metrics endpoint can emit these
+    counters even when ``engine.get_stats()`` is unavailable (engine
+    not yet loaded, or partially-initialized — both early-return
+    branches must still surface the response_format counters because
+    they live in their own module-level state and aren't engine-bound).
+    """
+    try:
+        from ..api.response_format_metrics import snapshot as _rf_snapshot
+
+        rf_stats = _rf_snapshot()
+    except Exception:
+        rf_stats = {"strict_requests_total": 0, "strict_violations_total": 0}
+    out: list[str] = []
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_response_format_strict_total",
+            "counter",
+            (
+                "Requests with response_format.type=json_schema and "
+                "strict=true (H-06). Counts admitted strict requests "
+                "regardless of whether the [guided] extra was installed "
+                "— installs missing the extra surface a 400 before "
+                "generation."
+            ),
+            int(rf_stats.get("strict_requests_total", 0)),
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_response_format_strict_violations_total",
+            "counter",
+            (
+                "Strict json_schema responses that failed post-decode "
+                "jsonschema.validate (H-06). Constrained decoding via "
+                "outlines should make this unreachable — any non-zero "
+                "rate signals that the guided-decoding path silently "
+                "degraded (alert on rate > 0)."
+            ),
+            int(rf_stats.get("strict_violations_total", 0)),
+        )
+    )
+    return out
+
+
 def _render_prometheus(cfg: Any) -> str:
     """Render the full /metrics body for a snapshot of cfg.engine state."""
     lines: list[str] = []
@@ -190,16 +237,24 @@ def _render_prometheus(cfg: Any) -> str:
         )
     )
 
+    # H-06 response_format strict-mode counters — process-local state
+    # that is independent of engine availability. Surface BEFORE the
+    # engine-None / get_stats-failure early returns so dashboards see
+    # the series even between restarts.
+    lines.extend(_render_response_format_counters())
+
     if cfg.engine is None:
-        # No engine yet — return only build info. Prometheus must NOT see
-        # a 500 here or the whole target goes "down" between restarts.
+        # No engine yet — return build info + response_format counters
+        # only. Prometheus must NOT see a 500 here or the whole target
+        # goes "down" between restarts.
         return "\n".join(lines) + "\n"
 
     try:
         stats: dict[str, Any] = cfg.engine.get_stats() or {}
     except Exception:
         # Even a partially-initialized engine must not poison /metrics.
-        # Fall back to build_info only so the scrape target stays up.
+        # Fall back to build_info + response_format counters only so the
+        # scrape target stays up.
         return "\n".join(lines) + "\n"
 
     # ---- Scheduler counters & gauges -----------------------------------
@@ -332,6 +387,60 @@ def _render_prometheus(cfg: Any) -> str:
             monotonic = _cache_counter_accumulator.advance(metric_name, raw)
             lines.extend(_fmt_metric(metric_name, "counter", help_text, monotonic))
 
+        # ---- R7-M1: prefix-cache cap + current-usage gauges ----------
+        # Dogfood-088 (Talia r2) flagged that operators tuning the
+        # ``RAPID_MLX_PREFIX_CACHE_MAX_BYTES`` env override had NO
+        # Prometheus surface to verify the cap was actually honored
+        # at runtime — they could see ``evictions_total`` tick but
+        # couldn't graph "how close are we to cap?" or "did our env
+        # ceiling stick?". These two gauges close that gap by
+        # exposing the same byte values the LRU evict-until-fits loop
+        # in MemoryAwarePrefixCache.store() compares against:
+        #
+        #   * ``rapid_mlx_prefix_cache_cap_bytes`` — the resolved
+        #     ceiling from ``MemoryCacheConfig.compute_memory_limit``
+        #     (env > programmatic > heuristic > 8 GiB fallback).
+        #     Gauge, not counter, because the value is set once at
+        #     cache init and reflects current config, not cumulative
+        #     work.
+        #   * ``rapid_mlx_prefix_cache_current_bytes`` — the cache's
+        #     live ledger of how many bytes are pinned by entries.
+        #     Pair with cap_bytes to compute utilization headroom
+        #     (1 - current/cap) in Prometheus or Grafana without
+        #     each consumer re-implementing the math.
+        #
+        # Both are byte gauges in line with the Prometheus naming
+        # convention ("base unit, no suffix"). They sit beside (not
+        # replace) the existing ``current_memory_mb`` /
+        # ``max_memory_mb`` fields in /v1/status which dashboards
+        # already consume.
+        lines.extend(
+            _fmt_metric(
+                "rapid_mlx_prefix_cache_cap_bytes",
+                "gauge",
+                (
+                    "Prefix-cache memory ceiling in bytes (resolved from "
+                    "RAPID_MLX_PREFIX_CACHE_MAX_BYTES env override, "
+                    "programmatic max_memory_mb, or the heuristic "
+                    "fraction-of-RAM default)."
+                ),
+                int(_coerce_number(cache_stats.get("max_memory_bytes"))),
+            )
+        )
+        lines.extend(
+            _fmt_metric(
+                "rapid_mlx_prefix_cache_current_bytes",
+                "gauge",
+                (
+                    "Prefix-cache memory currently pinned by cached entries, "
+                    "in bytes. Compare to rapid_mlx_prefix_cache_cap_bytes "
+                    "for headroom; the cache evicts LRU entries to stay "
+                    "below the cap."
+                ),
+                int(_coerce_number(cache_stats.get("current_memory_bytes"))),
+            )
+        )
+
     # ---- PFlash observability (M-02 reframe) ---------------------------
     # When PFlash compression engages, the prompt skips the prefix-cache
     # fetch + store paths entirely (the compressed sequence is a
@@ -366,6 +475,101 @@ def _render_prometheus(cfg: Any) -> str:
                 "(logical minus kept) across all requests."
             ),
             int(_coerce_number(stats.get("pflash_compressed_tokens_dropped"))),
+        )
+    )
+
+    # ---- Cancellation observability (M-01) -----------------------------
+    # ``rapid_mlx_requests_processed_total`` deliberately excludes aborted
+    # requests, so when fifty clients disconnect mid-stream the operator-
+    # facing series stays at zero with no way to distinguish "model idle"
+    # from "every request bailed". The total counter below ticks once per
+    # public-API abort the scheduler accepted (deduplicated against
+    # idempotent re-enqueues via ``_pending_abort_ids``), regardless of
+    # cause — client disconnect, explicit ``/v1/requests/{id}/cancel``
+    # route, timeout, or internal abort. The sub-counter attributes the
+    # subset triggered by the disconnect_guard force-abort path so the
+    # gap (total - via_disconnect) surfaces explicit-cancel + timeout
+    # traffic for capacity planning. Both default to zero on engines
+    # that never reach M-01 (mirrors the PFlash counters' flat-line
+    # treatment) so dashboards never flip to "no data" after a deploy.
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_requests_cancelled_total",
+            "counter",
+            (
+                "Cumulative requests aborted via the scheduler abort path "
+                "(client disconnect, explicit cancel route, timeout). "
+                "Disjoint from rapid_mlx_requests_processed_total which "
+                "only counts completed requests."
+            ),
+            int(_coerce_number(stats.get("num_requests_cancelled"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_requests_cancelled_via_disconnect_total",
+            "counter",
+            (
+                "Subset of rapid_mlx_requests_cancelled_total attributed "
+                "to client disconnect (force-abort fired from the "
+                "disconnect_guard streaming-route helper)."
+            ),
+            int(_coerce_number(stats.get("num_requests_cancelled_via_disconnect"))),
+        )
+    )
+
+    # ---- D-METAL-CAP / D-METAL-PFX observability -----------------------
+    # Both counters tick from the scheduler and are monotone for the
+    # process lifetime, so they bypass the sticky-counter accumulator
+    # (no cache.clear() path resets them).
+    #
+    # ``metal_cap_violations_total`` increments when ``add_request``
+    # rejected a new request because Metal active already crossed the
+    # ``--gpu-memory-utilization`` soft cap. Pre-fix, MLX's
+    # ``set_memory_limit`` silently let the allocator grow past the
+    # cap while system RAM remained available, and the only operator-
+    # visible signal was an eventual macOS-paging slowdown — this
+    # counter is the leading indicator that turns that silent
+    # violation into a queryable series.
+    #
+    # ``prefix_cache_pressure_evictions_total`` increments once per
+    # cache entry that the periodic engine_core memory-pressure tick
+    # evicted via ``Scheduler.evict_prefix_cache_under_pressure``. This
+    # is the headline number for the D-METAL-PFX decode-tps cliff:
+    # pre-fix the series stayed at 0 because no pressure-driven
+    # eviction existed at all (the only path was LRU-on-capacity,
+    # which on 108 entries / 7.7 GB / max_entries=100 already-at-limit
+    # never fired again — the cache trie held the slabs, the
+    # OrderedDict count was AT limit, not over it).
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_metal_cap_violations_total",
+            "counter",
+            (
+                "Requests rejected at admission because Metal active "
+                "memory + waiting-request KV reservations + the new "
+                "request's projected KV would exceed the "
+                "gpu_memory_utilization soft cap (D-METAL-CAP). "
+                "Increments on EITHER ``active >= cap`` (sustained "
+                "over-cap storm) OR ``active + reserved + projected "
+                ">= cap`` (single large prefill that would push the "
+                "allocator past cap on its own grow path)."
+            ),
+            int(_coerce_number(stats.get("num_metal_cap_violations"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_prefix_cache_pressure_evictions_total",
+            "counter",
+            (
+                "Prefix-cache entries evicted by the Metal-pressure "
+                "trigger (D-METAL-PFX). Disjoint from "
+                "rapid_mlx_prefix_cache_evictions_total which counts "
+                "LRU-on-capacity evictions performed by the cache "
+                "itself."
+            ),
+            int(_coerce_number(stats.get("num_prefix_cache_pressure_evictions"))),
         )
     )
 

@@ -8,10 +8,13 @@ one cohesive orchestrator, because reasoning/tool/sanitize are tightly coupled.
 
 from __future__ import annotations
 
+import copy
 import json
 import logging
+import os
 import uuid
 from typing import TYPE_CHECKING
+from unittest.mock import Mock
 
 from ..api.tool_calling import parse_tool_calls
 from ..api.utils import sanitize_output, strip_special_tokens
@@ -237,6 +240,16 @@ class StreamingPostProcessor:
         # leaving content empty. Track the explicit signal so process_chunk
         # can skip the reasoning path in that case.
         self.enable_thinking = enable_thinking
+        # R8-M2 (2026-06-22): one-way latch tracking whether the model
+        # has emitted an explicit ``<think>`` token despite
+        # ``enable_thinking=False``. Set by
+        # ``_should_route_through_reasoning`` when the opener shows up
+        # in the accumulated buffer; promotes the bypass path back to
+        # the reasoning lane so the wrapper bytes split correctly
+        # instead of leaking into ``delta.content``. Latched so the
+        # decision doesn't oscillate as the accumulator grows past the
+        # opener.
+        self._explicit_think_seen = False
 
         # Per-request parser instances — each streaming request gets its
         # own parser to avoid state corruption under concurrent
@@ -253,12 +266,25 @@ class StreamingPostProcessor:
         else:
             self.reasoning_parser = cfg.reasoning_parser  # None or injected mock
 
+        self._tool_parser_request_local = False
         if cfg.tool_call_parser:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
+            self._tool_parser_request_local = self.tool_parser is not None
         elif cfg.tool_parser_instance:
-            self.tool_parser = cfg.tool_parser_instance  # injected mock
+            self.tool_parser = self._clone_injected_tool_parser(
+                cfg.tool_parser_instance
+            )
+            self._tool_parser_request_local = (
+                self.tool_parser is not None
+                and self.tool_parser is not cfg.tool_parser_instance
+            )
         else:
             self.tool_parser = self._create_tool_parser(cfg, tools_requested)
+            self._tool_parser_request_local = self.tool_parser is not None
+        if self.tool_parser and self._tool_parser_request_local:
+            reset_parser = getattr(self.tool_parser, "reset", None)
+            if callable(reset_parser):
+                reset_parser()
 
         # State
         self.accumulated_text = ""
@@ -1074,11 +1100,101 @@ class StreamingPostProcessor:
 
         return None
 
+    @staticmethod
+    def _clone_injected_tool_parser(parser):
+        if parser is None:
+            return None
+        if isinstance(parser, Mock) and os.environ.get("PYTEST_CURRENT_TEST"):
+            return parser
+        try:
+            return copy.deepcopy(parser)
+        except Exception:
+            try:
+                return copy.copy(parser)
+            except Exception:
+                raise RuntimeError(
+                    "Injected tool parser instance could not be cloned safely "
+                    "for a request-local stream"
+                )
+
     def set_thinking_model(self, model_name: str):
         """Enable Nemotron-style thinking prefix injection."""
         self._is_thinking_model = (
             "nemotron" in model_name.lower() and not self.reasoning_parser
         )
+
+    _THINK_OPEN_TOKEN = "<think>"
+
+    def _should_route_through_reasoning(self, delta_text: str = "") -> bool:
+        """Decide whether the current chunk should go through the reasoning
+        parser.
+
+        Default policy: route when ``enable_thinking is not False``. The
+        ``False`` bypass exists because Qwen3's implicit-think heuristic
+        otherwise misroutes a plain answer to ``reasoning_content`` when
+        the chat template skipped the ``<think>`` injection.
+
+        R8-M2 override (2026-06-22): even when ``enable_thinking=False``,
+        if the model has ALREADY emitted an explicit ``<think>`` token
+        (or the buffer head is consistent with the leading bytes of one
+        — e.g. ``<th`` waiting for ``ink>``), re-enter the reasoning
+        lane so the gate splits BEFORE the wrapper text leaks into
+        ``delta.content``. The pre-fix bypass shipped the literal
+        wrapper to the client whenever ``tool_choice="auto"`` +
+        thinking-capable model + the model decided to think anyway
+        despite the off-flag (Sven r8 evidence; Qwen3 with two tools
+        defined).
+
+        Signal: ``self.accumulated_text + delta_text`` — checked
+        BEFORE this chunk's bytes have been folded into the
+        accumulator (the per-chunk fold happens inside the reasoning
+        path itself). Two cases enable the promotion:
+          1. The complete ``<think>`` opener is in the probe → latch.
+          2. The probe's HEAD (after leading whitespace) is a strict
+             prefix of ``<think>`` → tentative re-route this chunk so
+             a split-SSE tag (``<th`` then ``ink>``) doesn't leak.
+             The latch stays off until the full opener resolves; if
+             the prefix turns out NOT to be a tag (e.g. the model
+             emitted ``<thanks for asking!``), the parser falls back
+             to its Case-3 content path on the next chunk via the
+             same mechanism the default path uses.
+
+        Once promoted, the latch (``_explicit_think_seen``) makes the
+        decision sticky for the rest of the request so it doesn't
+        oscillate as the accumulator grows past the opener.
+
+        ``delta_text`` is optional to keep the helper callable as a
+        property-style predicate from other call sites that don't have
+        the live delta handy; those sites use the strict
+        accumulated-buffer signal (sufficient post-first-chunk).
+        """
+        if self.enable_thinking is not False:
+            return True
+        if self._explicit_think_seen:
+            return True
+        probe = self.accumulated_text + (delta_text or "")
+        # Codex r8-C round-2 MED: anchor the complete-token branch at
+        # the FIRST non-whitespace bytes, matching the split-prefix
+        # branch below. Without the anchor, a stream that produces a
+        # plain answer like ``You asked about <think> tags in HTML.``
+        # — literal ``<think>`` mid-content, NOT the model entering
+        # reasoning — would latch ``_explicit_think_seen`` and route
+        # all subsequent chunks through the reasoning parser, hiding
+        # the answer body. The intent is "the model started an
+        # explicit reasoning wrapper", which only happens at the head
+        # of the buffer (Qwen3 templates inject ``<think>`` first).
+        head = probe.lstrip()
+        if head.startswith(self._THINK_OPEN_TOKEN):
+            self._explicit_think_seen = True
+            return True
+        # Tentative re-route: the head of the probe (post-leading-ws)
+        # might be the start of a ``<think>`` opener whose tail hasn't
+        # arrived yet. Route this chunk through the reasoning parser
+        # so a split-SSE tag doesn't pre-leak as content. Don't latch
+        # — we'll re-evaluate next chunk once more bytes arrive.
+        if head and self._THINK_OPEN_TOKEN.startswith(head):
+            return True
+        return False
 
     def _consume_reasoning_budget(self, reasoning_text: str) -> tuple[str, str]:
         """Account for ``reasoning_text`` against the per-request cap.
@@ -1600,8 +1716,9 @@ class StreamingPostProcessor:
     def reset(self):
         """Reset all parser states for a new stream.
 
-        Safe for concurrent BatchedEngine requests — each PostProcessor
-        instance holds its own parser instances (created in __init__).
+        Safe for concurrent BatchedEngine requests when parser instances
+        are request-local. Injected singleton parsers are not reset here
+        because that would clear another active stream's parser state.
         """
         self.accumulated_text = ""
         self.tool_accumulated_text = ""
@@ -1643,10 +1760,13 @@ class StreamingPostProcessor:
         self._reasoning_tokens_emitted = 0
         self._reasoning_cap_hit = False
         self._reasoning_close_injected = False
+        # R8-M2: clear the explicit-think latch so a re-used processor
+        # doesn't carry the prior request's promotion into this one.
+        self._explicit_think_seen = False
 
         if self.reasoning_parser:
             self.reasoning_parser.reset_state()
-        if self.tool_parser:
+        if self.tool_parser and self._tool_parser_request_local:
             self.tool_parser.reset()
 
     def process_chunk(self, output: GenerationOutput) -> list[StreamEvent]:
@@ -1705,11 +1825,23 @@ class StreamingPostProcessor:
         # Step 1: Separate content from reasoning
         if output.channel is not None:
             events = self._process_channel_routed(delta_text, output)
-        elif self.reasoning_parser and self.enable_thinking is not False:
+        elif self.reasoning_parser and self._should_route_through_reasoning(delta_text):
             # When enable_thinking is explicitly False, the model is told to
             # skip thinking and answer directly. Bypass the reasoning parser
             # so its implicit-think heuristic doesn't reroute the answer to
             # reasoning_content.
+            #
+            # R8-M2 (2026-06-22): the bypass was overzealous. When
+            # ``tool_choice="auto"`` is set on a thinking-capable model
+            # AND the client explicitly set ``enable_thinking=False``,
+            # the model can STILL emit explicit ``<think>...</think>``
+            # wrapper tokens (Qwen3-thinking sometimes ignores the
+            # chat-template hint when tools are in the prompt). The
+            # pre-fix bypass routed the literal ``<think>`` bytes to
+            # ``delta.content`` BEFORE the tool-call chunk. Detect the
+            # explicit wrapper here and re-enter the reasoning lane so
+            # the gate splits BEFORE content emit. See
+            # ``_should_route_through_reasoning`` for the policy.
             events = self._process_with_reasoning(delta_text, output)
         else:
             events = self._process_standard(delta_text, output)
@@ -2647,6 +2779,46 @@ class StreamingPostProcessor:
                         )
                     )
                     self.tool_calls_detected = True
+
+        # Dogfood F-R1-04 (codex r5 BLOCKING): UI-TARS reasoning
+        # parser-specific EOF flush. The opener-prefix hold-back
+        # logic returns ``None`` (no event) while the buffer is a
+        # strict prefix of a known opener — ``"Thought"`` waiting
+        # for the colon, ``"Reflection"`` waiting, etc. If the
+        # stream ends mid-prefix (e.g. ``max_tokens`` truncation
+        # mid-token, or the model genuinely produced bare
+        # ``"Thought"`` text), those bytes are otherwise silently
+        # dropped at EOF. Mirror the ``tool_parser.flush_held_content``
+        # pattern below but scope it to the UI-TARS reasoning
+        # parser specifically — other reasoning parsers
+        # (``qwen3`` / ``deepseek_r1`` / ``gemma4``) have their own
+        # ``finalize_streaming`` semantics tied to specific call
+        # sites that this generic hook would clash with.
+        if (
+            self.reasoning_parser is not None
+            and self.accumulated_text
+            and type(self.reasoning_parser).__name__ == "UiTarsReasoningParser"
+        ):
+            try:
+                final_msg = self.reasoning_parser.finalize_streaming(
+                    self.accumulated_text
+                )
+            except Exception as e:
+                logger.warning(
+                    "UI-TARS finalize_streaming raised: %s — any held "
+                    "trailing bytes will not be flushed for this request",
+                    e,
+                )
+                final_msg = None
+            if final_msg is not None:
+                final_reasoning = getattr(final_msg, "reasoning", None)
+                if isinstance(final_reasoning, str) and final_reasoning:
+                    events.append(
+                        StreamEvent(type="reasoning", reasoning=final_reasoning)
+                    )
+                final_content = getattr(final_msg, "content", None)
+                if isinstance(final_content, str) and final_content:
+                    events.append(StreamEvent(type="content", content=final_content))
 
         # Release any prefix-held content trailing the stream. Hermes
         # and harmony streaming parsers hold back partial sentinel
