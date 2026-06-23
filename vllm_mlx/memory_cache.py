@@ -184,7 +184,23 @@ def _read_tokens_bin(
                     "tokens.bin missing v3 magic but index.json declared "
                     f"save_uuid={expected_save_uuid!r}"
                 )
-            # Legacy v2 path — rewind and read int32 array directly.
+            # Legacy v2 path — enforce the same exact-size invariant
+            # the pre-R10-D loader did (codex round 2 HIGH: a v2
+            # sidecar with trailing garbage was silently accepted by
+            # `array.fromfile`; preserve the historic "size mismatch
+            # = corruption" contract so existing BUG A defenses don't
+            # regress).
+            try:
+                actual_size = os.fstat(f.fileno()).st_size
+            except OSError as exc:
+                return None, f"legacy tokens.bin stat failed: {exc}"
+            expected_size = expected_num_tokens * _TOKEN_BYTES
+            if actual_size != expected_size:
+                return None, (
+                    f"legacy tokens.bin size mismatch "
+                    f"(expected {expected_size} bytes for "
+                    f"{expected_num_tokens} tokens, got {actual_size})"
+                )
             f.seek(0)
             import array as _array
 
@@ -226,6 +242,21 @@ def _read_tokens_bin(
         if len(payload) != payload_bytes_expected:
             return None, (
                 f"payload short read ({len(payload)}/{payload_bytes_expected})"
+            )
+        # R10-D codex round 2 HIGH: enforce "no trailing bytes" so the
+        # v3 wire format is unambiguous. A v3 sidecar that decoded
+        # cleanly through the header + payload but carried EXTRA bytes
+        # past EOF would otherwise be silently accepted; that's
+        # exactly the per-entry corruption signature R10-D was built
+        # to catch (a length-prefix that disagrees with the on-disk
+        # size). Read one more byte — any non-empty trailing read is
+        # a structural reject.
+        trailing = f.read(1)
+        if trailing:
+            return None, (
+                "v3 tokens.bin has unexpected trailing bytes past "
+                f"declared payload (token_count={token_count}, "
+                f"payload={payload_bytes_expected} bytes)"
             )
         try:
             tokens = list(_struct.unpack_from(f"<{token_count}i", payload, 0))
@@ -1514,12 +1545,27 @@ class MemoryAwarePrefixCache:
         return True
 
     def clear(self) -> None:
-        """Clear all cached entries."""
+        """Clear all cached entries.
+
+        R10-D codex round 2 HIGH: ``load_skipped`` is cumulative —
+        it backs the ``rapid_mlx_prefix_cache_load_skipped_total``
+        Prometheus counter, which by contract must never decrease.
+        The metrics route's sticky accumulator catches a process-
+        global reset, but if ``clear()`` runs BETWEEN two scrapes
+        the value the route sees drops and the accumulator pins
+        the reset to its own monotonic floor — losing the skip
+        delta. Carry it over here so the in-process counter never
+        regresses either.
+        """
         with self._lock:
             self._entries.clear()
             self._sorted_keys.clear()
             self._current_memory = 0
-            self._stats = CacheStats(max_memory_bytes=self._max_memory)
+            carried_load_skipped = self._stats.load_skipped
+            self._stats = CacheStats(
+                max_memory_bytes=self._max_memory,
+                load_skipped=carried_load_skipped,
+            )
         logger.debug("Cache cleared")
 
     def get_stats(self) -> dict[str, Any]:
@@ -1527,11 +1573,17 @@ class MemoryAwarePrefixCache:
         return self._stats.to_dict()
 
     def reset_stats(self) -> None:
-        """Reset statistics while preserving cache contents."""
+        """Reset statistics while preserving cache contents.
+
+        R10-D codex round 2 HIGH: same monotonic-counter rationale as
+        ``clear`` — ``load_skipped`` must carry across a stats reset
+        so the Prometheus counter never loses a delta.
+        """
         self._stats = CacheStats(
             max_memory_bytes=self._max_memory,
             current_memory_bytes=self._current_memory,
             entry_count=len(self._entries),
+            load_skipped=self._stats.load_skipped,
         )
 
     @property
@@ -2156,7 +2208,26 @@ class MemoryAwarePrefixCache:
         # detect a tokens.bin that was clobbered by a previous-cycle
         # orphan — the index's claim and the entry file's claim must
         # agree on whose save they came from.
-        expected_save_uuid = index.get("save_uuid") if version >= 3 else None
+        #
+        # R10-D codex round 2 HIGH: a malformed v3 index with a missing
+        # / non-string save_uuid would otherwise pass ``None`` here and
+        # silently re-enable the v2 legacy fallback in ``_read_tokens_bin``
+        # — defeating the whole point of the format pin. Refuse the
+        # load if the writer didn't stamp a valid uuid string on a v3+
+        # index. (v2 indices have no save_uuid by design — that's the
+        # only legitimate ``None``.)
+        if version >= 3:
+            raw_uuid = index.get("save_uuid")
+            if not isinstance(raw_uuid, str) or not raw_uuid:
+                logger.warning(
+                    f"[cache_persist] index.json version {version} is missing "
+                    f"a valid save_uuid (got {type(raw_uuid).__name__}); "
+                    f"refusing load to avoid orphan-pair mis-decode"
+                )
+                return 0
+            expected_save_uuid = raw_uuid
+        else:
+            expected_save_uuid = None
 
         loaded = 0
         corrupt_skipped = 0

@@ -2215,3 +2215,152 @@ def test_r10d_writer_stamps_v3_format_with_save_uuid(tmp_path):
         assert on_disk_uuid == save_uuid, (
             f"entry_{i}: tokens.bin uuid {on_disk_uuid!r} != index {save_uuid!r}"
         )
+
+
+# --------------------------------------------------------------------------
+# R10-D codex round 2 — hardening regressions
+# --------------------------------------------------------------------------
+
+
+def test_r10d_v3_index_without_save_uuid_refused(tmp_path):
+    """Codex r2 HIGH-1: a v3 index missing/null save_uuid must refuse
+    the whole load. Without this gate, ``expected_save_uuid`` would
+    pass through as None and re-enable the v2 raw-array fallback —
+    silently re-exposing the orphan-pair mis-decode the format pin
+    exists to prevent.
+    """
+    cache_dir = tmp_path / "snap"
+    c1 = fresh_cache()
+    c1.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Strip save_uuid from a v3 index — simulates a malformed/partial
+    # writer or a future migration tool that forgot the field.
+    index_path = cache_dir / "index.json"
+    idx = json.loads(index_path.read_text())
+    assert idx["version"] == 3
+    del idx["save_uuid"]
+    index_path.write_text(json.dumps(idx))
+
+    c2 = fresh_cache()
+    loaded = c2.load_from_disk(str(cache_dir))
+    assert loaded == 0, "v3 index without save_uuid must refuse load"
+
+
+def test_r10d_v3_index_with_null_save_uuid_refused(tmp_path):
+    """Same path as the missing-field case but with explicit null —
+    JSON serializers / migration tools sometimes drop ``""`` instead
+    of removing the key.
+    """
+    cache_dir = tmp_path / "snap"
+    c1 = fresh_cache()
+    c1.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    index_path = cache_dir / "index.json"
+    idx = json.loads(index_path.read_text())
+    idx["save_uuid"] = None
+    index_path.write_text(json.dumps(idx))
+
+    c2 = fresh_cache()
+    loaded = c2.load_from_disk(str(cache_dir))
+    assert loaded == 0
+
+
+def test_r10d_legacy_v2_tokens_bin_with_trailing_garbage_rejected(tmp_path):
+    """Codex r2 HIGH-2: pre-R10-D v2 contract was "size mismatch ==
+    corruption". The new helper must keep that invariant — a legacy
+    sidecar with the right first N tokens but extra trailing bytes
+    used to be skipped and must still be.
+    """
+    cache_dir = tmp_path / "snap"
+    cache_dir.mkdir()
+
+    # v2 layout, but append 4 trailing garbage bytes.
+    save_prompt_cache(
+        str(cache_dir / "entry_0.safetensors"),
+        make_kvcache(num_tokens=7),
+        metadata={"num_tokens": "7"},
+    )
+    tokens = list(range(7))
+    with open(cache_dir / "entry_0_tokens.bin", "wb") as f:
+        array.array("i", tokens).tofile(f)
+        f.write(b"\x00\x01\x02\x03")  # trailing garbage
+    (cache_dir / "index.json").write_text(
+        json.dumps(
+            {
+                "version": 2,
+                "num_entries": 1,
+                "total_memory_bytes": 0,
+                "entries": [
+                    {
+                        "index": 0,
+                        "num_tokens": 7,
+                        "memory_bytes": 0,
+                        "cache_types": ["KVCache"],
+                    }
+                ],
+            }
+        )
+    )
+
+    c = fresh_cache()
+    loaded = c.load_from_disk(str(cache_dir))
+    assert loaded == 0, "v2 trailing-garbage sidecar must be rejected"
+    assert c.get_stats()["load_skipped"] == 1
+
+
+def test_r10d_v3_tokens_bin_with_trailing_garbage_rejected(tmp_path):
+    """Codex r2 HIGH-3: v3 wire format must be unambiguous. A sidecar
+    that decoded its declared payload cleanly but carried extra
+    trailing bytes is a structural mismatch — the in-file length
+    prefix lied about the file's actual extent.
+    """
+    cache_dir = tmp_path / "snap"
+    c1 = fresh_cache()
+    c1.store(list(range(11)), make_kvcache(num_tokens=11))
+    c1.store(list(range(100, 111)), make_kvcache(num_tokens=11))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Append trailing garbage to entry_1's tokens.bin.
+    tb1 = cache_dir / "entry_1_tokens.bin"
+    raw = bytearray(tb1.read_bytes())
+    raw.extend(b"\xff\xee\xdd\xcc")
+    tb1.write_bytes(bytes(raw))
+
+    c2 = fresh_cache()
+    loaded = c2.load_from_disk(str(cache_dir))
+    assert loaded == 1, "entry_0 should load, entry_1 should skip"
+    assert c2.get_stats()["load_skipped"] == 1
+
+
+def test_r10d_load_skipped_survives_clear_and_reset_stats(tmp_path):
+    """Codex r2 HIGH-4: load_skipped backs a Prometheus counter and
+    must never decrease in-process. ``clear()`` and ``reset_stats()``
+    must carry the cumulative count over, not zero it.
+    """
+    cache_dir = tmp_path / "snap"
+    c1 = fresh_cache()
+    for i in range(2):
+        c1.store(list(range(i * 50, i * 50 + 10)), make_kvcache(num_tokens=10))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Force 2 corruption skips by stomping the save_uuid in the index.
+    idx_path = cache_dir / "index.json"
+    idx = json.loads(idx_path.read_text())
+    idx["save_uuid"] = "00" * 16
+    idx_path.write_text(json.dumps(idx))
+
+    c2 = fresh_cache()
+    c2.load_from_disk(str(cache_dir))
+    skipped_before = c2.get_stats()["load_skipped"]
+    assert skipped_before == 2
+
+    # clear() must NOT reset the cumulative load_skipped — Prometheus
+    # counter contract.
+    c2.clear()
+    assert c2.get_stats()["load_skipped"] == skipped_before
+
+    # reset_stats() must also preserve it.
+    c2.reset_stats()
+    assert c2.get_stats()["load_skipped"] == skipped_before
