@@ -1565,8 +1565,12 @@ Examples:
     parser.add_argument(
         "--host",
         type=str,
-        default="0.0.0.0",
-        help="Host to bind to",
+        default="127.0.0.1",
+        help=(
+            "Host to bind to (default: 127.0.0.1, loopback-only). "
+            "Pass 0.0.0.0 to expose the server on every interface "
+            "(LAN reachable)."
+        ),
     )
     parser.add_argument(
         "--port",

@@ -36,7 +36,7 @@ rapid-mlx serve <model> [options]
 | Option | Description | Default |
 |--------|-------------|---------|
 | `--port` | Server port | 8000 |
-| `--host` | Server host | 0.0.0.0 |
+| `--host` | Server host (loopback-only by default; pass `0.0.0.0` to expose on LAN) | 127.0.0.1 |
 | `--api-key` | API key for authentication | None |
 | `--rate-limit` | Requests per minute per client (0 = disabled) | 0 |
 | `--timeout` | Request timeout in seconds | 300 |
