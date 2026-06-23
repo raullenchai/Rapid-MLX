@@ -4,20 +4,29 @@
 Pins the v0.8.2-dogfood PortSweep-bypass fix:
 
 * The default ``--host`` is ``127.0.0.1`` (loopback-only). Operators must
-  opt-in to wildcard bind (``0.0.0.0``) — defaults stop being silently
-  LAN-reachable, and silent wildcard-vs-loopback port collisions stop
-  silently shadowing each other.
-* The pre-flight port check ALSO probes ``127.0.0.1`` when the operator
-  explicitly opts into ``--host 0.0.0.0``. macOS lets a wildcard bind
+  opt-in to wildcard bind (``0.0.0.0`` or ``""``) — defaults stop being
+  silently LAN-reachable, and silent wildcard-vs-loopback port collisions
+  stop silently shadowing each other.
+* ``_port_preflight_or_die`` also probes ``127.0.0.1`` when the operator
+  explicitly opts into a wildcard alias. macOS lets a wildcard bind
   coexist with a more-specific loopback bind on the same port — without
   the loopback probe, ``rapid-mlx serve --host 0.0.0.0 --port N`` would
   happily start beside an ``nc -l 127.0.0.1 N`` and loopback clients
   would silently be routed to nc. This was the original PR-#142
   PortSweep gap reproduced in /tmp/v082-dogfood-findings/03-sidecar-cli.md.
 
-Tests mirror the lightweight style of ``test_serve_listen_fd.py``: drive
-``cli.main()`` through a ``serve_command`` stub so the assertions ride
-the real subparser, not a hand-rolled namespace.
+Two layers of test:
+
+1. **Lightweight argparse + helper** — drive ``cli.main()`` through a
+   ``serve_command`` stub (no MLX import) to pin the new default, and
+   call ``_port_preflight_or_die`` directly to pin the probe loop. These
+   tests run in headless / sandboxed environments (no Metal GPU).
+2. **Behavioral via ``serve_command``** — the existing
+   ``test_serve_listen_fd.py`` already exercises the full
+   ``serve_command`` prologue. We don't duplicate that here; codex
+   round-1 MAJOR on PR #848 flagged that importing
+   ``vllm_mlx.server`` (which loads MLX) made the new tests
+   environment-fragile, so the helper tests below avoid it entirely.
 """
 
 from __future__ import annotations
@@ -114,171 +123,187 @@ def test_serve_host_help_mentions_loopback_default(capsys):
 
 
 # ---------------------------------------------------------------------------
-# Pre-flight collision detection
+# Wildcard-alias normalization
 # ---------------------------------------------------------------------------
 
 
-def _stub_heavy_serve_deps(monkeypatch):
-    """Replicate the minimal stubs needed to drive ``serve_command``
-    through to (or past) the pre-flight bind check without booting a
-    real engine. Mirrors ``stub_heavy_serve_deps`` in
-    ``test_serve_listen_fd.py`` but without the fixture wrapper so the
-    individual tests below can choose to short-circuit early."""
-    from vllm_mlx import _version_check
-    from vllm_mlx import cli as cli_mod
-    from vllm_mlx import server as server_mod
+def test_wildcard_host_aliases_includes_both_spellings():
+    """``_port_preflight_or_die`` treats ``"0.0.0.0"`` AND the empty
+    string as "bind on every interface" — both are uvicorn-supported
+    wildcard spellings, so both must trigger the loopback probe.
 
-    monkeypatch.setattr(_version_check, "prompt_upgrade_if_available", lambda: False)
-    monkeypatch.setattr(_version_check, "print_staleness_warning_if_any", lambda: None)
-    monkeypatch.setattr(cli_mod, "_ensure_model_downloaded", lambda model: None)
-    monkeypatch.setattr(cli_mod, "_check_memory_capacity", lambda *a, **kw: None)
-    monkeypatch.setattr(cli_mod, "_check_disk_space", lambda *a, **kw: None)
-    monkeypatch.setattr(server_mod, "configure_logging", lambda level: "info")
-    monkeypatch.setattr(server_mod, "load_model", lambda *a, **kw: None)
-    monkeypatch.setattr(server_mod, "configure_cors", lambda *a, **kw: None)
-    from vllm_mlx.middleware import auth as auth_mod
-
-    monkeypatch.setattr(auth_mod, "configure_rate_limiter", lambda *a, **kw: None)
-
-
-def _serve_ns(**overrides):
-    """Resolve a serve Namespace via the real subparser, then apply
-    field-level overrides."""
-    argv = ["rapid-mlx", "serve", "qwen3.5-4b-4bit"]
-    for k, v in overrides.items():
-        if k == "host":
-            argv += ["--host", v]
-        elif k == "port":
-            argv += ["--port", str(v)]
-        elif k == "listen_fd":
-            argv += ["--listen-fd", str(v)]
-    captured: list = []
-    with (
-        patch.object(sys, "argv", argv),
-        patch.object(cli, "serve_command", side_effect=captured.append),
-    ):
-        cli.main()
-    return captured[0]
-
-
-def test_serve_preflight_rejects_wildcard_when_loopback_already_bound(
-    monkeypatch, capsys
-):
-    """The dogfood-finding repro: a loopback-only listener occupies
-    ``127.0.0.1:PORT``, then a second ``rapid-mlx serve --host 0.0.0.0
-    --port PORT`` arrives. The kernel WILL let the wildcard bind
-    succeed (more-specific 127.0.0.1 wins for loopback traffic), so the
-    only place to catch this is an explicit pre-flight probe against
-    127.0.0.1.
-
-    Before the fix this test would have FAILED — the wildcard bind
-    succeeded and serve_command proceeded to load the model. After the
-    fix the probe catches it and ``sys.exit(1)`` fires with the
-    surfaced host in the error message.
+    Codex round-1 MAJOR on PR #848: the first version of the gate
+    only matched ``"0.0.0.0"``, so ``--host ""`` could still bypass
+    the loopback collision check. Fixed by routing through a shared
+    alias set; this test pins that set so a future refactor can't
+    silently drop ``""`` (or accidentally add ``"localhost"`` to it,
+    which would break collision detection on the default path).
     """
-    _stub_heavy_serve_deps(monkeypatch)
+    aliases = cli._wildcard_host_aliases()
+    assert "0.0.0.0" in aliases
+    assert "" in aliases
+    # MUST NOT include loopback / DNS-aliased loopback — those name a
+    # single host and must be probed exactly once.
+    assert "127.0.0.1" not in aliases
+    assert "localhost" not in aliases
 
-    # Capture uvicorn.run so a regression that drops the pre-flight
-    # entirely (and reaches uvicorn) gets a distinct failure shape.
-    captured_uvicorn: dict = {}
 
-    def fake_run(app, **kwargs):
-        captured_uvicorn["app"] = app
-        captured_uvicorn.update(kwargs)
+# ---------------------------------------------------------------------------
+# Pre-flight collision detection — exercises ``_port_preflight_or_die``
+# directly so the test stays lightweight (no MLX import, no model load).
+# ---------------------------------------------------------------------------
 
-    import uvicorn
 
-    monkeypatch.setattr(uvicorn, "run", fake_run)
-
-    # Stage 1: bind a loopback-only listener — the "nc -l 127.0.0.1 PORT"
-    # in the dogfood repro.
+def test_preflight_rejects_wildcard_when_loopback_already_bound(capsys):
+    """The dogfood-finding repro at the helper level: bind a loopback-only
+    listener on ``127.0.0.1:PORT``, then ask the helper to probe
+    ``("0.0.0.0", PORT)``. Pre-fix the wildcard probe succeeded and
+    nothing else ran — bypass. Post-fix the helper additionally probes
+    ``127.0.0.1`` and catches the collision."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
         blocker.bind(("127.0.0.1", 0))
         blocker.listen(1)
         blocked_port = blocker.getsockname()[1]
 
-        # Stage 2: try to serve on 0.0.0.0:PORT. The pre-flight MUST
-        # surface the collision via sys.exit(1).
-        ns = _serve_ns(host="0.0.0.0", port=blocked_port)
-        assert ns.host == "0.0.0.0"
-        assert ns.port == blocked_port
         with pytest.raises(SystemExit) as exc:
-            cli.serve_command(ns)
+            cli._port_preflight_or_die(
+                "0.0.0.0", blocked_port, model="qwen3.5-4b-4bit"
+            )
 
-    assert exc.value.code == 1, (
-        f"expected sys.exit(1) from PortSweep pre-flight, got {exc.value.code}"
-    )
+    assert exc.value.code == 1
     err_out = capsys.readouterr().out
     assert "already in use" in err_out
-    # The actionable detail the fix surfaces: which host the collision
-    # happened on. Lets the operator distinguish "LAN port busy" from
-    # "loopback shadow" without a packet-trace.
     assert "127.0.0.1" in err_out, (
-        f"pre-flight error must name the colliding host 127.0.0.1, got: {err_out!r}"
-    )
-    # And the wildcard branch must NOT have reached uvicorn — that's the
-    # whole point of catching it pre-bind.
-    assert not captured_uvicorn, (
-        f"serve_command must abort before uvicorn.run, got {captured_uvicorn!r}"
+        f"pre-flight error must name the colliding host 127.0.0.1, "
+        f"got: {err_out!r}"
     )
 
 
-def test_serve_preflight_rejects_loopback_when_loopback_already_bound(
-    monkeypatch, capsys
-):
-    """The plain-default flow: ``rapid-mlx serve`` (loopback default) on
-    a port a previous loopback listener already owns must also abort.
-    This is the path that ALREADY worked pre-fix; pin it so the new
-    probe-loop doesn't accidentally swallow the OSError on this branch."""
-    _stub_heavy_serve_deps(monkeypatch)
-
-    captured_uvicorn: dict = {}
-
-    def fake_run(app, **kwargs):
-        captured_uvicorn["app"] = app
-        captured_uvicorn.update(kwargs)
-
-    import uvicorn
-
-    monkeypatch.setattr(uvicorn, "run", fake_run)
-
+def test_preflight_rejects_empty_host_when_loopback_already_bound(capsys):
+    """``--host ""`` is the second uvicorn-style wildcard spelling. It
+    MUST also trigger the loopback probe — codex round-1 MAJOR caught
+    that the first version of the gate string-matched only ``"0.0.0.0"``
+    and would have left this bypass open."""
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
         blocker.bind(("127.0.0.1", 0))
         blocker.listen(1)
         blocked_port = blocker.getsockname()[1]
 
-        ns = _serve_ns(host="127.0.0.1", port=blocked_port)
         with pytest.raises(SystemExit) as exc:
-            cli.serve_command(ns)
+            cli._port_preflight_or_die("", blocked_port, model="qwen3.5-4b-4bit")
 
     assert exc.value.code == 1
     err_out = capsys.readouterr().out
     assert "already in use" in err_out
     assert "127.0.0.1" in err_out
-    assert not captured_uvicorn
 
 
-def test_serve_preflight_passes_to_uvicorn_on_free_port(monkeypatch):
-    """Pin the happy path: when the port is genuinely free, the
-    pre-flight does NOT raise and serve_command reaches uvicorn.run.
-    Guards against an over-eager probe that mistakes (say) IPv6
-    ::1 traffic for an IPv4 collision."""
-    _stub_heavy_serve_deps(monkeypatch)
+def test_preflight_rejects_loopback_when_loopback_already_bound(capsys):
+    """Pre-existing case (default ``--host 127.0.0.1``): loopback
+    listener already bound → collision surfaces directly without the
+    extra probe. Pin so the new probe loop doesn't accidentally swallow
+    the OSError on this path."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+        blocker.bind(("127.0.0.1", 0))
+        blocker.listen(1)
+        blocked_port = blocker.getsockname()[1]
 
-    captured_uvicorn: dict = {}
+        with pytest.raises(SystemExit) as exc:
+            cli._port_preflight_or_die(
+                "127.0.0.1", blocked_port, model="qwen3.5-4b-4bit"
+            )
 
-    def fake_run(app, **kwargs):
-        captured_uvicorn["app"] = app
-        captured_uvicorn.update(kwargs)
+    assert exc.value.code == 1
+    err_out = capsys.readouterr().out
+    assert "already in use" in err_out
+    assert "127.0.0.1" in err_out
 
-    import uvicorn
 
-    monkeypatch.setattr(uvicorn, "run", fake_run)
+def test_preflight_passes_on_free_port():
+    """Pin the happy path: when the port is genuinely free, the helper
+    returns cleanly and does NOT raise SystemExit. Guards against an
+    over-eager probe that mistakes (say) IPv6 ::1 traffic for an IPv4
+    collision."""
+    # Should return None and not raise.
+    result = cli._port_preflight_or_die(
+        "127.0.0.1", _free_loopback_port(), model="qwen3.5-4b-4bit"
+    )
+    assert result is None
 
-    ns = _serve_ns(host="127.0.0.1", port=_free_loopback_port())
-    # No SystemExit raised; uvicorn.run captured with the expected kwargs.
-    cli.serve_command(ns)
 
-    assert captured_uvicorn.get("host") == "127.0.0.1"
-    assert captured_uvicorn.get("port") == ns.port
-    assert "fd" not in captured_uvicorn
+def test_preflight_wildcard_branch_passes_on_free_port():
+    """Wildcard branch also must NOT raise on a fully free port — the
+    probe loop runs twice (host + 127.0.0.1) but neither probe should
+    collide."""
+    result = cli._port_preflight_or_die(
+        "0.0.0.0", _free_loopback_port(), model="qwen3.5-4b-4bit"
+    )
+    assert result is None
+
+
+def test_preflight_error_uses_friendly_host_display_for_empty(capsys):
+    """``--host ""`` is a wildcard alias; the error message must NOT
+    print a bare empty string (would look like ``on .`` in the UX). The
+    helper substitutes the friendlier ``0.0.0.0`` for display when the
+    user passed ``""``.
+
+    Achieve the empty-host collision deterministically by simulating
+    only the first probe failing — bind on ``("", port)`` collides with
+    any existing wildcard listener.
+    """
+    # Listen on a wildcard so the empty-string probe (which is also a
+    # wildcard bind) collides on the first iteration of the loop.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as blocker:
+        blocker.bind(("", 0))
+        blocker.listen(1)
+        blocked_port = blocker.getsockname()[1]
+
+        with pytest.raises(SystemExit) as exc:
+            cli._port_preflight_or_die("", blocked_port, model="qwen3.5-4b-4bit")
+
+    assert exc.value.code == 1
+    err_out = capsys.readouterr().out
+    # The display-host substitution must kick in: surface "0.0.0.0",
+    # not a bare quote, so the UX stays readable.
+    assert "0.0.0.0" in err_out
+
+
+# ---------------------------------------------------------------------------
+# Legacy ``python -m vllm_mlx.server`` entrypoint default
+# ---------------------------------------------------------------------------
+
+
+def test_legacy_server_argparse_host_default_is_loopback():
+    """Codex round-1 MAJOR on PR #848 flagged that ``vllm_mlx/server.py``
+    is the second supported entrypoint (``python -m vllm_mlx.server``)
+    and was also defaulting to ``0.0.0.0``. The fix landed the same
+    loopback default there too. This test pins the argparse contract
+    WITHOUT importing the heavy ``vllm_mlx.server`` module (which loads
+    MLX) — we read the source for the default literal instead, the same
+    style ``test_serve_listen_fd.py`` uses for source-level invariants.
+    """
+    import inspect
+    from pathlib import Path
+
+    # Resolve the source file via inspect on the cli module (already
+    # imported above) so the test stays self-locating across worktrees.
+    pkg_root = Path(inspect.getfile(cli)).parent
+    server_src = (pkg_root / "server.py").read_text(encoding="utf-8")
+
+    # Locate the --host argparse block and assert the default is
+    # loopback. We pin on a tight slice of source rather than a regex
+    # across the whole file to keep the test resilient to unrelated
+    # edits.
+    idx = server_src.find('"--host"')
+    assert idx >= 0, "expected --host argparse arg in vllm_mlx/server.py"
+    nearby = server_src[idx : idx + 400]
+    assert 'default="127.0.0.1"' in nearby, (
+        "vllm_mlx/server.py --host argparse default must be 127.0.0.1; "
+        f"got nearby source: {nearby!r}"
+    )
+    # And the 0.0.0.0 default must be gone — guards against a future
+    # refactor that adds a second --host block without dropping the old
+    # one.
+    assert 'default="0.0.0.0"' not in server_src, (
+        "vllm_mlx/server.py must not retain the legacy 0.0.0.0 default"
+    )

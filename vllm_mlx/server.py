@@ -1824,6 +1824,17 @@ Examples:
 
     args = parser.parse_args()
 
+    # PortSweep pre-flight (codex round-1 MAJOR on PR #848): mirror the
+    # ``rapid-mlx serve`` CLI's loopback-shadow probe here so the
+    # legacy ``python -m vllm_mlx.server`` entrypoint doesn't silently
+    # reopen the v0.8.2 dogfood-finding-#2 bypass. Probes ``args.host``
+    # AND ``127.0.0.1`` when ``args.host`` is a wildcard alias
+    # (``0.0.0.0`` or ``""``) so a co-resident loopback-only listener
+    # is caught before we sink time into model load.
+    from .cli import _port_preflight_or_die
+
+    _port_preflight_or_die(args.host, args.port, model=args.model)
+
     # F-H08-INCOMPLETE: the ``[embeddings]`` extra-required guard MUST
     # fire BEFORE logging configuration and the security/banner side
     # effects below. Pre-fix on this entrypoint the probe ran AFTER the
