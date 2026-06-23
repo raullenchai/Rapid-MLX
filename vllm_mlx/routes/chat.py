@@ -3231,20 +3231,17 @@ async def stream_chat_completion(
         def _fast_sse_chunk(text: str, field: str = "content") -> str:
             """Build SSE chunk JSON directly, bypassing Pydantic serialization.
 
-            r7-A R7-H2 — when ``field == "reasoning_content"`` emit
-            BOTH ``reasoning_content`` (legacy field name, retained for
-            one release as a deprecation window) AND ``reasoning`` (the
-            OpenAI spec field name). This mirrors the non-stream
-            ``AssistantMessage._serialize_assistant_message`` contract
-            so stream + non-stream parity holds — clients reading
-            either key see the same value.
+            r10-B R10-C2 — emit ONLY ``reasoning_content`` on the
+            streaming wire. The deprecation-window dup ``reasoning``
+            key (added in r7-A R7-H2) is now removed: it was the
+            byte-for-byte root cause of R9-CRIT3, where consumers like
+            ``openai-agents``'s ``Runner.run_streamed`` walk both
+            ``delta.reasoning_content`` AND ``delta.reasoning`` and
+            therefore double-counted every reasoning token. The
+            OpenAI o1-style spec uses ``reasoning_content`` only;
+            there is no ``reasoning`` key on chat-completions deltas.
             """
             escaped = json.dumps(text)
-            if field == "reasoning_content":
-                return (
-                    f'{_sse_prefix}"reasoning_content":{escaped},'
-                    f'"reasoning":{escaped}{_sse_suffix}'
-                )
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
         # First chunk with role

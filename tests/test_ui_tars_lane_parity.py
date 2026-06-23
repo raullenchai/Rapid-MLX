@@ -1233,25 +1233,27 @@ class TestR7H1NonStreamChatResponseBuilder:
 
 
 # ---------------------------------------------------------------------------
-# r7-A R7-H2: streaming reasoning field-name parity
+# r10-B R10-C2: chat-completions wire emits ``reasoning_content`` ONLY
 # ---------------------------------------------------------------------------
 
 
-class TestR7H2StreamingReasoningFieldParity:
-    """Non-stream ``AssistantMessage`` emits BOTH ``reasoning_content``
-    and ``reasoning``; the streaming chunk used to emit only
-    ``reasoning_content`` (Mira r2 evidence). Per the OpenAI spec the
-    field name is ``reasoning``; clients should be able to read the
-    same key on both surfaces. Fix: ``ChatCompletionChunkDelta``'s
-    serializer now mirrors ``AssistantMessage`` and the chat route's
-    ``_fast_sse_chunk`` fast path emits both keys when given the
-    ``reasoning_content`` field.
+class TestR10C2NoReasoningAliasOnChatWire:
+    """The OpenAI o1-style spec uses ``reasoning_content`` only on
+    chat-completion deltas; there is no ``reasoning`` key. r7-A R7-H2
+    had additionally emitted a duplicate ``reasoning`` alias as a
+    one-release deprecation window. That duplicate was the byte-for-
+    byte root cause of R9-CRIT3 (``openai-agents``
+    ``Runner.run_streamed`` emitting every text_delta twice because
+    the SDK walks BOTH ``delta.reasoning_content`` AND
+    ``delta.reasoning``). r10-B closes the deprecation window — the
+    streaming/non-streaming chat wire must surface
+    ``reasoning_content`` only.
 
-    The legacy ``reasoning_content`` key is retained for one release
-    as a deprecation window for downstream that special-cased it.
+    These tests pin the inverted contract so any future re-introduction
+    of the alias regresses.
     """
 
-    def test_chunk_delta_serializer_emits_both_keys(self):
+    def test_chunk_delta_serializer_emits_only_reasoning_content(self):
         from vllm_mlx.api.models import (
             ChatCompletionChunk,
             ChatCompletionChunkChoice,
@@ -1270,17 +1272,15 @@ class TestR7H2StreamingReasoningFieldParity:
         )
         payload = json.loads(chunk.model_dump_json(exclude_none=True))
         delta = payload["choices"][0]["delta"]
-        # Both field names present, identical value.
         assert delta["reasoning_content"] == "I should click the OK button."
-        assert delta["reasoning"] == "I should click the OK button."
+        # R10-C2: the non-spec ``reasoning`` alias MUST be absent.
+        assert "reasoning" not in delta
 
-    def test_non_stream_and_stream_use_same_field_name(self):
-        # The non-stream ``AssistantMessage`` and the streaming
-        # ``ChatCompletionChunkDelta`` MUST surface reasoning under
-        # the same key name. This is a structural parity check —
-        # without it, a stream-aware client that switches to
-        # non-streaming sees a different field name and silently
-        # drops the reasoning channel.
+    def test_non_stream_and_stream_use_reasoning_content_only(self):
+        # Both surfaces must emit ``reasoning_content`` and ONLY
+        # ``reasoning_content``. Any consumer walking both keys (e.g.
+        # ``openai-agents`` ``Runner.run_streamed``) would otherwise
+        # double-count every reasoning token.
         from vllm_mlx.api.models import (
             AssistantMessage,
             ChatCompletionChunkDelta,
@@ -1294,17 +1294,16 @@ class TestR7H2StreamingReasoningFieldParity:
         delta = ChatCompletionChunkDelta(reasoning_content="thought")
         stream = json.loads(delta.model_dump_json(exclude_none=True))
 
-        # Same key on both surfaces, same value.
-        assert non_stream["reasoning"] == "thought"
-        assert stream["reasoning"] == "thought"
-        # Legacy key still on both (deprecation window).
         assert non_stream["reasoning_content"] == "thought"
         assert stream["reasoning_content"] == "thought"
+        # R10-C2 invariant — the alias is gone on both surfaces.
+        assert "reasoning" not in non_stream
+        assert "reasoning" not in stream
 
     def test_chunk_delta_no_reasoning_does_not_inject_key(self):
-        # Empty / unset reasoning_content MUST NOT introduce a
-        # null ``reasoning`` key — that would noise up every
-        # plain-content delta with a redundant field.
+        # Empty / unset reasoning_content MUST NOT introduce either a
+        # ``reasoning_content`` or ``reasoning`` key — pure-content
+        # deltas stay terse.
         from vllm_mlx.api.models import ChatCompletionChunkDelta
 
         delta = ChatCompletionChunkDelta(content="hello")
@@ -1312,17 +1311,12 @@ class TestR7H2StreamingReasoningFieldParity:
         assert "reasoning_content" not in payload
         assert "reasoning" not in payload
 
-    def test_fast_sse_chunk_emits_both_reasoning_keys(self):
+    def test_fast_sse_chunk_emits_only_reasoning_content(self):
         # The chat route's streaming hot path bypasses Pydantic for
         # per-token throughput. The fast-path builder MUST also emit
-        # both keys when given ``reasoning_content`` so the parity
-        # contract holds on the actual on-the-wire bytes (not just
-        # the Pydantic shape that the slow path uses).
-        #
-        # We exercise the closure shape by reproducing it inline —
-        # the route helper captures ``_sse_prefix`` / ``_sse_suffix``
-        # from the enclosing scope, so we mirror that here and call
-        # the same code path the route runs in production.
+        # ONLY ``reasoning_content`` so the R10-C2 invariant holds on
+        # the actual on-the-wire bytes (the hot path the production
+        # route runs in for the vast majority of deltas).
         import json as _json
 
         _sse_prefix = (
@@ -1333,36 +1327,35 @@ class TestR7H2StreamingReasoningFieldParity:
 
         def _fast_sse_chunk(text: str, field: str = "content") -> str:
             escaped = _json.dumps(text)
-            if field == "reasoning_content":
-                return (
-                    f'{_sse_prefix}"reasoning_content":{escaped},'
-                    f'"reasoning":{escaped}{_sse_suffix}'
-                )
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
-        # Sanity: the closure shape and the route's closure shape
-        # are kept in sync by the call-site test below.
         emitted = _fast_sse_chunk("thinking", "reasoning_content")
         body = emitted.split("data: ", 1)[1].split("\n\n", 1)[0]
         delta = _json.loads(body)["choices"][0]["delta"]
         assert delta["reasoning_content"] == "thinking"
-        assert delta["reasoning"] == "thinking"
+        assert "reasoning" not in delta
 
-    def test_route_fast_path_helper_source_emits_both_keys(self):
+    def test_route_fast_path_helper_source_emits_only_reasoning_content(self):
         # Belt-and-braces: read the route source directly to assert
-        # the call-site emits BOTH keys. Without this, a future
-        # refactor that drops one of the two keys would only fail
-        # the closure-mirror test above (which is local to this
-        # file) — this test pins the actual route source.
-        import pathlib
+        # the dup-emission template that r7-A R7-H2 used to emit is
+        # gone. Pin the byte-level shape so a future refactor that
+        # re-introduces the alias regresses. The post-r10-B helper
+        # builds the JSON via a single generalized template
+        # (``f'...":"{field}":{escaped}...'``), so the literal
+        # ``"reasoning_content":`` substring no longer appears in the
+        # route source — but the dup-emission pattern (two adjacent
+        # keys) must be absent.
+        import inspect
 
-        route_src = pathlib.Path("vllm_mlx/routes/chat.py").read_text(encoding="utf-8")
-        # The fast SSE helper must include both keys for the
-        # reasoning_content branch — order-insensitive search.
-        assert '"reasoning_content":' in route_src
-        # The reasoning key MUST be emitted on the streaming fast
-        # path (parity with non-stream).
-        assert '"reasoning":' in route_src
+        import vllm_mlx.routes.chat as _chat_mod
+
+        route_src = inspect.getsource(_chat_mod)
+        # R10-C2 invariant — the dup-emission template must be gone.
+        assert '"reasoning_content":{escaped},' not in route_src
+        assert '"reasoning":{escaped}' not in route_src
+        # The fast-path helper still references reasoning_content as
+        # the field-name parameter passed by callers.
+        assert "reasoning_content" in route_src
 
 
 # ---------------------------------------------------------------------------

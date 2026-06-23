@@ -807,8 +807,14 @@ class TestModelSerialization:
             "any standard SDK client crashes with KeyError otherwise."
         )
         assert data["content"] is None
-        # reasoning alias still surfaces for backward-compat
-        assert data["reasoning"] == data["reasoning_content"]
+        # r10-B R10-C2: only ``reasoning_content`` is emitted; the
+        # deprecation-window ``reasoning`` alias (r7-A R7-H2) was the
+        # byte-for-byte root cause of R9-CRIT3 (openai-agents
+        # text_delta doubling) and is removed.
+        assert "reasoning" not in data
+        assert data["reasoning_content"] == (
+            "I was thinking but ran out of budget mid-thought."
+        )
 
     def test_assistant_message_content_present_via_model_dump(self):
         """Direct ``model_dump(exclude_none=True)`` also surfaces ``content``."""

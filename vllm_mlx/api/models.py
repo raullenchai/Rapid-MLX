@@ -1732,12 +1732,12 @@ class AssistantMessage(BaseModel):
     tool_calls: list[ToolCall] | None = None
 
     def model_post_init(self, __context) -> None:
-        """Add deprecated 'reasoning' alias for backward compatibility."""
+        """Reserved hook (previously seeded a ``reasoning`` alias)."""
         pass
 
     @model_serializer(mode="wrap")
     def _serialize_assistant_message(self, handler):
-        """Always emit ``content`` (and ``reasoning`` alias) on the wire.
+        """Always emit ``content`` on the wire.
 
         Per OpenAI's ``chat.completion`` schema, ``message.content`` is a
         REQUIRED field that is ``string`` or ``null`` — never absent. When
@@ -1751,38 +1751,35 @@ class AssistantMessage(BaseModel):
         can put the field back as an explicit ``None`` (→ JSON ``null``)
         regardless of how the parent was dumped.
 
-        Also forwards the deprecated ``reasoning`` alias for
-        backward-compat clients that read either field. (The legacy
-        ``model_dump`` override below covered direct ``.model_dump()``
-        calls but was bypassed when a parent's ``model_dump_json``
-        recursed — pydantic v2 routes JSON serialization through this
-        ``@model_serializer`` instead.)
+        r10-B R10-C2 — emit ONLY ``reasoning_content``. r7-A R7-H2
+        had additionally surfaced a duplicate ``reasoning`` alias as a
+        one-release deprecation window; that window is now closed.
+        The duplicate was the byte-for-byte root cause of R9-CRIT3
+        (``openai-agents`` ``Runner.run_streamed`` doubling every
+        text_delta because the SDK walks both keys). The OpenAI
+        o1-style spec uses ``reasoning_content`` only — there is no
+        ``reasoning`` key on chat-completion messages.
         """
         d = handler(self)
         # OpenAI contract: ``content`` is always present (string|null).
         if "content" not in d:
             d["content"] = None
-        if "reasoning_content" in d:
-            d["reasoning"] = d["reasoning_content"]
         return d
 
     def model_dump(self, **kwargs) -> dict:
-        """Include 'reasoning' as alias of reasoning_content for clients expecting it.
+        """Emit the standard OpenAI ``assistant`` message shape.
 
         Kept for callers that invoke ``.model_dump()`` directly (rather
         than via a parent ``model_dump_json``). The wrap-mode
         ``@model_serializer`` above already handles both paths, but this
-        override remains a defensive belt-and-braces for any external
-        caller relying on the historical behaviour.
+        override remains a defensive belt-and-braces for the
+        always-present ``content`` invariant.
         """
         d = super().model_dump(**kwargs)
         # Belt-and-braces: ensure ``content`` is always present, matching
         # the OpenAI-spec invariant enforced by the wrap-mode serializer.
         if "content" not in d:
             d["content"] = None
-        # Add backward-compat alias — clients may read either field
-        if "reasoning_content" in d:
-            d["reasoning"] = d["reasoning_content"]
         return d
 
 
@@ -2454,24 +2451,18 @@ class ChatCompletionChunkDelta(BaseModel):
         their current minimal shape, so the per-token streaming budget
         is unchanged for non-reasoning paths.
 
-        r7-A R7-H2 — stream/non-stream reasoning field-name parity.
-        The non-stream ``AssistantMessage`` emits BOTH
-        ``reasoning_content`` (legacy) and ``reasoning`` (OpenAI spec
-        name) so SDKs reading either field work. Streaming previously
-        emitted only ``reasoning_content``, which forced clients to
-        special-case the stream vs. non-stream code paths. Mirror the
-        non-stream contract here: when ``reasoning_content`` is set,
-        also expose it under the spec name ``reasoning``. The
-        duplicate ``reasoning_content`` is kept for one release as a
-        deprecation window for any downstream that already special-
-        cased the legacy field name; it will be dropped in a
-        subsequent release.
+        r10-B R10-C2 — emit ONLY ``reasoning_content`` on the wire.
+        r7-A R7-H2 had also emitted a duplicate ``reasoning`` alias
+        as a one-release deprecation window; that window is now
+        closed. The duplicate was the byte-for-byte root cause of
+        R9-CRIT3 (``openai-agents`` ``Runner.run_streamed`` emitting
+        every text_delta twice because the SDK walks both keys).
+        The OpenAI o1-style streaming spec uses ``reasoning_content``
+        only — there is no ``reasoning`` key on chat-completion deltas.
         """
         d = handler(self)
         if "content" not in d and ("reasoning_content" in d or "tool_calls" in d):
             d["content"] = None
-        if "reasoning_content" in d:
-            d["reasoning"] = d["reasoning_content"]
         return d
 
 
