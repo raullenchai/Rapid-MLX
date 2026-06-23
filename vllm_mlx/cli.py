@@ -1345,7 +1345,10 @@ def serve_command(args):
         features.append(f"tools: {args.tool_call_parser}{bias_info}")
     if args.reasoning_parser:
         features.append(f"reasoning: {args.reasoning_parser}")
-    if args.api_key:
+    # Banner mirrors the effective auth state: ``args.api_key`` covers
+    # the inline-CLI case, the env-var covers the rapid-desktop sidecar
+    # path that avoids putting the bearer on argv (visible to ``ps``).
+    if args.api_key or os.environ.get("RAPID_MLX_API_KEY"):
         features.append("auth: on")
     if args.rate_limit > 0:
         features.append(f"rate-limit: {args.rate_limit}/min")

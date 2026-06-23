@@ -1698,11 +1698,22 @@ Examples:
         default=None,
         help="Default max tokens for generation (caps when client sends None)",
     )
+    # ``--api-key`` accepts an inline value OR falls back to the
+    # ``RAPID_MLX_API_KEY`` env var. The env-var form keeps the bearer
+    # key out of ``argv`` (visible to ``ps -ef`` for any local user) —
+    # the standalone-shim spawn path that rapid-desktop's sidecar uses
+    # would otherwise leak the per-launch bearer token in the process
+    # list (codex BLOCKER taxonomy #3, dogfood-v0.8.2 finding #3).
+    # Inline value still works for backwards-compat with existing
+    # scripts; if both are set, the inline value wins.
     parser.add_argument(
         "--api-key",
         type=str,
         default=None,
-        help="API key for authentication (if not set, no auth required)",
+        help=(
+            "API key for authentication (if not set, falls back to the "
+            "RAPID_MLX_API_KEY env var; if neither, no auth required)"
+        ),
     )
     parser.add_argument(
         "--timeout",
@@ -1838,7 +1849,9 @@ Examples:
     # Set global configuration
     global _api_key, _default_timeout, _rate_limiter
     global _default_temperature, _default_top_p, _default_top_k
-    _api_key = args.api_key
+    # Env-fallback for the bearer key: keep it out of argv where
+    # ``ps -ef`` would leak it. Inline value wins for backwards-compat.
+    _api_key = args.api_key or os.environ.get("RAPID_MLX_API_KEY")
     _default_timeout = args.timeout
     if args.default_temperature is not None:
         _default_temperature = args.default_temperature
@@ -1859,9 +1872,15 @@ Examples:
     logger.info("SECURITY CONFIGURATION")
     logger.info("=" * 60)
     if _api_key:
+        # Don't reveal whether the key came from argv (visible to ps)
+        # or env (the recommended form); the user already knows which
+        # they used.
         logger.info("  Authentication: ENABLED (API key required)")
     else:
-        logger.warning("  Authentication: DISABLED - Use --api-key to enable")
+        logger.warning(
+            "  Authentication: DISABLED - Set RAPID_MLX_API_KEY env or "
+            "use --api-key to enable"
+        )
     if args.rate_limit > 0:
         logger.info(f"  Rate limiting: ENABLED ({args.rate_limit} req/min)")
     else:
