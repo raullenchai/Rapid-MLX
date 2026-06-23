@@ -1132,7 +1132,9 @@ class StreamingPostProcessor:
     # buffer (re.match anchored at position 0).
     _TOOL_PROSE_PREFIX_RES: tuple = (
         # ``Tool: <name>\nParameters: ...`` (UI-TARS evidence — Mira E)
-        re.compile(r"^(?:Tool|Action|Function)\s*:\s*[A-Za-z_][A-Za-z0-9_-]*", re.DOTALL),
+        re.compile(
+            r"^(?:Tool|Action|Function)\s*:\s*[A-Za-z_][A-Za-z0-9_-]*", re.DOTALL
+        ),
         # Bare ``Tool:`` / ``Action:`` / ``Function:`` with no name yet —
         # the prose hasn't progressed to the name token yet but the
         # opener is unambiguous.
@@ -1226,9 +1228,10 @@ class StreamingPostProcessor:
                 # Soft cap — release as legitimate prose if we held
                 # too much. A model legitimately discussing the word
                 # ``Tool:`` in prose passes through here.
-                if (
-                    len(self._tool_prose_buffer) > self._TOOL_PROSE_MAX_HOLD
-                    or not self._matches_tool_prose_prefix(self._tool_prose_buffer)
+                if len(
+                    self._tool_prose_buffer
+                ) > self._TOOL_PROSE_MAX_HOLD or not self._matches_tool_prose_prefix(
+                    self._tool_prose_buffer
                 ):
                     released = self._tool_prose_buffer
                     self._tool_prose_buffer = ""

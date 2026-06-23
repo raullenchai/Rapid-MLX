@@ -235,9 +235,7 @@ def test_r10_h4_completions_response_format_json_object_accepted():
 def test_r10_h4_completions_response_format_invalid_type_rejected():
     """Same closed-set check the chat lane runs."""
     with pytest.raises(ValidationError):
-        CompletionRequest(
-            model="m", prompt="hi", response_format={"type": "xml"}
-        )
+        CompletionRequest(model="m", prompt="hi", response_format={"type": "xml"})
 
 
 def test_r10_h4_completions_response_format_missing_type_rejected():
@@ -429,9 +427,7 @@ def test_r10_c8_tool_prose_prefix_is_buffered():
         [StreamEvent(type="content", content="Tool")]
     )
     assert _content_chunks(held) == []
-    held = pp._filter_events_for_tool_prose(
-        [StreamEvent(type="content", content=":")]
-    )
+    held = pp._filter_events_for_tool_prose([StreamEvent(type="content", content=":")])
     assert _content_chunks(held) == []
     held = pp._filter_events_for_tool_prose(
         [StreamEvent(type="content", content=" get_weather")]
@@ -529,9 +525,7 @@ def test_r10_c8_held_buffer_released_at_stream_end_without_tool_call():
     pp = _make_postprocessor(tool_choice="auto")
     from vllm_mlx.domain.events import StreamEvent
 
-    pp._filter_events_for_tool_prose(
-        [StreamEvent(type="content", content="Tool:")]
-    )
+    pp._filter_events_for_tool_prose([StreamEvent(type="content", content="Tool:")])
     # No tool_calls_detected yet.
     flushed = pp._flush_tool_prose_buffer()
     assert flushed == "Tool:"
