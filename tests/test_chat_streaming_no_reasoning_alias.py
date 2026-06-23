@@ -152,9 +152,7 @@ def test_chat_streaming_emits_reasoning_content_only_no_reasoning_alias():
             "model": "test-model",
             "stream": True,
             "max_tokens": 16,
-            "messages": [
-                {"role": "user", "content": "think briefly then say hi"}
-            ],
+            "messages": [{"role": "user", "content": "think briefly then say hi"}],
         },
     )
     assert resp.status_code == 200, resp.text
@@ -171,8 +169,8 @@ def test_chat_streaming_emits_reasoning_content_only_no_reasoning_alias():
     # R10-C2 invariant: NO delta carries the non-spec ``reasoning`` key.
     aliased = [d for d in deltas if "reasoning" in d]
     assert aliased == [], (
-        f"R10-C2 / R9-CRIT3: no streaming delta may carry the non-spec "
-        f"'reasoning' alias (use 'reasoning_content' only); offenders:\n"
+        "R10-C2 / R9-CRIT3: no streaming delta may carry the non-spec "
+        "'reasoning' alias (use 'reasoning_content' only); offenders:\n"
         + "\n".join(json.dumps(d) for d in aliased)
     )
 
@@ -200,9 +198,7 @@ def test_chat_streaming_sse_bytes_have_no_reasoning_alias_substring():
             "model": "test-model",
             "stream": True,
             "max_tokens": 16,
-            "messages": [
-                {"role": "user", "content": "think briefly then say hi"}
-            ],
+            "messages": [{"role": "user", "content": "think briefly then say hi"}],
         },
     )
     assert resp.status_code == 200, resp.text
