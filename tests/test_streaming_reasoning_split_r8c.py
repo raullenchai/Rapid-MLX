@@ -394,6 +394,46 @@ class TestR8M2ToolChoiceAutoThinkLeak:
         # And the r8-C bypass latch must NOT have promoted.
         assert pp._explicit_think_seen is False
 
+    def test_r10c7_whitespace_only_prefix_does_not_block_think_promotion(self):
+        """Codex r10-F HIGH (review of this PR): the router's head
+        anchor uses ``probe.lstrip()`` so it deliberately tolerates
+        leading whitespace before the ``<think>`` opener (Sven r8-M2
+        evidence: Qwen3-thinking sometimes prefixes its wrapper with
+        ``\\n`` / spaces). The R10-C7 latch must therefore gate on a
+        NON-WHITESPACE byte — emitting a leading whitespace-only
+        chunk via ``_process_standard`` must NOT poison subsequent
+        explicit-``<think>`` promotion.
+
+        Pre-fix (codex round-1 finding): chunks ``" \\n"`` then
+        ``"<think>"`` then body produced content containing
+        ``"<think>private reasoningfinal answer"`` and empty
+        reasoning — the whitespace chunk latched
+        ``_standard_content_observed`` so the head-match was
+        short-circuited.
+        """
+        pp = self._pp(enable_thinking=False)
+        result = _drive(
+            pp,
+            [
+                # Whitespace-only leading chunk.
+                " \n",
+                # Explicit wrapper opener.
+                "<think>",
+                "private reasoning",
+                "</think>",
+                "final answer",
+            ],
+        )
+        # Reasoning lane saw the wrapper body.
+        assert "private reasoning" in result["reasoning"]
+        # Content lane saw the answer body, NOT the wrapper.
+        assert "<think>" not in result["content"]
+        assert "</think>" not in result["content"]
+        assert "private reasoning" not in result["content"]
+        assert "final answer" in result["content"]
+        # The R8-M2 latch did promote (correctly).
+        assert pp._explicit_think_seen is True
+
     def test_r10c7_first_token_think_still_latches(self):
         """R10-C7 must NOT regress the original r8-C happy path. When
         the FIRST chunk is the ``<think>`` opener (Qwen3-thinking

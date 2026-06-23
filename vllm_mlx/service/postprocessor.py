@@ -2562,8 +2562,16 @@ class StreamingPostProcessor:
                         # R10-C7: mixed content+tool deltas also count
                         # as standard-path plain-content emission for
                         # the router-latch (see
-                        # ``_should_route_through_reasoning``).
-                        self._standard_content_observed = True
+                        # ``_should_route_through_reasoning``). Codex
+                        # r10-F HIGH: gate on a non-whitespace byte —
+                        # the router's head check uses
+                        # ``probe.lstrip()`` so leading whitespace
+                        # alone must NOT block a subsequent legitimate
+                        # ``<think>`` promotion (Sven r8-M2 evidence:
+                        # Qwen3-thinking sometimes prefixes the
+                        # wrapper with whitespace bytes).
+                        if mixed_content.strip():
+                            self._standard_content_observed = True
                         events.append(
                             StreamEvent(type="content", content=mixed_content)
                         )
@@ -2638,12 +2646,15 @@ class StreamingPostProcessor:
         # double-emission of the same content and duplicate logprobs.
         if finish_reason:
             # R10-C7: latch on real plain-content emission so a later
-            # ``<think>`` token in this same request can't be misclassified
-            # as a head-of-buffer reasoning opener by the router (see
-            # ``_should_route_through_reasoning``). Set only when we
-            # actually emit plain-content bytes — empty content (e.g.
-            # finish-only) MUST NOT latch.
-            if content:
+            # ``<think>`` token in this same request can't be
+            # misclassified as a head-of-buffer reasoning opener by
+            # the router (see ``_should_route_through_reasoning``).
+            # Codex r10-F HIGH: gate on a non-whitespace byte — the
+            # router's head check uses ``probe.lstrip()`` so leading
+            # whitespace alone must NOT block a subsequent legitimate
+            # ``<think>`` promotion. Empty content (finish-only) also
+            # MUST NOT latch.
+            if content and content.strip():
                 self._standard_content_observed = True
             return [
                 StreamEvent(
@@ -2654,8 +2665,11 @@ class StreamingPostProcessor:
                 )
             ]
         if content:
-            # R10-C7: see comment on the finish branch above.
-            self._standard_content_observed = True
+            # R10-C7: see comment on the finish branch above — only
+            # non-whitespace bytes are evidence that we're past the
+            # head of the buffer.
+            if content.strip():
+                self._standard_content_observed = True
             return [StreamEvent(type="content", content=content)]
         return []
 
