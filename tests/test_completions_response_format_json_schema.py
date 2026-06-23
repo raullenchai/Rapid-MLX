@@ -189,6 +189,53 @@ def test_sync_json_object_still_works_after_r10_j_rejection():
     assert body["choices"][0]["text"] == _CLEAN_TEXT
 
 
+def test_sync_response_format_plus_echo_rejected_with_400():
+    """r10-J round-3 (codex r3 MED #4): the route accepted
+    ``response_format=json_object`` + ``echo=true`` and silently
+    skipped the fence-strip (the prompt prefix is NOT JSON). Caller
+    received prompt-prefixed text in ``choices[0].text`` while
+    believing it had opted into structured output. Reject the
+    combination with a 400 (same envelope shape as the logprobs
+    reject)."""
+    client = _make_client()
+    resp = client.post(
+        "/v1/completions",
+        json={
+            "model": "test-model",
+            "prompt": "hi",
+            "max_tokens": 16,
+            "response_format": {"type": "json_object"},
+            "echo": True,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+    body = resp.json()
+    err = body["error"]
+    assert err["type"] == "invalid_request_error"
+    assert err["code"] == "unsupported_combination"
+    assert err["param"] == "response_format"
+    assert "echo" in err["message"]
+
+
+def test_stream_response_format_plus_echo_rejected_with_400():
+    """Streaming twin of the sync echo+json_object reject (codex r3
+    MED #4 calls out completions.py:693 too — the streaming branch
+    has the same bypass)."""
+    client = _make_client()
+    resp = client.post(
+        "/v1/completions",
+        json={
+            "model": "test-model",
+            "prompt": "hi",
+            "max_tokens": 16,
+            "stream": True,
+            "response_format": {"type": "json_object"},
+            "echo": True,
+        },
+    )
+    assert resp.status_code == 400, resp.text
+
+
 def test_json_schema_plus_logprobs_400_still_fires_for_combination_rule():
     """Cross-check: ``response_format + logprobs`` was already
     rejected by the r10-G/H r1 fix. Make sure r10-J's earlier-in-the-

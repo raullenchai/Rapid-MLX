@@ -336,6 +336,57 @@ class TestForcedToolChoiceFilter:
         )
         assert len(out) == 1
 
+    def test_drops_continuation_with_finalized_non_object_arguments(self):
+        """r10-J round-3 — codex r3 HIGH #1.
+
+        Pre-fix the ``anchor_name is None`` branch passed every
+        continuation fragment through unconditionally. Some streaming
+        parsers admit a name-only anchor first and then send the
+        arguments in a follow-up continuation as a *finalized
+        non-object* root (e.g. ``"20230805"``, a bare date string).
+        The cap layer routed those into the admitted anchor,
+        delivering schema-violating ``arguments`` to clients despite
+        ``tool_choice="required"`` (or a forced named choice).
+
+        Post-fix: the same object-root gate the finalized-anchor branch
+        uses now fires on continuation fragments too. Partial-fragment
+        JSON (unbalanced braces) is still passed through — covered by
+        ``test_passes_argument_fragment_continuation`` above.
+        """
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        # Continuation delta with FULLY-FORMED non-object JSON. Pre-fix
+        # this passed through; post-fix it must be dropped.
+        out = pp._apply_forced_tool_choice_filter(
+            [{"index": 0, "function": {"arguments": '"20230805"'}}]
+        )
+        assert out == [], (
+            "Finalized non-object continuation arguments must be dropped "
+            "(codex r10-J r3 HIGH #1)."
+        )
+        assert pp._no_index_last_dropped is True
+
+    def test_drops_continuation_with_bare_unquoted_text(self):
+        """Same gate, bare unquoted text variant (the codex r2
+        BLOCKING #1 / phi-4 ``<think>`` panic shape applied at the
+        continuation level)."""
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        out = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": "Paris output output"}}]
+        )
+        assert out == []
+        assert pp._no_index_last_dropped is True
+
+    def test_drops_continuation_with_array_root_arguments(self):
+        """Array-root variant — ``[1,2,3]`` parses as JSON but the
+        spec requires an object. Continuation fragments with array
+        roots must be dropped just like finalized anchors with array
+        roots are (covered earlier in this class)."""
+        pp = StreamingPostProcessor(_make_cfg(), request=_forced_request("get_weather"))
+        out = pp._apply_forced_tool_choice_filter(
+            [{"function": {"arguments": "[1,2,3]"}}]
+        )
+        assert out == []
+
     def test_no_op_when_no_forced_choice(self):
         """``auto`` mode — the filter MUST be a no-op so multi-call
         flows and other tools still work."""

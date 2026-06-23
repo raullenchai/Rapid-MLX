@@ -193,6 +193,45 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     }
                 },
             )
+    # R10-J round-3 (codex r3 MED #4): ``response_format=json_object``
+    # / ``json_schema`` combined with ``echo=true`` is a contradiction.
+    # The finalize-time fence-strip only runs when ``not request.echo``
+    # (lines L491 / L693) — by design, since the prompt prefix is NOT
+    # JSON and stripping fences out of it would corrupt the echoed
+    # text. But that means the request is accepted as "yes, JSON
+    # cleanup will run" and then silently returns prompt-prefixed
+    # fenced text, breaking the structured-output contract callers
+    # explicitly opted into. Reject the combination with a 400 so
+    # they pick exactly one knob per request (same pattern as the
+    # response_format + logprobs reject below).
+    if (
+        request.response_format is not None
+        and request.echo
+    ):
+        rf_type = (
+            getattr(request.response_format, "type", None)
+            if not isinstance(request.response_format, dict)
+            else request.response_format.get("type")
+        )
+        if rf_type in ("json_object", "json_schema"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format is not supported with "
+                            "echo=true on /v1/completions: echo returns "
+                            "the prompt prefix verbatim and JSON "
+                            "cleanup cannot run on prompt text. Send "
+                            "response_format and echo in separate "
+                            "requests."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "unsupported_combination",
+                        "param": "response_format",
+                    }
+                },
+            )
     # R10-J (codex r10-G/H r2 HIGH #1): ``response_format={"type":
     # "json_schema"}`` on the legacy ``/v1/completions`` lane is NOT
     # actually enforced. The route only post-strips fences via

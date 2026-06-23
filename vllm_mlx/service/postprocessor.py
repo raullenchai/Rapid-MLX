@@ -1701,11 +1701,47 @@ class StreamingPostProcessor:
             flat_name = tc.get("name") if isinstance(tc.get("name"), str) else None
             anchor_name = wrapped_name or flat_name
             if anchor_name is None:
-                # Continuation fragment — defer to cap-layer routing.
-                # When the prior anchor for this forced choice was
-                # dropped (wrong name, schema-violating args, or
+                # Continuation fragment — usually defer to cap-layer
+                # routing. When the prior anchor for this forced choice
+                # was dropped (wrong name, schema-violating args, or
                 # single-call cap hit), ``_no_index_last_dropped`` is
                 # set and the cap layer suppresses these fragments too.
+                #
+                # r10-J round-3 (codex r3 HIGH #1): the deferral was
+                # incomplete. Some streaming parsers admit a valid
+                # name-only anchor first and then send the ARGUMENTS
+                # in a follow-up continuation that carries
+                # ``{"function": {"arguments": "20230805"}}`` — a
+                # schema-violating non-object root. The prior anchor
+                # was admitted (so ``_no_index_last_dropped`` is False)
+                # and the cap layer happily passes the continuation
+                # through, leaking the malformed-args contract the
+                # finalized-anchor branch below was meant to close.
+                #
+                # Mirror the object-root gate here: if the continuation
+                # carries args AND those args parse to a non-object
+                # root, drop it and tell the cap layer to drop the
+                # rest. Partial-fragment JSON (unbalanced braces) is
+                # passed through unchanged — the helper already returns
+                # False for those, so the legitimate
+                # name-then-fragmented-args streaming pattern keeps
+                # working.
+                wrapped_args = (
+                    fn.get("arguments")
+                    if fn and isinstance(fn.get("arguments"), str)
+                    else None
+                )
+                flat_args = (
+                    tc.get("arguments")
+                    if isinstance(tc.get("arguments"), str)
+                    else None
+                )
+                cont_args = wrapped_args if wrapped_args is not None else flat_args
+                if self._forced_tool_choice_arguments_violate_object_root(
+                    cont_args
+                ):
+                    self._no_index_last_dropped = True
+                    continue
                 filtered.append(tc)
                 continue
             if forced_name and anchor_name != forced_name:
