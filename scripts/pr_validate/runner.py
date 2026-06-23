@@ -13,7 +13,7 @@ import os
 import sys
 import time
 from collections.abc import Sequence
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 from .base import Step
 from .context import Context
@@ -87,7 +87,7 @@ def run_pipeline(
 
     ctx = Context(pr_number=pr_number, verbose=verbose)
     run_id = (
-        f"run-{datetime.now(UTC).strftime('%Y%m%dT%H%M%SZ')}-"
+        f"run-{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}-"
         f"{os.getpid()}-{time.time_ns()}"
     )
     # Use a unique run directory instead of reusing / deleting pr-<n>.
