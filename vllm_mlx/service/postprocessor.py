@@ -1666,15 +1666,34 @@ class StreamingPostProcessor:
         finalized-anchor gate at the end of the stream catches any
         genuine non-object root after the full string is assembled.
 
-        Trade-off acknowledged: a stream that emits a *finalized*
-        bare-string ``"20230805"`` AS a continuation (no name on the
-        delta) will pass through this gate — but the streaming
-        finalized-anchor branch already caught that case in the
-        prior delta that carried the name, and the multi-round
-        finalize fallback (round-4) covers any recovery path. The
-        cost of being conservative here is a possible duplicate
-        sanity-check by the merge layer; the cost of being strict
-        is silently truncating valid split-JSON streams.
+        What this predicate DOES still drop at the continuation
+        layer (so the streaming wire stays clean and ``_no_index_
+        last_dropped`` propagates to the cap layer immediately):
+
+        * Bare integer ``"1234567890"`` — parses, root is int, drop.
+        * Bare JSON-quoted string ``'"20230805"'`` — parses, root
+          is str, drop.
+        * Array root ``"[1,2,3]"`` — parses, root is list, drop.
+
+        What it now passes through (the round-5 widening):
+
+        * Partial JSON ``'{"city":"Pa'`` — parse fails, pass.
+        * Closing fragment ``'ris"}'`` of a split — parse fails
+          (close > open in isolation), pass.
+        * Middle fragment ``'"PARI'`` of a three-way split —
+          parse fails, pass.
+        * Bare unquoted prose ``'Paris output output'`` — parse
+          fails (no quotes, not JSON at all), pass. The merge
+          layer assembles fragments back into the full arguments
+          string and the finalized-anchor gate (the strict twin)
+          re-validates it at finalize time, so bare-prose leaks
+          are caught one layer up rather than here.
+
+        Trade-off: the strict-twin already covers each finalized
+        case once the cap+merge layer has assembled the full args
+        string, so passing partial-looking continuations through
+        is safe; over-rotating split-JSON would silently truncate
+        legitimate forced/required tool calls.
         """
         if not args_str or not args_str.strip():
             return False

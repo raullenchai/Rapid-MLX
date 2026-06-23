@@ -689,6 +689,61 @@ class TestStreamForcedReasoningEndToEnd:
         assert isinstance(parsed, dict)
         assert parsed.get("city") == "Paris"
 
+    def test_finalize_extract_drops_primitive_args_under_required_mode(self):
+        """r10-J round-4 finalize-path coverage (codex r6 LOW #6).
+
+        Required-mode twin of
+        ``test_finalize_extract_drops_same_name_primitive_args`` above.
+        Pre-round-4 the finalize ``extract_tool_calls`` branch only
+        applied the object-root gate when ``_forced_tool_choice_name``
+        was set. For ``tool_choice="required"`` the forced name is
+        None and the gate was disabled, so fallback-recovered calls
+        with primitive args reached the client.
+
+        Pin that after round-4 the required-mode arm of the
+        finalize ``extract_tool_calls`` branch drops the scratch
+        call and keeps only the real one.
+        """
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        required_request = {
+            "tool_choice": "required",
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                            "required": ["city"],
+                        },
+                    },
+                }
+            ],
+        }
+        pp = StreamingPostProcessor(cfg, request=required_request)
+        pp.reset()
+        # Buffer carries BOTH the scratch primitive-args call AND the
+        # real object-args call — mirrors the forced-name case.
+        pp.tool_accumulated_text = (
+            '<tool_call>\n{"name": "get_weather", "arguments": 1234567890}\n</tool_call>\n'
+            '<tool_call>\n{"name": "get_weather", "arguments": {"city": "Paris"}}\n</tool_call>'
+        )
+        events = pp.finalize()
+        all_calls = [
+            tc
+            for ev in events
+            if ev.type == "tool_call"
+            for tc in (ev.tool_calls or [])
+        ]
+        assert len(all_calls) == 1, (
+            f"required-mode finalize leaked a scratch call: {all_calls!r}"
+        )
+        fn = all_calls[0].get("function") or {}
+        parsed = json.loads(fn["arguments"])
+        assert isinstance(parsed, dict)
+        assert parsed.get("city") == "Paris"
+
     def test_non_reasoning_stream_forced_keeps_call(self):
         """Hermes parser without a reasoning parser (e.g. qwen3-instruct):
         forced ``tool_choice`` + stream still surfaces the call with
