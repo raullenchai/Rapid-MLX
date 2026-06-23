@@ -2962,9 +2962,7 @@ def models_command(args):
         print(f"  Audio models ({len(audio_entries)} aliases)")
         audio_sep = "  " + "─" * width
         print(audio_sep)
-        audio_header = (
-            f"  {'Alias':<24} {'Kind':<10} {'Family':<12} {'HF id':<40}"
-        )
+        audio_header = f"  {'Alias':<24} {'Kind':<10} {'Family':<12} {'HF id':<40}"
         print(audio_header)
         print(audio_sep)
         for entry in audio_entries:

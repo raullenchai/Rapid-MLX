@@ -38,7 +38,6 @@ from unittest.mock import patch
 
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # A) Registry resolution table
 # ---------------------------------------------------------------------------
@@ -231,8 +230,8 @@ class TestAudioAliasRegistry:
         from vllm_mlx.audio.registry import stt_aliases, tts_aliases
         from vllm_mlx.routes.audio import STT_MODEL_ALIASES, TTS_MODEL_ALIASES
 
-        assert STT_MODEL_ALIASES == stt_aliases()
-        assert TTS_MODEL_ALIASES == tts_aliases()
+        assert stt_aliases() == STT_MODEL_ALIASES
+        assert tts_aliases() == TTS_MODEL_ALIASES
 
 
 # ---------------------------------------------------------------------------
@@ -328,9 +327,11 @@ class TestAudioServeModeDispatch:
         _ensure_model_downloaded with the unresolved alias."""
         from vllm_mlx import cli
 
-        with patch.object(cli, "_serve_audio_mode") as mock_audio, patch.object(
-            cli, "_ensure_model_downloaded"
-        ) as mock_download, patch("vllm_mlx.server.load_model") as mock_load:
+        with (
+            patch.object(cli, "_serve_audio_mode") as mock_audio,
+            patch.object(cli, "_ensure_model_downloaded") as mock_download,
+            patch("vllm_mlx.server.load_model") as mock_load,
+        ):
             args = _make_serve_args("kokoro")
             cli.serve_command(args)
 
@@ -373,9 +374,10 @@ class TestAudioServeModeDispatch:
     def test_every_audio_name_takes_the_audio_fork(self, alias):
         from vllm_mlx import cli
 
-        with patch.object(cli, "_serve_audio_mode") as mock_audio, patch.object(
-            cli, "_ensure_model_downloaded"
-        ) as mock_download:
+        with (
+            patch.object(cli, "_serve_audio_mode") as mock_audio,
+            patch.object(cli, "_ensure_model_downloaded") as mock_download,
+        ):
             args = _make_serve_args(alias)
             cli.serve_command(args)
 
@@ -430,9 +432,12 @@ class TestTextBootDoesNotRegress:
     def test_text_model_does_not_take_audio_fork(self, model):
         from vllm_mlx import cli
 
-        with patch.object(cli, "_serve_audio_mode") as mock_audio, patch(
-            "vllm_mlx._version_check.prompt_upgrade_if_available",
-            side_effect=SystemExit(0),
+        with (
+            patch.object(cli, "_serve_audio_mode") as mock_audio,
+            patch(
+                "vllm_mlx._version_check.prompt_upgrade_if_available",
+                side_effect=SystemExit(0),
+            ),
         ):
             args = _make_serve_args(model)
             with pytest.raises(SystemExit):
