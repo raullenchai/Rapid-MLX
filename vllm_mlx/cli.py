@@ -189,6 +189,22 @@ def _wildcard_host_aliases() -> frozenset[str]:
     return frozenset({"0.0.0.0", ""})
 
 
+def _is_ipv6_host(host: str) -> bool:
+    """Detect IPv6 literal hosts (``::``, ``::1``, ``2001:db8::1`` ...).
+
+    Codex round-1 MED #6 on PR #855: the IPv4-only preflight always
+    created an ``AF_INET`` socket, so any valid uvicorn IPv6 bind
+    (``--host ::1``, ``--host ::``, etc.) failed ``socket.bind`` and got
+    misreported as "port already in use." Detection is colon-based:
+    every IPv6 literal contains at least one ``:``, no IPv4 literal /
+    DNS name does (``localhost`` is the canonical non-IPv6 with no
+    colon). We deliberately keep this purely lexical — a stricter
+    ``ipaddress.ip_address`` parse would reject scoped literals
+    (``fe80::1%en0``) that uvicorn happily accepts.
+    """
+    return ":" in host
+
+
 def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     """Probe ``(host, port)`` AND — when ``host`` is a wildcard alias —
     additionally probe ``("127.0.0.1", port)``. Print a friendly error
@@ -209,9 +225,13 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
     MAJOR on PR #848 (the dogfood-CLI fix had to land on both supported
     entrypoints to actually close the bypass).
 
-    ``::1`` is intentionally NOT probed: macOS treats v4 and v6 loopback
-    as distinct stacks, and uvicorn's IPv4 bind never collides with an
-    IPv6 listener.
+    ``::1`` is intentionally NOT probed when the user binds an IPv4
+    wildcard: macOS treats v4 and v6 loopback as distinct stacks, and
+    uvicorn's IPv4 bind never collides with an IPv6 listener. When the
+    user EXPLICITLY binds an IPv6 host, we switch the probe family to
+    ``AF_INET6`` so the bind doesn't spuriously fail (codex round-1
+    MED #6 on PR #855 — pre-fix ``--host ::1`` raised ``OSError`` from
+    the ``AF_INET`` socket and was misreported as "port already in use").
     """
     import socket
 
@@ -225,12 +245,19 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
         hosts_to_probe = (host,)
 
     for probe_host in hosts_to_probe:
+        # Pick the address family that matches the host string. IPv6
+        # literals (``::``, ``::1``, etc.) need ``AF_INET6`` or the bind
+        # raises before we can detect a real collision (codex r1 MED #6
+        # on PR #855). Everything else — IPv4 literals, wildcards
+        # (``0.0.0.0``, ``""``), the loopback-shadow probe ``127.0.0.1``
+        # — stays on ``AF_INET``.
+        family = socket.AF_INET6 if _is_ipv6_host(probe_host) else socket.AF_INET
         # ``with`` guarantees the preflight socket is closed on every
         # exit path — including OSError during ``bind``. The previous
         # form called ``_sock.close()`` only on the success branch,
         # which leaked the fd whenever the bind raised (e.g. when
         # running under a test harness that catches ``SystemExit``).
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as _sock:
+        with socket.socket(family, socket.SOCK_STREAM) as _sock:
             _sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             try:
                 _sock.bind((probe_host, port))

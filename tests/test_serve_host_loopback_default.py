@@ -304,3 +304,88 @@ def test_legacy_server_argparse_host_default_is_loopback():
     assert 'default="0.0.0.0"' not in server_src, (
         "vllm_mlx/server.py must not retain the legacy 0.0.0.0 default"
     )
+
+
+# ---------------------------------------------------------------------------
+# IPv6 preflight — codex round-1 MED #6 on PR #855
+# ---------------------------------------------------------------------------
+
+
+def _ipv6_loopback_supported() -> bool:
+    """Skip-guard for IPv6-disabled environments.
+
+    GH Actions runners sometimes disable IPv6 entirely; we don't want a
+    real environment limitation to flake the test. A trivial ``::1``
+    bind probe tells us whether the family is usable.
+    """
+    try:
+        with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+            s.bind(("::1", 0))
+        return True
+    except OSError:
+        return False
+
+
+@pytest.mark.skipif(
+    not _ipv6_loopback_supported(), reason="IPv6 loopback not available"
+)
+def test_preflight_passes_for_ipv6_loopback_on_free_port():
+    """Codex round-1 MED #6 on PR #855: pre-fix the IPv4-only preflight
+    always opened an ``AF_INET`` socket, so ``--host ::1`` raised
+    ``OSError`` from ``socket.bind`` and was misreported as "port
+    already in use" — blocking a configuration uvicorn otherwise
+    supports.
+
+    Post-fix the helper detects IPv6 literals and switches the probe
+    family to ``AF_INET6``. On a free port the call must return cleanly
+    (no SystemExit) just like the IPv4 happy path."""
+    # OS-assigned IPv6 loopback port.
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+        s.bind(("::1", 0))
+        free_port = s.getsockname()[1]
+
+    result = cli._port_preflight_or_die("::1", free_port, model="qwen3.5-4b-4bit")
+    assert result is None
+
+
+@pytest.mark.skipif(
+    not _ipv6_loopback_supported(), reason="IPv6 loopback not available"
+)
+def test_preflight_passes_for_ipv6_wildcard_on_free_port():
+    """``--host ::`` is the IPv6 wildcard spelling. Same regression as
+    ``::1``: pre-fix the AF_INET socket raised ``EAFNOSUPPORT``/
+    ``EADDRNOTAVAIL`` and the helper printed "port already in use,"
+    masking the real (no-collision) state.
+
+    Note: ``::`` is NOT in ``_wildcard_host_aliases()`` because the
+    loopback-shadow probe is IPv4-specific (macOS treats v4 and v6
+    loopback as distinct stacks, per the helper's docstring). So the
+    fix is family-only — IPv6 wildcards probe themselves once with
+    AF_INET6 and don't trigger the secondary 127.0.0.1 probe."""
+    # OS-assigned IPv6 port via a transient bind, then release it.
+    with socket.socket(socket.AF_INET6, socket.SOCK_STREAM) as s:
+        s.bind(("::", 0))
+        free_port = s.getsockname()[1]
+
+    result = cli._port_preflight_or_die("::", free_port, model="qwen3.5-4b-4bit")
+    assert result is None
+
+
+def test_ipv6_host_detector_matches_literals_only():
+    """Pin the colon-based heuristic ``_is_ipv6_host`` uses.
+
+    IPv6 literals always contain ``:``; IPv4 literals, wildcards
+    (``0.0.0.0``, ``""``), and DNS names (``localhost``) never do.
+    Keep the detector purely lexical so scoped literals
+    (``fe80::1%en0``) that uvicorn accepts still route through the
+    AF_INET6 branch (a stricter ``ipaddress.ip_address`` parse would
+    reject them)."""
+    assert cli._is_ipv6_host("::") is True
+    assert cli._is_ipv6_host("::1") is True
+    assert cli._is_ipv6_host("2001:db8::1") is True
+    assert cli._is_ipv6_host("fe80::1%en0") is True
+
+    assert cli._is_ipv6_host("0.0.0.0") is False
+    assert cli._is_ipv6_host("127.0.0.1") is False
+    assert cli._is_ipv6_host("") is False
+    assert cli._is_ipv6_host("localhost") is False

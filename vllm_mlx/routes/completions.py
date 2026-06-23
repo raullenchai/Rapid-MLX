@@ -151,6 +151,48 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                 "request returns the generated-token distributions)."
             ),
         )
+    # R10-H4 follow-up (codex r1 MED #4 / #5): ``response_format``
+    # (json_object / json_schema) cleanup strips markdown fences and
+    # the legacy "Just the JSON.\n…" preamble from the wire text. But
+    # ``logprobs`` on the same request is a per-generated-token cursor
+    # that's byte-aligned to the EMITTED text (we pin ``text =
+    # "".join(tokens_arr)`` post-decode so ``text_offset`` stays
+    # spec-correct). The two contracts are incompatible: a fence-stripped
+    # ``text`` no longer matches the per-token concatenation, so either
+    #   (a) ``text_offset`` mis-aligns against ``text`` (silent
+    #       corruption — the original codex finding),
+    #   (b) ``text`` is rebuilt from the raw tokens (undoing the strip —
+    #       what the pre-fix non-stream branch did), OR
+    #   (c) the streaming branch silently skips JSON cleanup when
+    #       logprobs is requested (the pre-fix streaming branch).
+    # None of those are spec-correct. Reject the combination with a 400
+    # so callers pick exactly one knob per request (mirrors how we
+    # already reject ``echo + logprobs`` above).
+    if request.response_format is not None and request.logprobs is not None:
+        rf_type = (
+            getattr(request.response_format, "type", None)
+            if not isinstance(request.response_format, dict)
+            else request.response_format.get("type")
+        )
+        if rf_type in ("json_object", "json_schema"):
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "message": (
+                            "response_format=json_object is not supported "
+                            "with logprobs on /v1/completions: the fence/"
+                            "preamble strip rewrites the wire text, which "
+                            "would mis-align text_offset against the per-"
+                            "token cursor. Send response_format and "
+                            "logprobs in separate requests."
+                        ),
+                        "type": "invalid_request_error",
+                        "code": "unsupported_combination",
+                        "param": "response_format",
+                    }
+                },
+            )
     engine = get_engine(request.model)
 
     # Pre-flight admission gate (C4). Reservation is released by the
@@ -597,6 +639,11 @@ async def stream_completion(
     # bypass this scrub: echo prepends the raw prompt (not JSON), and
     # legacy logprobs needs per-chunk text alignment with the tokens
     # array — both are incompatible with the post-hoc fence-strip.
+    # ``want_logprobs`` is left in the gate as defense-in-depth: the
+    # route-entry validator already 400s ``response_format + logprobs``,
+    # so this branch is unreachable on the wire. Keep it so a future
+    # refactor that loosens the upstream gate doesn't silently re-open
+    # the streaming bypass codex r1 MED #5 originally flagged.
     _json_mode = False
     if request.response_format and not request.echo and not want_logprobs:
         rf_type = (
