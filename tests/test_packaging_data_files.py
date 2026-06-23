@@ -26,7 +26,6 @@ shipping a broken wheel to PyPI.
 from __future__ import annotations
 
 import importlib.resources
-import sys
 from pathlib import Path
 
 import pytest
