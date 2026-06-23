@@ -44,6 +44,195 @@ _DEFAULT_MEMORY_PERCENT = 0.20  # 20% of available RAM
 _MIN_MEMORY_BYTES = 100 * _BYTES_PER_MB  # Minimum 100MB
 _MAX_ENTRIES_FALLBACK = 50  # Fallback if memory detection fails
 
+# ---------------------------------------------------------------------------
+# Persist-format pinning (R10-D, Talia r10-R1)
+# ---------------------------------------------------------------------------
+# Multi-cycle SIGTERM round-trips were dropping ~30% of reloaded entries
+# (29/42 with 13 corrupt) because the on-disk format had no per-entry
+# integrity stamp. ``index.json`` claimed "entry K has N tokens", but a
+# previous-cycle orphan or a partial mid-write could leave ``entry_K_tokens.bin``
+# carrying a DIFFERENT entry's payload at the same int-array byte length
+# — the size cross-check at load passed and the loader registered a
+# mismatched key. The fix below pins three invariants per save:
+#
+#   1. A file-level ``save_uuid`` written into ``index.json`` AND embedded
+#      in every ``entry_K_tokens.bin`` — guarantees the entry file came
+#      from the same save as the index that references it. Any orphan
+#      from a previous save fails this check at load and gets skipped
+#      with a structured WARN + a metric increment.
+#
+#   2. A per-entry magic header ``RMTKBIN1`` + version byte so the loader
+#      can tell at-a-glance whether a tokens.bin came from a v3-aware
+#      writer. Legacy v2 files (no magic, no save_uuid) are detected by
+#      the absence of the magic and fall through to the pre-R10 path:
+#      size cross-check only, no uuid guard. This preserves the
+#      single-cycle PASS path (Talia's 12/12 round-trip) byte-exact.
+#
+#   3. An explicit ``token_count`` length prefix INSIDE tokens.bin
+#      (uint32 LE) — must equal both ``index["entries"][i]["num_tokens"]``
+#      AND ``(file_size - header_len) / 4``. Any disagreement is the
+#      length-prefix off-by-one signature the spec called out.
+#
+# Bumping the file-level ``index["version"]`` from 2 → 3 lets old loaders
+# refuse a new file cleanly. New loaders accept both 2 and 3 so the
+# upgrade path is one-way: a v3 writer can read a v2 file from a
+# previous deploy (legacy-mode tokens.bin), then re-save under v3.
+_TOKENS_MAGIC = b"RMTKBIN1"  # 8 bytes — "rapid-mlx tokens-bin v1"
+# Header layout for v3 tokens.bin:
+#   [0..8)   magic       — b"RMTKBIN1"
+#   [8..12)  token_count — uint32 LE
+#   [12..16) save_uuid_len — uint32 LE (length of uuid string in bytes, ≤64)
+#   [16..16+save_uuid_len) save_uuid — utf-8 hex string
+#   then aligned to 4-byte boundary, then token_count * 4 bytes of int32 LE
+# A short fixed-prefix (magic + 2 lengths) reads in a single ``f.read(16)``;
+# the variable uuid is a hex string so an operator can grep / diff snapshots
+# without binary tooling.
+_TOKENS_HEADER_FIXED_LEN = 16
+_TOKENS_FORMAT_VERSION_IN_INDEX = 3  # bumped from 2
+
+# Per-token serialization width is fixed at 4 bytes (int32 LE) regardless
+# of ``array.array("i").itemsize`` — that attribute is platform-dependent
+# (4 on POSIX 64-bit, 2 on some legacy Windows builds), and pinning a
+# wire-format width is the only sound way to make tokens.bin portable
+# across the heterogeneous fleet (codex r10-D systematic fix). Writer
+# uses struct.pack into bytes; reader uses struct.unpack_from a slice.
+_TOKEN_STRUCT_FMT = "<i"
+_TOKEN_BYTES = 4
+
+
+def _write_tokens_bin_v3(path: str, tokens: list[int], save_uuid: str) -> None:
+    """Write tokens.bin with magic + length + save_uuid + int32 LE tokens.
+
+    File layout pinned at _TOKENS_HEADER_FIXED_LEN-byte fixed prefix
+    followed by a variable-length uuid string and the token payload —
+    see module-level "Persist-format pinning" comment for the full
+    layout description.
+
+    Atomic on the fd close + os.fsync — the caller is responsible for
+    fsyncing the containing directory after this returns. Raises on any
+    write error (caller's outer try/except converts to a per-entry
+    skip + WARN).
+    """
+    import struct as _struct
+
+    uuid_bytes = save_uuid.encode("ascii")
+    if len(uuid_bytes) > 64:
+        # Defensive: uuid is always 32 hex chars in our writer, but cap
+        # at 64 so a future widening can't blow past a sane reader bound.
+        raise ValueError(
+            f"save_uuid too long for tokens.bin header ({len(uuid_bytes)} > 64)"
+        )
+    header = _TOKENS_MAGIC + _struct.pack("<II", len(tokens), len(uuid_bytes))
+    assert len(header) == _TOKENS_HEADER_FIXED_LEN, "fixed-prefix length drift"
+    # Pack tokens via struct so the wire format is independent of
+    # ``array.array("i").itemsize`` on this host. A single struct.pack
+    # with ``count * 4`` bytes is faster than per-token packing for the
+    # common 100-10K-token range — uses CPython's tightly-vectorized
+    # bulk path.
+    payload = _struct.pack(f"<{len(tokens)}i", *tokens)
+    with open(path, "wb") as f:
+        f.write(header)
+        f.write(uuid_bytes)
+        f.write(payload)
+        f.flush()
+        try:
+            os.fsync(f.fileno())
+        except OSError:
+            # Same non-fatal logic as the legacy path — the verify loop
+            # in save_to_disk catches files that vanished after we wrote
+            # them.
+            pass
+
+
+def _read_tokens_bin(
+    path: str, expected_num_tokens: int, expected_save_uuid: str | None
+) -> tuple[list[int] | None, str]:
+    """Read tokens.bin. Returns (tokens, reject_reason).
+
+    Detects v3 magic at offset 0:
+      * magic present → enforce length prefix + save_uuid (when provided)
+        + int32-LE payload size; any mismatch returns (None, reason).
+      * magic absent → fall through to legacy path: read
+        ``expected_num_tokens`` ints via ``array.array("i")``. Only used
+        for v2 index.json files (no save_uuid claim). Preserves
+        byte-exact single-cycle round-trip behavior for in-flight
+        upgrades.
+
+    ``reject_reason`` is empty string on success. Never raises for
+    structural mismatches — the caller treats reject_reason as a
+    skip + bump-metric signal. Raises only on truly unexpected I/O
+    failures.
+    """
+    import struct as _struct
+
+    with open(path, "rb") as f:
+        head = f.read(_TOKENS_HEADER_FIXED_LEN)
+        if len(head) < len(_TOKENS_MAGIC):
+            return None, "tokens.bin shorter than magic length"
+        if head[: len(_TOKENS_MAGIC)] != _TOKENS_MAGIC:
+            # Magic absent. ONLY legitimate when the file-level index
+            # advertised no save_uuid (v2 legacy layout). If the index
+            # claimed v3 but this tokens.bin lacks the magic, that's a
+            # mid-rewrite or external clobber — fail closed instead of
+            # silently falling through to legacy int-array decode,
+            # which would feed the loader 60 bytes of header content
+            # as "tokens" (codex r10-D round-2 BLOCKING — fall-through
+            # could re-expose the silent-mis-decode bug R10-D exists
+            # to prevent).
+            if expected_save_uuid is not None:
+                return None, (
+                    "tokens.bin missing v3 magic but index.json declared "
+                    f"save_uuid={expected_save_uuid!r}"
+                )
+            # Legacy v2 path — rewind and read int32 array directly.
+            f.seek(0)
+            import array as _array
+
+            arr = _array.array("i")
+            try:
+                arr.fromfile(f, expected_num_tokens)
+            except (EOFError, OSError) as exc:
+                return None, f"legacy tokens.bin short read: {exc}"
+            return list(arr), ""
+
+        if len(head) < _TOKENS_HEADER_FIXED_LEN:
+            return None, "tokens.bin truncated after magic"
+        token_count, uuid_len = _struct.unpack("<II", head[len(_TOKENS_MAGIC) :])
+        if uuid_len > 64:
+            return None, f"save_uuid_len {uuid_len} exceeds bound 64"
+        if token_count != expected_num_tokens:
+            # Length-prefix off-by-one / drift — exactly the failure
+            # mode the spec called out (entry's payload was rewritten
+            # with a different cycle's tokens; index.json never caught
+            # up).
+            return None, (
+                f"length prefix mismatch: tokens.bin says {token_count}, "
+                f"index.json says {expected_num_tokens}"
+            )
+        uuid_bytes = f.read(uuid_len)
+        if len(uuid_bytes) != uuid_len:
+            return None, f"save_uuid short read ({len(uuid_bytes)}/{uuid_len})"
+        on_disk_uuid = uuid_bytes.decode("ascii", errors="replace")
+        if expected_save_uuid is not None and on_disk_uuid != expected_save_uuid:
+            # Orphan from a previous cycle — exactly the multi-cycle
+            # drift scenario. Skip cleanly so the loader doesn't pair
+            # the index's "entry K" claim with another save's bytes.
+            return None, (
+                f"save_uuid mismatch: tokens.bin={on_disk_uuid!r} "
+                f"index={expected_save_uuid!r}"
+            )
+        payload_bytes_expected = token_count * _TOKEN_BYTES
+        payload = f.read(payload_bytes_expected)
+        if len(payload) != payload_bytes_expected:
+            return None, (
+                f"payload short read ({len(payload)}/{payload_bytes_expected})"
+            )
+        try:
+            tokens = list(_struct.unpack_from(f"<{token_count}i", payload, 0))
+        except _struct.error as exc:
+            return None, f"struct.unpack_from failed: {exc}"
+        return tokens, ""
+
 
 def _fsync_file(path: str) -> None:
     """Flush a file's contents to disk.
@@ -586,6 +775,16 @@ class CacheStats:
     current_memory_bytes: int = 0
     max_memory_bytes: int = 0
     entry_count: int = 0
+    # R10-D (Talia r10-R1): persist-format drift across multi-cycle
+    # round-trips can corrupt ~30% of entries when the on-disk index
+    # disagrees with the tokens.bin / safetensors that ship beside it.
+    # Each per-entry rejection at load (magic mismatch, length-prefix
+    # mismatch, save-uuid mismatch, body-truncated safetensors, or
+    # an mlx_lm.load_prompt_cache exception) bumps this counter so the
+    # operator can see the dropout rate in /metrics rather than buried
+    # in WARNING logs. Survives ``cache.clear()`` so the Prometheus
+    # counter contract holds — see ``reset_stats`` for the carry-over.
+    load_skipped: int = 0
 
     @property
     def hit_rate(self) -> float:
@@ -620,6 +819,11 @@ class CacheStats:
             "max_memory_bytes": int(self.max_memory_bytes),
             "memory_utilization": round(self.memory_utilization, 4),
             "entry_count": self.entry_count,
+            # R10-D: cumulative count of entries the loader rejected for
+            # any per-entry corruption signal — drives the
+            # ``rapid_mlx_prefix_cache_load_skipped_total`` Prometheus
+            # counter and closes the R9-L4 observability gap.
+            "load_skipped": int(self.load_skipped),
         }
 
 
@@ -1450,8 +1654,18 @@ class MemoryAwarePrefixCache:
                 os.path.join(new_dir, f"entry_{idx}_tokens.bin"),
             )
 
+        # R10-D: stamp this save with a fresh uuid so the loader can
+        # detect orphans from a previous cycle. uuid4 is 128-bit, hex
+        # form is 32 ASCII chars — short enough to grep through
+        # snapshots, wide enough that two saves never collide. Embedded
+        # in BOTH index.json (file level) AND each tokens.bin (per
+        # entry) — see _write_tokens_bin_v3.
+        import uuid as _uuid
+
+        save_uuid = _uuid.uuid4().hex
         index = {
-            "version": 2,
+            "version": _TOKENS_FORMAT_VERSION_IN_INDEX,
+            "save_uuid": save_uuid,
             "num_entries": len(self._entries),
             "total_memory_bytes": self._current_memory,
             "entries": [],
@@ -1556,26 +1770,15 @@ class MemoryAwarePrefixCache:
                         f"[cache_persist] fsync({entry_path}) failed: {fs_err}; "
                         "continuing — verify-loop will catch real file loss"
                     )
-                # Save tokens separately (can be 100K+ ints → binary is smaller).
-                import array as _array
-
-                arr = _array.array("i", tokens_key)  # 32-bit signed ints
-                with open(tokens_path, "wb") as f:
-                    arr.tofile(f)
-                    # R8-M7 codex r1 BLOCKING #3 follow-up: fsync the
-                    # tokens sidecar too. tokens.bin and the
-                    # safetensors are validated together at load time
-                    # (size-cross-check), so a durable safetensors
-                    # paired with a buffered-only tokens.bin would
-                    # surface as corruption.
-                    f.flush()
-                    try:
-                        os.fsync(f.fileno())
-                    except OSError as fs_err:
-                        logger.debug(
-                            f"[cache_persist] fsync({tokens_path}) failed: "
-                            f"{fs_err}; continuing"
-                        )
+                # R10-D: write tokens.bin via the v3 helper — magic +
+                # length prefix + save_uuid + int32 LE payload. Every
+                # branch above (fsync, dir-fsync, size cross-check) keeps
+                # working unchanged because the helper writes a
+                # self-describing file whose total length is deterministic
+                # given (token_count, uuid_len). Width pinned to 4 bytes
+                # per token regardless of host ``array.array("i").itemsize``
+                # — wire format must be portable.
+                _write_tokens_bin_v3(tokens_path, list(tokens_key), save_uuid)
 
                 # Record the per-layer cache class names so loaders can
                 # gate on cache-type compatibility (#198 BUG B). Read from
@@ -1924,10 +2127,36 @@ class MemoryAwarePrefixCache:
         with open(index_path) as f:
             index = json.load(f)
 
+        # Accept v2 (legacy: int-array tokens.bin, no save_uuid) and v3
+        # (R10-D: magic-prefixed tokens.bin with save_uuid). A future
+        # writer that bumps past v3 will be refused cleanly here — the
+        # operator sees one structured WARN instead of silent garbage,
+        # closing the "schema evolution without version stamp" gap the
+        # spec called out. Anything below v2 is the pre-#198 layout
+        # whose entry files lacked cache_types metadata; skip.
         version = index.get("version", 1)
         if version < 2:
-            logger.warning(f"[cache_persist] unsupported version {version}, skipping")
+            logger.warning(
+                f"[cache_persist] unsupported version {version} "
+                f"(known: 2 legacy, {_TOKENS_FORMAT_VERSION_IN_INDEX} current); "
+                f"skipping load"
+            )
             return 0
+        if version > _TOKENS_FORMAT_VERSION_IN_INDEX:
+            # Newer file from a future deploy. Refuse cleanly so we
+            # never reach into a format we don't know — silent
+            # mis-decode would re-open the R10-D drift class.
+            logger.warning(
+                f"[cache_persist] index.json version {version} is newer than "
+                f"this build supports (max {_TOKENS_FORMAT_VERSION_IN_INDEX}); "
+                f"skipping load to avoid silent corruption"
+            )
+            return 0
+        # File-level uuid (v3+ only). Used by ``_read_tokens_bin`` to
+        # detect a tokens.bin that was clobbered by a previous-cycle
+        # orphan — the index's claim and the entry file's claim must
+        # agree on whose save they came from.
+        expected_save_uuid = index.get("save_uuid") if version >= 3 else None
 
         loaded = 0
         corrupt_skipped = 0
@@ -1963,16 +2192,23 @@ class MemoryAwarePrefixCache:
                 incompatible_skipped += 1
                 continue
 
-            # Cross-check tokens.bin size against index.json's claim.
-            # Mismatch means the entry was partially rewritten by an
-            # interrupted previous save (BUG A). Drop it.
-            expected_bytes = expected_num_tokens * 4  # 32-bit signed ints
+            # R10-D: size cross-check is now version-aware. Legacy v2
+            # tokens.bin is exactly ``num_tokens * 4`` bytes; v3 has a
+            # variable-length header (magic + lengths + save_uuid) on
+            # top. The downstream ``_read_tokens_bin`` enforces the
+            # actual byte invariants of the right format and returns a
+            # structured reject reason — but a fast pre-check on the
+            # absolute floor (tokens.bin must hold at least the legacy
+            # payload length OR the v3 fixed-prefix length) catches
+            # severely truncated files before the open() syscall.
             actual_bytes = os.path.getsize(tokens_path)
-            if actual_bytes != expected_bytes:
+            legacy_expected_bytes = expected_num_tokens * _TOKEN_BYTES
+            v3_min_bytes = _TOKENS_HEADER_FIXED_LEN  # uuid + payload come after
+            if actual_bytes < min(legacy_expected_bytes, v3_min_bytes):
                 logger.warning(
-                    f"[cache_persist] entry {i} tokens.bin size mismatch "
-                    f"(expected {expected_bytes} bytes for {expected_num_tokens} "
-                    f"tokens, got {actual_bytes}) — corruption, skipping"
+                    f"[cache_persist] entry {i} tokens.bin too short "
+                    f"({actual_bytes} bytes) for "
+                    f"{expected_num_tokens} tokens — corruption, skipping"
                 )
                 corrupt_skipped += 1
                 continue
@@ -1990,13 +2226,23 @@ class MemoryAwarePrefixCache:
                 continue
 
             try:
-                # Load tokens from binary
-                import array as _array
-
-                arr = _array.array("i")
-                with open(tokens_path, "rb") as f:
-                    arr.fromfile(f, expected_num_tokens)
-                tokens = list(arr)
+                # R10-D: read tokens via the format-aware helper. Detects
+                # the v3 magic and enforces (magic + length prefix +
+                # save_uuid) round-trip invariants; falls back to the
+                # pre-R10 array.array("i") path when magic is absent so
+                # a legacy v2 file is still readable in-place. Any
+                # mismatch returns (None, reason) — we bump the
+                # corruption metric and surface a structured WARN.
+                tokens, reject_reason = _read_tokens_bin(
+                    tokens_path, expected_num_tokens, expected_save_uuid
+                )
+                if tokens is None:
+                    logger.warning(
+                        f"[cache_persist] entry {i} tokens.bin rejected: "
+                        f"{reject_reason} — corruption, skipping"
+                    )
+                    corrupt_skipped += 1
+                    continue
 
                 # Skip duplicates (e.g. an entry that warmup already
                 # populated). Done BEFORE load_prompt_cache so a duplicate
@@ -2064,6 +2310,14 @@ class MemoryAwarePrefixCache:
 
         self._stats.entry_count = len(self._entries)
         self._stats.current_memory_bytes = self._current_memory
+        # R10-D / R9-L4: surface the corrupt-skip count as a sticky
+        # cumulative counter so /metrics can graph "% of disk-load
+        # rejected per startup" without re-scraping logs. We only
+        # bump for CORRUPTION skips — duplicate and incompatible skips
+        # are benign (a deliberate config change or in-memory dedup)
+        # and would dilute the corruption signal an operator is
+        # actually looking for.
+        self._stats.load_skipped += corrupt_skipped
 
         dt = _time.monotonic() - t0
         summary = (

@@ -382,6 +382,25 @@ def _render_prometheus(cfg: Any) -> str:
                 "rapid_mlx_prefix_cache_tokens_saved_total",
                 "Prompt tokens skipped thanks to prefix-cache hits.",
             ),
+            (
+                # R10-D (Talia r10-R1): cumulative count of entries the
+                # disk loader rejected for any per-entry corruption
+                # signal — schema-magic mismatch, length-prefix drift,
+                # save-uuid mismatch (orphan from a previous cycle),
+                # body-truncated safetensors, or an mlx_lm.load_prompt_cache
+                # exception. Pair with ``loaded`` (in /v1/status payload)
+                # to graph the reload dropout rate per startup. Closes
+                # R9-L4 — operators previously had no Prometheus
+                # surface for cache-load corruption beyond grepping
+                # ``[cache_persist] SKIPPED`` log lines.
+                "load_skipped",
+                "rapid_mlx_prefix_cache_load_skipped_total",
+                (
+                    "Prefix-cache entries rejected at disk-load by the "
+                    "per-entry integrity guard (R10-D format-pin: magic, "
+                    "length-prefix, save_uuid, or safetensors body check)."
+                ),
+            ),
         ):
             raw = int(_coerce_number(cache_stats.get(raw_key)))
             monotonic = _cache_counter_accumulator.advance(metric_name, raw)

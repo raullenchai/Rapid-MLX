@@ -123,6 +123,11 @@ _FULL_STATS = {
         "misses": 4,
         "evictions": 1,
         "tokens_saved": 256,
+        # R10-D: cumulative count of entries the disk loader rejected
+        # for per-entry corruption (magic / length / save_uuid drift).
+        # 0 in the happy path; the metrics route advances the sticky
+        # counter so the Prometheus series is always present.
+        "load_skipped": 7,
     },
 }
 
@@ -149,6 +154,8 @@ def test_metrics_exposes_all_expected_series(metrics_client):
         "rapid_mlx_prefix_cache_misses_total",
         "rapid_mlx_prefix_cache_evictions_total",
         "rapid_mlx_prefix_cache_tokens_saved_total",
+        # R10-D (Talia r10-R1): per-entry corruption signal at disk-load
+        "rapid_mlx_prefix_cache_load_skipped_total",
     ]
     for name in expected_names:
         assert f"# HELP {name}" in body, f"missing HELP for {name}"
@@ -175,6 +182,8 @@ def test_metrics_values_match_get_stats(metrics_client):
     assert "rapid_mlx_prefix_cache_misses_total 4" in body
     assert "rapid_mlx_prefix_cache_evictions_total 1" in body
     assert "rapid_mlx_prefix_cache_tokens_saved_total 256" in body
+    # R10-D: cumulative count of corruption-rejects at disk-load.
+    assert "rapid_mlx_prefix_cache_load_skipped_total 7" in body
 
 
 def test_metrics_build_info_labels_carry_version_and_model(metrics_client):

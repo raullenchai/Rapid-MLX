@@ -1988,3 +1988,230 @@ def test_clean_save_load_roundtrip_after_r8m7_hardening(tmp_path):
     # Both entries round-tripped intact.
     keys = {e.tokens for e in c2._entries.values()}
     assert keys == {tuple(range(3, 13)), tuple(range(50, 60))}
+
+
+# --------------------------------------------------------------------------
+# R10-D — multi-cycle persist-format pinning (Talia r10-R1)
+# --------------------------------------------------------------------------
+# Talia's clean single-cycle round-trip PASSed (12/12 byte-exact), but the
+# cumulative 4-5 cycle scenario degraded to 29/42 entries with 13 corrupt
+# reloads. The fix pins three invariants per save: a v3 magic header in
+# every tokens.bin, a length prefix, and a file-level save_uuid embedded
+# in BOTH index.json and each entry's tokens.bin. The tests below cover
+# the round-trip, the per-entry skip metric, and the schema-version
+# refusal.
+
+
+def test_r10d_multi_cycle_roundtrip_preserves_all_entries(tmp_path):
+    """5 cycles of save -> reload -> warm new -> save must reload 100%.
+
+    Reproduces Talia r10-R1's failing scenario: each cycle reloads
+    everything from the previous cycle, then warms 2-3 new prompts of
+    varied length, then re-saves. Pre-R10-D this drifted to ~70% reload
+    rate by cycle 4-5. The persist format now pins per-entry
+    integrity, so this must hit 100%.
+    """
+    cache_dir = tmp_path / "snap"
+
+    cumulative = []
+    cumulative_lengths = []
+    # Cycle 1: 8 entries with varied length
+    c1 = fresh_cache()
+    for i in range(8):
+        toks = list(range(i * 100, i * 100 + 10 + i * 3))
+        c1.store(toks, make_kvcache(num_tokens=len(toks), fill=float(i + 1)))
+        cumulative.append(toks)
+        cumulative_lengths.append(len(toks))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Cycles 2-5: reload + add 2-3 new entries each
+    next_seed = 800
+    for cycle_n in range(2, 6):
+        c = fresh_cache()
+        loaded = c.load_from_disk(str(cache_dir))
+        assert loaded == len(cumulative), (
+            f"cycle {cycle_n}: loaded {loaded} but expected "
+            f"{len(cumulative)} from previous cycle's save — drift!"
+        )
+        # Verify every previously-saved entry is back, byte-exact key.
+        loaded_keys = {e.tokens for e in c._entries.values()}
+        expected_keys = {tuple(t) for t in cumulative}
+        assert loaded_keys == expected_keys, (
+            f"cycle {cycle_n}: keys disagree — "
+            f"missing={expected_keys - loaded_keys} "
+            f"extra={loaded_keys - expected_keys}"
+        )
+        # Add new entries (mutate state)
+        for j in range(2 + (cycle_n % 2)):  # 2 or 3 new per cycle
+            toks = list(range(next_seed, next_seed + 12 + j * 5))
+            c.store(
+                toks, make_kvcache(num_tokens=len(toks), fill=float(cycle_n * 10 + j))
+            )
+            cumulative.append(toks)
+            cumulative_lengths.append(len(toks))
+            next_seed += 100
+        assert c.save_to_disk(str(cache_dir)) is True
+
+    # Final reload — every entry across all 5 cycles must come back.
+    final = fresh_cache()
+    loaded_final = final.load_from_disk(str(cache_dir))
+    assert loaded_final == len(cumulative), (
+        f"final reload: {loaded_final}/{len(cumulative)} — multi-cycle drift!"
+    )
+    final_keys = {e.tokens for e in final._entries.values()}
+    expected_keys = {tuple(t) for t in cumulative}
+    assert final_keys == expected_keys
+    # And no corruption-skip should have fired at any point.
+    assert final.get_stats()["load_skipped"] == 0
+
+
+def test_r10d_save_uuid_mismatch_skips_entry_with_metric(tmp_path):
+    """A tokens.bin from a previous save (different save_uuid) is the
+    fingerprint of multi-cycle orphan drift. The loader must reject it
+    and bump ``load_skipped`` so /metrics can surface the dropout rate.
+    """
+    cache_dir = tmp_path / "snap"
+    c1 = fresh_cache()
+    for i in range(3):
+        c1.store(list(range(i * 50, i * 50 + 10)), make_kvcache(num_tokens=10))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Mutate index.json's save_uuid so it no longer matches the per-
+    # entry uuids embedded in the tokens.bin files — exactly the
+    # orphan-from-previous-cycle signature.
+    index_path = cache_dir / "index.json"
+    index = json.loads(index_path.read_text())
+    assert "save_uuid" in index, "writer must stamp save_uuid in v3 index"
+    index["save_uuid"] = "ff" * 16
+    index_path.write_text(json.dumps(index))
+
+    c2 = fresh_cache()
+    loaded = c2.load_from_disk(str(cache_dir))
+    assert loaded == 0, "loader must reject all 3 entries on save_uuid mismatch"
+    stats = c2.get_stats()
+    assert stats["load_skipped"] == 3, (
+        f"load_skipped should track all 3 rejected entries, got {stats['load_skipped']}"
+    )
+
+
+def test_r10d_length_prefix_drift_is_caught(tmp_path):
+    """If tokens.bin's in-file token_count disagrees with index.json,
+    the loader must skip — that's the per-entry length-prefix off-by-one
+    drift the spec called out.
+    """
+    import struct
+
+    from vllm_mlx.memory_cache import _TOKENS_MAGIC
+
+    cache_dir = tmp_path / "snap"
+    c1 = fresh_cache()
+    c1.store(list(range(15)), make_kvcache(num_tokens=15))
+    c1.store(list(range(100, 115)), make_kvcache(num_tokens=15))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Stomp entry_1's in-file length prefix without touching index.json.
+    tb1 = cache_dir / "entry_1_tokens.bin"
+    raw = bytearray(tb1.read_bytes())
+    # Layout: [magic 8][token_count u32][uuid_len u32]...
+    struct.pack_into("<I", raw, len(_TOKENS_MAGIC), 999)
+    tb1.write_bytes(bytes(raw))
+
+    c2 = fresh_cache()
+    loaded = c2.load_from_disk(str(cache_dir))
+    assert loaded == 1, "entry_0 should load, entry_1 should skip"
+    assert c2.get_stats()["load_skipped"] == 1
+
+
+def test_r10d_future_version_refused_cleanly(tmp_path):
+    """Loader must refuse a higher index.json version cleanly so a
+    schema mismatch never silently mis-decodes. Closes the spec's
+    'schema evolution without version stamp' gap.
+    """
+    cache_dir = tmp_path / "snap"
+    c1 = fresh_cache()
+    c1.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Bump version far beyond what this build supports.
+    index_path = cache_dir / "index.json"
+    index = json.loads(index_path.read_text())
+    index["version"] = 999
+    index_path.write_text(json.dumps(index))
+
+    c2 = fresh_cache()
+    loaded = c2.load_from_disk(str(cache_dir))
+    assert loaded == 0, "future versions must be refused, not silently decoded"
+    # Refusal is a clean version-skip, NOT a per-entry corruption signal,
+    # so load_skipped stays 0 (the whole load short-circuited).
+    assert c2.get_stats()["load_skipped"] == 0
+
+
+def test_r10d_legacy_v2_layout_still_loads(tmp_path):
+    """A v2 index.json + raw-array tokens.bin (no magic, no save_uuid)
+    must still load — operators upgrading from <0.8.12 keep their
+    warm cache instead of starting from cold.
+    """
+    cache_dir = tmp_path / "snap"
+    cache_dir.mkdir()
+
+    # Build a v2 layout by hand: no magic in tokens.bin, no save_uuid
+    # in index.json. Mimics what 0.8.11 wrote.
+    save_prompt_cache(
+        str(cache_dir / "entry_0.safetensors"),
+        make_kvcache(num_tokens=17),
+        metadata={"num_tokens": "17"},
+    )
+    tokens = list(range(17))
+    with open(cache_dir / "entry_0_tokens.bin", "wb") as f:
+        array.array("i", tokens).tofile(f)
+    index = {
+        "version": 2,
+        "num_entries": 1,
+        "total_memory_bytes": 0,
+        "entries": [
+            {
+                "index": 0,
+                "num_tokens": 17,
+                "memory_bytes": 0,
+                "cache_types": ["KVCache"],
+            }
+        ],
+    }
+    (cache_dir / "index.json").write_text(json.dumps(index))
+
+    c = fresh_cache()
+    loaded = c.load_from_disk(str(cache_dir))
+    assert loaded == 1
+    entry = next(iter(c._entries.values()))
+    assert entry.tokens == tuple(tokens)
+    assert c.get_stats()["load_skipped"] == 0
+
+
+def test_r10d_writer_stamps_v3_format_with_save_uuid(tmp_path):
+    """Sanity check the writer side of the format pin: index.json must
+    be v3 and carry a save_uuid; every tokens.bin must start with the
+    RMTKBIN1 magic and embed the same uuid.
+    """
+    from vllm_mlx.memory_cache import _TOKENS_HEADER_FIXED_LEN, _TOKENS_MAGIC
+
+    cache_dir = tmp_path / "snap"
+    c1 = fresh_cache()
+    for i in range(3):
+        c1.store(list(range(i * 50, i * 50 + 12)), make_kvcache(num_tokens=12))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    index = json.loads((cache_dir / "index.json").read_text())
+    assert index["version"] == 3
+    save_uuid = index["save_uuid"]
+    assert len(save_uuid) == 32  # uuid4().hex
+
+    for i in range(3):
+        tb = (cache_dir / f"entry_{i}_tokens.bin").read_bytes()
+        assert tb.startswith(_TOKENS_MAGIC), f"entry_{i}: missing v3 magic"
+        # uuid follows the fixed-prefix header
+        on_disk_uuid = tb[
+            _TOKENS_HEADER_FIXED_LEN : _TOKENS_HEADER_FIXED_LEN + 32
+        ].decode()
+        assert on_disk_uuid == save_uuid, (
+            f"entry_{i}: tokens.bin uuid {on_disk_uuid!r} != index {save_uuid!r}"
+        )
