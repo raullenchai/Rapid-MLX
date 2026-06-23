@@ -1737,9 +1737,7 @@ class StreamingPostProcessor:
                     else None
                 )
                 cont_args = wrapped_args if wrapped_args is not None else flat_args
-                if self._forced_tool_choice_arguments_violate_object_root(
-                    cont_args
-                ):
+                if self._forced_tool_choice_arguments_violate_object_root(cont_args):
                     self._no_index_last_dropped = True
                     continue
                 filtered.append(tc)

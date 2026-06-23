@@ -204,10 +204,7 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
     # explicitly opted into. Reject the combination with a 400 so
     # they pick exactly one knob per request (same pattern as the
     # response_format + logprobs reject below).
-    if (
-        request.response_format is not None
-        and request.echo
-    ):
+    if request.response_format is not None and request.echo:
         rf_type = (
             getattr(request.response_format, "type", None)
             if not isinstance(request.response_format, dict)
