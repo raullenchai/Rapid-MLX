@@ -4560,16 +4560,16 @@ Examples:
         default="127.0.0.1",
         help=(
             "Host to bind (default: 127.0.0.1, loopback-only). Pass "
-            "0.0.0.0 to expose the server on every interface (LAN "
-            "reachable) — only do this once the bearer-auth posture "
-            "has been reviewed. The wildcard bind also widens the "
-            "PortSweep collision window: macOS lets a wildcard "
-            "(0.0.0.0) listener coexist with a more-specific "
+            "0.0.0.0 (or \"\") to expose the server on every "
+            "interface (LAN reachable) — only do this once the "
+            "bearer-auth posture has been reviewed. The wildcard "
+            "bind also widens the PortSweep collision window: macOS "
+            "lets a wildcard listener coexist with a more-specific "
             "(127.0.0.1) listener on the same port, so a second "
             "server may start and silently shadow the first on the "
             "loopback path. The pre-flight bind check below probes "
-            "127.0.0.1 explicitly whenever --host=0.0.0.0 to keep "
-            "that bypass closed."
+            "127.0.0.1 explicitly whenever --host is a wildcard "
+            "alias to keep that bypass closed."
         ),
     )
     serve_parser.add_argument("--port", type=int, default=8000, help="Port to bind")
