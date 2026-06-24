@@ -181,6 +181,88 @@ class TestHelperAutoDisableForTools:
             "enable_thinking": False,
         }
 
+    def test_tool_choice_none_skips_auto_disable(self):
+        """Codex r1 BLOCKING (R12-T1F follow-up): when the client
+        attached tools BUT pinned ``tool_choice="none"``, the OpenAI
+        spec says the model must ignore the tool list and answer in
+        prose. The budget-burn rationale for auto-disabling thinking
+        does not apply — the model is not going to emit a tool_call,
+        so a Qwen3 prose answer should keep default-on thinking. The
+        helper MUST skip the injection so a prose request does not
+        get its thinking quietly turned off solely because tool
+        DEFINITIONS were attached."""
+        req = SimpleNamespace(
+            tools=[{"type": "function", "function": {"name": "x"}}],
+            tool_choice="none",
+            chat_template_kwargs=None,
+            enable_thinking=None,
+        )
+        assert maybe_auto_disable_thinking_for_tools(req) is False
+        assert req.chat_template_kwargs is None
+        assert req.enable_thinking is None
+
+    def test_tool_choice_auto_still_fires_auto_disable(self):
+        """Negative control for ``tool_choice="none"`` skip: the
+        default ``tool_choice="auto"`` (model picks whether to call
+        a tool) is still a tool-emitting path, so the budget-burn
+        risk applies and the auto-disable MUST fire. Without this
+        assertion the ``tool_choice == "none"`` gate could over-
+        match (e.g. a typo that excluded ``"auto"`` too) and we
+        would silently regress the load-bearing happy path."""
+        req = SimpleNamespace(
+            tools=[{"type": "function", "function": {"name": "x"}}],
+            tool_choice="auto",
+            chat_template_kwargs=None,
+            enable_thinking=None,
+        )
+        assert maybe_auto_disable_thinking_for_tools(req) is True
+        assert req.chat_template_kwargs == {"enable_thinking": False}
+
+    def test_tool_choice_required_still_fires_auto_disable(self):
+        """Negative control mirroring ``"auto"`` above: ``required``
+        is the strongest tool-emitting signal (the OpenAI spec
+        guarantees a tool_call), so the budget-burn risk applies
+        and the helper MUST fire."""
+        req = SimpleNamespace(
+            tools=[{"type": "function", "function": {"name": "x"}}],
+            tool_choice="required",
+            chat_template_kwargs=None,
+            enable_thinking=None,
+        )
+        assert maybe_auto_disable_thinking_for_tools(req) is True
+        assert req.chat_template_kwargs == {"enable_thinking": False}
+
+    def test_tool_choice_named_function_still_fires_auto_disable(self):
+        """Negative control: the OpenAI ``tool_choice={"type":
+        "function", "function": {"name": ...}}`` shape forces a
+        specific named tool. That is the strongest tool-emitting
+        signal and the budget-burn risk applies. The gate MUST be
+        ``isinstance(str) and == "none"`` only — dict shapes must
+        fall through."""
+        req = SimpleNamespace(
+            tools=[{"type": "function", "function": {"name": "x"}}],
+            tool_choice={"type": "function", "function": {"name": "x"}},
+            chat_template_kwargs=None,
+            enable_thinking=None,
+        )
+        assert maybe_auto_disable_thinking_for_tools(req) is True
+        assert req.chat_template_kwargs == {"enable_thinking": False}
+
+    def test_tool_choice_none_with_explicit_thinking_true_still_honors_client(self):
+        """``tool_choice="none"`` is skipped early; explicit client
+        preference (``enable_thinking=True``) is not reached as a
+        decision point. Verify the request shape is fully preserved
+        — thinking stays ON because the client asked for it AND
+        because the helper did not touch the request at all."""
+        req = SimpleNamespace(
+            tools=[{"type": "function", "function": {"name": "x"}}],
+            tool_choice="none",
+            chat_template_kwargs={"enable_thinking": True},
+            enable_thinking=None,
+        )
+        assert maybe_auto_disable_thinking_for_tools(req) is False
+        assert req.chat_template_kwargs == {"enable_thinking": True}
+
 
 # ---------------------------------------------------------------------------
 # (2) /v1/chat/completions: route-level integration

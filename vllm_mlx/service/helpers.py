@@ -1770,6 +1770,12 @@ def maybe_auto_disable_thinking_for_tools(request) -> bool:
     Trigger (all must hold):
       * ``request.tools`` is non-empty (caller wants the model to
         emit a tool_call).
+      * ``request.tool_choice`` is NOT the string ``"none"``. The
+        OpenAI ``tool_choice="none"`` contract explicitly tells the
+        model to ignore the supplied tool list and answer in prose
+        — auto-disabling thinking there would turn a prose request
+        into thinking-off behavior solely because tool DEFINITIONS
+        were attached, contradicting the contract (codex r1 BLOCKING).
       * Neither ``chat_template_kwargs["enable_thinking"]`` nor the
         top-level ``enable_thinking`` field is set on the request.
 
@@ -1801,6 +1807,19 @@ def maybe_auto_disable_thinking_for_tools(request) -> bool:
     """
     tools = getattr(request, "tools", None)
     if not tools:
+        return False
+    # tool_choice="none" tells the model to ignore the tool list
+    # entirely and answer in prose — the budget-burn rationale does
+    # not apply (no tool_call is expected), and forcing thinking off
+    # would change a prose request's behavior solely because the
+    # client attached tool DEFINITIONS. Skip the auto-disable so
+    # default-on thinking is preserved for this prose path. Codex
+    # r1 BLOCKING (R12-T1F follow-up): symmetric with the chat /
+    # Anthropic adapters' downstream ``tool_choice="none"`` handling
+    # (no system-prompt injection, no FSM enforcement) — keep the
+    # auto-disable gate aligned with the rest of the no-tool path.
+    tool_choice = getattr(request, "tool_choice", None)
+    if isinstance(tool_choice, str) and tool_choice == "none":
         return False
     if _extract_thinking_from_request(request) is not None:
         return False
