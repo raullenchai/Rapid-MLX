@@ -152,9 +152,7 @@ class TestApplyReasoningCutoffNotice:
         # does not silently swallow the user-visible cue.
         ["", "anything", "garbage", "maybe"],
     )
-    def test_env_unknown_values_keep_sentinel_enabled(
-        self, monkeypatch, unknown_value
-    ):
+    def test_env_unknown_values_keep_sentinel_enabled(self, monkeypatch, unknown_value):
         """Issue #858: anything outside the disable set — including
         the empty string and arbitrary unrecognised values — keeps the
         sentinel ENABLED (default-on). This is the safe default for
@@ -1103,6 +1101,57 @@ def test_chat_route_optin_surfaces_sentinel_on_length_cut(monkeypatch):
             f"mid-think; got content={msg.get('content')!r}"
         )
         assert payload["choices"][0]["finish_reason"] == "length"
+    finally:
+        reset_config()
+
+
+def test_chat_route_default_env_surfaces_sentinel_regression_858(monkeypatch):
+    """End-to-end regression pin for issue #858 on the actual route.
+
+    With the env var UNSET (the rapid-desktop / vanilla-SDK default),
+    ``/v1/chat/completions`` non-streaming MUST carry the sentinel in
+    ``message.content`` on length-cut mid-think. Pure helper-level
+    coverage is insufficient — if a future refactor unwires the
+    chat-route call site (or skips it on a code path), the helper
+    test would still pass while the user-visible bug (#858 empty
+    bubble) reappears. This test drives the actual FastAPI router
+    end-to-end and asserts the envelope shape clients see.
+    """
+    monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+    from fastapi import FastAPI
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.routes.chat import router as chat_router
+
+    cfg = reset_config()
+    _seed_length_cut_engine(cfg)
+
+    try:
+        app = FastAPI()
+        app.include_router(chat_router)
+        client = TestClient(app)
+        resp = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "test-model",
+                "stream": False,
+                "max_tokens": 16,
+                "messages": [{"role": "user", "content": "compute 17*23"}],
+            },
+        )
+        assert resp.status_code == 200, resp.text
+        payload = resp.json()
+        msg = payload["choices"][0]["message"]
+        assert msg.get("content") == REASONING_CUTOFF_SENTINEL, (
+            f"issue #858 e2e: default env must inject sentinel into "
+            f"message.content on length-cut mid-think; got "
+            f"content={msg.get('content')!r}"
+        )
+        assert payload["choices"][0]["finish_reason"] == "length"
+        assert msg.get("reasoning_content"), (
+            "reasoning_content must remain populated alongside the sentinel"
+        )
     finally:
         reset_config()
 

@@ -1059,9 +1059,7 @@ REASONING_CUTOFF_SENTINEL = "[truncated — reasoning incomplete; raise max_toke
 #: Power callers that prefer the strict-null shape can opt out via
 #: ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` (or ``0`` / ``false`` /
 #: ``no`` / ``off``).
-_CUTOFF_NOTICE_DISABLED_VALUES = frozenset(
-    {"0", "false", "no", "off", "disabled"}
-)
+_CUTOFF_NOTICE_DISABLED_VALUES = frozenset({"0", "false", "no", "off", "disabled"})
 
 
 def _cutoff_notice_enabled() -> bool:
