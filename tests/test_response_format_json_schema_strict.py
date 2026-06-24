@@ -1029,6 +1029,202 @@ def test_strict_true_streaming_emits_done_on_upstream_raise():
     )
 
 
+def test_strict_true_streaming_propagates_cancelled_error():
+    """Codex r8 #1 — client-disconnect / cooperative cancellation
+    arrives as ``asyncio.CancelledError``. The strict-streaming
+    wrapper MUST re-raise instead of swallowing it, otherwise:
+      (a) the engine keeps generating tokens for a client who is
+          already gone (wasted compute + held GPU slot);
+      (b) the wrapper tries to yield bytes into a closed pipe and
+          raises again from inside ``finally``, masking the original
+          cancellation.
+
+    Pre-fix the wrapper used ``except BaseException``, which
+    silently captured CancelledError and dropped into the
+    error-emission path. This test pins the fix by injecting an
+    upstream that raises CancelledError mid-stream and asserting the
+    wrapper re-raises it (no [DONE], no error envelope).
+    """
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    async def _cancelling_stream(engine, messages, request, **kwargs):
+        response_id = kwargs.get("response_id", "chatcmpl-test")
+        created = kwargs.get("created", 0)
+        yield (
+            "data: "
+            + _json.dumps(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "x"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            + "\n\n"
+        )
+        raise asyncio.CancelledError()
+
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {"type": "object", "required": ["v"]}
+
+    async def _run():
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _cancelling_stream
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks, None
+        except asyncio.CancelledError as exc:
+            return chunks, exc
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    chunks, exc = asyncio.run(_run())
+    # The cancellation MUST propagate up to the caller — pre-fix the
+    # except-BaseException arm swallowed it and the test would see
+    # exc=None + a body with [DONE].
+    assert exc is not None, (
+        "CancelledError was swallowed; client-disconnect path leaks "
+        "compute (upstream keeps running) and masks cancellation."
+    )
+    assert isinstance(exc, asyncio.CancelledError)
+    # Critically, no [DONE] sentinel should have been emitted — the
+    # finally block must skip its yields on cancellation, so the
+    # pipe doesn't see writes after the disconnect.
+    body = "".join(chunks)
+    assert "data: [DONE]" not in body, (
+        "wrapper emitted [DONE] on cancellation; finally body MUST "
+        "skip its yields to avoid writing into a closed pipe."
+    )
+    assert "chat.completion.error" not in body, (
+        "wrapper emitted upstream-error envelope on cancellation; "
+        "finally body MUST skip its yields to avoid writing into a "
+        "closed pipe."
+    )
+
+
+def test_strict_true_streaming_bounds_buffer_with_overflow_error(monkeypatch):
+    """Codex r8 #2 — the wrapper MUST cap the validation buffer to
+    bound server memory on a runaway / adversarial generation. When
+    the cap is hit the wrapper surfaces a structured
+    ``buffer_overflow`` envelope (under code
+    ``json_schema_violation``) and emits ``[DONE]``; clients see a
+    proper terminal error instead of either silent truncation or an
+    OOM crash.
+
+    Test strategy: monkey-patch the cap to a tiny value (256 bytes)
+    via ``RAPID_MLX_STRICT_BUFFER_BYTES``, then feed an upstream
+    that emits content far larger than the cap. Pin: error envelope
+    contains ``buffer_overflow`` in the message, finish_reason is
+    ``json_schema_violation``, and [DONE] is last.
+    """
+    monkeypatch.setenv("RAPID_MLX_STRICT_BUFFER_BYTES", "256")
+
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    async def _runaway_stream(engine, messages, request, **kwargs):
+        response_id = kwargs.get("response_id", "chatcmpl-test")
+        created = kwargs.get("created", 0)
+        # Emit 10 chunks of 100 bytes each = 1000 bytes content,
+        # well above the 256-byte cap.
+        for _ in range(10):
+            yield (
+                "data: "
+                + _json.dumps(
+                    {
+                        "id": response_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": "test-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": "x" * 100},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                )
+                + "\n\n"
+            )
+        # Terminal chunk (which we may or may not reach before break).
+        yield (
+            "data: "
+            + _json.dumps(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": "test-model",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                }
+            )
+            + "\n\n"
+        )
+
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {"type": "object", "required": ["v"]}
+
+    async def _run():
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _runaway_stream
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    chunks = asyncio.run(_run())
+    body = "".join(chunks)
+    # Structured overflow envelope must appear.
+    assert "buffer_overflow" in body, (
+        "wrapper did not surface buffer_overflow envelope on cap "
+        f"breach. Body tail: {body[-400:]!r}"
+    )
+    # Finish reason MUST be json_schema_violation (the union code we
+    # use for ALL strict-mode terminal failures — clients branch on
+    # the envelope ``code`` field within).
+    assert "json_schema_violation" in body
+    # And [DONE] is still last.
+    assert body.rstrip().endswith("data: [DONE]")
+
+
 # ---------------------------------------------------------------------------
 # Route-level: strict=false → fallthrough to prompt-injection
 # ---------------------------------------------------------------------------

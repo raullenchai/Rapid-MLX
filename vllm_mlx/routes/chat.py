@@ -5,6 +5,7 @@ import asyncio
 import gc
 import json
 import logging
+import os
 import re
 import time
 import uuid
@@ -4491,6 +4492,26 @@ async def stream_chat_completion_strict_postgen(
     model_name = _resolve_model_name(request.model)
 
     buffered_content: list[str] = []
+    buffered_content_chars = 0
+    # Codex r8 #2: bound the validation buffer. A misbehaving or
+    # adversarial generation (forced-loop, jailbroken, model decode
+    # bug) can stream content deltas indefinitely; pre-fix we'd
+    # accumulate every byte until the upstream gave up, which
+    # erased streaming's bounded-memory property and could OOM the
+    # server on a single request. The cap defaults to 2 MiB — well
+    # above any realistic strict-JSON payload (the largest strict
+    # schemas in our pydantic-ai corpus marshal to ~50 KiB) but
+    # comfortably below per-request memory limits operators expect
+    # streaming to honor. Override via
+    # ``RAPID_MLX_STRICT_BUFFER_BYTES`` for unusual workloads.
+    try:
+        _buffer_cap = int(
+            os.environ.get("RAPID_MLX_STRICT_BUFFER_BYTES", str(2 * 1024 * 1024))
+        )
+        if _buffer_cap <= 0:
+            _buffer_cap = 2 * 1024 * 1024
+    except (TypeError, ValueError):
+        _buffer_cap = 2 * 1024 * 1024
     # Codex r2 #1: we MUST NOT forward the upstream stream's terminal
     # chunk (the one carrying ``finish_reason``) until we know whether
     # validation passed. Spec-compliant clients finalize on the first
@@ -4511,6 +4532,11 @@ async def stream_chat_completion_strict_postgen(
     # (not just a silent close).
     upstream_raised: BaseException | None = None
     validation_emitted = False
+    buffer_overflow = False
+    # Codex r8 #1: flag set in the cancellation arm so the finally
+    # block skips its own yields (which would themselves raise into
+    # a closed pipe and mask the original cancellation).
+    cancelled = False
 
     try:
         async for chunk_text in stream_chat_completion(
@@ -4546,7 +4572,20 @@ async def stream_chat_completion_strict_postgen(
                         if isinstance(delta, dict):
                             c = delta.get("content")
                             if isinstance(c, str):
-                                buffered_content.append(c)
+                                # Codex r8 #2: enforce the buffer cap.
+                                # When exceeded we stop accumulating
+                                # AND break out of the upstream loop —
+                                # the finally block surfaces a
+                                # structured ``buffer_overflow`` error
+                                # so the client sees WHY validation
+                                # was abandoned, instead of either
+                                # silently truncating (data
+                                # corruption) or OOMing the server.
+                                if buffered_content_chars + len(c) > _buffer_cap:
+                                    buffer_overflow = True
+                                else:
+                                    buffered_content.append(c)
+                                    buffered_content_chars += len(c)
                         if ch.get("finish_reason"):
                             is_terminal = True
                     # A usage-only chunk has no choices (or empty
@@ -4565,6 +4604,67 @@ async def stream_chat_completion_strict_postgen(
                 held_usage_chunk = chunk_text
                 continue
             yield chunk_text
+            # Codex r8 #2: if the buffer cap was hit, abandon the
+            # rest of the upstream stream. Continuing to iterate
+            # would just discard bytes (we already stopped appending)
+            # while still consuming engine-side resources; better to
+            # break here and surface the structured error.
+            if buffer_overflow:
+                break
+
+        # Codex r8 #2: if the buffer cap fired, skip validation and
+        # treat the truncated content as a violation. Validating a
+        # truncated payload would frequently produce a misleading
+        # ``invalid_json`` error (the truncation point can fall
+        # mid-string / mid-object) — surfacing the overflow as its
+        # own ``buffer_overflow`` code is more actionable for the
+        # operator who needs to either raise the cap or fix the
+        # runaway model.
+        if buffer_overflow:
+            incr_strict_violation()
+            overflow_envelope = build_violation_envelope(
+                {
+                    "reason": "buffer_overflow",
+                    "message": (
+                        f"strict json_schema content buffer exceeded "
+                        f"{_buffer_cap} bytes; abandoned validation. "
+                        f"Raise RAPID_MLX_STRICT_BUFFER_BYTES or "
+                        f"investigate a runaway generation."
+                    ),
+                },
+                attempts=1,
+            )
+            violation_chunk = ChatCompletionChunk(
+                id=response_id,
+                created=created,
+                model=model_name,
+                choices=[
+                    ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(),
+                        finish_reason="json_schema_violation",
+                    )
+                ],
+            )
+            yield (
+                "data: " + violation_chunk.model_dump_json(exclude_none=True) + "\n\n"
+            )
+            error_event = {
+                "id": response_id,
+                "object": "chat.completion.error",
+                "created": created,
+                "model": model_name,
+                **overflow_envelope,
+            }
+            error_payload = json.dumps(error_event, separators=(",", ":"))
+            yield ("event: chat.completion.error\n" + "data: " + error_payload + "\n\n")
+            if held_usage_chunk is not None:
+                yield held_usage_chunk
+            logger.warning(
+                "R12-4 strict json_schema streaming buffer overflow at %d bytes",
+                _buffer_cap,
+            )
+            validation_emitted = True
+            return
 
         # Stream completed normally — run validation. We do NOT
         # incr_strict_violation() on the happy path; only when we
@@ -4654,10 +4754,34 @@ async def stream_chat_completion_strict_postgen(
                 (failure_details or {}).get("message"),
             )
         validation_emitted = True
-    except BaseException as exc:  # noqa: BLE001
-        # Codex r7 #1: the upstream generator raised mid-stream.
-        # Without this try/finally, the promised unconditional
-        # ``[DONE]`` at the bottom of this function would NEVER be
+    except (asyncio.CancelledError, GeneratorExit):
+        # Codex r8 #1: client-disconnect / cooperative cancellation
+        # paths arrive as ``asyncio.CancelledError`` (FastAPI /
+        # uvicorn cancel the request task when the client TCP socket
+        # closes) and ``GeneratorExit`` (when the consumer of THIS
+        # async generator calls ``aclose()``). Suppressing them would
+        # keep the upstream generation task running long enough to
+        # emit our trailing error frame + ``[DONE]``, which:
+        #   (a) defeats the disconnect mechanism — the engine keeps
+        #       generating tokens for a client who is gone, wasting
+        #       compute and prolonging the slot until the natural
+        #       terminus;
+        #   (b) tries to yield bytes into a closed pipe, raising
+        #       again from inside ``finally`` (BrokenPipeError /
+        #       RuntimeError "generator closed") and masking the
+        #       original cancellation.
+        # We set ``cancelled`` so the finally block skips its own
+        # yields (which would themselves raise into the dead pipe)
+        # and re-raises to propagate cancellation up the stack. The
+        # caller's ``StreamingResponse`` framing handles the rest.
+        cancelled = True
+        raise
+    except Exception as exc:  # noqa: BLE001
+        # Codex r7 #1 + r8 #1: ordinary upstream generation
+        # exceptions (engine raises, runtime errors, etc.) — distinct
+        # from cancellation. Without this catch, the exception would
+        # propagate past the function epilogue and the promised
+        # unconditional ``[DONE]`` at the bottom would NEVER be
         # emitted (Python's generator close semantics propagate the
         # exception past the function epilogue), and clients see a
         # truncated stream with no terminal sentinel. We capture the
@@ -4673,53 +4797,54 @@ async def stream_chat_completion_strict_postgen(
             exc,
         )
     finally:
-        # Codex r7 #1: if the upstream raised, emit the error envelope
-        # BEFORE [DONE]. This is structurally identical to a schema
-        # violation event — distinct ``code`` so clients can branch,
-        # same envelope shape so handler code is reusable.
-        if upstream_raised is not None and not validation_emitted:
-            # Use the same envelope shape as the schema violation path
-            # so a single ``onerror`` handler can decode both.
-            upstream_envelope = {
-                "error": {
-                    "type": "upstream_error",
-                    "code": "strict_stream_upstream_error",
-                    "message": (
-                        f"strict json_schema streaming generation aborted "
-                        f"before validation: "
-                        f"{type(upstream_raised).__name__}: {upstream_raised}"
-                    ),
-                    "param": "response_format.json_schema",
-                    "details": {
-                        "exception_type": type(upstream_raised).__name__,
-                    },
+        # Codex r8 #1: skip the entire finally body on cancellation —
+        # the consumer pipe is dead, our yields would raise into it
+        # and mask the original CancelledError. The caller's
+        # StreamingResponse machinery handles the disconnect from
+        # here.
+        if not cancelled:
+            # Codex r7 #1: if the upstream raised, emit the error
+            # envelope BEFORE [DONE]. Structurally identical to a
+            # schema-violation event — distinct ``code`` so clients
+            # can branch, same envelope shape so handler code is
+            # reusable.
+            if upstream_raised is not None and not validation_emitted:
+                upstream_envelope = {
+                    "error": {
+                        "type": "upstream_error",
+                        "code": "strict_stream_upstream_error",
+                        "message": (
+                            f"strict json_schema streaming generation aborted "
+                            f"before validation: "
+                            f"{type(upstream_raised).__name__}: {upstream_raised}"
+                        ),
+                        "param": "response_format.json_schema",
+                        "details": {
+                            "exception_type": type(upstream_raised).__name__,
+                        },
+                    }
                 }
-            }
-            err_obj = {
-                "id": response_id,
-                "object": "chat.completion.error",
-                "created": created,
-                "model": model_name,
-                **upstream_envelope,
-            }
-            try:
-                err_payload = json.dumps(err_obj, separators=(",", ":"))
-                yield (
-                    "event: chat.completion.error\n" + "data: " + err_payload + "\n\n"
-                )
-            except (TypeError, ValueError):
-                # JSON encoding can't reasonably fail here, but if it
-                # did we still need to close the stream. Fall through
-                # to [DONE].
-                pass
-        # Codex r6 #1 + r7 #1: ALWAYS emit the terminal ``[DONE]``
-        # sentinel — regardless of whether the upstream generator
-        # produced its own, AND regardless of whether the upstream
-        # raised mid-stream. The spec wire envelope MUST close with
-        # ``[DONE]`` so spec-compliant clients don't hang. Duplicate
-        # sentinels on a normal-shaped upstream are tolerated by every
-        # SSE client (the protocol discards repeated ``[DONE]`` lines
-        # as no-op message events). The finally block guarantees
-        # delivery even on upstream raise — see the ``except`` arm
-        # above for the error-envelope companion.
-        yield "data: [DONE]\n\n"
+                err_obj = {
+                    "id": response_id,
+                    "object": "chat.completion.error",
+                    "created": created,
+                    "model": model_name,
+                    **upstream_envelope,
+                }
+                try:
+                    err_payload = json.dumps(err_obj, separators=(",", ":"))
+                    yield (
+                        "event: chat.completion.error\n"
+                        + "data: "
+                        + err_payload
+                        + "\n\n"
+                    )
+                except (TypeError, ValueError):
+                    # JSON encoding can't reasonably fail here; if it
+                    # did we still need to close the stream — fall
+                    # through to [DONE].
+                    pass
+            # Codex r6 #1 + r7 #1: ALWAYS emit ``[DONE]`` on the
+            # non-cancelled exit. Spec wire envelope MUST close with
+            # ``[DONE]`` so clients don't hang.
+            yield "data: [DONE]\n\n"
