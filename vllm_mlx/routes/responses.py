@@ -2327,11 +2327,7 @@ async def _stream_responses(
             # output_text.done → content_part.done → output_item.done
             # ladder. Gating mirrors `_apply_reasoning_cutoff_notice` —
             # message_open + tool_calls already preclude rescue.
-            if (
-                mid_think_cutoff
-                and not message_open
-                and not tool_calls
-            ):
+            if mid_think_cutoff and not message_open and not tool_calls:
                 rescue_text = _apply_reasoning_cutoff_notice(
                     final_content=None,
                     reasoning_text=accumulated_reasoning_text,

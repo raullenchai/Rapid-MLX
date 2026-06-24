@@ -535,13 +535,10 @@ class TestR12_8RescuePayloadShape:
             f"sanitized rescue must keep the sentinel prefix; got {result!r}"
         )
         assert marker not in result, (
-            f"sanitizer must strip {marker!r} from the rescue payload; "
-            f"got {result!r}"
+            f"sanitizer must strip {marker!r} from the rescue payload; got {result!r}"
         )
 
-    def test_rescue_falls_back_to_sentinel_when_tail_is_pure_markup(
-        self, monkeypatch
-    ):
+    def test_rescue_falls_back_to_sentinel_when_tail_is_pure_markup(self, monkeypatch):
         """Edge case for the sanitizer: if the tail is ENTIRELY
         special-token markup (``sanitize_output`` returns ``None``
         because everything was stripped), the rescue degrades

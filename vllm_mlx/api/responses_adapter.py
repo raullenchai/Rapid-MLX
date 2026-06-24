@@ -509,7 +509,7 @@ def openai_to_responses(
             # ``reasoning_block_closed`` predicate (which never sees
             # the sentinel because streaming injects it as a terminal
             # delta, never as the parser's content channel).
-            content_for_downstream_check = (choice.message.content or "")
+            content_for_downstream_check = choice.message.content or ""
             if content_for_downstream_check.startswith(REASONING_CUTOFF_SENTINEL):
                 content_for_downstream_check = ""
             downstream_output_seen = bool(
