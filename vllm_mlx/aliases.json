@@ -121,7 +121,7 @@
   "tmax-27b": {
     "hf_path": "mlx-community/Tmax-27B-MLX-4bit",
     "tool_call_parser": "qwen3_xml",
-    "is_hybrid": false,
+    "is_hybrid": true,
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -130,7 +130,7 @@
   "tmax-27b-6bit": {
     "hf_path": "mlx-community/Tmax-27B-MLX-6bit",
     "tool_call_parser": "qwen3_xml",
-    "is_hybrid": false,
+    "is_hybrid": true,
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -139,7 +139,7 @@
   "tmax-27b-8bit": {
     "hf_path": "mlx-community/Tmax-27B-MLX-8bit",
     "tool_call_parser": "qwen3_xml",
-    "is_hybrid": false,
+    "is_hybrid": true,
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
