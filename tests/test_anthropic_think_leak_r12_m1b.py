@@ -9,12 +9,16 @@ canonical sanitizer that together close Mira r12 R-3 SEVERE finding on
   prompt-template-injected ``<think>`` opener was the only token the
   reasoning parser saw at ``max_tokens=1`` on a thinking model and it
   ended up verbatim in BOTH the ``thinking`` AND the ``text`` content
-  blocks. The canonical :func:`sanitize_output` now strips both the
-  opener and the closer (only ``</think>`` was stripped before), and
-  the Anthropic adapter routes the ``thinking`` block content through
-  the sanitizer so the leak is closed on every entry path (chat /
-  responses / messages, stream + non-stream all share the same
-  canonical sanitizer + adapter).
+  blocks. Fixed by routing reasoning-channel bytes (Anthropic
+  ``thinking`` block + rescue tail) through the new
+  :func:`strip_reasoning_channel_markup`, which strips BOTH the
+  ``<think>`` opener AND ``</think>`` closer. The canonical
+  :func:`sanitize_output` intentionally STILL preserves the bare
+  ``<think>`` opener on content-channel bytes — that opener is
+  sometimes legit there (Nemotron prefix injection, literal-tag prose
+  like ``"use the <think> tag in HTML"``), and stripping it would
+  regress ``TestStreamingPostProcessorNemotron::test_thinking_prefix_injected``
+  + the ``test_streaming_reasoning_split_r8c.py`` literal-tag pin.
 
 * **Bug #2 — rescue tail duplicated across content blocks**. With
   ``max_tokens=40`` on a thinking model, the H-01 (PR #802 / R12-8 PR

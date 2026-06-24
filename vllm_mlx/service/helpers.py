@@ -1233,9 +1233,19 @@ def _apply_reasoning_cutoff_notice(
       model produced nothing semantically, which is a different bug
       class and shouldn't get a "raise max_tokens" hint)
 
-    Otherwise returns ``sentinel + "\\n\\n" + reasoning_text[-RESCUE_TAIL_LENGTH:]``.
-    The caller writes it into ``message.content`` (non-stream) or the
-    final SSE ``delta.content`` chunk (stream).
+    Otherwise returns the rescue payload produced by
+    :func:`_build_reasoning_rescue_payload` — the canonical shape is
+    ``sentinel + "\\n\\n" + sanitized_tail``, where ``sanitized_tail``
+    is ``reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]`` run through
+    :func:`strip_reasoning_channel_markup` (channel-aware ``<think>`` /
+    ``</think>`` strip) and :func:`sanitize_output` (general special-
+    token catch-all). When that sanitization collapses the tail to
+    empty (e.g. ``reasoning_text="<think>"`` at ``max_tokens=1``), the
+    rescue builder returns the bare sentinel — clients still see the
+    structural truncation signal without a stray markup byte in
+    ``content``. The caller writes the returned string into
+    ``message.content`` (non-stream) or the final SSE ``delta.content``
+    chunk (stream).
     """
     if not _cutoff_notice_enabled():
         return final_content

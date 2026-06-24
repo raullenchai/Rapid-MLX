@@ -108,10 +108,19 @@ def strip_reasoning_channel_markup(text: str) -> str:
     """Strip ``<think>`` / ``</think>`` tags that the reasoning parser
     may have left in the reasoning channel.
 
-    Used by surfaces that emit reasoning content as a discrete field
-    (Anthropic ``thinking`` block, ``/v1/responses`` reasoning item,
-    OpenAI ``reasoning_content``) and by ``_build_reasoning_rescue_payload``
-    which surfaces a tail of the reasoning trace into ``content``.
+    Current call sites (R12-M1b):
+
+    * ``api.anthropic_adapter._thinking_block_content`` — sanitizes
+      bytes destined for the Anthropic ``thinking`` content block.
+    * ``service.helpers._build_reasoning_rescue_payload`` — sanitizes
+      the rescue tail that surfaces a slice of the reasoning trace
+      into the user-visible ``content`` channel.
+
+    The OpenAI ``reasoning_content`` field and the ``/v1/responses``
+    reasoning item DO NOT currently route through this helper — they
+    surface the raw parser output. Wire them through here too if a
+    future report shows the same ``<think>`` opener leakage on those
+    surfaces.
 
     Why this isn't in ``sanitize_output``: the canonical sanitizer is
     applied to ``content``-channel bytes too, where the bare ``<think>``
