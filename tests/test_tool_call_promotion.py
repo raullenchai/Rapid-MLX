@@ -272,13 +272,55 @@ class TestStreamingPromotion:
         assert "<tool_call>" in content
 
     def test_stream_finalize_with_buffered_tool_call(self, parser):
-        """Stream ends mid-tool-call — flushed by finalize as content."""
+        """Stream ends mid-tool-call — flushed by finalize as content,
+        NOT duplicated. Codex round-3 BLOCKING regression: the
+        subclass ``finalize_streaming`` (Qwen3 natural-EOS path)
+        re-derives content from ``accumulated_text`` which includes
+        the buffered ``<tool_call>`` bytes; the merge in
+        ``finalize_streaming_compat`` must strip them before
+        appending the flush, otherwise the tool-call XML appears
+        TWICE on the wire."""
         text = (
             "<think>\n<tool_call>\n<function=f><parameter=x>1</parameter></function>\n"
         )
         reasoning, content = _stream(parser, text)
         assert content is not None
         assert "<tool_call>" in content
+        # Exactly one tool_call block — no duplication.
+        assert content.count("<tool_call>") == 1
+        assert content.count("<function=f>") == 1
+
+    def test_stream_finalize_buffered_tool_call_no_reasoning_leak(self):
+        """Codex round-3 BLOCKING regression: when ``finish_reason=
+        "length"`` truncates a stream mid-``<tool_call>``, Qwen3's
+        ``finalize_streaming`` returns the cleaned trace as
+        ``reasoning`` (D-STOP-THINK suppression). Without dedup, the
+        same buffered ``<tool_call>`` bytes leak into BOTH reasoning
+        AND content — the merge must strip them from reasoning so the
+        flush owns the tool_call wire emission and the channel is
+        clean."""
+        cls = get_parser("qwen3")
+        p = cls()
+        p.reset_state()
+        text = (
+            "<think>\n<tool_call>\n<function=f><parameter=x>1</parameter></function>\n"
+        )
+        accumulated = ""
+        for ch in [text]:
+            previous = accumulated
+            accumulated += ch
+            p.extract_reasoning_streaming(previous, accumulated, ch)
+        final = finalize_streaming_compat(
+            p, accumulated, finish_reason="length", matched_stop=None
+        )
+        assert final is not None
+        # Tool call must not appear in reasoning — that's a wire leak.
+        assert "<tool_call>" not in (final.reasoning or "")
+        # Tool call must appear in content (flushed by promotion).
+        assert final.content is not None
+        assert "<tool_call>" in final.content
+        # Exactly one occurrence — no duplication.
+        assert final.content.count("<tool_call>") == 1
 
     def test_stream_multiple_tool_calls(self, parser):
         text = (
