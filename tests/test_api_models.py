@@ -789,24 +789,34 @@ class TestModelSerialization:
         data = schema.model_dump(by_alias=True)
         assert "schema" in data
 
-    # F-040 regression: ``content`` MUST always be present on the wire,
-    # even when the route serializes the response with ``exclude_none=True``
-    # and the underlying value is ``None`` (e.g. reasoning consumed the
-    # whole budget and we truncated mid-``<think>``). Standard OpenAI
-    # clients read ``resp["choices"][0]["message"]["content"]`` and crash
-    # with ``KeyError: 'content'`` if the field is missing.
+    # F-040 / D-MISSING-CONTENT-KEY regression: ``content`` MUST always
+    # be present on the wire, even when the route serializes the response
+    # with ``exclude_none=True`` and the underlying value is ``None``
+    # (e.g. reasoning consumed the whole budget and we truncated
+    # mid-``<think>``, or the model produced empty content +
+    # ``finish_reason=stop``). Standard OpenAI clients read
+    # ``resp["choices"][0]["message"]["content"]`` and crash with
+    # ``KeyError: 'content'`` if the field is missing. D-MISSING-CONTENT-KEY
+    # additionally enforces that the fill-in value is the empty string
+    # ``""`` (not ``null``) so the wire-level ``string`` type
+    # discriminator is preserved — Swift Codable / Rust serde decode
+    # cleanly into a non-Optional ``String``.
     def test_assistant_message_content_always_present_in_json(self):
-        """``content`` is REQUIRED in OpenAI's chat.completion schema (string|null)."""
+        """``content`` is REQUIRED in OpenAI's chat.completion schema (string|null|array)."""
         msg = AssistantMessage(
             content=None,
             reasoning_content="I was thinking but ran out of budget mid-thought.",
         )
         data = json.loads(msg.model_dump_json(exclude_none=True))
         assert "content" in data, (
-            "F-040: 'content' must always appear on the wire (OpenAI spec); "
-            "any standard SDK client crashes with KeyError otherwise."
+            "F-040 / D-MISSING-CONTENT-KEY: 'content' must always appear "
+            "on the wire (OpenAI spec); any standard SDK client crashes "
+            "with KeyError otherwise."
         )
-        assert data["content"] is None
+        # D-MISSING-CONTENT-KEY (r12-7): empty string, not null, so the
+        # wire ``string`` type discriminator survives strongly-typed
+        # decoders (Swift Codable, pydantic strict, Rust serde).
+        assert data["content"] == ""
         # r10-B R10-C2: only ``reasoning_content`` is emitted; the
         # deprecation-window ``reasoning`` alias (r7-A R7-H2) was the
         # byte-for-byte root cause of R9-CRIT3 (openai-agents
@@ -821,7 +831,8 @@ class TestModelSerialization:
         msg = AssistantMessage(content=None, reasoning_content="…")
         data = msg.model_dump(exclude_none=True)
         assert "content" in data
-        assert data["content"] is None
+        # D-MISSING-CONTENT-KEY: parity with the wire shape — ``""``.
+        assert data["content"] == ""
 
     def test_chat_completion_response_content_always_present(self):
         """Parent ``ChatCompletionResponse.model_dump_json(exclude_none=True)``
@@ -842,20 +853,67 @@ class TestModelSerialization:
         payload = json.loads(resp.model_dump_json(exclude_none=True))
         message = payload["choices"][0]["message"]
         assert "content" in message
-        assert message["content"] is None
+        # D-MISSING-CONTENT-KEY: ``""`` (preferred), not ``null``.
+        assert message["content"] == ""
         # Make sure we did not regress the role / reasoning shape.
         assert message["role"] == "assistant"
         assert message["reasoning_content"] == "Truncated mid-think."
 
-    def test_chunk_delta_terminal_with_reasoning_has_content_null(self):
-        """F-040 (streaming): the terminal chunk delta for a reasoning-only
-        finish must expose ``content: null`` so clients reading
-        ``chunk.choices[0].delta.content`` on the last chunk do not crash.
+    def test_assistant_message_empty_stop_emits_empty_content_key(self):
+        """D-MISSING-CONTENT-KEY (r12-7) reproducer: empty generation +
+        ``finish_reason="stop"`` — the OpenAI canonical shape REQUIRES
+        ``content`` to be present (Swift Codable, pydantic strict, Rust
+        serde all hard-fail on a missing required key). The serializer
+        emits ``content: ""`` (preferred over ``null``)."""
+        resp = ChatCompletionResponse(
+            model="granite4-h-micro-4bit",
+            choices=[
+                ChatCompletionChoice(
+                    message=AssistantMessage(content=None),
+                    finish_reason="stop",
+                )
+            ],
+        )
+        payload = json.loads(resp.model_dump_json(exclude_none=True))
+        message = payload["choices"][0]["message"]
+        assert "content" in message, (
+            "D-MISSING-CONTENT-KEY: empty completion + stop MUST still "
+            "carry the ``content`` key (regression of 0.8TODO r12-7)."
+        )
+        assert message["content"] == ""
+        assert message["role"] == "assistant"
+        # No reasoning, no tool_calls — exact wire shape is the
+        # canonical "{role,content}" doublet.
+        assert set(message.keys()) == {"role", "content"}
+
+    def test_assistant_message_tool_calls_only_emits_empty_content(self):
+        """D-MISSING-CONTENT-KEY (r12-7): tool-call-only assistant
+        messages serialize as ``{role,tool_calls,content:""}`` — the
+        canonical OpenAI tool-call envelope. Without the explicit
+        ``content`` key strict clients reject the message shape."""
+        tc = ToolCall(
+            id="call_1",
+            type="function",
+            function={"name": "get_weather", "arguments": "{}"},
+        )
+        msg = AssistantMessage(content=None, tool_calls=[tc])
+        data = json.loads(msg.model_dump_json(exclude_none=True))
+        assert "content" in data
+        assert data["content"] == ""
+        assert data["tool_calls"][0]["id"] == "call_1"
+        assert data["role"] == "assistant"
+
+    def test_chunk_delta_terminal_with_reasoning_has_content_empty(self):
+        """F-040 / D-MISSING-CONTENT-KEY (streaming): the terminal chunk
+        delta for a reasoning-only finish must expose ``content: ""``
+        so clients reading ``chunk.choices[0].delta.content`` on the
+        last chunk do not crash.
         """
         delta = ChatCompletionChunkDelta(reasoning_content="…", content=None)
         data = json.loads(delta.model_dump_json(exclude_none=True))
         assert "content" in data
-        assert data["content"] is None
+        # D-MISSING-CONTENT-KEY: parity with the non-stream surface.
+        assert data["content"] == ""
 
     def test_chunk_delta_pure_content_stays_lean(self):
         """Per-token content-only deltas keep their minimal shape — we do

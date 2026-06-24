@@ -686,25 +686,30 @@ def test_streaming_rescue_noop_when_reasoning_is_whitespace_only():
         # the list is empty; any non-null emission at all
         # (whitespace, empty string, real text) is a regression.
         #
-        # F-040: ``content: null`` is now an INTENTIONAL part of the
+        # F-040 / D-MISSING-CONTENT-KEY: ``content: ""`` (and prior
+        # ``content: null``) is now an INTENTIONAL part of the
         # streaming shape on reasoning-only deltas (so clients reading
         # ``delta.content`` on the terminal chunk don't crash with a
         # KeyError). The original test caught any presence of the
         # ``content`` key including ``None``; we tighten the check to
-        # only flag actual *promotions* (a non-null value), which is
-        # the regression we care about here.
+        # only flag actual *promotions* (a non-null, non-empty value
+        # — i.e. real promoted text), which is the regression we
+        # care about here. D-MISSING-CONTENT-KEY flipped the
+        # placeholder from ``null`` to ``""`` for strongly-typed
+        # client parity, so we also filter out empty strings here.
         content_values = [
             (choice.get("delta") or {}).get("content")
             for ev in events
             for choice in ev.get("choices", [])
             if "content" in (choice.get("delta") or {})
             and (choice.get("delta") or {}).get("content") is not None
+            and (choice.get("delta") or {}).get("content") != ""
         ]
         assert content_values == [], (
             "#676 round-4 BLOCKING (streaming): whitespace-only "
             "accumulated reasoning must NOT promote to delta.content "
-            "on any SSE chunk; expected zero non-null content emissions "
-            f"but got {content_values!r}"
+            "on any SSE chunk; expected zero non-empty content "
+            f"promotions but got {content_values!r}"
         )
     finally:
         reset_config()

@@ -523,7 +523,29 @@ def openai_to_responses(
             )
 
         text = choice.message.content or ""
-        if text:
+        # D-MISSING-CONTENT-KEY (r12-7): emit the assistant message
+        # item whenever the turn produced ANY visible text-side signal
+        # (non-empty content) OR there is NO other structured output
+        # (no reasoning, no tool_calls) representing the assistant's
+        # reply. The empty-completion + ``finish_reason=stop`` case
+        # (granite4-h-micro repro) lands here: pre-fix the entire
+        # ``output`` array was empty so /v1/responses callers walking
+        # ``output[i].content[0].text`` crashed on an out-of-bounds
+        # index; post-fix a single ``message`` item with
+        # ``content:[{type:"output_text",text:""}]`` is emitted so the
+        # canonical shape walker stays addressable.
+        #
+        # Reasoning-only turns (closed thought → no answer) keep their
+        # OpenAI-spec shape: only the ``reasoning`` item is emitted,
+        # no empty message item. Tool-call-only turns likewise keep
+        # their ``function_call``/``computer_call`` items as the
+        # primary signal — the empty message item is only added when
+        # NEITHER reasoning NOR tool_calls represent the assistant's
+        # reply.
+        has_tool_calls = bool(choice.message.tool_calls)
+        has_reasoning = bool(reasoning_text)
+        emit_message_item = bool(text) or not (has_tool_calls or has_reasoning)
+        if emit_message_item:
             output.append(
                 ResponsesOutputItem(
                     type="message",

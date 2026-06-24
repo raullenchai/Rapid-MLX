@@ -745,6 +745,7 @@ def _chat_response(
     *,
     text: str | None = "",
     tool_calls: list[ToolCall] | None = None,
+    reasoning_content: str | None = None,
     finish_reason: str = "stop",
     prompt_tokens: int = 10,
     completion_tokens: int = 5,
@@ -761,7 +762,11 @@ def _chat_response(
         model="test-model",
         choices=[
             ChatCompletionChoice(
-                message=AssistantMessage(content=text, tool_calls=tool_calls),
+                message=AssistantMessage(
+                    content=text,
+                    tool_calls=tool_calls,
+                    reasoning_content=reasoning_content,
+                ),
                 finish_reason=finish_reason,
             )
         ],
@@ -806,6 +811,51 @@ class TestOpenaiToResponses:
         )
         assert len(resp.output) == 1
         assert resp.output[0].type == "function_call"
+
+    def test_empty_stop_emits_empty_message_item(self):
+        """D-MISSING-CONTENT-KEY (r12-7): an empty completion +
+        ``finish_reason="stop"`` (granite4-h-micro repro: "Reply with
+        only the letter A." + ``max_tokens=3``, model emits nothing
+        visible) MUST still surface a well-formed ``message`` item with
+        ``content: [{type:"output_text", text:""}]`` so /v1/responses
+        callers walking ``output[i].content[0].text`` keep their happy
+        path. Pre-fix the ``output`` array was empty and clients
+        crashed with IndexError / KeyError."""
+        chat_resp = _chat_response(text=None, finish_reason="stop")
+        resp = openai_to_responses(
+            chat_resp, model="granite4-h-micro-4bit", request=_bare_request(), created_at=0
+        )
+        assert len(resp.output) == 1, (
+            "D-MISSING-CONTENT-KEY: empty stop must surface an assistant "
+            "message item, not an empty output array."
+        )
+        item = resp.output[0]
+        assert item.type == "message"
+        assert item.role == "assistant"
+        assert item.content is not None and len(item.content) == 1
+        assert item.content[0].type == "output_text"
+        assert item.content[0].text == ""
+
+    def test_reasoning_only_does_not_emit_empty_message_item(self):
+        """D-MISSING-CONTENT-KEY (r12-7): a reasoning-only turn (closed
+        thought block, no answer text) keeps the OpenAI-spec shape —
+        only the ``reasoning`` item is emitted; no empty message item
+        is synthesized. The reasoning item itself represents the
+        assistant's structured signal for this turn."""
+        chat_resp = _chat_response(
+            text=None,
+            reasoning_content="Let me think... 17 * 23 =",
+            finish_reason="stop",
+        )
+        resp = openai_to_responses(
+            chat_resp, model="reasoning-model", request=_bare_request(), created_at=0
+        )
+        types = [item.type for item in resp.output]
+        # Only reasoning, no synthesized empty message item.
+        assert types == ["reasoning"], (
+            "D-MISSING-CONTENT-KEY: reasoning-only turn must NOT "
+            f"synthesize an empty message item; got output types {types!r}."
+        )
 
     def test_text_then_tool_call_ordering(self):
         chat_resp = _chat_response(
