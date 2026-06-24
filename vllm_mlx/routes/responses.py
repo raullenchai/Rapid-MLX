@@ -2222,9 +2222,21 @@ async def _stream_responses(
         if accumulated_reasoning_text:
             reasoning_output_index = len(completed_output)
             reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
-            reasoning_status = (
-                "incomplete" if last_finish_reason == "length" else "completed"
+            # R11-B codex r2 BLOCKING: scope reasoning ``status`` to
+            # "cut off mid-think" — NOT every ``finish_reason=length``.
+            # Mirror the non-stream gating in
+            # ``openai_to_responses`` (responses_adapter.py L487):
+            # reasoning stays ``completed`` whenever a message body
+            # shipped, because the model already CLOSED ``</think>``
+            # and only the assistant message body was truncated. Pre-
+            # fix this branch flipped reasoning to ``incomplete`` even
+            # in the mixed reasoning+message case, diverging from the
+            # non-stream surface for the same response shape.
+            mid_think_cutoff = (
+                last_finish_reason == "length"
+                and not (accumulated_text or "").strip()
             )
+            reasoning_status = "incomplete" if mid_think_cutoff else "completed"
             reasoning_item_payload_added = {
                 "type": "reasoning",
                 "id": reasoning_item_id,

@@ -680,6 +680,44 @@ class TestReasoningPlusMessageOutputIndexAlignment:
         assert "reasoning" in types_seen, (
             f"reasoning item missing from output[]; types={types_seen}"
         )
+        assert "message" in types_seen, (
+            f"message item missing from output[]; types={types_seen}"
+        )
+
+        # R11-B codex r2 BLOCKING regression guard: when message body
+        # shipped, reasoning ``status`` must be ``completed`` even
+        # under ``finish_reason="length"`` — only the MESSAGE was
+        # truncated, the model already closed ``</think>``. This
+        # mirrors the non-stream gating in
+        # ``openai_to_responses`` (responses_adapter.py L487).
+        reasoning_item = next(item for item in output if item["type"] == "reasoning")
+        assert reasoning_item["status"] == "completed", (
+            f"reasoning item must be ``completed`` in the mixed case "
+            f"(message body shipped → reasoning is NOT mid-think), "
+            f"got status={reasoning_item['status']!r}"
+        )
+
+        # And cross-path parity: the non-stream surface on the same
+        # engine shape must also report ``status="completed"``.
+        non_stream_resp = reasoning_then_message_client.client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": "Hi",
+                "max_output_tokens": 32,
+            },
+            headers=HEADERS,
+        )
+        assert non_stream_resp.status_code == 200
+        non_stream_output = non_stream_resp.json()["output"]
+        non_stream_reasoning = next(
+            item for item in non_stream_output if item["type"] == "reasoning"
+        )
+        assert non_stream_reasoning["status"] == reasoning_item["status"], (
+            f"streaming vs non-streaming reasoning status diverged: "
+            f"stream={reasoning_item['status']!r}, "
+            f"non-stream={non_stream_reasoning['status']!r}"
+        )
 
         # Walk every ``output_item.done`` and verify its
         # ``output_index`` matches its position in ``output[]`` by id.
