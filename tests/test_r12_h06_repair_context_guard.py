@@ -39,7 +39,6 @@ from vllm_mlx.engine.base import GenerationOutput
 from vllm_mlx.middleware.exception_handlers import install_exception_handlers
 from vllm_mlx.routes.chat import router as chat_router
 
-
 # ---------------------------------------------------------------------------
 # Stubs — modelled after the constraint-matrix file but with a real
 # tokenizer + a tunable max-context window so we can hit the H-06
@@ -206,9 +205,7 @@ def test_repair_runs_when_both_initial_and_repair_fit_context():
     # 1 048 576 tokens — comfortably larger than the repair prompt
     # (instructions + schema + ~50 char failed output ≈ a few
     # hundred tokens at 4 chars/token).
-    client, engine = _client(
-        body=_VIOLATING_BODY, max_position_embeddings=1_048_576
-    )
+    client, engine = _client(body=_VIOLATING_BODY, max_position_embeddings=1_048_576)
 
     resp = client.post("/v1/chat/completions", json=_payload())
     assert resp.status_code == 422, resp.text
