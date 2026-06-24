@@ -458,5 +458,114 @@ def test_entry_with_none_parser_does_not_fall_back_to_profile():
         )
 
 
+def test_tier2_one_sided_live_parser_does_not_backfill_from_profile():
+    """Codex round-2 BLOCKING regression test.
+
+    Operator runs an alias and binds ONLY one parser side at the
+    server-global level (e.g. ``--tool-call-parser hermes`` but no
+    ``--reasoning-parser``). Pre-fix Tier 2 backfilled the missing
+    side from the alias profile (``live_reasoning or
+    profile_reasoning_parser``), so the listing falsely advertised
+    a reasoning parser the runtime is NOT using. Reasoning-aware
+    clients would then mis-attribute streamed reasoning content.
+
+    Pin: when Tier 2 fires, both sides come from the live server
+    state independently — the unbound side surfaces as ``null``,
+    NEVER as the alias profile default.
+    """
+    from vllm_mlx.routes.models import effective_parsers_for
+
+    with _mounted(
+        model_name="mlx-community/Qwen3-0.6B-bf16",
+        tool_call_parser="hermes",  # only tool-call bound
+        reasoning_parser_name=None,  # reasoning explicitly unbound
+    ):
+        tool, reasoning = effective_parsers_for(
+            "mlx-community/Qwen3-0.6B-bf16",
+            "profile-tool-default",
+            "profile-reasoning-default",
+        )
+        assert tool == "hermes"
+        assert reasoning is None, (
+            f"Tier 2 must NOT backfill reasoning from profile default "
+            f"when the live server state has it unbound; got {reasoning!r}"
+        )
+
+    # Symmetric case — reasoning bound, tool-call unbound.
+    with _mounted(
+        model_name="mlx-community/Qwen3-0.6B-bf16",
+        tool_call_parser=None,
+        reasoning_parser_name="qwen",
+    ):
+        tool, reasoning = effective_parsers_for(
+            "mlx-community/Qwen3-0.6B-bf16",
+            "profile-tool-default",
+            "profile-reasoning-default",
+        )
+        assert tool is None, (
+            f"Tier 2 must NOT backfill tool from profile default "
+            f"when the live server state has it unbound; got {tool!r}"
+        )
+        assert reasoning == "qwen"
+
+
+def test_tier1_matches_guard_rejects_non_bool_truthy():
+    """Codex round-2 BLOCKING regression test.
+
+    The Tier 1 guard is ``candidate.matches(model_id) is True`` —
+    strict identity on the literal ``True``. Pre-fix the guard was
+    ``bool(candidate.matches(model_id)) is True``, which collapses
+    any truthy non-bool return (``MagicMock``, ``"yes"``, ``1``) to
+    ``True``, lets the default entry leak through, and reports its
+    parsers for an unrelated id.
+
+    Pin: a candidate whose ``matches`` returns a truthy non-``True``
+    sentinel must be rejected — Tier 1 must NOT engage, and the
+    helper must fall through to the profile default.
+    """
+    from vllm_mlx.routes.models import effective_parsers_for
+
+    class _FakeRegistryEntry:
+        # Simulates a test-double / partial-init entry whose ``matches``
+        # returns a truthy non-bool (closest real-world analogue: a
+        # ``MagicMock`` whose default truthiness is ``True``).
+        tool_call_parser = "default-entry-tool"
+        reasoning_parser = "default-entry-reasoning"
+
+        def matches(self, name):
+            return "truthy-but-not-True"  # truthy str, but not ``is True``
+
+    class _FakeRegistry:
+        # Mimics ``ModelRegistry.get_entry``'s fallback-to-default
+        # behavior: returns the default entry on miss, NEVER raises.
+        def __init__(self, default_entry):
+            self._default = default_entry
+
+        def get_entry(self, name):
+            return self._default
+
+    fake_default = _FakeRegistryEntry()
+    fake_registry = _FakeRegistry(fake_default)
+
+    with _mounted(model_name=None, model_registry=fake_registry):
+        tool, reasoning = effective_parsers_for(
+            "some-unrelated-id",
+            "profile-tool",
+            "profile-reasoning",
+        )
+        # Default-entry parsers must NOT have leaked through the guard.
+        assert tool != "default-entry-tool", (
+            f"strict ``is True`` guard must reject truthy-non-bool ``matches`` "
+            f"return; default-entry parser leaked: {tool!r}"
+        )
+        assert reasoning != "default-entry-reasoning", (
+            f"strict ``is True`` guard must reject truthy-non-bool ``matches`` "
+            f"return; default-entry parser leaked: {reasoning!r}"
+        )
+        # Fell through to profile default per the lookup-order contract.
+        assert tool == "profile-tool"
+        assert reasoning == "profile-reasoning"
+
+
 if __name__ == "__main__":  # pragma: no cover — convenience only
     pytest.main([__file__, "-v"])

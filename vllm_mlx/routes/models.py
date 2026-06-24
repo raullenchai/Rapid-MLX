@@ -476,11 +476,19 @@ def effective_parsers_for(
             # ``get_entry`` falls back to the default entry on miss; guard
             # that the entry actually corresponds to ``model_id`` so we
             # never report the default entry's parsers for an unrelated id.
-            # ``matches`` may itself be a test-double truthiness fallback;
-            # coerce the result explicitly to ``bool`` so a ``MagicMock``
-            # ``matches`` return doesn't shortcut the guard. (The real
-            # ``ModelEntry.matches`` already returns ``bool``.)
-            if candidate is not None and bool(candidate.matches(model_id)) is True:
+            #
+            # Strict identity check on the boolean: ``candidate.matches(...)
+            # is True`` (no ``bool()`` wrap). The real
+            # :meth:`ModelEntry.matches` already returns the literal
+            # ``True`` / ``False``. Codex review (round 2) flagged that
+            # wrapping a non-bool sentinel — e.g. a ``MagicMock`` whose
+            # default truthiness is ``True`` — in ``bool(...)`` would
+            # collapse to ``True`` and let a default-entry leak through
+            # the guard. The strict-identity check rejects anything that
+            # isn't the literal ``True`` (including ``MagicMock``, ``1``,
+            # ``"yes"``, etc.), so test doubles can't shortcut the guard
+            # and report the default entry's parsers for an unrelated id.
+            if candidate is not None and candidate.matches(model_id) is True:
                 entry = candidate
     except Exception:  # noqa: BLE001
         entry = None
@@ -530,11 +538,23 @@ def effective_parsers_for(
                 live_reasoning = _server_reasoning_name
             except Exception:  # noqa: BLE001
                 live_reasoning = None
+        # Server-global live state is AUTHORITATIVE for the single-model
+        # serve case — same Tier 1 reasoning. Codex review (round 2)
+        # flagged that the previous ``live_tool or profile_tool_parser``
+        # backfill would, for an alias served with only ONE parser bound
+        # (e.g. operator passed ``--tool-call-parser hermes`` but no
+        # ``--reasoning-parser``), falsely advertise the alias's static
+        # ``reasoning_parser`` from ``aliases.json`` even though the
+        # runtime is NOT using it. Return live fields independently and
+        # do not backfill missing sides from the profile.
+        #
+        # Gate: only return live state when AT LEAST ONE side is bound.
+        # If BOTH sides are unbound the server-global path has no
+        # information to surface; fall through to the alias profile
+        # default (Tier 3) so discovery clients still see the curated
+        # static defaults rather than null.
         if live_tool or live_reasoning:
-            return (
-                live_tool or profile_tool_parser,
-                live_reasoning or profile_reasoning_parser,
-            )
+            return (_coerce(live_tool), _coerce(live_reasoning))
 
     # Tier 3 / 4 — alias profile default (which may itself be None)
     return profile_tool_parser, profile_reasoning_parser
