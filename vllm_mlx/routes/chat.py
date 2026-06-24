@@ -2809,11 +2809,20 @@ async def _create_chat_completion_impl(
             # the cleanest possible path to "emit JSON only". Most of
             # ``chat_kwargs`` is preserved (model, temperature, max_tokens)
             # so the repair turn respects the operator's runtime caps.
+            #
+            # Codex r3 #2: ``request_id_holder`` IS preserved (was
+            # dropped pre-r3, which left the repair generation
+            # unwired from the route's disconnect / cancellation
+            # tracking — a client that hung up between attempts
+            # would keep the GPU pinned on the repair turn until it
+            # finished). Tools / tool_choice / logprobs / top_logprobs
+            # are still dropped because they're structurally
+            # incompatible with the repair turn's "emit ONLY JSON"
+            # contract.
             repair_kwargs = dict(chat_kwargs)
             for _k in (
                 "tools",
                 "tool_choice",
-                "request_id_holder",
                 "logprobs",
                 "top_logprobs",
             ):

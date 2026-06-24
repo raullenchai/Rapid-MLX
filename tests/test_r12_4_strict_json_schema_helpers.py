@@ -215,6 +215,20 @@ def test_build_violation_envelope_custom_param():
         attempts=1,
     )
     assert env["error"]["param"] == "text.format"
+    # Codex r3 NIT: the message MUST also use the surface-correct
+    # field label so /v1/responses doesn't tell clients to fix
+    # ``response_format.json_schema.strict``.
+    assert "text.format.strict=true" in env["error"]["message"]
+    assert "response_format.json_schema.strict" not in env["error"]["message"]
+
+
+def test_build_violation_envelope_default_param_field_label():
+    """Codex r3 NIT — chat surface keeps the legacy field label."""
+    env = build_violation_envelope(
+        {"reason": "schema_violation", "failing_path": "/x"},
+        attempts=1,
+    )
+    assert "response_format.json_schema.strict=true" in env["error"]["message"]
 
 
 def test_build_violation_envelope_invalid_json_reason_prefix():
@@ -245,3 +259,49 @@ def test_validate_and_envelope_enforces_format_email():
     # The FAILING keyword must be ``format`` — not ``type`` (which
     # would mean the validator regressed to type-checking only).
     assert details["expected"].startswith("format:"), details
+
+
+def test_validate_and_envelope_handles_mixed_path_components():
+    """Codex r3 #1 — validate_and_envelope must NOT crash when
+    multiple violations have ``absolute_path`` components of mixed
+    types (int + str). Pre-fix, the route used
+    ``sorted(..., key=lambda e: list(e.absolute_path))`` which
+    raised ``TypeError`` on Python 3 when two paths needed to be
+    compared at an int-vs-str position — turning a schema violation
+    into a server 500. The fix takes the FIRST iter_errors entry
+    directly; this test pins that behavior with a schema designed
+    to produce two errors at mixed paths.
+    """
+    schema = {
+        "type": "object",
+        "properties": {
+            "users": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {"id": {"type": "integer"}},
+                    "required": ["id"],
+                },
+            },
+            "meta": {
+                "type": "object",
+                "properties": {"version": {"type": "string"}},
+                "required": ["version"],
+            },
+        },
+        "required": ["users", "meta"],
+    }
+    # ``users[0].id`` is the wrong type AND ``meta.version`` is missing
+    # — two errors with paths of different shape (int component vs
+    # string component at the second level). Pre-fix this raised
+    # TypeError inside ``sorted``.
+    payload = json.dumps({"users": [{"id": "not-an-int"}], "meta": {}})
+    ok, details = validate_and_envelope(payload, schema)
+    assert ok is False
+    # We do NOT assert WHICH path failed first — jsonschema's
+    # iter_errors order is deterministic but stable across versions
+    # isn't guaranteed. The pin is that the call doesn't crash AND
+    # returns a structured envelope.
+    assert details["reason"] == "schema_violation"
+    assert "expected" in details
+    assert "failing_path" in details

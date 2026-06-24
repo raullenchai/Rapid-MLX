@@ -199,14 +199,21 @@ def validate_and_envelope(
     # (e.g. ``regex``) are best-effort but never throw — see the
     # jsonschema docs.
     validator = validator_cls(json_schema, format_checker=FormatChecker())
-    errors = sorted(validator.iter_errors(parsed), key=lambda e: list(e.absolute_path))
-    if not errors:
+    # Codex r2 #1: take the FIRST error from ``iter_errors`` directly
+    # rather than ``sorted(...)`` with a list-typed key. Pre-fix,
+    # ``key=lambda e: list(e.absolute_path)`` would raise ``TypeError``
+    # under Python 3 when two errors had ``absolute_path`` lists that
+    # compared int-vs-str at the same index (e.g. one path
+    # ``["users", 0]`` and another ``["users", "ids"]``) — turning a
+    # legitimate schema violation into an HTTP 500. ``iter_errors``
+    # already yields in deterministic depth-first order, so the FIRST
+    # entry is the right one for the envelope; pulling it via
+    # ``next()`` avoids materializing every error AND avoids the
+    # mixed-type-comparison hazard.
+    try:
+        first: ValidationError = next(validator.iter_errors(parsed))
+    except StopIteration:
         return True, None
-
-    # We surface the FIRST validation error in the envelope.
-    # ``iter_errors`` returns errors in deterministic depth-first order;
-    # most clients only retry against the first error anyway.
-    first: ValidationError = errors[0]
     failing_path = "/" + "/".join(str(p) for p in first.absolute_path)
     if failing_path == "/":
         failing_path = "/" if list(first.absolute_path) else ""
@@ -360,9 +367,21 @@ def build_violation_envelope(
     else:
         path = details.get("failing_path", "/")
         prefix = f"strict response_format violated at '{path}'"
+    # Codex r3 NIT: derive the "the request set X=true" field name
+    # from ``param`` so the message stays accurate on every surface.
+    # /v1/responses passes ``param="text.format"`` and the legacy
+    # message ("response_format.json_schema.strict=true") would
+    # mislead clients reading the Responses-surface envelope into
+    # thinking they need to fix a different field. Use the
+    # surface-correct field name: chat uses
+    # ``response_format.json_schema.strict``, Responses uses
+    # ``text.format.strict``. We synthesize from ``param`` by
+    # appending ``.strict`` when missing — both production callers
+    # already pass the right shape.
+    field_label = param if param.endswith(".strict") else f"{param}.strict"
     msg = (
         f"{prefix}: {short_message}. "
-        f"The request set response_format.json_schema.strict=true; "
+        f"The request set {field_label}=true; "
         f"the server made {attempts} attempt(s) to honor the contract "
         "and the final output did not validate. See error.details for "
         "the failing path / expected / got triple."
