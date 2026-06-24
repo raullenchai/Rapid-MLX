@@ -23,7 +23,7 @@ This module pins behaviour at three layers:
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import MagicMock
 
 import mlx.core as mx
 import pytest

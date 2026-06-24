@@ -30,7 +30,7 @@ classifiers = [
 dependencies = [
     # Core — these are all you need for `rapid-mlx serve <text-model>`
     "mlx>=0.29.0",
-    "mlx-lm>=0.31.0",  # 0.31+ required for ArraysCache native batching (hybrid models)
+    "mlx-lm>=0.31.1",  # 0.31.1+ required for presence_penalty/frequency_penalty kwargs on make_logits_processors (#512); 0.31.0 only had repetition_penalty
     # mlx-vlm is opt-in via [vision] extras (saves ~322 MB for text-only users)
     "transformers>=5.0.0",  # mlx-lm 0.30.5+ requires transformers 5.0 (rc3 bug fixed in stable)
     "tokenizers>=0.19.0",
