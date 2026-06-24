@@ -484,12 +484,27 @@ def openai_to_anthropic(
                 )
             )
 
-        # Add text content
-        if text:
+        # Add text content. Emit the SAME ``sanitized_text`` used by
+        # the dedupe gate above — keeping a single normalised payload
+        # avoids the asymmetry codex r4 flagged: the prior
+        # implementation gated on ``sanitize_output(text)`` but emitted
+        # raw ``text``, so a non-route caller passing ``text="done</think>"``
+        # could still leak ``</think>`` into the Anthropic text block
+        # even after the gate correctly suppressed the duplicate
+        # thinking block. The in-route path's upstream
+        # ``sanitize_output(final_content)`` in ``routes/anthropic.py``
+        # remains in place; this is defense-in-depth at the adapter
+        # boundary so non-route callers (test helpers, future SSE
+        # finalize paths, hypothetical internal routes) also see
+        # sanitised bytes on the Anthropic wire. ``sanitized_text`` is
+        # ``None`` only when ``text`` itself collapsed to empty after
+        # sanitization (all-markup input); in that case the text block
+        # is suppressed.
+        if sanitized_text:
             content.append(
                 AnthropicResponseContentBlock(
                     type="text",
-                    text=text,
+                    text=sanitized_text,
                 )
             )
 

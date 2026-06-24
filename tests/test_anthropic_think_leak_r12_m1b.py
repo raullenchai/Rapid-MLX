@@ -769,6 +769,7 @@ class TestMarkupOnlyDelta:
         )
         anth = openai_to_anthropic(resp, "qwen3-0.6b-bf16", reasoning_enabled=True)
         thinking_blocks = [b for b in anth.content if b.type == "thinking"]
+        text_blocks = [b for b in anth.content if b.type == "text"]
         # The thinking block MUST be suppressed: post-sanitize, both
         # sides reduce to ``"done"`` — emitting both would render the
         # answer twice on the wire (codex r3 BLOCKING dupe shape).
@@ -776,6 +777,18 @@ class TestMarkupOnlyDelta:
             "thinking block must be suppressed when its post-sanitize "
             "payload equals the post-sanitize text payload (codex r3 "
             f"BLOCKING dupe shape); got {[b.thinking for b in thinking_blocks]!r}"
+        )
+        # Codex r4 medium (R12-M1b): the text block emission must
+        # ALSO go through the adapter-level sanitizer — half the gate
+        # only suppresses the duplicate; the other half must scrub the
+        # removable markup so ``</think>`` never reaches the wire.
+        assert len(text_blocks) == 1
+        assert text_blocks[0].text == "done", (
+            "text block must carry the sanitized payload, not the raw "
+            f"input with markup; got {text_blocks[0].text!r}"
+        )
+        assert "</think>" not in (text_blocks[0].text or ""), (
+            f"</think> leaked into text block: {text_blocks[0].text!r}"
         )
 
 
