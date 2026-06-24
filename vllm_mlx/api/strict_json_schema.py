@@ -274,9 +274,16 @@ def build_repair_messages(
 ) -> list[dict[str, Any]]:
     """Build the message list for the single repair retry.
 
-    Strategy: append a SYSTEM turn with a hint that quotes the failed
-    output as DATA (inside a fenced block) and names the specific
-    validation error, followed by a USER turn that demands ONLY valid
+    Codex r12 NIT #1: this function PREPENDS a leading system message
+    (or MERGES the repair hint into an existing leading system
+    message — see r10 #2). The ``Strategy`` text below describes the
+    post-r10 layout.
+
+    Strategy: ensure a single leading SYSTEM turn carries the repair
+    hint — quoting the failed output as DATA (encoded as a JSON
+    string literal), naming the specific validation error, and
+    re-including the schema — followed by the original non-system
+    turns and finally a trailing USER turn that demands ONLY valid
     JSON. The failed output is shown to the model so it has concrete
     feedback to act on ("your previous output was X; it failed because
     Y"), but it is delivered as quoted reference material — NOT as an
@@ -464,6 +471,16 @@ def build_violation_envelope(
         prefix = "model output is not valid JSON"
     elif reason == "empty":
         prefix = "model output is empty"
+    elif reason == "buffer_overflow":
+        # Codex r12 NIT #2: ``buffer_overflow`` is structurally
+        # different from a schema violation — the validator never
+        # ran because the content stream exceeded the per-request
+        # memory cap. Surface the cap-specific framing so operators
+        # don't waste cycles inspecting a ``failing_path`` that has
+        # no meaning here.
+        prefix = "strict response_format content exceeded memory cap"
+    elif reason == "invalid_schema":
+        prefix = "strict response_format schema is malformed"
     else:
         path = details.get("failing_path", "/")
         prefix = f"strict response_format violated at '{path}'"

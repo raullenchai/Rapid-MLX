@@ -1027,6 +1027,24 @@ def test_strict_true_streaming_emits_done_on_upstream_raise():
         "upstream-error envelope must precede [DONE]; "
         f"err at {err_idx}, [DONE] at {done_idx}"
     )
+    # Codex r12 #2: the SSE payload MUST NOT leak ``str(upstream_raised)``
+    # — it can carry file paths, type details, env values from the
+    # inference stack to external callers. We wire ONLY the
+    # exception_type (coarse public identifier) and the
+    # response_id. The full exception string was already logged
+    # server-side in the except arm. Pin: the simulated upstream
+    # message "simulated engine crash" MUST NOT appear in the
+    # client-visible body.
+    assert "simulated engine crash" not in body, (
+        "upstream_raised exception message leaked into client-visible "
+        "SSE payload; this is an info-leak vector. Wire only "
+        "exception_type + response_id."
+    )
+    # But the exception TYPE name (coarse, public-shape) IS exposed
+    # so clients can branch on it.
+    assert "RuntimeError" in body
+    # And the response_id is exposed for client/server correlation.
+    assert "response_id" in body
 
 
 def test_strict_true_streaming_propagates_cancelled_error():

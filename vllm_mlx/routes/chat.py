@@ -4505,6 +4505,27 @@ async def stream_chat_completion_strict_postgen(
     # streaming to honor. Override via
     # ``RAPID_MLX_STRICT_BUFFER_BYTES`` for unusual workloads.
     #
+    # Codex r12 #1 (design decision, documented for future passes):
+    # the wrapper streams incremental content deltas to the client
+    # as they arrive, then validates the FULL content at end of
+    # stream. On overflow we drop the offending chunk (codex r10 #1)
+    # and surface the structured ``buffer_overflow`` envelope —
+    # prior chunks already on the wire are NOT recalled, because
+    # streaming clients consume incrementally by definition (the
+    # whole point of SSE is to deliver bytes as they arrive). An
+    # "all-or-error" design would require buffering the entire
+    # response before yielding the first byte, which:
+    #   (a) defeats the user-facing latency benefit of streaming
+    #       (which is THE reason clients opt into it);
+    #   (b) doesn't actually help — a client building UI from
+    #       partial deltas already has to handle interrupted
+    #       streams (cancellation, timeouts, etc.); the strict
+    #       contract is enforced by the ``finish_reason=
+    #       json_schema_violation`` chunk that follows, NOT by
+    #       withholding bytes.
+    # Clients that need atomic validation use the non-streaming
+    # path (``stream=false``) which IS all-or-error.
+    #
     # Codex r10 NIT #1: clamp the configured cap to an upper bound.
     # A bad operator value (typo, misunderstanding of bytes vs
     # gigabytes) could silently disable the memory-safety guarantee
@@ -4882,18 +4903,31 @@ async def stream_chat_completion_strict_postgen(
             # can branch, same envelope shape so handler code is
             # reusable.
             if upstream_raised is not None and not validation_emitted:
+                # Codex r12 #2: do NOT leak ``str(upstream_raised)``
+                # into the client-visible SSE payload. Exception
+                # messages from the inference stack can include
+                # file paths, internal type details, environment
+                # values, etc. — info-leak shapes a malicious
+                # client can probe. Wire ONLY the exception_type
+                # (a coarse, public, contract-style identifier) and
+                # the response_id (so operators can correlate the
+                # client report with the full server-side log
+                # entry). The full ``str(exc)`` was already logged
+                # in the except arm above for server-side
+                # diagnostics — that's where operators look.
                 upstream_envelope = {
                     "error": {
                         "type": "upstream_error",
                         "code": "strict_stream_upstream_error",
                         "message": (
-                            f"strict json_schema streaming generation aborted "
-                            f"before validation: "
-                            f"{type(upstream_raised).__name__}: {upstream_raised}"
+                            "strict json_schema streaming generation "
+                            "aborted before validation. See server logs "
+                            f"for response_id={response_id}."
                         ),
                         "param": "response_format.json_schema",
                         "details": {
                             "exception_type": type(upstream_raised).__name__,
+                            "response_id": response_id,
                         },
                     }
                 }
