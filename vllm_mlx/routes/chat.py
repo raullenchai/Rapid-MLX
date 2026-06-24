@@ -96,6 +96,7 @@ from ..service.helpers import (
     enable_thinking_warning_header,
     enforce_context_length_for_messages,
     get_engine,
+    maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
     repair_messages_fit_context,
 )
@@ -1948,6 +1949,35 @@ async def _create_chat_completion_impl(
             "<think> before emitting the tool_call. Set "
             "chat_template_kwargs.enable_thinking=true to opt back in.",
             len(request.tools),
+        )
+
+    # R12-T2F-276 (0.8.16 brand-new-user simulation) — auto-disable
+    # thinking on a casual chat completion (no tools, no strict json
+    # schema, no explicit reasoning intent) so a first-time SDK user
+    # gets a useful first request without having to learn
+    # ``chat_template_kwargs``. Third member of the auto-disable
+    # family (after R12-T1F TOOLS-AUTO above and R12-M2 strict-json
+    # earlier); the helper short-circuits when an earlier trigger
+    # already injected the kwarg OR when the client expressed
+    # explicit reasoning intent (top-level / nested
+    # ``enable_thinking``, ``reasoning_max_tokens``,
+    # ``reasoning_effort``, or the Responses-native ``reasoning``
+    # dict). MUST run BEFORE ``_resolve_enable_thinking`` so the
+    # resolved value drives ``max_tokens`` headroom + the engine
+    # kwarg below from one source. Mirrors the ``rapid-mlx chat``
+    # REPL's ``--no-think`` default for thinking-capable models on
+    # the OpenAI-SDK surface.
+    if maybe_auto_disable_thinking_for_casual_chat(request):
+        logger.info(
+            "R12-T2F auto-disable: /v1/chat/completions casual chat "
+            "request to a thinking-capable model (parser=%s) with no "
+            "client-set thinking preference and no explicit reasoning "
+            "intent — injecting chat_template_kwargs."
+            "enable_thinking=False so thinking models do not burn the "
+            "token budget inside <think> before emitting the answer. "
+            "Set chat_template_kwargs.enable_thinking=true (or "
+            "reasoning_max_tokens / reasoning_effort) to opt back in.",
+            cfg.reasoning_parser_name,
         )
 
     # Resolve enable_thinking once and reuse — drives both the

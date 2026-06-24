@@ -96,6 +96,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     enforce_context_length_for_messages,
     get_engine,
+    maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
     repair_messages_fit_context,
 )
@@ -574,6 +575,38 @@ async def create_response(request: Request):
                 "chat_template_kwargs.enable_thinking=true to opt "
                 "back in.",
                 len(openai_request.tools),
+            )
+
+        # R12-T2F-276 (0.8.16 brand-new-user simulation) — third
+        # member of the auto-disable family. The Responses-native
+        # ``reasoning`` dict (``{"effort": "low|medium|high", ...}``)
+        # is declared on ``ResponsesRequest`` but
+        # ``responses_to_openai`` deliberately does NOT forward it
+        # onto the materialized ``ChatCompletionRequest`` (the
+        # engine consults the already-translated ``reasoning_max_tokens``
+        # / ``reasoning_effort`` fields). Pass the original
+        # ``responses_request`` as the secondary ``extra_signals``
+        # source so the shared casual-chat helper sees the
+        # Responses-native ``reasoning`` dict the same way the chat
+        # surface sees ``reasoning_effort`` — single source of truth
+        # for "explicit reasoning intent" without forking the helper
+        # AND without mutating a Pydantic-locked schema (extra="forbid"
+        # on the ChatCompletionRequest model would reject a stray
+        # setattr).
+        if maybe_auto_disable_thinking_for_casual_chat(
+            openai_request, extra_signals=responses_request
+        ):
+            logger.info(
+                "R12-T2F auto-disable: /v1/responses casual chat "
+                "request to a thinking-capable model (parser=%s) with "
+                "no client-set thinking preference and no explicit "
+                "reasoning intent — injecting chat_template_kwargs."
+                "enable_thinking=False so thinking models do not burn "
+                "the token budget inside <think> before emitting the "
+                "answer. Set chat_template_kwargs.enable_thinking=true "
+                "(or reasoning / reasoning_max_tokens / reasoning_effort) "
+                "to opt back in.",
+                get_config().reasoning_parser_name,
             )
 
         try:
