@@ -196,12 +196,61 @@ print(response.choices[0].message.content)
 
 | Client | Status | Setup |
 |--------|--------|-------|
-| [Cursor](https://cursor.com) | Compatible | Settings → OpenAI Base URL |
-| [Claude Code](https://claude.ai/code) | Tested | One command ([see below](#claude-code)) |
-| [Continue.dev](https://continue.dev) | Compatible | VS Code / JetBrains extension |
+| [Cursor](https://cursor.com) | Compatible | `rapid-mlx launch cursor` ([see below](#one-shot-bootstrap-rapid-mlx-launch)) |
+| [Claude Code](https://claude.ai/code) | Tested | `rapid-mlx launch claude-code` |
+| [Cline](https://github.com/cline/cline) (VS Code) | Compatible | `rapid-mlx launch cline` |
+| [Continue.dev](https://continue.dev) | Compatible | `rapid-mlx launch continue-dev` |
 | [LibreChat](https://librechat.ai) | Tested | Docker ([test](tests/integrations/test_librechat_docker.py)) |
 | [Open WebUI](https://github.com/open-webui/open-webui) | Tested | Docker ([test](tests/integrations/test_openwebui.py)) |
 | Any OpenAI-compatible app | Compatible | Point at `http://localhost:8000/v1` |
+
+### One-shot bootstrap: `rapid-mlx launch`
+
+The fastest way to wire an IDE client to your local rapid-mlx server is the
+`launch` subcommand — one verb, no copy-pasting base URLs into nested
+settings panels:
+
+```bash
+pip install rapid-mlx
+
+# Which clients are installed on this Mac?
+rapid-mlx launch list
+
+# Patch Cline (VS Code) to route at the local server and start serve
+# in the background.
+rapid-mlx launch cline --model qwen3.5-4b-4bit --start-server
+
+# Or wire every detected client at once.
+rapid-mlx launch --all --model qwen3.5-9b-4bit --start-server
+```
+
+What it does, per client:
+
+| Client | Config patched | Keys set |
+|--------|----------------|----------|
+| **cline** | `~/Library/Application Support/Code/User/globalStorage/saoudrizwan.claude-dev/settings/cline_mcp_settings.json` | `apiProvider`, `openAiBaseUrl`, `openAiApiKey`, `openAiModelId` |
+| **claude-code** | `~/.config/claude/settings.json` | `env.ANTHROPIC_BASE_URL`, `env.ANTHROPIC_API_KEY`, `env.ANTHROPIC_MODEL` |
+| **continue-dev** | `~/.continue/config.json` | Appends/updates a `rapid-mlx` entry under `models[]` |
+| **cursor** | `~/Library/Application Support/Cursor/User/settings.json` | `cursor.aiprovider.openai.{baseUrl,apiKey,model}` |
+
+Every patch:
+
+- Backs up the existing config to `<path>.bak.<timestamp>` (printed to
+  stderr) so you can recover from a bad patch with `mv <bak> <path>`.
+- Atomically replaces the file (write-temp + rename) so a Ctrl-C never
+  leaves a half-written JSON file on disk.
+- Preserves every other key in the existing config — `customInstructions`,
+  MCP servers, theme settings, etc.
+
+Useful flags:
+
+- `--dry-run` — print what would change without touching disk.
+- `--server-url <url>` — point clients somewhere other than
+  `http://127.0.0.1:8000` (e.g. a `rapid-mlx share` URL).
+- `--start-server` — also fire `rapid-mlx serve <model> --port <port>`
+  detached; PID written to `~/.rapid-mlx/launch.pid`.
+- `--port <int>` — port for `--start-server` (default 8000).
+
 
 ### Claude Code
 

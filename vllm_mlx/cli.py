@@ -6044,6 +6044,15 @@ Examples:
 
     _register_share(subparsers)
 
+    # Launch subcommand — one-shot bootstrap that patches IDE/agent
+    # client configs (Cline, Claude Code, Continue, Cursor) to route
+    # at the local rapid-mlx server. See GH issue #566 for motivation.
+    # Registered AFTER share so the help-text ordering reads
+    # serve→…→share→launch, matching the rough "more common first" flow.
+    from vllm_mlx.launch.cli import register as _register_launch
+
+    _register_launch(subparsers)
+
     # Shell tab completion via argcomplete. Must fire before parse_args:
     # when the shell completion handler invokes us with the
     # ``_ARGCOMPLETE`` env var set, this function short-circuits before
@@ -6410,6 +6419,10 @@ Examples:
         from vllm_mlx.share.cli import share_command
 
         share_command(args)
+    elif args.command == "launch":
+        from vllm_mlx.launch.cli import launch_command
+
+        launch_command(args)
     else:
         parser.print_help()
         sys.exit(1)

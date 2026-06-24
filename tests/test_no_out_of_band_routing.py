@@ -179,6 +179,16 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # servers. It selects external tool endpoints, never which model /
         # parser / tier the engine routes a request to.
         "RAPID_MLX_MCP_CONFIG",
+        # ``rapid-mlx launch <client>`` default-model override. When the user
+        # doesn't pass ``--model``, the launch dispatcher reads this env var
+        # before falling back to the built-in ``qwen3.5-4b-4bit`` default.
+        # Pure UX-default knob consumed only by
+        # ``vllm_mlx/launch/cli.py:_resolve_default_model`` to decide which
+        # alias to write into the patched IDE-client config (Cline / Claude
+        # Code / Continue / Cursor). Never consulted by the engine,
+        # scheduler, or any routing layer — the actual model that loads is
+        # chosen by ``rapid-mlx serve <model>``.
+        "RAPID_MLX_DEFAULT_MODEL",
         # User-configured HTTP base URL for a weight mirror (R2/S3/any HTTP
         # host) consumed by ``_try_mirror_prefetch`` in ``vllm_mlx/cli.py``.
         # Pre-populates the HF cache layout (``snapshots/<sha>/<file>``) from
