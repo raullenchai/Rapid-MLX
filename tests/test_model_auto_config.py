@@ -1102,3 +1102,36 @@ class TestWarnMisboundDeepseekV3Parser:
             f"with {parser!r} must still warn — classifier must scope to "
             "the model-name component, not the full path."
         )
+
+    # Codex round-5 P2 regression: when auto-detect would ALSO pick a
+    # V3-family parser for the same path (because its regex still runs
+    # against the full path and the parent dir matches the family),
+    # surfacing "Auto-detect would pick 'deepseek_v3'" + "Drop the flag
+    # to let auto-detect choose" creates a contradiction — auto-detect
+    # would silently keep the same wrong parser. The warning must
+    # suppress the auto-detect suggestion in that case AND switch the
+    # remediation to "Pass --tool-call-parser hermes" (since dropping
+    # the flag wouldn't help).
+    def test_no_contradiction_when_auto_detect_also_misclassifies(self):
+        msg = warn_misbound_deepseek_v3_parser(
+            "/models/DeepSeek-V3/qwen-model", "deepseek_v3"
+        )
+        assert msg is not None
+        # No "Auto-detect would pick 'deepseek_v3'" — suppressed.
+        assert "Auto-detect would pick" not in msg
+        # No "drop the explicit ... flag to let auto-detect choose" —
+        # would silently keep the wrong parser. The replacement
+        # remediation pins to hermes.
+        assert "Drop the explicit" not in msg
+        assert "hermes" in msg
+
+    # Sanity check that the suggestion path still fires for the common
+    # case (non-V3-named parent, R1-Distill family, auto suggests the
+    # legacy ``deepseek`` parser).
+    def test_suggestion_still_fires_when_auto_picks_non_v3(self):
+        msg = warn_misbound_deepseek_v3_parser(
+            "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit", "deepseek_v3"
+        )
+        assert msg is not None
+        assert "Auto-detect would pick 'deepseek'" in msg
+        assert "Drop the explicit" in msg

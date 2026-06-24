@@ -799,12 +799,23 @@ def warn_misbound_deepseek_v3_parser(
     # parser by mistake. Critically, this also lights up the
     # cross-sub-family case: ``deepseek_v31`` parser on R1-0528 will see
     # auto suggest ``deepseek_v3`` here, which is the correct fix.
+    #
+    # Codex r5 P2: ``detect_model_config`` runs its regexes against the
+    # FULL path, so a non-V3 checkpoint under a V3-marker parent dir
+    # (e.g. ``/models/DeepSeek-V3/qwen-model``) would have auto-detect
+    # ALSO pick a V3-family parser — and if it picked the SAME parser
+    # the user is already binding, the suggestion turns into a
+    # contradiction ("drop the flag; auto-detect would pick the same
+    # wrong parser"). Suppress the suggestion in that exact case; the
+    # remaining "drop the flag, use hermes" remediation still applies.
+    # The cross-sub-family case (auto suggests a DIFFERENT V3-family
+    # parser than the one bound) is still useful so we keep it.
     auto = detect_model_config(model_path)
-    suggestion = (
-        f" Auto-detect would pick '{auto.tool_call_parser}' for this model."
-        if auto is not None and auto.tool_call_parser
-        else ""
-    )
+    auto_parser = auto.tool_call_parser if auto is not None else None
+    if auto_parser and auto_parser != tool_call_parser:
+        suggestion = f" Auto-detect would pick '{auto_parser}' for this model."
+    else:
+        suggestion = ""
 
     # Tailor the diagnosis to the failure class so the message is
     # actionable instead of generic.
@@ -825,7 +836,20 @@ def warn_misbound_deepseek_v3_parser(
             "auto-detect pick the matching V3-family parser."
         )
 
-    # Out-of-lineage (Sven r12 HIGH-1 case).
+    # Out-of-lineage (Sven r12 HIGH-1 case). The remediation depends on
+    # whether auto-detect would ALSO mis-pick a V3-family parser (codex
+    # r5: a parent dir like ``/models/DeepSeek-V3/qwen-model`` fools the
+    # full-path regex even though the checkpoint name itself is
+    # non-V3). When auto-detect is fooled too, "drop the flag" is
+    # actively bad advice — pin to ``hermes`` instead.
+    auto_in_v3_family = auto_parser in _DEEPSEEK_V3_FAMILY_PARSERS
+    remediation = (
+        "Pass --tool-call-parser hermes for this Qwen/Llama-arch model."
+        if auto_in_v3_family
+        else "Drop the explicit --tool-call-parser flag to let "
+        "auto-detect choose, or use --tool-call-parser hermes for "
+        "Qwen/Llama-arch distills."
+    )
     return (
         f"--tool-call-parser={tool_call_parser!r} is bound to "
         f"{model_path!r}, which is NOT a DeepSeek-V3 chat-template "
@@ -833,9 +857,7 @@ def warn_misbound_deepseek_v3_parser(
         "`<｜tool▁calls▁begin｜>function<｜tool▁sep｜>NAME\\n```json\\n{…}\\n```` "
         "envelope; non-V3 checkpoints (R1-Distill-Qwen/-Llama, V2.x, "
         "Qwen2/Llama-arch SFTs) cannot emit it and tool calls will "
-        f"have empty arguments.{suggestion} Drop the explicit "
-        "--tool-call-parser flag to let auto-detect choose, or use "
-        "--tool-call-parser hermes for Qwen/Llama-arch distills."
+        f"have empty arguments.{suggestion} {remediation}"
     )
 
 
