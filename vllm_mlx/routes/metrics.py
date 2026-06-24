@@ -255,7 +255,7 @@ def _render_response_format_counters() -> list[str]:
     )
     out.extend(
         _fmt_metric(
-            "rapid_mlx_strict_repair_skipped_context_overflow_total",
+            "rapid_mlx_response_format_strict_repairs_skipped_context_overflow_total",
             "counter",
             (
                 "H-06 #267b strict-mode repair-retry skips. Ticks when "

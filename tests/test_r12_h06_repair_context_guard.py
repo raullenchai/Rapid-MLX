@@ -38,6 +38,7 @@ from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
 from vllm_mlx.middleware.exception_handlers import install_exception_handlers
 from vllm_mlx.routes.chat import router as chat_router
+from vllm_mlx.routes.responses import router as responses_router
 
 # ---------------------------------------------------------------------------
 # Stubs — modelled after the constraint-matrix file but with a real
@@ -159,6 +160,34 @@ def _client(*, body: str, max_position_embeddings: int):
     return TestClient(app), engine
 
 
+def _responses_client(*, body: str, max_position_embeddings: int):
+    """Same fixture as ``_client`` but mounts the /v1/responses
+    router. Both routes call into the SAME centralized helper
+    (``service.helpers.repair_messages_fit_context``), so we exercise
+    the responses surface end-to-end to make sure the wiring at
+    ``responses.py:963`` is identical to ``chat.py``.
+    """
+    from vllm_mlx.middleware.auth import rate_limiter
+
+    engine = _StubEngine(body=body, max_position_embeddings=max_position_embeddings)
+    cfg = reset_config()
+    cfg.engine = engine
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+
+    # /v1/responses is gated by the global rate-limiter; the strict
+    # repair-overflow test file pins counter behaviour and must not
+    # be perturbed by 429s.
+    rate_limiter.enabled = False
+    rate_limiter._requests.clear()
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(responses_router)
+    return TestClient(app), engine
+
+
 # ---------------------------------------------------------------------------
 # Boundary fixtures
 # ---------------------------------------------------------------------------
@@ -186,6 +215,26 @@ def _payload(*, messages: list[dict] | None = None) -> dict:
                 "schema": _SCHEMA_MINIMUM,
                 "strict": True,
             },
+        },
+    }
+
+
+def _responses_payload() -> dict:
+    """``/v1/responses`` shape — schema carried under ``text.format``
+    instead of ``response_format``. Mirrors the test in
+    ``test_response_format_json_schema_strict.py``.
+    """
+    return {
+        "model": "test-model",
+        "input": "produce something",
+        "max_output_tokens": 64,
+        "text": {
+            "format": {
+                "type": "json_schema",
+                "name": "AgeCheck",
+                "schema": _SCHEMA_MINIMUM,
+                "strict": True,
+            }
         },
     }
 
@@ -378,3 +427,105 @@ def test_repair_fits_helper_returns_true_when_build_prompt_missing():
     assert repair_messages_fit_context(
         _NoBuildPrompt(), [{"role": "user", "content": "x"}]
     )
+
+
+# ---------------------------------------------------------------------------
+# /v1/responses parity — codex r1 #2: the chat suite above proves the
+# centralized helper is wired into chat.py, but the /v1/responses
+# call site (responses.py:963) has its own envelope, its own request-
+# disconnect path, and its own ``max_output_tokens`` plumbing. Pin
+# the SAME overflow contract end-to-end on the responses surface so a
+# future refactor that only edits the chat route cannot regress
+# /v1/responses without an obvious test failure.
+# ---------------------------------------------------------------------------
+
+
+def test_responses_repair_skipped_when_repair_prompt_exceeds_context():
+    """``/v1/responses`` parity for Test 2 (chat-side).
+
+    Tight context window: the initial prompt fits but the post-build
+    repair prompt does not. Pre-#267b /v1/responses would have
+    surfaced this as ``502 strict_repair_engine_failure``. Post-fix
+    the route MUST short-circuit, leave ``attempts == 1``, and
+    surface the original ``422 json_schema_violation`` envelope.
+
+    Pinned observable contract on the responses surface:
+      * status_code == 422 (NOT 502)
+      * error.code == "json_schema_violation"
+      * error.param == "text.format" (responses-specific envelope)
+      * engine.chat called exactly once
+      * strict_repairs_skipped_context_overflow_total ticks by 1
+      * strict_repairs_attempted_total does NOT tick
+    """
+    # Sizing on /v1/responses (4 chars/token stub tokenizer):
+    #   * Unlike /v1/chat/completions, the responses route does NOT
+    #     inject a ``build_json_system_prompt`` instruction into the
+    #     initial messages (chat.py:1919 has no responses-side
+    #     parallel). The initial prompt is therefore just the user
+    #     "produce something" message → a few tokens; trivially fits.
+    #   * The REPAIR prompt (instructions + schema + failed-output
+    #     quote + retry hint) ≈ 188 tokens. With ``max_output_tokens=64``
+    #     → 252 total. Setting the cap to 200 puts the repair 52
+    #     tokens over the limit so the gate MUST fire while the
+    #     initial pass still succeeds.
+    client, engine = _responses_client(
+        body=_VIOLATING_BODY, max_position_embeddings=200
+    )
+
+    resp = client.post("/v1/responses", json=_responses_payload())
+    # The critical assertion: NOT 502 (no opaque server-side error).
+    assert resp.status_code == 422, (
+        f"/v1/responses expected 422 (deterministic validation outcome), "
+        f"got {resp.status_code}: {resp.text}"
+    )
+    body = resp.json()
+    assert body["error"]["code"] == "json_schema_violation", body
+    assert body["error"]["type"] == "validation_error", body
+    # Responses surface carries ``text.format`` in the envelope —
+    # distinct from chat's ``response_format`` param.
+    assert body["error"].get("param") == "text.format", body
+
+    # Engine MUST NOT have been called a second time.
+    assert len(engine.chat_calls) == 1, (
+        f"/v1/responses repair was skipped → expected 1 chat call, "
+        f"got {len(engine.chat_calls)}"
+    )
+
+    snap = response_format_metrics.snapshot()
+    # Skip counter ticked exactly once — same counter as chat.py.
+    assert snap["strict_repairs_skipped_context_overflow_total"] == 1, snap
+    # Attempt counter did NOT tick — repair was skipped, not run.
+    assert snap["strict_repairs_attempted_total"] == 0, snap
+    # The violation still ticks because the client sees a 422.
+    assert snap["strict_violations_total"] == 1, snap
+
+
+def test_responses_repair_runs_when_both_initial_and_repair_fit_context():
+    """``/v1/responses`` parity for Test 1 (chat-side).
+
+    Sanity-check the responses surface on the HAPPY path: with a
+    generous context window the repair runs, ``attempts == 2``, and
+    the skip counter does NOT tick. Without this companion test, a
+    regression that wedged the responses skip path "always-skip"
+    could pass the overflow test above on its own. Pinning the
+    happy path here ensures the gate only fires when it should.
+    """
+    client, engine = _responses_client(
+        body=_VIOLATING_BODY, max_position_embeddings=1_048_576
+    )
+
+    resp = client.post("/v1/responses", json=_responses_payload())
+    # Repair fires, validation still fails → 422 with attempts=2.
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "json_schema_violation", body
+    # Engine called twice — initial + repair retry.
+    assert len(engine.chat_calls) == 2, (
+        f"/v1/responses repair should have run → expected 2 chat calls, "
+        f"got {len(engine.chat_calls)}"
+    )
+
+    snap = response_format_metrics.snapshot()
+    # Repair was attempted; skip counter did NOT tick.
+    assert snap["strict_repairs_attempted_total"] == 1, snap
+    assert snap["strict_repairs_skipped_context_overflow_total"] == 0, snap
