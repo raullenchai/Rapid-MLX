@@ -2041,14 +2041,13 @@ async def _stream_responses(
             if output_channel is not None:
                 if output_channel in ("content", "tool_call", "reasoning"):
                     accumulated_raw_parts.append(delta_text)
-                if output_channel in ("content", "tool_call"):
-                    # R11-B codex r7 BLOCKING: any TRUE content/tool
-                    # channel chunk proves the model left the
-                    # ``<think>`` block — this is the precise signal
-                    # the mid-think gate needs (NOT
-                    # ``accumulated_text`` which can include reasoning
-                    # overflow reclassified via _account_for_reasoning
-                    # below).
+                if output_channel == "content":
+                    # R11-B codex r7 BLOCKING: a TRUE content chunk
+                    # proves the model left the ``<think>`` block —
+                    # this is the precise signal the mid-think gate
+                    # needs (NOT ``accumulated_text`` which can include
+                    # reasoning overflow reclassified via
+                    # _account_for_reasoning below).
                     reasoning_block_closed = True
                     content = strip_special_tokens(delta_text)
                     if content:
@@ -2056,6 +2055,27 @@ async def _stream_responses(
                         if filtered:
                             async for ev in _emit_text_delta(filtered):
                                 yield ev
+                elif output_channel == "tool_call":
+                    # #591 HIGH (item 2): tool_call channel bytes are
+                    # tool-call argument JSON, NOT assistant-visible
+                    # text. The earlier code routed them through
+                    # ``_emit_text_delta``, which works today only
+                    # because every channel-emitting engine (harmony /
+                    # gemma4) populates ``output.tool_calls`` with
+                    # structured calls — the ``engine_tool_calls``
+                    # branch above ``continue``s before we reach here.
+                    # If a future channel-emitting engine ever surfaces
+                    # tool args through the channel itself (without the
+                    # structured ``output.tool_calls`` sidecar), those
+                    # JSON bytes would leak into the assistant message
+                    # as raw text. Drop them from the wire here; the
+                    # post-loop ``_parse_tool_calls_with_parser`` reads
+                    # ``accumulated_raw`` (populated above) so the
+                    # text-parser fallback still recovers the call.
+                    # Mid-think gate still flips — leaving the thinking
+                    # block to emit a tool call still counts as "left
+                    # ``<think>``".
+                    reasoning_block_closed = True
                 elif output_channel == "reasoning":
                     # R11-B (R11-M-F1): accumulate reasoning text for the
                     # post-loop ``reasoning`` output-item emitter so
@@ -3053,7 +3073,13 @@ async def _stream_responses(
         # response.completed — terminal event. Codex treats a missing
         # one as a hard failure (it logs "stream closed before
         # response.completed").
-        cached_tokens_clamped = min(cached_tokens, prompt_tokens)
+        # #591 P2 (item 6): floor-clamp before the upper clamp. A buggy
+        # engine that surfaces a negative ``cached_tokens`` would
+        # otherwise pass through unchanged and emit
+        # ``input_tokens_details.cached_tokens=-N`` on the wire — OpenAI
+        # SDK consumers (Codex CLI, openai-python) reject the field.
+        # ``max(0, ...)`` returns 0 — semantically "no cache info".
+        cached_tokens_clamped = max(0, min(cached_tokens, prompt_tokens))
         # R11-B (R11-M-F1): credit accumulated reasoning bytes against
         # ``output_tokens_details.reasoning_tokens`` so SDK consumers can
         # surface the same "reasoning_tokens=N" counter the non-stream

@@ -1026,7 +1026,14 @@ def _build_responses_usage(response: ChatCompletionResponse) -> ResponsesUsage:
     cached = 0
     if response.usage.prompt_tokens_details is not None:
         cached = response.usage.prompt_tokens_details.cached_tokens or 0
-    cached = min(cached, prompt)
+    # #591 P2 (item 6): floor-clamp before the upper clamp. A buggy engine
+    # that surfaces a negative ``cached_tokens`` (uninitialized counter,
+    # delta-arithmetic gone wrong) would otherwise pass through unchanged
+    # and emit ``input_tokens_details.cached_tokens=-N`` on the wire,
+    # which OpenAI clients (Codex CLI, openai-python) treat as a parse
+    # error. ``max(0, ...)`` returns 0 — semantically equivalent to
+    # "no cache hit info" and matches the absent-details shape below.
+    cached = max(0, min(cached, prompt))
     reasoning = 0
     if response.usage.completion_tokens_details is not None:
         reasoning = response.usage.completion_tokens_details.reasoning_tokens or 0

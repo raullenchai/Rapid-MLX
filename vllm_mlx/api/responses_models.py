@@ -84,7 +84,18 @@ class ResponsesRequest(BaseModel):
     uses for fields we know about but don't act on.
     """
 
-    model: str
+    # #591 P2 (item 5): ``min_length=1`` rejects the empty-string ``model``
+    # at the Pydantic layer with a clean 422 instead of letting it slip
+    # past the ``gpt-*`` / ``claude-*`` ``startswith`` bypass in
+    # ``routes/responses.py`` and land on ``get_engine("")``. ``""``
+    # doesn't match either prefix so the bypass returns False; the
+    # request would then 400 via ``_validate_model_name`` — but the
+    # Pydantic-layer rejection is the right place to surface a malformed
+    # request body and matches OpenAI cloud's behavior. Sibling chat /
+    # completions / anthropic surfaces' ``_validate_model_name`` already
+    # 400 on empty, so this just pulls the same rejection up to the
+    # schema layer.
+    model: str = Field(..., min_length=1)
     # The Responses API allows either a bare prompt string OR an array
     # of polymorphic ``ResponsesInputItem`` blocks. Codex CLI sends the
     # array form with the full conversation history each turn.
