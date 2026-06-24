@@ -1410,6 +1410,16 @@ def serve_command(args):
             file=sys.stderr,
         )
         sys.exit(2)
+    # R12-S1: snapshot whether the user explicitly passed
+    # ``--tool-call-parser`` BEFORE auto-detect mutates ``args``. The
+    # misbind warning below only consults this snapshot — auto-detected
+    # bindings are guaranteed to match the model family by construction
+    # (the auto path picks the same parser the helper would suggest), so
+    # warning on them would be a contradictory "drop the flag" nudge
+    # against a flag the user never passed. (Codex r4 NIT — keeps the
+    # warning grounded in user intent even if a helper-side regression
+    # ever started flagging in-spec cases.)
+    _user_explicit_tool_call_parser = bool(args.tool_call_parser)
     if not args.tool_call_parser or not args.reasoning_parser:
         try:
             from .model_auto_config import detect_model_config
@@ -1456,25 +1466,29 @@ def serve_command(args):
     # calls with ``arguments="{}"`` because the parser correctly refuses
     # to parse the non-V3 prose the model emits. The auto-detect path
     # (above) routes the distill family to the legacy ``deepseek`` parser
-    # by default, so this warning only fires when the user explicitly
-    # overrides — preserving the override as the user's declared intent
-    # while loudly surfacing the mismatch so agent SDK builders stop
-    # blaming the parser when the model is the wrong target.
-    try:
-        from .model_auto_config import warn_misbound_deepseek_v3_parser
+    # by default — so this warning is intentionally gated on
+    # ``_user_explicit_tool_call_parser`` (snapshotted before auto-detect
+    # mutated ``args``). Skipping auto-detected bindings preserves the
+    # warning as a "your declared intent doesn't match the model" nudge
+    # rather than ever blaming a default serve (codex r4 NIT — guards
+    # against future helper-side regressions warning on the auto path).
+    if _user_explicit_tool_call_parser:
+        try:
+            from .model_auto_config import warn_misbound_deepseek_v3_parser
 
-        misbind_warning = warn_misbound_deepseek_v3_parser(
-            args.model, args.tool_call_parser
-        )
-        if misbind_warning:
-            # ``logger.warning`` so the message lands in any structured
-            # log sink AND surfaces in the terminal at the default
-            # ``WARNING`` level (no stderr-print needed). ``stacklevel=2``
-            # so log frameworks attribute the call site to the CLI entry
-            # rather than the helper module.
-            logger.warning(misbind_warning, stacklevel=2)
-    except Exception as e:  # noqa: BLE001
-        logger.debug(f"deepseek_v3 misbind check failed (non-fatal): {e}")
+            misbind_warning = warn_misbound_deepseek_v3_parser(
+                args.model, args.tool_call_parser
+            )
+            if misbind_warning:
+                # ``logger.warning`` so the message lands in any
+                # structured log sink AND surfaces in the terminal at
+                # the default ``WARNING`` level (no stderr-print
+                # needed). ``stacklevel=2`` so log frameworks attribute
+                # the call site to the CLI entry rather than the helper
+                # module.
+                logger.warning(misbind_warning, stacklevel=2)
+        except Exception as e:  # noqa: BLE001
+            logger.debug(f"deepseek_v3 misbind check failed (non-fatal): {e}")
 
     # Pass alias info to server (for /v1/models)
     server._model_alias = getattr(args, "_original_alias", None)

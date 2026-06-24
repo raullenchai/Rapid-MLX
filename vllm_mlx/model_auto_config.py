@@ -661,39 +661,48 @@ def _classify_deepseek_template_name(s: str) -> str | None:
     classifier on BOTH the user-supplied path AND the alias-resolved HF
     path without duplicating the pattern logic.
 
-    Codex r3 P3 fix: the R1-Distill reject is scoped to the model-name
-    component (last path segment) rather than the full path, because a
-    legitimate local serve like
-    ``/models/distillations/deepseek-ai/DeepSeek-V3.1-0324`` carries
-    ``distill`` in the parent directory but the checkpoint itself is a
-    valid V3.1 model. A full-path substring match would warn falsely
-    there even on the correct ``deepseek_v31`` parser.
+    All pattern matches are scoped to the model-name component (last
+    non-empty path segment) rather than the full path, so:
+
+    * The R1-Distill reject (codex r3 P3) is not tripped by a
+      ``distillations`` parent dir.
+    * The V3 / V3.1 / R1-0528 / V4-V5 positive classifiers do not fire
+      on a parent dir like ``/models/DeepSeek-V3/qwen-model`` whose
+      checkpoint is actually a Qwen variant (codex r4 BLOCKING — the
+      r3 fix only scoped the reject, not the positive classifiers).
+
+    Single-segment scoping works for genuine HF paths because every
+    DeepSeek checkpoint's MODEL NAME carries its own family marker:
+    ``DeepSeek-V3-0324``, ``DeepSeek-V3.1-0324``,
+    ``DeepSeek-R1-0528-Qwen3-8B``, ``DeepSeek-R1-Distill-Qwen-1.5B-4bit``.
+    The ``deepseek-ai`` / ``mlx-community`` org segment is informational
+    and never load-bearing for sub-family identification.
     """
     s = s.lower()
     # Extract the model-name component (last non-empty path segment).
     # Empty or all-slash inputs collapse to the full string so the
     # classifier still produces ``None`` rather than crashing.
-    tail = s.rstrip("/").rsplit("/", 1)[-1] or s
+    parts = [p for p in s.rstrip("/").split("/") if p]
+    name = parts[-1] if parts else s
     # R1-Distill family is V2 / Qwen2-arch, NOT V3. Explicit reject for
-    # BOTH sub-families. Scoped to ``tail`` so a ``distillations``
-    # parent dir doesn't trip the gate.
-    if "distill" in tail:
+    # BOTH sub-families.
+    if "distill" in name:
         return None
     # V3.1 — distinct chat template, ordered BEFORE the bare V3 check
     # so the more specific pattern wins (V3.1 contains "v3" as a
     # substring after the dot is stripped by the loose regex).
-    if re.search(r"deepseek[-_/]*v3\.\d", s):
+    if re.search(r"deepseek[-_]*v3\.\d", name):
         return "v31"
     # V3 vanilla — V3-0324 etc.
-    if re.search(r"deepseek[-_/]*v3(?![._\d])", s):
+    if re.search(r"deepseek[-_]*v3(?![._\d])", name):
         return "v3"
     # R1-0528 — the R1 retrain on the V3 chat template.
-    if re.search(r"deepseek.*r1[-_]?0528", s):
+    if re.search(r"deepseek.*r1[-_]?0528", name):
         return "v3"
     # Forward-cover V4 / V5 (per upstream V4 card both inherit the V3
     # template; cheap to include and avoids a future regression when a
     # user serves a V4 checkpoint with ``--tool-call-parser deepseek_v3``).
-    if re.search(r"deepseek[-_/]*v[45]", s):
+    if re.search(r"deepseek[-_]*v[45]", name):
         return "v3"
     return None
 

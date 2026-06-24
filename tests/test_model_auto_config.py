@@ -1073,3 +1073,32 @@ class TestWarnMisboundDeepseekV3Parser:
         msg = warn_misbound_deepseek_v3_parser(model_path, "deepseek_v3")
         assert msg is not None
         assert model_path in msg
+
+    # Codex round-4 BLOCKING regression: the r3 fix scoped the
+    # ``distill`` REJECT to the tail segment but left the V3 / V3.1 /
+    # R1-0528 / V4-V5 POSITIVE classifiers running against the full
+    # path. That falsely classified a non-V3 checkpoint as v3/v31 when
+    # an unrelated parent directory carried the family marker — e.g.
+    # ``/models/DeepSeek-V3/qwen-model`` resolved to ``"v3"`` and
+    # SUPPRESSED the misbind warning even with the wrong parser. All
+    # classifiers must scope to the model-name component.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            ("/models/DeepSeek-V3/qwen-model", "deepseek_v3"),
+            ("/models/DeepSeek-V3.1/qwen-model", "deepseek_v31"),
+            ("/models/DeepSeek-R1-0528/random-model", "deepseek_v3"),
+            ("/models/DeepSeek-V4/qwen-model", "deepseek_v3"),
+        ],
+    )
+    def test_warn_when_only_parent_dir_carries_v3_marker(self, model_path, parser):
+        # The model-NAME component is a non-V3 checkpoint (``qwen-model``
+        # / ``random-model``). The misbind warning must fire even when
+        # the parent dir is named after a V3 family — the parent dir
+        # tells us nothing about the actual checkpoint.
+        msg = warn_misbound_deepseek_v3_parser(model_path, parser)
+        assert msg is not None, (
+            f"non-V3 checkpoint under V3-named parent ({model_path!r}) "
+            f"with {parser!r} must still warn — classifier must scope to "
+            "the model-name component, not the full path."
+        )
