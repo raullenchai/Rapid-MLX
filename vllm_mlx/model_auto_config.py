@@ -800,22 +800,37 @@ def warn_misbound_deepseek_v3_parser(
     # cross-sub-family case: ``deepseek_v31`` parser on R1-0528 will see
     # auto suggest ``deepseek_v3`` here, which is the correct fix.
     #
-    # Codex r5 P2: ``detect_model_config`` runs its regexes against the
-    # FULL path, so a non-V3 checkpoint under a V3-marker parent dir
-    # (e.g. ``/models/DeepSeek-V3/qwen-model``) would have auto-detect
-    # ALSO pick a V3-family parser — and if it picked the SAME parser
-    # the user is already binding, the suggestion turns into a
-    # contradiction ("drop the flag; auto-detect would pick the same
-    # wrong parser"). Suppress the suggestion in that exact case; the
-    # remaining "drop the flag, use hermes" remediation still applies.
-    # The cross-sub-family case (auto suggests a DIFFERENT V3-family
-    # parser than the one bound) is still useful so we keep it.
+    # Codex r5 + r5-followup P2: ``detect_model_config`` runs its
+    # regexes against the FULL path, so a non-V3 checkpoint under a
+    # V3-marker parent dir (e.g. ``/models/DeepSeek-V3/qwen-model``)
+    # would have auto-detect ALSO pick a V3-family parser — fooled by
+    # the same parent dir the tail-segment classifier above correctly
+    # ignored. Surfacing that fooled auto-detect as a suggestion is
+    # actively harmful: it nudges the user toward the same wrong family
+    # the warning is about. Suppress the suggestion whenever the model
+    # is out-of-lineage (template is None) AND auto-detect would pick
+    # any V3-family parser — including a DIFFERENT one than the one
+    # the user bound, because the suggestion's framing
+    # ("auto-detect would pick X for this model") implies endorsement
+    # that doesn't hold when auto-detect itself is fooled. The
+    # cross-sub-family case (template in {"v3","v31"}) is unaffected
+    # — there the model genuinely is V3-template and auto-detect's
+    # other-V3 suggestion is the actually-correct fix.
     auto = detect_model_config(model_path)
     auto_parser = auto.tool_call_parser if auto is not None else None
-    if auto_parser and auto_parser != tool_call_parser:
-        suggestion = f" Auto-detect would pick '{auto_parser}' for this model."
-    else:
-        suggestion = ""
+    suppress_suggestion = (
+        not auto_parser
+        # Same parser the user bound — contradiction.
+        or auto_parser == tool_call_parser
+        # Out-of-lineage + auto also fooled into V3 family — endorses
+        # the same wrong-family class.
+        or (template is None and auto_parser in _DEEPSEEK_V3_FAMILY_PARSERS)
+    )
+    suggestion = (
+        ""
+        if suppress_suggestion
+        else f" Auto-detect would pick '{auto_parser}' for this model."
+    )
 
     # Tailor the diagnosis to the failure class so the message is
     # actionable instead of generic.

@@ -1135,3 +1135,34 @@ class TestWarnMisboundDeepseekV3Parser:
         assert msg is not None
         assert "Auto-detect would pick 'deepseek'" in msg
         assert "Drop the explicit" in msg
+
+    # Codex r5 follow-up nit: even when auto-detect's pick is a
+    # DIFFERENT V3-family parser than the one bound (so the suggestion
+    # would have fired under the r5 same-parser-only gate), suppress
+    # it for out-of-lineage models because auto-detect was fooled by a
+    # parent dir — endorsing a different-but-still-V3 parser would
+    # nudge the user toward another wrong-family choice.
+    def test_no_suggestion_when_auto_picks_other_v3_for_out_of_lineage(self):
+        # Parent dir is ``DeepSeek-V3.1`` so auto-detect picks
+        # ``deepseek_v31``. User bound ``deepseek_v3``. Tail name is
+        # ``qwen-model`` — out-of-lineage. Even though auto-detect's
+        # pick differs from the bound parser, the suggestion must be
+        # suppressed (both V3-family picks would be wrong).
+        msg = warn_misbound_deepseek_v3_parser(
+            "/models/DeepSeek-V3.1/qwen-model", "deepseek_v3"
+        )
+        assert msg is not None
+        assert "Auto-detect would pick" not in msg
+        # The hermes-pinning remediation kicks in instead.
+        assert "hermes" in msg
+
+    # The cross-sub-family auto-detect suggestion MUST still fire on
+    # real V3-template checkpoints (template != None). Codex r5's
+    # original wins must not regress.
+    def test_cross_sub_family_suggestion_still_fires_on_real_v3_template(self):
+        msg = warn_misbound_deepseek_v3_parser(
+            "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit", "deepseek_v31"
+        )
+        assert msg is not None
+        # Auto-detect correctly picks ``deepseek_v3`` for R1-0528.
+        assert "Auto-detect would pick 'deepseek_v3'" in msg
