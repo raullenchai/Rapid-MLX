@@ -235,14 +235,19 @@ def _dry_run_stt(model_name: str | None) -> tuple[bool, str | None]:
     configured engine instead.
     """
     try:
-        import tempfile
         import wave
 
+        from .._tempfile_safe import managed_tempfile_path
         from ..audio.stt import DEFAULT_WHISPER_MODEL, STTEngine
 
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
-            wav_path = tmp.name
-        try:
+        # GH #719 — the old pattern was ``NamedTemporaryFile(delete=False)``
+        # inside a ``with`` block (which only closes the FD, not the
+        # file), followed by a manual ``try/finally`` for unlink. The
+        # window between the ``with`` exit and the ``try`` entry leaked
+        # the wav if ``STTEngine`` construction raised. ``managed_tempfile_path``
+        # closes that window via atexit fallback.
+        with managed_tempfile_path(suffix=".wav") as wav_handle:
+            wav_path = wav_handle.path
             with wave.open(wav_path, "wb") as w:
                 w.setnchannels(1)
                 w.setsampwidth(2)
@@ -254,13 +259,6 @@ def _dry_run_stt(model_name: str | None) -> tuple[bool, str | None]:
             # An empty string is a valid transcription of silence.
             if not hasattr(result, "text"):
                 return False, "STT result missing `text` attribute"
-        finally:
-            import os as _os
-
-            try:
-                _os.unlink(wav_path)
-            except OSError:
-                pass
         return True, None
     except Exception as e:  # noqa: BLE001
         return False, f"STT dry-run failed: {type(e).__name__}: {e}"

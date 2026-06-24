@@ -3771,7 +3771,8 @@ def chat_command(args):
     import atexit
     import signal
     import subprocess
-    import tempfile
+
+    from vllm_mlx._tempfile_safe import managed_tempfile_path
 
     base_url: str
     proc = None
@@ -3974,19 +3975,34 @@ def chat_command(args):
         # several minutes on first run with a fresh model.
         _ensure_model_downloaded(args.model)
 
-        log_path = tempfile.NamedTemporaryFile(
-            prefix="rapid-mlx-chat-", suffix=".log", delete=False
-        ).name
-        print(f"\n  Starting server {DIM}(log: {log_path}){RESET} ...")
-        # If main() resolved an alias, expose the alias as the API model name
-        # so the chat request body matches what the user typed.
-        original = getattr(args, "_original_alias", None)
-        proc, base_url = _spawn_chat_server(
-            args.model,
-            log_path,
-            served_name=original,
-            register_in=_active_procs,
-        )
+        # GH #719: ``NamedTemporaryFile(...).name`` leaked one zero-byte
+        # log per invocation if ANYTHING raised between path creation
+        # and the proc being appended to ``_active_procs`` (where
+        # ``_teardown_proc`` would otherwise reap it). The
+        # ``managed_tempfile_path`` helper registers an atexit unlink
+        # the moment the path exists, so the race window is closed:
+        # cleanup runs on context exit, on ``sys.exit``, or via atexit
+        # if the body propagates. Once ``_spawn_chat_server`` has
+        # successfully stashed the path on the proc, ``.release()``
+        # hands ownership to ``_teardown_proc`` so its per-proc policy
+        # (keep non-empty logs for post-mortem) still applies.
+        with managed_tempfile_path(
+            prefix="rapid-mlx-chat-", suffix=".log"
+        ) as _log_handle:
+            log_path = _log_handle.path
+            print(f"\n  Starting server {DIM}(log: {log_path}){RESET} ...")
+            # If main() resolved an alias, expose the alias as the API model name
+            # so the chat request body matches what the user typed.
+            original = getattr(args, "_original_alias", None)
+            proc, base_url = _spawn_chat_server(
+                args.model,
+                log_path,
+                served_name=original,
+                register_in=_active_procs,
+            )
+            # Spawn succeeded and the proc owns the log path now; the
+            # session-long cleanup belongs to ``_teardown_proc``.
+            _log_handle.release()
 
         try:
             _wait_for_chat_server(base_url, proc, timeout_s=args.ready_timeout)
@@ -4255,22 +4271,30 @@ def chat_command(args):
 
         # 2. Allocate a new log file and spawn the new server. We don't
         #    tear down the old one yet; we want a working candidate
-        #    before we commit.
-        new_log_path = tempfile.NamedTemporaryFile(
-            prefix="rapid-mlx-chat-", suffix=".log", delete=False
-        ).name
-        print(f"  Starting server {DIM}(log: {new_log_path}){RESET} ...")
-        # ``register_in=_active_procs`` makes the candidate visible to
-        # ``_cleanup`` *inside* ``_spawn_chat_server`` — before the
-        # readiness wait, before any further Python statement runs in
-        # this scope. A SIGTERM/Ctrl-C during the (possibly multi-second)
-        # load tears the child down via the cleanup walk.
-        new_proc, new_base_url = _spawn_chat_server(
-            resolved,
-            new_log_path,
-            served_name=new_alias,
-            register_in=_active_procs,
-        )
+        #    before we commit. ``managed_tempfile_path`` (GH #719)
+        #    guarantees the log path is unlinked if the spawn raises
+        #    before the proc is registered onto ``_active_procs`` —
+        #    the leak window in the original ``NamedTemporaryFile(...).name``
+        #    pattern. Once the proc holds the path, ``release()``
+        #    hands ownership to ``_teardown_proc`` whose per-proc
+        #    policy already covers non-empty-keep semantics.
+        with managed_tempfile_path(
+            prefix="rapid-mlx-chat-", suffix=".log"
+        ) as _new_log_handle:
+            new_log_path = _new_log_handle.path
+            print(f"  Starting server {DIM}(log: {new_log_path}){RESET} ...")
+            # ``register_in=_active_procs`` makes the candidate visible to
+            # ``_cleanup`` *inside* ``_spawn_chat_server`` — before the
+            # readiness wait, before any further Python statement runs in
+            # this scope. A SIGTERM/Ctrl-C during the (possibly multi-second)
+            # load tears the child down via the cleanup walk.
+            new_proc, new_base_url = _spawn_chat_server(
+                resolved,
+                new_log_path,
+                served_name=new_alias,
+                register_in=_active_procs,
+            )
+            _new_log_handle.release()
         try:
             _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
         except (RuntimeError, TimeoutError) as exc:
