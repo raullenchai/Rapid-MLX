@@ -303,11 +303,12 @@ class TestDetectModelConfig:
         assert config.tool_call_parser == "deepseek"
         assert config.reasoning_parser == "deepseek_r1"
 
-    # DeepSeek non-R1 (V3, V2.5) → deepseek parser, no reasoning
+    # DeepSeek V2.5 (and older non-R1) → legacy ``deepseek`` parser.
+    # R12-5: V3 vanilla checkpoints now route to ``deepseek_v3`` (the
+    # dedicated parser) — see ``test_deepseek_v3_vanilla_routes_to_v3_parser``.
     @pytest.mark.parametrize(
         "model_path",
         [
-            "deepseek-v3-0324",
             "mlx-community/DeepSeek-V2.5-4bit",
         ],
     )
@@ -315,6 +316,26 @@ class TestDetectModelConfig:
         config = detect_model_config(model_path)
         assert config is not None
         assert config.tool_call_parser == "deepseek"
+        assert config.reasoning_parser is None
+
+    # R12-5: vanilla DeepSeek-V3 checkpoints (V3-0324 etc.) emit the
+    # V3 fenced-JSON wire shape, same as R1-0528. Route them to the
+    # dedicated ``deepseek_v3`` parser so they get the block-wise
+    # scanner hardening and the forced-tool prefix injection (codex
+    # round-3 P2 — the generic ``deepseek`` parser has neither).
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "deepseek-ai/DeepSeek-V3-0324",
+            "deepseek-v3-0324",
+        ],
+    )
+    def test_deepseek_v3_vanilla_routes_to_v3_parser(self, model_path):
+        config = detect_model_config(model_path)
+        assert config is not None
+        assert config.tool_call_parser == "deepseek_v3"
+        # No ``deepseek_r1`` reasoning on vanilla V3 — only R1 family
+        # ships with the thinking-channel.
         assert config.reasoning_parser is None
 
     # Hermes fine-tuned

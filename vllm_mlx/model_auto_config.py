@@ -157,7 +157,22 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="deepseek_r1",
         ),
     ),
-    # DeepSeek (V3, V2.5, etc.) — no reasoning parser
+    # DeepSeek V3 (vanilla checkpoints: V3-0324 etc.) — same
+    # function-typed fenced JSON wire shape as R1-0528. R12-5: route
+    # to the dedicated V3 parser so vanilla V3 users get the same
+    # forced-tool prefix injection as R1-0528 (codex r3 P2 — without
+    # this, a direct serve of ``deepseek-ai/DeepSeek-V3-0324`` falls
+    # through to the generic ``deepseek`` parser, which has neither
+    # the block-wise scanner hardening nor a forced-prefix branch).
+    # Matched AFTER V3.1 (above) so the more specific pattern wins.
+    (
+        re.compile(r"deepseek.*v3(?![._\d])", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="deepseek_v3",
+            reasoning_parser=None,
+        ),
+    ),
+    # DeepSeek (V2.5 and older) — no reasoning parser
     (
         re.compile(r"deepseek", re.IGNORECASE),
         ModelConfig(
