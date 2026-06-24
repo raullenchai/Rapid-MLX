@@ -42,9 +42,37 @@ import pytest
 
 from vllm_mlx.service.helpers import (
     REASONING_CUTOFF_SENTINEL,
+    RESCUE_TAIL_LENGTH,
     _apply_reasoning_cutoff_notice,
     _rescue_silent_drop_from_reasoning,
 )
+
+
+def _assert_is_rescue(
+    result: str | None, reasoning_text: str, *, msg: str = ""
+) -> None:
+    """R12-8: the rescue payload is ``sentinel + "\\n\\n" + tail``.
+
+    Centralised here so every assertion in this file pins the same
+    contract — the sentinel anchors the opening (pattern-matchable
+    by agentic auto-retry) and the trailing ``RESCUE_TAIL_LENGTH``
+    chars of ``reasoning_text`` give a human reader a glimpse of the
+    partial conclusion. This shape replaces the pre-R12-8 bare
+    sentinel return — see ``_build_reasoning_rescue_payload``.
+    """
+    assert result is not None, f"rescue must fire: {msg}"
+    assert result.startswith(REASONING_CUTOFF_SENTINEL), (
+        f"rescue must open with the literal sentinel; got {result!r}: {msg}"
+    )
+    expected_tail = reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]
+    assert result.endswith(expected_tail), (
+        f"rescue must end with last {RESCUE_TAIL_LENGTH} chars of "
+        f"reasoning; expected tail {expected_tail!r}, got {result!r}: {msg}"
+    )
+    assert "\n\n" in result, (
+        f"rescue must separate sentinel from tail with a blank line; got {result!r}: {msg}"
+    )
+
 
 # ──────────────────────────────────────────────────────────────────────
 # Unit tests for the helper itself
@@ -89,15 +117,19 @@ class TestApplyReasoningCutoffNotice:
         back to PR #802 (H-01) semantics: default ON, opt-out via
         ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``."""
         monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        reasoning = "<incomplete thought>"
         result = _apply_reasoning_cutoff_notice(
             final_content=None,
-            reasoning_text="<incomplete thought>",
+            reasoning_text=reasoning,
             tool_calls=None,
             finish_reason="length",
         )
-        assert result == REASONING_CUTOFF_SENTINEL, (
-            f"issue #858: unset env var must enable the sentinel "
-            f"(default ON, PR #802 behaviour restored); got {result!r}"
+        _assert_is_rescue(
+            result,
+            reasoning,
+            msg="issue #858: unset env var must enable the rescue "
+            "(default ON, PR #802 / #860 behaviour restored)",
         )
 
     @pytest.mark.parametrize(
@@ -114,14 +146,17 @@ class TestApplyReasoningCutoffNotice:
         that want to be explicit about the on-state regardless of
         future default flips."""
         monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", enable_alias)
+        reasoning = "Let me think about 17*23... 17*20=340, 17*3="
         result = _apply_reasoning_cutoff_notice(
             final_content=None,
-            reasoning_text="Let me think about 17*23... 17*20=340, 17*3=",
+            reasoning_text=reasoning,
             tool_calls=None,
             finish_reason="length",
         )
-        assert result == REASONING_CUTOFF_SENTINEL, (
-            f"explicit enable alias {enable_alias!r} must keep the sentinel on"
+        _assert_is_rescue(
+            result,
+            reasoning,
+            msg=f"explicit enable alias {enable_alias!r} must keep the rescue on",
         )
 
     @pytest.mark.parametrize(
@@ -163,14 +198,17 @@ class TestApplyReasoningCutoffNotice:
         sentinel ENABLED (default-on). This is the safe default for
         GUI clients."""
         monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", unknown_value)
+        reasoning = "<truncated thought>"
         result = _apply_reasoning_cutoff_notice(
             final_content=None,
-            reasoning_text="<truncated thought>",
+            reasoning_text=reasoning,
             tool_calls=None,
             finish_reason="length",
         )
-        assert result == REASONING_CUTOFF_SENTINEL, (
-            f"env value {unknown_value!r} must leave the sentinel enabled"
+        _assert_is_rescue(
+            result,
+            reasoning,
+            msg=f"env value {unknown_value!r} must leave the rescue enabled",
         )
 
     # ----- enabled branch: the H-01 / issue #858 truth table -----
@@ -187,26 +225,28 @@ class TestApplyReasoningCutoffNotice:
         ``content`` + non-empty reasoning + no tool calls. The sentinel
         surfaces in ``content``; reasoning stays as-is."""
         monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "1")
+        reasoning = "Let me think about 17*23... 17*20=340, 17*3="
         result = _apply_reasoning_cutoff_notice(
             final_content=None,
-            reasoning_text="Let me think about 17*23... 17*20=340, 17*3=",
+            reasoning_text=reasoning,
             tool_calls=None,
             finish_reason="length",
         )
-        assert result == REASONING_CUTOFF_SENTINEL
+        _assert_is_rescue(result, reasoning)
 
     def test_enabled_fires_when_content_is_empty_string(self, monkeypatch):
         """Empty-string ``content`` (downstream sanitization collapsed
         the buffer to ``""``) is treated the same as ``None`` with the
         sentinel enabled — clients render an empty bubble either way."""
         monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "1")
+        reasoning = "<incomplete thought>"
         result = _apply_reasoning_cutoff_notice(
             final_content="",
-            reasoning_text="<incomplete thought>",
+            reasoning_text=reasoning,
             tool_calls=None,
             finish_reason="length",
         )
-        assert result == REASONING_CUTOFF_SENTINEL
+        _assert_is_rescue(result, reasoning)
 
     def test_enabled_fires_when_content_is_whitespace_only(self, monkeypatch):
         """Whitespace-only ``content`` looks identical to clients with
@@ -214,13 +254,14 @@ class TestApplyReasoningCutoffNotice:
         same semantics as the silent-drop helper's whitespace-only
         check."""
         monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "1")
+        reasoning = "<incomplete thought>"
         result = _apply_reasoning_cutoff_notice(
             final_content="   \n\t",
-            reasoning_text="<incomplete thought>",
+            reasoning_text=reasoning,
             tool_calls=None,
             finish_reason="length",
         )
-        assert result == REASONING_CUTOFF_SENTINEL
+        _assert_is_rescue(result, reasoning)
 
     def test_enabled_noop_when_content_is_populated(self, monkeypatch):
         """Happy path with sentinel enabled: model produced a real
@@ -302,6 +343,346 @@ class TestApplyReasoningCutoffNotice:
             finish_reason="length",
         )
         assert result is None
+
+
+# ──────────────────────────────────────────────────────────────────────
+# R12-8 (issue #259): rescue-payload shape + RAPID_MLX_REASONING_RESCUE
+# env knob + back-compat alias coverage.
+# ──────────────────────────────────────────────────────────────────────
+
+
+class TestR12_8RescuePayloadShape:
+    """R12-8 / issue #259: the rescue payload format is
+    ``sentinel + "\\n\\n" + reasoning_text[-RESCUE_TAIL_LENGTH:]``.
+
+    Six independent reviewers reopened H-01 across 8 rounds because
+    the bare PR #802 sentinel still felt like "the model didn't
+    answer". R12-8 keeps the literal-sentinel prefix (agentic clients
+    can still pattern-match it for auto-retry) and appends the
+    trailing window of ``reasoning_content`` so a human reader sees a
+    glimpse of what the model was working on when the budget ran out.
+
+    These tests pin the payload shape exhaustively so a future drift
+    (e.g. tail trimmed too aggressively, sentinel demoted to suffix,
+    separator collapsed) fails here first.
+    """
+
+    def test_rescue_starts_with_sentinel_prefix(self, monkeypatch):
+        """Agentic auto-retry clients pattern-match the sentinel prefix
+        to decide whether to re-issue the request with a higher
+        ``max_tokens``. The sentinel MUST anchor the opening of the
+        payload regardless of the tail content."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        reasoning = "x" * 500
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text=reasoning,
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is not None
+        assert result.startswith(REASONING_CUTOFF_SENTINEL), (
+            f"sentinel must anchor the rescue prefix; got {result!r}"
+        )
+
+    def test_rescue_ends_with_last_n_chars_of_reasoning(self, monkeypatch):
+        """The tail MUST be the LAST ``RESCUE_TAIL_LENGTH`` characters
+        of the reasoning trace (taken from the END because the partial
+        conclusion lives at the tail in every parser dialect).
+        """
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        # Build reasoning with a unique early prefix that won't recur
+        # in the tail — so we can pin "early text doesn't bleed into
+        # the rescue payload".
+        prefix_marker = "UNIQUE-EARLY-PREFIX-MARKER"
+        prefix_part = prefix_marker + ("." * (RESCUE_TAIL_LENGTH * 3))
+        tail_part = (
+            " ...so 17 * 23 = 17 * (20 + 3) = 340 + 51 = 391, then 391 - 5 = 386"
+        )
+        reasoning = prefix_part + tail_part
+        assert len(reasoning) > RESCUE_TAIL_LENGTH
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text=reasoning,
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is not None
+        expected_tail = reasoning[-RESCUE_TAIL_LENGTH:]
+        assert result.endswith(expected_tail), (
+            f"rescue must end with the LAST {RESCUE_TAIL_LENGTH} chars of "
+            f"reasoning; expected suffix {expected_tail!r}, got {result!r}"
+        )
+        assert prefix_marker not in result, (
+            f"rescue must NOT carry the unique early prefix marker — only "
+            f"the trailing window; got {result!r}"
+        )
+
+    def test_rescue_separates_sentinel_from_tail_with_blank_line(self, monkeypatch):
+        """``sentinel\\n\\ntail`` — a literal blank line separates the
+        machine-readable prefix from the human-readable tail. Lets a
+        chat UI render the sentinel as a separate paragraph above the
+        reasoning excerpt."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        reasoning = "Some partial reasoning trace that ends here"
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text=reasoning,
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is not None
+        expected = f"{REASONING_CUTOFF_SENTINEL}\n\n{reasoning}"
+        assert result == expected, (
+            f"rescue payload must be exactly 'sentinel\\n\\ntail'; got {result!r}"
+        )
+
+    def test_rescue_short_reasoning_appended_in_full(self, monkeypatch):
+        """When ``reasoning_text`` is shorter than ``RESCUE_TAIL_LENGTH``,
+        the entire trace is appended — there is no minimum-length gate
+        beyond non-empty. A 5-char thought still surfaces the rescue."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        short = "Hmm."
+        assert len(short) < RESCUE_TAIL_LENGTH
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text=short,
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result == f"{REASONING_CUTOFF_SENTINEL}\n\n{short}", (
+            f"short reasoning must be appended in full; got {result!r}"
+        )
+
+    def test_rescue_strips_trailing_whitespace_before_slicing_tail(self, monkeypatch):
+        """Trailing whitespace on the reasoning trace is stripped
+        BEFORE the tail slice so the rescue doesn't dribble out a
+        partial newline / blank tail. The tail window is content-only."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        reasoning = "thinking... let me compute the result   \n\n\t  "
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text=reasoning,
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is not None
+        assert result.endswith("compute the result"), (
+            f"rescue tail must strip trailing whitespace; got {result!r}"
+        )
+        assert not result.endswith(" "), (
+            f"rescue must NOT end with whitespace; got {result!r}"
+        )
+
+    def test_rescue_preserves_reasoning_content_unchanged(self, monkeypatch):
+        """R12-8 contract: the rescue NEVER mutates ``reasoning_text`` —
+        it only writes to ``content``. Pin via helper-level call: the
+        caller's reasoning string is identity-preserved across the
+        rescue path (the helper is pure on its reasoning argument).
+        """
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        reasoning = "trace that must survive identity-preserved"
+        original = reasoning  # snapshot
+        _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text=reasoning,
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert reasoning == original, (
+            f"helper must not mutate reasoning text; got {reasoning!r}"
+        )
+
+
+class TestR12_8RescueEnvVar:
+    """R12-8 / issue #259: the primary env var is
+    ``RAPID_MLX_REASONING_RESCUE`` (legacy
+    ``RAPID_MLX_REASONING_CUTOFF_NOTICE`` is still honoured as an
+    alias for back-compat).
+    """
+
+    def test_primary_env_off_disables_rescue(self, monkeypatch):
+        """``RAPID_MLX_REASONING_RESCUE=off`` — the R12-8 task spec —
+        disables the rescue. ``content`` stays untouched (strict-null
+        contract)."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "off")
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text="some reasoning trace",
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is None, (
+            f"RAPID_MLX_REASONING_RESCUE=off must disable rescue; got {result!r}"
+        )
+
+    def test_primary_env_on_enables_rescue(self, monkeypatch):
+        """Explicit ``RAPID_MLX_REASONING_RESCUE=on`` — though default
+        is already on, an explicit ``on`` MUST keep the rescue active.
+        Lets operators be defensive about default flips."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
+        reasoning = "some reasoning trace"
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text=reasoning,
+            tool_calls=None,
+            finish_reason="length",
+        )
+        _assert_is_rescue(result, reasoning)
+
+    @pytest.mark.parametrize(
+        "disable_value",
+        ["0", "false", "no", "off", "disabled", "OFF", "False"],
+    )
+    def test_primary_env_disable_spellings(self, monkeypatch, disable_value):
+        """Every documented disable spelling on the PRIMARY env var
+        opts out of the rescue."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", disable_value)
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text="trace",
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is None, (
+            f"RAPID_MLX_REASONING_RESCUE={disable_value!r} must disable; got {result!r}"
+        )
+
+    def test_legacy_alias_still_honoured(self, monkeypatch):
+        """Back-compat: ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``
+        from PR #802 / #860 / issue #858 still disables the rescue
+        even when the new primary env var is unset. Operators that
+        already shipped scripts referencing the legacy name don't need
+        to re-deploy."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text="trace",
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is None, (
+            f"legacy alias must still disable the rescue; got {result!r}"
+        )
+
+    def test_either_env_disabling_wins(self, monkeypatch):
+        """When BOTH env vars are set and EITHER carries a disable
+        value, the rescue is off. Operator intent: "I do not want
+        the injection", regardless of which name was used."""
+        # Legacy off, primary on (or unset, semantically equivalent here)
+        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
+        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text="trace",
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is None, (
+            f"legacy=disabled must win even when primary=on; got {result!r}"
+        )
+        # Primary off, legacy explicitly on
+        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "off")
+        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "1")
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text="trace",
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is None, (
+            f"primary=off must win even when legacy=1; got {result!r}"
+        )
+
+    def test_both_unset_defaults_to_on(self, monkeypatch):
+        """With both env vars unset, the rescue is ON (the issue #858
+        default that R12-8 inherits)."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        reasoning = "trace"
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text=reasoning,
+            tool_calls=None,
+            finish_reason="length",
+        )
+        _assert_is_rescue(result, reasoning)
+
+
+class TestR12_8AntiRegressionGates:
+    """R12-8 anti-regression: the rescue's extended payload must NOT
+    fire on legitimate stop-empty turns, non-length finish, populated
+    content, or tool-call turns. The 8-round D-carry kept these gates
+    in scope — pinning them with the new payload shape so future
+    refactors can't re-break them."""
+
+    def test_no_rescue_on_finish_stop_even_if_content_empty(self, monkeypatch):
+        """``finish_reason="stop"`` + empty content is a legitimate
+        model decision (the model chose to say nothing, possibly after
+        a tool call elsewhere in the turn). R12-8 must NOT inject the
+        rescue here — D-STOP-THINK contract holds."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text="model thought about it but chose not to answer",
+            tool_calls=None,
+            finish_reason="stop",
+        )
+        assert result is None, (
+            f"finish_reason=stop must NEVER trigger rescue; got {result!r}"
+        )
+
+    def test_no_rescue_when_content_already_present(self, monkeypatch):
+        """Coordination with r12-7 (D-MISSING-CONTENT-KEY): r12-7 may
+        emit ``content=""`` or a real string; this test pins that the
+        rescue only fires when content is empty/whitespace AND the
+        gate fires — populated content is left alone."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        result = _apply_reasoning_cutoff_notice(
+            final_content="The answer is 391.",
+            reasoning_text="17*23 = 391",
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result == "The answer is 391.", (
+            f"populated content must pass through unmodified; got {result!r}"
+        )
+
+    def test_no_rescue_when_reasoning_empty(self, monkeypatch):
+        """Empty reasoning + empty content + length finish — the model
+        emitted nothing semantically. That's a different bug class
+        (zero-token generation) and shouldn't get a "raise max_tokens"
+        cue."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text="",
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is None, (
+            f"empty reasoning must NOT trigger rescue; got {result!r}"
+        )
+
+    def test_no_rescue_when_tool_calls_present_on_length_finish(self, monkeypatch):
+        """Tool-call turns ship ``content=None`` per OpenAI spec, even
+        when ``finish_reason="length"`` interrupts a long tool-call
+        argument. R12-8 must NOT inject the rescue."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text="planning the call...",
+            tool_calls=[{"id": "x", "type": "function"}],
+            finish_reason="length",
+        )
+        assert result is None, (
+            f"tool-call turns must not trigger rescue; got {result!r}"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -549,11 +930,23 @@ class TestParserWideLengthCutMidThinkEnabled:
             reasoning_parser=parser_case["parser"],
             finish_reason="length",
         )
-        assert content == REASONING_CUTOFF_SENTINEL, (
-            f"enabled [{parser_case['name']}]: length-cut mid-think must "
-            f"surface sentinel; got content={content!r}"
+        # R12-8: rescue is ``sentinel + tail-of-reasoning``. Sentinel
+        # anchors the prefix (parser-independent); the tail is the
+        # parser-specific reasoning trace's last RESCUE_TAIL_LENGTH
+        # chars.
+        assert content is not None, (
+            f"enabled [{parser_case['name']}]: rescue must fire; got None"
+        )
+        assert content.startswith(REASONING_CUTOFF_SENTINEL), (
+            f"enabled [{parser_case['name']}]: rescue must open with the "
+            f"sentinel; got content={content!r}"
         )
         assert reasoning is not None and "17" in reasoning
+        # Tail must be the trailing window of the parser's reasoning text.
+        assert content.endswith(reasoning.rstrip()[-RESCUE_TAIL_LENGTH:]), (
+            f"enabled [{parser_case['name']}]: rescue must end with the "
+            f"reasoning tail; got content={content!r}, reasoning={reasoning!r}"
+        )
 
 
 # ──────────────────────────────────────────────────────────────────────
@@ -581,13 +974,14 @@ class TestGemma4HarmonyEngineRouted:
 
     def test_default_on_surfaces_sentinel_on_empty_cleaned_text(self, monkeypatch):
         monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "1")
+        reasoning = "The user wants to know about the weather. Let me think"
         content = _apply_reasoning_cutoff_notice(
             final_content=None,
-            reasoning_text=("The user wants to know about the weather. Let me think"),
+            reasoning_text=reasoning,
             tool_calls=None,
             finish_reason="length",
         )
-        assert content == REASONING_CUTOFF_SENTINEL
+        _assert_is_rescue(content, reasoning)
 
     def test_harmony_analysis_only_opt_out(self, monkeypatch):
         monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
@@ -808,9 +1202,17 @@ def test_streaming_enabled_emits_sentinel_in_terminal_chunk(monkeypatch):
     assert terminal_events
     terminal = terminal_events[-1]
     delta = terminal["choices"][0].get("delta", {})
-    assert delta.get("content") == REASONING_CUTOFF_SENTINEL, (
-        f"enabled streaming: terminal chunk must carry sentinel; "
-        f"got {delta.get('content')!r}"
+    # R12-8: rescue is ``sentinel + tail``; the terminal chunk carries
+    # the full payload as a single SSE event (NOT split per token —
+    # see ``test_streaming_enabled_sentinel_is_single_event_not_per_token``).
+    terminal_content = delta.get("content")
+    assert terminal_content is not None, (
+        f"enabled streaming: terminal chunk must carry rescue payload; "
+        f"got {terminal_content!r}"
+    )
+    assert terminal_content.startswith(REASONING_CUTOFF_SENTINEL), (
+        f"enabled streaming: terminal chunk must open with the sentinel; "
+        f"got {terminal_content!r}"
     )
 
 
@@ -832,9 +1234,16 @@ def test_streaming_enabled_sentinel_is_single_event_not_per_token(monkeypatch):
             if d.get("content"):
                 sentinel_chunks.append(d["content"])
 
-    assert sentinel_chunks == [REASONING_CUTOFF_SENTINEL], (
-        f"sentinel must surface as exactly one final-chunk content "
-        f"delta carrying the literal sentinel string; got {sentinel_chunks!r}"
+    # R12-8: rescue is one chunk (not per-token), but its payload now
+    # carries ``sentinel + tail`` rather than the bare sentinel —
+    # ``len(sentinel_chunks) == 1`` is the invariant we pin here.
+    assert len(sentinel_chunks) == 1, (
+        f"rescue must surface as exactly ONE final-chunk content "
+        f"delta (single event, not per-token split); got {sentinel_chunks!r}"
+    )
+    assert sentinel_chunks[0].startswith(REASONING_CUTOFF_SENTINEL), (
+        f"the single rescue chunk must open with the literal sentinel "
+        f"prefix; got {sentinel_chunks[0]!r}"
     )
 
 
@@ -1118,10 +1527,20 @@ def test_chat_route_enabled_surfaces_sentinel_on_length_cut(monkeypatch):
         assert resp.status_code == 200, resp.text
         payload = resp.json()
         msg = payload["choices"][0]["message"]
-        assert msg.get("content") == REASONING_CUTOFF_SENTINEL, (
-            "enabled (env=1): chat non-stream must surface sentinel "
-            f"on length-cut mid-think; got content={msg.get('content')!r}"
+        content = msg.get("content")
+        assert content is not None and content.startswith(REASONING_CUTOFF_SENTINEL), (
+            "enabled (env=1): chat non-stream must surface rescue payload "
+            f"opening with the sentinel; got content={content!r}"
         )
+        # R12-8: rescue payload also embeds the reasoning tail so users
+        # see what the model was working on. The mock engine produces a
+        # short ``<think>`` body — verify the last chars are appended.
+        reasoning = msg.get("reasoning_content") or ""
+        if reasoning:
+            assert content.endswith(reasoning.rstrip()[-RESCUE_TAIL_LENGTH:]), (
+                f"R12-8: rescue must end with the reasoning tail; "
+                f"got content={content!r}, reasoning={reasoning!r}"
+            )
         assert payload["choices"][0]["finish_reason"] == "length"
     finally:
         reset_config()
@@ -1140,6 +1559,7 @@ def test_chat_route_default_env_surfaces_sentinel_regression_858(monkeypatch):
     end-to-end and asserts the envelope shape clients see.
     """
     monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+    monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -1165,14 +1585,15 @@ def test_chat_route_default_env_surfaces_sentinel_regression_858(monkeypatch):
         assert resp.status_code == 200, resp.text
         payload = resp.json()
         msg = payload["choices"][0]["message"]
-        assert msg.get("content") == REASONING_CUTOFF_SENTINEL, (
-            f"issue #858 e2e: default env must inject sentinel into "
-            f"message.content on length-cut mid-think; got "
-            f"content={msg.get('content')!r}"
+        content = msg.get("content")
+        assert content is not None and content.startswith(REASONING_CUTOFF_SENTINEL), (
+            f"issue #858 e2e: default env must inject rescue payload "
+            f"opening with the sentinel into message.content on length-cut "
+            f"mid-think; got content={content!r}"
         )
         assert payload["choices"][0]["finish_reason"] == "length"
         assert msg.get("reasoning_content"), (
-            "reasoning_content must remain populated alongside the sentinel"
+            "reasoning_content must remain populated alongside the rescue"
         )
     finally:
         reset_config()

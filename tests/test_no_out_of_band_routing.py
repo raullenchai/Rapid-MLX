@@ -256,21 +256,28 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_CORS_ALLOW_HEADERS",
         "RAPID_MLX_CORS_MAX_AGE",
         "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
-        # Cutoff sentinel opt-OUT (issue #858, restoring PR #802 /
-        # H-01 semantics after the R-01 (#815) opt-in flip caused
-        # empty-bubble regressions in GUI clients). Pure UX knob —
-        # default ON so clients that render only ``message.content``
+        # Reasoning-cutoff RESCUE opt-OUT (R12-8 / issue #259, the
+        # 8-round D-carry that extended PR #802 / #860 from a bare
+        # sentinel to ``sentinel + tail-of-reasoning``). Pure UX knob
+        # — default ON so clients that render only ``message.content``
         # see the literal cue ``[truncated — reasoning incomplete;
-        # raise max_tokens]`` on length-cut mid-think. Power callers
-        # that want the strict-null shape (relying on the structured
-        # ``finish_reason="length"`` / ``status="incomplete"`` /
-        # ``stop_reason="max_tokens"`` cue alone) opt out via
-        # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` (or
-        # ``0`` / ``false`` / ``no`` / ``off``). Never selects a
-        # model, parser, or routing tier; consumed only by
+        # raise max_tokens]`` PLUS the last ``RESCUE_TAIL_LENGTH``
+        # chars of the reasoning trace on length-cut mid-think. Power
+        # callers that want the strict-null shape (relying on the
+        # structured ``finish_reason="length"`` / ``status="incomplete"``
+        # / ``stop_reason="max_tokens"`` cue alone) opt out via
+        # ``RAPID_MLX_REASONING_RESCUE=off`` (or ``0`` / ``false`` /
+        # ``no`` / ``disabled``). Never selects a model, parser, or
+        # routing tier; consumed only by
         # ``vllm_mlx.service.helpers._cutoff_notice_enabled`` to decide
-        # whether the sentinel notice is surfaced. See PR
-        # fix/length-stop-rescue-stub-858.
+        # whether the rescue payload is surfaced. See PR
+        # fix/r12-8-reasoning-content-rescue.
+        "RAPID_MLX_REASONING_RESCUE",
+        # Legacy alias for the rescue opt-out (PR #802 / #860 / issue
+        # #858, pre-R12-8). Still honoured so existing rapid-desktop
+        # deployments and operator runbooks that already reference this
+        # name keep working without a rebuild. Identical semantics +
+        # call-site to ``RAPID_MLX_REASONING_RESCUE``.
         "RAPID_MLX_REASONING_CUTOFF_NOTICE",
         # F-K-CAPABILITIES-OMIT-AUDIO opt-in deep audio probe (boolean
         # flag). When set to a truthy value, the lifespan hook runs a
