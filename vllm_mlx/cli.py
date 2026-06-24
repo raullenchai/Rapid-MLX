@@ -1457,44 +1457,56 @@ def serve_command(args):
             "Reasoning parser auto-detection disabled via --no-reasoning-parser"
         )
 
-    # R12-S1: surface a startup warning when the user explicitly bound a
-    # ``deepseek_v3`` / ``deepseek_v31`` / ``deepseek_r1_0528`` parser to
-    # a model whose checkpoint cannot emit the V3 fenced-JSON wire shape
-    # (notably the R1-distill family, which is Qwen2-/Llama2-arch SFT).
-    # See Sven r12 dogfood HIGH-1: forcing ``--tool-call-parser
+    # R12-S1: surface a startup warning when ``args.tool_call_parser``
+    # is a ``deepseek_v3`` / ``deepseek_v31`` / ``deepseek_r1_0528``
+    # binding but the model can't emit the matching V3 fenced-JSON wire
+    # shape. See Sven r12 dogfood HIGH-1: forcing ``--tool-call-parser
     # deepseek_v3`` on ``DeepSeek-R1-Distill-Qwen-1.5B-4bit`` lands tool
     # calls with ``arguments="{}"`` because the parser correctly refuses
     # to parse the non-V3 prose the model emits.
     #
-    # Scope: ONLY explicit overrides (codex r5 follow-up via
-    # ``_user_explicit_tool_call_parser`` snapshot). Auto-detect
-    # mis-picks are a separate bug class — they belong in
-    # ``detect_model_config`` (whose regex still runs against the full
-    # path, so a parent dir like ``/models/DeepSeek-V3/qwen-model``
-    # would silently pick ``deepseek_v3``). Warning on those would be
-    # mis-targeted noise that doesn't help the user fix the root cause
-    # — the cli print would say "you bound the wrong parser" when the
-    # user bound nothing. Auto-detect regex tightening is tracked
-    # separately as future work; the warning here stays scoped to the
-    # case where the user's declared intent is the load-bearing
-    # signal we can actually surface.
-    if _user_explicit_tool_call_parser:
-        try:
-            from .model_auto_config import warn_misbound_deepseek_v3_parser
+    # Runs on BOTH explicit overrides AND auto-detected bindings,
+    # because ``detect_model_config`` still scans the full path — a
+    # parent dir like ``/models/DeepSeek-V3/qwen-model`` can fool
+    # auto-detect into ``deepseek_v3`` even though the tail model name
+    # is out-of-lineage (pr-validate codex r7 BLOCKING). The helper's
+    # canonical model-name classification catches that mis-pick that
+    # auto-detect missed. Whether the user explicitly bound the flag is
+    # tracked in ``_user_explicit_tool_call_parser`` and threaded into
+    # the warning so the operator can tell who to blame: a misbound
+    # flag (user error) vs. a fooled auto-detect (regex needs
+    # tightening — tracked as follow-up so this PR stays scoped).
+    try:
+        from .model_auto_config import warn_misbound_deepseek_v3_parser
 
-            misbind_warning = warn_misbound_deepseek_v3_parser(
-                args.model, args.tool_call_parser
-            )
-            if misbind_warning:
-                # ``logger.warning`` so the message lands in any
-                # structured log sink AND surfaces in the terminal at
-                # the default ``WARNING`` level (no stderr-print
-                # needed). ``stacklevel=2`` so log frameworks
-                # attribute the call site to the CLI entry rather
-                # than the helper module.
-                logger.warning(misbind_warning, stacklevel=2)
-        except Exception as e:  # noqa: BLE001
-            logger.debug(f"deepseek_v3 misbind check failed (non-fatal): {e}")
+        misbind_warning = warn_misbound_deepseek_v3_parser(
+            args.model, args.tool_call_parser
+        )
+        if misbind_warning:
+            # ``logger.warning`` so the message lands in any structured
+            # log sink AND surfaces in the terminal at the default
+            # ``WARNING`` level (no stderr-print needed).
+            # ``stacklevel=2`` so log frameworks attribute the call
+            # site to the CLI entry rather than the helper module.
+            logger.warning(misbind_warning, stacklevel=2)
+            if not _user_explicit_tool_call_parser:
+                # Auto-detect mis-pick. Emit a second WARNING line so
+                # the operator knows the user didn't bind anything —
+                # the ``detect_model_config`` regex was fooled by the
+                # path. Forces the user to add an explicit
+                # ``--tool-call-parser hermes`` (or similar) to recover
+                # tool-call capability, which is the actually-correct
+                # action for an out-of-lineage checkpoint.
+                logger.warning(
+                    "  ↳ This binding came from AUTO-DETECT, not an "
+                    "explicit --tool-call-parser flag. The "
+                    "detect_model_config() regex was fooled by the "
+                    "path. Override with --tool-call-parser hermes "
+                    "(or whatever your checkpoint actually emits) to "
+                    "recover tool-call capability."
+                )
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"deepseek_v3 misbind check failed (non-fatal): {e}")
 
     # Pass alias info to server (for /v1/models)
     server._model_alias = getattr(args, "_original_alias", None)
