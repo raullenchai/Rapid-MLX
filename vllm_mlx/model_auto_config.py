@@ -625,72 +625,102 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     return None
 
 
-# DeepSeek-V3 wire-shape parsers — they expect the
-# ``<｜tool▁calls▁begin｜>…function<｜tool▁sep｜>NAME\n``\`json\n{…}\n``\`…``
-# envelope emitted by the V3 chat template (R1-0528-Qwen3-8B, vanilla
-# V3-0324, V3.1). Models that did NOT inherit the V3 chat template
-# cannot honour this wire shape — most importantly the original
-# R1-distill family (DeepSeek-R1-Distill-Qwen-*, -Llama-*) which are
-# Qwen2 / Llama2-arch SFTs whose tokenizers do not carry the V3
-# fullwidth-pipe special tokens. Binding any of these parsers to such
-# a model produces ``arguments="{}"`` because the model emits prose
-# (or hallucinated wire-token glyphs) that the parser correctly
-# refuses to parse — the parser is working as designed.
+# DeepSeek V3-template wire-shape parsers, by the sub-family each one
+# OWNS. The V3 chat template and the V3.1 chat template emit DIFFERENT
+# tool-call bodies inside the same outer envelope:
 #
-# This set is the ground truth for the misbind warning below. Keep in
-# sync with the @ToolParserManager.register_module(...) aliases on
-# DeepSeekV3ToolParser and DeepSeekV31ToolParser.
-_DEEPSEEK_V3_FAMILY_PARSERS = frozenset(
-    {"deepseek_v3", "deepseek_r1_0528", "deepseek_v31"}
-)
+#   * ``deepseek_v3`` / ``deepseek_r1_0528`` (DeepSeekV3ToolParser):
+#       body = ``function<｜tool▁sep｜>NAME\n``\`json\n{…}\n``\```
+#       emitted by V3-line checkpoints whose ``chat_template.jinja`` is
+#       the V3 template — vanilla V3-0324, R1-0528 (R1 retrained on V3),
+#       and the forward-cover V4 / V5 family per the upstream V4 card.
+#
+#   * ``deepseek_v31`` (DeepSeekV31ToolParser):
+#       body = ``NAME<｜tool▁sep｜>{…json…}``
+#       emitted by V3.1-line checkpoints — DeepSeek-V3.1-0324 etc.
+#
+# The two parsers were intentionally split in PR #874 (R12-5) so each
+# one owns exactly one wire shape, removing the cross-shape blast radius
+# the unified V3.1 parser carried. Crossing the streams — binding
+# ``deepseek_v3`` to a V3.1 checkpoint, or ``deepseek_v31`` to a V3
+# checkpoint — IS the same class of silent-empty-args failure this
+# warning is meant to surface, even though both ends of the misbind sit
+# inside the V3-template lineage (codex round 1 follow-up). Track the
+# sub-family ownership explicitly so cross-family misbinds warn too.
+#
+# Keep in sync with the ``@ToolParserManager.register_module(...)``
+# aliases on the two parser classes.
+_DEEPSEEK_V3_BODY_PARSERS = frozenset({"deepseek_v3", "deepseek_r1_0528"})
+_DEEPSEEK_V31_BODY_PARSERS = frozenset({"deepseek_v31"})
+_DEEPSEEK_V3_FAMILY_PARSERS = _DEEPSEEK_V3_BODY_PARSERS | _DEEPSEEK_V31_BODY_PARSERS
 
 
-def _model_emits_deepseek_v3_wire(model_path: str) -> bool:
-    """True iff ``model_path`` names a checkpoint that inherits the V3
-    chat template (and therefore can emit the V3 fenced-JSON wire shape
-    a ``deepseek_v3``-family parser expects).
+def _deepseek_template_family(model_path: str) -> str | None:
+    """Identify which DeepSeek chat-template sub-family a checkpoint
+    belongs to, by name pattern.
 
-    Authoritative list (all matched case-insensitively as substrings of
-    the HF path / alias name):
-      * DeepSeek-V3 / V3.1 / V3.x       — vanilla V3-line checkpoints
-      * DeepSeek-R1-0528                — R1 retrained on the V3 template
-      * DeepSeek-V4 / V5 (forward-cover) — same V3 template lineage
-        per the upstream V4 model card
+    Returns one of:
+      * ``"v3"``     — V3 chat template (vanilla V3, R1-0528, V4, V5)
+                       → emits the V3 fenced-JSON body shape
+      * ``"v31"``    — V3.1 chat template (DeepSeek-V3.1-*)
+                       → emits the V3.1 plain-JSON body shape
+      * ``None``     — not a V3-template checkpoint (R1-Distill family,
+                       V2.x, Qwen2/Llama-arch SFTs, unknowns).
 
-    The original R1 distill family (``DeepSeek-R1-Distill-Qwen-*``,
-    ``-Llama-*``) is EXCLUDED — those are SFTs on Qwen2 / Llama2 base
-    tokenizers that do not carry the V3 special tokens. Same for the
-    legacy V2.x line (predates the V3 template).
+    The R1-distill family (``DeepSeek-R1-Distill-Qwen-*``,
+    ``-Llama-*``) is EXCLUDED from both V3 sub-families because those
+    are SFTs on Qwen2 / Llama2 base tokenizers that do not carry the V3
+    fullwidth-pipe special tokens, and binding either V3-family parser
+    to them lands ``arguments="{}"`` (Sven r12 HIGH-1).
     """
     s = model_path.lower()
-    # R1-Distill family is V2 / Qwen2-arch, NOT V3. Explicit reject.
+    # R1-Distill family is V2 / Qwen2-arch, NOT V3. Explicit reject for
+    # BOTH sub-families.
     if "distill" in s:
-        return False
-    # V3 / V3.1 / V3.x — vanilla
-    if re.search(r"deepseek[-_/]*v3(?:\.\d+)?", s):
-        return True
+        return None
+    # V3.1 — distinct chat template, ordered BEFORE the bare V3 check
+    # so the more specific pattern wins (V3.1 contains "v3" as a
+    # substring after the dot is stripped by the loose regex).
+    if re.search(r"deepseek[-_/]*v3\.\d", s):
+        return "v31"
+    # V3 vanilla — V3-0324 etc.
+    if re.search(r"deepseek[-_/]*v3(?![._\d])", s):
+        return "v3"
     # R1-0528 — the R1 retrain on the V3 chat template.
     if re.search(r"deepseek.*r1[-_]?0528", s):
-        return True
+        return "v3"
     # Forward-cover V4 / V5 (per upstream V4 card both inherit the V3
     # template; cheap to include and avoids a future regression when a
     # user serves a V4 checkpoint with ``--tool-call-parser deepseek_v3``).
     if re.search(r"deepseek[-_/]*v[45]", s):
-        return True
-    return False
+        return "v3"
+    return None
 
 
 def warn_misbound_deepseek_v3_parser(
     model_path: str, tool_call_parser: str | None
 ) -> str | None:
-    """If the user explicitly bound a deepseek_v3-family parser to a
-    model that cannot emit the V3 wire shape, return a single-line
-    warning string. Return ``None`` for the in-spec cases (no warning).
+    """If the user explicitly bound a DeepSeek V3-template-family parser
+    to a model that cannot emit the matching wire shape, return a
+    single-line warning string. Return ``None`` for in-spec cases.
+
+    Two failure classes are covered:
+      1. **Out-of-lineage** — V3-family parser bound to a model that
+         isn't a V3-template checkpoint at all (R1-Distill, V2.x,
+         Qwen/Llama-arch SFTs). Emits the V2-style envelope or prose;
+         the V3-family parser refuses → ``arguments="{}"``. This is the
+         Sven r12 HIGH-1 case.
+      2. **Cross-sub-family** — V3 parser bound to a V3.1 checkpoint, or
+         V3.1 parser bound to a V3-line checkpoint. Both ends sit inside
+         the V3-template lineage so the outer envelope matches, but the
+         per-block body shape differs (V3 wraps the args in a fenced
+         JSON code block, V3.1 emits raw ``NAME<sep>{json}``). The
+         parser whose body regex doesn't match drops the block silently
+         → same empty-args failure (codex r1 P2 on this PR).
 
     Caller (cli.py / serve entrypoint) decides whether to logger.warning
     or stderr.print; this helper is pure so the boundary is unit-
-    testable without an active logger and a clean stderr to assert
-    against.
+    testable without an active logger.
 
     Why warn instead of reject: the parser-flag override is the user's
     declared intent. The historical D-DSV31 hotfix exists *because* a
@@ -702,17 +732,45 @@ def warn_misbound_deepseek_v3_parser(
     """
     if tool_call_parser not in _DEEPSEEK_V3_FAMILY_PARSERS:
         return None
-    if _model_emits_deepseek_v3_wire(model_path):
+    template = _deepseek_template_family(model_path)
+    # In-spec cases — parser matches the model's chat-template sub-family.
+    if tool_call_parser in _DEEPSEEK_V3_BODY_PARSERS and template == "v3":
         return None
+    if tool_call_parser in _DEEPSEEK_V31_BODY_PARSERS and template == "v31":
+        return None
+
     # Suggest the auto-detected parser if one would have applied — that's
-    # the most actionable nudge for the typical user who picked the V3
-    # parser by mistake.
+    # the most actionable nudge for the typical user who picked the wrong
+    # parser by mistake. Critically, this also lights up the
+    # cross-sub-family case: ``deepseek_v31`` parser on R1-0528 will see
+    # auto suggest ``deepseek_v3`` here, which is the correct fix.
     auto = detect_model_config(model_path)
     suggestion = (
         f" Auto-detect would pick '{auto.tool_call_parser}' for this model."
         if auto is not None and auto.tool_call_parser
         else ""
     )
+
+    # Tailor the diagnosis to the failure class so the message is
+    # actionable instead of generic.
+    if template in {"v3", "v31"}:
+        # Cross-sub-family inside the V3 template lineage.
+        expected_body = (
+            "`NAME<｜tool▁sep｜>{…json…}`"
+            if template == "v31"
+            else "`function<｜tool▁sep｜>NAME\\n```json\\n{…}\\n````"
+        )
+        return (
+            f"--tool-call-parser={tool_call_parser!r} is bound to "
+            f"{model_path!r}, which inherits the DeepSeek-V3.{('1' if template == 'v31' else '0')}"
+            f" chat template (body shape {expected_body}). The bound "
+            "parser expects a DIFFERENT body shape — tool-call blocks "
+            f"will be dropped and arguments will be empty.{suggestion} "
+            "Drop the explicit --tool-call-parser flag to let "
+            "auto-detect pick the matching V3-family parser."
+        )
+
+    # Out-of-lineage (Sven r12 HIGH-1 case).
     return (
         f"--tool-call-parser={tool_call_parser!r} is bound to "
         f"{model_path!r}, which is NOT a DeepSeek-V3 chat-template "

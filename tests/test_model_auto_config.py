@@ -883,9 +883,10 @@ class TestWarnMisboundDeepseekV3Parser:
             is None
         )
 
-    # In-spec: V3 / V3.1 / R1-0528 / V4 / V5 checkpoints DO emit the V3
-    # wire shape, so a deepseek_v3-family parser binding is legitimate.
-    # No warning.
+    # In-spec: V3-line checkpoints (V3 / R1-0528 / V4 / V5) emit the V3
+    # fenced-JSON body, matched by deepseek_v3 / deepseek_r1_0528.
+    # V3.1-line checkpoints emit the V3.1 plain-JSON body, matched by
+    # deepseek_v31. Matching combos warn nothing.
     @pytest.mark.parametrize(
         "model_path,parser",
         [
@@ -895,14 +896,47 @@ class TestWarnMisboundDeepseekV3Parser:
             ("mlx-community/DeepSeek-V3-0324-4bit", "deepseek_v3"),
             ("deepseek-ai/DeepSeek-V3.1-0324", "deepseek_v31"),
             ("mlx-community/DeepSeek-V3.1-MLX-4bit", "deepseek_v31"),
-            # Forward-cover V4 / V5 — same V3 template lineage. The
-            # helper should accept these without warning.
+            # Forward-cover V4 / V5 — V3 template lineage per upstream
+            # V4 card. The helper should accept these without warning.
             ("deepseek-ai/DeepSeek-V4", "deepseek_v3"),
             ("mlx-community/DeepSeek-V5-MLX-4bit", "deepseek_v3"),
         ],
     )
-    def test_no_warn_for_real_v3_shape_models(self, model_path, parser):
+    def test_no_warn_for_matching_sub_family(self, model_path, parser):
         assert warn_misbound_deepseek_v3_parser(model_path, parser) is None
+
+    # Cross-sub-family misbind (codex r1 P2): V3.1 model + V3 parser, or
+    # V3 model + V3.1 parser. Both ends sit inside the V3 template
+    # lineage so the outer envelope matches, but the per-block body
+    # shapes are incompatible — same empty-args failure as the
+    # out-of-lineage case. The warning MUST fire here too.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            # V3.1 model + V3 body parser → blocks dropped, empty args.
+            ("deepseek-ai/DeepSeek-V3.1-0324", "deepseek_v3"),
+            ("mlx-community/DeepSeek-V3.1-MLX-4bit", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V3.1-0324", "deepseek_r1_0528"),
+            # V3-line model + V3.1 body parser → same.
+            ("mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit", "deepseek_v31"),
+            ("deepseek-ai/DeepSeek-V3-0324", "deepseek_v31"),
+            ("deepseek-ai/DeepSeek-V4", "deepseek_v31"),
+        ],
+    )
+    def test_warn_on_cross_sub_family_misbind(self, model_path, parser):
+        msg = warn_misbound_deepseek_v3_parser(model_path, parser)
+        assert msg is not None, (
+            f"cross-sub-family misbind {parser} on {model_path} must warn"
+        )
+        # Must name the offending flag, the model, and reference the
+        # body-shape mismatch so the user knows it's not the same as the
+        # out-of-lineage case.
+        assert parser in msg
+        assert model_path in msg
+        # Cross-sub-family messages mention the chat-template family
+        # (V3.0 or V3.1) rather than the generic "non-V3" framing used
+        # by the out-of-lineage warning.
+        assert ("V3.0" in msg) or ("V3.1" in msg)
 
     # The Sven HIGH-1 repro: forcing deepseek_v3 on an R1-Distill (Qwen2
     # arch) MUST surface a warning. Covers every common distill flavour
