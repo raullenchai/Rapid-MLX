@@ -1405,6 +1405,17 @@ async def _stream_responses(
         # parity gap.
         accumulated_reasoning_text = ""
 
+        # R11-B codex r7 BLOCKING: track an explicit "reasoning closed"
+        # signal — set only when the parser/router emits a TRUE content
+        # channel chunk (NOT reasoning-cap overflow reclassified into
+        # content via ``_account_for_reasoning``). Pre-fix the mid-think
+        # gate derived this from ``accumulated_text``, but overflow
+        # bytes ALSO land in ``accumulated_text``, so a mid-think
+        # length cutoff after a reasoning-cap overflow could be
+        # misclassified as a downstream-output completion. This flag
+        # plus ``tool_calls`` is the precise signal.
+        reasoning_block_closed = False
+
         # Lazy message-item state. We do NOT emit the message
         # output_item.added until we have actual user-facing text to stream
         # — a turn that is pure tool_calls should not emit a phantom empty
@@ -1669,6 +1680,14 @@ async def _stream_responses(
                 if output_channel in ("content", "tool_call", "reasoning"):
                     accumulated_raw_parts.append(delta_text)
                 if output_channel in ("content", "tool_call"):
+                    # R11-B codex r7 BLOCKING: any TRUE content/tool
+                    # channel chunk proves the model left the
+                    # ``<think>`` block — this is the precise signal
+                    # the mid-think gate needs (NOT
+                    # ``accumulated_text`` which can include reasoning
+                    # overflow reclassified via _account_for_reasoning
+                    # below).
+                    reasoning_block_closed = True
                     content = strip_special_tokens(delta_text)
                     if content:
                         filtered = tool_filter.process(content)
@@ -1758,6 +1777,20 @@ async def _stream_responses(
                     _reasoning_close_injected = True
                 if delta_msg is None:
                     continue
+                # R11-B codex r7 BLOCKING: latch the close signal from
+                # the PARSER'S OWN content output (i.e. ``delta_msg.content``
+                # populated by ``extract_reasoning_streaming`` BEFORE any
+                # cap-overflow promotion below). When the parser emits
+                # content, the model has formally left ``<think>`` —
+                # exactly the signal the mid-think gate needs.
+                # Reasoning-cap overflow that the route REPACKAGES as
+                # content (lines 1859/1867) is NOT this signal; that's
+                # routed through ``_emit_text_delta`` and lands in
+                # ``accumulated_text``, but the parser may still be
+                # mid-think (overflow only flips on successful
+                # ``</think>`` injection).
+                if delta_msg.content:
+                    reasoning_block_closed = True
                 if delta_msg.reasoning:
                     # Account for reasoning bytes against the per-request
                     # cap. Overflow is whatever crossed the budget mid-
@@ -1872,6 +1905,10 @@ async def _stream_responses(
             pieces = think_router.process(filtered)
             for block_type, piece in pieces:
                 if block_type == "text" and piece:
+                    # R11-B codex r7 BLOCKING: think_router routes
+                    # post-``</think>`` bytes to the "text" block —
+                    # that's the close signal for this path.
+                    reasoning_block_closed = True
                     async for ev in _emit_text_delta(piece):
                         yield ev
                 elif block_type == "thinking" and piece:
@@ -1890,6 +1927,8 @@ async def _stream_responses(
             else:
                 for block_type, piece in think_router.process(remaining):
                     if block_type == "text" and piece:
+                        # R11-B codex r7 BLOCKING: see in-loop branch.
+                        reasoning_block_closed = True
                         async for ev in _emit_text_delta(piece):
                             yield ev
                     elif block_type == "thinking" and piece:
@@ -1901,6 +1940,8 @@ async def _stream_responses(
         if not reasoning_parser:
             for block_type, piece in think_router.flush():
                 if block_type == "text" and piece:
+                    # R11-B codex r7 BLOCKING: see in-loop branch.
+                    reasoning_block_closed = True
                     async for ev in _emit_text_delta(piece):
                         yield ev
                 elif block_type == "thinking" and piece:
@@ -2220,24 +2261,21 @@ async def _stream_responses(
         if accumulated_reasoning_text:
             reasoning_output_index = len(completed_output)
             reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
-            # R11-B codex r5 BLOCKING: scope reasoning ``status`` to
-            # "cut off mid-think" — NOT every ``finish_reason=length``.
-            # Mirror the non-stream gating in
-            # ``openai_to_responses`` (responses_adapter.py L487):
-            # reasoning stays ``completed`` whenever ANY downstream
-            # output landed after the ``<think>`` block, because the
-            # model already CLOSED ``</think>`` to get there. The
-            # r2 fix only checked ``accumulated_text`` — that missed
-            # the tool-call-only case (closed ``</think>`` then
-            # function_call emit, ``finish_reason=length`` on the
-            # tool args). In that shape ``accumulated_text`` is
-            # empty but reasoning IS completed; we must check
-            # ``tool_calls`` too. Any of the three downstream
-            # signals (text body, structured tool_calls, or open
-            # message item) proves the parser closed reasoning.
-            downstream_output_seen = bool(
-                (accumulated_text or "").strip() or tool_calls or message_open
-            )
+            # R11-B codex r7 BLOCKING: ``reasoning_block_closed`` is
+            # the precise signal — set ONLY when the parser/router
+            # emitted a TRUE content/tool channel chunk. We can't use
+            # ``accumulated_text`` here because reasoning-cap overflow
+            # bytes also land in ``accumulated_text`` via
+            # ``_emit_text_delta``, but the parser may still be
+            # logically mid-think (overflow only promotes after a
+            # successful ``</think>`` flip). The previous r5 gate
+            # (``accumulated_text or tool_calls or message_open``)
+            # therefore mis-classified a mid-think length cutoff
+            # AFTER a reasoning-cap overflow as a clean completion.
+            # ``reasoning_block_closed`` is true whenever the
+            # parser's OWN content/text channel emitted; tool_calls
+            # is the orthogonal "closed-then-tool-emit" signal.
+            downstream_output_seen = bool(reasoning_block_closed or tool_calls)
             mid_think_cutoff = (
                 last_finish_reason == "length" and not downstream_output_seen
             )
@@ -2474,9 +2512,16 @@ async def _stream_responses(
         # ``_account_for_reasoning`` 4-char heuristic used elsewhere on
         # this surface). Min-clamp to 1 when reasoning text exists so
         # consumers see a non-zero credit on extremely short reasoning.
+        # R11-B codex r7 NIT: also cap to ``completion_tokens`` so
+        # ``reasoning_tokens`` can never exceed total ``output_tokens``
+        # — a stubbed-short engine (or a model that emits one literal
+        # token of long reasoning text) could otherwise report
+        # ``reasoning_tokens > output_tokens`` and break SDK arithmetic.
         reasoning_token_credit = 0
         if accumulated_reasoning_text:
             reasoning_token_credit = max(1, len(accumulated_reasoning_text) // 4)
+            if completion_tokens:
+                reasoning_token_credit = min(reasoning_token_credit, completion_tokens)
         usage_payload = {
             "input_tokens": prompt_tokens,
             "output_tokens": completion_tokens,
