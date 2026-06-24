@@ -234,6 +234,37 @@ class TestNonStreamingPromotion:
         assert "<tool_call>" in content
         assert "Done thinking." not in content
 
+    def test_unclosed_pretty_printed_json_not_truncated_at_value_line(self, parser):
+        """Codex round-4 finding #8: an unclosed multi-line JSON
+        ``<tool_call>`` body where some inner lines are pretty-printed
+        JSON values (no ``<``, ``{`` or ``}`` on the line) must NOT
+        be truncated by the prose-boundary heuristic. The heuristic
+        is JSON-aware: while ``{…}`` brace depth is > 0 every line is
+        body, not prose. Pre-fix, the inner ``"name": "get_weather",``
+        line would have been treated as prose and the promoted block
+        would have collapsed to just ``<tool_call>\\n{`` leaving the
+        rest of the JSON in reasoning."""
+        output = (
+            "<think>Calling.\n"
+            "<tool_call>\n"
+            "{\n"
+            '  "name": "get_weather",\n'
+            '  "arguments": {\n'
+            '    "city": "Tokyo",\n'
+            '    "units": "metric"\n'
+            "  }\n"
+            "</think>"
+        )
+        reasoning, content = parser.extract_reasoning(output)
+        assert content is not None
+        # The full JSON body must survive in content, not get split
+        # at the ``"name": "get_weather",`` line.
+        assert '"name": "get_weather"' in content
+        assert '"city": "Tokyo"' in content
+        assert '"units": "metric"' in content
+        # Reasoning must still contain the pre-call prose.
+        assert "Calling." in (reasoning or "")
+
 
 # ── Streaming promotion ─────────────────────────────────────────────
 
@@ -321,6 +352,86 @@ class TestStreamingPromotion:
         assert "<tool_call>" in final.content
         # Exactly one occurrence — no duplication.
         assert final.content.count("<tool_call>") == 1
+
+    def test_stream_finalize_dedup_keeps_earlier_completed_tool_call(self):
+        """Codex round-4 BLOCKING finding #7: the dedup substring
+        strip must use trailing-position match, not first-occurrence
+        ``replace``. With an earlier COMPLETED ``<tool_call>`` block
+        sharing the same prefix as the trailing in-progress buffered
+        call, a naive ``replace(span, '', 1)`` could remove or
+        corrupt the EARLIER block instead of stripping the
+        duplicated trailing buffered span. The fix uses ``rfind``
+        and only strips when the match is at the END (modulo
+        trailing whitespace)."""
+        cls = get_parser("qwen3")
+        p = cls()
+        p.reset_state()
+        # Two tool_call blocks: first is COMPLETED (with content),
+        # second is in-progress (will be buffered at stream end and
+        # flushed by finalize). They share the same opener prefix.
+        text = (
+            "<think>\n"
+            "<tool_call>\n"
+            "<function=a><parameter=x>1</parameter></function>\n"
+            "</tool_call>\n"
+            "<tool_call>\n"
+            "<function=b><parameter=y>2</parameter></function>\n"
+        )
+        accumulated = ""
+        for ch in [text]:
+            previous = accumulated
+            accumulated += ch
+            p.extract_reasoning_streaming(previous, accumulated, ch)
+        final = finalize_streaming_compat(
+            p, accumulated, finish_reason=None, matched_stop=None
+        )
+        assert final is not None
+        assert final.content is not None
+        # Both completed-and-in-progress calls must appear in content
+        # — the first must NOT have been mistakenly stripped by the
+        # dedup logic.
+        assert "<function=a>" in final.content
+        assert "<function=b>" in final.content
+        # Each opener appears exactly twice (one per call), not three
+        # times (would indicate duplication) or once (would indicate
+        # the first was clobbered).
+        assert final.content.count("<tool_call>") == 2
+
+    def test_deepseek_threshold_crossing_with_buffered_tool_call(self):
+        """Codex round-4 BLOCKING finding #1: the DeepSeek no-tag
+        threshold path emits ``DeltaMessage(content=delta_text)``
+        once the stream crosses ``NO_TAG_CONTENT_THRESHOLD``. If a
+        structural ``<tool_call>`` opened the buffer while still
+        under the threshold (the parser routed under-threshold
+        bytes to reasoning), the buffered prefix must be flushed
+        with the threshold-crossing delta — otherwise the bytes
+        are stranded and never reach the wire."""
+        cls = get_parser("deepseek_r1")
+        p = cls()
+        p.reset_state()
+        # Open a tool_call buffer with reasoning bytes (under threshold).
+        under_threshold = "<tool_call>\n<func"
+        accumulated = ""
+        previous = accumulated
+        accumulated += under_threshold
+        p.extract_reasoning_streaming(previous, accumulated, under_threshold)
+        # Now push past NO_TAG_CONTENT_THRESHOLD (64) so the
+        # next delta hits the threshold-crossing branch.
+        crossing = "tion=f><parameter=x>1</parameter></function>"
+        crossing_pad = "x" * (max(0, 65 - len(accumulated + crossing)))
+        crossing_full = crossing + crossing_pad
+        previous = accumulated
+        accumulated += crossing_full
+        result = p.extract_reasoning_streaming(previous, accumulated, crossing_full)
+        # The buffered ``<tool_call>\n<func`` prefix must be present
+        # in the emitted content — not silently dropped from the
+        # wire by the threshold-crossing early-return.
+        assert result is not None
+        content_seen = result.content or ""
+        # Buffer should have been flushed: the under-threshold
+        # ``<tool_call>`` opener bytes appear in content.
+        assert "<tool_call>" in content_seen
+        assert "<function=f>" in content_seen
 
     def test_stream_multiple_tool_calls(self, parser):
         text = (
