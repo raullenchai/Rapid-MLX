@@ -95,12 +95,22 @@ _FINAL_SANITIZER = re.compile(
 #: Reasoning-channel sanitizer — strips ``<think>`` opener + closer
 #: BOTH. Distinct from ``_FINAL_SANITIZER`` (which leaves the opener
 #: alone so legit Nemotron prefix injection and literal-tag prose
-#: survive). This regex is applied ONLY to bytes destined for the
-#: reasoning channel (``reasoning_content`` field, Anthropic
-#: ``thinking`` content block, ``/v1/responses`` reasoning item) and to
-#: the rescue-tail copy of the reasoning trace that surfaces in
-#: ``content``. In those contexts the ``<think>`` opener is structural
-#: parser artifact, never legit user-visible text.
+#: survive). Current consumers (R12-M1b):
+#:
+#: * the Anthropic ``thinking`` content block (via
+#:   ``_thinking_block_content`` in ``api.anthropic_adapter``)
+#: * the rescue-tail copy of the reasoning trace that surfaces in
+#:   ``content`` (via ``_build_reasoning_rescue_payload`` in
+#:   ``service.helpers``)
+#:
+#: OpenAI ``message.reasoning_content`` and ``/v1/responses`` reasoning
+#: items intentionally DO NOT route through this regex in this PR; if
+#: the same ``<think>`` opener leakage is observed on those surfaces,
+#: wire the helper through ``strip_reasoning_channel_markup`` at the
+#: matching emit site rather than expanding the regex itself. In every
+#: reasoning-channel context the ``<think>`` opener is a structural
+#: parser artifact, never legit user-visible text — so the channel-
+#: aware strip is always safe where it is wired in.
 _REASONING_CHANNEL_TAG_RE = re.compile(r"</?think>")
 
 
