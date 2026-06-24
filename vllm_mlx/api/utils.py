@@ -54,6 +54,25 @@ def strip_special_tokens(text: str) -> str:
 # - All <|..|> symmetric tokens (Qwen, GPT-OSS style)
 # - [Calling tool:...] text-format tool calls
 # - Stray </think>, </tool_call>, etc.
+#
+# IMPORTANT — what is NOT stripped here:
+# The bare ``<think>`` OPENER is intentionally NOT in this regex. The
+# streaming postprocessor legitimately prepends ``<think>`` to the first
+# content chunk on Nemotron-family models, and the standard / chat path
+# routes that chunk through ``sanitize_output`` — stripping the opener
+# here would erase the prefix injection (broke
+# ``TestStreamingPostProcessorNemotron::test_thinking_prefix_injected``
+# during the R12-M1b first pass). Models that legitimately mention the
+# literal ``<think>`` tag in prose (e.g. "use the <think> tag in HTML")
+# must also pass through unchanged.
+#
+# Reasoning-channel leaks of the opener (Mira r12 R-3 bonus regression:
+# ``reasoning_text="<think>"`` at ``max_tokens=1`` because the prompt
+# template's pre-injected opener was the only token the parser saw) are
+# handled at the REASONING-channel layer instead — see
+# ``api.anthropic_adapter._thinking_block_content`` and
+# ``service.helpers._build_reasoning_rescue_payload``, both of which
+# call the dedicated ``strip_reasoning_channel_markup`` helper below.
 # =============================================================================
 
 _FINAL_SANITIZER = re.compile(
@@ -71,6 +90,47 @@ _FINAL_SANITIZER = re.compile(
     r"|</think>|</tool_call>",
     re.DOTALL,
 )
+
+
+#: Reasoning-channel sanitizer — strips ``<think>`` opener + closer
+#: BOTH. Distinct from ``_FINAL_SANITIZER`` (which leaves the opener
+#: alone so legit Nemotron prefix injection and literal-tag prose
+#: survive). This regex is applied ONLY to bytes destined for the
+#: reasoning channel (``reasoning_content`` field, Anthropic
+#: ``thinking`` content block, ``/v1/responses`` reasoning item) and to
+#: the rescue-tail copy of the reasoning trace that surfaces in
+#: ``content``. In those contexts the ``<think>`` opener is structural
+#: parser artifact, never legit user-visible text.
+_REASONING_CHANNEL_TAG_RE = re.compile(r"</?think>")
+
+
+def strip_reasoning_channel_markup(text: str) -> str:
+    """Strip ``<think>`` / ``</think>`` tags that the reasoning parser
+    may have left in the reasoning channel.
+
+    Used by surfaces that emit reasoning content as a discrete field
+    (Anthropic ``thinking`` block, ``/v1/responses`` reasoning item,
+    OpenAI ``reasoning_content``) and by ``_build_reasoning_rescue_payload``
+    which surfaces a tail of the reasoning trace into ``content``.
+
+    Why this isn't in ``sanitize_output``: the canonical sanitizer is
+    applied to ``content``-channel bytes too, where the bare ``<think>``
+    opener is sometimes legitimate (Nemotron prefix injection, literal-
+    tag prose). Splitting the strip rule by channel keeps both
+    invariants intact:
+
+    * ``content`` channel — opener passes through, closer is stripped
+      (existing pre-R12-M1b behaviour, no regression risk).
+    * ``reasoning_content`` / ``thinking`` channel — both opener and
+      closer are stripped, because the channel itself MEANS "this is
+      the model's thought trace" so wrapping tags are redundant /
+      structural noise.
+
+    Empty / None input returns the input unchanged.
+    """
+    if not text:
+        return text
+    return _REASONING_CHANNEL_TAG_RE.sub("", text)
 
 
 def sanitize_output(text: str) -> str:

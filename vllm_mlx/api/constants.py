@@ -20,6 +20,16 @@ environments depend on this.
 #: existing callers (route helpers + their tests) need not change.
 REASONING_CUTOFF_SENTINEL = "[truncated — reasoning incomplete; raise max_tokens]"
 
+#: R12-8 rescue tail length — how many trailing characters of
+#: ``reasoning_content`` get copied into ``content`` after the sentinel
+#: prefix when ``_build_reasoning_rescue_payload`` fires. Lives in
+#: ``api.constants`` so the Anthropic adapter (also lower-layer) can
+#: trim the matching suffix from the ``thinking`` content block without
+#: importing ``service.helpers`` (which would invert the layering rule).
+#: ``service.helpers`` re-exports this as the public symbol so existing
+#: callers (route helpers + tests) need not change.
+RESCUE_TAIL_LENGTH = 200
+
 
 def is_rescue_payload(content: str | None) -> bool:
     """Return True iff ``content`` is a rescue payload produced by

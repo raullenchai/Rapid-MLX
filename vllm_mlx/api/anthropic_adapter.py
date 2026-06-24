@@ -23,6 +23,10 @@ from .anthropic_models import (
     AnthropicToolDef,
     AnthropicUsage,
 )
+from .constants import (
+    RESCUE_TAIL_LENGTH,
+    is_rescue_payload,
+)
 from .models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -31,6 +35,7 @@ from .models import (
     ResponseFormatJsonSchema,
     ToolDefinition,
 )
+from .utils import sanitize_output, strip_reasoning_channel_markup
 
 # F9: Anthropic's public spec uses ``id="toolu_<hex>"`` on every
 # ``tool_use`` block (and every matching ``tool_result.tool_use_id``).
@@ -233,6 +238,98 @@ def _resolve_reasoning_max_tokens(request: AnthropicRequest) -> int | None:
     return None
 
 
+def _sanitize_reasoning_channel(text: str | None) -> str | None:
+    """Run the reasoning-channel two-stage sanitizer on ``text``.
+
+    Stage 1 — :func:`strip_reasoning_channel_markup` strips the
+    ``<think>`` opener + closer (the canonical reasoning-channel
+    parser artifact that the catch-all :func:`sanitize_output`
+    intentionally leaves alone — see ``api.utils`` docstring).
+
+    Stage 2 — :func:`sanitize_output` strips the rest of the special-
+    token catch-all (``<|im_end|>``, harmony channel markers,
+    ``</tool_call>``, …).
+
+    Returns ``None`` when the result is empty / whitespace-only so the
+    caller can suppress the surrounding channel emission.
+    """
+    if not text:
+        return None
+    stripped = strip_reasoning_channel_markup(text)
+    sanitized = sanitize_output(stripped)
+    if not sanitized or not sanitized.strip():
+        return None
+    return sanitized
+
+
+def _thinking_block_content(
+    reasoning_text: str | None,
+    text: str | None,
+) -> str | None:
+    """Compute the body of the Anthropic ``thinking`` content block.
+
+    Two systematic invariants on top of the raw ``reasoning_text``:
+
+    1. **Sanitization (R12-M1b fix #1)** — strips the ``<think>`` /
+       ``</think>`` tags that the reasoning parser may have left in
+       the trace, then runs the canonical :func:`sanitize_output` for
+       the rest of the special-token catch-all. Mira r12 R-3 bonus
+       regression: at ``max_tokens=1`` on a thinking model, the prompt
+       template's pre-injected ``<think>`` is the only token seen by
+       the parser and it ended up as the literal ``thinking`` block
+       content; routing through the channel-aware sanitizer closes
+       that without disturbing the ``content`` channel (where the
+       opener can be legit Nemotron prefix injection or literal-tag
+       prose).
+
+    2. **Rescue-tail dedupe (R12-M1b fix #2)** — when ``content``
+       carries the R12-8 / H-01 rescue payload
+       (``sentinel + "\\n\\n" + tail-of-reasoning``), the LAST
+       ``RESCUE_TAIL_LENGTH`` chars of the reasoning trace have already
+       been published to the user via the ``text`` block. Re-emitting
+       the same slice as the suffix of the ``thinking`` block makes
+       the same partial sentence render twice (Mira r12 R-3 dupe arm).
+       Trim that suffix off the ``thinking`` body so each byte of the
+       reasoning trace surfaces on EXACTLY one Anthropic content block.
+
+       The full original ``reasoning_content`` is unchanged on the
+       OpenAI-side ``AssistantMessage`` field (the Anthropic envelope
+       does not surface it, but the OpenAI-side response — which the
+       adapter is being called on — keeps the full trace for
+       cross-route observability). PR #802's intentional design
+       (rescue surfaces to Anthropic) is preserved: the sentinel +
+       tail remain in the ``text`` block; only the duplication is
+       fixed.
+
+    Returns ``None`` when sanitization + trimming leave nothing —
+    callers MUST treat ``None`` as "do not emit a thinking block",
+    matching the existing whitespace-only guard.
+    """
+    if not reasoning_text:
+        return None
+    # Dedupe rescue tail FIRST so the trim works on the raw
+    # reasoning_text bytes (matching the same slice boundary the
+    # rescue helper used in ``_build_reasoning_rescue_payload``).
+    # ``_build_reasoning_rescue_payload`` does
+    # ``reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]`` then sanitizes
+    # — so we trim the same suffix on the rstripped reasoning and
+    # sanitize the prefix that remains.
+    if is_rescue_payload(text):
+        stripped = reasoning_text.rstrip()
+        prefix = (
+            stripped[:-RESCUE_TAIL_LENGTH] if len(stripped) > RESCUE_TAIL_LENGTH else ""
+        )
+        if not prefix:
+            # Entire reasoning trace already surfaces in the rescue
+            # ``text`` block — suppress the ``thinking`` block so the
+            # tail is not duplicated. The text block alone carries the
+            # truncated reasoning excerpt; clients still see the full
+            # structural truncation signal via ``stop_reason="max_tokens"``.
+            return None
+        return _sanitize_reasoning_channel(prefix)
+    return _sanitize_reasoning_channel(reasoning_text)
+
+
 def openai_to_anthropic(
     response: ChatCompletionResponse,
     model: str,
@@ -303,11 +400,21 @@ def openai_to_anthropic(
         # Codex r1 NIT on PR #705.
         reasoning_text = choice.message.reasoning_content
         text = choice.message.content
+        # R12-M1b: route the thinking block content through the
+        # canonical sanitizer + rescue-tail dedupe helper. This:
+        #   * strips ``<think>`` / ``</think>`` / ``<|...|>`` leaks
+        #     that the reasoning parser may have left in the trace
+        #     (Mira r12 R-3 ``<think>`` literal at ``max_tokens=1``)
+        #   * trims the trailing slice that already surfaces in the
+        #     rescue ``text`` block, so the same partial sentence is
+        #     never rendered on BOTH content blocks (Mira r12 R-3
+        #     duped-rescue-tail arm)
+        # Returns ``None`` when sanitization + trimming leave nothing,
+        # which signals "do not emit a thinking block" (same shape as
+        # the previous whitespace-only guard).
+        thinking_body = _thinking_block_content(reasoning_text, text)
         emit_thinking = (
-            reasoning_enabled
-            and bool(reasoning_text)
-            and reasoning_text.strip() != ""
-            and reasoning_text != text
+            reasoning_enabled and thinking_body is not None and reasoning_text != text
         )
         # Add thinking block FIRST so it appears before the answer text,
         # matching Anthropic's extended-thinking SDK convention. Without
@@ -317,7 +424,7 @@ def openai_to_anthropic(
             content.append(
                 AnthropicResponseContentBlock(
                     type="thinking",
-                    thinking=reasoning_text,
+                    thinking=thinking_body,
                 )
             )
 
