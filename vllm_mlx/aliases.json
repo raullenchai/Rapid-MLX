@@ -82,6 +82,69 @@
     "is_moe": true,
     "pflash_tier": "verified"
   },
+  "tmax-9b": {
+    "hf_path": "mlx-community/Tmax-9B-MLX-4bit",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-9b-6bit": {
+    "hf_path": "mlx-community/Tmax-9B-MLX-6bit",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-9b-8bit": {
+    "hf_path": "mlx-community/Tmax-9B-MLX-8bit",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-9b-bf16": {
+    "hf_path": "mlx-community/Tmax-9B-MLX-bf16",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-27b": {
+    "hf_path": "mlx-community/Tmax-27B-MLX-4bit",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-27b-6bit": {
+    "hf_path": "mlx-community/Tmax-27B-MLX-6bit",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
+  "tmax-27b-8bit": {
+    "hf_path": "mlx-community/Tmax-27B-MLX-8bit",
+    "tool_call_parser": "qwen3_xml",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false,
+    "pflash_tier": "unknown"
+  },
   "qwen3.5-27b-8bit": {
     "hf_path": "mlx-community/Qwen3.5-27B-8bit",
     "tool_call_parser": "hermes",
