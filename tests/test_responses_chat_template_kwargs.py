@@ -391,23 +391,59 @@ class TestStrictAutoDisableThinking:
     def test_extra_chat_template_kwargs_keys_survive_auto_disable_merge(
         self, _rate_limiter_state
     ):
-        """If the client passes ``chat_template_kwargs`` with keys
-        OTHER than enable_thinking (e.g. a forward-compat extension),
-        the auto-disable must merge — not replace — so the unknown
-        keys survive."""
+        """Codex round-3 BLOCKING: pin that the future-compat key
+        ``future_key`` ACTUALLY survives the auto-disable merge on
+        the materialized ``ChatCompletionRequest``. Pre-fix the
+        previous version of this test only asserted
+        ``enable_thinking`` reached the engine — it would have
+        passed even if production REPLACED ``chat_template_kwargs``
+        with only ``{"enable_thinking": False}``.
+
+        Strategy: spy on ``_resolve_enable_thinking`` (called by the
+        route immediately AFTER the auto-disable injection) and
+        snapshot the request's ``chat_template_kwargs`` at that
+        instant — which is the post-merge state. Asserting both
+        ``enable_thinking=False`` AND ``future_key="x"`` are
+        present pins the merge contract.
+        """
         engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
         client = _make_responses_client(engine)
-        body = _strict_responses_payload(
-            strict=True,
-            chat_template_kwargs={"future_key": "x"},
-        )
-        resp = client.post("/v1/responses", json=body)
+        captured_ctk: list[dict | None] = []
+
+        # The route calls ``_resolve_enable_thinking(openai_request)``
+        # MULTIPLE times after the injection (context-length gate
+        # first, then chat_kwargs build). Snapshot the request's
+        # chat_template_kwargs at the first call — that's the
+        # post-merge state.
+        import vllm_mlx.routes.responses as _responses_mod
+
+        original = _responses_mod._resolve_enable_thinking
+
+        def _spy(openai_request):
+            ctk = getattr(openai_request, "chat_template_kwargs", None)
+            # ``dict(ctk)`` to snapshot — later code might mutate.
+            captured_ctk.append(dict(ctk) if ctk is not None else None)
+            return original(openai_request)
+
+        with patch.object(_responses_mod, "_resolve_enable_thinking", side_effect=_spy):
+            body = _strict_responses_payload(
+                strict=True,
+                chat_template_kwargs={"future_key": "x"},
+            )
+            resp = client.post("/v1/responses", json=body)
+
         assert resp.status_code == 200, resp.text
-        # The injection set enable_thinking=False, but future_key must
-        # have survived on the materialized ChatCompletionRequest.
-        # We can't observe the request from here, but we can observe
-        # the engine.chat kwargs: enable_thinking is False (injected),
-        # which proves the merge ran.
+        # The spy must have been called at least once (route always
+        # calls _resolve_enable_thinking).
+        assert captured_ctk, "_resolve_enable_thinking was never called"
+        first_seen = captured_ctk[0]
+        # Both the auto-injected key and the client-supplied
+        # ``future_key`` must be on the merged dict.
+        assert first_seen == {"future_key": "x", "enable_thinking": False}, (
+            "auto-disable merge dropped the client's forward-compat "
+            f"key: got {first_seen}"
+        )
+        # Independent sanity: the engine receives the resolved value too.
         assert engine.chat_calls[0]["kwargs"].get("enable_thinking") is False
 
 
