@@ -4597,6 +4597,25 @@ async def stream_chat_completion_strict_postgen(
                             continue
                         delta = ch.get("delta") or {}
                         if isinstance(delta, dict):
+                            # Codex r11 #2: the JSON-schema strict
+                            # contract applies to the user-visible
+                            # response content — the ``delta.content``
+                            # surface. We deliberately do NOT
+                            # accumulate ``delta.reasoning_content``
+                            # (a separate thinking-channel surface
+                            # that is NOT included in the schema's
+                            # scope) or ``delta.tool_calls`` (which
+                            # is forbidden in strict mode by the
+                            # ``strict_with_tools_unsupported`` gate
+                            # in the chat route — line ~2310 — so it
+                            # cannot legally appear here). Any future
+                            # delta surface that carries user-visible
+                            # text MUST be added here, OR the route
+                            # gate must reject strict mode for that
+                            # surface, otherwise strict mode would
+                            # over-trigger ``json_schema_violation``
+                            # on a request that emitted valid JSON
+                            # through a non-content channel.
                             c = delta.get("content")
                             if isinstance(c, str):
                                 # Codex r8 #2 + r9 #1: enforce the

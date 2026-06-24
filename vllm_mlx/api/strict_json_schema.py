@@ -295,11 +295,15 @@ def build_repair_messages(
     DELIMITED as non-instructional reference text inside the system
     hint, with no ``assistant`` role marker.
 
-    The schema is included in the hint at most once (we de-duplicate
-    against any prior schema injection — see
-    ``build_json_system_prompt`` — so a strict request that already
-    embedded the schema in the system prompt doesn't pay a 2x token
-    cost on the repair turn).
+    The schema is included verbatim in the repair hint. Note that
+    the original system prompt may ALSO carry the schema (see
+    ``build_json_system_prompt``), so on a repair retry the schema
+    is sent twice; the duplication is intentional — repeating it
+    in the repair hint keeps the model's attention on the
+    canonical schema text without requiring the model to scan back
+    through the conversation history. The token cost is bounded by
+    the schema size (typically ~1-5 KiB) and only paid on the
+    repair attempt, not on every request.
     """
     try:
         schema_str = json.dumps(schema, indent=2)
