@@ -839,6 +839,75 @@ class TestStreamingBudgetExhaustEmitsReasoningItem:
             f"accumulated — usage credit missing."
         )
 
+    def test_streaming_responses_emits_rescue_output_text_under_cutoff(
+        self, responses_client, monkeypatch
+    ):
+        """Codex r2 (R12-8) MED #4: cross-path parity. Non-stream
+        Responses materializes the H-01 rescue text into an
+        ``output_text`` message item via ``openai_to_responses``.
+        The streaming surface must mirror this — emit a synthetic
+        message item carrying the rescue payload so clients that
+        render only ``output_text`` see the same retry signal +
+        reasoning tail the non-stream surface ships. Pre-fix the
+        streaming surface only emitted the reasoning item (status
+        incomplete) and silently dropped the rescue text.
+        """
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        with responses_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_stream_payload(),
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        # The completed.response.output[] must carry BOTH the reasoning
+        # item AND a synthetic message item with the rescue payload.
+        completed = next(d for n, d in events if n == "response.completed")
+        output = completed["response"]["output"]
+        types = [item["type"] for item in output]
+        assert "reasoning" in types, (
+            f"reasoning item missing from output; got types={types}"
+        )
+        assert "message" in types, (
+            f"streaming rescue message item missing; got types={types} "
+            f"(non-stream surface emits one for the same cutoff shape)"
+        )
+        message_item = next(item for item in output if item["type"] == "message")
+        assert message_item["content"], "rescue message must have content"
+        rescue_text = message_item["content"][0]["text"]
+        from vllm_mlx.service.helpers import REASONING_CUTOFF_SENTINEL
+
+        assert rescue_text.startswith(REASONING_CUTOFF_SENTINEL), (
+            f"rescue message must lead with the sentinel; got {rescue_text!r}"
+        )
+        # And the SSE ladder MUST emit the canonical message-item
+        # event sequence — added → content_part.added → output_text.delta
+        # → output_text.done → content_part.done → output_item.done.
+        event_types_after_reasoning_done = []
+        seen_reasoning_done = False
+        for name, _ in events:
+            if name == "response.output_item.done" and not seen_reasoning_done:
+                seen_reasoning_done = True
+                continue
+            if seen_reasoning_done:
+                event_types_after_reasoning_done.append(name)
+                if name == "response.output_item.done":
+                    break
+        canonical_ladder = [
+            "response.output_item.added",
+            "response.content_part.added",
+            "response.output_text.delta",
+            "response.output_text.done",
+            "response.content_part.done",
+            "response.output_item.done",
+        ]
+        assert event_types_after_reasoning_done == canonical_ladder, (
+            f"rescue message ladder missing or out-of-order; expected "
+            f"{canonical_ladder}, got {event_types_after_reasoning_done}"
+        )
+
     def test_reasoning_tokens_not_credited_when_completion_tokens_zero(
         self, monkeypatch
     ):
