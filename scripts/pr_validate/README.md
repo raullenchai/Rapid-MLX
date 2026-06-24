@@ -58,9 +58,14 @@ order is **non-negotiable**:
 
 * `supply_chain` runs at index ≈ 0.75 — BEFORE any
   auto-installing step. Any modification to `pyproject.toml`,
-  `requirements*.txt`, `setup.py`, `setup.cfg`, `conftest.py`,
-  `.github/workflows/`, `Makefile`, `.pre-commit-config.yaml`, or
-  `Formula/` from an external author is `[BLOCKING]`.
+  any repo-root `requirements*.txt` (the prefix matcher catches
+  `requirements-dev.txt`, `requirements-test.txt`,
+  `requirements-pin.txt`, … without enumeration), `setup.py`,
+  `setup.cfg`, `conftest.py`, `.github/workflows/`, `Makefile`,
+  `.pre-commit-config.yaml`, or `Formula/` from an external author
+  is `[BLOCKING]`. Detection delegates to
+  `_test_env.is_dep_declaration_file()` so the supply-chain step
+  and `test_env_check` share one source of truth.
 * `test_env_check` runs at index ≈ 0.8 — AFTER `supply_chain`.
   Its `pip install '.[test]'` (project-extras) fallback is gated:
   if the PR diff touches any dep-declaration file, the

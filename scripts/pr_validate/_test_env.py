@@ -86,14 +86,52 @@ TEST_EXTRAS_NAME = "test"
 # require the operator to either install manually (after reading the
 # diff) or re-run with the dep-file change rolled back. See
 # scripts/pr_validate/README.md "Threat model".
+#
+# Two parts: exact-path matches and a prefix-glob list. The prefix
+# list catches every ``requirements*.txt`` variant a contributor
+# might invent (``requirements-test.txt``, ``requirements-prod.txt``,
+# etc.) without us having to enumerate them — codex r2 BLOCKING was
+# that ``requirements-test.txt`` slipped through.
 DEP_DECLARATION_FILES_DENYLIST: tuple[str, ...] = (
     "pyproject.toml",
     "setup.py",
     "setup.cfg",
-    "requirements.txt",
-    "requirements-dev.txt",
-    "requirements-pin.txt",  # pr_validate's own pin list
 )
+
+# Filename prefixes whose ``.txt`` (or no-extension) variants at the
+# repo root all count as dep-declaration files. Kept here so the
+# supply-chain step can import the same source of truth via
+# ``is_dep_declaration_file()`` — see ``steps/supply_chain.py``
+# ``HOOK_PATHS`` for the install-hook matcher that also uses this.
+DEP_DECLARATION_FILE_PREFIXES: tuple[str, ...] = (
+    "requirements",  # requirements.txt, requirements-dev.txt, requirements-test.txt, …
+)
+
+
+def is_dep_declaration_file(path: str) -> bool:
+    """Return True iff ``path`` (a repo-relative file name) is a
+    dep-declaration file that an external PR must NOT be allowed to
+    influence the validator's install from.
+
+    Exact match against ``DEP_DECLARATION_FILES_DENYLIST`` OR
+    starts-with match against ``DEP_DECLARATION_FILE_PREFIXES`` for
+    repo-root ``.txt`` files. Subdirectory files (e.g.
+    ``vendor/requirements.txt``) are intentionally NOT matched —
+    they don't drive pr_validate's ``pip install '.[test]'``.
+
+    Public so the supply-chain step can share the matcher.
+    """
+    if path in DEP_DECLARATION_FILES_DENYLIST:
+        return True
+    # Only match the repo root — subdirectory files don't drive the
+    # validator's recovery install. Strip path separators to test.
+    if "/" in path:
+        return False
+    for prefix in DEP_DECLARATION_FILE_PREFIXES:
+        if path.startswith(prefix) and (path.endswith(".txt") or path == prefix):
+            return True
+    return False
+
 
 # Hardcoded, version-pinned set of pytest plugins pr_validate needs
 # IN ITS OWN venv to run ``targeted_tests`` / ``full_unit`` reliably.
@@ -234,8 +272,8 @@ def auto_install_disabled() -> bool:
 
 
 def pr_touches_dep_files(files_changed: list[str]) -> list[str]:
-    """Return the subset of ``files_changed`` that overlaps with
-    ``DEP_DECLARATION_FILES_DENYLIST``.
+    """Return the subset of ``files_changed`` that ``is_dep_declaration_file``
+    flags.
 
     Returning the (possibly empty) list rather than a bool lets the
     caller surface the exact filenames in the warning the operator
@@ -243,12 +281,12 @@ def pr_touches_dep_files(files_changed: list[str]) -> list[str]:
     more actionable than just "skipped". An empty list means the
     auto-install path is safe to take.
 
-    Matching is exact-path (no prefix). pr_validate doesn't try to be
-    clever about renames or symlinks — anything fancier is a manual
-    review case anyway.
+    Matching delegates to ``is_dep_declaration_file`` so the supply-
+    chain step and this guard share a single source of truth. Catches
+    every repo-root ``requirements*.txt`` variant — codex r2
+    BLOCKING was an under-enumeration here.
     """
-    denylist = set(DEP_DECLARATION_FILES_DENYLIST)
-    return [f for f in files_changed if f in denylist]
+    return [f for f in files_changed if is_dep_declaration_file(f)]
 
 
 def install_trusted_pins(python: str | None = None) -> tuple[bool, str]:

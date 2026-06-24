@@ -401,7 +401,13 @@ class TestStepIntegration:
                 result = step.run(fake_ctx)
 
         assert result.status == "pass"
-        assert "trusted-pins" in result.summary or "installed" in result.summary
+        # Pin the exact trusted-pins wording — codex r2 NIT was that
+        # the previous loose ``or "installed"`` matcher would also
+        # accept a summary from the old project-extras path, masking
+        # a regression that flipped the order.
+        assert "trusted-pins" in result.summary, (
+            f"expected 'trusted-pins' in summary, got: {result.summary!r}"
+        )
         # Trusted-pins path runs exactly once.
         assert mock_pins.call_count == 1
         # Project-extras path MUST NOT run when trusted pins recover —
@@ -522,6 +528,80 @@ class TestSupplyChainIntegrity:
         for dep_file in DEP_DECLARATION_FILES_DENYLIST:
             assert pr_touches_dep_files([dep_file]) == [dep_file], (
                 f"{dep_file!r} not detected by pr_touches_dep_files"
+            )
+
+    def test_pr_touches_dep_files_catches_arbitrary_requirements_variants(self):
+        """Codex r2 BLOCKING: the previous exact-match list let
+        ``requirements-test.txt`` / ``requirements-prod.txt`` through
+        the gate. The matcher is now prefix-based for repo-root
+        ``requirements*.txt`` files, so every variant a contributor
+        might invent is caught without us enumerating them."""
+        from scripts.pr_validate._test_env import (
+            is_dep_declaration_file,
+            pr_touches_dep_files,
+        )
+
+        # Variants that MUST be flagged (the regression cases).
+        for variant in (
+            "requirements.txt",
+            "requirements-dev.txt",
+            "requirements-test.txt",
+            "requirements-prod.txt",
+            "requirements-pin.txt",
+            "requirements-ci.txt",
+        ):
+            assert is_dep_declaration_file(variant), (
+                f"{variant!r} not flagged by is_dep_declaration_file"
+            )
+            assert pr_touches_dep_files([variant]) == [variant]
+
+        # Negative cases — subdirectory requirements files don't drive
+        # pr_validate's recovery install and should NOT trip the gate.
+        # (Their contents may still be supply-chain interesting via
+        # other means, but they don't enable the #275 attack vector.)
+        for safe in (
+            "vendor/requirements.txt",
+            "tests/fixtures/requirements.txt",
+            "docs/requirements.md",  # not .txt
+            "requirements.yaml",  # not .txt
+        ):
+            assert not is_dep_declaration_file(safe), (
+                f"{safe!r} incorrectly flagged by is_dep_declaration_file"
+            )
+
+    def test_supply_chain_hook_matcher_catches_arbitrary_requirements_variants(self):
+        """Codex r2 BLOCKING: supply-chain's hook matcher and the
+        test-env-check matcher previously had divergent lists. Now
+        they share ``is_dep_declaration_file`` so any new
+        ``requirements*.txt`` variant is BLOCKING for external authors
+        at the supply-chain step too."""
+        from scripts.pr_validate.steps.supply_chain import _is_hook_file
+
+        for variant in (
+            "pyproject.toml",
+            "setup.py",
+            "setup.cfg",
+            "requirements.txt",
+            "requirements-dev.txt",
+            "requirements-test.txt",
+            "requirements-pin.txt",
+            "requirements-anything.txt",
+            ".github/workflows/ci.yml",
+            "conftest.py",
+        ):
+            assert _is_hook_file(variant), (
+                f"{variant!r} not flagged by supply_chain._is_hook_file"
+            )
+
+        # Negative: source files and docs MUST NOT be flagged or
+        # every PR would trip supply-chain.
+        for safe in (
+            "vllm_mlx/scheduler.py",
+            "docs/foo.md",
+            "tests/test_foo.py",
+        ):
+            assert not _is_hook_file(safe), (
+                f"{safe!r} incorrectly flagged by supply_chain._is_hook_file"
             )
 
     def test_auto_install_refused_when_pr_touches_pyproject(self, fake_ctx):
