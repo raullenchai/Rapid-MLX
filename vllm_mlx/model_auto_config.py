@@ -852,19 +852,34 @@ def warn_misbound_deepseek_v3_parser(
         )
 
     # Out-of-lineage (Sven r12 HIGH-1 case). The remediation depends on
-    # whether auto-detect would ALSO mis-pick a V3-family parser (codex
-    # r5: a parent dir like ``/models/DeepSeek-V3/qwen-model`` fools the
-    # full-path regex even though the checkpoint name itself is
-    # non-V3). When auto-detect is fooled too, "drop the flag" is
-    # actively bad advice — pin to ``hermes`` instead.
-    auto_in_v3_family = auto_parser in _DEEPSEEK_V3_FAMILY_PARSERS
-    remediation = (
-        "Pass --tool-call-parser hermes for this Qwen/Llama-arch model."
-        if auto_in_v3_family
-        else "Drop the explicit --tool-call-parser flag to let "
-        "auto-detect choose, or use --tool-call-parser hermes for "
-        "Qwen/Llama-arch distills."
-    )
+    # what auto-detect would do for this same path. Three cases:
+    #
+    #   1. ``auto_parser`` is a V3-family parser (codex r5): a parent
+    #      dir like ``/models/DeepSeek-V3/qwen-model`` fools the
+    #      full-path regex even though the checkpoint name itself is
+    #      non-V3. "Drop the flag" is actively bad advice — pin to
+    #      ``hermes`` directly.
+    #   2. ``auto_parser is None`` (codex r6 PR-validate NIT): unknown
+    #      model, no regex match. "Drop the flag" leaves the user with
+    #      no tool parser at all, which is worse than the current
+    #      misbind. Pin explicitly to ``hermes`` for the typical
+    #      Qwen/Llama-arch case.
+    #   3. ``auto_parser`` is a non-V3 family parser: the auto-detect
+    #      knows the right answer (e.g. ``deepseek`` for R1-Distill).
+    #      Dropping the flag is the right call.
+    if auto_parser in _DEEPSEEK_V3_FAMILY_PARSERS:
+        remediation = "Pass --tool-call-parser hermes for this Qwen/Llama-arch model."
+    elif auto_parser is None:
+        remediation = (
+            "Pass --tool-call-parser hermes for this Qwen/Llama-arch model "
+            "(auto-detect has no fallback for unknown checkpoints)."
+        )
+    else:
+        remediation = (
+            "Drop the explicit --tool-call-parser flag to let auto-detect "
+            "choose, or use --tool-call-parser hermes for Qwen/Llama-arch "
+            "distills."
+        )
     return (
         f"--tool-call-parser={tool_call_parser!r} is bound to "
         f"{model_path!r}, which is NOT a DeepSeek-V3 chat-template "

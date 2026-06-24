@@ -990,14 +990,27 @@ class TestWarnMisboundDeepseekV3Parser:
 
     # Unknown models (no regex match) still get a warning when bound to
     # a V3-family parser, but the message degrades gracefully (no
-    # auto-detect suggestion).
+    # auto-detect suggestion, AND the "drop the flag" advice is
+    # replaced with an explicit hermes pin — codex r6 PR-validate NIT,
+    # because dropping the flag on an unknown model leaves the user
+    # with no tool parser at all).
     def test_warn_on_unknown_model_no_suggestion(self):
         msg = warn_misbound_deepseek_v3_parser(
             "brand-new-org/MysteryModel-2026-7B", "deepseek_v3"
         )
         assert msg is not None
         # No `auto-detect would pick 'X'` blurb when there's no match.
-        # The actionable nudge is still present (drop the flag).
+        assert "Auto-detect would pick" not in msg
+        # No "Drop the explicit ... flag" — auto-detect has nothing to
+        # fall back to. The remediation must explicitly recommend
+        # ``hermes``.
+        assert "Drop the explicit" not in msg
+        assert "hermes" in msg
+        # Must call out that auto-detect has no fallback so the user
+        # understands why the standard remediation doesn't apply.
+        assert "no fallback" in msg.lower() or "unknown" in msg.lower()
+        # Still mentions the bound parser so the user can locate the
+        # offending flag.
         assert "deepseek_v3" in msg
 
     # Codex round-2 P2 regression: when the user serves a built-in
