@@ -1207,6 +1207,14 @@ class TestReasoningToolOutputIndexAlignment:
                 "model": "test-model",
                 "input": "What's the weather?",
                 "stream": True,
+                # R12-T1F: opt back INTO thinking on a tools request —
+                # the test exercises the reasoning+message+tool_call
+                # output_index alignment, which by construction
+                # requires thinking to be ON. Pre-R12-T1F the no-
+                # preference path defaulted thinking on; the new
+                # auto-disable turns it off for tools, so the test
+                # must declare its intent.
+                "chat_template_kwargs": {"enable_thinking": True},
                 "tools": [
                     {
                         "type": "function",
@@ -1289,7 +1297,21 @@ class TestReasoningCompletedWhenToolCallOnlyAfterThink:
     thinking block to reach the tool emit. Pre-fix the streaming
     ``mid_think_cutoff`` check only inspected ``accumulated_text``,
     so this shape incorrectly flipped reasoning to ``incomplete``
-    (text was empty even though reasoning was complete)."""
+    (text was empty even though reasoning was complete).
+
+    R12-T1F (0.8.16 operator dogfood): the auto-disable-thinking-for-
+    tools route gate now turns thinking OFF by default whenever the
+    client declares ``tools`` without expressing a thinking
+    preference. This regression guard exercises the OPPOSITE corner
+    (reasoning + tool_call + length cutoff), so it must explicitly
+    opt INTO thinking via ``chat_template_kwargs.enable_thinking=true``
+    — otherwise the engine reasoning-text never reaches the
+    reasoning_parser branch on the streaming surface and the
+    ``reasoning`` item is never assembled. The non-stream surface
+    surfaces the reasoning item via ``output.reasoning_text``
+    regardless, so the explicit opt-in is only load-bearing for the
+    streaming case below.
+    """
 
     def test_reasoning_completed_with_tool_call_under_length(
         self, reasoning_tool_length_client
@@ -1302,6 +1324,11 @@ class TestReasoningCompletedWhenToolCallOnlyAfterThink:
                 "input": "Weather?",
                 "stream": True,
                 "max_output_tokens": 4,
+                # R12-T1F: opt back into thinking on a tools request —
+                # the test is exercising the reasoning + tool_call +
+                # length corner, so it needs thinking ON to be
+                # representative.
+                "chat_template_kwargs": {"enable_thinking": True},
                 "tools": [
                     {
                         "type": "function",
@@ -1352,13 +1379,21 @@ class TestReasoningCompletedWhenToolCallOnlyAfterThink:
         ``downstream_output_seen`` gate as the streaming path —
         otherwise the two surfaces report divergent reasoning
         status for the closed-``</think>`` + truncated tool_call
-        shape."""
+        shape.
+
+        R12-T1F: opt back INTO thinking on this tools+reasoning corner
+        for cross-surface parity with the streaming test above. The
+        non-stream finalize path emits the reasoning item from
+        ``output.reasoning_text`` regardless, but pinning the same
+        request shape keeps the two cases comparable.
+        """
         resp = reasoning_tool_length_client.client.post(
             "/v1/responses",
             json={
                 "model": "test-model",
                 "input": "Weather?",
                 "max_output_tokens": 4,
+                "chat_template_kwargs": {"enable_thinking": True},
                 "tools": [
                     {
                         "type": "function",

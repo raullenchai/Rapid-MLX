@@ -95,6 +95,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     enforce_context_length_for_messages,
     get_engine,
+    maybe_auto_disable_thinking_for_tools,
 )
 
 logger = logging.getLogger(__name__)
@@ -546,6 +547,32 @@ async def create_response(request: Request):
                     "inside <think>. Set chat_template_kwargs."
                     "enable_thinking=true to opt back in."
                 )
+
+        # R12-T1F (0.8.16 operator dogfood) — auto-disable thinking
+        # when ``tools`` is non-empty and the client did NOT pin a
+        # thinking preference. Same shape as R12-M2 above but the
+        # trigger is "tools provided" instead of "strict json_schema",
+        # so this branch lives OUTSIDE the ``if is_strict_json_schema``
+        # block (strict + tools is mutually exclusive on /v1/responses
+        # and returns 400 above, so the two branches never both fire —
+        # but the shared helper keeps the merge contract identical
+        # across both auto-disable triggers). Default-on thinking
+        # routinely exhausts the agent-SDK ``max_output_tokens=50..100``
+        # budget inside ``<think>...</think>`` before emitting the
+        # ``<tool_call>`` envelope, so the tool never fires
+        # (``finish_reason="length"``, ``tool_calls=None``). Explicit
+        # ``enable_thinking=true`` from the client is preserved.
+        if maybe_auto_disable_thinking_for_tools(openai_request):
+            logger.info(
+                "R12-T1F auto-disable: /v1/responses request has "
+                "tools=%d with no client-set thinking preference — "
+                "injecting chat_template_kwargs.enable_thinking=False "
+                "so thinking models do not burn the token budget "
+                "inside <think> before emitting the tool_call. Set "
+                "chat_template_kwargs.enable_thinking=true to opt "
+                "back in.",
+                len(openai_request.tools),
+            )
 
         try:
             validate_content_blocks_for_capabilities(

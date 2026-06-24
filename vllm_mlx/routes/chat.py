@@ -95,6 +95,7 @@ from ..service.helpers import (
     enable_thinking_warning_header,
     enforce_context_length_for_messages,
     get_engine,
+    maybe_auto_disable_thinking_for_tools,
 )
 
 logger = logging.getLogger(__name__)
@@ -1923,6 +1924,29 @@ async def _create_chat_completion_impl(
             )
         if json_instruction:
             messages = _inject_json_instruction(messages, json_instruction)
+
+    # R12-T1F (0.8.16 operator dogfood) — auto-disable thinking when
+    # ``tools`` is non-empty and the client did NOT pin a thinking
+    # preference. Same shape as M-2's strict-json_schema auto-disable
+    # (PR #877): default-on thinking on Qwen3 / DeepSeek-R1 burns the
+    # entire ``max_tokens`` budget inside ``<think>...</think>`` before
+    # the model emits a ``<tool_call>`` envelope, so the agent-SDK
+    # tight-budget pattern (``max_tokens=50..100``) finishes with
+    # ``finish_reason="length"`` and ``tool_calls=None``. The injection
+    # is non-destructive (forward-compat keys preserved) and explicit
+    # ``True`` / ``False`` from the client is always honored. MUST run
+    # BEFORE ``_resolve_enable_thinking`` so the resolved value drives
+    # ``max_tokens`` headroom + the engine kwarg below from one source.
+    if maybe_auto_disable_thinking_for_tools(request):
+        logger.info(
+            "R12-T1F auto-disable: /v1/chat/completions request has "
+            "tools=%d with no client-set thinking preference — "
+            "injecting chat_template_kwargs.enable_thinking=False so "
+            "thinking models do not burn the token budget inside "
+            "<think> before emitting the tool_call. Set "
+            "chat_template_kwargs.enable_thinking=true to opt back in.",
+            len(request.tools),
+        )
 
     # Resolve enable_thinking once and reuse — drives both the
     # max_tokens default (thinking models need more headroom) and the

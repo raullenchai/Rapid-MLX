@@ -1760,6 +1760,60 @@ def _resolve_enable_thinking(request) -> bool | None:
     return _extract_thinking_from_request(request)
 
 
+def maybe_auto_disable_thinking_for_tools(request) -> bool:
+    """R12-T1F: auto-disable ``enable_thinking`` when tools are declared
+    and the client did not pin a preference. Mirrors the M-2 strict-
+    json_schema auto-disable pattern (PR #877) — same root cause, same
+    shape, single source of truth so chat / responses / anthropic /
+    future surfaces share one contract.
+
+    Trigger (all must hold):
+      * ``request.tools`` is non-empty (caller wants the model to
+        emit a tool_call).
+      * Neither ``chat_template_kwargs["enable_thinking"]`` nor the
+        top-level ``enable_thinking`` field is set on the request.
+
+    Effect: merge ``{"enable_thinking": False}`` onto
+    ``request.chat_template_kwargs`` so every downstream consult
+    (``_resolve_enable_thinking``, ``_effective_enable_thinking``,
+    ``engine.chat`` / ``stream_chat`` / ``generate_with_schema``)
+    sees the resolved choice. The merge is non-destructive: any
+    forward-compat keys the client passed survive untouched.
+
+    Rationale (operator dogfood on Qwen3-0.6B-bf16, 0.8.16):
+    thinking-on by default is the right answer for prose, but for
+    tool-calling the model spends its entire ``max_tokens`` budget
+    inside ``<think>...</think>`` before emitting the
+    ``<tool_call>`` envelope. With the typical agent-SDK budget
+    (``max_tokens=50..100``) the request finishes with
+    ``finish_reason="length"`` and ``tool_calls=None`` — the tool
+    never fires. Default-off thinking restores the "tool calling
+    just works" contract; clients who explicitly opt back in
+    (``chat_template_kwargs={"enable_thinking": true}`` or top-
+    level ``enable_thinking: true``) keep the chain-of-thought and
+    accept the budget risk.
+
+    Returns ``True`` if the auto-disable injection fired, ``False``
+    if it was skipped (no tools, or client preference already
+    set). The returned bool is the load-bearing signal for the
+    route's structured log line; callers that do not need it can
+    discard the return value.
+    """
+    tools = getattr(request, "tools", None)
+    if not tools:
+        return False
+    if _extract_thinking_from_request(request) is not None:
+        return False
+    existing_ctk = getattr(request, "chat_template_kwargs", None) or {}
+    # Merge rather than replace so any non-thinking keys the client
+    # passed (forward-compat, e.g. future kwargs the chat template
+    # honors) survive untouched. Codex-r3 BLOCKING contract from M-2.
+    merged_ctk = dict(existing_ctk)
+    merged_ctk["enable_thinking"] = False
+    request.chat_template_kwargs = merged_ctk
+    return True
+
+
 # L-05: the set of reasoning parsers that actually honor
 # ``chat_template_kwargs.enable_thinking``. Only ``qwen3`` consults the
 # flag as a strict on/off switch (its chat template skips the ``<think>``
