@@ -30,6 +30,8 @@ import threading
 _lock = threading.Lock()
 _strict_requests_total = 0
 _strict_violations_total = 0
+_strict_repairs_attempted_total = 0
+_strict_repairs_succeeded_total = 0
 
 
 def incr_strict_request() -> None:
@@ -53,12 +55,43 @@ def incr_strict_violation() -> None:
         _strict_violations_total += 1
 
 
+def incr_strict_repair_attempt() -> None:
+    """Increment the strict-mode auto-repair attempt counter (R12-4).
+
+    R12-4 introduces a single retry with a system-prompt-injected
+    "your previous output failed validation" hint when the initial
+    unconstrained generation does not validate against the supplied
+    schema. This counter ticks on EVERY attempt (including the ones
+    that ultimately still fail and surface as 422). Pair with
+    :func:`incr_strict_repair_success` to compute the repair success
+    rate.
+    """
+    global _strict_repairs_attempted_total
+    with _lock:
+        _strict_repairs_attempted_total += 1
+
+
+def incr_strict_repair_success() -> None:
+    """Increment the strict-mode auto-repair success counter (R12-4).
+
+    Only ticks when an attempted repair produced output that
+    ``jsonschema.validate`` accepted. The ratio
+    ``strict_repairs_succeeded_total / strict_repairs_attempted_total``
+    is the operator signal for "is the retry hint actually helping".
+    """
+    global _strict_repairs_succeeded_total
+    with _lock:
+        _strict_repairs_succeeded_total += 1
+
+
 def snapshot() -> dict[str, int]:
-    """Return a consistent snapshot of both counters for ``/metrics``."""
+    """Return a consistent snapshot of all counters for ``/metrics``."""
     with _lock:
         return {
             "strict_requests_total": _strict_requests_total,
             "strict_violations_total": _strict_violations_total,
+            "strict_repairs_attempted_total": _strict_repairs_attempted_total,
+            "strict_repairs_succeeded_total": _strict_repairs_succeeded_total,
         }
 
 
@@ -69,6 +102,9 @@ def reset_for_tests() -> None:
     contractually monotonic for the process lifetime.
     """
     global _strict_requests_total, _strict_violations_total
+    global _strict_repairs_attempted_total, _strict_repairs_succeeded_total
     with _lock:
         _strict_requests_total = 0
         _strict_violations_total = 0
+        _strict_repairs_attempted_total = 0
+        _strict_repairs_succeeded_total = 0

@@ -363,48 +363,1069 @@ def test_strict_true_responses_validate_for_10_distinct_valid_payloads(valid_pay
 # ---------------------------------------------------------------------------
 
 
-def test_strict_true_guided_unavailable_returns_canonical_400_non_streaming():
-    """``[guided]`` missing must surface as 400 with the H-17 envelope shape."""
-    engine = _Engine(supports_guided=False)
+def test_strict_true_guided_unavailable_returns_422_on_violation_non_streaming():
+    """R12-4 — pre-R12-4 ``[guided]`` missing returned 400
+    ``guided_extra_required`` and broke pydantic-ai. Post-R12-4 the
+    request runs UNCONSTRAINED via ``engine.chat`` (no outlines),
+    the route then validates the output against the schema and
+    surfaces 422 with a structured ``json_schema_violation``
+    envelope when validation fails after one repair retry.
+
+    This test uses ``chat_text`` that violates the schema; both the
+    initial generation and the repair retry will return the same
+    invalid body, so the route must 422.
+    """
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
     client = _make_client(engine)
 
     resp = client.post("/v1/chat/completions", json=_payload(strict=True))
-    assert resp.status_code == 400, resp.text
+    assert resp.status_code == 422, resp.text
     body = resp.json()
 
-    # H-17 canonical envelope shape: top-level "error" key, with
-    # message / type / code / param subkeys.
     assert "error" in body
     err = body["error"]
-    assert err["type"] == "invalid_request_error"
-    assert err["code"] == "guided_extra_required"
-    assert "rapid-mlx[guided]" in err["message"]
-    assert "pip install" in err["message"]
-    # ``param`` must point at the strict flag specifically — clients
-    # parsing the envelope use this to surface a targeted SDK error.
-    assert "strict" in (err.get("param") or "")
+    assert err["type"] == "validation_error"
+    assert err["code"] == "json_schema_violation"
+    assert err["param"] == "response_format.json_schema"
+    # Structured envelope so SDKs (pydantic-ai) can decode the failing
+    # path programmatically.
+    details = err["details"]
+    assert details["attempts"] == 2  # initial + repair
+    assert details["reason"] == "schema_violation"
+    assert details["failing_path"] == "/value"
+    assert "maximum" in details["expected"]
 
-    # No fallback to unconstrained generation: the 400 short-circuits
-    # before either guided or chat is hit.
+    # The chat path WAS invoked twice — once initially, once for the
+    # repair retry. Guided path is NEVER hit on a non-guided engine.
     assert engine.guided_calls == []
-    assert engine.chat_calls == []
+    assert len(engine.chat_calls) == 2
 
-    # Counter still ticks: operators tracking strict traffic want to
-    # see the rate even on installs that 400 them.
+    # Counter still ticks for traffic shape AND violation surfacing.
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+    assert snap["strict_repairs_attempted_total"] == 1
+    assert snap["strict_repairs_succeeded_total"] == 0
 
 
-def test_strict_true_guided_unavailable_returns_canonical_400_streaming():
-    """Streaming strict=true + no guided → same 400 BEFORE SSE begins."""
-    engine = _Engine(supports_guided=False)
+def test_strict_true_guided_unavailable_returns_200_when_initial_output_valid():
+    """R12-4 happy-path — strict+no-guided + initial output valid →
+    200 with the validated body (no repair retry needed)."""
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
     client = _make_client(engine)
 
-    resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
-    assert resp.status_code == 400, resp.text
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
+    assert snap["strict_repairs_attempted_total"] == 0
+    # Only the initial chat call should fire; no repair retry needed.
+    assert len(engine.chat_calls) == 1
+
+
+def test_strict_true_guided_unavailable_repair_succeeds_returns_200():
+    """R12-4 — first attempt invalid → repair attempt valid → 200 with
+    repaired body. Pins the counter pair (attempts + successes both
+    tick exactly once) and verifies the repair message carries the
+    failure hint."""
+
+    class _RepairingEngine(_Engine):
+        """Returns invalid on first call, valid on every subsequent call.
+
+        We detect the repair turn by call-index, NOT by message count —
+        the route's prompt-injection helper adds a system message before
+        the initial generation, so the FIRST call already has multiple
+        messages. Counting calls is unambiguous.
+        """
+
+        def __init__(self):
+            super().__init__(supports_guided=False)
+            self.chat_text_first = _INVALID_PAYLOAD_OUT_OF_RANGE
+            self.chat_text_repair = _VALID_PAYLOAD
+
+        async def chat(self, *, messages, **kwargs):
+            is_repair = len(self.chat_calls) > 0
+            self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+            return GenerationOutput(
+                text=self.chat_text_repair if is_repair else self.chat_text_first,
+                new_text=self.chat_text_repair if is_repair else self.chat_text_first,
+                prompt_tokens=4,
+                completion_tokens=5,
+                finished=True,
+                finish_reason="stop",
+                channel=None,
+            )
+
+    engine = _RepairingEngine()
+    client = _make_client(engine)
+
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
+    assert snap["strict_repairs_attempted_total"] == 1
+    assert snap["strict_repairs_succeeded_total"] == 1
+    assert len(engine.chat_calls) == 2
+    # Repair call must have the structured hint in its messages.
+    repair_messages = engine.chat_calls[1]["messages"]
+    assert any(
+        m.get("role") == "system" and "REPAIR" in (m.get("content") or "").upper()
+        for m in repair_messages
+    )
+    # Codex r2 #3: the response's reported token usage MUST aggregate
+    # both attempts. Each ``_Engine.chat`` call reports
+    # prompt_tokens=4 + completion_tokens=5, so the final response
+    # should bill prompt_tokens=8 + completion_tokens=10.
     body = resp.json()
-    assert body["error"]["code"] == "guided_extra_required"
-    assert engine.stream_calls == []
+    usage = body["usage"]
+    assert usage["prompt_tokens"] == 8, (
+        f"repair-success path must aggregate prompt tokens (got {usage})"
+    )
+    assert usage["completion_tokens"] == 10, (
+        f"repair-success path must aggregate completion tokens (got {usage})"
+    )
+
+
+def test_strict_true_guided_unavailable_disable_flag_skips_enforcement(monkeypatch):
+    """R12-4 escape hatch — ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` restores
+    the pre-R12-4 silent-pass-through behavior. Schema-violating output
+    is returned as 200 (legacy compat) instead of 422."""
+    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA", "off")
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    client = _make_client(engine)
+
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    # Counter still ticks (operator observability) but no violation or
+    # repair attempt — the disable flag short-circuits enforcement.
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
+    assert snap["strict_repairs_attempted_total"] == 0
+
+
+def test_strict_true_guided_unavailable_repair_engine_failure_returns_502():
+    """Codex r1 #3 — a non-timeout exception from ``engine.chat``
+    during the REPAIR turn is a server-side failure, NOT a client
+    schema-violation. Pre-fix the route swallowed the exception
+    and surfaced 422 ``json_schema_violation`` using the ORIGINAL
+    validation failure, misleading the client. Post-fix the route
+    raises 502 ``strict_repair_engine_failure`` with the original
+    validation context preserved in ``details.initial_failure``.
+    """
+
+    class _EngineThatBreaksOnRepair(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            is_repair = len(self.chat_calls) > 0
+            self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+            if is_repair:
+                raise RuntimeError("simulated engine wedge during repair")
+            return GenerationOutput(
+                text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+                new_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+                prompt_tokens=4,
+                completion_tokens=5,
+                finished=True,
+                finish_reason="stop",
+                channel=None,
+            )
+
+    engine = _EngineThatBreaksOnRepair(supports_guided=False)
+    client = _make_client(engine)
+
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 502, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "strict_repair_engine_failure"
+    assert body["error"]["type"] == "api_error"
+    # Initial failure context preserved.
+    assert body["error"]["details"]["initial_failure"]["reason"] == "schema_violation"
+    assert body["error"]["details"]["repair_exception"] == "RuntimeError"
+
+
+def test_strict_true_guided_unavailable_repair_disable_flag_skips_retry(monkeypatch):
+    """R12-4 — ``RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR=off`` disables ONLY
+    the repair retry; the post-decode validation + 422 envelope still
+    fires (strict mode stays a hard contract; only the retry is
+    skipped). One chat call (no retry) then 422."""
+    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR", "off")
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    client = _make_client(engine)
+
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "json_schema_violation"
+    assert body["error"]["details"]["attempts"] == 1
+    assert len(engine.chat_calls) == 1
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_repairs_attempted_total"] == 0
+
+
+def _parse_sse_events(body: str) -> list[dict]:
+    """Parse an SSE response body into a list of ``{event, data}`` dicts.
+
+    Each SSE event is a blank-line-separated block; within a block,
+    ``event:`` and ``data:`` lines accumulate the named event type
+    and the data payload respectively. The ``data:`` field is left
+    as-is (string) so the caller can choose between JSON-decoding and
+    sentinel matching (``[DONE]``). The ``event`` field defaults to
+    the SSE-spec ``"message"`` when no ``event:`` line is present.
+
+    Codex r2 #4: pre-fix the streaming tests grepped the full body
+    for substrings, so an envelope landing AFTER an already-success
+    ``stop`` chunk OR encoded as a non-named SSE event would still
+    pass. Parsing the frames in order lets us assert (a) the
+    violation chunk is the FIRST finish_reason the client sees,
+    (b) the error envelope is wired as a named ``event:
+    chat.completion.error`` block, and (c) ``[DONE]`` arrives last.
+    """
+    events: list[dict] = []
+    current: dict[str, str] = {}
+    for raw_line in body.split("\n"):
+        line = raw_line.rstrip("\r")
+        if line == "":
+            if current:
+                # Default event type per SSE spec.
+                current.setdefault("event", "message")
+                events.append(current)
+                current = {}
+            continue
+        if line.startswith("event: "):
+            current["event"] = line[len("event: ") :]
+        elif line.startswith("data: "):
+            # Multi-line data lines are joined with "\n" per spec.
+            payload = line[len("data: ") :]
+            if "data" in current:
+                current["data"] = current["data"] + "\n" + payload
+            else:
+                current["data"] = payload
+    if current:
+        current.setdefault("event", "message")
+        events.append(current)
+    return events
+
+
+def test_strict_true_guided_unavailable_streaming_emits_violation_finish():
+    """R12-4 streaming variant — the unconstrained stream is emitted
+    as usual; on validation failure the wrapper REPLACES the upstream
+    terminal ``finish_reason="stop"`` chunk with ``finish_reason="json_schema_violation"``
+    and emits the 422-shaped envelope as a SINGLE named SSE event
+    (``event: chat.completion.error\\ndata: ...``) before ``[DONE]``.
+
+    The parsed-frames assertions pin:
+        * the FIRST finish_reason a client sees on a violating
+          response is ``json_schema_violation`` (NOT a leading
+          ``stop`` chunk that lets the client finalize early);
+        * the error envelope appears as a named SSE event exactly
+          once — codex r5 #1 explicitly rejected the prior
+          double-emit (named + plain-data) because a client that
+          consumes both forms would handle the same terminal error
+          twice;
+        * ``[DONE]`` arrives last so the wire envelope still closes.
+    """
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json=_payload(strict=True, stream=True),
+    )
+    assert resp.status_code == 200, resp.text  # SSE wire is 200; body carries the error
+    events = _parse_sse_events(resp.text)
+
+    # The body MUST end with [DONE].
+    assert events, "no SSE events parsed from body"
+    assert events[-1]["data"] == "[DONE]", (
+        f"final SSE event must be [DONE], got {events[-1]}"
+    )
+
+    # Codex r2 #1: the FIRST finish_reason the client encounters
+    # MUST be ``json_schema_violation``. A leading ``stop`` chunk
+    # would let spec-compliant clients finalize on success and miss
+    # the violation entirely.
+    first_finish_reason = None
+    for ev in events:
+        data = ev.get("data", "")
+        if data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for ch in payload.get("choices") or []:
+            if isinstance(ch, dict) and ch.get("finish_reason"):
+                first_finish_reason = ch["finish_reason"]
+                break
+        if first_finish_reason is not None:
+            break
+    assert first_finish_reason == "json_schema_violation", (
+        f"first finish_reason was {first_finish_reason!r}, expected "
+        f"json_schema_violation. The upstream terminal chunk leaked through."
+    )
+
+    # Codex r5 #1: the envelope MUST be emitted as a SINGLE named SSE
+    # event (``event: chat.completion.error\ndata: <json>``) — NOT
+    # also as a separate plain ``data: <json>`` line. A prior
+    # iteration emitted both; clients that read both named events AND
+    # plain data lines would then handle the same terminal error
+    # twice. Per SSE spec the ``event: chat.completion.error`` form
+    # is parsed as one message event by both EventSource (dispatched
+    # to the named listener) AND plain-line consumers like the OpenAI
+    # SDK or curl (who ignore the ``event:`` field and consume the
+    # ``data:`` payload).
+    named_error_events = [
+        ev for ev in events if ev.get("event") == "chat.completion.error"
+    ]
+    assert len(named_error_events) == 1, (
+        f"expected EXACTLY ONE named `event: chat.completion.error` SSE "
+        f"block; got {len(named_error_events)}. A double-emit causes "
+        f"clients reading both named events AND plain data: lines to "
+        f"double-count the terminal error."
+    )
+    err_payload = json.loads(named_error_events[0]["data"])
+    assert err_payload["error"]["code"] == "json_schema_violation"
+    assert err_payload["object"] == "chat.completion.error"
+
+    # Codex r5 #1 negative-pin: there must be NO plain-data envelope
+    # carrying the ``chat.completion.error`` object. The error event
+    # is single-emit, named-only.
+    plain_data_error_count = 0
+    for ev in events:
+        if ev.get("event") != "message":
+            continue
+        data = ev.get("data", "")
+        if data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if (
+            isinstance(payload, dict)
+            and payload.get("object") == "chat.completion.error"
+        ):
+            plain_data_error_count += 1
+    assert plain_data_error_count == 0, (
+        f"found {plain_data_error_count} plain-data `chat.completion.error` "
+        f"envelopes — codex r5 #1 banned this double-emit. The error event "
+        f"must be the named form only."
+    )
+
+    # On streaming we do NOT run repair retry — no attempt counter
+    # increment.
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+    assert snap["strict_repairs_attempted_total"] == 0
+
+
+def test_strict_true_guided_unavailable_streaming_happy_path_passes_through():
+    """R12-4 streaming variant happy path — when validation passes,
+    the wrapper releases the held upstream terminal chunk in order
+    (``finish_reason="stop"``) and emits ``[DONE]``. No
+    ``json_schema_violation`` chunk and no ``chat.completion.error``
+    envelope must leak through."""
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json=_payload(strict=True, stream=True),
+    )
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+    # No violation chunk and no error event must appear.
+    body_text = resp.text
+    assert "json_schema_violation" not in body_text
+    assert "chat.completion.error" not in body_text
+    # The last non-DONE event must carry finish_reason="stop".
+    assert events[-1]["data"] == "[DONE]"
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
+
+
+def test_strict_true_streaming_violation_preserves_usage_chunk():
+    """Codex r6 #2 — a strict-streaming request that asked for
+    ``stream_options.include_usage=true`` MUST receive the trailing
+    usage chunk even on a json_schema_violation. The generation
+    actually consumed tokens before the validator's verdict landed;
+    silently dropping the usage chunk on failure leaves billing /
+    observability clients blind to those tokens exactly when they
+    most want to reconcile.
+
+    A prior iteration deliberately dropped the held usage chunk on
+    failure (codex r5 NIT, promoted to BLOCKING in r6). The fix:
+    emit the held usage chunk AFTER the violation+error frames and
+    BEFORE [DONE], same as the happy-path order.
+    """
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    client = _make_client(engine)
+
+    body = _payload(strict=True, stream=True)
+    body["stream_options"] = {"include_usage": True}
+    resp = client.post("/v1/chat/completions", json=body)
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+    assert events[-1]["data"] == "[DONE]"
+
+    # Scan all events for a usage-carrying chunk. The upstream
+    # streamer emits ``{... "usage": {...}, "choices": []}`` as the
+    # final pre-[DONE] chunk when ``include_usage`` is set.
+    usage_chunks = []
+    for ev in events:
+        data = ev.get("data", "")
+        if data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("usage"):
+            usage_chunks.append(payload)
+    assert usage_chunks, (
+        "no usage chunk emitted on a failed strict generation; "
+        "clients using stream_options.include_usage lose token accounting."
+    )
+    # The usage chunk carries real token counts (NOT zeros) — pre-fix
+    # the test would have failed at "no usage chunk" instead of here,
+    # but pin this too so a future regression that emits a zero-usage
+    # chunk shape doesn't silently pass.
+    final_usage = usage_chunks[-1]["usage"]
+    # The mock engine emits prompt=4 + completion=5; just pin "non-zero".
+    assert (
+        final_usage.get("prompt_tokens", 0) > 0
+        or final_usage.get("completion_tokens", 0) > 0
+    ), f"usage chunk emitted but all-zero: {final_usage}"
+
+
+def test_strict_true_streaming_emits_done_even_without_upstream_done():
+    """Codex r6 #1 — the strict-streaming wrapper MUST emit the
+    terminal ``[DONE]`` sentinel UNCONDITIONALLY, regardless of
+    whether the upstream generator ever produced it. A pre-fix
+    iteration gated the emission on ``saw_done``; an upstream that
+    exited mid-flight (engine crash, disconnect) or any future
+    upstream that omits the sentinel would leave the SSE stream
+    open from the client's perspective, causing UI hangs.
+
+    Test strategy: build a fake stream_chat_completion that emits
+    one content chunk + one terminal chunk + NO [DONE], then verify
+    the wrapper still emits [DONE] last.
+    """
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    async def _fake_stream(engine, messages, request, **kwargs):
+        response_id = kwargs.get("response_id", "chatcmpl-test")
+        created = kwargs.get("created", 0)
+        # Content delta
+        yield (
+            "data: "
+            + _json.dumps(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": _VALID_PAYLOAD},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            + "\n\n"
+        )
+        # Terminal chunk
+        yield (
+            "data: "
+            + _json.dumps(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": "test-model",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                }
+            )
+            + "\n\n"
+        )
+        # NB: NO [DONE] — simulate a misbehaving upstream.
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    # Run the strict-postgen helper directly so we have full
+    # control over the upstream stream shape.
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {
+        "type": "object",
+        "properties": {"value": {"type": "integer", "minimum": 0, "maximum": 100}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+
+    import asyncio
+
+    async def _run():
+        # Monkey-patch the inner stream_chat_completion that the
+        # strict-postgen helper delegates to.
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _fake_stream
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    chunks = asyncio.run(_run())
+    body = "".join(chunks)
+    # The wrapper MUST have emitted [DONE] even though the fake
+    # upstream did not.
+    assert "data: [DONE]" in body, (
+        "strict-streaming wrapper omitted terminal [DONE] when upstream "
+        "did not emit it; spec-compliant clients will hang."
+    )
+    # And [DONE] must be the LAST line (modulo trailing whitespace).
+    stripped = body.rstrip()
+    assert stripped.endswith("data: [DONE]"), (
+        f"expected body to end with `data: [DONE]`, got tail: {stripped[-200:]!r}"
+    )
+
+
+def test_strict_true_streaming_emits_done_on_upstream_raise():
+    """Codex r7 #1 — when the upstream generator RAISES mid-stream
+    (engine crash, runtime exception, etc.), the wrapper must
+    STILL emit ``[DONE]`` so clients don't hang on a truncated
+    stream. The pre-fix code had no ``try/finally`` around the
+    upstream ``async for`` loop, so an exception would propagate
+    out of the async generator and skip the unconditional ``[DONE]``
+    emission entirely.
+
+    Additionally pins: the wrapper emits a structured
+    ``upstream_error`` envelope BEFORE ``[DONE]`` so the client
+    sees WHY the stream ended early (not just a silent close).
+    """
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    async def _raising_stream(engine, messages, request, **kwargs):
+        response_id = kwargs.get("response_id", "chatcmpl-test")
+        created = kwargs.get("created", 0)
+        # Emit one content chunk, THEN raise — exercises the
+        # "raised mid-stream after partial output" path that the
+        # try/finally has to cover.
+        yield (
+            "data: "
+            + _json.dumps(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": '{"val'},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            + "\n\n"
+        )
+        raise RuntimeError("simulated engine crash")
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {
+        "type": "object",
+        "properties": {"value": {"type": "integer"}},
+        "required": ["value"],
+    }
+
+    import asyncio
+
+    async def _run():
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _raising_stream
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    chunks = asyncio.run(_run())
+    body = "".join(chunks)
+
+    # The wrapper MUST emit [DONE] even though the upstream raised.
+    assert "data: [DONE]" in body, (
+        "wrapper omitted [DONE] after upstream raise; clients will "
+        "hang on truncated stream."
+    )
+    # [DONE] must be the LAST line.
+    assert body.rstrip().endswith("data: [DONE]"), (
+        f"expected body to end with [DONE]; tail: {body[-200:]!r}"
+    )
+    # The structured upstream-error envelope MUST appear BEFORE [DONE]
+    # so clients can decode the failure reason.
+    assert "strict_stream_upstream_error" in body, (
+        "wrapper did not emit upstream_error envelope on upstream raise; "
+        "clients receive a silent close with no structured reason."
+    )
+    assert "chat.completion.error" in body, (
+        "wrapper did not emit the named SSE error event on upstream raise."
+    )
+    # Position check: the error envelope must come BEFORE [DONE].
+    err_idx = body.find("strict_stream_upstream_error")
+    done_idx = body.find("data: [DONE]")
+    assert err_idx < done_idx, (
+        "upstream-error envelope must precede [DONE]; "
+        f"err at {err_idx}, [DONE] at {done_idx}"
+    )
+    # Codex r12 #2: the SSE payload MUST NOT leak ``str(upstream_raised)``
+    # — it can carry file paths, type details, env values from the
+    # inference stack to external callers. We wire ONLY the
+    # exception_type (coarse public identifier) and the
+    # response_id. The full exception string was already logged
+    # server-side in the except arm. Pin: the simulated upstream
+    # message "simulated engine crash" MUST NOT appear in the
+    # client-visible body.
+    assert "simulated engine crash" not in body, (
+        "upstream_raised exception message leaked into client-visible "
+        "SSE payload; this is an info-leak vector. Wire only "
+        "exception_type + response_id."
+    )
+    # But the exception TYPE name (coarse, public-shape) IS exposed
+    # so clients can branch on it.
+    assert "RuntimeError" in body
+    # And the response_id is exposed for client/server correlation.
+    assert "response_id" in body
+
+
+def test_strict_true_streaming_propagates_cancelled_error():
+    """Codex r8 #1 — client-disconnect / cooperative cancellation
+    arrives as ``asyncio.CancelledError``. The strict-streaming
+    wrapper MUST re-raise instead of swallowing it, otherwise:
+      (a) the engine keeps generating tokens for a client who is
+          already gone (wasted compute + held GPU slot);
+      (b) the wrapper tries to yield bytes into a closed pipe and
+          raises again from inside ``finally``, masking the original
+          cancellation.
+
+    Pre-fix the wrapper used ``except BaseException``, which
+    silently captured CancelledError and dropped into the
+    error-emission path. This test pins the fix by injecting an
+    upstream that raises CancelledError mid-stream and asserting the
+    wrapper re-raises it (no [DONE], no error envelope).
+    """
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    async def _cancelling_stream(engine, messages, request, **kwargs):
+        response_id = kwargs.get("response_id", "chatcmpl-test")
+        created = kwargs.get("created", 0)
+        yield (
+            "data: "
+            + _json.dumps(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": "x"},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            + "\n\n"
+        )
+        raise asyncio.CancelledError()
+
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {"type": "object", "required": ["v"]}
+
+    async def _run():
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _cancelling_stream
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks, None
+        except asyncio.CancelledError as exc:
+            return chunks, exc
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    chunks, exc = asyncio.run(_run())
+    # The cancellation MUST propagate up to the caller — pre-fix the
+    # except-BaseException arm swallowed it and the test would see
+    # exc=None + a body with [DONE].
+    assert exc is not None, (
+        "CancelledError was swallowed; client-disconnect path leaks "
+        "compute (upstream keeps running) and masks cancellation."
+    )
+    assert isinstance(exc, asyncio.CancelledError)
+    # Critically, no [DONE] sentinel should have been emitted — the
+    # finally block must skip its yields on cancellation, so the
+    # pipe doesn't see writes after the disconnect.
+    body = "".join(chunks)
+    assert "data: [DONE]" not in body, (
+        "wrapper emitted [DONE] on cancellation; finally body MUST "
+        "skip its yields to avoid writing into a closed pipe."
+    )
+    assert "chat.completion.error" not in body, (
+        "wrapper emitted upstream-error envelope on cancellation; "
+        "finally body MUST skip its yields to avoid writing into a "
+        "closed pipe."
+    )
+
+
+def test_strict_true_streaming_bounds_buffer_with_overflow_error(monkeypatch):
+    """Codex r8 #2 — the wrapper MUST cap the validation buffer to
+    bound server memory on a runaway / adversarial generation. When
+    the cap is hit the wrapper surfaces a structured
+    ``buffer_overflow`` envelope (under code
+    ``json_schema_violation``) and emits ``[DONE]``; clients see a
+    proper terminal error instead of either silent truncation or an
+    OOM crash.
+
+    Test strategy: monkey-patch the cap to a tiny value (256 bytes)
+    via ``RAPID_MLX_STRICT_BUFFER_BYTES``, then feed an upstream
+    that emits content far larger than the cap. Pin: error envelope
+    contains ``buffer_overflow`` in the message, finish_reason is
+    ``json_schema_violation``, and [DONE] is last.
+    """
+    monkeypatch.setenv("RAPID_MLX_STRICT_BUFFER_BYTES", "256")
+
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    async def _runaway_stream(engine, messages, request, **kwargs):
+        response_id = kwargs.get("response_id", "chatcmpl-test")
+        created = kwargs.get("created", 0)
+        # Emit 10 chunks of 100 bytes each = 1000 bytes content,
+        # well above the 256-byte cap.
+        for _ in range(10):
+            yield (
+                "data: "
+                + _json.dumps(
+                    {
+                        "id": response_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": "test-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": "x" * 100},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                )
+                + "\n\n"
+            )
+        # Terminal chunk (which we may or may not reach before break).
+        yield (
+            "data: "
+            + _json.dumps(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": "test-model",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                }
+            )
+            + "\n\n"
+        )
+
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {"type": "object", "required": ["v"]}
+
+    async def _run():
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _runaway_stream
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    chunks = asyncio.run(_run())
+    body = "".join(chunks)
+    # Structured overflow envelope must appear.
+    assert "buffer_overflow" in body, (
+        "wrapper did not surface buffer_overflow envelope on cap "
+        f"breach. Body tail: {body[-400:]!r}"
+    )
+    # Finish reason MUST be json_schema_violation (the union code we
+    # use for ALL strict-mode terminal failures — clients branch on
+    # the envelope ``code`` field within).
+    assert "json_schema_violation" in body
+    # And [DONE] is still last.
+    assert body.rstrip().endswith("data: [DONE]")
+
+
+def test_strict_true_streaming_overflow_closes_upstream_generator(monkeypatch):
+    """Codex r13 #1 — on buffer overflow the wrapper MUST
+    explicitly ``aclose()`` the upstream async generator so the
+    engine's per-request cleanup runs synchronously. Pre-fix the
+    wrapper used a plain ``async for`` with no handle, so a
+    ``break`` left the upstream generator dangling — the engine
+    kept generating tokens for a request the wrapper had already
+    given up on (wasted compute + held slot).
+
+    Test strategy: build a fake upstream generator that tracks
+    whether ``aclose()`` was called on it; force an overflow; pin
+    that ``aclose()`` ran.
+    """
+    monkeypatch.setenv("RAPID_MLX_STRICT_BUFFER_BYTES", "100")
+
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    aclose_called = [False]
+
+    class _TrackingStream:
+        """Async generator that tracks ``aclose()`` calls."""
+
+        def __init__(self, response_id, created):
+            self._response_id = response_id
+            self._created = created
+            self._i = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._i >= 200:  # safety bound
+                raise StopAsyncIteration
+            self._i += 1
+            return (
+                "data: "
+                + _json.dumps(
+                    {
+                        "id": self._response_id,
+                        "object": "chat.completion.chunk",
+                        "created": self._created,
+                        "model": "test-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": "x" * 100},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                )
+                + "\n\n"
+            )
+
+        async def aclose(self):
+            aclose_called[0] = True
+
+    def _factory(engine, messages, request, **kwargs):
+        return _TrackingStream(
+            response_id=kwargs.get("response_id", "chatcmpl-test"),
+            created=kwargs.get("created", 0),
+        )
+
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {"type": "object", "required": ["v"]}
+
+    async def _run():
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _factory
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    asyncio.run(_run())
+    assert aclose_called[0], (
+        "wrapper did not call aclose() on the upstream generator on "
+        "buffer overflow; engine keeps generating after wrapper gives up."
+    )
+
+
+def test_strict_true_streaming_buffer_cap_counts_bytes_not_chars(monkeypatch):
+    """Codex r9 #1 — the buffer cap MUST count UTF-8 BYTES, not
+    Python code points. Pre-fix used ``len(c)`` which counts code
+    points; multi-byte content (CJK, emoji, accented Latin scripts)
+    could blow past a byte budget by 2-4x before the cap engaged,
+    defeating the memory-safety guarantee.
+
+    Test strategy: set the cap to a value that ASCII content fits
+    under but multi-byte content (4-byte emoji) overflows. cap = 100
+    bytes; feed 30 emoji deltas where each emoji is 4 bytes UTF-8
+    (total 120 bytes). The cap MUST trip — pre-fix it would have
+    appeared to fit (30 code points < 100), and validation would
+    proceed against a 120-byte buffer.
+    """
+    monkeypatch.setenv("RAPID_MLX_STRICT_BUFFER_BYTES", "100")
+
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    # U+1F525 (FIRE emoji) is 4 bytes in UTF-8.
+    fire = "\U0001f525"
+    assert len(fire) == 1, "test setup: emoji should be 1 code point"
+    assert len(fire.encode("utf-8")) == 4, "test setup: emoji should be 4 bytes UTF-8"
+
+    async def _emoji_stream(engine, messages, request, **kwargs):
+        response_id = kwargs.get("response_id", "chatcmpl-test")
+        created = kwargs.get("created", 0)
+        # 30 emoji = 30 code points = 120 bytes UTF-8.
+        # Pre-fix: 30 < 100 → cap doesn't trip → 120 bytes accumulated.
+        # Post-fix: 120 > 100 → cap trips → overflow envelope.
+        for _ in range(30):
+            yield (
+                "data: "
+                + _json.dumps(
+                    {
+                        "id": response_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": "test-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": fire},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                )
+                + "\n\n"
+            )
+
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {"type": "object", "required": ["v"]}
+
+    async def _run():
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _emoji_stream
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    chunks = asyncio.run(_run())
+    body = "".join(chunks)
+    # The overflow envelope MUST appear — multi-byte content
+    # correctly accounted in bytes.
+    assert "buffer_overflow" in body, (
+        "buffer cap did not trip on multi-byte content; pre-fix the "
+        "cap counted code points and let 120 UTF-8 bytes through "
+        "under a 100-byte cap."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -518,20 +1539,12 @@ def test_post_decode_schema_violation_returns_502():
 
 
 def test_strict_true_with_outlines_module_faked_absent(monkeypatch):
-    """Codex r4 BLOCKING #1: when ``guided.HAS_OUTLINES`` is False,
-    the production ``BatchedEngine.supports_guided_generation``
-    property composes to False (it reads ``HAS_GUIDED`` which
-    derives from ``HAS_OUTLINES``). This test asserts that
-    composition contract: monkeypatch ``HAS_OUTLINES`` and verify
-    ``is_guided_available()`` reflects it, so a hypothetical engine
-    that calls ``is_guided_available()`` at request time would see
-    the override and fall through the 400 gate.
-
-    The pre-r4 form of this test paired the monkeypatch with
-    ``supports_guided=False`` so it never exercised the
-    monkeypatched module — codex caught the mock-not-actually-
-    used issue. We now exercise the helper directly to prove the
-    HAS_OUTLINES → guided-availability link is wired."""
+    """R12-4 — when ``guided.HAS_OUTLINES`` is False the production
+    ``BatchedEngine.supports_guided_generation`` property composes
+    to False. Post-R12-4, that no longer triggers a 400 — it
+    triggers the post-generate validation + repair retry path.
+    Pin the composition contract here so refactors that decouple
+    HAS_OUTLINES → guided-availability are caught."""
     from vllm_mlx.api import guided as guided_mod
 
     # Before the monkeypatch, the guided extra IS installed.
@@ -542,17 +1555,14 @@ def test_strict_true_with_outlines_module_faked_absent(monkeypatch):
     # After the monkeypatch, the helper composes to False.
     assert guided_mod.is_guided_available() is False
     # An engine honestly reporting ``supports_guided_generation=False``
-    # (the production shape on a HAS_OUTLINES=False install) then
-    # 400s as ``guided_extra_required`` — the operator-actionable
-    # signal that the extra needs installing.
-    engine = _Engine(supports_guided=False)
+    # (the production shape on a HAS_OUTLINES=False install) now
+    # runs the unconstrained chat path and validates; with a valid
+    # output the request returns 200.
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
     client = _make_client(engine)
     resp = client.post("/v1/chat/completions", json=_payload(strict=True))
-    assert resp.status_code == 400
-    body = resp.json()
-    assert body["error"]["code"] == "guided_extra_required"
-    assert "pip install" in body["error"]["message"]
-    assert "rapid-mlx[guided]" in body["error"]["message"]
+    assert resp.status_code == 200
+    assert len(engine.chat_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -673,21 +1683,45 @@ def _responses_payload(*, strict: bool, stream: bool = False) -> dict:
     }
 
 
-def test_responses_strict_true_guided_unavailable_returns_400(_rate_limiter_state):
-    """Codex r1 BLOCKING parity: /v1/responses + strict=true + no
-    guided → canonical 400 with the same envelope shape the chat
-    route emits. The two surfaces must agree on the contract."""
-    engine = _Engine(supports_guided=False)
+def test_responses_strict_true_guided_unavailable_runs_postgen_validation(
+    _rate_limiter_state,
+):
+    """R12-4 parity on /v1/responses — pre-R12-4 the route 400'd
+    ``guided_extra_required`` here. Post-R12-4 the route runs the
+    unconstrained chat path, validates the output, attempts a single
+    repair retry on failure, and surfaces 422 if both attempts
+    fail. The two surfaces (chat + responses) must agree on the
+    contract."""
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
     client = _make_responses_client(engine, _rate_limiter_state)
     resp = client.post("/v1/responses", json=_responses_payload(strict=True))
-    assert resp.status_code == 400, resp.text
+    assert resp.status_code == 422, resp.text
     body = resp.json()
-    assert body["error"]["code"] == "guided_extra_required"
-    assert "rapid-mlx[guided]" in body["error"]["message"]
-    # Counter must tick on /v1/responses too — the same strict-traffic
-    # series spans both surfaces.
+    assert body["error"]["code"] == "json_schema_violation"
+    assert body["error"]["type"] == "validation_error"
+    assert body["error"]["param"] == "text.format"
+    # Counter must tick on /v1/responses too.
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+    assert snap["strict_repairs_attempted_total"] == 1
+
+
+def test_responses_strict_true_guided_unavailable_valid_returns_200(
+    _rate_limiter_state,
+):
+    """R12-4 happy path on /v1/responses — strict + no guided +
+    valid output → 200, no violation counter increment."""
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    client = _make_responses_client(engine, _rate_limiter_state)
+    resp = client.post("/v1/responses", json=_responses_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
 
 
 def test_responses_strict_true_guided_available_routes_to_constrained(

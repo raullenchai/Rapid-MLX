@@ -185,7 +185,12 @@ def _render_response_format_counters() -> list[str]:
 
         rf_stats = _rf_snapshot()
     except Exception:
-        rf_stats = {"strict_requests_total": 0, "strict_violations_total": 0}
+        rf_stats = {
+            "strict_requests_total": 0,
+            "strict_violations_total": 0,
+            "strict_repairs_attempted_total": 0,
+            "strict_repairs_succeeded_total": 0,
+        }
     out: list[str] = []
     out.extend(
         _fmt_metric(
@@ -195,8 +200,8 @@ def _render_response_format_counters() -> list[str]:
                 "Requests with response_format.type=json_schema and "
                 "strict=true (H-06). Counts admitted strict requests "
                 "regardless of whether the [guided] extra was installed "
-                "— installs missing the extra surface a 400 before "
-                "generation."
+                "— installs missing the extra now fall through to the "
+                "post-generate validation + repair-retry path (R12-4)."
             ),
             int(rf_stats.get("strict_requests_total", 0)),
         )
@@ -209,10 +214,42 @@ def _render_response_format_counters() -> list[str]:
                 "Strict json_schema responses that failed post-decode "
                 "jsonschema.validate (H-06). Constrained decoding via "
                 "outlines should make this unreachable — any non-zero "
-                "rate signals that the guided-decoding path silently "
-                "degraded (alert on rate > 0)."
+                "rate on a guided install signals that the guided path "
+                "silently degraded. On non-guided installs this counts "
+                "the requests that ultimately surfaced 422 to the client "
+                "after the R12-4 repair retry also failed."
             ),
             int(rf_stats.get("strict_violations_total", 0)),
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_response_format_strict_repairs_attempted_total",
+            "counter",
+            (
+                "R12-4 strict-mode auto-repair attempts. Ticks once per "
+                "request whose initial unconstrained output failed "
+                "jsonschema.validate and was re-prompted with a "
+                "system-injected repair hint. Includes attempts that "
+                "ultimately still failed (those also bump "
+                "rapid_mlx_response_format_strict_violations_total)."
+            ),
+            int(rf_stats.get("strict_repairs_attempted_total", 0)),
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_response_format_strict_repairs_succeeded_total",
+            "counter",
+            (
+                "R12-4 strict-mode auto-repair successes. Ticks when an "
+                "auto-repair attempt produced output that validated "
+                "against the supplied schema. Divide by "
+                "rapid_mlx_response_format_strict_repairs_attempted_total "
+                "for the repair success rate — low rates suggest the "
+                "client's schema is too restrictive for the model."
+            ),
+            int(rf_stats.get("strict_repairs_succeeded_total", 0)),
         )
     )
     return out
