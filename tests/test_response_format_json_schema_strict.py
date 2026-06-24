@@ -926,6 +926,109 @@ def test_strict_true_streaming_emits_done_even_without_upstream_done():
     )
 
 
+def test_strict_true_streaming_emits_done_on_upstream_raise():
+    """Codex r7 #1 — when the upstream generator RAISES mid-stream
+    (engine crash, runtime exception, etc.), the wrapper must
+    STILL emit ``[DONE]`` so clients don't hang on a truncated
+    stream. The pre-fix code had no ``try/finally`` around the
+    upstream ``async for`` loop, so an exception would propagate
+    out of the async generator and skip the unconditional ``[DONE]``
+    emission entirely.
+
+    Additionally pins: the wrapper emits a structured
+    ``upstream_error`` envelope BEFORE ``[DONE]`` so the client
+    sees WHY the stream ended early (not just a silent close).
+    """
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    async def _raising_stream(engine, messages, request, **kwargs):
+        response_id = kwargs.get("response_id", "chatcmpl-test")
+        created = kwargs.get("created", 0)
+        # Emit one content chunk, THEN raise — exercises the
+        # "raised mid-stream after partial output" path that the
+        # try/finally has to cover.
+        yield (
+            "data: "
+            + _json.dumps(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": '{"val'},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            + "\n\n"
+        )
+        raise RuntimeError("simulated engine crash")
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {
+        "type": "object",
+        "properties": {"value": {"type": "integer"}},
+        "required": ["value"],
+    }
+
+    import asyncio
+
+    async def _run():
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _raising_stream
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    chunks = asyncio.run(_run())
+    body = "".join(chunks)
+
+    # The wrapper MUST emit [DONE] even though the upstream raised.
+    assert "data: [DONE]" in body, (
+        "wrapper omitted [DONE] after upstream raise; clients will "
+        "hang on truncated stream."
+    )
+    # [DONE] must be the LAST line.
+    assert body.rstrip().endswith("data: [DONE]"), (
+        f"expected body to end with [DONE]; tail: {body[-200:]!r}"
+    )
+    # The structured upstream-error envelope MUST appear BEFORE [DONE]
+    # so clients can decode the failure reason.
+    assert "strict_stream_upstream_error" in body, (
+        "wrapper did not emit upstream_error envelope on upstream raise; "
+        "clients receive a silent close with no structured reason."
+    )
+    assert "chat.completion.error" in body, (
+        "wrapper did not emit the named SSE error event on upstream raise."
+    )
+    # Position check: the error envelope must come BEFORE [DONE].
+    err_idx = body.find("strict_stream_upstream_error")
+    done_idx = body.find("data: [DONE]")
+    assert err_idx < done_idx, (
+        "upstream-error envelope must precede [DONE]; "
+        f"err at {err_idx}, [DONE] at {done_idx}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Route-level: strict=false → fallthrough to prompt-injection
 # ---------------------------------------------------------------------------

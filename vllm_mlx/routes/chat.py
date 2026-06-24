@@ -4503,149 +4503,223 @@ async def stream_chat_completion_strict_postgen(
     # it with our ``json_schema_violation`` chunk (if invalid).
     held_terminal_chunks: list[str] = []
     held_usage_chunk: str | None = None
+    # Codex r7 #1: track whether validation+emission ran. The
+    # try/finally below emits ``[DONE]`` unconditionally on the way
+    # out — but if the upstream ``async for`` raised mid-stream we
+    # must ALSO surface a structured ``upstream_stream_error`` event
+    # before ``[DONE]`` so clients see WHY the stream ended early
+    # (not just a silent close).
+    upstream_raised: BaseException | None = None
+    validation_emitted = False
 
-    async for chunk_text in stream_chat_completion(
-        engine,
-        messages,
-        request,
-        response_id=response_id,
-        created=created,
-        **kwargs,
-    ):
-        # Swallow the upstream [DONE] sentinel — we emit our own
-        # [DONE] at the END of validation (codex r6 #1, unconditional)
-        # so post-validation chunks land BEFORE the terminal marker
-        # the spec requires last.
-        if chunk_text.strip() == "data: [DONE]":
-            continue
-        is_terminal = False
-        is_usage_chunk = False
-        # Snoop content deltas + detect terminal finish_reason chunks
-        # without disturbing the byte stream.
-        if chunk_text.startswith("data: "):
-            payload = chunk_text[len("data: ") :].strip()
-            try:
-                parsed = json.loads(payload)
-            except (json.JSONDecodeError, TypeError, ValueError):
-                parsed = None
-            if isinstance(parsed, dict):
-                choices = parsed.get("choices") or []
-                for ch in choices:
-                    if not isinstance(ch, dict):
-                        continue
-                    delta = ch.get("delta") or {}
-                    if isinstance(delta, dict):
-                        c = delta.get("content")
-                        if isinstance(c, str):
-                            buffered_content.append(c)
-                    if ch.get("finish_reason"):
-                        is_terminal = True
-                # A usage-only chunk has no choices (or empty choices)
-                # AND carries a ``usage`` field — the upstream
-                # ``stream_chat_completion`` emits one after the
-                # terminal chunk when ``stream_options.include_usage``
-                # is set. We hold it alongside the terminal chunk so
-                # the terminal-replacement logic doesn't drop usage.
-                if not choices and parsed.get("usage") is not None:
-                    is_usage_chunk = True
-        if is_terminal:
-            held_terminal_chunks.append(chunk_text)
-            continue
-        if is_usage_chunk:
-            held_usage_chunk = chunk_text
-            continue
-        yield chunk_text
-
-    # Stream completed — run validation. We do NOT incr_strict_violation()
-    # on the happy path; only when we surface the failure event.
-    full_content = "".join(buffered_content)
-    ok, failure_details = validate_and_envelope(full_content, json_schema)
-    if ok:
-        # Validation passed — release the held terminal + usage chunks
-        # in their original order. The client sees a normal stream.
-        for terminal in held_terminal_chunks:
-            yield terminal
-        if held_usage_chunk is not None:
-            yield held_usage_chunk
-    else:
-        incr_strict_violation()
-        envelope = build_violation_envelope(
-            failure_details or {"reason": "schema_violation"},
-            attempts=1,
-        )
-        # Codex r2 #1: DROP the held upstream terminal chunk(s); a
-        # client finalizing on the first ``finish_reason`` would
-        # otherwise treat ``stop`` as the verdict and miss the
-        # violation. The R12-4 contract: the FIRST finish_reason a
-        # strict-streaming client sees on a violating response MUST
-        # be ``json_schema_violation``.
-        violation_chunk = ChatCompletionChunk(
-            id=response_id,
+    try:
+        async for chunk_text in stream_chat_completion(
+            engine,
+            messages,
+            request,
+            response_id=response_id,
             created=created,
-            model=model_name,
-            choices=[
-                ChatCompletionChunkChoice(
-                    delta=ChatCompletionChunkDelta(),
-                    finish_reason="json_schema_violation",
-                )
-            ],
-        )
-        yield ("data: " + violation_chunk.model_dump_json(exclude_none=True) + "\n\n")
-        # Codex r5 #1: emit ONE error frame, not two. A previous
-        # iteration (codex r2) split the envelope into a named SSE
-        # event (``event: chat.completion.error\ndata: ...``) AND a
-        # plain ``data: ...`` line carrying the same payload. The
-        # double-emit is harmful: a client that consumes both named
-        # SSE events AND plain ``data:`` lines (EventSource subclasses,
-        # custom dispatchers) handles the same terminal error twice,
-        # producing double-billing in observability and potentially
-        # duplicate user-facing toasts. We pick the named form: per
-        # SSE spec, ``event: chat.completion.error\ndata: <json>``
-        # is parsed as ONE message event by EventSource (dispatched
-        # to the ``chat.completion.error`` listener) AND as ONE
-        # ``data:`` line by plain-line consumers (OpenAI Python SDK,
-        # curl, AI SDK), who ignore the unknown ``event:`` field.
-        # Both client classes receive the envelope exactly once.
-        error_event = {
-            "id": response_id,
-            "object": "chat.completion.error",
-            "created": created,
-            "model": model_name,
-            **envelope,
-        }
-        # Compact JSON encoding (no spaces) matches the SSE chunk
-        # encoding used elsewhere in this module.
-        error_payload = json.dumps(error_event, separators=(",", ":"))
-        yield ("event: chat.completion.error\n" + "data: " + error_payload + "\n\n")
-        # Codex r6 #2: preserve usage accounting on a failed strict
-        # generation. Requests with ``stream_options.include_usage``
-        # already consumed generation tokens before the validation
-        # verdict landed; dropping the usage chunk on failure would
-        # leave billing / observability clients blind to those tokens.
-        # The terminal ``finish_reason=json_schema_violation`` chunk
-        # has already been emitted ABOVE this point, so the
-        # usage-only chunk that follows is unambiguously trailing
-        # metadata (mirroring the OpenAI streaming spec, where the
-        # final usage chunk arrives AFTER the terminal finish_reason
-        # chunk). Pass the held usage chunk through verbatim so
-        # consumers reconcile billing against the same numbers they
-        # would have seen on a successful turn.
-        if held_usage_chunk is not None:
-            yield held_usage_chunk
+            **kwargs,
+        ):
+            # Swallow the upstream [DONE] sentinel — we emit our own
+            # [DONE] at the END of validation (codex r6 #1,
+            # unconditional) so post-validation chunks land BEFORE the
+            # terminal marker the spec requires last.
+            if chunk_text.strip() == "data: [DONE]":
+                continue
+            is_terminal = False
+            is_usage_chunk = False
+            # Snoop content deltas + detect terminal finish_reason
+            # chunks without disturbing the byte stream.
+            if chunk_text.startswith("data: "):
+                payload = chunk_text[len("data: ") :].strip()
+                try:
+                    parsed = json.loads(payload)
+                except (json.JSONDecodeError, TypeError, ValueError):
+                    parsed = None
+                if isinstance(parsed, dict):
+                    choices = parsed.get("choices") or []
+                    for ch in choices:
+                        if not isinstance(ch, dict):
+                            continue
+                        delta = ch.get("delta") or {}
+                        if isinstance(delta, dict):
+                            c = delta.get("content")
+                            if isinstance(c, str):
+                                buffered_content.append(c)
+                        if ch.get("finish_reason"):
+                            is_terminal = True
+                    # A usage-only chunk has no choices (or empty
+                    # choices) AND carries a ``usage`` field — the
+                    # upstream ``stream_chat_completion`` emits one
+                    # after the terminal chunk when
+                    # ``stream_options.include_usage`` is set. We
+                    # hold it alongside the terminal chunk so the
+                    # terminal-replacement logic doesn't drop usage.
+                    if not choices and parsed.get("usage") is not None:
+                        is_usage_chunk = True
+            if is_terminal:
+                held_terminal_chunks.append(chunk_text)
+                continue
+            if is_usage_chunk:
+                held_usage_chunk = chunk_text
+                continue
+            yield chunk_text
+
+        # Stream completed normally — run validation. We do NOT
+        # incr_strict_violation() on the happy path; only when we
+        # surface the failure event.
+        full_content = "".join(buffered_content)
+        ok, failure_details = validate_and_envelope(full_content, json_schema)
+        if ok:
+            # Validation passed — release the held terminal + usage
+            # chunks in their original order. The client sees a normal
+            # stream.
+            for terminal in held_terminal_chunks:
+                yield terminal
+            if held_usage_chunk is not None:
+                yield held_usage_chunk
+        else:
+            incr_strict_violation()
+            envelope = build_violation_envelope(
+                failure_details or {"reason": "schema_violation"},
+                attempts=1,
+            )
+            # Codex r2 #1: DROP the held upstream terminal chunk(s); a
+            # client finalizing on the first ``finish_reason`` would
+            # otherwise treat ``stop`` as the verdict and miss the
+            # violation. The R12-4 contract: the FIRST finish_reason a
+            # strict-streaming client sees on a violating response
+            # MUST be ``json_schema_violation``.
+            violation_chunk = ChatCompletionChunk(
+                id=response_id,
+                created=created,
+                model=model_name,
+                choices=[
+                    ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(),
+                        finish_reason="json_schema_violation",
+                    )
+                ],
+            )
+            yield (
+                "data: " + violation_chunk.model_dump_json(exclude_none=True) + "\n\n"
+            )
+            # Codex r5 #1: emit ONE error frame, not two. A previous
+            # iteration (codex r2) split the envelope into a named
+            # SSE event (``event: chat.completion.error\ndata: ...``)
+            # AND a plain ``data: ...`` line carrying the same
+            # payload. The double-emit is harmful: a client that
+            # consumes both named SSE events AND plain ``data:``
+            # lines (EventSource subclasses, custom dispatchers)
+            # handles the same terminal error twice, producing
+            # double-billing in observability and potentially
+            # duplicate user-facing toasts. We pick the named form:
+            # per SSE spec, ``event: chat.completion.error\ndata:
+            # <json>`` is parsed as ONE message event by EventSource
+            # (dispatched to the ``chat.completion.error`` listener)
+            # AND as ONE ``data:`` line by plain-line consumers
+            # (OpenAI Python SDK, curl, AI SDK), who ignore the
+            # unknown ``event:`` field. Both client classes receive
+            # the envelope exactly once.
+            error_event = {
+                "id": response_id,
+                "object": "chat.completion.error",
+                "created": created,
+                "model": model_name,
+                **envelope,
+            }
+            # Compact JSON encoding (no spaces) matches the SSE chunk
+            # encoding used elsewhere in this module.
+            error_payload = json.dumps(error_event, separators=(",", ":"))
+            yield ("event: chat.completion.error\n" + "data: " + error_payload + "\n\n")
+            # Codex r6 #2: preserve usage accounting on a failed
+            # strict generation. Requests with
+            # ``stream_options.include_usage`` already consumed
+            # generation tokens before the validation verdict landed;
+            # dropping the usage chunk on failure would leave billing
+            # / observability clients blind to those tokens. The
+            # terminal ``finish_reason=json_schema_violation`` chunk
+            # has already been emitted ABOVE this point, so the
+            # usage-only chunk that follows is unambiguously trailing
+            # metadata (mirrors the OpenAI streaming spec, where the
+            # final usage chunk arrives AFTER the terminal
+            # finish_reason chunk). Pass the held usage chunk through
+            # verbatim so consumers reconcile billing against the same
+            # numbers they would have seen on a successful turn.
+            if held_usage_chunk is not None:
+                yield held_usage_chunk
+            logger.warning(
+                "R12-4 strict json_schema streaming validation failed: %s",
+                (failure_details or {}).get("message"),
+            )
+        validation_emitted = True
+    except BaseException as exc:  # noqa: BLE001
+        # Codex r7 #1: the upstream generator raised mid-stream.
+        # Without this try/finally, the promised unconditional
+        # ``[DONE]`` at the bottom of this function would NEVER be
+        # emitted (Python's generator close semantics propagate the
+        # exception past the function epilogue), and clients see a
+        # truncated stream with no terminal sentinel. We capture the
+        # exception, surface a structured ``upstream_stream_error``
+        # event, then drop into the finally block to emit ``[DONE]``.
+        # We do NOT re-raise after the finally — by the time the SSE
+        # stream is in flight there is no other surface for the
+        # error, and the wire envelope is already 200/event-stream.
+        upstream_raised = exc
         logger.warning(
-            "R12-4 strict json_schema streaming validation failed: %s",
-            (failure_details or {}).get("message"),
+            "R12-4 strict streaming upstream generator raised: %s: %s",
+            type(exc).__name__,
+            exc,
         )
-    # Codex r6 #1: ALWAYS emit the terminal ``[DONE]`` sentinel — even
-    # if the upstream generator exited WITHOUT emitting it. A previous
-    # iteration gated the emission on ``saw_done``; that left clients
-    # hanging when the upstream stream-fn raised mid-flight (engine
-    # crash, disconnect, etc.) and the wrapper consumed its iterator
-    # to exhaustion without ever observing ``[DONE]``. The spec wire
-    # envelope MUST close with ``[DONE]`` regardless of upstream
-    # health — duplicate sentinels on a normal-shaped upstream are
-    # tolerated by every spec-compliant client (the SSE protocol
-    # discards repeated ``[DONE]`` lines as no-op message events). We
-    # ALSO keep ``saw_done`` tracking for telemetry parity, but the
-    # actual emission is unconditional.
-    yield "data: [DONE]\n\n"
+    finally:
+        # Codex r7 #1: if the upstream raised, emit the error envelope
+        # BEFORE [DONE]. This is structurally identical to a schema
+        # violation event — distinct ``code`` so clients can branch,
+        # same envelope shape so handler code is reusable.
+        if upstream_raised is not None and not validation_emitted:
+            # Use the same envelope shape as the schema violation path
+            # so a single ``onerror`` handler can decode both.
+            upstream_envelope = {
+                "error": {
+                    "type": "upstream_error",
+                    "code": "strict_stream_upstream_error",
+                    "message": (
+                        f"strict json_schema streaming generation aborted "
+                        f"before validation: "
+                        f"{type(upstream_raised).__name__}: {upstream_raised}"
+                    ),
+                    "param": "response_format.json_schema",
+                    "details": {
+                        "exception_type": type(upstream_raised).__name__,
+                    },
+                }
+            }
+            err_obj = {
+                "id": response_id,
+                "object": "chat.completion.error",
+                "created": created,
+                "model": model_name,
+                **upstream_envelope,
+            }
+            try:
+                err_payload = json.dumps(err_obj, separators=(",", ":"))
+                yield (
+                    "event: chat.completion.error\n" + "data: " + err_payload + "\n\n"
+                )
+            except (TypeError, ValueError):
+                # JSON encoding can't reasonably fail here, but if it
+                # did we still need to close the stream. Fall through
+                # to [DONE].
+                pass
+        # Codex r6 #1 + r7 #1: ALWAYS emit the terminal ``[DONE]``
+        # sentinel — regardless of whether the upstream generator
+        # produced its own, AND regardless of whether the upstream
+        # raised mid-stream. The spec wire envelope MUST close with
+        # ``[DONE]`` so spec-compliant clients don't hang. Duplicate
+        # sentinels on a normal-shaped upstream are tolerated by every
+        # SSE client (the protocol discards repeated ``[DONE]`` lines
+        # as no-op message events). The finally block guarantees
+        # delivery even on upstream raise — see the ``except`` arm
+        # above for the error-envelope companion.
+        yield "data: [DONE]\n\n"
