@@ -838,10 +838,11 @@ class TestR11AInvariantFilterEmptyDoesNotPromiseToolCalls:
         # drops it. ``output.finished=True`` on the same chunk so the
         # terminal finish event fires here.
         scratch = (
-            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n'
-            "</tool_call>"
+            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n</tool_call>'
         )
-        events = pp.process_chunk(_make_output(text=scratch, finished=True, finish_reason="stop"))
+        events = pp.process_chunk(
+            _make_output(text=scratch, finished=True, finish_reason="stop")
+        )
         events.extend(pp.finalize())
 
         state = _collect_terminal_state(events)
@@ -875,14 +876,15 @@ class TestR11AInvariantFilterEmptyDoesNotPromiseToolCalls:
         pp.reset()
 
         scratch = (
-            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n'
-            "</tool_call>"
+            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n</tool_call>'
         )
         # Chunk 1: parser surfaces the call → filter drops → no event
         events_a = pp.process_chunk(_make_output(text=scratch, finished=False))
         # Chunk 2 (zero-text finished chunk): hits the
         # ``if self.tool_calls_detected: ... finished:`` branch.
-        events_b = pp.process_chunk(_make_output(text="", finished=True, finish_reason="stop"))
+        events_b = pp.process_chunk(
+            _make_output(text="", finished=True, finish_reason="stop")
+        )
         events = list(events_a) + list(events_b) + list(pp.finalize())
 
         state = _collect_terminal_state(events)
@@ -907,7 +909,9 @@ class TestR11AInvariantFilterEmptyDoesNotPromiseToolCalls:
             '<tool_call>\n{"name": "format_date", "arguments": {"raw": 20230805}}\n'
             "</tool_call>"
         )
-        events = pp.process_chunk(_make_output(text=full, finished=True, finish_reason="stop"))
+        events = pp.process_chunk(
+            _make_output(text=full, finished=True, finish_reason="stop")
+        )
         events.extend(pp.finalize())
 
         state = _collect_terminal_state(events)
@@ -936,7 +940,10 @@ class TestR11AInvariantFilterEmptyDoesNotPromiseToolCalls:
         )
         events = pp.finalize()
         emitted_calls = [
-            tc for ev in events if ev.type == "tool_call" for tc in (ev.tool_calls or [])
+            tc
+            for ev in events
+            if ev.type == "tool_call"
+            for tc in (ev.tool_calls or [])
         ]
         assert emitted_calls, "finalize recovery did not surface the call"
         assert pp._tool_calls_emitted_to_wire == len(emitted_calls)
@@ -1019,14 +1026,15 @@ class TestR11V2ExactlyOneFinishReason:
         pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
         pp.reset()
         scratch = (
-            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n'
-            "</tool_call>"
+            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n</tool_call>'
         )
         events = pp.process_chunk(
             _make_output(text=scratch, finished=True, finish_reason="stop")
         )
         finish_events = [e for e in events if e.type == "finish"]
-        assert finish_events, "filter-drop on finished chunk must still emit a finish event"
+        assert finish_events, (
+            "filter-drop on finished chunk must still emit a finish event"
+        )
         # And the lone finish carries a non-None reason.
         assert all(e.finish_reason for e in finish_events)
 
@@ -1066,9 +1074,7 @@ class TestR11ARegressionFromDogfoodSSE:
         # hermes wire shape that the parser drives through the
         # streaming path).
         wire_text = (
-            "<tool_call>\n"
-            '{"name": "format_date", "arguments": 20230805}\n'
-            "</tool_call>"
+            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n</tool_call>'
         )
         # Stream it byte-by-byte to exercise the cumulative
         # streaming-parser path AND its interaction with the filter

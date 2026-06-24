@@ -713,7 +713,7 @@ class _InlineToolCallFinishEngine:
 
     async def stream_chat(self, messages, **kwargs):
         body = (
-            '<tool_call>\n'
+            "<tool_call>\n"
             '{"name": "get_weather", "arguments": {"city": "Paris"}}\n'
             "</tool_call>"
         )
