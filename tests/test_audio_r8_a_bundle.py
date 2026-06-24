@@ -664,9 +664,7 @@ class TestAllowedVoicesDynamicEnumeration:
             assert filename == "config.json"
             return str(snapshot / "config.json")
 
-        monkeypatch.setattr(
-            "huggingface_hub.try_to_load_from_cache", fake_cache_lookup
-        )
+        monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", fake_cache_lookup)
 
         from vllm_mlx.audio.tts import _list_snapshot_voices
 
@@ -721,9 +719,7 @@ class TestAllowedVoicesDynamicEnumeration:
             captured["repo_id"] = repo_id
             return str(snapshot / "config.json")
 
-        monkeypatch.setattr(
-            "huggingface_hub.try_to_load_from_cache", fake_cache_lookup
-        )
+        monkeypatch.setattr("huggingface_hub.try_to_load_from_cache", fake_cache_lookup)
 
         from vllm_mlx.audio.tts import _list_snapshot_voices
 
@@ -846,9 +842,7 @@ class TestVibevoiceDefaultSentinelResolves:
         self._patch_static_fallback(monkeypatch)
         for alias in ("voxcpm", "dia"):
             voices_seen: list[str] = []
-            audio_route, _models = _stub_engine(
-                monkeypatch, voice_observed=voices_seen
-            )
+            audio_route, _models = _stub_engine(monkeypatch, voice_observed=voices_seen)
             client, restore = _mount_audio_app()
             try:
                 r = client.post(
