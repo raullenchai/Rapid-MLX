@@ -576,3 +576,89 @@ class TestThinkingBlockContentHelper:
         reasoning = "my full thought process"
         text = "the answer"
         assert _thinking_block_content(reasoning, text) == reasoning
+
+
+class TestMarkupOnlyDelta:
+    """Codex r1 P2 (R12-M1b): the markup-only-delta dupe case.
+
+    When ``reasoning_text`` and ``text`` differ ONLY by reasoning-channel
+    markup (e.g. ``reasoning_text="<think>done</think>"`` and
+    ``text="done"``), the channel-aware sanitizer normalizes the
+    thinking payload to the same bytes the text block already carries.
+    The pre-fix gate ``reasoning_text != text`` was a True predicate
+    (the strings DO differ), so both blocks emitted with the same
+    visible bytes — exactly the duplicate-block failure mode this
+    suppression was supposed to prevent.
+
+    Fix: gate on ``thinking_body != text`` (post-sanitize).
+    """
+
+    def test_markup_only_delta_does_not_emit_duplicate_thinking_block(self):
+        """``reasoning_text`` is just the wrapped form of ``text`` — the
+        adapter must NOT emit a thinking block that, after sanitization,
+        contains the same visible bytes as the text block.
+        """
+        reasoning_text = "<think>done</think>"
+        text = "done"
+        resp = ChatCompletionResponse(
+            model="qwen3-0.6b-bf16",
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message=AssistantMessage(
+                        role="assistant",
+                        content=text,
+                        reasoning_content=reasoning_text,
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=Usage(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+        )
+        anth = openai_to_anthropic(resp, "qwen3-0.6b-bf16", reasoning_enabled=True)
+        # The text block must carry the answer.
+        text_blocks = [b for b in anth.content if b.type == "text"]
+        assert len(text_blocks) == 1
+        assert text_blocks[0].text == "done"
+        # The thinking block MUST be suppressed — emitting it would
+        # render the same visible bytes twice (Codex r1 P2 dupe).
+        thinking_blocks = [b for b in anth.content if b.type == "thinking"]
+        assert thinking_blocks == [], (
+            "thinking block must be suppressed when its post-sanitize "
+            "payload equals the text block (markup-only delta dupe); "
+            f"got {[b.thinking for b in thinking_blocks]!r}"
+        )
+
+    def test_markup_only_delta_with_distinct_reasoning_still_emits_thinking(self):
+        """Pin the inverse: when the post-sanitize thinking payload is
+        genuinely DIFFERENT from the text block (the normal happy path),
+        the adapter MUST emit the thinking block. Guards against an
+        over-aggressive fix that suppresses the thinking block for
+        every case where reasoning + content share a non-empty suffix.
+        """
+        reasoning_text = "<think>let me think about this carefully</think>"
+        text = "the answer"
+        resp = ChatCompletionResponse(
+            model="qwen3-0.6b-bf16",
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message=AssistantMessage(
+                        role="assistant",
+                        content=text,
+                        reasoning_content=reasoning_text,
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=Usage(prompt_tokens=5, completion_tokens=10, total_tokens=15),
+        )
+        anth = openai_to_anthropic(resp, "qwen3-0.6b-bf16", reasoning_enabled=True)
+        thinking_blocks = [b for b in anth.content if b.type == "thinking"]
+        text_blocks = [b for b in anth.content if b.type == "text"]
+        assert len(thinking_blocks) == 1
+        assert thinking_blocks[0].thinking == "let me think about this carefully"
+        assert len(text_blocks) == 1
+        assert text_blocks[0].text == "the answer"

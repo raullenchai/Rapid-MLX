@@ -413,8 +413,22 @@ def openai_to_anthropic(
         # which signals "do not emit a thinking block" (same shape as
         # the previous whitespace-only guard).
         thinking_body = _thinking_block_content(reasoning_text, text)
+        # Compare the POST-sanitize thinking payload against ``text`` —
+        # not the raw ``reasoning_text``. Codex r1 P2 on R12-M1b: when
+        # ``reasoning_text="<think>done</think>"`` and ``text="done"``,
+        # the channel-aware sanitizer normalizes the thinking payload
+        # to ``"done"`` (correctly stripping the reasoning-channel
+        # tags), but the raw byte comparison ``reasoning_text != text``
+        # is True — so both blocks would emit with the same visible
+        # bytes (``thinking="done"`` AND ``text="done"``), which is
+        # exactly the duplicate-block case this gate was supposed to
+        # prevent. Gating on ``thinking_body != text`` collapses the
+        # markup-only-delta case correctly while preserving the
+        # original intent on the raw-equality case (the rescue path,
+        # which the dedupe helper above already handles, returns a
+        # trimmed prefix so ``thinking_body != text`` holds there too).
         emit_thinking = (
-            reasoning_enabled and thinking_body is not None and reasoning_text != text
+            reasoning_enabled and thinking_body is not None and thinking_body != text
         )
         # Add thinking block FIRST so it appears before the answer text,
         # matching Anthropic's extended-thinking SDK convention. Without
