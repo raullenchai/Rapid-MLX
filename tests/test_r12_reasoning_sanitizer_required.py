@@ -144,6 +144,69 @@ class TestSanitizeReasoningHelpers:
         assert sanitize_reasoning_for_stream(None) == ""
         assert sanitize_reasoning_for_stream("") == ""
 
+    def test_sanitize_reasoning_for_stream_preserves_leading_whitespace(self):
+        """Codex r2 [P2] on R12-FIX-V2: streaming clients concatenate
+        deltas verbatim. ``.strip()``-ing an individual delta corrupts
+        cross-delta boundaries — e.g. prior delta ``"foo"`` + this
+        delta ``" bar <|im_start|>"`` must arrive as ``"foo bar "`` not
+        ``"foobar"``. The streaming sanitizer removes ONLY the marker
+        bytes and leaves surrounding whitespace intact.
+        """
+        out = sanitize_reasoning_for_stream(" bar <|im_start|>")
+        # Leading whitespace MUST survive so the concatenation with the
+        # prior delta keeps the word boundary.
+        assert out.startswith(" "), (
+            f"streaming sanitizer must preserve leading whitespace; got {out!r}"
+        )
+        assert "<|im_start|>" not in out
+        assert "bar" in out
+
+    def test_sanitize_reasoning_for_stream_preserves_trailing_whitespace(self):
+        """Mirror of the leading-whitespace test: ``"<|im_start|> next"``
+        must NOT trim the leading space after marker removal — it's
+        meaningful between the prior delta and the surviving prose."""
+        out = sanitize_reasoning_for_stream("<|im_start|> next")
+        assert out.endswith(" next"), (
+            f"streaming sanitizer must preserve whitespace after marker "
+            f"removal; got {out!r}"
+        )
+        assert "<|im_start|>" not in out
+
+    def test_sanitize_reasoning_for_stream_preserves_newline_whitespace(self):
+        """Newlines inside reasoning deltas are equally load-bearing —
+        the streaming concatenation contract requires the sanitizer to
+        leave newlines around stripped markers intact."""
+        out = sanitize_reasoning_for_stream("step1\n<|im_end|>\nstep2")
+        assert "<|im_end|>" not in out
+        assert out == "step1\n\nstep2", (
+            f"newlines surrounding marker must survive; got {out!r}"
+        )
+
+    def test_sanitize_reasoning_for_stream_pure_marker_collapses_to_empty(self):
+        """When the delta is purely markup (no surrounding text),
+        the result is ``""`` so the caller can suppress the empty
+        delta without surprising clients."""
+        for marker in _LEAK_MARKERS:
+            assert sanitize_reasoning_for_stream(marker) == "", (
+                f"pure-marker delta must collapse to empty; marker={marker!r}"
+            )
+
+    def test_sanitize_reasoning_for_stream_two_delta_concat_repro(self):
+        """End-to-end of the codex r2 concern: ``"foo"`` + ``" bar
+        <|im_start|>"`` must concatenate to ``"foo bar "`` — pre-fix
+        the second delta sanitized to ``"bar"`` and clients saw
+        ``"foobar"``.
+        """
+        prior = "foo"
+        leaky = " bar <|im_start|>"
+        sanitized = sanitize_reasoning_for_stream(leaky)
+        joined = prior + sanitized
+        assert "foobar" not in joined, (
+            f"streaming concat regression: deltas {prior!r}+{leaky!r} "
+            f"produced {joined!r}, must preserve the inter-word space"
+        )
+        assert "foo bar" in joined
+
     def test_helper_parity_with_sanitize_output_content_semantic(self):
         """The reasoning-side sanitizer MUST agree byte-for-byte with
         the content-side sanitizer. Single source of truth: drift
@@ -169,9 +232,7 @@ class TestAssistantMessageSanitizes:
     """
 
     @pytest.mark.parametrize("marker", _LEAK_MARKERS)
-    def test_reasoning_content_special_token_is_stripped_on_construction(
-        self, marker
-    ):
+    def test_reasoning_content_special_token_is_stripped_on_construction(self, marker):
         """The Vlad r12 repro shape: reasoning_content is set to a
         bare special token. The validator must strip it so the
         serialized envelope never carries the marker."""
@@ -396,9 +457,7 @@ def test_chat_route_required_repro_exact_vlad_shape():
         "/v1/chat/completions",
         json={
             "model": "qwen3-0.6b-4bit",
-            "messages": [
-                {"role": "user", "content": "What's the weather in Tokyo?"}
-            ],
+            "messages": [{"role": "user", "content": "What's the weather in Tokyo?"}],
             "tools": _WEATHER_TOOL,
             "tool_choice": "required",
             "max_tokens": 200,
@@ -527,9 +586,7 @@ def test_chat_route_streaming_required_reasoning_is_sanitized():
         "/v1/chat/completions",
         json={
             "model": "qwen3-0.6b-4bit",
-            "messages": [
-                {"role": "user", "content": "What's the weather in Tokyo?"}
-            ],
+            "messages": [{"role": "user", "content": "What's the weather in Tokyo?"}],
             "tools": _WEATHER_TOOL,
             "tool_choice": "required",
             "max_tokens": 200,

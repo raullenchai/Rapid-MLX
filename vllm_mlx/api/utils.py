@@ -131,18 +131,38 @@ def sanitize_reasoning_for_stream(text: str | None) -> str:
     write a STRING value into the JSON envelope — a ``None`` here would
     serialize as JSON ``null`` and change the field's type contract on
     the wire (clients consume ``delta.reasoning_content`` as a string).
-    This variant collapses a fully-stripped result to ``""`` (empty
-    string) instead of ``None``, so the caller can decide whether to
-    suppress the delta entirely (empty string → skip) without
-    surprising clients.
 
-    Returns ``""`` for ``None`` / empty input so callers can use the
-    return as the JSON value directly.
+    **Whitespace preservation contract**: streaming clients concatenate
+    deltas verbatim, so ``.strip()``-ing an individual delta corrupts
+    cross-delta boundaries — e.g. a prior delta ``"foo"`` followed by
+    ``" bar <|im_start|>"`` would arrive as ``"foobar"`` instead of
+    ``"foo bar"`` if the sanitizer trimmed leading whitespace after
+    removing the marker. This variant therefore removes ONLY the marker
+    bytes via :data:`_FINAL_SANITIZER` and leaves all surrounding
+    whitespace intact. (The non-stream :func:`sanitize_output` strips
+    because it operates on a fully-assembled final string where leading/
+    trailing whitespace is cosmetic.)
+
+    Codex R2 [P2] on R12-FIX-V2.
+
+    Returns:
+        - ``""`` for ``None`` / empty input so callers can use the
+          return as the JSON value directly.
+        - The marker-stripped text otherwise (whitespace preserved).
+          May still be ``""`` if the input was entirely markup — the
+          caller decides whether to suppress the empty delta.
     """
     if not text:
         return ""
-    sanitized = sanitize_output(text)
-    return sanitized or ""
+    # Fast-path bypass: no marker characters → no rewrite at all
+    # (preserves identity, no whitespace touched).
+    for ch in text:
+        if ch in _SPECIAL_TOKEN_CHARS:
+            # Strip markers ONLY — do NOT ``.strip()`` the whitespace
+            # around them, because cross-delta whitespace is
+            # load-bearing in the streaming concatenation contract.
+            return _FINAL_SANITIZER.sub("", text)
+    return text
 
 
 # Regex for matching final channel marker with optional constrain token:
