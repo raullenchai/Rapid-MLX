@@ -1837,9 +1837,7 @@ def maybe_auto_disable_thinking_for_tools(request) -> bool:
     return True
 
 
-def maybe_auto_disable_thinking_for_casual_chat(
-    request, *, extra_signals=None
-) -> bool:
+def maybe_auto_disable_thinking_for_casual_chat(request, *, extra_signals=None) -> bool:
     """R12-T2F-276: auto-disable ``enable_thinking`` on a casual chat
     completion to a thinking-capable model when the caller did not
     pin a thinking preference or otherwise express explicit reasoning

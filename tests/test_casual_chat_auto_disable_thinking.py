@@ -76,7 +76,6 @@ from vllm_mlx.service.helpers import (
     maybe_auto_disable_thinking_for_tools,
 )
 
-
 # ---------------------------------------------------------------------------
 # (1) Helper-level: maybe_auto_disable_thinking_for_casual_chat
 # ---------------------------------------------------------------------------
@@ -130,9 +129,7 @@ class TestHelperAutoDisableForCasualChat:
         assert req.chat_template_kwargs is None
         assert req.enable_thinking is None
 
-    def test_casual_chat_no_preference_fires_auto_disable(
-        self, _thinking_parser_cfg
-    ):
+    def test_casual_chat_no_preference_fires_auto_disable(self, _thinking_parser_cfg):
         """The 0.8.16 brand-new-user simulation repro: thinking-capable
         model + no client signal → inject ``enable_thinking=False`` so
         the model returns a clean answer instead of burning the budget
@@ -193,9 +190,7 @@ class TestHelperAutoDisableForCasualChat:
         assert maybe_auto_disable_thinking_for_casual_chat(req) is False
         assert req.chat_template_kwargs == {"enable_thinking": True}
 
-    def test_reasoning_max_tokens_signal_skips_auto_disable(
-        self, _thinking_parser_cfg
-    ):
+    def test_reasoning_max_tokens_signal_skips_auto_disable(self, _thinking_parser_cfg):
         """An explicit per-request reasoning cap is itself proof the
         caller wants reasoning ON (just bounded). Default-disabling
         here would silently collapse the contract to "no reasoning"."""
@@ -209,9 +204,7 @@ class TestHelperAutoDisableForCasualChat:
         assert maybe_auto_disable_thinking_for_casual_chat(req) is False
         assert req.chat_template_kwargs is None
 
-    def test_reasoning_effort_signal_skips_auto_disable(
-        self, _thinking_parser_cfg
-    ):
+    def test_reasoning_effort_signal_skips_auto_disable(self, _thinking_parser_cfg):
         """OpenAI-spec ``reasoning_effort="low|medium|high"`` is the
         documented opt-in signal — the helper MUST honor it."""
         req = SimpleNamespace(
@@ -224,9 +217,7 @@ class TestHelperAutoDisableForCasualChat:
         assert maybe_auto_disable_thinking_for_casual_chat(req) is False
         assert req.chat_template_kwargs is None
 
-    def test_reasoning_dict_signal_skips_auto_disable(
-        self, _thinking_parser_cfg
-    ):
+    def test_reasoning_dict_signal_skips_auto_disable(self, _thinking_parser_cfg):
         """Responses-native ``reasoning={"effort":"low"}`` is the
         canonical /v1/responses opt-in. The helper consults the field
         directly when present on the request shape (used by tests and
@@ -242,9 +233,7 @@ class TestHelperAutoDisableForCasualChat:
         assert maybe_auto_disable_thinking_for_casual_chat(req) is False
         assert req.chat_template_kwargs is None
 
-    def test_empty_reasoning_dict_does_not_count_as_signal(
-        self, _thinking_parser_cfg
-    ):
+    def test_empty_reasoning_dict_does_not_count_as_signal(self, _thinking_parser_cfg):
         """Defensive check: ``reasoning={}`` is functionally an
         absent signal — the dict is the OpenAI Responses-spec shape
         for "client supplied nothing meaningful". Do NOT treat it as
@@ -321,9 +310,7 @@ class TestHelperAutoDisableForCasualChat:
         )
         assert req.chat_template_kwargs is None
 
-    def test_extra_signals_reasoning_max_tokens_skips(
-        self, _thinking_parser_cfg
-    ):
+    def test_extra_signals_reasoning_max_tokens_skips(self, _thinking_parser_cfg):
         """``reasoning_max_tokens`` on the secondary signals source
         (mirrors the ``ResponsesRequest.reasoning_max_tokens`` shape)
         also short-circuits the auto-disable."""
@@ -359,8 +346,7 @@ class TestHelperAutoDisableForCasualChat:
             reasoning_effort=None,
         )
         assert (
-            maybe_auto_disable_thinking_for_casual_chat(req, extra_signals=req)
-            is True
+            maybe_auto_disable_thinking_for_casual_chat(req, extra_signals=req) is True
         )
         assert req.chat_template_kwargs == {"enable_thinking": False}
 
@@ -375,9 +361,7 @@ class TestHelperAutoDisableForCasualChat:
 
 
 class TestHelperCodexR1FollowUps:
-    def test_tools_present_short_circuits_casual_helper(
-        self, _thinking_parser_cfg
-    ):
+    def test_tools_present_short_circuits_casual_helper(self, _thinking_parser_cfg):
         """Codex r1 MEDIUM #1: ``tool_choice="none"`` was being
         defeated. The tools helper at line 1821 correctly SKIPS the
         ``tool_choice="none"`` branch, but pre-fix the casual helper
@@ -450,9 +434,7 @@ class TestHelperCodexR1FollowUps:
             assert maybe_auto_disable_thinking_for_casual_chat(req) is False
             assert req.chat_template_kwargs is None
 
-    def test_reasoning_dict_with_null_effort_is_NOT_signal(
-        self, _thinking_parser_cfg
-    ):
+    def test_reasoning_dict_with_null_effort_is_not_signal(self, _thinking_parser_cfg):
         """Codex r1 MEDIUM #3: ``reasoning={"effort": null}`` is
         EXPLICITLY allowed by the Responses-API schema
         (``_validate_reasoning_dict_effort`` lets ``None`` flow
@@ -473,9 +455,7 @@ class TestHelperCodexR1FollowUps:
         assert maybe_auto_disable_thinking_for_casual_chat(req) is True
         assert req.chat_template_kwargs == {"enable_thinking": False}
 
-    def test_reasoning_dict_with_only_summary_is_NOT_signal(
-        self, _thinking_parser_cfg
-    ):
+    def test_reasoning_dict_with_only_summary_is_not_signal(self, _thinking_parser_cfg):
         """Codex r1 MEDIUM #3 (sibling): ``reasoning={"summary":
         "auto"}`` is a SDK convenience flag (controls whether the
         Responses SDK emits a ``reasoning.summary`` block), NOT a
@@ -509,7 +489,7 @@ class TestHelperCodexR1FollowUps:
         assert maybe_auto_disable_thinking_for_casual_chat(req) is True
         assert getattr(req, "_auto_disabled_thinking", False) is True
 
-    def test_marker_NOT_set_on_skip(self, _thinking_parser_cfg):
+    def test_marker_not_set_on_skip(self, _thinking_parser_cfg):
         """Inverse: when the helper SKIPS (client opted in), the marker
         MUST NOT be set — otherwise a downstream L-05 warning would
         be suppressed for a request where the client DID supply the
@@ -642,7 +622,9 @@ def _rate_limiter_state():
     rate_limiter._requests.update(saved_requests)
 
 
-def _make_chat_client(engine: _ChatEngine, *, reasoning_parser_name="qwen3") -> TestClient:
+def _make_chat_client(
+    engine: _ChatEngine, *, reasoning_parser_name="qwen3"
+) -> TestClient:
     from vllm_mlx.routes.chat import router as chat_router
 
     cfg = reset_config()
@@ -685,9 +667,7 @@ class TestChatRouteAutoDisableForCasualChat:
             f"enable_thinking=False; engine saw kwargs={kwargs!r}"
         )
 
-    def test_casual_explicit_enable_thinking_true_preserved(
-        self, _rate_limiter_state
-    ):
+    def test_casual_explicit_enable_thinking_true_preserved(self, _rate_limiter_state):
         """Explicit opt-in is honored end-to-end — the rescue path
         still applies when the budget is exhausted, but the contract
         is that we never silently override an explicit signal."""
@@ -705,9 +685,7 @@ class TestChatRouteAutoDisableForCasualChat:
         assert resp.status_code == 200, resp.text
         assert engine.chat_calls[0]["kwargs"].get("enable_thinking") is True
 
-    def test_casual_explicit_enable_thinking_false_preserved(
-        self, _rate_limiter_state
-    ):
+    def test_casual_explicit_enable_thinking_false_preserved(self, _rate_limiter_state):
         """Explicit opt-out is honored — same resolved value, but the
         preservation contract is exercised for parity."""
         engine = _ChatEngine(text="ok")
@@ -724,9 +702,7 @@ class TestChatRouteAutoDisableForCasualChat:
         assert resp.status_code == 200, resp.text
         assert engine.chat_calls[0]["kwargs"].get("enable_thinking") is False
 
-    def test_casual_top_level_enable_thinking_true_preserved(
-        self, _rate_limiter_state
-    ):
+    def test_casual_top_level_enable_thinking_true_preserved(self, _rate_limiter_state):
         """Top-level rapid-mlx convenience knob is honored end-to-end
         identically to the nested kwarg form."""
         engine = _ChatEngine(text="ok")
@@ -743,9 +719,7 @@ class TestChatRouteAutoDisableForCasualChat:
         assert resp.status_code == 200, resp.text
         assert engine.chat_calls[0]["kwargs"].get("enable_thinking") is True
 
-    def test_casual_reasoning_max_tokens_preserves_thinking(
-        self, _rate_limiter_state
-    ):
+    def test_casual_reasoning_max_tokens_preserves_thinking(self, _rate_limiter_state):
         """The ``reasoning_max_tokens=N`` signal is an explicit "I want
         reasoning, just bounded" — the auto-disable MUST NOT fire."""
         engine = _ChatEngine(text="ok")
@@ -769,9 +743,7 @@ class TestChatRouteAutoDisableForCasualChat:
             f"engine saw kwargs={kwargs!r}"
         )
 
-    def test_casual_reasoning_effort_preserves_thinking(
-        self, _rate_limiter_state
-    ):
+    def test_casual_reasoning_effort_preserves_thinking(self, _rate_limiter_state):
         """OpenAI-spec ``reasoning_effort`` opt-in keeps thinking ON."""
         engine = _ChatEngine(text="ok")
         client = _make_chat_client(engine)
@@ -1009,9 +981,7 @@ class TestResponsesRouteAutoDisableForCasualChat:
         assert engine.chat_calls, "engine.chat was not called"
         assert engine.chat_calls[0]["kwargs"].get("enable_thinking") is False
 
-    def test_casual_explicit_enable_thinking_true_preserved(
-        self, _rate_limiter_state
-    ):
+    def test_casual_explicit_enable_thinking_true_preserved(self, _rate_limiter_state):
         engine = _ResponsesEngine(text="ok")
         client = _make_responses_client(engine)
         resp = client.post(
@@ -1051,9 +1021,7 @@ class TestResponsesRouteAutoDisableForCasualChat:
             f"engine saw kwargs={kwargs!r}"
         )
 
-    def test_casual_reasoning_max_tokens_preserves_thinking(
-        self, _rate_limiter_state
-    ):
+    def test_casual_reasoning_max_tokens_preserves_thinking(self, _rate_limiter_state):
         engine = _ResponsesEngine(text="ok")
         client = _make_responses_client(engine)
         resp = client.post(
