@@ -152,26 +152,33 @@ class _TempfileHandle:
                 proc = spawn(h)  # spawn registers h.path on the proc
                 final_path = h.release()
 
-        Codex round-4 finding: discard from the registry BEFORE
-        setting ``self._released = True``, under the lock. The
-        reverse order had a window where an interruption left
-        ``released=True`` (so the context manager's ``finally``
-        would skip the unlink) while the path was still in
-        ``_pending_paths`` — atexit would then unlink a file the
-        caller has just taken ownership of. With this ordering,
-        an interruption mid-call either:
+        Codex pr_validate r3 BLOCKING: ``release()`` MUST be a true
+        no-op when ``_released`` is already true. The prior shape
+        ``discard(); released=True`` always ran the discard, even
+        when called after the context-exit cleanup had already
+        claimed ownership (and possibly already discarded the
+        path). A second ``release()`` could then remove the
+        registry fallback after the context manager flipped
+        ``_released=True`` but before the unlink succeeded — the
+        very race the round-2 BLOCKING fixed in the other
+        direction. With the early no-op, double-release and
+        release-after-cleanup-claim are both safe.
 
-        - happens before the discard → ``released`` is still
-          ``False``, ``finally`` reaps the path (and the atexit
-          fallback would also reap it).
-        - happens after the discard but before ``_released=True``
-          → ``released`` is still ``False``, ``finally`` reaps the
-          path (the caller's "I took ownership" is incomplete; the
-          helper conservatively still owns).
-        - happens after ``_released=True`` → call has completed
-          successfully; both context manager and atexit step away.
+        Codex round-4 finding (also still satisfied): the discard
+        runs BEFORE setting ``_released = True`` so an interruption
+        between the two leaves the helper in the conservative
+        "still owned" state — the context manager would still
+        unlink, and the atexit fallback would still see the entry
+        if the discard ran but the flag flip didn't.
         """
         with _pending_lock:
+            if self._released:
+                # Already released (by an earlier ``release()``) or
+                # already claimed by the context manager's cleanup.
+                # Either way, do NOT touch the registry — the entry
+                # is either gone (we discarded it) or still owned by
+                # the cleanup that flipped ``_released`` first.
+                return self._path
             _pending_paths.discard(self._path)
             self._released = True
         return self._path

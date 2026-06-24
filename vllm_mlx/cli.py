@@ -3281,25 +3281,41 @@ def _spawn_chat_server(
     child_env["RAPID_MLX_CHAT_SPAWN"] = "1"
     # Atomic critical section: block SIGTERM/SIGINT delivery around
     # the whole ``Popen()`` + register + attribute-set + ``release()``
-    # sequence. Codex pr_validate round-2 BLOCKING: must use
-    # ``pthread_sigmask`` (block), NOT ``signal.signal(SIG_IGN)``
-    # (ignore), because signal DISPOSITION is inherited by ``fork``ed
-    # children. If we set the parent's disposition to ``SIG_IGN`` and
-    # then ``Popen()`` runs, the child server inherits ``SIG_IGN`` for
-    # SIGTERM/SIGINT and will refuse to honour normal shutdown signals
-    # for its entire lifetime. ``pthread_sigmask`` only affects the
-    # signal mask of the current thread, which is NOT inherited
-    # across ``fork`` + ``exec`` because the kernel resets the mask
-    # at exec time. On POSIX systems the child therefore exec's with
-    # the default mask AND default disposition.
+    # sequence. We use ``pthread_sigmask(SIG_BLOCK, ...)`` so the
+    # parent thread's mask blocks the signals (queued, delivered when
+    # restored).
+    #
+    # POSIX caveat (codex pr_validate round-3 BLOCKING): both the
+    # signal mask AND the signal disposition are inherited across
+    # ``fork`` + ``execve``. If we Popen() while the mask blocks
+    # SIGTERM/SIGINT, the child server inherits the block and won't
+    # honour normal shutdown. The fix is a ``preexec_fn`` that
+    # explicitly UNBLOCKS the signals in the child between ``fork``
+    # and ``exec`` so the child starts with a clean mask.
+    #
+    # ``preexec_fn`` runs in the child after fork, before exec, and
+    # is exactly the right hook for this. There is no async-signal-
+    # safety concern because we are still pre-exec; the child has
+    # not yet been replaced with a new image.
     #
     # On platforms without ``pthread_sigmask`` (Windows), fall back
-    # to the ``SIG_IGN`` approach and accept the inherit-into-child
-    # caveat — the chat REPL is not a Windows feature anyway.
+    # to the ``SIG_IGN`` shape — Windows ``subprocess`` doesn't have
+    # the same fork/exec model, and the chat REPL is not a Windows
+    # feature anyway.
     has_pthread_sigmask = hasattr(_signal, "pthread_sigmask")
     sigset = {_signal.SIGTERM, _signal.SIGINT}
     _prev_mask = None
     _prev_term = _prev_int = None
+
+    def _child_unblock_signals():
+        """preexec_fn: clear inherited SIGTERM/SIGINT mask in the child
+        so it starts with default mask + default disposition.
+        """
+        try:
+            _signal.pthread_sigmask(_signal.SIG_UNBLOCK, sigset)
+        except (ValueError, OSError):
+            pass
+
     try:
         if has_pthread_sigmask:
             try:
@@ -3307,8 +3323,6 @@ def _spawn_chat_server(
             except (ValueError, OSError):
                 _prev_mask = None
         else:
-            # Windows fallback — best effort; the child inherit caveat
-            # applies but the chat REPL targets POSIX.
             try:
                 _prev_term = _signal.signal(_signal.SIGTERM, _signal.SIG_IGN)
             except (ValueError, OSError):
@@ -3324,6 +3338,12 @@ def _spawn_chat_server(
                 stderr=subprocess.STDOUT,
                 start_new_session=True,
                 env=child_env,
+                # Codex pr_validate r3 BLOCKING: clear the inherited
+                # signal mask in the child so it can be terminated
+                # normally. ``preexec_fn`` is the documented hook for
+                # post-fork / pre-exec setup; the child cannot reach
+                # ``exec`` until this runs.
+                preexec_fn=_child_unblock_signals if has_pthread_sigmask else None,
             )
         except (OSError, ValueError):
             # Popen raised before constructing the child — the log handle

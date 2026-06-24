@@ -1926,10 +1926,18 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
 
     class _FakePopen:
         def __init__(
-            self, cmd, *, stdout=None, stderr=None, start_new_session=False, env=None
+            self,
+            cmd,
+            *,
+            stdout=None,
+            stderr=None,
+            start_new_session=False,
+            env=None,
+            preexec_fn=None,
         ):
             captured["env"] = env
             captured["cmd"] = cmd
+            captured["preexec_fn"] = preexec_fn
 
         def poll(self):
             return None
@@ -2352,11 +2360,21 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
         def getsockname(self):
             return ("127.0.0.1", 54322)
 
+    captured_preexec: dict = {}
+
     class _FakePopen:
         def __init__(
-            self, cmd, *, stdout=None, stderr=None, start_new_session=False, env=None
+            self,
+            cmd,
+            *,
+            stdout=None,
+            stderr=None,
+            start_new_session=False,
+            env=None,
+            preexec_fn=None,
         ):
             milestones["popen"] = _current_blocked()
+            captured_preexec["fn"] = preexec_fn
 
         def poll(self):
             return None
@@ -2447,3 +2465,36 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
         "would inherit the ignored disposition and refuse normal "
         f"shutdown. changes={sig_ign_changes}"
     )
+
+    # Pr_validate round-3 BLOCKING: a preexec_fn MUST be passed to
+    # Popen() AND it must, when called, unblock SIGTERM and SIGINT.
+    # Without it the child inherits the blocked mask and refuses to
+    # honour normal shutdown signals.
+    preexec_fn = captured_preexec.get("fn")
+    assert preexec_fn is not None, (
+        "Pr_validate round-3 BLOCKING regression: spawn did not pass "
+        "preexec_fn to Popen() — the child will inherit the blocked "
+        "signal mask and ignore SIGTERM/SIGINT."
+    )
+    # Simulate the child's post-fork pre-exec moment: block SIGTERM
+    # ourselves (as the spawn does in the parent), then call the
+    # preexec_fn and observe that the signals are unblocked.
+    saved_mask = real_pthread_sigmask(
+        _signal.SIG_BLOCK, {_signal.SIGTERM, _signal.SIGINT}
+    )
+    try:
+        # ``preexec_fn`` runs in the child after fork. Calling it here
+        # simulates what it would do to the child's mask.
+        preexec_fn()
+        # After preexec_fn, SIGTERM and SIGINT MUST NOT be in the
+        # blocked set.
+        after = set(real_pthread_sigmask(_signal.SIG_BLOCK, set()))
+        assert _signal.SIGTERM not in after, (
+            f"preexec_fn did not unblock SIGTERM; mask after={after}"
+        )
+        assert _signal.SIGINT not in after, (
+            f"preexec_fn did not unblock SIGINT; mask after={after}"
+        )
+    finally:
+        # Restore the simulated parent state.
+        real_pthread_sigmask(_signal.SIG_SETMASK, saved_mask)
