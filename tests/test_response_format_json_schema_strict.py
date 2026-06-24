@@ -762,6 +762,170 @@ def test_strict_true_guided_unavailable_streaming_happy_path_passes_through():
     assert snap["strict_violations_total"] == 0
 
 
+def test_strict_true_streaming_violation_preserves_usage_chunk():
+    """Codex r6 #2 — a strict-streaming request that asked for
+    ``stream_options.include_usage=true`` MUST receive the trailing
+    usage chunk even on a json_schema_violation. The generation
+    actually consumed tokens before the validator's verdict landed;
+    silently dropping the usage chunk on failure leaves billing /
+    observability clients blind to those tokens exactly when they
+    most want to reconcile.
+
+    A prior iteration deliberately dropped the held usage chunk on
+    failure (codex r5 NIT, promoted to BLOCKING in r6). The fix:
+    emit the held usage chunk AFTER the violation+error frames and
+    BEFORE [DONE], same as the happy-path order.
+    """
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    client = _make_client(engine)
+
+    body = _payload(strict=True, stream=True)
+    body["stream_options"] = {"include_usage": True}
+    resp = client.post("/v1/chat/completions", json=body)
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+    assert events[-1]["data"] == "[DONE]"
+
+    # Scan all events for a usage-carrying chunk. The upstream
+    # streamer emits ``{... "usage": {...}, "choices": []}`` as the
+    # final pre-[DONE] chunk when ``include_usage`` is set.
+    usage_chunks = []
+    for ev in events:
+        data = ev.get("data", "")
+        if data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        if payload.get("usage"):
+            usage_chunks.append(payload)
+    assert usage_chunks, (
+        "no usage chunk emitted on a failed strict generation; "
+        "clients using stream_options.include_usage lose token accounting."
+    )
+    # The usage chunk carries real token counts (NOT zeros) — pre-fix
+    # the test would have failed at "no usage chunk" instead of here,
+    # but pin this too so a future regression that emits a zero-usage
+    # chunk shape doesn't silently pass.
+    final_usage = usage_chunks[-1]["usage"]
+    # The mock engine emits prompt=4 + completion=5; just pin "non-zero".
+    assert (
+        final_usage.get("prompt_tokens", 0) > 0
+        or final_usage.get("completion_tokens", 0) > 0
+    ), f"usage chunk emitted but all-zero: {final_usage}"
+
+
+def test_strict_true_streaming_emits_done_even_without_upstream_done():
+    """Codex r6 #1 — the strict-streaming wrapper MUST emit the
+    terminal ``[DONE]`` sentinel UNCONDITIONALLY, regardless of
+    whether the upstream generator ever produced it. A pre-fix
+    iteration gated the emission on ``saw_done``; an upstream that
+    exited mid-flight (engine crash, disconnect) or any future
+    upstream that omits the sentinel would leave the SSE stream
+    open from the client's perspective, causing UI hangs.
+
+    Test strategy: build a fake stream_chat_completion that emits
+    one content chunk + one terminal chunk + NO [DONE], then verify
+    the wrapper still emits [DONE] last.
+    """
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    async def _fake_stream(engine, messages, request, **kwargs):
+        response_id = kwargs.get("response_id", "chatcmpl-test")
+        created = kwargs.get("created", 0)
+        # Content delta
+        yield (
+            "data: "
+            + _json.dumps(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": "test-model",
+                    "choices": [
+                        {
+                            "index": 0,
+                            "delta": {"content": _VALID_PAYLOAD},
+                            "finish_reason": None,
+                        }
+                    ],
+                }
+            )
+            + "\n\n"
+        )
+        # Terminal chunk
+        yield (
+            "data: "
+            + _json.dumps(
+                {
+                    "id": response_id,
+                    "object": "chat.completion.chunk",
+                    "created": created,
+                    "model": "test-model",
+                    "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+                }
+            )
+            + "\n\n"
+        )
+        # NB: NO [DONE] — simulate a misbehaving upstream.
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    # Run the strict-postgen helper directly so we have full
+    # control over the upstream stream shape.
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {
+        "type": "object",
+        "properties": {"value": {"type": "integer", "minimum": 0, "maximum": 100}},
+        "required": ["value"],
+        "additionalProperties": False,
+    }
+
+    import asyncio
+
+    async def _run():
+        # Monkey-patch the inner stream_chat_completion that the
+        # strict-postgen helper delegates to.
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _fake_stream
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    chunks = asyncio.run(_run())
+    body = "".join(chunks)
+    # The wrapper MUST have emitted [DONE] even though the fake
+    # upstream did not.
+    assert "data: [DONE]" in body, (
+        "strict-streaming wrapper omitted terminal [DONE] when upstream "
+        "did not emit it; spec-compliant clients will hang."
+    )
+    # And [DONE] must be the LAST line (modulo trailing whitespace).
+    stripped = body.rstrip()
+    assert stripped.endswith("data: [DONE]"), (
+        f"expected body to end with `data: [DONE]`, got tail: {stripped[-200:]!r}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # Route-level: strict=false → fallthrough to prompt-injection
 # ---------------------------------------------------------------------------

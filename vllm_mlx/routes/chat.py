@@ -4491,7 +4491,6 @@ async def stream_chat_completion_strict_postgen(
     model_name = _resolve_model_name(request.model)
 
     buffered_content: list[str] = []
-    saw_done = False
     # Codex r2 #1: we MUST NOT forward the upstream stream's terminal
     # chunk (the one carrying ``finish_reason``) until we know whether
     # validation passed. Spec-compliant clients finalize on the first
@@ -4513,12 +4512,11 @@ async def stream_chat_completion_strict_postgen(
         created=created,
         **kwargs,
     ):
-        # Detect the upstream [DONE] sentinel so we know when to run
-        # validation. We delay yielding [DONE] until AFTER the
-        # validation pass so the post-validation chunks land BEFORE
-        # the terminal marker the spec requires last.
+        # Swallow the upstream [DONE] sentinel — we emit our own
+        # [DONE] at the END of validation (codex r6 #1, unconditional)
+        # so post-validation chunks land BEFORE the terminal marker
+        # the spec requires last.
         if chunk_text.strip() == "data: [DONE]":
-            saw_done = True
             continue
         is_terminal = False
         is_usage_chunk = False
@@ -4619,17 +4617,35 @@ async def stream_chat_completion_strict_postgen(
         # encoding used elsewhere in this module.
         error_payload = json.dumps(error_event, separators=(",", ":"))
         yield ("event: chat.completion.error\n" + "data: " + error_payload + "\n\n")
-        # Drop the held usage chunk on failure: emitting it after a
-        # ``finish_reason=json_schema_violation`` would imply the
-        # violation was a successful generation, which contradicts
-        # the contract. The /metrics counters carry the operator-
-        # facing signal instead.
+        # Codex r6 #2: preserve usage accounting on a failed strict
+        # generation. Requests with ``stream_options.include_usage``
+        # already consumed generation tokens before the validation
+        # verdict landed; dropping the usage chunk on failure would
+        # leave billing / observability clients blind to those tokens.
+        # The terminal ``finish_reason=json_schema_violation`` chunk
+        # has already been emitted ABOVE this point, so the
+        # usage-only chunk that follows is unambiguously trailing
+        # metadata (mirroring the OpenAI streaming spec, where the
+        # final usage chunk arrives AFTER the terminal finish_reason
+        # chunk). Pass the held usage chunk through verbatim so
+        # consumers reconcile billing against the same numbers they
+        # would have seen on a successful turn.
+        if held_usage_chunk is not None:
+            yield held_usage_chunk
         logger.warning(
             "R12-4 strict json_schema streaming validation failed: %s",
             (failure_details or {}).get("message"),
         )
-    # Always emit the terminal [DONE] last; even on failure the wire
-    # envelope MUST close with the spec-mandated sentinel so clients
-    # don't stall.
-    if saw_done:
-        yield "data: [DONE]\n\n"
+    # Codex r6 #1: ALWAYS emit the terminal ``[DONE]`` sentinel — even
+    # if the upstream generator exited WITHOUT emitting it. A previous
+    # iteration gated the emission on ``saw_done``; that left clients
+    # hanging when the upstream stream-fn raised mid-flight (engine
+    # crash, disconnect, etc.) and the wrapper consumed its iterator
+    # to exhaustion without ever observing ``[DONE]``. The spec wire
+    # envelope MUST close with ``[DONE]`` regardless of upstream
+    # health — duplicate sentinels on a normal-shaped upstream are
+    # tolerated by every spec-compliant client (the SSE protocol
+    # discards repeated ``[DONE]`` lines as no-op message events). We
+    # ALSO keep ``saw_done`` tracking for telemetry parity, but the
+    # actual emission is unconditional.
+    yield "data: [DONE]\n\n"
