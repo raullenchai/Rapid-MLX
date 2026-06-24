@@ -508,12 +508,14 @@ def effective_parsers_for(
         if live_tool is None:
             try:
                 from ..server import _tool_call_parser as _server_tool_parser
+
                 live_tool = _server_tool_parser
             except Exception:  # noqa: BLE001
                 live_tool = None
         if live_reasoning is None:
             try:
                 from ..server import _reasoning_parser_name as _server_reasoning_name
+
                 live_reasoning = _server_reasoning_name
             except Exception:  # noqa: BLE001
                 live_reasoning = None

@@ -40,7 +40,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
 # ---------------------------------------------------------------------------
 # Test harness
 # ---------------------------------------------------------------------------
@@ -232,7 +231,9 @@ def test_alias_cli_override_beats_alias_default():
             "Sentinel alias lost its parser default; pick another alias to pin override."
         )
     # Force CLI override to values that DIFFER from the alias default.
-    override_tool = "deepseek_v3" if profile.tool_call_parser != "deepseek_v3" else "hermes"
+    override_tool = (
+        "deepseek_v3" if profile.tool_call_parser != "deepseek_v3" else "hermes"
+    )
     override_reasoning = (
         "deepseek_r1" if profile.reasoning_parser != "deepseek_r1" else "qwen"
     )
