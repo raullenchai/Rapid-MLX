@@ -50,18 +50,36 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
     # model repo — return a 200 with the chat model's pooled hidden
     # states as if they were embeddings. Silent-wrong: callers stuff
     # the garbage vector into a vector store and only notice weeks
-    # later when retrieval quality cratered. Fail loud instead — 400
-    # with the canonical envelope and the same install hint the CLI
-    # probe (H-08) prints, so the user sees the same actionable line
-    # regardless of which surface tripped the guard.
+    # later when retrieval quality cratered. Fail loud instead.
+    #
+    # R11-G: status flipped 400 → 503 so the wire signal matches
+    # "server isn't capable of fulfilling this kind of request right
+    # now" — a missing ``--embedding-model`` is a configuration / boot
+    # gap, not a bad client payload. 503 is also what LangChain /
+    # LlamaIndex retry policies recognise as "transient infra issue,
+    # back off and retry" — a 400 would look like a permanently-bad
+    # request and the client would surface a misleading user-side error.
+    # The structured envelope carries ``code: "no_embedding_model"`` so
+    # downstream clients can branch on the machine-readable code
+    # instead of substring-matching the message. The install hint is
+    # preserved verbatim — base installs without the ``[embeddings]``
+    # extra get the same actionable line the CLI probe (H-08) prints.
     if cfg.embedding_model_locked is None:
         raise HTTPException(
-            status_code=400,
-            detail=(
-                "embeddings model not configured; start server with "
-                "--embedding-model <model> (requires [embeddings] extra). "
-                + EMBEDDINGS_EXTRA_INSTALL_HINT
-            ),
+            status_code=503,
+            detail={
+                "error": {
+                    "message": (
+                        "No embedding model loaded. Restart the server "
+                        "with --embedding-model <hf-id> to enable "
+                        "/v1/embeddings. "
+                        + EMBEDDINGS_EXTRA_INSTALL_HINT
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "no_embedding_model",
+                    "param": None,
+                }
+            },
         )
 
     try:

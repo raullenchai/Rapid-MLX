@@ -42,7 +42,7 @@ rapid-mlx serve qwen3.5-9b-4bit --port 8000 --use-paged-cache
 | `--stream-interval` | Tokens per stream chunk | 1 |
 | `--mcp-config` | Path to MCP config file | None |
 | `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
-| `--embedding-model` | Pre-load an embedding model at startup | None |
+| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (see [Tool Calling](tool-calling.md)) | None |
 

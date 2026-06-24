@@ -244,7 +244,7 @@ class TestEmbeddingsEndpoint:
 
     def test_model_hot_swap_disabled_when_unlocked(self, client):
         """H-09: hot-swap is gone — without --embedding-model, every
-        ``/v1/embeddings`` request is rejected with 400.
+        ``/v1/embeddings`` request is rejected with 503.
 
         Pre-fix the route would call ``load_embedding_model`` on
         ``request.model`` (typically the chat model, since no embedding
@@ -252,6 +252,13 @@ class TestEmbeddingsEndpoint:
         states as if they were embeddings. The new guard refuses to do
         that — callers must explicitly configure the embedding model at
         startup.
+
+        R11-G: status code flipped 400 → 503 so the wire signal matches
+        "server isn't capable of fulfilling this kind of request right
+        now" rather than "bad client payload"; the envelope now carries
+        the machine-readable ``code: "no_embedding_model"`` so SDK
+        retry policies can branch on the code without substring-
+        matching the message.
         """
         import vllm_mlx.server as srv
         from vllm_mlx.config import get_config
@@ -275,13 +282,19 @@ class TestEmbeddingsEndpoint:
                     "/v1/embeddings",
                     json={"model": "new-model", "input": "test"},
                 )
-                # Hot-swap path is gone; route 400s without touching
+                # Hot-swap path is gone; route 503s without touching
                 # the engine class.
-                assert resp.status_code == 400
+                assert resp.status_code == 503
                 mock_cls.assert_not_called()
                 body = resp.json()
+                # The OpenAI-shaped envelope, plus the machine-readable
+                # code. A future refactor that drops the code field
+                # would silently break the SDK branching contract.
+                assert body["error"]["code"] == "no_embedding_model"
+                assert body["error"]["type"] == "invalid_request_error"
                 msg = body["error"]["message"]
-                assert "embeddings model not configured" in msg
+                assert "No embedding model loaded" in msg
+                assert "--embedding-model" in msg
                 assert "rapid-mlx[embeddings]" in msg
         finally:
             srv._embedding_engine = original

@@ -295,12 +295,22 @@ def _build_embed_app(monkeypatch, engine, *, embedding_model_locked):
 
 
 class TestEmbeddingsRouteGuard:
-    """H-09: ``POST /v1/embeddings`` must 400 when no embedding model
+    """H-09: ``POST /v1/embeddings`` must 503 when no embedding model
     is configured. Previously the route silently re-used the chat
     model as if it were an embedding model — vectors shaped right
-    (1024-dim for Qwen3-0.6B) but semantically meaningless."""
+    (1024-dim for Qwen3-0.6B) but semantically meaningless.
 
-    def test_unconfigured_server_returns_400(self, monkeypatch):
+    R11-G: the status code was flipped 400 → 503 because a missing
+    ``--embedding-model`` is a configuration / boot gap, not a bad
+    client payload. LangChain / LlamaIndex retry policies recognise
+    503 as "transient infra issue, back off and retry" — a 400 would
+    look like a permanently-bad request and the client would surface
+    a misleading user-side error. The envelope also gained the
+    machine-readable ``code: "no_embedding_model"`` so downstream
+    clients can branch on the code instead of substring-matching
+    the message."""
+
+    def test_unconfigured_server_returns_503(self, monkeypatch):
         engine = MagicMock()
         client, restore = _build_embed_app(
             monkeypatch, engine, embedding_model_locked=None
@@ -313,13 +323,21 @@ class TestEmbeddingsRouteGuard:
         finally:
             restore()
 
-        assert r.status_code == 400, r.text
+        assert r.status_code == 503, r.text
         body = r.json()
-        # Canonical OpenAI-shaped envelope.
+        # Canonical OpenAI-shaped envelope, plus the machine-readable
+        # code so SDKs can branch without substring-matching the
+        # message. Pin both the type AND the code — a future refactor
+        # that drops either field would silently break the client
+        # branching contract.
         assert "error" in body
+        assert body["error"]["type"] == "invalid_request_error"
+        assert body["error"]["code"] == "no_embedding_model"
         msg = body["error"]["message"]
-        assert "embeddings model not configured" in msg
-        # Install hint is the actionable bit — must be in the envelope.
+        # The actionable message names the CLI flag and the install
+        # hint verbatim so the operator can copy-paste the fix.
+        assert "No embedding model loaded" in msg
+        assert "--embedding-model" in msg
         assert "pip install 'rapid-mlx[embeddings]'" in msg
         # The engine must NOT have been touched — guard fires before
         # any model load (no silent chat-model fallback).

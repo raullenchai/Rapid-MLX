@@ -161,7 +161,7 @@ class TestResolveRequestAliasOrDefault:
 
     def test_unknown_alias_returns_none(self):
         """Caller decides the rejection envelope — helper just signals
-        the miss with None so embeddings can 400 and audio can 404."""
+        the miss with None so embeddings can 400/503 and audio can 404."""
         from vllm_mlx.service.helpers import _resolve_request_alias_or_default
 
         assert (
@@ -173,7 +173,7 @@ class TestResolveRequestAliasOrDefault:
 
     def test_returns_none_when_locked_is_none(self):
         """Nothing configured → no match. Caller surfaces the
-        embeddings-not-configured 400 via the H-09 guard."""
+        embeddings-not-configured 503 via the H-09 guard (R11-G)."""
         from vllm_mlx.service.helpers import _resolve_request_alias_or_default
 
         assert _resolve_request_alias_or_default("default", None) is None
@@ -275,7 +275,7 @@ class TestEmbeddingsRouteAliasResolution:
 
     def test_default_sentinel_accepts(self, client_with_locked_embed):
         """R-03: ``model="default"`` must hit the embedding engine, not
-        the 400 ``embedding model not available`` guard."""
+        the H-09 ``no_embedding_model`` guard (503 after R11-G)."""
         client, engine = client_with_locked_embed
         resp = client.post(
             "/v1/embeddings", json={"model": "default", "input": "hello"}
@@ -328,11 +328,15 @@ class TestEmbeddingsRouteAliasResolution:
         # operator sees what the server was actually booted with.
         assert self.EMBED_HF in err["message"]
 
-    def test_no_embedding_model_configured_400(self):
+    def test_no_embedding_model_configured_503(self):
         """H-09 invariant preserved: no ``--embedding-model`` →
-        every request 400s with the install-hint envelope, regardless
+        every request 503s with the install-hint envelope, regardless
         of whether the client sent ``"default"`` (the bridge MUST NOT
         route ``"default"`` to a chat-only server's hidden states).
+
+        R11-G: status flipped 400 → 503 — a missing ``--embedding-model``
+        is a server-configuration gap, not a bad-client-payload, and
+        503 lines up with LangChain / LlamaIndex retry semantics.
 
         Cross-platform path: inject a stub ``vllm_mlx.server`` module
         with ``_embedding_model_locked = None`` so the H-09 bridge
@@ -378,15 +382,22 @@ class TestEmbeddingsRouteAliasResolution:
             cfg.embedding_model_locked = prev_locked
             cfg.api_key = prev_api_key
 
-        assert resp.status_code == 400
+        assert resp.status_code == 503
         body = resp.json()
-        # H-09 envelope unchanged — install hint must still appear.
-        msg = (
-            body.get("detail")
-            if isinstance(body.get("detail"), str)
-            else body.get("error", {}).get("message", "")
-        )
+        # H-09 envelope — install hint must still appear, and the
+        # machine-readable code lets SDKs branch without substring-
+        # matching the message.
+        err = body.get("error") or (
+            body.get("detail", {}) if isinstance(body.get("detail"), dict) else {}
+        ).get("error", {})
+        msg = err.get("message") if isinstance(err, dict) else None
+        if not msg and isinstance(body.get("detail"), str):
+            msg = body["detail"]
         assert "embedding" in (msg or "").lower()
+        # The R11-G code field must survive both envelope-handler
+        # mounted and bare-router-include code paths.
+        if isinstance(err, dict):
+            assert err.get("code") == "no_embedding_model"
 
 
 # ──────────────────────────────────────────────────────────────────

@@ -55,7 +55,7 @@ rapid-mlx serve <model> [options]
 | `--default-temperature` | Default temperature when not specified in request | None |
 | `--default-top-p` | Default top_p when not specified in request | None |
 | `--reasoning-parser` | Reasoning parser (`gemma4`, `qwen3`, `deepseek_r1`, `glm4`, `gpt_oss`, `harmony`, `minimax`). Auto-detected; explicit flag overrides. | auto |
-| `--embedding-model` | Pre-load an embedding model at startup | None |
+| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
 | `--enable-auto-tool-choice` | Enable automatic tool calling | False |
 | `--tool-call-parser` | Tool call parser (e.g. `hermes`, `llama`, `deepseek`, `deepseek_v31`, `glm47`, `gemma4`, `minimax`, `kimi`, `harmony`, `qwen3_coder_xml`). Auto-detected from the model name; explicit flag overrides. | auto |
 

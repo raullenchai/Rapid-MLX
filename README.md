@@ -876,7 +876,7 @@ Also: a fused single-kernel sampler (faster than mlx-vlm's, identical sampling m
 | `--force-openai-harmony-streaming` | Force the openai-harmony streaming router on (escape hatch — debug-only, raises on non-harmony tokenizers) | auto-detect |
 | `--no-openai-harmony-streaming` | Disable the openai-harmony streaming router; fall back to the legacy state machine | auto-detect |
 | `--mcp-config` | MCP configuration file for tool integration | *(none)* |
-| `--embedding-model` | Pre-load embedding model at startup | *(none)* |
+| `--embedding-model` | Pre-load embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | *(none)* |
 
 </details>
 

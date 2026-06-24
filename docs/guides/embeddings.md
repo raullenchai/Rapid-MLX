@@ -4,9 +4,13 @@ rapid-mlx supports text embeddings using [mlx-embeddings](https://github.com/Bla
 
 ## Installation
 
+The `/v1/embeddings` surface ships behind the `[embeddings]` extra (mirrors how `[audio]` and `[vision]` are packaged) — base installs of rapid-mlx do **not** bundle `mlx-embeddings`. Install the extra alongside the base package:
+
 ```bash
-pip install mlx-embeddings>=0.0.5
+pip install 'rapid-mlx[embeddings]'
 ```
+
+If you boot `rapid-mlx serve --embedding-model …` without the extra installed, the CLI exits cleanly with the same install hint (no `ModuleNotFoundError` traceback).
 
 ## Quick Start
 
@@ -17,7 +21,7 @@ pip install mlx-embeddings>=0.0.5
 rapid-mlx serve my-llm-model --embedding-model mlx-community/all-MiniLM-L6-v2-4bit
 ```
 
-If you don't use `--embedding-model`, the embedding model is loaded lazily on the first request.
+`--embedding-model` is **required** to enable the `/v1/embeddings` endpoint. Without it, every `POST /v1/embeddings` request returns `503 Service Unavailable` with `code: "no_embedding_model"` — the server will NOT silently re-route the request to the chat model (which would produce shape-valid but semantically meaningless vectors).
 
 ### Generate embeddings with the OpenAI SDK
 
@@ -69,19 +73,15 @@ Any BERT, XLM-RoBERTa, or ModernBERT model from HuggingFace that is compatible w
 
 ## Model Management
 
-### Lazy loading
+### Pre-loading at startup (required)
 
-By default, the embedding model is loaded on the first `/v1/embeddings` request. You can switch models between requests and the previous model will be unloaded automatically.
-
-### Pre-loading at startup
-
-Use `--embedding-model` to load a model at startup. When this flag is set, only that specific model can be used for embeddings:
+`--embedding-model` pins the embedding engine to one model id at boot. The flag is REQUIRED to enable `/v1/embeddings` — there is no hot-swap and no lazy-load fallback. Requests sent without the flag configured return `503` with `error.code = "no_embedding_model"`.
 
 ```bash
 rapid-mlx serve my-llm-model --embedding-model mlx-community/all-MiniLM-L6-v2-4bit
 ```
 
-Requesting a different model will return a 400 error.
+Once locked, requesting a *different* model id on the wire returns a `400` with `error.code = "model_not_found"`. The locked model id appears in `GET /v1/models` alongside the chat model, with `capabilities: ["embedding"]` so `client.models.list()` auto-discovery works for LangChain / LlamaIndex / openai-python.
 
 ## API Reference
 

@@ -56,7 +56,7 @@
 
 | Option | Description | Default |
 |--------|-------------|---------|
-| `--embedding-model` | Pre-load an embedding model at startup | None |
+| `--embedding-model` | Pre-load an embedding model at startup (requires `pip install 'rapid-mlx[embeddings]'`) | None |
 
 ### MCP Options
 

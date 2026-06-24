@@ -663,6 +663,17 @@ def _load_embedding_model_or_exit(args, load_fn) -> None:
       hint pointing at the alias registry and the canonical HF id
       format. Any OTHER ``Exception`` re-raises so unrelated bugs
       surface with their real trace.
+
+    Audio-mode integration (deferred #258 / r11-K coordination): if
+    ``_serve_audio_mode`` ever needs to honour ``--embedding-model``
+    (e.g. an STT lane that exposes embeddings of the transcript), the
+    audio path MUST route through this helper rather than duplicate
+    the guard logic. The probe + alias resolve + error-wrap are a
+    single source of truth — a second copy in the audio dispatcher
+    would drift on the next H-08/H-09/H-13 follow-up. The helper is
+    intentionally independent of the text-LM serve path so the audio
+    boot path can call it without dragging in the chat-engine
+    machinery.
     """
     from .embedding import require_mlx_embeddings_or_exit
 
