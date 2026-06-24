@@ -4492,7 +4492,7 @@ async def stream_chat_completion_strict_postgen(
     model_name = _resolve_model_name(request.model)
 
     buffered_content: list[str] = []
-    buffered_content_chars = 0
+    buffered_content_bytes = 0
     # Codex r8 #2: bound the validation buffer. A misbehaving or
     # adversarial generation (forced-loop, jailbroken, model decode
     # bug) can stream content deltas indefinitely; pre-fix we'd
@@ -4572,20 +4572,36 @@ async def stream_chat_completion_strict_postgen(
                         if isinstance(delta, dict):
                             c = delta.get("content")
                             if isinstance(c, str):
-                                # Codex r8 #2: enforce the buffer cap.
-                                # When exceeded we stop accumulating
-                                # AND break out of the upstream loop —
-                                # the finally block surfaces a
-                                # structured ``buffer_overflow`` error
-                                # so the client sees WHY validation
-                                # was abandoned, instead of either
+                                # Codex r8 #2 + r9 #1: enforce the
+                                # buffer cap in BYTES (UTF-8 encoded),
+                                # not characters. Pre-fix used
+                                # ``len(c)`` which counts Python code
+                                # points; multi-byte content (CJK,
+                                # emoji, accented Latin-1+ scripts)
+                                # can blow past a byte budget by 2-4x
+                                # before the cap engages, defeating
+                                # the memory-safety guarantee.
+                                # Encoding once per delta is O(N) on
+                                # a typically-short delta and the
+                                # encoded bytes are discarded
+                                # immediately (we still buffer the
+                                # original str so the validator
+                                # receives correct UTF-8 round-tripped
+                                # content). When exceeded we stop
+                                # accumulating AND break out of the
+                                # upstream loop — the finally block
+                                # surfaces a structured
+                                # ``buffer_overflow`` error so the
+                                # client sees WHY validation was
+                                # abandoned, instead of either
                                 # silently truncating (data
                                 # corruption) or OOMing the server.
-                                if buffered_content_chars + len(c) > _buffer_cap:
+                                c_byte_len = len(c.encode("utf-8"))
+                                if buffered_content_bytes + c_byte_len > _buffer_cap:
                                     buffer_overflow = True
                                 else:
                                     buffered_content.append(c)
-                                    buffered_content_chars += len(c)
+                                    buffered_content_bytes += c_byte_len
                         if ch.get("finish_reason"):
                             is_terminal = True
                     # A usage-only chunk has no choices (or empty

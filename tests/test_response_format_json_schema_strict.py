@@ -1225,6 +1225,94 @@ def test_strict_true_streaming_bounds_buffer_with_overflow_error(monkeypatch):
     assert body.rstrip().endswith("data: [DONE]")
 
 
+def test_strict_true_streaming_buffer_cap_counts_bytes_not_chars(monkeypatch):
+    """Codex r9 #1 — the buffer cap MUST count UTF-8 BYTES, not
+    Python code points. Pre-fix used ``len(c)`` which counts code
+    points; multi-byte content (CJK, emoji, accented Latin scripts)
+    could blow past a byte budget by 2-4x before the cap engaged,
+    defeating the memory-safety guarantee.
+
+    Test strategy: set the cap to a value that ASCII content fits
+    under but multi-byte content (4-byte emoji) overflows. cap = 100
+    bytes; feed 30 emoji deltas where each emoji is 4 bytes UTF-8
+    (total 120 bytes). The cap MUST trip — pre-fix it would have
+    appeared to fit (30 code points < 100), and validation would
+    proceed against a 120-byte buffer.
+    """
+    monkeypatch.setenv("RAPID_MLX_STRICT_BUFFER_BYTES", "100")
+
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    # U+1F525 (FIRE emoji) is 4 bytes in UTF-8.
+    fire = "\U0001f525"
+    assert len(fire) == 1, "test setup: emoji should be 1 code point"
+    assert len(fire.encode("utf-8")) == 4, "test setup: emoji should be 4 bytes UTF-8"
+
+    async def _emoji_stream(engine, messages, request, **kwargs):
+        response_id = kwargs.get("response_id", "chatcmpl-test")
+        created = kwargs.get("created", 0)
+        # 30 emoji = 30 code points = 120 bytes UTF-8.
+        # Pre-fix: 30 < 100 → cap doesn't trip → 120 bytes accumulated.
+        # Post-fix: 120 > 100 → cap trips → overflow envelope.
+        for _ in range(30):
+            yield (
+                "data: "
+                + _json.dumps(
+                    {
+                        "id": response_id,
+                        "object": "chat.completion.chunk",
+                        "created": created,
+                        "model": "test-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": fire},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                )
+                + "\n\n"
+            )
+
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {"type": "object", "required": ["v"]}
+
+    async def _run():
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _emoji_stream
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    chunks = asyncio.run(_run())
+    body = "".join(chunks)
+    # The overflow envelope MUST appear — multi-byte content
+    # correctly accounted in bytes.
+    assert "buffer_overflow" in body, (
+        "buffer cap did not trip on multi-byte content; pre-fix the "
+        "cap counted code points and let 120 UTF-8 bytes through "
+        "under a 100-byte cap."
+    )
+
+
 # ---------------------------------------------------------------------------
 # Route-level: strict=false → fallthrough to prompt-injection
 # ---------------------------------------------------------------------------
