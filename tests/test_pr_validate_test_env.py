@@ -625,7 +625,14 @@ class TestSupplyChainIntegrity:
         """Trusted-pins runs FIRST regardless of whether the PR is
         clean. That's the design — never install from the PR's working
         tree unless we have to. A clean PR is just allowed to fall
-        through to the project-extras path if trusted pins fall short."""
+        through to the project-extras path if trusted pins fall short.
+
+        Hardened (codex r1 NIT, #275 follow-up): the test exercises
+        BOTH paths by leaving the post-trusted-pins probe broken so
+        the step is forced through the project-extras fallback. A
+        future refactor that flipped the order (or dropped the
+        fallback) would break ``call_order == ["trusted_pins",
+        "project_extras"]``, not just the first element."""
         broken = TestEnvStatus(
             ok=False,
             missing=("pytest_asyncio",),
@@ -644,18 +651,21 @@ class TestSupplyChainIntegrity:
 
         def trusted_pins(*_args, **_kwargs):
             call_order.append("trusted_pins")
-            return (True, "trusted")
+            return (True, "trusted partial")
 
         def project_extras(*_args, **_kwargs):
             call_order.append("project_extras")
-            return (True, "extras")
+            return (True, "extras recovered")
 
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PR_VALIDATE_NO_AUTO_INSTALL", None)
             with (
                 patch(
                     "scripts.pr_validate.steps.test_env_check.check_test_env",
-                    side_effect=[broken, healthy],
+                    # initial → broken; after trusted-pins → STILL
+                    # broken (forces fallback); after project-extras
+                    # → healthy.
+                    side_effect=[broken, broken, healthy],
                 ),
                 patch(
                     "scripts.pr_validate.steps.test_env_check.install_trusted_pins",
@@ -667,10 +677,11 @@ class TestSupplyChainIntegrity:
                 ),
             ):
                 step = TestEnvCheckStep()
-                step.run(fake_ctx)
+                result = step.run(fake_ctx)
 
-        assert call_order[0] == "trusted_pins", (
-            "trusted_pins must run BEFORE project_extras"
+        assert result.status == "pass"
+        assert call_order == ["trusted_pins", "project_extras"], (
+            f"expected trusted_pins THEN project_extras, got: {call_order}"
         )
 
     def test_trusted_pins_uses_isolated_pip_flag(self):

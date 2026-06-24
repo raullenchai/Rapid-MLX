@@ -62,12 +62,19 @@ order is **non-negotiable**:
   `.github/workflows/`, `Makefile`, `.pre-commit-config.yaml`, or
   `Formula/` from an external author is `[BLOCKING]`.
 * `test_env_check` runs at index ≈ 0.8 — AFTER `supply_chain`.
-  Its `pip install '.[test]'` fallback is also gated: if the PR
-  diff touches any dep-declaration file, the project-extras path
-  is REFUSED and the step falls back to installing a hardcoded,
-  version-pinned set of trusted plugins (`TRUSTED_TEST_PINS` in
-  `_test_env.py`) directly from PyPI. That set never reads the
-  PR's working tree.
+  Its `pip install '.[test]'` (project-extras) fallback is gated:
+  if the PR diff touches any dep-declaration file, the
+  project-extras path is REFUSED.
+* The `test_env_check` step instead **always tries trusted-pins
+  first**: a hardcoded, version-pinned set (`TRUSTED_TEST_PINS` in
+  `_test_env.py`) installed from PyPI with `pip install --isolated`.
+  That install path is intentionally allowed even on dep-file PRs —
+  it does not read the PR's working tree and the install target list
+  is grep-able in `_test_env.py`, so a malicious `pyproject.toml`
+  cannot influence what gets installed. The opt-out
+  `PR_VALIDATE_NO_AUTO_INSTALL=1` disables BOTH stages (trusted-pins
+  AND project-extras) for hardened CI sandboxes that must not mutate
+  the host Python at all.
 
 The invariant is locked in by
 `tests/test_pr_validate_runner.py::test_supply_chain_runs_before_auto_installing_steps`.

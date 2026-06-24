@@ -55,6 +55,10 @@ HOOK_PATHS = (
     "pyproject.toml",
     "requirements.txt",
     "requirements-dev.txt",
+    # pr_validate's own pin list (TRUSTED_TEST_PINS materialized as a
+    # file in some downstream uses) — kept in sync with the dep-file
+    # denylist in ``scripts/pr_validate/_test_env.py``.
+    "requirements-pin.txt",
     "conftest.py",  # runs on every `pytest`
     "tests/conftest.py",
     ".github/workflows/",

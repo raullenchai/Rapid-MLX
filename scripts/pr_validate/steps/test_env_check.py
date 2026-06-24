@@ -16,25 +16,34 @@ rather than letting downstream pytest crash with a cryptic plugin-
 missing message.
 
 Recovery path: by default the step *also* attempts to install the
-required plugins so the rest of the pipeline can run:
+required plugins so the rest of the pipeline can run. Two-stage:
 
-* **Trusted-pins path (default + safe).** When the PR has not
-  modified any dep-declaration file (``pyproject.toml``,
-  ``requirements*.txt``, ``setup.py``, ``setup.cfg``), the step
-  installs ``TRUSTED_TEST_PINS`` directly from PyPI (hardcoded
-  version-pinned set) — bypasses the PR's working tree entirely.
-* **Project-extras path.** Falls back to ``pip install '.[test]'``
-  ONLY if the trusted-pins install didn't cover what's missing AND
-  the PR has not touched any dep file. This path executes
-  ``pyproject.toml`` build hooks, so it's gated on the PR being
-  "trustworthy by file scope" — see #275 for the threat model.
-* **Skip auto-install.** When the PR touched a dep file (so the
-  project-extras path is unsafe) the step refuses to auto-install
-  and emits a MERGE-UNSAFE-flavored warning naming the offending
-  file(s) and the canonical manual recovery command.
+* **Stage 1 — trusted-pins (always tried first when enabled).**
+  Installs ``TRUSTED_TEST_PINS`` directly from PyPI with
+  ``pip install --isolated`` (hardcoded version-pinned set —
+  ``pytest>=7,<9``, ``pytest-asyncio>=0.21,<1`` at time of writing).
+  The pin list lives in ``_test_env.py``, NOT in the PR's working
+  tree, so a malicious ``pyproject.toml`` cannot influence what gets
+  installed. This stage is intentionally allowed even when the PR
+  has touched a dep-declaration file: it does not read the PR's tree
+  and the install target list is grep-able. The only way it mutates
+  the validator's environment is to bring in known-good pytest
+  plugins from PyPI.
 
-Disable with ``PR_VALIDATE_NO_AUTO_INSTALL=1`` for hardened CI
-sandboxes that must not mutate the host Python.
+* **Stage 2 — project-extras (gated on PR scope).** Falls back to
+  ``pip install '.[test]'`` from ``ctx.repo_root`` if and only if
+  (a) trusted pins didn't fully recover the missing-plugin set AND
+  (b) the PR's diff has NOT touched any dep-declaration file
+  (``pyproject.toml``, ``requirements*.txt``, ``setup.py``,
+  ``setup.cfg``, ``requirements-pin.txt``). This stage evaluates
+  ``pyproject.toml`` build hooks, so it's the unsafe path #275
+  describes; it is refused on dep-file PRs and the step reports
+  ``fail`` with the offending file names + a manual-recovery
+  command.
+
+Disable BOTH stages with ``PR_VALIDATE_NO_AUTO_INSTALL=1`` for
+hardened CI sandboxes that must not mutate the host Python — the
+self-check still runs and still reports the missing-package list.
 """
 
 from __future__ import annotations
