@@ -141,12 +141,19 @@ def _payload(*, schema: dict) -> dict:
     }
 
 
-# Each row: (constraint_family_label, schema, violating_body)
+# Each row: (constraint_family_label, schema, violating_body,
+#            expected_validator_substring).
 #
 # The bodies are deliberately chosen so json.loads succeeds but the
 # specific JSON-Schema constraint fails — that way every row exercises
 # the validator's ``iter_errors`` path (not the json-parse arm).
-_CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
+#
+# ``expected_validator_substring`` is a fragment that MUST appear in
+# the returned ``details.expected`` field. This pins each row to the
+# CORRECT validator (codex r1 #2) — e.g. the ``format_email`` row
+# must surface ``"format"`` in ``expected``, NOT ``"type"``, so a
+# regression that disables the FormatChecker is caught immediately.
+_CONSTRAINT_MATRIX: list[tuple[str, dict, str, str]] = [
     (
         "additionalProperties_false",
         {
@@ -156,6 +163,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "additionalProperties": False,
         },
         json.dumps({"name": "ok", "extra": "should not be here"}),
+        "additionalProperties",
     ),
     (
         "required",
@@ -168,12 +176,14 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["name", "age"],
         },
         json.dumps({"name": "missing age"}),
+        "required",
     ),
     (
         "type_top_level",
         # Expect an object, model returns an array.
         {"type": "object", "properties": {"x": {"type": "integer"}}},
         json.dumps([1, 2, 3]),
+        "type",
     ),
     (
         "enum",
@@ -183,6 +193,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["color"],
         },
         json.dumps({"color": "purple"}),
+        "enum",
     ),
     (
         "pattern",
@@ -194,6 +205,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["code"],
         },
         json.dumps({"code": "abcde"}),
+        "pattern",
     ),
     (
         "minLength",
@@ -203,6 +215,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["slug"],
         },
         json.dumps({"slug": "hi"}),
+        "minLength",
     ),
     (
         "maxLength",
@@ -212,6 +225,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["slug"],
         },
         json.dumps({"slug": "way-too-long"}),
+        "maxLength",
     ),
     (
         "minimum",
@@ -221,6 +235,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["age"],
         },
         json.dumps({"age": 5}),
+        "minimum",
     ),
     (
         "maximum",
@@ -230,6 +245,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["score"],
         },
         json.dumps({"score": 9001}),
+        "maximum",
     ),
     (
         "multipleOf",
@@ -239,6 +255,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["step"],
         },
         json.dumps({"step": 7}),
+        "multipleOf",
     ),
     (
         "minItems",
@@ -250,6 +267,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["tags"],
         },
         json.dumps({"tags": ["only-one"]}),
+        "minItems",
     ),
     (
         "maxItems",
@@ -261,6 +279,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["tags"],
         },
         json.dumps({"tags": ["a", "b", "c"]}),
+        "maxItems",
     ),
     (
         "uniqueItems",
@@ -272,6 +291,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["ids"],
         },
         json.dumps({"ids": [1, 1, 2]}),
+        "uniqueItems",
     ),
     (
         "format_email",
@@ -282,11 +302,13 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             },
             "required": ["email"],
         },
-        # Validating ``format`` requires the optional checker — we use
-        # a value that's clearly not an email AND fails ``type`` so
-        # the constraint family still surfaces even on installs without
-        # the format-checker enabled.
-        json.dumps({"email": 12345}),
+        # Codex r1 #2: the value MUST be a syntactically valid string
+        # so it passes ``type:"string"`` and ONLY the ``format`` check
+        # can be the failing keyword. Pre-fix the row used ``12345``
+        # which tripped ``type`` instead — false-passing the
+        # ``format`` enforcement contract this row is supposed to pin.
+        json.dumps({"email": "not-an-email"}),
+        "format",
     ),
     (
         "type_coercion_number",
@@ -298,6 +320,7 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["price"],
         },
         json.dumps({"price": "12.50"}),
+        "type",
     ),
     (
         "type_coercion_boolean",
@@ -308,18 +331,23 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str]] = [
             "required": ["active"],
         },
         json.dumps({"active": "true"}),
+        "type",
     ),
 ]
 
 
 @pytest.mark.parametrize(
-    "label,schema,violating_body",
+    "label,schema,violating_body,expected_validator_substring",
     _CONSTRAINT_MATRIX,
     ids=[row[0] for row in _CONSTRAINT_MATRIX],
 )
-def test_strict_constraint_family_trips_422(label, schema, violating_body):
+def test_strict_constraint_family_trips_422(
+    label, schema, violating_body, expected_validator_substring
+):
     """Every constraint family in the 16-row matrix must trip a 422
-    response with the structured ``json_schema_violation`` envelope.
+    response with the structured ``json_schema_violation`` envelope,
+    AND the failing validator must match the constraint the row is
+    claiming to exercise.
 
     The engine returns the SAME violating body on every chat call,
     so the route MUST:
@@ -327,6 +355,12 @@ def test_strict_constraint_family_trips_422(label, schema, violating_body):
         2. attempt the repair retry
         3. validate-and-fail again
         4. surface 422 with the structured envelope
+
+    The ``expected_validator_substring`` assertion (codex r1 #2)
+    pins each row to the CORRECT validator — a regression that
+    disables the FormatChecker, swaps draft versions, or otherwise
+    causes a different keyword to be the first failing one is
+    caught immediately.
     """
     client, engine = _client(violating_body)
 
@@ -339,6 +373,20 @@ def test_strict_constraint_family_trips_422(label, schema, violating_body):
     details = body["error"]["details"]
     assert details["attempts"] == 2  # initial + single repair retry
     assert "reason" in details
+    # Codex r1 #2: pin the failing validator. ``expected`` is shaped
+    # ``"<validator_name>: <repr(validator_value)>"`` (e.g.
+    # ``"minimum: 18"``, ``"format: 'email'"``), so the row's
+    # constraint name MUST appear as the validator portion before
+    # the colon.
+    assert details.get("reason") == "schema_violation", (
+        f"{label}: expected schema_violation, got {details}"
+    )
+    assert details["expected"].startswith(expected_validator_substring + ":"), (
+        f"{label}: expected validator `{expected_validator_substring}` "
+        f"as the failing keyword but got `{details['expected']}`. "
+        "If you are seeing `type` for a non-type row, the FormatChecker "
+        "may have regressed (codex r1 #1)."
+    )
     # Both the initial AND repair retry must have hit the engine —
     # otherwise the route is short-circuiting somewhere it shouldn't.
     assert len(engine.chat_calls) == 2, f"{label}: chat_calls = {engine.chat_calls}"
@@ -356,7 +404,7 @@ def test_strict_constraint_matrix_disable_flag_returns_200_for_all(monkeypatch):
     escape hatch operators can flip if R12-4 enforcement is too
     aggressive for their workload."""
     monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA", "off")
-    for label, schema, violating_body in _CONSTRAINT_MATRIX:
+    for label, schema, violating_body, _ in _CONSTRAINT_MATRIX:
         client, engine = _client(violating_body)
         resp = client.post("/v1/chat/completions", json=_payload(schema=schema))
         # Legacy behavior: 200 even with schema-violating body.

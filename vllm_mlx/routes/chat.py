@@ -2829,16 +2829,47 @@ async def _create_chat_completion_impl(
             except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
                 raise
             except Exception as repair_err:
-                # Treat repair-side exceptions as a failed repair; we
-                # still surface the 422 below using the ORIGINAL
-                # validation failure (the most actionable signal for
-                # the client).
+                # Codex r1 #3: a non-timeout, non-disconnect engine
+                # exception during the repair turn is a SERVER failure
+                # (the engine couldn't produce ANY output for the
+                # retry), NOT a client schema-validation failure.
+                # Pre-fix, this branch swallowed the exception and
+                # surfaced a 422 ``json_schema_violation`` using the
+                # ORIGINAL validation failure — misleading the client
+                # into believing their schema was the problem when the
+                # actual fault was a server-side generation error.
+                # Surface as 502 with the engine-error shape so the
+                # operator sees the real cause; the original validation
+                # failure is preserved in ``details.initial_failure``
+                # for postmortem context.
                 logger.warning(
-                    "R12-4 strict json_schema repair retry raised %s; "
-                    "surfacing original validation failure as 422.",
+                    "R12-4 strict json_schema repair retry raised %s: %s; "
+                    "surfacing as 502 (server-side generation failure, "
+                    "NOT a schema-validation contract breach).",
                     type(repair_err).__name__,
+                    repair_err,
                 )
-                repair_output = None
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "error": {
+                            "message": (
+                                "Strict json_schema repair retry failed: the "
+                                f"engine raised {type(repair_err).__name__} "
+                                "during the second generation attempt. The "
+                                "initial output had also failed schema "
+                                "validation; investigate server logs."
+                            ),
+                            "type": "api_error",
+                            "code": "strict_repair_engine_failure",
+                            "param": "response_format.json_schema",
+                            "details": {
+                                "initial_failure": failure_details,
+                                "repair_exception": type(repair_err).__name__,
+                            },
+                        }
+                    },
+                ) from repair_err
             if repair_output is not None:
                 ok2, failure2 = validate_and_envelope(
                     repair_output.text or "", json_schema

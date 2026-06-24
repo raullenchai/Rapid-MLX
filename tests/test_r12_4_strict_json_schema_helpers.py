@@ -223,3 +223,25 @@ def test_build_violation_envelope_invalid_json_reason_prefix():
         attempts=2,
     )
     assert "not valid JSON" in env["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# Codex r1 #1: FormatChecker integration — `format` keywords MUST be
+# enforced rather than treated as annotation-only. Pre-fix the
+# validator was instantiated without ``format_checker=FormatChecker()``
+# so ``{"format":"email"}`` validated any string. This test pins the
+# fix so a refactor that drops the FormatChecker is caught.
+# ---------------------------------------------------------------------------
+
+
+def test_validate_and_envelope_enforces_format_email():
+    schema = {
+        "type": "object",
+        "properties": {"e": {"type": "string", "format": "email"}},
+        "required": ["e"],
+    }
+    ok, details = validate_and_envelope(json.dumps({"e": "not-an-email"}), schema)
+    assert ok is False
+    # The FAILING keyword must be ``format`` — not ``type`` (which
+    # would mean the validator regressed to type-checking only).
+    assert details["expected"].startswith("format:"), details

@@ -173,7 +173,7 @@ def validate_and_envelope(
     try:
         # Lazy-import so the helper module stays import-light for
         # routes that never touch json_schema.
-        from jsonschema import Draft202012Validator
+        from jsonschema import Draft202012Validator, FormatChecker
         from jsonschema.exceptions import ValidationError
         from jsonschema.validators import validator_for
     except ImportError as exc:  # pragma: no cover
@@ -187,7 +187,18 @@ def validate_and_envelope(
     except TypeError:
         validator_cls = Draft202012Validator
 
-    validator = validator_cls(json_schema)
+    # Codex r1 BLOCKING #1: pass a ``FormatChecker`` so JSON Schema
+    # ``format`` constraints (``"email"``, ``"uri"``, ``"date"``, …)
+    # are enforced rather than treated as annotations. Pre-fix,
+    # ``{"format":"email"}`` validated any string that satisfied
+    # ``type:"string"`` — the format keyword was effectively ignored
+    # and a violating output would surface a confusing 200 (or, if
+    # ``type`` happened to also fail, a misleading ``type`` error).
+    # The default ``FormatChecker`` covers the common formats out of
+    # the box; specialised formats that require optional dependencies
+    # (e.g. ``regex``) are best-effort but never throw — see the
+    # jsonschema docs.
+    validator = validator_cls(json_schema, format_checker=FormatChecker())
     errors = sorted(validator.iter_errors(parsed), key=lambda e: list(e.absolute_path))
     if not errors:
         return True, None

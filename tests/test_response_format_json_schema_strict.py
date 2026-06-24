@@ -500,6 +500,45 @@ def test_strict_true_guided_unavailable_disable_flag_skips_enforcement(monkeypat
     assert snap["strict_repairs_attempted_total"] == 0
 
 
+def test_strict_true_guided_unavailable_repair_engine_failure_returns_502():
+    """Codex r1 #3 — a non-timeout exception from ``engine.chat``
+    during the REPAIR turn is a server-side failure, NOT a client
+    schema-violation. Pre-fix the route swallowed the exception
+    and surfaced 422 ``json_schema_violation`` using the ORIGINAL
+    validation failure, misleading the client. Post-fix the route
+    raises 502 ``strict_repair_engine_failure`` with the original
+    validation context preserved in ``details.initial_failure``.
+    """
+
+    class _EngineThatBreaksOnRepair(_Engine):
+        async def chat(self, *, messages, **kwargs):
+            is_repair = len(self.chat_calls) > 0
+            self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+            if is_repair:
+                raise RuntimeError("simulated engine wedge during repair")
+            return GenerationOutput(
+                text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+                new_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+                prompt_tokens=4,
+                completion_tokens=5,
+                finished=True,
+                finish_reason="stop",
+                channel=None,
+            )
+
+    engine = _EngineThatBreaksOnRepair(supports_guided=False)
+    client = _make_client(engine)
+
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 502, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "strict_repair_engine_failure"
+    assert body["error"]["type"] == "api_error"
+    # Initial failure context preserved.
+    assert body["error"]["details"]["initial_failure"]["reason"] == "schema_violation"
+    assert body["error"]["details"]["repair_exception"] == "RuntimeError"
+
+
 def test_strict_true_guided_unavailable_repair_disable_flag_skips_retry(monkeypatch):
     """R12-4 — ``RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR=off`` disables ONLY
     the repair retry; the post-decode validation + 422 envelope still

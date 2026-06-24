@@ -918,12 +918,42 @@ async def _non_stream(
             except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
                 raise
             except Exception as repair_err:
+                # Codex r1 #4 parity with chat.py: a non-timeout,
+                # non-disconnect engine exception during the repair
+                # turn is a SERVER failure, not a client schema-
+                # validation failure. Surface as 502 instead of
+                # swallowing into a 422 ``json_schema_violation``
+                # that would mislead the client into thinking their
+                # schema was the problem.
                 logger.warning(
-                    "R12-4 /v1/responses strict repair retry raised %s; "
-                    "surfacing original failure as 422.",
+                    "R12-4 /v1/responses strict repair retry raised %s: %s; "
+                    "surfacing as 502 (server-side generation failure, "
+                    "NOT a schema-validation contract breach).",
                     type(repair_err).__name__,
+                    repair_err,
                 )
-                repair_output = None
+                raise HTTPException(
+                    status_code=502,
+                    detail={
+                        "error": {
+                            "message": (
+                                "Strict json_schema repair retry failed on "
+                                "/v1/responses: the engine raised "
+                                f"{type(repair_err).__name__} during the "
+                                "second generation attempt. The initial "
+                                "output had also failed schema validation; "
+                                "investigate server logs."
+                            ),
+                            "type": "api_error",
+                            "code": "strict_repair_engine_failure",
+                            "param": "text.format",
+                            "details": {
+                                "initial_failure": failure_details,
+                                "repair_exception": type(repair_err).__name__,
+                            },
+                        }
+                    },
+                ) from repair_err
             if repair_output is not None:
                 ok2, failure2 = validate_and_envelope(
                     repair_output.text or "", _strict_schema
