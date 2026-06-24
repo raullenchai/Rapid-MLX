@@ -32,6 +32,7 @@ _strict_requests_total = 0
 _strict_violations_total = 0
 _strict_repairs_attempted_total = 0
 _strict_repairs_succeeded_total = 0
+_strict_repairs_skipped_context_overflow_total = 0
 
 
 def incr_strict_request() -> None:
@@ -84,6 +85,27 @@ def incr_strict_repair_success() -> None:
         _strict_repairs_succeeded_total += 1
 
 
+def incr_strict_repair_skipped_context_overflow() -> None:
+    """Increment the strict-mode repair-skip counter (H-06 #267b).
+
+    Ticks when the route was about to re-call the engine for the
+    R12-4 repair retry but the post-build repair prompt (which
+    prepends repair instructions, repeats the schema, and includes
+    up to 4 KiB of the failed output) would have exceeded the
+    engine's context window. The route skips the retry and surfaces
+    the ORIGINAL 422 ``json_schema_violation`` envelope — not a 502
+    — so the client sees a deterministic validation outcome instead
+    of an opaque server-side context-overflow.
+
+    Operators alert on a non-zero rate as a signal that the repair
+    prompt template + failed-output budget is too large for the
+    deployed model's context window.
+    """
+    global _strict_repairs_skipped_context_overflow_total
+    with _lock:
+        _strict_repairs_skipped_context_overflow_total += 1
+
+
 def snapshot() -> dict[str, int]:
     """Return a consistent snapshot of all counters for ``/metrics``."""
     with _lock:
@@ -92,6 +114,9 @@ def snapshot() -> dict[str, int]:
             "strict_violations_total": _strict_violations_total,
             "strict_repairs_attempted_total": _strict_repairs_attempted_total,
             "strict_repairs_succeeded_total": _strict_repairs_succeeded_total,
+            "strict_repairs_skipped_context_overflow_total": (
+                _strict_repairs_skipped_context_overflow_total
+            ),
         }
 
 
@@ -103,8 +128,10 @@ def reset_for_tests() -> None:
     """
     global _strict_requests_total, _strict_violations_total
     global _strict_repairs_attempted_total, _strict_repairs_succeeded_total
+    global _strict_repairs_skipped_context_overflow_total
     with _lock:
         _strict_requests_total = 0
         _strict_violations_total = 0
         _strict_repairs_attempted_total = 0
         _strict_repairs_succeeded_total = 0
+        _strict_repairs_skipped_context_overflow_total = 0

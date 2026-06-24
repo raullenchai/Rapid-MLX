@@ -190,6 +190,7 @@ def _render_response_format_counters() -> list[str]:
             "strict_violations_total": 0,
             "strict_repairs_attempted_total": 0,
             "strict_repairs_succeeded_total": 0,
+            "strict_repairs_skipped_context_overflow_total": 0,
         }
     out: list[str] = []
     out.extend(
@@ -250,6 +251,24 @@ def _render_response_format_counters() -> list[str]:
                 "client's schema is too restrictive for the model."
             ),
             int(rf_stats.get("strict_repairs_succeeded_total", 0)),
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_response_format_strict_repairs_skipped_context_overflow_total",
+            "counter",
+            (
+                "H-06 #267b strict-mode repair-retry skips. Ticks when "
+                "the post-build repair prompt (instructions + schema + "
+                "up to 4 KiB of failed output) would have exceeded the "
+                "engine's context window. The route skips the retry and "
+                "surfaces the ORIGINAL 422 json_schema_violation envelope "
+                "instead of 502 strict_repair_engine_failure, so clients "
+                "see a deterministic validation outcome. A non-zero rate "
+                "signals the repair prompt template is too large for the "
+                "deployed model's context window."
+            ),
+            int(rf_stats.get("strict_repairs_skipped_context_overflow_total", 0)),
         )
     )
     return out
