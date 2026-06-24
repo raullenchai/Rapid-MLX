@@ -478,7 +478,22 @@ def openai_to_responses(
         # spec-compliant sequence.
         reasoning_text = getattr(choice.message, "reasoning_content", None) or ""
         if reasoning_text:
-            output.append(_build_reasoning_output_item(reasoning_text))
+            # R11-B (R11-M-F1): when the engine cut off mid-think under
+            # ``max_output_tokens``, the reasoning item itself is
+            # ``incomplete`` (the model never reached its conclusion).
+            # The text we ship IS partial — flagging it as such matches
+            # the streaming surface and lets walkers handle the
+            # truncated chain-of-thought correctly.
+            reasoning_item_status = (
+                "incomplete"
+                if (choice.finish_reason == "length" and not (choice.message.content or "").strip())
+                else "completed"
+            )
+            output.append(
+                _build_reasoning_output_item(
+                    reasoning_text, status=reasoning_item_status
+                )
+            )
 
         text = choice.message.content or ""
         if text:
@@ -501,6 +516,16 @@ def openai_to_responses(
 
     usage = _build_responses_usage(response)
 
+    # R11-B (R11-M-F1): mirror the streaming surface — when the engine
+    # cut off mid-generation under ``max_output_tokens``, surface a
+    # structured ``incomplete_details.reason="max_output_tokens"`` block
+    # alongside ``status="incomplete"`` so SDK consumers can distinguish
+    # a budget-exhaust truncation from a stop-sequence / EOS completion.
+    # Pre-R11 the non-stream path emitted ``status="incomplete"`` only.
+    incomplete_details: dict | None = None
+    if status == "incomplete":
+        incomplete_details = {"reason": "max_output_tokens"}
+
     return ResponsesResponse(
         created_at=created_at,
         model=model,
@@ -518,10 +543,13 @@ def openai_to_responses(
         # round-trip. ``service_tier`` is echoed as the requested value.
         truncation=request.truncation,
         service_tier=request.service_tier,
+        incomplete_details=incomplete_details,
     )
 
 
-def _build_reasoning_output_item(reasoning_text: str) -> ResponsesOutputItem:
+def _build_reasoning_output_item(
+    reasoning_text: str, *, status: str = "completed"
+) -> ResponsesOutputItem:
     """Build the top-level ``reasoning`` output item (Yuki F4 / R10).
 
     Spec shape (OpenAI Responses):
@@ -533,11 +561,15 @@ def _build_reasoning_output_item(reasoning_text: str) -> ResponsesOutputItem:
     verbatim. Large reasoning blobs are chunk-capped at the engine
     level via ``reasoning_max_tokens`` (upstream vLLM PR #20859),
     which already runs upstream of this adapter call.
+
+    R11-B (R11-M-F1): ``status`` is parameterised so callers can flag a
+    mid-think ``max_output_tokens`` cutoff as ``"incomplete"``. Defaults
+    to ``"completed"`` for the common case.
     """
     return ResponsesOutputItem(
         type="reasoning",
         id=f"rs_{uuid.uuid4().hex[:24]}",
-        status="completed",
+        status=status,
         summary=[{"type": "summary_text", "text": reasoning_text}],
     )
 

@@ -1391,6 +1391,20 @@ async def _stream_responses(
         completion_tokens = 0
         cached_tokens = 0
 
+        # R11-B (R11-M-F1): accumulate reasoning text in-stream so we can
+        # emit a ``reasoning`` output item when the engine cuts off
+        # mid-think on ``max_output_tokens``. Pre-fix the streaming path
+        # dropped every reasoning delta on the floor (the v1 Responses
+        # contract used to omit ``response.reasoning_text.delta``) — so
+        # if ``</think>`` never closed within budget the message ladder
+        # never opened and ``response.completed`` shipped with
+        # ``output:[]`` + ``status:"completed"``. The non-streaming path
+        # always surfaced this exact case as a ``reasoning`` item +
+        # ``status:"incomplete"`` via ``openai_to_responses``; this
+        # accumulator + the post-loop emitter below close the cross-path
+        # parity gap.
+        accumulated_reasoning_text = ""
+
         # Lazy message-item state. We do NOT emit the message
         # output_item.added until we have actual user-facing text to stream
         # — a turn that is pure tool_calls should not emit a phantom empty
@@ -1662,13 +1676,24 @@ async def _stream_responses(
                             async for ev in _emit_text_delta(filtered):
                                 yield ev
                 elif output_channel == "reasoning":
+                    # R11-B (R11-M-F1): accumulate reasoning text for the
+                    # post-loop ``reasoning`` output-item emitter so
+                    # ``max_output_tokens`` cut-offs during the think
+                    # phase ship a populated ``output[]`` array instead
+                    # of an empty one. Cap reclassification still wins
+                    # over accumulation for overflow bytes (those leave
+                    # as ``content`` per the original contract).
+                    kept_reasoning, overflow, _ = _account_for_reasoning(
+                        delta_text
+                    )
+                    if kept_reasoning:
+                        accumulated_reasoning_text += kept_reasoning
                     # Reasoning-cap reclassification: once the per-request
                     # cap fires, route the overflow portion of this and
                     # every subsequent reasoning chunk to ``content`` so
                     # the user actually sees a reply instead of an
                     # unending silent reasoning stream. Without the cap
                     # the chunk drops as before (v1 Responses contract).
-                    _, overflow, _ = _account_for_reasoning(delta_text)
                     if overflow:
                         content = strip_special_tokens(overflow)
                         if content:
@@ -1752,6 +1777,12 @@ async def _stream_responses(
                     kept_reasoning, overflow, _ = _account_for_reasoning(
                         delta_msg.reasoning
                     )
+                    # R11-B (R11-M-F1): also accumulate the parser-routed
+                    # reasoning text so the post-loop reasoning emitter
+                    # has something to ship when the engine cuts off
+                    # mid-think under ``max_output_tokens``.
+                    if kept_reasoning:
+                        accumulated_reasoning_text += kept_reasoning
                     flip_succeeded = _reasoning_close_injected
                     if overflow and not _reasoning_close_injected:
                         # Codex round-10 BLOCKING #2: flip the latch
@@ -1824,7 +1855,12 @@ async def _stream_responses(
                         if filtered:
                             async for ev in _emit_text_delta(filtered):
                                 yield ev
-                # delta_msg.reasoning intentionally dropped — see above.
+                # delta_msg.reasoning routed to ``accumulated_reasoning_text``
+                # above (R11-B). The bytes are NOT emitted as wire deltas in
+                # v1 (Codex CLI doesn't render ``response.reasoning_text.delta``),
+                # but they ARE preserved so the terminal ``response.completed``
+                # event ships a populated ``reasoning`` output item under
+                # ``max_output_tokens`` cutoffs.
                 continue
 
             # Default path: text-only stream with think_router stripping
@@ -1840,7 +1876,12 @@ async def _stream_responses(
                 if block_type == "text" and piece:
                     async for ev in _emit_text_delta(piece):
                         yield ev
-                # block_type == "thinking" intentionally dropped.
+                elif block_type == "thinking" and piece:
+                    # R11-B (R11-M-F1): accumulate so the post-loop
+                    # reasoning-item emitter has bytes to ship under
+                    # ``max_output_tokens`` cutoffs. Same rationale as
+                    # the reasoning_parser path above.
+                    accumulated_reasoning_text += piece
 
         # Flush filters
         remaining = tool_filter.flush()
@@ -1853,12 +1894,21 @@ async def _stream_responses(
                     if block_type == "text" and piece:
                         async for ev in _emit_text_delta(piece):
                             yield ev
+                    elif block_type == "thinking" and piece:
+                        # R11-B: same rationale as the in-loop think_router
+                        # branch above — preserve mid-think bytes for the
+                        # terminal reasoning output item.
+                        accumulated_reasoning_text += piece
 
         if not reasoning_parser:
             for block_type, piece in think_router.flush():
                 if block_type == "text" and piece:
                     async for ev in _emit_text_delta(piece):
                         yield ev
+                elif block_type == "thinking" and piece:
+                    # R11-B: same rationale as the in-loop think_router
+                    # branch above.
+                    accumulated_reasoning_text += piece
 
         # Codex round-3 BLOCKING #3: if the reasoning cap latched on the
         # last engine chunk of the stream (terminal exact-boundary case
@@ -1972,6 +2022,22 @@ async def _stream_responses(
                 if content:
                     async for ev in _emit_text_delta(content):
                         yield ev
+            # R11-B (R11-M-F1): tap any reasoning bytes the finalize pass
+            # surfaces, but ONLY if the in-loop ``extract_reasoning_streaming``
+            # accumulator didn't already capture them. Qwen3 / deepseek /
+            # glm4 release reasoning incrementally on each delta AND
+            # re-emit the full chain on ``finalize_streaming`` (it
+            # re-parses ``accumulated_raw``), so naively appending would
+            # double the text. Parsers that only release on finalize
+            # (none in-tree today, but the contract allows it) still
+            # contribute correctly. The streaming surface's accumulator
+            # is the canonical source when both are populated.
+            if (
+                final_msg
+                and getattr(final_msg, "reasoning", None)
+                and not accumulated_reasoning_text
+            ):
+                accumulated_reasoning_text += final_msg.reasoning
 
         # Parse tool_calls FIRST so the forced-choice deferred-text
         # resolution (Yuki F6 codex r1 BLOCKING #2) can decide whether
@@ -2118,6 +2184,73 @@ async def _stream_responses(
             )
             completed_output.append(message_item_payload)
 
+        # R11-B (R11-M-F1): emit a ``reasoning`` output item carrying any
+        # accumulated chain-of-thought. Pre-fix the streaming path dropped
+        # every reasoning delta on the floor — so when ``max_output_tokens``
+        # cut the model off WHILE STILL inside ``<think>...</think>`` the
+        # message item never opened, ``completed_output`` shipped empty,
+        # and the terminal ``response.completed`` ran with ``output:[]`` +
+        # ``status:"completed"`` (the wire shape Mira R1 F1 captured).
+        # The non-streaming path always surfaced this same input as a
+        # ``reasoning`` item + ``status:"incomplete"`` via
+        # ``openai_to_responses``; this block closes the cross-path parity
+        # gap.
+        #
+        # Item status mirrors the non-stream convention:
+        # ``incomplete`` when the engine reported ``finish_reason=="length"``
+        # (the model was still mid-think when its budget ran out), else
+        # ``completed``. The reasoning text itself is delivered verbatim
+        # in ``summary[0].summary_text`` — rapid-mlx does not run a
+        # separate summarization model, matching ``_build_reasoning_output_item``
+        # on the non-stream side.
+        if accumulated_reasoning_text:
+            reasoning_output_index = (
+                (message_output_index + 1) if message_open else 0
+            )
+            reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+            reasoning_status = (
+                "incomplete" if last_finish_reason == "length" else "completed"
+            )
+            reasoning_item_payload_added = {
+                "type": "reasoning",
+                "id": reasoning_item_id,
+                "status": "in_progress",
+                "summary": [],
+            }
+            yield _emit(
+                "response.output_item.added",
+                {
+                    "type": "response.output_item.added",
+                    "output_index": reasoning_output_index,
+                    "item": reasoning_item_payload_added,
+                },
+            )
+            reasoning_item_payload_done = {
+                "type": "reasoning",
+                "id": reasoning_item_id,
+                "status": reasoning_status,
+                "summary": [
+                    {
+                        "type": "summary_text",
+                        "text": accumulated_reasoning_text,
+                    }
+                ],
+            }
+            yield _emit(
+                "response.output_item.done",
+                {
+                    "type": "response.output_item.done",
+                    "output_index": reasoning_output_index,
+                    "item": reasoning_item_payload_done,
+                },
+            )
+            # Mirror the non-stream ``openai_to_responses`` ordering:
+            # reasoning appears FIRST in ``output[]`` so SDK consumers
+            # walking ``output[i].type`` see the same shape on both
+            # surfaces. We may have already appended a message item at
+            # ``completed_output[0]`` — insert reasoning before it.
+            completed_output.insert(0, reasoning_item_payload_done)
+
         # Ana C-06 (0.8.5 dogfood): when the request used Computer-Use,
         # translate ``function.name == "computer"`` tool_calls into the
         # ``computer_call`` envelope so SDK consumers walking
@@ -2257,7 +2390,7 @@ async def _stream_responses(
         if (
             last_finish_reason == "length"
             and completion_tokens == 0
-            and not (accumulated_text or tool_calls)
+            and not (accumulated_text or tool_calls or accumulated_reasoning_text)
         ):
             logger.warning(
                 "Responses (stream): engine produced no output "
@@ -2300,6 +2433,19 @@ async def _stream_responses(
         # one as a hard failure (it logs "stream closed before
         # response.completed").
         cached_tokens_clamped = min(cached_tokens, prompt_tokens)
+        # R11-B (R11-M-F1): credit accumulated reasoning bytes against
+        # ``output_tokens_details.reasoning_tokens`` so SDK consumers can
+        # surface the same "reasoning_tokens=N" counter the non-stream
+        # path emits via ``_build_usage``. We don't have a per-token
+        # split, so approximate by character-quarter (matches the
+        # ``_account_for_reasoning`` 4-char heuristic used elsewhere on
+        # this surface). Min-clamp to 1 when reasoning text exists so
+        # consumers see a non-zero credit on extremely short reasoning.
+        reasoning_token_credit = 0
+        if accumulated_reasoning_text:
+            reasoning_token_credit = max(
+                1, len(accumulated_reasoning_text) // 4
+            )
         usage_payload = {
             "input_tokens": prompt_tokens,
             "output_tokens": completion_tokens,
@@ -2310,31 +2456,51 @@ async def _stream_responses(
             "input_tokens_details": {
                 "cached_tokens": cached_tokens_clamped if cached_tokens_clamped else 0,
             },
-            "output_tokens_details": {"reasoning_tokens": 0},
+            "output_tokens_details": {"reasoning_tokens": reasoning_token_credit},
         }
+        # R11-B (R11-M-F1): mirror the non-stream
+        # ``_convert_status`` mapping — ``finish_reason="length"``
+        # surfaces as ``status="incomplete"`` and pins a structured
+        # ``incomplete_details.reason`` block so SDK consumers (Codex
+        # CLI, openai-python) can distinguish a budget-exhaust
+        # truncation from a stop-sequence / EOS completion. Pre-fix
+        # the streaming path always reported ``status="completed"``
+        # regardless of the underlying truncation, so a mid-think
+        # ``max_output_tokens`` cutoff was indistinguishable from a
+        # clean finish on the wire.
+        if last_finish_reason == "length":
+            completed_status = "incomplete"
+            incomplete_details: dict | None = {"reason": "max_output_tokens"}
+        else:
+            completed_status = "completed"
+            incomplete_details = None
+
+        completed_response_payload = {
+            "id": response_id,
+            "object": "response",
+            "created_at": created_at,
+            "status": completed_status,
+            "model": served_model,
+            # R10-C3: include the full reconstructed ``output`` array
+            # so the openai-python SDK can materialize the final
+            # Response object. Pre-fix this field was missing and the
+            # SDK raised on ``Response.output`` validation.
+            "output": completed_output,
+            "usage": usage_payload,
+            # R10-C3: mirror the non-streaming response shape — the
+            # SDK's ``Response`` model marks these three fields
+            # required and rejects the payload without them.
+            "parallel_tool_calls": bool(responses_request.parallel_tool_calls),
+            "tool_choice": responses_request.tool_choice or "auto",
+            "tools": responses_request.tools or [],
+        }
+        if incomplete_details is not None:
+            completed_response_payload["incomplete_details"] = incomplete_details
         yield _emit(
             "response.completed",
             {
                 "type": "response.completed",
-                "response": {
-                    "id": response_id,
-                    "object": "response",
-                    "created_at": created_at,
-                    "status": "completed",
-                    "model": served_model,
-                    # R10-C3: include the full reconstructed ``output`` array
-                    # so the openai-python SDK can materialize the final
-                    # Response object. Pre-fix this field was missing and the
-                    # SDK raised on ``Response.output`` validation.
-                    "output": completed_output,
-                    "usage": usage_payload,
-                    # R10-C3: mirror the non-streaming response shape — the
-                    # SDK's ``Response`` model marks these three fields
-                    # required and rejects the payload without them.
-                    "parallel_tool_calls": bool(responses_request.parallel_tool_calls),
-                    "tool_choice": responses_request.tool_choice or "auto",
-                    "tools": responses_request.tools or [],
-                },
+                "response": completed_response_payload,
             },
         )
 

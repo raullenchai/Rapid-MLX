@@ -388,3 +388,11 @@ class ResponsesResponse(BaseModel):
     # validator's contract carries over to the response shape too.
     truncation: Literal["auto", "disabled"] | None = None
     service_tier: str | None = None
+    # R11-B (R11-M-F1): structured truncation block. When ``status ==
+    # "incomplete"`` because the engine reported ``finish_reason="length"``,
+    # this carries ``{"reason": "max_output_tokens"}`` so SDK consumers
+    # (Codex CLI, openai-python) can distinguish a budget-exhaust
+    # truncation from a stop-sequence / EOS completion. Mirrors the
+    # OpenAI Responses spec ``Response.incomplete_details`` field;
+    # left ``None`` for ``completed`` and ``failed`` envelopes.
+    incomplete_details: dict | None = None
