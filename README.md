@@ -86,6 +86,8 @@ Upgrade later: `uv tool upgrade rapid-mlx` / `brew upgrade rapid-mlx` / `pip ins
 
 > **Vision/multimodal models** (Gemma 4, Qwen-VL, etc.) need extras: `pip install 'rapid-mlx[vision]'`. Text-only install is ~460 MB; vision adds ~322 MB. See [Optional Extras](#optional-extras) for the full list.
 
+> **Audio (TTS / STT)** — `pip install 'rapid-mlx[audio]'` unlocks `kokoro`, `chatterbox`, `vibevoice`, `whisper`, `parakeet`, and friends behind OpenAI's `/v1/audio/speech` and `/v1/audio/transcriptions`. See [Supported audio models](#supported-audio-models).
+
 > **"No matching distribution" error?** Your Python is too old. Run `python3 --version` — if it says 3.9, install a newer Python: `brew install python@3.12` then `python3.12 -m pip install rapid-mlx`
 
 > **`Refusing to load formula ... from untrusted tap`?** Homebrew 4.x requires third-party taps to be explicitly trusted before install. The `brew trust raullenchai/rapid-mlx` line above is what marks the tap as trusted — without it, even after `brew tap`, the install is refused. Trust is per-machine and persists across upgrades.
@@ -537,6 +539,52 @@ Decoded examples:
 
 </details>
 
+### Supported audio models
+
+Audio support landed in **0.8.13** behind the `[audio]` extra. **26 aliases** ship today (13 TTS + 13 STT), all served through the same OpenAI-compatible endpoints — `POST /v1/audio/speech` for synthesis and `POST /v1/audio/transcriptions` for recognition. Engines load **lazily** on the first `/v1/audio/*` request, so booting a TTS/STT alias is as fast as booting a text model — no boot-time weight download.
+
+```bash
+pip install 'rapid-mlx[audio]==0.8.13'
+```
+
+| Mode | Alias | HuggingFace repo | Notes |
+|---|---|---|---|
+| **TTS** | `kokoro` (default) | `mlx-community/Kokoro-82M-bf16` | 12 voices (`af_heart`, `af_bella`, …) |
+| **TTS** | `kokoro-4bit` | Kokoro-82M 4-bit | Same voices, lower RAM |
+| **TTS** | `chatterbox` | `mlx-community/chatterbox-turbo-fp16` | Conversational, low-latency |
+| **TTS** | `vibevoice` | `mlx-community/VibeVoice-Realtime-0.5B-4bit` | 25 voices across en/de/fr/jp/kr/pt/sp/it/pl/nl/in/cn |
+| **TTS** | `voxcpm` | `mlx-community/VoxCPM1.5` | High-quality multilingual |
+| **TTS** | `dia` | `mlx-community/Dia-1.6B-4bit` | Expressive dialogue model |
+| **STT** | `whisper` / `whisper-1` | `mlx-community/whisper-large-v3-mlx` | OpenAI-spec aliases (drop-in for `whisper-1`) |
+| **STT** | `whisper-tiny`, `whisper-base`, `whisper-small`, `whisper-medium` | Whisper size variants | Pick by Mac RAM |
+| **STT** | `whisper-large-v3-turbo` | Whisper turbo | Faster decode, near-large quality |
+| **STT** | `parakeet` / `parakeet-v3` | `mlx-community/parakeet-tdt-0.6b-v2` / v3 | NVIDIA TDT, English-only, very fast |
+
+Run `rapid-mlx models --audio` for the full 26-alias list.
+
+**Try TTS** — synth a clip with Kokoro:
+
+```bash
+pip install 'rapid-mlx[audio]'
+rapid-mlx serve kokoro --port 8000
+
+# OpenAI-compatible TTS
+curl -X POST http://127.0.0.1:8000/v1/audio/speech \
+  -H "Content-Type: application/json" \
+  -d '{"model":"kokoro","input":"Hello world","voice":"af_heart","response_format":"mp3"}' \
+  --output out.mp3
+```
+
+**Try STT** — transcribe a clip with Whisper:
+
+```bash
+rapid-mlx serve whisper --port 8001
+curl -X POST http://127.0.0.1:8001/v1/audio/transcriptions \
+  -F "file=@speech.wav" -F "model=whisper-1"
+```
+
+Both endpoints match the OpenAI shape, so the official `openai` Python / JS SDKs work unchanged (`base_url="http://localhost:8000/v1"`).
+
 ### Copy-paste commands
 
 Pick the one that matches your Mac. Run `rapid-mlx models` to see all available aliases.
@@ -787,7 +835,7 @@ Large-context requests auto-route to a cloud LLM (GPT-5, Claude, etc.) when loca
 
 ### Multimodal
 
-Vision, audio (STT/TTS), video understanding, and text embeddings — all through the same OpenAI-compatible API.
+Vision, audio (STT/TTS), video understanding, and text embeddings — all through the same OpenAI-compatible API. Audio (new in 0.8.13) ships 26 aliases — 13 TTS (Kokoro, Chatterbox, VibeVoice, VoxCPM, Dia) and 13 STT (Whisper, Parakeet) — served via `POST /v1/audio/speech` and `POST /v1/audio/transcriptions`. See [Supported audio models](#supported-audio-models).
 
 ### PFlash Prefill Acceleration
 
@@ -906,7 +954,7 @@ The base `pip install rapid-mlx` is ~460 MB and covers all text-only models. Vis
 | Extra | Install | Adds | What it unlocks |
 |---|---|---|---|
 | `vision` | `pip install 'rapid-mlx[vision]'` | ~322 MB | Gemma 4, Qwen-VL, video understanding (mlx-vlm + opencv + torch) |
-| `audio` | `pip install 'rapid-mlx[audio]'` | ~600 MB | TTS / STT (mlx-audio + spacy + scipy) |
+| `audio` | `pip install 'rapid-mlx[audio]'` | ~600 MB | TTS (Kokoro, Chatterbox, VibeVoice, VoxCPM, Dia) + STT (Whisper, Parakeet) via `/v1/audio/speech` & `/v1/audio/transcriptions` (mlx-audio + miniaudio + soundfile + sounddevice + numba) |
 | `embeddings` | `pip install 'rapid-mlx[embeddings]'` | ~50 MB | `/v1/embeddings` endpoint (mlx-embeddings) |
 | `chat` | `pip install 'rapid-mlx[chat]'` | ~150 MB | Built-in Gradio chat UI |
 | `guided` | `pip install 'rapid-mlx[guided]'` | ~80 MB | Schema-constrained JSON generation (outlines) |
