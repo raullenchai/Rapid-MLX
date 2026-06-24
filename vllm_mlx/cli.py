@@ -3219,6 +3219,7 @@ def _spawn_chat_server(
     served_name: str | None = None,
     *,
     register_in: list | None = None,
+    log_handle=None,
 ) -> tuple[object, str]:
     """Spawn a `serve` subprocess on an ephemeral port for chat REPL use.
 
@@ -3232,11 +3233,23 @@ def _spawn_chat_server(
     one Python statement of unprotected window; doing it inside this
     function closes that window for the caller.
 
+    ``log_handle`` is the ``managed_tempfile_path`` context-manager handle
+    that owns ``log_path``. When provided, ownership is transferred to the
+    proc inside a SIGTERM/SIGINT-masked critical section that also performs
+    the ``register_in`` append and the ``_rapid_mlx_log*`` attribute set.
+    Without the mask + atomic transfer, a signal landing between
+    ``_active_procs.append`` and the caller's later ``handle.release()``
+    could fire ``_teardown_proc`` (which intentionally keeps non-empty
+    logs for post-mortem) — then the ``with`` block's ``finally`` would
+    unlink the kept log anyway, violating the keep-non-empty-log policy
+    documented on ``_teardown_proc``. Codex round-1 BLOCKING #1.
+
     If ``served_name`` is given, it is passed via ``--served-model-name`` so
     the spawned server exposes the alias as the API model name (e.g. user
     typed ``qwen3.5-4b-4bit`` → API requests use ``qwen3.5-4b-4bit`` rather than the
     expanded HF path).
     """
+    import signal as _signal
     import socket
     import subprocess
 
@@ -3279,15 +3292,48 @@ def _spawn_chat_server(
         # would otherwise leak. Re-raise after closing.
         log.close()
         raise
-    # Register first so a SIGTERM landing between here and the caller's
-    # next statement still tears the child down.
-    if register_in is not None:
-        register_in.append(proc)
-    # Stash the log handle and path on the proc object so the chat REPL
-    # can close+unlink them when the proc is torn down (fixes the file
-    # descriptor + tempfile leak across `/model` swaps).
-    proc._rapid_mlx_log = log
-    proc._rapid_mlx_log_path = log_path
+    # Atomic ownership-transfer critical section: mask SIGTERM/SIGINT so
+    # ``_cleanup`` (which walks ``_active_procs`` and applies
+    # ``_teardown_proc``'s keep-non-empty-log policy) cannot interleave
+    # between the append and the ``log_handle.release()`` call. Without
+    # the mask, a signal here would fire ``_teardown_proc`` (which may
+    # keep the log) and then the surrounding ``with`` block's ``finally``
+    # would unlink it anyway. See docstring for the full race.
+    _prev_term = _prev_int = None
+    try:
+        try:
+            _prev_term = _signal.signal(_signal.SIGTERM, _signal.SIG_IGN)
+        except (ValueError, OSError):
+            pass
+        try:
+            _prev_int = _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
+        except (ValueError, OSError):
+            pass
+        # Register first so a SIGTERM landing between here and the caller's
+        # next statement still tears the child down.
+        if register_in is not None:
+            register_in.append(proc)
+        # Stash the log handle and path on the proc object so the chat REPL
+        # can close+unlink them when the proc is torn down (fixes the file
+        # descriptor + tempfile leak across `/model` swaps).
+        proc._rapid_mlx_log = log
+        proc._rapid_mlx_log_path = log_path
+        # Hand the tempfile path off to ``_teardown_proc`` BEFORE we
+        # leave the masked section. Once released, the ``with`` block's
+        # ``finally`` in the caller is a no-op for this path.
+        if log_handle is not None:
+            log_handle.release()
+    finally:
+        # Best-effort restore so post-spawn signals route normally.
+        for signum, prev in (
+            (_signal.SIGTERM, _prev_term),
+            (_signal.SIGINT, _prev_int),
+        ):
+            if prev is not None:
+                try:
+                    _signal.signal(signum, prev)
+                except (ValueError, OSError):
+                    pass
     return proc, base_url
 
 
@@ -3982,10 +4028,12 @@ def chat_command(args):
         # ``managed_tempfile_path`` helper registers an atexit unlink
         # the moment the path exists, so the race window is closed:
         # cleanup runs on context exit, on ``sys.exit``, or via atexit
-        # if the body propagates. Once ``_spawn_chat_server`` has
-        # successfully stashed the path on the proc, ``.release()``
-        # hands ownership to ``_teardown_proc`` so its per-proc policy
-        # (keep non-empty logs for post-mortem) still applies.
+        # if the body propagates. The handle is passed through to
+        # ``_spawn_chat_server`` which performs the
+        # register/attribute-set/release as a single SIGTERM-masked
+        # critical section, so ``_teardown_proc``'s keep-non-empty-log
+        # policy cannot be undone by a signal during the handoff
+        # (codex round-1 BLOCKING #1).
         with managed_tempfile_path(
             prefix="rapid-mlx-chat-", suffix=".log"
         ) as _log_handle:
@@ -3999,10 +4047,8 @@ def chat_command(args):
                 log_path,
                 served_name=original,
                 register_in=_active_procs,
+                log_handle=_log_handle,
             )
-            # Spawn succeeded and the proc owns the log path now; the
-            # session-long cleanup belongs to ``_teardown_proc``.
-            _log_handle.release()
 
         try:
             _wait_for_chat_server(base_url, proc, timeout_s=args.ready_timeout)
@@ -4275,9 +4321,11 @@ def chat_command(args):
         #    guarantees the log path is unlinked if the spawn raises
         #    before the proc is registered onto ``_active_procs`` —
         #    the leak window in the original ``NamedTemporaryFile(...).name``
-        #    pattern. Once the proc holds the path, ``release()``
-        #    hands ownership to ``_teardown_proc`` whose per-proc
-        #    policy already covers non-empty-keep semantics.
+        #    pattern. The handle is passed into ``_spawn_chat_server``
+        #    so the register/attribute-set/release happens under one
+        #    SIGTERM/SIGINT mask, preserving ``_teardown_proc``'s
+        #    keep-non-empty-log policy on signal-during-handoff (codex
+        #    round-1 BLOCKING #1).
         with managed_tempfile_path(
             prefix="rapid-mlx-chat-", suffix=".log"
         ) as _new_log_handle:
@@ -4293,8 +4341,8 @@ def chat_command(args):
                 new_log_path,
                 served_name=new_alias,
                 register_in=_active_procs,
+                log_handle=_new_log_handle,
             )
-            _new_log_handle.release()
         try:
             _wait_for_chat_server(new_base_url, new_proc, timeout_s=args.ready_timeout)
         except (RuntimeError, TimeoutError) as exc:

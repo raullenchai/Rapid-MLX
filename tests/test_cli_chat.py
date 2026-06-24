@@ -1076,11 +1076,15 @@ def test_chat_command_switch_model_rollback_on_wait_failure(monkeypatch, capsys)
         def kill(self):
             self._terminated = True
 
-    def _fake_spawn(model, log_path, served_name=None, *, register_in=None):
+    def _fake_spawn(
+        model, log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
         proc = _FakeProc(model)
         spawned.append(proc)
         if register_in is not None:
             register_in.append(proc)
+        if log_handle is not None:
+            log_handle.release()
         return proc, f"http://127.0.0.1:{port}"
 
     wait_calls = {"n": 0}
@@ -1736,7 +1740,9 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
     # --- Case 1: empty log → unlinked on swap ---
     call_n = {"n": 0}
 
-    def _spawn_empty(model, log_path, served_name=None, *, register_in=None):
+    def _spawn_empty(
+        model, log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
         # First spawn: backed by empty_log (the one that should be
         # unlinked when swapped out). Second spawn: a noop replacement.
         call_n["n"] += 1
@@ -1748,6 +1754,8 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
             p = _FakeProc(tmp)
         if register_in is not None:
             register_in.append(p)
+        if log_handle is not None:
+            log_handle.release()
         return p, f"http://127.0.0.1:{port_e}"
 
     monkeypatch.setattr(cli, "_spawn_chat_server", _spawn_empty)
@@ -1769,7 +1777,9 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
     # --- Case 2: full log → preserved on swap ---
     call_n2 = {"n": 0}
 
-    def _spawn_full(model, log_path, served_name=None, *, register_in=None):
+    def _spawn_full(
+        model, log_path, served_name=None, *, register_in=None, log_handle=None
+    ):
         call_n2["n"] += 1
         if call_n2["n"] == 1:
             p = _FakeProc(full_log)
@@ -1779,6 +1789,8 @@ def test_teardown_unlinks_only_empty_log_files(tmp_path, monkeypatch):
             p = _FakeProc(tmp)
         if register_in is not None:
             register_in.append(p)
+        if log_handle is not None:
+            log_handle.release()
         return p, f"http://127.0.0.1:{port_f}"
 
     monkeypatch.setattr(cli, "_spawn_chat_server", _spawn_full)
@@ -2257,3 +2269,101 @@ def test_serve_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
         cli.main()
     err = capsys.readouterr().err
     assert "--no-thi" in err or "unrecognized" in err.lower()
+
+
+def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tmp_path):
+    """Codex round-1 BLOCKING #1 — the
+    register/attribute-set/release handoff must be atomic w.r.t.
+    SIGTERM and SIGINT.
+
+    Without atomicity, a signal landing between ``_active_procs.append``
+    and ``handle.release()`` (which currently were in different scopes)
+    would fire ``_teardown_proc`` (which keeps non-empty logs for
+    post-mortem) and then the surrounding context manager's
+    ``finally`` would unlink the kept log anyway. The fix passes the
+    handle into ``_spawn_chat_server`` and performs all three steps
+    under a single SIG_IGN mask. This test asserts:
+
+    1. ``log_handle.release()`` is called BEFORE the spawn returns.
+    2. SIGTERM is masked while register/attribute/release run.
+    3. The mask is restored to the previous handler after the
+       critical section.
+    """
+    import signal as _signal
+
+    from vllm_mlx._tempfile_safe import managed_tempfile_path
+
+    signal_changes: list[tuple[int, object]] = []
+    real_signal = _signal.signal
+
+    def _spy_signal(signum, handler):
+        signal_changes.append((signum, handler))
+        return real_signal(signum, handler)
+
+    class _FakeSocket:
+        def __init__(self, *_, **__):
+            pass
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+        def bind(self, _addr):
+            pass
+
+        def getsockname(self):
+            return ("127.0.0.1", 54322)
+
+    # When Popen runs, capture whether the path was already released
+    # (the release MUST happen during the critical section, which is
+    # after Popen — so it should NOT yet be released here).
+    release_state: dict = {}
+
+    class _FakePopen:
+        def __init__(
+            self, cmd, *, stdout=None, stderr=None, start_new_session=False, env=None
+        ):
+            release_state["released_at_popen"] = None  # set later
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr("socket.socket", _FakeSocket)
+    monkeypatch.setattr("subprocess.Popen", _FakePopen)
+    monkeypatch.setattr(_signal, "signal", _spy_signal)
+
+    register_in: list = []
+    with managed_tempfile_path(
+        prefix="rapid-mlx-chat-test-", suffix=".log", dir=str(tmp_path)
+    ) as handle:
+        assert handle.released is False
+        proc, _base_url = cli._spawn_chat_server(
+            "qwen3.5-4b-4bit",
+            handle.path,
+            register_in=register_in,
+            log_handle=handle,
+        )
+        # Inside the ``with`` body but AFTER the spawn returns, the
+        # handle MUST already be released so the surrounding
+        # ``finally`` is a no-op for this path.
+        assert handle.released is True, (
+            "handoff race: handle was not released inside the "
+            "spawn's signal-masked critical section"
+        )
+        # The proc must be in register_in and have the path attribute,
+        # both set inside the same critical section.
+        assert proc in register_in
+        assert getattr(proc, "_rapid_mlx_log_path", None) == handle.path
+
+    # Both SIGTERM and SIGINT must have been masked with SIG_IGN, then
+    # restored to their previous handlers. We assert at least one
+    # SIG_IGN install for each.
+    sig_ign_signums = {s for s, h in signal_changes if h is _signal.SIG_IGN}
+    assert _signal.SIGTERM in sig_ign_signums, (
+        f"SIGTERM not masked during handoff; changes={signal_changes}"
+    )
+    assert _signal.SIGINT in sig_ign_signums, (
+        f"SIGINT not masked during handoff; changes={signal_changes}"
+    )

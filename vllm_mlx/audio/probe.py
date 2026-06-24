@@ -243,9 +243,14 @@ def _dry_run_stt(model_name: str | None) -> tuple[bool, str | None]:
         # GH #719 — the old pattern was ``NamedTemporaryFile(delete=False)``
         # inside a ``with`` block (which only closes the FD, not the
         # file), followed by a manual ``try/finally`` for unlink. The
-        # window between the ``with`` exit and the ``try`` entry leaked
-        # the wav if ``STTEngine`` construction raised. ``managed_tempfile_path``
-        # closes that window via atexit fallback.
+        # uncovered window was any exception between path allocation
+        # (when ``NamedTemporaryFile`` returned the open handle) and
+        # the start of the manual ``try`` block — including the
+        # ``with`` body itself, ``wave.open`` errors, or anything that
+        # raised before the manual ``finally`` could fire.
+        # ``managed_tempfile_path`` registers the path in a process-wide
+        # set the moment ``mkstemp`` returns, so the atexit fallback
+        # reaps it even on the bypass paths the old shape couldn't see.
         with managed_tempfile_path(suffix=".wav") as wav_handle:
             wav_path = wav_handle.path
             with wave.open(wav_path, "wb") as w:

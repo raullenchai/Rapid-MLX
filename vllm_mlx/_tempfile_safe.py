@@ -22,14 +22,16 @@ that:
 
 1. Creates the tempfile via ``mkstemp`` (closes the FD immediately,
    so there is no dangling descriptor) and returns the path string.
-2. Registers an ``atexit`` hook to unlink the path *before* the
-   context body runs. This guarantees cleanup even if the body
-   raises BEFORE the context's ``__exit__`` runs (e.g. the body
-   triggers a sub-helper that calls ``sys.exit()`` from within an
-   ``atexit``-bypassing path, or a hard interpreter shutdown).
-3. On normal context exit, unlinks the path and unregisters the
-   ``atexit`` hook so we don't accumulate dead callables in long-
-   running parents that create + tear down many tempfiles.
+2. Adds the path to a module-level ``_pending_paths`` set. A single
+   shared ``atexit`` hook (installed lazily the first time anyone
+   uses the helper) walks this set at interpreter shutdown so any
+   path still pending at exit gets unlinked. The hook is installed
+   once per process and stays registered for the lifetime of the
+   interpreter — only the registry shrinks as paths are released
+   or cleaned up by ``__exit__``.
+3. On normal context exit (including exceptions and ``SystemExit``,
+   both of which trigger ``__exit__``), unlinks the path and drops
+   it from the registry.
 4. Exposes ``release()`` for callers that need to hand ownership
    over to another lifecycle (e.g. the chat REPL hands the log
    path to ``_teardown_proc`` which has its own per-proc cleanup
@@ -45,16 +47,19 @@ Why not just use ``NamedTemporaryFile()`` (no ``delete=False``)?
   policy is therefore decoupled from the FD lifecycle and has to
   be expressed explicitly — that is what this helper provides.
 
-Why both ``atexit`` AND ``__exit__``?
-- ``__exit__`` covers normal control flow (return, exception
-  caught by the caller).
-- ``atexit`` covers paths where ``__exit__`` is bypassed:
-  ``sys.exit()`` from inside the body (the chat command does this
-  on readiness failure), a hard exception that propagates past
-  the context, or any helper that does ``os._exit`` in an unusual
-  way. ``atexit`` does NOT cover SIGKILL or ``os._exit`` itself,
-  which is acceptable — those are not the failure modes #719
-  observed.
+Coverage matrix:
+
+- Normal exit / exception inside body / ``SystemExit`` (``sys.exit``):
+  Python invokes the context manager's ``__exit__`` (or, for the
+  generator-based helper here, the ``finally`` inside the ``@contextmanager``
+  wrapper), which unlinks the path and removes it from the registry.
+- Interpreter exit while a path is still pending (caller forgot to
+  exit the context, or a hard exception aborted the unwind):
+  The shared ``atexit`` hook reaps everything in ``_pending_paths``.
+- ``os._exit()`` / SIGKILL: NEITHER ``__exit__`` nor ``atexit`` runs.
+  These paths are explicitly NOT covered. They are not the failure
+  modes #719 reported, and covering them would require a separate
+  janitor process — out of scope for this helper.
 """
 
 from __future__ import annotations

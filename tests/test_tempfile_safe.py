@@ -128,13 +128,69 @@ def test_release_removes_from_registry_immediately():
     os.unlink(path)
 
 
-def test_atexit_fallback_via_subprocess_exit_before_context_exit():
-    """Regression for GH #719.
+def test_atexit_fallback_reaps_paths_not_cleaned_by_context_exit():
+    """Codex round-1 finding #3 — exercise the atexit hook directly.
 
-    Spawn a subprocess that creates a managed tempfile and then
-    ``sys.exit(0)``s from *inside* the context body. Without the
-    atexit fallback, the file would persist; with it, the file is
-    reaped before the interpreter dies.
+    The ``with`` block's ``finally`` covers normal exit, exceptions, and
+    ``SystemExit`` — so a test that uses the public context manager and
+    then exits cannot distinguish "atexit reaped it" from "``__exit__``
+    reaped it". To prove the atexit fallback actually works, we have to
+    leave a path in the module-level registry WITHOUT going through the
+    context manager's ``finally``.
+
+    Strategy: in a fresh subprocess, call ``mkstemp`` directly, register
+    the path via the module's internal registry (the same pathway
+    ``managed_tempfile_path`` uses), then exit normally. Only the atexit
+    hook can reap that path; if the hook is broken, the file persists
+    after the subprocess exits.
+    """
+    with tempfile.TemporaryDirectory() as td:
+        marker = Path(td) / "marker.txt"
+        script = textwrap.dedent(
+            f"""
+            import os, sys, tempfile
+            sys.path.insert(0, {str(Path(__file__).resolve().parent.parent)!r})
+            from vllm_mlx import _tempfile_safe
+
+            fd, path = tempfile.mkstemp(prefix="ut-atexit-", suffix=".tmp", dir={td!r})
+            os.close(fd)
+            # Bypass the context manager: register the path directly and
+            # arm the shared atexit hook the same way the helper does on
+            # first use. If the hook is broken, the file survives the
+            # subprocess. This is the ONLY test in this file that
+            # actually exercises the atexit path in isolation.
+            _tempfile_safe._ensure_atexit_registered()
+            with _tempfile_safe._pending_lock:
+                _tempfile_safe._pending_paths.add(path)
+            with open({str(marker)!r}, "w") as f:
+                f.write(path)
+            # Normal exit. ``__exit__`` does NOT run for this path
+            # (we never entered the context manager). atexit is the
+            # ONLY path that can reap it.
+            """
+        )
+        result = subprocess.run(
+            [sys.executable, "-c", script],
+            capture_output=True,
+            text=True,
+        )
+        assert result.returncode == 0, result.stderr
+        leaked_path = marker.read_text().strip()
+        assert leaked_path
+        assert not os.path.exists(leaked_path), (
+            f"atexit hook failed to reap {leaked_path}"
+        )
+
+
+def test_systemexit_inside_context_body_triggers_context_finally():
+    """Companion to the atexit test above.
+
+    Spawn a subprocess that calls ``sys.exit(0)`` from inside a
+    ``with managed_tempfile_path(...)`` block. ``SystemExit`` triggers
+    ``__exit__`` (i.e. the ``finally`` inside the ``@contextmanager``
+    wrapper), so the path is reaped via the normal exit path — atexit
+    plays no role here. This documents the contract for the chat REPL,
+    whose ``sys.exit(1)`` on readiness failure depends on this guarantee.
     """
     with tempfile.TemporaryDirectory() as td:
         marker = Path(td) / "marker.txt"
@@ -145,14 +201,8 @@ def test_atexit_fallback_via_subprocess_exit_before_context_exit():
             from vllm_mlx._tempfile_safe import managed_tempfile_path
 
             with managed_tempfile_path(prefix="ut-exit-", suffix=".tmp", dir={td!r}) as h:
-                # Stash the path so the test runner can check it after exit.
                 with open({str(marker)!r}, "w") as f:
                     f.write(h.path)
-                # ``SystemExit`` propagates as a regular BaseException,
-                # which DOES trigger __exit__. The normal-exit path
-                # therefore reaps via ``finally`` first; this test
-                # confirms the file is gone regardless of whether
-                # ``__exit__`` or the atexit fallback did the work.
                 sys.exit(0)
             """
         )
@@ -164,21 +214,20 @@ def test_atexit_fallback_via_subprocess_exit_before_context_exit():
         assert result.returncode == 0, result.stderr
         leaked_path = marker.read_text().strip()
         assert leaked_path
-        # File should be gone — either via ``__exit__`` (SystemExit
-        # path) or via the atexit fallback.
         assert not os.path.exists(leaked_path), (
-            f"leak: {leaked_path} still exists after subprocess exit"
+            f"SystemExit path leaked: {leaked_path} still exists"
         )
 
 
-def test_atexit_fallback_via_subprocess_os_exit_skips_context_exit():
-    """Confirms the atexit fallback covers the case where ``__exit__``
-    truly does NOT run.
+def test_os_exit_is_documented_to_skip_cleanup_negative_control():
+    """Negative control — ``os._exit`` MUST leak.
 
+    Documents the limitation called out in the module docstring:
     ``os._exit`` skips both ``__exit__`` and ``atexit``, so the file
-    SHOULD leak (we document that limitation). This test is the
-    negative control — without it, we can't claim the atexit
-    fallback is meaningful.
+    survives the subprocess. If a future "fix" started reaping this
+    case (e.g. a SIGCHLD-based janitor), we'd want to know so the
+    docstring can be updated. Asserting the file IS present makes
+    the negative control real.
     """
     with tempfile.TemporaryDirectory() as td:
         marker = Path(td) / "marker.txt"
@@ -201,12 +250,14 @@ def test_atexit_fallback_via_subprocess_os_exit_skips_context_exit():
         )
         assert result.returncode == 0
         leaked_path = marker.read_text().strip()
-        # We expect the leak here (documented limitation).
-        # The test passes if the file IS gone (best case) OR still
-        # exists (worst case but documented). The point is the
-        # NORMAL atexit path covers the chat REPL scenarios.
-        if os.path.exists(leaked_path):
-            os.unlink(leaked_path)
+        assert leaked_path
+        # ``os._exit`` skips atexit + __exit__: file must remain.
+        assert os.path.exists(leaked_path), (
+            "negative-control regression: os._exit no longer leaks. "
+            "If intentional, update the helper's docstring."
+        )
+        # Manual cleanup so $TMPDIR doesn't accumulate.
+        os.unlink(leaked_path)
 
 
 def _count_in_dir(d: str) -> int:
@@ -313,12 +364,16 @@ def test_chat_command_does_not_leak_tempfile_on_spawn_readiness_failure(tmp_path
         fake_proc.poll.return_value = None
         fake_proc.wait.return_value = 0
 
-        def fake_spawn(model, log_path, served_name=None, *, register_in=None):
-            log_handle = open(log_path, "w")
-            fake_proc._rapid_mlx_log = log_handle
+        def fake_spawn(model, log_path, served_name=None, *, register_in=None, log_handle=None):
+            log_fh = open(log_path, "w")
+            fake_proc._rapid_mlx_log = log_fh
             fake_proc._rapid_mlx_log_path = log_path
             if register_in is not None:
                 register_in.append(fake_proc)
+            # Mirror the real spawn's hand-off so the chat REPL's
+            # ``_teardown_proc`` is the one that decides when to unlink.
+            if log_handle is not None:
+                log_handle.release()
             return fake_proc, "http://127.0.0.1:9999"
 
         def fake_wait(base_url, proc, timeout_s=600):
