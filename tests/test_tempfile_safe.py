@@ -260,6 +260,60 @@ def test_os_exit_is_documented_to_skip_cleanup_negative_control():
         os.unlink(leaked_path)
 
 
+def test_setup_window_exception_does_not_leak_path(monkeypatch, tmp_path):
+    """Codex round-2 BLOCKING: exceptions between ``mkstemp`` and the
+    yield must still unlink the just-created file.
+
+    The leak window: ``mkstemp`` has created the file on disk, but the
+    path has not yet been added to ``_pending_paths`` (so atexit won't
+    see it) and the yielded-context ``finally`` hasn't started yet
+    (so ``__exit__`` won't see it either). A SIGINT/SIGTERM landing in
+    that window — or any setup-phase exception such as
+    ``_ensure_atexit_registered`` raising — would otherwise leak the
+    file permanently.
+
+    Inject the failure by patching ``_ensure_atexit_registered`` to
+    raise. Assert the file was cleaned up before the exception
+    propagated, and that the registry is in the same state as
+    before the call.
+    """
+    from vllm_mlx import _tempfile_safe
+
+    baseline = _tempfile_safe._pending_snapshot()
+
+    def _boom() -> None:
+        raise KeyboardInterrupt("simulated SIGINT during setup")
+
+    monkeypatch.setattr(_tempfile_safe, "_ensure_atexit_registered", _boom)
+
+    captured_path: list[str] = []
+
+    # Also stub mkstemp to capture the path before it's wiped, so we
+    # can verify the unlink actually happened.
+    real_mkstemp = tempfile.mkstemp
+
+    def _spy_mkstemp(*args, **kwargs):
+        fd, path = real_mkstemp(*args, **kwargs)
+        captured_path.append(path)
+        return fd, path
+
+    monkeypatch.setattr(tempfile, "mkstemp", _spy_mkstemp)
+
+    with (
+        pytest.raises(KeyboardInterrupt, match="simulated SIGINT during setup"),
+        managed_tempfile_path(prefix="ut-setupfail-", suffix=".tmp", dir=str(tmp_path)),
+    ):
+        pytest.fail("should never reach the body")
+
+    assert captured_path, "mkstemp was not invoked"
+    leaked = captured_path[0]
+    assert not os.path.exists(leaked), (
+        f"setup-window leak: {leaked} survived a setup-phase exception"
+    )
+    # Registry should be unchanged.
+    assert _tempfile_safe._pending_snapshot() == baseline
+
+
 def _count_in_dir(d: str) -> int:
     """Count ``rapid-mlx-chat-*.log`` files in ``d``."""
     try:

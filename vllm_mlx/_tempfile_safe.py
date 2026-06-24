@@ -206,16 +206,43 @@ def managed_tempfile_path(
     # themselves in whichever mode they need. This is the recommended
     # pattern in the stdlib docs for "I just need the path".
     fd, path = tempfile.mkstemp(prefix=prefix, suffix=suffix, dir=dir)
+    # Codex round-2 BLOCKING: ``mkstemp`` has already created the file
+    # at this point. If anything between here and the ``yield`` raises
+    # — including ``BaseException`` such as ``KeyboardInterrupt``
+    # (SIGINT) or ``SystemExit`` (e.g. ``_sigterm_handler`` running on
+    # the main thread) — the file would leak: not yet in
+    # ``_pending_paths`` (so atexit can't see it), not yet inside the
+    # yielded-context ``finally`` (so ``__exit__`` won't either). Wrap
+    # the whole setup phase in a ``try/except BaseException`` so a
+    # signal or import-time error during ``_ensure_atexit_registered``
+    # cleans up the just-created file before propagating.
     try:
-        os.close(fd)
-    except OSError:
-        # mkstemp succeeded but close failed — extremely rare. We
-        # still want the path tracked so cleanup happens.
-        pass
+        try:
+            os.close(fd)
+        except OSError:
+            # mkstemp succeeded but close failed — extremely rare. We
+            # still want the path tracked so cleanup happens.
+            pass
 
-    _ensure_atexit_registered()
-    with _pending_lock:
-        _pending_paths.add(path)
+        _ensure_atexit_registered()
+        with _pending_lock:
+            _pending_paths.add(path)
+    except BaseException:
+        # Setup failed: close FD if still open, drop from registry if
+        # we managed to add it, unlink the file, then re-raise. Each
+        # step is best-effort because we are already unwinding an
+        # exception — we must not mask it.
+        try:
+            os.close(fd)
+        except OSError:
+            pass
+        with _pending_lock:
+            _pending_paths.discard(path)
+        try:
+            os.unlink(path)
+        except OSError:
+            pass
+        raise
 
     handle = _TempfileHandle(path)
     try:
