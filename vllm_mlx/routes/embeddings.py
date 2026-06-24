@@ -72,8 +72,7 @@ async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
                     "message": (
                         "No embedding model loaded. Restart the server "
                         "with --embedding-model <hf-id> to enable "
-                        "/v1/embeddings. "
-                        + EMBEDDINGS_EXTRA_INSTALL_HINT
+                        "/v1/embeddings. " + EMBEDDINGS_EXTRA_INSTALL_HINT
                     ),
                     "type": "invalid_request_error",
                     "code": "no_embedding_model",

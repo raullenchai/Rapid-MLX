@@ -101,9 +101,7 @@ def test_embeddings_503_when_no_model(monkeypatch):
     "transient infra issue, back off".
     """
     engine = MagicMock()
-    client, restore = _build_embed_app(
-        monkeypatch, engine, embedding_model_locked=None
-    )
+    client, restore = _build_embed_app(monkeypatch, engine, embedding_model_locked=None)
     try:
         r = client.post(
             "/v1/embeddings",
@@ -145,9 +143,7 @@ def test_embeddings_503_envelope_survives_pre_tokenized_input(monkeypatch):
     against the guard.
     """
     engine = MagicMock()
-    client, restore = _build_embed_app(
-        monkeypatch, engine, embedding_model_locked=None
-    )
+    client, restore = _build_embed_app(monkeypatch, engine, embedding_model_locked=None)
     try:
         r = client.post(
             "/v1/embeddings",

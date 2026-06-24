@@ -49,9 +49,7 @@ def test_load_embedding_helper_exits_2_when_extra_missing(monkeypatch, capsys):
     # Force the probe to report mlx_embeddings missing — this is the
     # bug condition. ``mlx_embeddings_available`` is the lazy probe
     # that the helper consults.
-    monkeypatch.setattr(
-        "vllm_mlx.embedding.mlx_embeddings_available", lambda: False
-    )
+    monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: False)
 
     def _fake_loader(*_args, **_kwargs):  # pragma: no cover — must not run
         raise AssertionError(
@@ -86,9 +84,7 @@ def test_load_embedding_helper_proceeds_when_extra_installed(monkeypatch):
     """
     from vllm_mlx.cli import _load_embedding_model_or_exit
 
-    monkeypatch.setattr(
-        "vllm_mlx.embedding.mlx_embeddings_available", lambda: True
-    )
+    monkeypatch.setattr("vllm_mlx.embedding.mlx_embeddings_available", lambda: True)
 
     captured: dict = {}
 
