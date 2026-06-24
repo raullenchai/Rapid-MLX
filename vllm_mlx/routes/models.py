@@ -398,6 +398,172 @@ def _audio_lane_snapshot() -> dict[str, str] | None:
     return snapshot or None
 
 
+def effective_parsers_for(
+    model_id: str, profile_tool_parser: str | None, profile_reasoning_parser: str | None
+) -> tuple[str | None, str | None]:
+    """Return the EFFECTIVE ``(tool_call_parser, reasoning_parser)`` pair
+    for ``model_id`` — i.e. the parsers actually in use by the live
+    runtime, not the static alias profile defaults.
+
+    Lookup order (highest precedence first):
+
+    1. **Per-entry live state** — when a ``ModelEntry`` is loaded for
+       ``model_id`` (multi-model serve, or single-model serve that
+       populated the registry), the entry's ``tool_call_parser`` /
+       ``reasoning_parser`` fields hold what the runtime is actually
+       using. These already encode both the explicit CLI flag
+       (``--tool-call-parser``, ``--reasoning-parser``) and the
+       auto-detect outcome — :func:`server.load_model` writes them
+       AFTER ``_detect_native_tool_support`` has resolved the final
+       values.
+    2. **Per-server live state (single-model)** — for single-model
+       serves that don't go through the registry, fall back to the
+       ``ServerConfig`` globals (which mirror ``server._tool_call_parser``
+       and ``server._reasoning_parser_name``). Same gating as
+       :func:`_tools_capable`: the server-global parsers ONLY apply
+       to the model the server is currently serving, never to
+       unrelated registry / discovery ids.
+    3. **Alias profile default** — the values declared in
+       ``aliases.json`` and surfaced via ``AliasProfile``. Used for
+       discovery clients pre-flighting tool-call support on aliases
+       they're considering switching to (the runtime isn't actually
+       running them yet).
+    4. **None** — preserves the existing wire shape for ids with no
+       live runtime AND no alias profile entry.
+
+    R12 MED-1 (Vlad + Sven dogfood, rapid-mlx 0.8.15): pre-fix the
+    ``/v1/models`` handler read ``profile.tool_call_parser`` /
+    ``profile.reasoning_parser`` directly, so a server booted with
+    a raw HF id (no alias profile) returned ``null`` for both fields
+    even when the runtime was actively using auto-detected or
+    CLI-supplied parsers. Agentic SDKs that route on the declared
+    parsers (and human operators debugging tool-call issues) saw
+    misleading nulls. This helper is the single source of truth for
+    "what parsers does the runtime actually have bound for this id".
+
+    Exception-tolerant by design: the route must stay 200 even when
+    the registry mutates mid-iteration or the server module fails to
+    import (test isolation, partial-init). Any failure collapses to
+    the profile default so the listing never regresses below the
+    pre-fix shape.
+    """
+    cfg = get_config()
+
+    def _coerce(value):
+        """Return ``value`` only when it's a non-empty string.
+
+        Defensive against test doubles (``MagicMock`` registry entries
+        used in ``tests/test_routes.py``) and any future entry shape
+        that stores a non-string sentinel. The wire field is
+        ``str | None``; anything else is treated as "no value bound"
+        and reported as ``null`` on the wire (the entry branch is
+        authoritative — non-string entry parser fields collapse to
+        ``None`` here rather than falling back to the alias profile
+        default; for unrelated ids the registry guard above already
+        prevents this branch from running). Keeps the route 200 even
+        when an entry has a malformed parser field.
+        """
+        return value if isinstance(value, str) and value else None
+
+    # Tier 1 — per-entry live state
+    entry = None
+    try:
+        if cfg.model_registry is not None:
+            try:
+                candidate = cfg.model_registry.get_entry(model_id)
+            except KeyError:
+                candidate = None
+            # ``get_entry`` falls back to the default entry on miss; guard
+            # that the entry actually corresponds to ``model_id`` so we
+            # never report the default entry's parsers for an unrelated id.
+            #
+            # Strict identity check on the boolean: ``candidate.matches(...)
+            # is True`` (no ``bool()`` wrap). The real
+            # :meth:`ModelEntry.matches` already returns the literal
+            # ``True`` / ``False``. Codex review (round 2) flagged that
+            # wrapping a non-bool sentinel — e.g. a ``MagicMock`` whose
+            # default truthiness is ``True`` — in ``bool(...)`` would
+            # collapse to ``True`` and let a default-entry leak through
+            # the guard. The strict-identity check rejects anything that
+            # isn't the literal ``True`` (including ``MagicMock``, ``1``,
+            # ``"yes"``, etc.), so test doubles can't shortcut the guard
+            # and report the default entry's parsers for an unrelated id.
+            if candidate is not None and candidate.matches(model_id) is True:
+                entry = candidate
+    except Exception:  # noqa: BLE001
+        entry = None
+    if entry is not None:
+        # Per-entry live state is AUTHORITATIVE for the registry case.
+        # ``server.load_model`` writes ``tool_call_parser`` /
+        # ``reasoning_parser`` onto the ``ModelEntry`` from the resolved
+        # globals AFTER ``_detect_native_tool_support`` — so an entry
+        # field of ``None`` means the runtime is deliberately running
+        # this model WITHOUT that parser (operator passed
+        # ``--no-tool-call-parser`` or the auto-detector saw a model
+        # without native tool support). Falling back to the alias
+        # profile default in that case would lie about the live state
+        # and re-introduce the very V-1/S-2 bug this PR was opened
+        # to fix — clients would tool-call against a parser that isn't
+        # actually bound, and tool-output extraction would silently
+        # mis-attribute on the response. Codex review (round 1) flagged
+        # this as a blocking regression: when the entry exists, return
+        # the entry's fields directly; do NOT use the profile default
+        # as a backstop. The profile default only applies to ids with
+        # NO live entry / NO server-global binding (Tier 3 below).
+        return (
+            _coerce(getattr(entry, "tool_call_parser", None)),
+            _coerce(getattr(entry, "reasoning_parser", None)),
+        )
+
+    # Tier 2 — per-server live state (single-model serve without registry)
+    if _is_served_model(model_id):
+        live_tool = getattr(cfg, "tool_call_parser", None)
+        live_reasoning = getattr(cfg, "reasoning_parser_name", None)
+        # ``ServerConfig`` was wired in PR #225; pre-bridge installs may
+        # still carry the values only on the legacy server module
+        # globals. Mirror :func:`_locked_embedding_id`'s bridge-order
+        # fallback so the values surface even before ``_sync_config``
+        # has plumbed them.
+        if live_tool is None:
+            try:
+                from ..server import _tool_call_parser as _server_tool_parser
+
+                live_tool = _server_tool_parser
+            except Exception:  # noqa: BLE001
+                live_tool = None
+        if live_reasoning is None:
+            try:
+                from ..server import _reasoning_parser_name as _server_reasoning_name
+
+                live_reasoning = _server_reasoning_name
+            except Exception:  # noqa: BLE001
+                live_reasoning = None
+        # Server-global live state is AUTHORITATIVE for the single-model
+        # serve case — same Tier 1 reasoning. Once ``_is_served_model``
+        # has confirmed this id IS the model the server is currently
+        # serving, the per-server globals describe its live binding
+        # exhaustively — including the case where BOTH sides are
+        # ``None`` (operator passed ``--no-tool-call-parser`` and
+        # ``--no-reasoning-parser``, or auto-detect found neither).
+        # Codex review (rounds 2 + 3) flagged two related leaks:
+        #   - r2: ``live_tool or profile_tool_parser`` backfilled a
+        #     missing live side from the alias profile (one-sided bind
+        #     case) — falsely advertising a parser the runtime is NOT
+        #     using.
+        #   - r3: gating Tier 2 on ``live_tool or live_reasoning``
+        #     fell through to the profile default when BOTH sides were
+        #     unbound for a served alias — same lie, just the all-off
+        #     case.
+        # Fix: return the coerced live fields authoritatively whenever
+        # ``_is_served_model`` is True. Never backfill from the profile
+        # for an id we're actively serving — the alias profile default
+        # only applies to ids with NO live binding at all (Tier 3).
+        return (_coerce(live_tool), _coerce(live_reasoning))
+
+    # Tier 3 / 4 — alias profile default (which may itself be None)
+    return profile_tool_parser, profile_reasoning_parser
+
+
 def _build_model_info(model_id: str) -> ModelInfo:
     """Construct a ``ModelInfo`` for ``model_id``, filling vendor
     extension fields from the alias registry when the id resolves.
@@ -475,13 +641,16 @@ def _build_model_info(model_id: str) -> ModelInfo:
             if profile.recommended_sampling is not None
             else None
         )
+        eff_tool, eff_reasoning = effective_parsers_for(
+            model_id, profile.tool_call_parser, profile.reasoning_parser
+        )
         return ModelInfo(
             id=model_id,
             recommended_sampling=sampling,
             is_hybrid=profile.is_hybrid,
             is_moe=profile.is_moe,
-            tool_call_parser=profile.tool_call_parser,
-            reasoning_parser=profile.reasoning_parser,
+            tool_call_parser=eff_tool,
+            reasoning_parser=eff_reasoning,
             modality=_reported_modality_for_embedding(locked),
             capabilities=["embedding"],
             context_window=context_window,
@@ -497,8 +666,17 @@ def _build_model_info(model_id: str) -> ModelInfo:
         # ``ModelInfo.modality``'s default ever flipped from ``None``.
         # Branch on the detector instead so the default path keeps using
         # the schema default.
+        #
+        # R12 MED-1 (Vlad + Sven 0.8.15 dogfood): raw HF ids (no alias
+        # profile) used to advertise ``tool_call_parser=null`` /
+        # ``reasoning_parser=null`` even when the runtime was actively
+        # using auto-detected or CLI-supplied parsers. Surface the live
+        # values via :func:`effective_parsers_for` so the listing
+        # reports what the runtime is actually doing — not what the
+        # (missing) alias profile would have said.
+        eff_tool, eff_reasoning = effective_parsers_for(model_id, None, None)
         capabilities = _detect_capabilities(
-            model_id, profile_modality=None, profile_tool_parser=None
+            model_id, profile_modality=None, profile_tool_parser=eff_tool
         )
         try:
             if is_mllm_model(model_id):
@@ -506,6 +684,8 @@ def _build_model_info(model_id: str) -> ModelInfo:
                     id=model_id,
                     modality="image",
                     capabilities=capabilities,
+                    tool_call_parser=eff_tool,
+                    reasoning_parser=eff_reasoning,
                     context_window=context_window,
                     audio_lanes=audio_lanes,
                 )
@@ -514,6 +694,8 @@ def _build_model_info(model_id: str) -> ModelInfo:
         return ModelInfo(
             id=model_id,
             capabilities=capabilities,
+            tool_call_parser=eff_tool,
+            reasoning_parser=eff_reasoning,
             context_window=context_window,
             audio_lanes=audio_lanes,
         )
@@ -528,18 +710,29 @@ def _build_model_info(model_id: str) -> ModelInfo:
         if profile.recommended_sampling is not None
         else None
     )
+    # R12 MED-1: the EFFECTIVE parsers may override the alias profile
+    # defaults when the operator passed ``--tool-call-parser`` /
+    # ``--reasoning-parser`` on the CLI, or when auto-detect chose a
+    # different parser than the alias default. Surface the live values
+    # so ``/v1/models`` never lies about what the runtime is doing.
+    # When no live runtime is bound for ``model_id`` (discovery listing
+    # of an alias the server isn't currently running), the helper falls
+    # back to the profile default — pre-fix shape is preserved.
+    eff_tool, eff_reasoning = effective_parsers_for(
+        model_id, profile.tool_call_parser, profile.reasoning_parser
+    )
     capabilities = _detect_capabilities(
         model_id,
         profile_modality=profile.modality,
-        profile_tool_parser=profile.tool_call_parser,
+        profile_tool_parser=eff_tool,
     )
     return ModelInfo(
         id=model_id,
         recommended_sampling=sampling,
         is_hybrid=profile.is_hybrid,
         is_moe=profile.is_moe,
-        tool_call_parser=profile.tool_call_parser,
-        reasoning_parser=profile.reasoning_parser,
+        tool_call_parser=eff_tool,
+        reasoning_parser=eff_reasoning,
         modality=_reported_modality(model_id, profile.modality),
         capabilities=capabilities,
         context_window=context_window,

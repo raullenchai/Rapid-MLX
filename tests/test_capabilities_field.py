@@ -243,12 +243,23 @@ class TestToolsCapability:
 
     def test_profile_tool_parser_enables_tools_tag(self, monkeypatch):
         """A model whose alias profile sets ``tool_call_parser=hermes``
-        (Qwen3) advertises ``"tools"`` regardless of server flags."""
+        (Qwen3) advertises ``"tools"`` once the alias-resolved server
+        globals are populated.
+
+        R12 V-1/S-2: live runtime state is authoritative for the
+        served id. ``model_auto_config.detect_model_config`` populates
+        ``args.tool_call_parser`` from the alias profile before the
+        server boots; the test mirrors that real-world post-CLI state
+        so the ``"tools"`` capability is derived from the actual live
+        binding (the new ``effective_parsers_for`` helper) rather than
+        a profile-only read.
+        """
         model_id = "mlx-community/Qwen3-0.6B-8bit"
         client, restore = _mount_models_app(
             monkeypatch,
             model_name=model_id,
             model_alias="qwen3-0.6b-8bit",
+            tool_call_parser="hermes",
         )
         try:
             entry = _fetch_entry(client, model_id)
