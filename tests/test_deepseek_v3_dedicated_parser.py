@@ -144,7 +144,7 @@ class TestV3Extraction:
         fence (``...}```<call_end>``). The tolerant regex must
         accept it."""
         body = (
-            f'{C_OPEN}function{SEP}get_weather\n'
+            f"{C_OPEN}function{SEP}get_weather\n"
             f'```json\n{{"city": "Paris"}}```{C_CLOSE}'
         )
         payload = _envelope(body)

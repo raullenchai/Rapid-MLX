@@ -254,9 +254,7 @@ class TestSplitContract:
 # Malformed V3 payloads — graceful handling.
 # --------------------------------------------------------------------
 class TestMalformedGraceful:
-    def test_no_envelope_passes_through(
-        self, v3_parser: DeepSeekV3ToolParser
-    ) -> None:
+    def test_no_envelope_passes_through(self, v3_parser: DeepSeekV3ToolParser) -> None:
         text = "Just plain reasoning, no tools here."
         result = v3_parser.extract_tool_calls(text)
 
@@ -277,9 +275,7 @@ class TestMalformedGraceful:
         # Full text passes through.
         assert result.content == payload
 
-    def test_envelope_with_no_blocks(
-        self, v3_parser: DeepSeekV3ToolParser
-    ) -> None:
+    def test_envelope_with_no_blocks(self, v3_parser: DeepSeekV3ToolParser) -> None:
         payload = f"{TC_OPEN}{TC_CLOSE}"
 
         result = v3_parser.extract_tool_calls(payload)
@@ -288,9 +284,7 @@ class TestMalformedGraceful:
         assert result.tool_calls == []
         assert result.content == payload
 
-    def test_block_missing_separator(
-        self, v3_parser: DeepSeekV3ToolParser
-    ) -> None:
+    def test_block_missing_separator(self, v3_parser: DeepSeekV3ToolParser) -> None:
         """Block envelope but no ``<sep>`` — un-parseable body."""
         payload = f"{TC_OPEN}{C_OPEN}garbage_no_sep_here{C_CLOSE}{TC_CLOSE}"
 
@@ -300,9 +294,7 @@ class TestMalformedGraceful:
         assert result.tool_calls == []
         assert result.content == payload
 
-    def test_one_good_one_bad_block(
-        self, v3_parser: DeepSeekV3ToolParser
-    ) -> None:
+    def test_one_good_one_bad_block(self, v3_parser: DeepSeekV3ToolParser) -> None:
         """A malformed block must not invalidate sibling good blocks."""
         payload = _envelope(
             _v3_block("get_weather", '{"city": "Tokyo"}'),
@@ -417,7 +409,9 @@ class TestV3Streaming:
         events = self._feed(v3_parser, "Let me check.", chunk_size=4)
         # At least one event should carry plain content.
         content_seen = [ev for ev in events if ev and ev.get("content")]
-        assert content_seen, f"No content emitted for pre-envelope tokens. Events: {events!r}"
+        assert content_seen, (
+            f"No content emitted for pre-envelope tokens. Events: {events!r}"
+        )
 
     def test_pre_envelope_prose_in_same_delta_as_marker_is_emitted(
         self, v3_parser: DeepSeekV3ToolParser
