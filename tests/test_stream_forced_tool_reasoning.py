@@ -765,3 +765,333 @@ class TestStreamForcedReasoningEndToEnd:
             assert fn.get("name") == "get_weather"
             parsed = json.loads(fn["arguments"])
             assert isinstance(parsed, dict)
+
+
+# ── R11-A invariant: finish_reason="tool_calls" ⇒ ≥1 tool_call delta ─
+
+
+def _required_request(name="format_date"):
+    """Build a request dict carrying ``tool_choice="required"``."""
+    return {
+        "tool_choice": "required",
+        "tools": [
+            {
+                "type": "function",
+                "function": {
+                    "name": name,
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"raw": {"type": "integer"}},
+                        "required": ["raw"],
+                    },
+                },
+            }
+        ],
+    }
+
+
+def _collect_terminal_state(events):
+    """Aggregate stream events into the invariant-relevant state.
+
+    Returns a dict with:
+      - ``tool_call_delta_count``: count of ``tool_calls`` array entries
+        across every ``tool_call`` StreamEvent (the wire-equivalent of
+        ``delta.tool_calls`` chunks).
+      - ``finish_reasons``: list of every non-None ``finish_reason`` on
+        any event in order (R11-V2 invariant: exactly one non-None
+        finish_reason should appear before stream close).
+    """
+    tool_call_delta_count = 0
+    finish_reasons: list = []
+    for ev in events:
+        if ev.type == "tool_call" and ev.tool_calls:
+            tool_call_delta_count += len(ev.tool_calls)
+        if getattr(ev, "finish_reason", None):
+            finish_reasons.append(ev.finish_reason)
+    return {
+        "tool_call_delta_count": tool_call_delta_count,
+        "finish_reasons": finish_reasons,
+    }
+
+
+class TestR11AInvariantFilterEmptyDoesNotPromiseToolCalls:
+    """R11-V1: when ``_apply_forced_tool_choice_filter`` drops every
+    anchor (scratch with primitive-args root), the terminal event MUST
+    NOT carry ``finish_reason="tool_calls"``. The pre-fix path lied to
+    the client: it stamped ``tool_calls_detected=True`` AND emitted
+    ``finish_reason="tool_calls"`` even though zero ``delta.tool_calls``
+    chunks reached the wire. Clients depending on the promised tool
+    call hung their agent loop.
+
+    Repro shape mirrors the live Qwen3-0.6B + tool_choice=required
+    failure: model emits a SINGLE complete ``<tool_call>`` with
+    ``arguments=<bare-int>``.
+    """
+
+    def test_required_mode_bare_int_args_in_one_chunk_keeps_stop(self):
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
+        pp.reset()
+
+        # Single-chunk emission of a complete scratch tool_call —
+        # arguments parse to bare int 20230805 (non-object), filter
+        # drops it. ``output.finished=True`` on the same chunk so the
+        # terminal finish event fires here.
+        scratch = (
+            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n'
+            "</tool_call>"
+        )
+        events = pp.process_chunk(_make_output(text=scratch, finished=True, finish_reason="stop"))
+        events.extend(pp.finalize())
+
+        state = _collect_terminal_state(events)
+        # Invariant: zero tool_call deltas reached the wire AND no
+        # finish_reason==tool_calls was promised.
+        assert state["tool_call_delta_count"] == 0, (
+            f"filter should have dropped the scratch call but tool_call deltas leaked: {state!r}"
+        )
+        assert "tool_calls" not in state["finish_reasons"], (
+            f"R11-V1 regression: finish_reason=tool_calls emitted with zero deltas: {state!r}"
+        )
+        # Downgrade target: engine's natural finish_reason ("stop").
+        assert "stop" in state["finish_reasons"], (
+            f"terminal finish_reason missing or wrong: {state!r}"
+        )
+        # Wire-truth counter MUST be zero.
+        assert pp._tool_calls_emitted_to_wire == 0
+
+    def test_required_mode_filter_drop_then_followup_chunk_stays_stop(self):
+        """Mid-stream filter drop then a later finished chunk still
+        downgrades the finish to ``stop``.
+
+        Pre-fix the early-exit branch ``if self.tool_calls_detected:``
+        on the next chunk stamped ``finish_reason="tool_calls"``
+        unconditionally — even though the prior chunk's tool_calls had
+        been filter-dropped. This pins that path through
+        ``_compute_finish_reason``.
+        """
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
+        pp.reset()
+
+        scratch = (
+            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n'
+            "</tool_call>"
+        )
+        # Chunk 1: parser surfaces the call → filter drops → no event
+        events_a = pp.process_chunk(_make_output(text=scratch, finished=False))
+        # Chunk 2 (zero-text finished chunk): hits the
+        # ``if self.tool_calls_detected: ... finished:`` branch.
+        events_b = pp.process_chunk(_make_output(text="", finished=True, finish_reason="stop"))
+        events = list(events_a) + list(events_b) + list(pp.finalize())
+
+        state = _collect_terminal_state(events)
+        assert state["tool_call_delta_count"] == 0
+        assert "tool_calls" not in state["finish_reasons"], (
+            f"R11-V1 regression on next-chunk early-exit: {state!r}"
+        )
+        assert "stop" in state["finish_reasons"]
+
+    def test_required_mode_real_call_keeps_tool_calls(self):
+        """Symmetric pin: when the parser emits a VALID call (args is
+        a JSON object), the filter passes it through, the wire emits a
+        tool_call delta, AND ``finish_reason="tool_calls"`` is honored.
+        Ensures the fix doesn't over-rotate and downgrade legitimate
+        calls.
+        """
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
+        pp.reset()
+
+        full = (
+            '<tool_call>\n{"name": "format_date", "arguments": {"raw": 20230805}}\n'
+            "</tool_call>"
+        )
+        events = pp.process_chunk(_make_output(text=full, finished=True, finish_reason="stop"))
+        events.extend(pp.finalize())
+
+        state = _collect_terminal_state(events)
+        assert state["tool_call_delta_count"] >= 1, (
+            f"valid required-mode call must surface a tool_call delta: {state!r}"
+        )
+        assert "tool_calls" in state["finish_reasons"], (
+            f"valid required-mode call must keep finish=tool_calls: {state!r}"
+        )
+        assert pp._tool_calls_emitted_to_wire >= 1
+
+    def test_finalize_recovery_increments_wire_counter(self):
+        """Cross-format fallback in finalize() also satisfies the
+        invariant: when streaming missed the call and ``finalize()``
+        recovered it via ``extract_tool_calls`` / the cross-format
+        scan, ``_tool_calls_emitted_to_wire`` MUST be incremented so
+        downstream consumers see the consistent state.
+        """
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
+        pp.reset()
+        # Seed the buffer so finalize() runs the fallback parser.
+        pp.tool_accumulated_text = (
+            '<tool_call>\n{"name": "format_date", "arguments": {"raw": 20230805}}\n'
+            "</tool_call>"
+        )
+        events = pp.finalize()
+        emitted_calls = [
+            tc for ev in events if ev.type == "tool_call" for tc in (ev.tool_calls or [])
+        ]
+        assert emitted_calls, "finalize recovery did not surface the call"
+        assert pp._tool_calls_emitted_to_wire == len(emitted_calls)
+
+    def test_reset_clears_wire_counter(self):
+        """``reset()`` MUST zero ``_tool_calls_emitted_to_wire`` so a
+        re-used processor doesn't carry the prior turn's emitted count
+        forward and lie to ``_compute_finish_reason`` on the next
+        request (BatchedEngine singleton-parser path)."""
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
+        pp._tool_calls_emitted_to_wire = 7
+        pp.reset()
+        assert pp._tool_calls_emitted_to_wire == 0
+
+
+class TestR11AInvariantHoldsAcrossSuite:
+    """Cross-suite invariant: ``finish_reason=="tool_calls" ⇒
+    tool_call_delta_count >= 1`` MUST hold across every postprocessor-
+    only stream test in this module. The check is structural — it
+    drives the postprocessor with the matrix of repro shapes seen
+    in dogfood-0812 (R11-V1 evidence) and confirms the invariant.
+    """
+
+    SCRATCH_CASES = [
+        # (label, arguments_value_in_scratch_block)
+        ("bare_int", "20230805"),
+        ("bare_quoted_string", '"20230805"'),
+        ("bare_unquoted_prose", "Paris output"),
+        ("bare_array_root", "[1,2,3]"),
+    ]
+
+    def test_invariant_holds_for_every_scratch_shape(self):
+        for label, args in self.SCRATCH_CASES:
+            cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+            pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
+            pp.reset()
+            scratch = (
+                '<tool_call>\n{"name": "format_date", "arguments": ' + args + "}\n"
+                "</tool_call>"
+            )
+            events = pp.process_chunk(
+                _make_output(text=scratch, finished=True, finish_reason="stop")
+            )
+            events.extend(pp.finalize())
+            state = _collect_terminal_state(events)
+            # Core invariant — same assertion the route-level prompt
+            # spells out: ``finish_reason=="tool_calls" ⇒ tool_call_delta_count >= 1``.
+            if "tool_calls" in state["finish_reasons"]:
+                assert state["tool_call_delta_count"] >= 1, (
+                    f"R11-A invariant violated on {label!r}: {state!r}"
+                )
+            # And the wire-truth counter must always match the emitted
+            # count (no orphan increments / decrements).
+            assert pp._tool_calls_emitted_to_wire == state["tool_call_delta_count"], (
+                f"wire-counter drift on {label!r}: counter="
+                f"{pp._tool_calls_emitted_to_wire} emitted={state['tool_call_delta_count']}"
+            )
+
+
+class TestR11V2ExactlyOneFinishReason:
+    """R11-V2 invariant: every closed stream MUST emit exactly one
+    ``finish_reason`` chunk before ``[DONE]``. Pre-fix some Qwen3 +
+    tool_choice=required streams in dogfood-0812 emitted zero
+    finish_reason chunks — clients hung waiting for the spec-mandated
+    terminal marker. Pinned by exercising the postprocessor-only
+    invariant: any path that ends a stream (process_chunk on the
+    finished chunk + finalize()) MUST surface at least one
+    finish_reason somewhere in the combined event list.
+    """
+
+    def test_filter_drop_finished_chunk_still_emits_finish(self):
+        """Filter drops the only scratch call AND the chunk is
+        ``finished=True`` — the early branch must emit a ``finish``
+        event (with downgraded reason). Pre-fix this path always
+        emitted a finish event so this just confirms we didn't break
+        it; the regression risk lives in the assertion that NO chunk
+        is silently lost."""
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
+        pp.reset()
+        scratch = (
+            '<tool_call>\n{"name": "format_date", "arguments": 20230805}\n'
+            "</tool_call>"
+        )
+        events = pp.process_chunk(
+            _make_output(text=scratch, finished=True, finish_reason="stop")
+        )
+        finish_events = [e for e in events if e.type == "finish"]
+        assert finish_events, "filter-drop on finished chunk must still emit a finish event"
+        # And the lone finish carries a non-None reason.
+        assert all(e.finish_reason for e in finish_events)
+
+    def test_real_call_finished_chunk_emits_exactly_one_finish_reason(self):
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
+        pp.reset()
+        full = (
+            '<tool_call>\n{"name": "format_date", "arguments": {"raw": 20230805}}\n'
+            "</tool_call>"
+        )
+        events = pp.process_chunk(
+            _make_output(text=full, finished=True, finish_reason="stop")
+        )
+        events.extend(pp.finalize())
+        state = _collect_terminal_state(events)
+        # Exactly one finish_reason across the stream (R11-V2 spec).
+        assert len(state["finish_reasons"]) == 1, (
+            f"expected exactly one finish_reason but got {state['finish_reasons']!r}"
+        )
+        assert state["finish_reasons"][0] == "tool_calls"
+
+
+class TestR11ARegressionFromDogfoodSSE:
+    """Direct regression scrape: drive the postprocessor with the
+    scratch-buffer state observed in ``/tmp/dogfood-0812/sse-required-*.txt``
+    (the live Qwen3 + tool_choice=required repro). The hermes parser
+    surfaces ``arguments`` as a bare-int string; the postprocessor
+    must drop the call AND downgrade the terminal to ``stop``.
+    """
+
+    def test_dogfood_qwen3_required_scratch_buffer(self):
+        cfg = _make_cfg(tool_call_parser="hermes", reasoning_parser_name=None)
+        pp = StreamingPostProcessor(cfg, request=_required_request("format_date"))
+        pp.reset()
+        # The bytes observed in the live SSE captures (canonical
+        # hermes wire shape that the parser drives through the
+        # streaming path).
+        wire_text = (
+            "<tool_call>\n"
+            '{"name": "format_date", "arguments": 20230805}\n'
+            "</tool_call>"
+        )
+        # Stream it byte-by-byte to exercise the cumulative
+        # streaming-parser path AND its interaction with the filter
+        # on the final ``</tool_call>`` closing delta.
+        events = []
+        for i, ch in enumerate(wire_text):
+            is_last = i == len(wire_text) - 1
+            events.extend(
+                pp.process_chunk(
+                    _make_output(
+                        text=ch,
+                        finished=is_last,
+                        finish_reason="stop" if is_last else None,
+                    )
+                )
+            )
+        events.extend(pp.finalize())
+
+        state = _collect_terminal_state(events)
+        assert state["tool_call_delta_count"] == 0, (
+            f"byte-streamed repro leaked a tool_call delta: {state!r}"
+        )
+        assert "tool_calls" not in state["finish_reasons"], (
+            f"R11-V1 byte-stream regression: {state!r}"
+        )
+        assert "stop" in state["finish_reasons"]

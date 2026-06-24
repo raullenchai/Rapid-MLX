@@ -337,6 +337,24 @@ class StreamingPostProcessor:
         # onboarding sweep finding #5.
         self.accumulated_reasoning = ""
         self.tool_calls_detected = False
+        # R11-A invariant tracker (PR 0.8.13 hotfix). Counts ``tool_call``
+        # StreamEvents the postprocessor has actually emitted to the wire
+        # this turn (i.e. the route layer will serialize a ``delta.tool_calls``
+        # SSE chunk for each). DISTINCT from ``tool_calls_detected``, which
+        # is a "parser saw a tool-call shape" signal that stays True even
+        # when the forced-``tool_choice`` filter dropped every anchor as
+        # spec-violating scratch. Bug R11-V1: pre-fix the cap-empty / filter-
+        # empty branches set ``tool_calls_detected=True`` AND emitted
+        # ``finish_reason="tool_calls"`` even though zero ``tool_call``
+        # deltas had reached the wire — clients saw the promised tool call
+        # never materialise and the agent loop deadlocked. The invariant
+        # this counter enforces: ``finish_reason="tool_calls"`` is emitted
+        # IFF at least one ``tool_call`` StreamEvent (or finalize-recovered
+        # ``fallback_tool_calls`` in the route layer) was/will be on the
+        # wire before ``[DONE]``. Incremented at every streaming-path emit
+        # site (channel-routed, reasoning, standard) AND in
+        # ``_build_tool_call_event``. Read by ``_compute_finish_reason``.
+        self._tool_calls_emitted_to_wire: int = 0
         self.tool_markup_possible = False
         # R10-C8 (Mira r10-R1): tool-prose-prefix hold-back. When the
         # request declares ``tools`` and the model emits a UI-TARS-style
@@ -2186,6 +2204,11 @@ class StreamingPostProcessor:
         self.tool_accumulated_text = ""
         self.accumulated_reasoning = ""
         self.tool_calls_detected = False
+        # R11-A invariant tracker — see ``__init__`` for the contract. The
+        # reset MUST clear this so a re-used processor doesn't carry the
+        # prior turn's emitted-count into a new stream and lie to
+        # ``_compute_finish_reason`` about the wire state.
+        self._tool_calls_emitted_to_wire = 0
         self.tool_markup_possible = False
         # R10-C8: clear the tool-prose hold-back so a re-used processor
         # doesn't ship the prior turn's buffered preamble bytes.
@@ -2419,15 +2442,23 @@ class StreamingPostProcessor:
                 self._structured_tool_call_count = new_idx + 1
                 allowed_calls.append(tc)
             if not allowed_calls:
-                # Cap exhausted — preserve finish semantics but skip
-                # emission. The buffered_finish gate fires through the
-                # existing tool_calls_detected branch below.
+                # Cap exhausted — preserve the parser-saw-tool-call signal
+                # (``tool_calls_detected``) for downstream gates like the
+                # tool-prose buffer drop AND the harmony cut-short rescue,
+                # but DO NOT lie about the wire state with
+                # ``finish_reason="tool_calls"`` — no ``tool_call`` delta
+                # ever made it to the wire on this turn. R11-A invariant:
+                # ``_compute_finish_reason`` reads ``_tool_calls_emitted_to_wire``
+                # and falls back to ``output.finish_reason`` when zero.
+                # The route layer's ``buffered_finish`` + ``fallback_tool_calls``
+                # merge re-stamps the finish_reason if ``finalize()``
+                # recovers a call via the cross-format fallback.
                 self.tool_calls_detected = True
                 if output.finished:
                     return [
                         StreamEvent(
                             type="finish",
-                            finish_reason="tool_calls",
+                            finish_reason=self._compute_finish_reason(output),
                             tool_calls_detected=True,
                         )
                     ]
@@ -2452,6 +2483,11 @@ class StreamingPostProcessor:
                     }
                 )
             self.tool_calls_detected = True
+            # R11-A: increment the wire-truth counter BEFORE returning the
+            # tool_call StreamEvent. The route layer turns this into a
+            # ``delta.tool_calls`` SSE chunk on the wire, so the invariant
+            # "finish_reason=tool_calls ⇒ ≥1 tool_call delta sent" holds.
+            self._tool_calls_emitted_to_wire += len(structured)
             return [
                 StreamEvent(
                     type="tool_call",
@@ -2543,17 +2579,41 @@ class StreamingPostProcessor:
                 _tc_list = self._apply_forced_tool_choice_filter(result["tool_calls"])
                 allowed_tcs = self._apply_parallel_cap(_tc_list)
                 if not allowed_tcs:
+                    # R11-A invariant: parser saw a tool-call shape but
+                    # the forced-``tool_choice`` filter / parallel cap
+                    # dropped every entry. Keep ``tool_calls_detected``
+                    # set so the tool-prose buffer drop + harmony rescue
+                    # gates fire on the parser-saw-call signal, but DO
+                    # NOT emit ``finish_reason="tool_calls"`` — no
+                    # ``delta.tool_calls`` chunk reached the wire on
+                    # this turn. Bug R11-V1 pre-fix shipped a terminal
+                    # ``finish_reason="tool_calls"`` with zero tool_call
+                    # deltas; clients broke their agent loop waiting for
+                    # the promised call. ``_compute_finish_reason``
+                    # downgrades to ``output.finish_reason`` (typically
+                    # ``"stop"``) when ``_tool_calls_emitted_to_wire``
+                    # is zero. The route layer's buffered-finish merge
+                    # still re-stamps the reason to ``"tool_calls"`` if
+                    # ``finalize()`` recovers the call via the
+                    # cross-format fallback path.
                     self.tool_calls_detected = True
                     if output.finished:
                         events.append(
                             StreamEvent(
                                 type="finish",
-                                finish_reason="tool_calls",
+                                finish_reason=self._compute_finish_reason(output),
                                 tool_calls_detected=True,
                             )
                         )
                     return events
                 self.tool_calls_detected = True
+                # R11-A: increment the wire-truth counter BEFORE appending
+                # the tool_call StreamEvent. The route layer turns this
+                # into a ``delta.tool_calls`` SSE chunk so the invariant
+                # "finish_reason=tool_calls ⇒ ≥1 tool_call delta sent"
+                # holds across all three streaming-emit branches
+                # (channel-routed, reasoning, standard).
+                self._tool_calls_emitted_to_wire += len(allowed_tcs)
                 events.append(
                     StreamEvent(
                         type="tool_call",
@@ -2567,10 +2627,21 @@ class StreamingPostProcessor:
 
         if self.tool_calls_detected:
             if output.finished:
+                # R11-A: route the finish through ``_compute_finish_reason``
+                # so the wire-truth gate (``_tool_calls_emitted_to_wire``)
+                # decides whether ``"tool_calls"`` is honest. When the
+                # parser saw a call shape but every entry was dropped by
+                # the forced-``tool_choice`` filter / parallel cap on a
+                # prior chunk, ``tool_calls_detected`` is True but zero
+                # ``delta.tool_calls`` chunks were sent — the terminal
+                # finish must downgrade to ``output.finish_reason`` so
+                # the client doesn't wait for a tool call that never
+                # materialised (bug R11-V1, ~50% reproducible on Qwen3
+                # + ``tool_choice="required"`` pre-fix).
                 return [
                     StreamEvent(
                         type="finish",
-                        finish_reason="tool_calls",
+                        finish_reason=self._compute_finish_reason(output),
                         tool_calls_detected=True,
                     )
                 ]
@@ -2845,17 +2916,41 @@ class StreamingPostProcessor:
                 _tc_list = self._apply_forced_tool_choice_filter(result["tool_calls"])
                 allowed_tcs = self._apply_parallel_cap(_tc_list)
                 if not allowed_tcs:
+                    # R11-A invariant: parser saw a tool-call shape but
+                    # the forced-``tool_choice`` filter / parallel cap
+                    # dropped every entry. Keep ``tool_calls_detected``
+                    # set so the tool-prose buffer drop + harmony rescue
+                    # gates fire on the parser-saw-call signal, but DO
+                    # NOT emit ``finish_reason="tool_calls"`` — no
+                    # ``delta.tool_calls`` chunk reached the wire on
+                    # this turn. Bug R11-V1 pre-fix shipped a terminal
+                    # ``finish_reason="tool_calls"`` with zero tool_call
+                    # deltas; clients broke their agent loop waiting for
+                    # the promised call. ``_compute_finish_reason``
+                    # downgrades to ``output.finish_reason`` (typically
+                    # ``"stop"``) when ``_tool_calls_emitted_to_wire``
+                    # is zero. The route layer's buffered-finish merge
+                    # still re-stamps the reason to ``"tool_calls"`` if
+                    # ``finalize()`` recovers the call via the
+                    # cross-format fallback path.
                     self.tool_calls_detected = True
                     if output.finished:
                         events.append(
                             StreamEvent(
                                 type="finish",
-                                finish_reason="tool_calls",
+                                finish_reason=self._compute_finish_reason(output),
                                 tool_calls_detected=True,
                             )
                         )
                     return events
                 self.tool_calls_detected = True
+                # R11-A: increment the wire-truth counter BEFORE appending
+                # the tool_call StreamEvent. The route layer turns this
+                # into a ``delta.tool_calls`` SSE chunk so the invariant
+                # "finish_reason=tool_calls ⇒ ≥1 tool_call delta sent"
+                # holds across all three streaming-emit branches
+                # (channel-routed, reasoning, standard).
+                self._tool_calls_emitted_to_wire += len(allowed_tcs)
                 events.append(
                     StreamEvent(
                         type="tool_call",
@@ -2869,10 +2964,21 @@ class StreamingPostProcessor:
 
         if self.tool_calls_detected:
             if output.finished:
+                # R11-A: route the finish through ``_compute_finish_reason``
+                # so the wire-truth gate (``_tool_calls_emitted_to_wire``)
+                # decides whether ``"tool_calls"`` is honest. When the
+                # parser saw a call shape but every entry was dropped by
+                # the forced-``tool_choice`` filter / parallel cap on a
+                # prior chunk, ``tool_calls_detected`` is True but zero
+                # ``delta.tool_calls`` chunks were sent — the terminal
+                # finish must downgrade to ``output.finish_reason`` so
+                # the client doesn't wait for a tool call that never
+                # materialised (bug R11-V1, ~50% reproducible on Qwen3
+                # + ``tool_choice="required"`` pre-fix).
                 return [
                     StreamEvent(
                         type="finish",
-                        finish_reason="tool_calls",
+                        finish_reason=self._compute_finish_reason(output),
                         tool_calls_detected=True,
                     )
                 ]
@@ -3021,17 +3127,41 @@ class StreamingPostProcessor:
                 _tc_list = self._apply_forced_tool_choice_filter(result["tool_calls"])
                 allowed_tcs = self._apply_parallel_cap(_tc_list)
                 if not allowed_tcs:
+                    # R11-A invariant: parser saw a tool-call shape but
+                    # the forced-``tool_choice`` filter / parallel cap
+                    # dropped every entry. Keep ``tool_calls_detected``
+                    # set so the tool-prose buffer drop + harmony rescue
+                    # gates fire on the parser-saw-call signal, but DO
+                    # NOT emit ``finish_reason="tool_calls"`` — no
+                    # ``delta.tool_calls`` chunk reached the wire on
+                    # this turn. Bug R11-V1 pre-fix shipped a terminal
+                    # ``finish_reason="tool_calls"`` with zero tool_call
+                    # deltas; clients broke their agent loop waiting for
+                    # the promised call. ``_compute_finish_reason``
+                    # downgrades to ``output.finish_reason`` (typically
+                    # ``"stop"``) when ``_tool_calls_emitted_to_wire``
+                    # is zero. The route layer's buffered-finish merge
+                    # still re-stamps the reason to ``"tool_calls"`` if
+                    # ``finalize()`` recovers the call via the
+                    # cross-format fallback path.
                     self.tool_calls_detected = True
                     if output.finished:
                         events.append(
                             StreamEvent(
                                 type="finish",
-                                finish_reason="tool_calls",
+                                finish_reason=self._compute_finish_reason(output),
                                 tool_calls_detected=True,
                             )
                         )
                     return events
                 self.tool_calls_detected = True
+                # R11-A: increment the wire-truth counter BEFORE appending
+                # the tool_call StreamEvent. The route layer turns this
+                # into a ``delta.tool_calls`` SSE chunk so the invariant
+                # "finish_reason=tool_calls ⇒ ≥1 tool_call delta sent"
+                # holds across all three streaming-emit branches
+                # (channel-routed, reasoning, standard).
+                self._tool_calls_emitted_to_wire += len(allowed_tcs)
                 events.append(
                     StreamEvent(
                         type="tool_call",
@@ -3045,10 +3175,21 @@ class StreamingPostProcessor:
 
         if self.tool_calls_detected:
             if output.finished:
+                # R11-A: route the finish through ``_compute_finish_reason``
+                # so the wire-truth gate (``_tool_calls_emitted_to_wire``)
+                # decides whether ``"tool_calls"`` is honest. When the
+                # parser saw a call shape but every entry was dropped by
+                # the forced-``tool_choice`` filter / parallel cap on a
+                # prior chunk, ``tool_calls_detected`` is True but zero
+                # ``delta.tool_calls`` chunks were sent — the terminal
+                # finish must downgrade to ``output.finish_reason`` so
+                # the client doesn't wait for a tool call that never
+                # materialised (bug R11-V1, ~50% reproducible on Qwen3
+                # + ``tool_choice="required"`` pre-fix).
                 return [
                     StreamEvent(
                         type="finish",
-                        finish_reason="tool_calls",
+                        finish_reason=self._compute_finish_reason(output),
                         tool_calls_detected=True,
                     )
                 ]
@@ -3447,18 +3588,29 @@ class StreamingPostProcessor:
         Used by both finalize() branches (configured parser succeeded, and the
         cross-format ``parse_tool_calls`` fallback) so the two paths can't drift
         in wire shape.
+
+        R11-A: also bumps ``_tool_calls_emitted_to_wire`` so the finalize-
+        recovered path satisfies the invariant
+        ``finish_reason="tool_calls" ⇒ ≥1 tool_call delta on the wire``.
+        The route layer reads the finalize-produced event and treats it as
+        ``fallback_tool_calls``, splicing it into the buffered_finish
+        terminal chunk (see ``routes/chat.py`` SSE-FALLBACK-TC-MERGED) — so
+        a wire ``delta.tool_calls`` IS emitted, and the counter reflects
+        that.
         """
+        tcs = [
+            {
+                "index": i,
+                "id": tc["id"],
+                "type": "function",
+                "function": {"name": tc["name"], "arguments": tc["arguments"]},
+            }
+            for i, tc in enumerate(items)
+        ]
+        self._tool_calls_emitted_to_wire += len(tcs)
         return StreamEvent(
             type="tool_call",
-            tool_calls=[
-                {
-                    "index": i,
-                    "id": tc["id"],
-                    "type": "function",
-                    "function": {"name": tc["name"], "arguments": tc["arguments"]},
-                }
-                for i, tc in enumerate(items)
-            ],
+            tool_calls=tcs,
             finish_reason="tool_calls",
             tool_calls_detected=True,
         )
@@ -3525,7 +3677,21 @@ class StreamingPostProcessor:
     def _compute_finish_reason(self, output: GenerationOutput) -> str | None:
         if not output.finished:
             return None
-        if self.tool_calls_detected:
+        # R11-A invariant: ``finish_reason="tool_calls"`` is emitted ONLY
+        # when at least one ``tool_call`` StreamEvent has actually reached
+        # the wire on this turn. Pre-fix this gated on
+        # ``tool_calls_detected``, which the forced-``tool_choice`` filter
+        # flipped to True even when it dropped every anchor as spec-
+        # violating scratch (qwen3 emitting ``arguments="20230805"`` —
+        # bare-int root). The wire then carried zero ``delta.tool_calls``
+        # chunks but a ``finish_reason="tool_calls"`` terminal — bug
+        # R11-V1, ~50% reproducible on Qwen3-0.6B + ``tool_choice="required"``.
+        # The route layer separately re-stamps ``finish_reason`` to
+        # ``"tool_calls"`` when ``finalize()`` recovers a call via the
+        # cross-format fallback (see ``routes/chat.py`` buffered-finish
+        # merge), so this gate is the floor — the route-layer override
+        # only fires UP from ``output.finish_reason``, never DOWN.
+        if self._tool_calls_emitted_to_wire > 0:
             return "tool_calls"
         return output.finish_reason
 

@@ -3810,6 +3810,39 @@ async def stream_chat_completion(
             _fb_sse = f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
             logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
             yield _fb_sse
+        else:
+            # R11-A / R11-V2 invariant guard: every closed SSE stream
+            # MUST emit exactly one terminal chunk carrying a
+            # ``finish_reason`` BEFORE ``[DONE]``. Pre-fix, 4/10 streams
+            # in some Qwen3 + ``tool_choice="required"`` batches reached
+            # ``[DONE]`` with no finish_reason chunk at all when the
+            # engine ended without surfacing ``output.finished=True`` on
+            # any chunk AND ``finalize()`` produced no recovered tool
+            # calls / held content. Spec-compliant clients (LangChain,
+            # OpenAI Python SDK, AI SDK) stall waiting for the terminal
+            # marker. Synthesize a ``finish_reason="stop"`` chunk here
+            # so the wire envelope is always well-formed — the
+            # accumulated content / reasoning has already been streamed
+            # as per-delta chunks during the loop, so this synthetic
+            # chunk is structurally additive only.
+            synthetic_finish = ChatCompletionChunk(
+                id=response_id,
+                created=_sse_created,
+                model=_resolve_model_name(request.model),
+                choices=[
+                    ChatCompletionChunkChoice(
+                        delta=ChatCompletionChunkDelta(),
+                        finish_reason="stop",
+                    )
+                ],
+            )
+            logger.warning(
+                "[SSE-MISSING-FINISH-R11V2] engine stream ended without "
+                "emitting a finish event AND finalize() produced no "
+                "recovered material; synthesizing finish_reason=stop "
+                "terminal chunk so the wire envelope is well-formed"
+            )
+            yield f"data: {synthetic_finish.model_dump_json(exclude_none=True)}\n\n"
 
         # Log throughput
         elapsed = time.perf_counter() - start_time
