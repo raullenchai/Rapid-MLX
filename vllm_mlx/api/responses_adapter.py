@@ -478,18 +478,23 @@ def openai_to_responses(
         # spec-compliant sequence.
         reasoning_text = getattr(choice.message, "reasoning_content", None) or ""
         if reasoning_text:
-            # R11-B (R11-M-F1): when the engine cut off mid-think under
-            # ``max_output_tokens``, the reasoning item itself is
-            # ``incomplete`` (the model never reached its conclusion).
-            # The text we ship IS partial — flagging it as such matches
-            # the streaming surface and lets walkers handle the
-            # truncated chain-of-thought correctly.
+            # R11-B codex r6 BLOCKING: scope reasoning ``incomplete``
+            # to "mid-think cutoff" — finish_reason="length" AND no
+            # downstream output (neither message body nor tool_calls).
+            # Pre-fix this branch only checked ``message.content``,
+            # missing the closed-``</think>`` + tool_call shape where
+            # reasoning IS completed (the model left the thinking
+            # block to reach the tool emit) and only the tool args
+            # were truncated. The streaming surface already lands at
+            # the wider check (``downstream_output_seen`` covers
+            # text OR tool_calls) — this brings the non-stream
+            # surface into parity.
+            downstream_output_seen = bool(
+                (choice.message.content or "").strip() or choice.message.tool_calls
+            )
             reasoning_item_status = (
                 "incomplete"
-                if (
-                    choice.finish_reason == "length"
-                    and not (choice.message.content or "").strip()
-                )
+                if (choice.finish_reason == "length" and not downstream_output_seen)
                 else "completed"
             )
             output.append(

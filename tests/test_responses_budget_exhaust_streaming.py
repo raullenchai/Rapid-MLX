@@ -1147,3 +1147,53 @@ class TestReasoningCompletedWhenToolCallOnlyAfterThink:
             f"before tool_call emit (text empty but tool_calls present); "
             f"got status={reasoning_item['status']!r}"
         )
+
+    def test_non_stream_reasoning_completed_with_tool_call_under_length(
+        self, reasoning_tool_length_client
+    ):
+        """R11-B codex r6 BLOCKING regression guard. Non-stream
+        ``openai_to_responses`` must apply the SAME
+        ``downstream_output_seen`` gate as the streaming path —
+        otherwise the two surfaces report divergent reasoning
+        status for the closed-``</think>`` + truncated tool_call
+        shape."""
+        resp = reasoning_tool_length_client.client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": "Weather?",
+                "max_output_tokens": 4,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "city": {"type": "string"},
+                                },
+                                "required": ["city"],
+                            },
+                        },
+                    }
+                ],
+            },
+            headers=HEADERS,
+        )
+        assert resp.status_code == 200, resp.text
+        body = resp.json()
+        output = body["output"]
+        types_seen = [item["type"] for item in output]
+        assert "reasoning" in types_seen, (
+            f"non-stream reasoning item missing; types={types_seen}"
+        )
+        assert "function_call" in types_seen, (
+            f"non-stream function_call item missing; types={types_seen}"
+        )
+        reasoning_item = next(item for item in output if item["type"] == "reasoning")
+        assert reasoning_item["status"] == "completed", (
+            f"non-stream reasoning must be ``completed`` when "
+            f"``</think>`` closed before tool_call emit; got "
+            f"status={reasoning_item['status']!r}"
+        )
