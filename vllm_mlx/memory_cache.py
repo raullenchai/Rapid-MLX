@@ -144,6 +144,54 @@ def _write_tokens_bin_v3(path: str, tokens: list[int], save_uuid: str) -> None:
             pass
 
 
+def _peek_tokens_bin_header(path: str) -> tuple[int | None, str | None, str]:
+    """Read just the v3 header of a tokens.bin (magic + length + uuid).
+
+    Returns ``(token_count, save_uuid, reject_reason)``. On any
+    structural / IO problem returns ``(None, None, reason)``.
+
+    Used by :meth:`MemoryAwarePrefixCache.save_to_disk`'s post-write
+    self-verify pass — see R12-T1 in the docstring there. The fast
+    path reads at most ``_TOKENS_HEADER_FIXED_LEN + 64`` bytes (16
+    fixed + bounded uuid) and skips the int32 LE token payload so
+    a 100-entry verify against a 2.6 GB on-disk snapshot completes
+    in milliseconds rather than seconds.
+
+    Pinned to the v3 wire format only — legacy v2 sidecars never
+    carried magic / length / uuid, so the post-write check is moot
+    for them (they're never written by the current writer). Returns
+    ``(None, None, "missing v3 magic")`` for a v2-shaped file; the
+    caller treats that as a structural reject in the verify pass.
+
+    Kept structurally close to ``_read_tokens_bin`` so a future tweak
+    to the wire format only has to touch the per-field offsets once.
+    """
+    import struct as _struct
+
+    try:
+        with open(path, "rb") as f:
+            head = f.read(_TOKENS_HEADER_FIXED_LEN)
+            if len(head) < _TOKENS_HEADER_FIXED_LEN:
+                return None, None, "tokens.bin truncated at fixed prefix"
+            if head[: len(_TOKENS_MAGIC)] != _TOKENS_MAGIC:
+                return None, None, "tokens.bin missing v3 magic"
+            token_count, uuid_len = _struct.unpack(
+                "<II", head[len(_TOKENS_MAGIC) :]
+            )
+            if uuid_len > 64:
+                return None, None, (
+                    f"save_uuid_len {uuid_len} exceeds bound 64"
+                )
+            uuid_bytes = f.read(uuid_len)
+            if len(uuid_bytes) != uuid_len:
+                return None, None, (
+                    f"save_uuid short read ({len(uuid_bytes)}/{uuid_len})"
+                )
+            return token_count, uuid_bytes.decode("ascii", errors="replace"), ""
+    except OSError as exc:
+        return None, None, f"open/read failed: {exc}"
+
+
 def _read_tokens_bin(
     path: str, expected_num_tokens: int, expected_save_uuid: str | None
 ) -> tuple[list[int] | None, str]:
@@ -816,6 +864,21 @@ class CacheStats:
     # in WARNING logs. Survives ``cache.clear()`` so the Prometheus
     # counter contract holds — see ``reset_stats`` for the carry-over.
     load_skipped: int = 0
+    # R12-T1 (dogfood-0815 Talia r12 SEVERE): save-side mirror of
+    # ``load_skipped``. Counts entries dropped by the post-write
+    # self-verify pass in ``save_to_disk`` — a tokens.bin in our
+    # ``.new`` staging dir that disagrees with the index.json we're
+    # about to commit (save_uuid drift or length-prefix mismatch).
+    # Pre-R12-T1 such drift survived into ``cache_dir`` and the
+    # NEXT boot's loader refused the whole snapshot via R10-D's
+    # integrity guard ("LOADED 0 entries ... SKIPPED N corrupt").
+    # The post-write verify catches the drift before the rename so
+    # the corruption never reaches the committed snapshot — this
+    # counter surfaces the rate so operators see the rescue rather
+    # than a silent on-disk loss. Cumulative, carries across
+    # ``cache.clear()`` / ``reset_stats``, same contract as
+    # ``load_skipped``.
+    save_drift_drops: int = 0
 
     @property
     def hit_rate(self) -> float:
@@ -855,6 +918,11 @@ class CacheStats:
             # ``rapid_mlx_prefix_cache_load_skipped_total`` Prometheus
             # counter and closes the R9-L4 observability gap.
             "load_skipped": int(self.load_skipped),
+            # R12-T1: cumulative count of entries the save-side
+            # post-write verify rejected — drives the
+            # ``rapid_mlx_prefix_cache_save_drift_drops_total``
+            # Prometheus counter. Cumulative same as ``load_skipped``.
+            "save_drift_drops": int(self.save_drift_drops),
         }
 
 
@@ -1556,15 +1624,21 @@ class MemoryAwarePrefixCache:
         the reset to its own monotonic floor — losing the skip
         delta. Carry it over here so the in-process counter never
         regresses either.
+
+        R12-T1: the same carry-over applies to ``save_drift_drops``
+        — it backs the ``rapid_mlx_prefix_cache_save_drift_drops_total``
+        Prometheus counter and must be monotonic.
         """
         with self._lock:
             self._entries.clear()
             self._sorted_keys.clear()
             self._current_memory = 0
             carried_load_skipped = self._stats.load_skipped
+            carried_save_drift_drops = self._stats.save_drift_drops
             self._stats = CacheStats(
                 max_memory_bytes=self._max_memory,
                 load_skipped=carried_load_skipped,
+                save_drift_drops=carried_save_drift_drops,
             )
         logger.debug("Cache cleared")
 
@@ -1578,12 +1652,16 @@ class MemoryAwarePrefixCache:
         R10-D codex round 2 HIGH: same monotonic-counter rationale as
         ``clear`` — ``load_skipped`` must carry across a stats reset
         so the Prometheus counter never loses a delta.
+
+        R12-T1: ``save_drift_drops`` likewise must carry across so its
+        backing Prometheus counter never regresses.
         """
         self._stats = CacheStats(
             max_memory_bytes=self._max_memory,
             current_memory_bytes=self._current_memory,
             entry_count=len(self._entries),
             load_skipped=self._stats.load_skipped,
+            save_drift_drops=self._stats.save_drift_drops,
         )
 
     @property
@@ -1689,10 +1767,47 @@ class MemoryAwarePrefixCache:
         old_dir = cache_dir + ".old"
 
         # Pre-clean stale staging dirs from a previous interrupted save.
+        #
+        # R12-T1 (dogfood-0815 Talia r12): the old pre-clean used
+        # ``ignore_errors=True`` blindly — a partial rmtree (file locked
+        # by an external process, EACCES under a chmod, ENOTEMPTY race
+        # with a concurrent reader) would silently leave stale entry
+        # files in ``.new``, and the subsequent ``os.makedirs(...,
+        # exist_ok=True)`` would adopt them. Those orphan files then
+        # ride the atomic rename into ``cache_dir`` alongside the
+        # current save's writes — producing the (uuid_A tokens.bin,
+        # uuid_B index.json) mismatch Talia r12 caught. Belt-and-
+        # suspenders: keep ``ignore_errors=True`` for the rmtree (so
+        # one bad file doesn't kill the whole save) but VERIFY the
+        # post-rmtree state with ``os.listdir`` and surface a hard
+        # error if anything survived. The post-write self-verify pass
+        # below would catch any survivor that did manage to ride along,
+        # but failing fast here gives a structured signal directly
+        # tied to the mechanism rather than a "drift drop" downstream.
         for stale in (new_dir, old_dir):
+            if not os.path.exists(stale):
+                continue
+            logger.info(f"[cache_persist] removing stale staging dir: {stale}")
+            shutil.rmtree(stale, ignore_errors=True)
+            # If anything survived, escalate. We don't try harder than
+            # rmtree did — a stuck file means an external process has it
+            # open / locked, which a retry won't fix and a second rmtree
+            # call could merely race with whatever holds it. Better to
+            # ABORT the save (cache_dir keeps the previous good snapshot)
+            # than commit a snapshot that we know contains foreign files.
             if os.path.exists(stale):
-                logger.info(f"[cache_persist] removing stale staging dir: {stale}")
-                shutil.rmtree(stale, ignore_errors=True)
+                try:
+                    survivors = os.listdir(stale)
+                except OSError:
+                    survivors = ["<listdir failed>"]
+                logger.warning(
+                    f"[cache_persist] R12-T1 pre-clean could not fully remove "
+                    f"{stale}; {len(survivors)} entries survived "
+                    f"(first 5: {survivors[:5]}); aborting save to keep "
+                    f"cache_dir consistent — operator should investigate "
+                    f"and remove the staging dir manually"
+                )
+                return False
 
         os.makedirs(new_dir, exist_ok=True)
 
@@ -1873,33 +1988,111 @@ class MemoryAwarePrefixCache:
             logger.warning("[cache_persist] no entries saved successfully, aborting")
             return False
 
-        # Filter index to entries whose files actually survived to disk.
-        # Defends against the staging dir being clobbered mid-save by an
-        # external process (e.g. macOS Spotlight, purgeable-cache cleanup
-        # under disk pressure) — observed in the wild during long
-        # multi-GB shutdown saves where 14GB+ of cache was being written.
-        # Without this filter, index.json may reference entry files that
-        # no longer exist, and the open() below raises FileNotFoundError
-        # because new_dir itself is gone.
+        # R12-T1 (dogfood-0815 Talia r12 SEVERE): post-write self-verify.
+        # The save_uuid + length-prefix invariants this writer claims must
+        # hold on the just-written ``.new/`` snapshot BEFORE we publish it
+        # via the atomic rename. Talia r12 caught a deterministic 2-cycle-
+        # SIGTERM repro where cache_dir ended up with index.json from save B
+        # but several entry_K_tokens.bin files carrying save A's uuid and
+        # length-prefix — the loader's R10-D integrity guard refused to
+        # load the whole 100-entry / 2.6 GB snapshot the next boot. The
+        # mechanism (concurrent writers, mmap coherence window, fs-event
+        # external clobber, partial pre-clean of a stale ``.new``, …) is
+        # noisy in production but the consequence is invariant: a tokens.bin
+        # in our staging dir that disagrees with what we just claimed in
+        # index.json. Make THIS check the source of truth so the corrupt
+        # state cannot survive into ``cache_dir`` regardless of mechanism.
+        #
+        # Three passes, cheapest first:
+        #   1. ``_both_exist`` — the legacy filter for staging-dir clobber
+        #      under disk pressure / Spotlight. Preserved verbatim.
+        #   2. Header-only verify — read each tokens.bin's fixed prefix
+        #      + uuid (≤80 bytes per entry; cheap even at 100 entries)
+        #      and confirm (save_uuid, token_count) match what we'd write
+        #      into index.json for that entry. Mismatches drop the entry
+        #      and bump a per-save metric so the operator sees the rate.
+        #   3. Orphan-file sweep — any ``entry_*`` file in ``.new`` that
+        #      isn't covered by the (now-filtered) index.json gets removed
+        #      so the committed dir contains exactly what the index claims.
+        #
+        # If pass (2) drops every entry the save aborts — we'd otherwise
+        # commit an empty index that would unnecessarily clobber the
+        # known-good ``cache_dir``.
         def _both_exist(e: dict) -> bool:
             sf, tk = _entry_paths(e["index"])
             return os.path.exists(sf) and os.path.exists(tk)
 
-        verified = [e for e in index["entries"] if _both_exist(e)]
-        if not verified:
+        existing = [e for e in index["entries"] if _both_exist(e)]
+        if not existing:
             shutil.rmtree(new_dir, ignore_errors=True)
             logger.warning(
                 "[cache_persist] staging dir vanished mid-save, no entries survived "
                 f"(saved {saved}/{len(self._entries)} but 0 files remain on disk)"
             )
             return False
-        if len(verified) < len(index["entries"]):
+        if len(existing) < len(index["entries"]):
             logger.warning(
-                f"[cache_persist] {len(index['entries']) - len(verified)} of "
+                f"[cache_persist] {len(index['entries']) - len(existing)} of "
                 f"{len(index['entries'])} entry files vanished mid-save, "
-                f"persisting {len(verified)} that survived"
+                f"persisting {len(existing)} that survived"
             )
-            index["entries"] = verified
+
+        # Pass 2 — header-only self-verify. Catches the R12-T1 drift class
+        # regardless of mechanism: if the file we ASSUMED we wrote does not
+        # carry (save_uuid, token_count) we declared for it, drop the entry
+        # rather than commit a snapshot that the loader will refuse en bloc.
+        verified: list[dict] = []
+        drift_drops = 0
+        for e in existing:
+            _, tk = _entry_paths(e["index"])
+            on_disk_count, on_disk_uuid, reject_reason = _peek_tokens_bin_header(tk)
+            if reject_reason:
+                drift_drops += 1
+                logger.warning(
+                    f"[cache_persist] R12-T1 post-write self-verify dropped "
+                    f"entry {e['index']}: {reject_reason}"
+                )
+                continue
+            if on_disk_uuid != save_uuid:
+                drift_drops += 1
+                logger.warning(
+                    f"[cache_persist] R12-T1 post-write self-verify dropped "
+                    f"entry {e['index']}: tokens.bin save_uuid "
+                    f"{on_disk_uuid!r} != current save {save_uuid!r}"
+                )
+                continue
+            if on_disk_count != e["num_tokens"]:
+                drift_drops += 1
+                logger.warning(
+                    f"[cache_persist] R12-T1 post-write self-verify dropped "
+                    f"entry {e['index']}: tokens.bin length-prefix "
+                    f"{on_disk_count} != index num_tokens {e['num_tokens']}"
+                )
+                continue
+            verified.append(e)
+        if drift_drops:
+            # Sticky in-process counter so /metrics can surface "% of
+            # entries dropped by post-write verify per save" without
+            # parsing logs. Mirrors the load_skipped contract for the
+            # save side.
+            self._stats.save_drift_drops += drift_drops
+        if not verified:
+            shutil.rmtree(new_dir, ignore_errors=True)
+            logger.warning(
+                f"[cache_persist] R12-T1 post-write verify rejected ALL "
+                f"{len(existing)} entries (save_uuid / length-prefix drift); "
+                f"aborting save so cache_dir keeps the previous good snapshot"
+            )
+            return False
+        if len(verified) < len(existing):
+            logger.warning(
+                f"[cache_persist] R12-T1 post-write verify dropped "
+                f"{len(existing) - len(verified)} of {len(existing)} entries "
+                f"(save_uuid / length-prefix drift); committing "
+                f"{len(verified)} that round-tripped cleanly"
+            )
+
+        index["entries"] = verified
         # Always pin num_entries to the actually-verified count. The initial
         # value was ``total_entries`` (set before the save loop) which is
         # wrong both when we aborted early AND when some entry files
@@ -1907,6 +2100,48 @@ class MemoryAwarePrefixCache:
         # ships alongside, or load_from_disk's ``num_entries`` read drifts
         # from reality and downstream callers report a phantom count.
         index["num_entries"] = len(index["entries"])
+
+        # Pass 3 — orphan-file sweep. The atomic rename publishes the
+        # entire ``.new/`` directory tree, so any file we wrote but the
+        # post-verify filter dropped must be physically removed from the
+        # staging dir BEFORE the rename. Otherwise a subsequent recovery
+        # path could still match it via ``entry_<index>_tokens.bin``
+        # naming and re-introduce the very drift the verify pass caught.
+        # We also catch orphan files left behind by ANY other source
+        # (e.g. a previous interrupted save's ``.new`` that survived the
+        # pre-clean's ``ignore_errors=True``) — the committed dir must
+        # contain exactly { index.json } ∪ { entry_K.safetensors,
+        # entry_K_tokens.bin : K ∈ index["entries"] }.
+        keep_paths = {os.path.join(new_dir, "index.json")}
+        for e in index["entries"]:
+            sf, tk = _entry_paths(e["index"])
+            keep_paths.add(sf)
+            keep_paths.add(tk)
+        try:
+            for name in os.listdir(new_dir):
+                full = os.path.join(new_dir, name)
+                if full in keep_paths:
+                    continue
+                # Only sweep regular files — leave any unexpected dirs
+                # alone so we don't recurse into something weird.
+                try:
+                    if os.path.isfile(full):
+                        os.remove(full)
+                        logger.info(
+                            f"[cache_persist] R12-T1 orphan sweep removed {name}"
+                        )
+                except OSError as sweep_err:
+                    logger.debug(
+                        f"[cache_persist] orphan sweep failed on {name}: "
+                        f"{sweep_err}; continuing"
+                    )
+        except OSError as listdir_err:
+            # If listdir itself fails the dir is gone — the recheck
+            # below catches it and we abort cleanly.
+            logger.debug(
+                f"[cache_persist] orphan sweep listdir({new_dir}) failed: "
+                f"{listdir_err}; deferring to TOCTOU recheck"
+            )
 
         # Defensively recreate new_dir before the index.json write — the
         # filter above proves at least one entry's files exist, so the

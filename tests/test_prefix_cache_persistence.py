@@ -41,6 +41,7 @@ from __future__ import annotations
 import array
 import json
 import os
+from pathlib import Path
 
 import pytest
 
@@ -2364,3 +2365,409 @@ def test_r10d_load_skipped_survives_clear_and_reset_stats(tmp_path):
     # reset_stats() must also preserve it.
     c2.reset_stats()
     assert c2.get_stats()["load_skipped"] == skipped_before
+
+
+# --------------------------------------------------------------------------
+# R12-T1 — post-write self-verify rescues 2-cycle SIGTERM atomicity drift
+# (dogfood-0815 Talia r12 SEVERE)
+# --------------------------------------------------------------------------
+#
+# Talia r12 caught a deterministic 2-cycle SIGTERM round-trip that produced
+# an on-disk cache where index.json carried save B's uuid but several
+# entry_K_tokens.bin files retained save A's uuid + length-prefix. The
+# loader's R10-D integrity guard correctly refused the whole 100-entry /
+# 2.6 GB snapshot ("LOADED 0 entries ... SKIPPED 100 corrupt") so no
+# client-visible corruption, but the entire prior cache was silently
+# discarded.
+#
+# The systematic fix: post-write self-verify. After writing all entries
+# and index.json to .new/ but BEFORE the atomic rename, the writer re-reads
+# every tokens.bin's (magic + length + uuid) header and confirms it matches
+# the in-flight index.json. Any mismatch drops the entry (and an orphan
+# sweep nukes its files in .new). If everything is dropped the save aborts
+# and cache_dir keeps the previous good snapshot. The committed snapshot
+# is therefore self-consistent by construction regardless of WHICH
+# mechanism produced the drift (the field repro never pinpointed it —
+# candidates included signal-handler races, mmap coherence windows, fs
+# event clobber, partial pre-clean of a stale ``.new``).
+
+
+def _stomp_tokens_bin_uuid(path, new_uuid_hex: str) -> None:
+    """Overwrite the save_uuid bytes in a v3 tokens.bin in-place.
+
+    Layout: [magic 8][token_count u32][uuid_len u32][uuid bytes][payload].
+    We only touch the uuid bytes, so token_count and payload are unchanged.
+    """
+    from vllm_mlx.memory_cache import _TOKENS_HEADER_FIXED_LEN, _TOKENS_MAGIC
+
+    raw = bytearray(path.read_bytes())
+    assert raw[: len(_TOKENS_MAGIC)] == _TOKENS_MAGIC
+    import struct
+
+    _, uuid_len = struct.unpack(
+        "<II", raw[len(_TOKENS_MAGIC) : _TOKENS_HEADER_FIXED_LEN]
+    )
+    assert len(new_uuid_hex) == uuid_len, (
+        "test helper expects same-length replacement uuid"
+    )
+    raw[_TOKENS_HEADER_FIXED_LEN : _TOKENS_HEADER_FIXED_LEN + uuid_len] = (
+        new_uuid_hex.encode("ascii")
+    )
+    path.write_bytes(bytes(raw))
+
+
+def _stomp_tokens_bin_length_prefix(path, new_count: int) -> None:
+    """Overwrite just the token_count u32 in a v3 tokens.bin."""
+    from vllm_mlx.memory_cache import _TOKENS_MAGIC
+
+    raw = bytearray(path.read_bytes())
+    assert raw[: len(_TOKENS_MAGIC)] == _TOKENS_MAGIC
+    import struct
+
+    struct.pack_into("<I", raw, len(_TOKENS_MAGIC), new_count)
+    path.write_bytes(bytes(raw))
+
+
+def test_r12_two_cycle_sigterm_roundtrip_baseline(tmp_path):
+    """Baseline (post-fix): 2 consecutive save→load→save→load cycles
+    round-trip every entry cleanly. Probes the same shape as Talia's
+    repro: cycle 1 cold save, cycle 2 load+save (no mutations), cycle
+    3 load — all 5 entries must survive end-to-end, no drift_drops.
+    """
+    cache_dir = tmp_path / "snap"
+
+    # --- cycle 1: cold save ---
+    c1 = fresh_cache()
+    for i in range(5):
+        c1.store(list(range(i * 100, i * 100 + 11)), make_kvcache(num_tokens=11))
+    assert c1.save_to_disk(str(cache_dir)) is True
+    assert c1.get_stats()["save_drift_drops"] == 0
+
+    # --- cycle 2: load + re-save (no mutations) ---
+    c2 = fresh_cache()
+    loaded = c2.load_from_disk(str(cache_dir))
+    assert loaded == 5
+    assert c2.save_to_disk(str(cache_dir)) is True
+    assert c2.get_stats()["save_drift_drops"] == 0
+
+    # --- cycle 3: load — this is where Talia's repro saw LOADED 0 ---
+    c3 = fresh_cache()
+    loaded = c3.load_from_disk(str(cache_dir))
+    assert loaded == 5, f"R12-T1 baseline regressed: loaded={loaded}, expected 5"
+    assert c3.get_stats()["load_skipped"] == 0
+
+
+def test_r12_five_cycle_sigterm_stress(tmp_path):
+    """Talia r12's probe-5: 5-cycle stress mirroring the production
+    SIGTERM round-trip. Each cycle loads the previous save, adds a few
+    new entries, and re-saves. All 5 cycles must round-trip every entry
+    cleanly (post-fix: 0 drift_drops, 0 load_skipped).
+    """
+    cache_dir = tmp_path / "snap"
+
+    cumulative = []
+    c1 = fresh_cache()
+    for i in range(10):
+        toks = list(range(i * 1000, i * 1000 + 11))
+        c1.store(toks, make_kvcache(num_tokens=11, fill=float(i + 1)))
+        cumulative.append(toks)
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    for cycle in range(2, 6):  # cycles 2,3,4,5
+        c = fresh_cache()
+        loaded = c.load_from_disk(str(cache_dir))
+        assert loaded == len(cumulative), (
+            f"cycle {cycle} load: {loaded} != {len(cumulative)} — SIGTERM drift!"
+        )
+        # Add 2 more entries per cycle (mutates state, mirrors Talia's
+        # "a few new requests per cycle" repro).
+        for j in range(2):
+            toks = list(range(500_000 + cycle * 10_000 + j * 100, 500_000 + cycle * 10_000 + j * 100 + 11))
+            c.store(toks, make_kvcache(num_tokens=11, fill=float(cycle * 10 + j)))
+            cumulative.append(toks)
+        assert c.save_to_disk(str(cache_dir)) is True
+        # The save-side post-write verify must never DROP a clean entry
+        # — if it does, we've regressed the false-positive rate.
+        assert c.get_stats()["save_drift_drops"] == 0, (
+            f"cycle {cycle}: post-write verify dropped a clean entry — "
+            f"R12-T1 verify is now false-positive"
+        )
+
+    # Final 6th boot — must load every entry across all 5 cycles.
+    final = fresh_cache()
+    loaded = final.load_from_disk(str(cache_dir))
+    assert loaded == len(cumulative), (
+        f"final load: {loaded}/{len(cumulative)} — 5-cycle SIGTERM stress "
+        f"lost {len(cumulative) - loaded} entries"
+    )
+    assert final.get_stats()["load_skipped"] == 0
+
+
+def test_r12_post_write_verify_rescues_save_uuid_drift(tmp_path, monkeypatch):
+    """The post-write self-verify must drop entries whose tokens.bin
+    save_uuid does not match the current save's uuid.
+
+    Repro the exact failure mode Talia r12 observed by injecting a stomp
+    of entry_0_tokens.bin's uuid AFTER the writer wrote it but BEFORE
+    the verify pass runs. Post-fix: the entry is dropped, the bad files
+    are swept from .new, the commit proceeds with the surviving entries,
+    and ``save_drift_drops`` ticks. Pre-fix: the rename committed the
+    bad uuid into cache_dir and the next boot's loader refused everything.
+    """
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    for i in range(3):
+        cache.store(list(range(i * 100, i * 100 + 11)), make_kvcache(num_tokens=11))
+
+    new_dir = str(cache_dir) + ".new"
+
+    # Patch _peek_tokens_bin_header so it reports a stale uuid for
+    # entry_0 only — simulates the exact drift Talia observed without
+    # having to race a real signal/mmap mechanism. We patch on the
+    # vllm_mlx.memory_cache module symbol so save_to_disk's verify pass
+    # picks up the spy.
+    import vllm_mlx.memory_cache as _mc
+
+    real_peek = _mc._peek_tokens_bin_header
+    stale_uuid = "ff" * 16  # 32 hex chars, matches real width
+
+    def _spy_peek(path):
+        token_count, uuid, reason = real_peek(path)
+        if path.endswith("entry_0_tokens.bin"):
+            return token_count, stale_uuid, ""
+        return token_count, uuid, reason
+
+    monkeypatch.setattr(_mc, "_peek_tokens_bin_header", _spy_peek)
+
+    assert cache.save_to_disk(str(cache_dir)) is True
+    stats = cache.get_stats()
+    assert stats["save_drift_drops"] == 1, (
+        f"post-write verify must drop the drift-bearing entry, "
+        f"got drift_drops={stats['save_drift_drops']}"
+    )
+
+    # Committed dir has only entries 1, 2 — entry 0 was swept.
+    assert not os.path.exists(new_dir)
+    assert (cache_dir / "index.json").exists()
+    idx = json.loads((cache_dir / "index.json").read_text())
+    assert idx["num_entries"] == 2, (
+        f"committed index should list only the 2 surviving entries, "
+        f"got num_entries={idx['num_entries']}"
+    )
+    # Verify orphan sweep nuked entry_0's files in the committed dir.
+    assert not (cache_dir / "entry_0.safetensors").exists()
+    assert not (cache_dir / "entry_0_tokens.bin").exists()
+
+    # Next boot loads the surviving entries cleanly.
+    c2 = fresh_cache()
+    loaded = c2.load_from_disk(str(cache_dir))
+    assert loaded == 2
+    assert c2.get_stats()["load_skipped"] == 0
+
+
+def test_r12_post_write_verify_rescues_length_prefix_drift(tmp_path, monkeypatch):
+    """Same shape as the save_uuid drift test, but for the length-prefix
+    mismatch failure mode (tokens.bin claims a different token_count
+    than index.json). Talia r12 saw both flavors in the same cycle.
+    """
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    for i in range(3):
+        cache.store(list(range(i * 100, i * 100 + 11)), make_kvcache(num_tokens=11))
+
+    import vllm_mlx.memory_cache as _mc
+
+    real_peek = _mc._peek_tokens_bin_header
+
+    def _spy_peek(path):
+        token_count, uuid, reason = real_peek(path)
+        if path.endswith("entry_1_tokens.bin"):
+            # Simulate length-prefix drift: tokens.bin claims a
+            # different count than what was passed to the writer
+            return 99, uuid, ""
+        return token_count, uuid, reason
+
+    monkeypatch.setattr(_mc, "_peek_tokens_bin_header", _spy_peek)
+
+    assert cache.save_to_disk(str(cache_dir)) is True
+    assert cache.get_stats()["save_drift_drops"] == 1
+    idx = json.loads((cache_dir / "index.json").read_text())
+    assert idx["num_entries"] == 2
+
+
+def test_r12_post_write_verify_aborts_when_all_drift(tmp_path, monkeypatch):
+    """If every entry drifts, the verify pass must abort the rename
+    so cache_dir keeps its previous good snapshot. Returns False with
+    no commit-side effects beyond logging + the drift counter.
+    """
+    cache_dir = tmp_path / "snap"
+
+    # Session 1: clean save (cache_dir has good state to preserve).
+    c1 = fresh_cache()
+    c1.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert c1.save_to_disk(str(cache_dir)) is True
+    orig_idx = json.loads((cache_dir / "index.json").read_text())
+    orig_uuid = orig_idx["save_uuid"]
+
+    # Session 2: build new entries but mock the verify to fail every one.
+    c2 = fresh_cache()
+    for i in range(3):
+        c2.store(
+            list(range(i * 200, i * 200 + 11)), make_kvcache(num_tokens=11, fill=2.0)
+        )
+
+    import vllm_mlx.memory_cache as _mc
+
+    real_peek = _mc._peek_tokens_bin_header
+
+    def _spy_peek_all_bad(path):
+        token_count, _, reason = real_peek(path)
+        return token_count, "00" * 16, reason  # wrong uuid
+
+    monkeypatch.setattr(_mc, "_peek_tokens_bin_header", _spy_peek_all_bad)
+
+    assert c2.save_to_disk(str(cache_dir)) is False, (
+        "all-drift case must abort the save and preserve cache_dir"
+    )
+    assert c2.get_stats()["save_drift_drops"] == 3
+
+    # cache_dir still holds session 1's snapshot, untouched.
+    assert (cache_dir / "index.json").exists()
+    surviving = json.loads((cache_dir / "index.json").read_text())
+    assert surviving["save_uuid"] == orig_uuid, (
+        "aborted save must preserve cache_dir's previous good snapshot"
+    )
+
+    # Load from cache_dir still produces session 1's content.
+    c3 = fresh_cache()
+    loaded = c3.load_from_disk(str(cache_dir))
+    assert loaded == 1
+    entry = next(iter(c3._entries.values()))
+    assert entry.tokens == tuple(range(11))
+
+
+def test_r12_orphan_sweep_removes_dropped_entry_files(tmp_path, monkeypatch):
+    """After the post-write verify drops an entry, the orphan sweep
+    must remove that entry's safetensors AND tokens.bin from .new BEFORE
+    the rename. Otherwise the file rides the rename into cache_dir and
+    any recovery path could still match it via the entry_K filename
+    convention.
+    """
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    for i in range(2):
+        cache.store(list(range(i * 100, i * 100 + 11)), make_kvcache(num_tokens=11))
+
+    import vllm_mlx.memory_cache as _mc
+
+    real_peek = _mc._peek_tokens_bin_header
+
+    def _spy_peek(path):
+        token_count, uuid, reason = real_peek(path)
+        if path.endswith("entry_1_tokens.bin"):
+            return token_count, "ff" * 16, ""  # drift
+        return token_count, uuid, reason
+
+    monkeypatch.setattr(_mc, "_peek_tokens_bin_header", _spy_peek)
+    assert cache.save_to_disk(str(cache_dir)) is True
+    # Entry 1's files are gone from the committed dir.
+    assert not (cache_dir / "entry_1.safetensors").exists()
+    assert not (cache_dir / "entry_1_tokens.bin").exists()
+    # Entry 0's files survive.
+    assert (cache_dir / "entry_0.safetensors").exists()
+    assert (cache_dir / "entry_0_tokens.bin").exists()
+
+
+def test_r12_pre_clean_failure_aborts_save(tmp_path, monkeypatch):
+    """R12-T1 systematic fix branch (hint #3 in the spec): a stale ``.new``
+    that the pre-clean's rmtree could not remove must abort the save
+    rather than build a new snapshot ON TOP of the stale files.
+    """
+    cache_dir = tmp_path / "snap"
+    new_dir_path = str(cache_dir) + ".new"
+    # Session 1: clean save (cache_dir present, no .new).
+    c1 = fresh_cache()
+    c1.store(list(range(11)), make_kvcache(num_tokens=11))
+    assert c1.save_to_disk(str(cache_dir)) is True
+
+    # Hand-craft a stale ``.new`` survivor to mimic a partial rmtree.
+    os.makedirs(new_dir_path, exist_ok=True)
+    (Path(new_dir_path) / "leftover.bin").write_bytes(b"orphan content")
+
+    # Patch shutil.rmtree so the pre-clean's rmtree call is a no-op (ie
+    # the rmtree silently failed and ignore_errors swallowed it). The
+    # save must detect the survivor and abort.
+    import vllm_mlx.memory_cache as _mc
+
+    real_rmtree = _mc.shutil.rmtree if hasattr(_mc, "shutil") else None
+
+    import shutil as _real_shutil
+
+    def _broken_rmtree(path, *args, **kwargs):
+        # Pretend to silently fail on the staging dir (the prod failure
+        # mode this branch defends against). Other rmtree calls go through.
+        if str(path) == new_dir_path:
+            return None
+        return _real_shutil.rmtree(path, *args, **kwargs)
+
+    # The save imports shutil locally — patch on the module the save
+    # function imports from (it does ``import shutil`` at function top).
+    monkeypatch.setattr(_real_shutil, "rmtree", _broken_rmtree)
+
+    c2 = fresh_cache()
+    c2.store(list(range(50, 65)), make_kvcache(num_tokens=15))
+    result = c2.save_to_disk(str(cache_dir))
+    assert result is False, (
+        "stale-.new survivor of broken rmtree must abort the save so "
+        "cache_dir is not clobbered with mixed-cycle files"
+    )
+
+
+def test_r12_save_drift_drops_survives_clear_and_reset_stats(tmp_path, monkeypatch):
+    """``save_drift_drops`` backs a Prometheus counter and must carry
+    across ``clear()`` and ``reset_stats()`` exactly like ``load_skipped``.
+    """
+    cache_dir = tmp_path / "snap"
+    cache = fresh_cache()
+    for i in range(2):
+        cache.store(list(range(i * 100, i * 100 + 11)), make_kvcache(num_tokens=11))
+
+    import vllm_mlx.memory_cache as _mc
+
+    real_peek = _mc._peek_tokens_bin_header
+
+    def _spy_peek(path):
+        token_count, _, reason = real_peek(path)
+        return token_count, "ff" * 16, reason
+
+    monkeypatch.setattr(_mc, "_peek_tokens_bin_header", _spy_peek)
+    cache.save_to_disk(str(cache_dir))  # All drift → aborts but ticks counter
+    drops_before = cache.get_stats()["save_drift_drops"]
+    assert drops_before == 2
+
+    cache.clear()
+    assert cache.get_stats()["save_drift_drops"] == drops_before
+
+    cache.reset_stats()
+    assert cache.get_stats()["save_drift_drops"] == drops_before
+
+
+def test_r12_metrics_exposes_save_drift_drops():
+    """The ``rapid_mlx_prefix_cache_save_drift_drops_total`` Prometheus
+    counter must appear in /metrics output when the cache stats dict
+    carries a ``save_drift_drops`` field. Pin the wiring so a future
+    metrics refactor doesn't silently drop it.
+    """
+    from vllm_mlx.routes.metrics import _coerce_number  # noqa: F401 — import probe
+
+    # Synthesize a tiny stats payload and run the cache-stats block.
+    # We inspect the names emitted by the metrics module's source as
+    # a cheap structural check; deep wiring is exercised in the
+    # /metrics route's own tests.
+    import vllm_mlx.routes.metrics as metrics_mod
+
+    src = Path(metrics_mod.__file__).read_text()
+    assert "rapid_mlx_prefix_cache_save_drift_drops_total" in src, (
+        "metrics route lost the R12-T1 counter wiring"
+    )
+    assert "save_drift_drops" in src

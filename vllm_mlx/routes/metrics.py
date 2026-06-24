@@ -438,6 +438,30 @@ def _render_prometheus(cfg: Any) -> str:
                     "length-prefix, save_uuid, or safetensors body check)."
                 ),
             ),
+            (
+                # R12-T1 (dogfood-0815 Talia r12 SEVERE): save-side
+                # mirror of ``load_skipped``. Counts entries that
+                # ``save_to_disk``'s post-write self-verify pass dropped
+                # because the just-written tokens.bin disagreed with
+                # the index.json we were about to commit (save_uuid
+                # drift or length-prefix mismatch). A non-zero value
+                # is the rescue rate — pre-R12-T1 those entries silently
+                # corrupted ``cache_dir`` and the next boot refused the
+                # whole snapshot via R10-D. Pair with
+                # ``load_skipped_total`` to see whether drift is being
+                # caught at save (good) or at load (bad — means another
+                # path skipped the verify).
+                "save_drift_drops",
+                "rapid_mlx_prefix_cache_save_drift_drops_total",
+                (
+                    "Prefix-cache entries dropped at disk-save by the "
+                    "post-write self-verify pass (R12-T1: save_uuid or "
+                    "length-prefix drift between the just-written "
+                    "tokens.bin and the in-flight index.json). A non-zero "
+                    "rate is the save path catching corruption before it "
+                    "reaches cache_dir."
+                ),
+            ),
         ):
             raw = int(_coerce_number(cache_stats.get(raw_key)))
             monotonic = _cache_counter_accumulator.advance(metric_name, raw)
