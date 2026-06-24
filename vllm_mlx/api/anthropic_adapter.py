@@ -265,6 +265,7 @@ def _sanitize_reasoning_channel(text: str | None) -> str | None:
 def _thinking_block_content(
     reasoning_text: str | None,
     text: str | None,
+    finish_reason: str | None = None,
 ) -> str | None:
     """Compute the body of the Anthropic ``thinking`` content block.
 
@@ -301,6 +302,17 @@ def _thinking_block_content(
        tail remain in the ``text`` block; only the duplication is
        fixed.
 
+       Gated on ``finish_reason == "length"`` (codex r4 P3 R12-M1b):
+       the R12-8 rescue helper only fires on length-cut truncation
+       (see ``_apply_reasoning_cutoff_notice``), so a content payload
+       that looks like a rescue payload on a non-length finish (e.g.
+       a model legitimately echoing the literal sentinel followed by
+       ``\\n\\n`` and more text) is NOT a rescue artifact and the
+       dedupe must not fire. Defaults to ``None`` for back-compat
+       with external callers that don't pass the field; in that case
+       only the shape gate applies (matching the pre-r4 behaviour
+       for any tests or third-party adapter callers).
+
     Returns ``None`` when sanitization + trimming leave nothing —
     callers MUST treat ``None`` as "do not emit a thinking block",
     matching the existing whitespace-only guard.
@@ -318,7 +330,17 @@ def _thinking_block_content(
     # first means the slice operates on the clean, in-channel byte
     # stream and can never bisect a tag because there are no tags
     # left to bisect.
-    if is_rescue_payload(text):
+    #
+    # Codex r4 P3 (R12-M1b): gate the dedupe on
+    # ``finish_reason == "length"`` AND the rescue-payload shape. The
+    # rescue helper only fires on length-cut truncation, so a content
+    # body that happens to look like a rescue payload on a clean
+    # ``stop`` finish (e.g. a model echoing the literal sentinel
+    # followed by ``\n\n`` and more text) is NOT a rescue artifact.
+    # The shape gate alone would still false-positive in that case
+    # and silently drop a legit thinking block.
+    is_length_cut = finish_reason == "length"
+    if is_length_cut and is_rescue_payload(text):
         stripped = strip_reasoning_channel_markup(reasoning_text.rstrip())
         prefix = (
             stripped[:-RESCUE_TAIL_LENGTH] if len(stripped) > RESCUE_TAIL_LENGTH else ""
@@ -421,7 +443,9 @@ def openai_to_anthropic(
         # Returns ``None`` when sanitization + trimming leave nothing,
         # which signals "do not emit a thinking block" (same shape as
         # the previous whitespace-only guard).
-        thinking_body = _thinking_block_content(reasoning_text, text)
+        thinking_body = _thinking_block_content(
+            reasoning_text, text, finish_reason=choice.finish_reason
+        )
         # Compare BOTH sides post-sanitize so visible-byte equality
         # decides the duplicate-block gate. Codex r1 P2 + r3 BLOCKING
         # on R12-M1b: the prior implementation compared the sanitized

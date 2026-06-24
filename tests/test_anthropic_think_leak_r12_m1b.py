@@ -582,13 +582,14 @@ class TestThinkingBlockContentHelper:
         assert _thinking_block_content(reasoning, text) == expected
 
     def test_dedupes_rescue_tail_from_thinking_block(self):
-        """When ``text`` is a rescue payload, trim the matching suffix
-        from the thinking block content so the tail surfaces on exactly
-        one block.
+        """When ``text`` is a rescue payload AND ``finish_reason`` is
+        ``"length"`` (the only condition under which the route helper
+        injects a rescue), trim the matching suffix from the thinking
+        block content so the tail surfaces on exactly one block.
         """
         reasoning = "PREFIX_KEEP_ME " + "Y" * (RESCUE_TAIL_LENGTH + 10)
         text = REASONING_CUTOFF_SENTINEL + "\n\n" + "Y" * RESCUE_TAIL_LENGTH
-        out = _thinking_block_content(reasoning, text)
+        out = _thinking_block_content(reasoning, text, finish_reason="length")
         assert out is not None
         assert "PREFIX_KEEP_ME" in out, (
             f"prefix lost when deduping rescue tail: {out!r}"
@@ -606,7 +607,7 @@ class TestThinkingBlockContentHelper:
         """
         reasoning = "all of it fits in the tail"
         text = REASONING_CUTOFF_SENTINEL + "\n\n" + reasoning
-        assert _thinking_block_content(reasoning, text) is None
+        assert _thinking_block_content(reasoning, text, finish_reason="length") is None
 
     def test_non_rescue_text_does_not_trigger_dedupe(self):
         """When ``text`` is a normal model answer (not a rescue
@@ -618,6 +619,28 @@ class TestThinkingBlockContentHelper:
         reasoning = "my full thought process"
         text = "the answer"
         assert _thinking_block_content(reasoning, text) == reasoning
+
+    def test_dedupe_skipped_on_non_length_finish_even_if_text_matches_shape(self):
+        """Codex r4 P3 (R12-M1b): the dedupe must be gated on BOTH
+        the rescue-payload shape AND ``finish_reason == "length"``.
+        Without the finish-reason gate, a model that legitimately
+        echoes the literal sentinel followed by ``\\n\\n`` and more
+        prose on a clean ``stop`` finish would have its thinking
+        block silently truncated.
+        """
+        reasoning = "PREFIX_KEEP_ME " + "Y" * (RESCUE_TAIL_LENGTH + 10)
+        # Same byte shape as a rescue payload, but it's the model's
+        # genuine answer on a clean ``stop`` finish.
+        text = REASONING_CUTOFF_SENTINEL + "\n\n" + "echo of the sentinel"
+        # finish_reason="stop" → no dedupe even though the shape matches.
+        out = _thinking_block_content(reasoning, text, finish_reason="stop")
+        # Full thinking trace must be preserved (no truncation).
+        assert out is not None
+        assert "PREFIX_KEEP_ME" in out
+        assert ("Y" * RESCUE_TAIL_LENGTH) in out, (
+            "thinking block was incorrectly truncated on a non-length "
+            f"finish even though the rescue helper never fired: {out!r}"
+        )
 
 
 class TestMarkupOnlyDelta:
