@@ -1161,11 +1161,7 @@ async def _non_stream(
     # only" and then the unconditional 502 at this site fired
     # regardless, breaking parity with /v1/chat/completions. Match
     # chat's gate exactly: only the guided path runs this validator.
-    if (
-        _strict_schema
-        and engine.supports_guided_generation
-        and output is not None
-    ):
+    if _strict_schema and engine.supports_guided_generation and output is not None:
         ok, err = validate_output_against_schema(output.text or "", _strict_schema)
         if not ok:
             incr_strict_violation()
