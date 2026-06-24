@@ -727,6 +727,7 @@ class SimpleEngine(BaseEngine):
             completion_tokens=last_output.completion_tokens,
             finish_reason=last_output.finish_reason,
             finished=True,
+            matched_stop=getattr(last_output, "matched_stop", None),
         )
 
     async def _track_request_stream(
@@ -980,6 +981,7 @@ class SimpleEngine(BaseEngine):
                         completion_tokens=completion_tokens,
                         finished=finished,
                         finish_reason=finish_reason,
+                        matched_stop=getattr(chunk, "matched_stop", None),
                     )
 
                     if finished:
@@ -1062,6 +1064,7 @@ class SimpleEngine(BaseEngine):
                 finish_reason=final_output.finish_reason,
                 mtp_drafts=final_output.mtp_drafts,
                 mtp_accepted=final_output.mtp_accepted,
+                matched_stop=getattr(final_output, "matched_stop", None),
             )
 
         # mlx-lm non-streaming chat with tools can stall indefinitely on some
@@ -1137,6 +1140,7 @@ class SimpleEngine(BaseEngine):
                 prompt_tokens=prompt_token_count,
                 completion_tokens=len(output.tokens),
                 finish_reason=output.finish_reason,
+                matched_stop=getattr(output, "matched_stop", None),
             )
 
     async def stream_chat(
@@ -1711,6 +1715,7 @@ class SimpleEngine(BaseEngine):
                         completion_tokens=token_count,
                         finished=finished,
                         finish_reason=finish_reason,
+                        matched_stop=getattr(resp, "matched_stop", None),
                     )
                     if finished:
                         break
@@ -1938,6 +1943,7 @@ class SimpleEngine(BaseEngine):
                 completion_tokens=token_count,
                 finished=finished,
                 finish_reason=resp.finish_reason or ("stop" if finished else None),
+                matched_stop=getattr(resp, "matched_stop", None),
             )
 
             if finished:
@@ -2654,6 +2660,16 @@ class SimpleEngine(BaseEngine):
                     stop_hit = any(stop_seq in accumulated_text for stop_seq in stop)
                 finished = stop_hit or token_count >= max_tokens
                 finish_reason = getattr(resp, "finish_reason", None)
+                # Identify which stop string fired (issue #469) so the
+                # Anthropic adapter can emit ``stop_sequence``.
+                matched_here: str | None = None
+                if stop_hit and stop:
+                    for stop_seq in stop:
+                        if stop_seq and stop_seq in accumulated_text:
+                            if matched_here is None or accumulated_text.find(
+                                stop_seq
+                            ) < accumulated_text.find(matched_here):
+                                matched_here = stop_seq
                 if stop_hit:
                     finish_reason = "stop"
                 elif finish_reason is None and finished:
@@ -2668,6 +2684,8 @@ class SimpleEngine(BaseEngine):
                     completion_tokens=token_count,
                     finished=finished,
                     finish_reason=finish_reason,
+                    matched_stop=matched_here
+                    or getattr(resp, "matched_stop", None),
                 )
 
                 if finished:

@@ -414,6 +414,101 @@ class TestSchedulerStopSequenceEnforcement:
 # ---------------------------------------------------------------------------
 
 
+class TestSimpleEngineStopEnforcement:
+    """Codex r3 regression: the default (non-continuous-batching) engine
+    is ``SimpleEngine``, which wraps ``MLXLanguageModel`` directly.  The
+    ``stream_generate`` path now hold-back-buffers and surfaces
+    ``matched_stop``; the non-streaming ``generate`` aggregates the same
+    stream so it inherits the enforcement and stop-string reporting.
+    """
+
+    def test_stream_generate_emits_matched_stop_and_truncates(self):
+        from vllm_mlx.models.llm import MLXLanguageModel, StreamingOutput
+
+        # Build a fake mlx_lm.stream_generate that emits a known token
+        # sequence so we don't need a real model.
+        class FakeResp:
+            def __init__(self, text, token=1):
+                self.text = text
+                self.token = token
+
+        seq = [
+            FakeResp("hello "),
+            FakeResp("wor"),
+            FakeResp("ld"),
+            FakeResp("END"),
+        ]
+
+        # Monkey-patch the lazy mlx_lm imports inside stream_generate.
+        original_stream_generate = None
+        try:
+            import mlx_lm as _mlx_lm
+            original_stream_generate = _mlx_lm.stream_generate
+            _mlx_lm.stream_generate = lambda *a, **kw: iter(seq)
+            model = MLXLanguageModel.__new__(MLXLanguageModel)
+            model._loaded = True
+            model._mtp = False
+            model._mtp_num_draft_tokens = 1
+            model.model = MagicMock()
+            model.tokenizer = MagicMock()
+            model.tokenizer.encode = lambda s: list(range(len(s.split())))
+            model._create_sampler = lambda *a, **kw: None
+            model._create_logits_processors = lambda *a, **kw: None
+
+            chunks = list(
+                model.stream_generate(
+                    prompt="ignored",
+                    max_tokens=10,
+                    stop=["END"],
+                )
+            )
+            assert chunks, "stream_generate yielded nothing"
+            terminal = chunks[-1]
+            assert isinstance(terminal, StreamingOutput)
+            assert terminal.finished is True
+            assert terminal.finish_reason == "stop"
+            assert terminal.matched_stop == "END"
+            streamed = "".join(c.text for c in chunks)
+            assert "END" not in streamed
+        finally:
+            if original_stream_generate is not None:
+                import mlx_lm as _mlx_lm  # noqa: F811
+                _mlx_lm.stream_generate = original_stream_generate
+
+    def test_generate_truncates_and_surfaces_matched_stop(self):
+        # Non-streaming path: mlx_lm.generate has no native stop support,
+        # so our wrapper scans + truncates after the fact and surfaces
+        # ``matched_stop`` for the Anthropic adapter.
+        from vllm_mlx.models.llm import GenerationOutput, MLXLanguageModel
+
+        import mlx_lm as _mlx_lm
+        orig = _mlx_lm.generate
+        try:
+            _mlx_lm.generate = lambda *a, **kw: "hi ENDworld"
+            model = MLXLanguageModel.__new__(MLXLanguageModel)
+            model._loaded = True
+            model._mtp = False
+            model._mtp_num_draft_tokens = 1
+            model.model = MagicMock()
+            model.tokenizer = MagicMock()
+            model.tokenizer.encode = lambda s: list(range(len(s)))
+            model._create_sampler = lambda *a, **kw: None
+            model._create_logits_processors = lambda *a, **kw: None
+
+            out = model.generate(
+                prompt="ignored",
+                max_tokens=10,
+                stop=["END"],
+            )
+            assert isinstance(out, GenerationOutput)
+            assert out.finish_reason == "stop"
+            assert out.matched_stop == "END"
+            assert "END" not in out.text
+            assert out.text == "hi "
+        finally:
+            _mlx_lm.generate = orig
+
+
 class TestOpenAIStopUnchanged:
     def test_openai_chat_request_stop_field_unchanged(self):
         # Sanity check: the OpenAI ChatCompletionRequest still accepts and

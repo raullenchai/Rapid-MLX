@@ -24,6 +24,14 @@ class GenerationOutput:
     text: str
     tokens: list[int]
     finish_reason: str | None = None
+    # When termination was triggered by a client-supplied stop string,
+    # the matched sequence.  Propagated to ``RequestOutput.matched_stop``
+    # so the Anthropic adapter can emit the spec-required
+    # ``stop_reason="stop_sequence"`` + ``stop_sequence="<matched>"``
+    # (issue #469).
+    matched_stop: str | None = None
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
 
 
 @dataclass
@@ -35,6 +43,8 @@ class StreamingOutput:
     finished: bool = False
     finish_reason: str | None = None
     prompt_tokens: int = 0
+    # See ``GenerationOutput.matched_stop`` (issue #469).
+    matched_stop: str | None = None
 
 
 class MLXLanguageModel:
@@ -206,16 +216,44 @@ class MLXLanguageModel:
             verbose=False,
         )
 
+        # Enforce client-supplied stop strings (mlx_lm.generate has no
+        # native ``stop`` support) and surface the matched sequence so the
+        # Anthropic adapter can emit ``stop_reason="stop_sequence"`` +
+        # ``stop_sequence="<matched>"`` per spec (issue #469).
+        matched_stop_value: str | None = None
+        if stop:
+            best_idx: int | None = None
+            for cand in stop:
+                if not cand:
+                    continue
+                idx = output_text.find(cand)
+                if idx == -1:
+                    continue
+                if best_idx is None or idx < best_idx or (
+                    idx == best_idx
+                    and len(cand) > len(matched_stop_value or "")
+                ):
+                    best_idx = idx
+                    matched_stop_value = cand
+            if matched_stop_value is not None and best_idx is not None:
+                output_text = output_text[:best_idx]
+
         # Tokenize output to get token IDs
         tokens = self.tokenizer.encode(output_text)
 
         # Determine finish reason
-        finish_reason = "length" if len(tokens) >= max_tokens else "stop"
+        if matched_stop_value is not None:
+            finish_reason = "stop"
+        elif len(tokens) >= max_tokens:
+            finish_reason = "length"
+        else:
+            finish_reason = "stop"
 
         return GenerationOutput(
             text=output_text,
             tokens=tokens,
             finish_reason=finish_reason,
+            matched_stop=matched_stop_value,
         )
 
     def stream_generate(
@@ -272,9 +310,15 @@ class MLXLanguageModel:
         else:
             num_prompt_tokens = len(prompt)
 
-        stop_list = stop or []
+        stop_list = [s for s in (stop or []) if s]
         max_stop_len = max((len(s) for s in stop_list), default=0)
-        accumulated_tail = ""
+        # Per-request buffers for stop-string enforcement (issue #469).
+        # ``cumulative_text`` is the full streamed output so far; we hold
+        # back the trailing ``max_stop_len - 1`` chars from emission so a
+        # partial prefix of a stop string never leaks into the SSE delta.
+        cumulative_text = ""
+        published_text_len = 0
+        matched_stop_value: str | None = None
 
         mtp_kwargs = {}
         if self._mtp:
@@ -295,23 +339,50 @@ class MLXLanguageModel:
             start=1,
         ):
             # response.text is the new token text (not accumulated)
-            new_text = response.text
+            raw_new_text = response.text
 
-            # Check for stop sequences against a bounded tail rather than
-            # accumulating the full response (which is O(n^2) over the loop).
-            should_stop = False
-            if max_stop_len > 0:
-                combined = accumulated_tail + new_text
+            if stop_list:
+                cumulative_text += raw_new_text
+                # Scan the cumulative buffer (bounded by output length;
+                # acceptable in practice for non-pathological outputs and
+                # stop-list sizes).  Earliest match wins; on tie, longer.
+                best_idx: int | None = None
                 for stop_seq in stop_list:
-                    if stop_seq in combined:
-                        should_stop = True
-                        break
-                accumulated_tail = combined[-max_stop_len:]
-
-            finished = should_stop or token_count >= max_tokens
-            finish_reason = None
-            if finished:
-                finish_reason = "stop" if should_stop else "length"
+                    idx = cumulative_text.find(stop_seq)
+                    if idx == -1:
+                        continue
+                    if best_idx is None or idx < best_idx or (
+                        idx == best_idx
+                        and len(stop_seq) > len(matched_stop_value or "")
+                    ):
+                        best_idx = idx
+                        matched_stop_value = stop_seq
+                if matched_stop_value is not None and best_idx is not None:
+                    cumulative_text = cumulative_text[:best_idx]
+                    new_text = cumulative_text[published_text_len:]
+                    published_text_len = len(cumulative_text)
+                    finished = True
+                    finish_reason = "stop"
+                else:
+                    finished = token_count >= max_tokens
+                    if finished:
+                        # Flush the full safety-window remainder.
+                        new_text = cumulative_text[published_text_len:]
+                        published_text_len = len(cumulative_text)
+                        finish_reason = "length"
+                    else:
+                        hold_back = max_stop_len - 1
+                        safe_end = max(0, len(cumulative_text) - hold_back)
+                        if safe_end > published_text_len:
+                            new_text = cumulative_text[published_text_len:safe_end]
+                            published_text_len = safe_end
+                        else:
+                            new_text = ""
+                        finish_reason = None
+            else:
+                new_text = raw_new_text
+                finished = token_count >= max_tokens
+                finish_reason = "length" if finished else None
 
             yield StreamingOutput(
                 text=new_text,
@@ -319,6 +390,7 @@ class MLXLanguageModel:
                 finished=finished,
                 finish_reason=finish_reason,
                 prompt_tokens=num_prompt_tokens,
+                matched_stop=matched_stop_value if finished else None,
             )
 
             if finished:
