@@ -625,6 +625,346 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     return None
 
 
+# DeepSeek V3-template wire-shape parsers, by the sub-family each one
+# OWNS. The V3 chat template and the V3.1 chat template emit DIFFERENT
+# tool-call bodies inside the same outer envelope:
+#
+#   * ``deepseek_v3`` / ``deepseek_r1_0528`` (DeepSeekV3ToolParser):
+#       body = ``function<｜tool▁sep｜>NAME\n``\`json\n{…}\n``\```
+#       emitted by V3-line checkpoints whose ``chat_template.jinja`` is
+#       the V3 template — vanilla V3-0324, R1-0528 (R1 retrained on V3),
+#       and the forward-cover V4 / V5 family per the upstream V4 card.
+#
+#   * ``deepseek_v31`` (DeepSeekV31ToolParser):
+#       body = ``NAME<｜tool▁sep｜>{…json…}``
+#       emitted by V3.1-line checkpoints — DeepSeek-V3.1-0324 etc.
+#
+# The two parsers were intentionally split in PR #874 (R12-5) so each
+# one owns exactly one wire shape, removing the cross-shape blast radius
+# the unified V3.1 parser carried. Crossing the streams — binding
+# ``deepseek_v3`` to a V3.1 checkpoint, or ``deepseek_v31`` to a V3
+# checkpoint — IS the same class of silent-empty-args failure this
+# warning is meant to surface, even though both ends of the misbind sit
+# inside the V3-template lineage (codex round 1 follow-up). Track the
+# sub-family ownership explicitly so cross-family misbinds warn too.
+#
+# Keep in sync with the ``@ToolParserManager.register_module(...)``
+# aliases on the two parser classes.
+_DEEPSEEK_V3_BODY_PARSERS = frozenset({"deepseek_v3", "deepseek_r1_0528"})
+_DEEPSEEK_V31_BODY_PARSERS = frozenset({"deepseek_v31"})
+_DEEPSEEK_V3_FAMILY_PARSERS = _DEEPSEEK_V3_BODY_PARSERS | _DEEPSEEK_V31_BODY_PARSERS
+
+
+# HF cache layout components that must be stripped before the
+# tail-segment classifier runs. Real layouts:
+#   ~/.cache/huggingface/hub/models--<org>--<name>/snapshots/<sha>/...
+# A bare ``parts[-1]`` would resolve to ``<sha>`` or ``blobs`` and
+# completely miss the model name. Strip these intermediate segments
+# so the classifier sees the canonical model name component.
+_HF_CACHE_INTERMEDIATE_SEGMENTS = frozenset({"snapshots", "blobs", "refs"})
+
+
+def _extract_model_name_segment(path: str) -> str:
+    """Pick the canonical model-name segment from a path that may include
+    HF cache layout intermediates.
+
+    Real-world inputs covered:
+      * ``mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit`` → tail = name
+      * ``/abs/path/mlx-community/DeepSeek-V3-0324`` → tail = name
+      * ``models--mlx-community--DeepSeek-R1-0528-Qwen3-8B-4bit/snapshots/<sha>``
+        → must skip the SHA segment AND the ``snapshots`` marker, then
+        unpack the ``models--<org>--<name>`` form to recover the name.
+      * ``alias-name`` (single token) → tail = name
+    """
+    parts = [p for p in path.rstrip("/").split("/") if p]
+    if not parts:
+        return path
+    # SHA-skipping is gated on the path actually being an HF cache
+    # layout (codex r8 BLOCKING). Without this gate, a legitimate
+    # local-model directory whose final name happens to be all-hex
+    # (e.g. ``/models/abcdef1234``) would have its name silently
+    # dropped and the parent classified instead — false-misbind on a
+    # perfectly valid checkpoint. We look for any HF cache
+    # intermediate marker (``snapshots`` / ``blobs`` / ``refs``)
+    # anywhere in the path; if present, the path IS HF cache and
+    # SHA-shaped segments below the marker can be safely skipped.
+    in_hf_cache_layout = any(p in _HF_CACHE_INTERMEDIATE_SEGMENTS for p in parts)
+    candidate = None
+    for seg in reversed(parts):
+        if seg in _HF_CACHE_INTERMEDIATE_SEGMENTS:
+            continue
+        # Only skip SHA-shaped segments when we KNOW the path is an HF
+        # cache layout. ``len(seg) >= 7`` is the conventional minimum
+        # abbreviated-SHA width; ``all hex`` keeps the heuristic
+        # narrow enough to not eat real model names.
+        if (
+            in_hf_cache_layout
+            and len(seg) >= 7
+            and all(c in "0123456789abcdef" for c in seg.lower())
+        ):
+            continue
+        candidate = seg
+        break
+    if candidate is None:
+        candidate = parts[-1]
+    # HF cache flattens ``<org>/<name>`` into ``models--<org>--<name>``.
+    # Pull the original name out so the classifier sees the same string
+    # it would see on a direct HF-path serve.
+    if candidate.startswith("models--") and "--" in candidate[len("models--") :]:
+        candidate = candidate.rsplit("--", 1)[-1]
+    return candidate
+
+
+def _classify_deepseek_template_name(s: str) -> str | None:
+    """Inner name-pattern classifier — see ``_deepseek_template_family``
+    for the public contract. Pulled out so the public helper can run the
+    classifier on BOTH the user-supplied path AND the alias-resolved HF
+    path without duplicating the pattern logic.
+
+    All pattern matches are scoped to the model-name component
+    (extracted via ``_extract_model_name_segment`` so HF cache layouts
+    like ``models--<org>--<name>/snapshots/<sha>`` resolve to the
+    canonical name and not the SHA), so:
+
+    * The R1-Distill reject (codex r3 P3) is not tripped by a
+      ``distillations`` parent dir.
+    * The V3 / V3.1 / R1-0528 / V4-V5 positive classifiers do not fire
+      on a parent dir like ``/models/DeepSeek-V3/qwen-model`` whose
+      checkpoint is actually a Qwen variant (codex r4 BLOCKING).
+    * HF cache snapshot layouts don't get false-negative classified
+      because the tail segment is a SHA (pr-validate codex r6 BLOCKING).
+
+    Single-segment scoping works for genuine HF paths because every
+    DeepSeek checkpoint's MODEL NAME carries its own family marker:
+    ``DeepSeek-V3-0324``, ``DeepSeek-V3.1-0324``,
+    ``DeepSeek-R1-0528-Qwen3-8B``, ``DeepSeek-R1-Distill-Qwen-1.5B-4bit``.
+    The ``deepseek-ai`` / ``mlx-community`` org segment is informational
+    and never load-bearing for sub-family identification.
+    """
+    s = s.lower()
+    name = _extract_model_name_segment(s)
+    # R1-Distill family is V2 / Qwen2-arch, NOT V3. Explicit reject for
+    # BOTH sub-families.
+    if "distill" in name:
+        return None
+    # V3.1 — distinct chat template, ordered BEFORE the bare V3 check
+    # so the more specific pattern wins (V3.1 contains "v3" as a
+    # substring after the dot is stripped by the loose regex).
+    if re.search(r"deepseek[-_]*v3\.\d", name):
+        return "v31"
+    # V3 vanilla — V3-0324 etc. Require ``v3`` to be terminated by
+    # end-of-string or a separator so ``V30``, ``V31`` (which would have
+    # matched V3.1 above anyway), ``V3Beta``, and ``V300`` don't get
+    # mis-classified. ``V3-0324`` matches via the ``-`` boundary.
+    if re.search(r"deepseek[-_]*v3(?=[-_/.\s]|$)", name):
+        return "v3"
+    # R1-0528 — the R1 retrain on the V3 chat template.
+    if re.search(r"deepseek.*r1[-_]?0528", name):
+        return "v3"
+    # Forward-cover V4 / V5 (per upstream V4 card both inherit the V3
+    # template). Require the ``v4`` / ``v5`` token to be terminated by
+    # end-of-string OR a separator character (``-``, ``_``, ``/``, ``.``,
+    # space) so future variants like ``DeepSeek-V40-*``,
+    # ``DeepSeek-V5Beta-*``, or ``DeepSeek-V42-MoE-*`` don't get
+    # silently classified as V3-template just because they share the
+    # ``v4`` / ``v5`` prefix (pr-validate codex r6 BLOCKING — the
+    # missing boundary was a real false-negative path). ``DeepSeek-V4``
+    # and ``DeepSeek-V4-Flash`` still match because the boundary is
+    # satisfied by end-of-string or ``-`` respectively.
+    if re.search(r"deepseek[-_]*v[45](?=[-_/.\s]|$)", name):
+        return "v3"
+    return None
+
+
+def _deepseek_template_family(model_path: str) -> str | None:
+    """Identify which DeepSeek chat-template sub-family a checkpoint
+    belongs to, by name pattern.
+
+    Returns one of:
+      * ``"v3"``     — V3 chat template (vanilla V3, R1-0528, V4, V5)
+                       → emits the V3 fenced-JSON body shape
+      * ``"v31"``    — V3.1 chat template (DeepSeek-V3.1-*)
+                       → emits the V3.1 plain-JSON body shape
+      * ``None``     — not a V3-template checkpoint (R1-Distill family,
+                       V2.x, Qwen2/Llama-arch SFTs, unknowns).
+
+    The R1-distill family (``DeepSeek-R1-Distill-Qwen-*``,
+    ``-Llama-*``) is EXCLUDED from both V3 sub-families because those
+    are SFTs on Qwen2 / Llama2 base tokenizers that do not carry the V3
+    fullwidth-pipe special tokens, and binding either V3-family parser
+    to them lands ``arguments="{}"`` (Sven r12 HIGH-1).
+
+    Codex r2 P2 fix: also classify by the alias-resolved HF path when
+    the user-supplied name is an alias whose textual form alone doesn't
+    encode the family (e.g. ``deepseek-r1-8b-4bit`` resolves to
+    ``mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit`` — the alias name
+    contains no ``0528`` marker, so the bare-text classifier would
+    return ``None`` and the misbind warning would fire falsely on a
+    perfectly correct default serve).
+    """
+    # First pass: classify by the user-supplied string itself. This
+    # covers HF paths and any alias whose name already carries a family
+    # marker.
+    family = _classify_deepseek_template_name(model_path)
+    if family is not None:
+        return family
+    # Second pass: resolve as an alias and classify the canonical HF
+    # path. Pulled in lazily so a degraded ``model_aliases`` import
+    # cannot kill the warning path (the helper falls back to the
+    # name-only classification, which is the previous behaviour).
+    try:
+        profile = resolve_profile(model_path)
+    except Exception:  # noqa: BLE001
+        return None
+    if profile is None:
+        return None
+    return _classify_deepseek_template_name(profile.hf_path)
+
+
+def warn_misbound_deepseek_v3_parser(
+    model_path: str, tool_call_parser: str | None
+) -> str | None:
+    """If the user explicitly bound a DeepSeek V3-template-family parser
+    to a model that cannot emit the matching wire shape, return a
+    single-line warning string. Return ``None`` for in-spec cases.
+
+    Two failure classes are covered:
+      1. **Out-of-lineage** — V3-family parser bound to a model that
+         isn't a V3-template checkpoint at all (R1-Distill, V2.x,
+         Qwen/Llama-arch SFTs). Emits the V2-style envelope or prose;
+         the V3-family parser refuses → ``arguments="{}"``. This is the
+         Sven r12 HIGH-1 case.
+      2. **Cross-sub-family** — V3 parser bound to a V3.1 checkpoint, or
+         V3.1 parser bound to a V3-line checkpoint. Both ends sit inside
+         the V3-template lineage so the outer envelope matches, but the
+         per-block body shape differs (V3 wraps the args in a fenced
+         JSON code block, V3.1 emits raw ``NAME<sep>{json}``). The
+         parser whose body regex doesn't match drops the block silently
+         → same empty-args failure (codex r1 P2 on this PR).
+
+    Caller (cli.py / serve entrypoint) decides whether to logger.warning
+    or stderr.print; this helper is pure so the boundary is unit-
+    testable without an active logger.
+
+    Why warn instead of reject: the parser-flag override is the user's
+    declared intent. The historical D-DSV31 hotfix exists *because* a
+    user knew their checkpoint emitted the V3 shape under a non-obvious
+    HF path. Hard-rejecting would lock that door. The warning surfaces
+    the mismatch loudly (so agent SDKs / dogfood reports stop blaming
+    the parser when the model is the wrong target) without blocking
+    the explicit override.
+    """
+    if tool_call_parser not in _DEEPSEEK_V3_FAMILY_PARSERS:
+        return None
+    template = _deepseek_template_family(model_path)
+    # In-spec cases — parser matches the model's chat-template sub-family.
+    if tool_call_parser in _DEEPSEEK_V3_BODY_PARSERS and template == "v3":
+        return None
+    if tool_call_parser in _DEEPSEEK_V31_BODY_PARSERS and template == "v31":
+        return None
+
+    # Suggest the auto-detected parser if one would have applied — that's
+    # the most actionable nudge for the typical user who picked the wrong
+    # parser by mistake. Critically, this also lights up the
+    # cross-sub-family case: ``deepseek_v31`` parser on R1-0528 will see
+    # auto suggest ``deepseek_v3`` here, which is the correct fix.
+    #
+    # Codex r5 + r5-followup P2: ``detect_model_config`` runs its
+    # regexes against the FULL path, so a non-V3 checkpoint under a
+    # V3-marker parent dir (e.g. ``/models/DeepSeek-V3/qwen-model``)
+    # would have auto-detect ALSO pick a V3-family parser — fooled by
+    # the same parent dir the tail-segment classifier above correctly
+    # ignored. Surfacing that fooled auto-detect as a suggestion is
+    # actively harmful: it nudges the user toward the same wrong family
+    # the warning is about. Suppress the suggestion whenever the model
+    # is out-of-lineage (template is None) AND auto-detect would pick
+    # any V3-family parser — including a DIFFERENT one than the one
+    # the user bound, because the suggestion's framing
+    # ("auto-detect would pick X for this model") implies endorsement
+    # that doesn't hold when auto-detect itself is fooled. The
+    # cross-sub-family case (template in {"v3","v31"}) is unaffected
+    # — there the model genuinely is V3-template and auto-detect's
+    # other-V3 suggestion is the actually-correct fix.
+    auto = detect_model_config(model_path)
+    auto_parser = auto.tool_call_parser if auto is not None else None
+    suppress_suggestion = (
+        not auto_parser
+        # Same parser the user bound — contradiction.
+        or auto_parser == tool_call_parser
+        # Out-of-lineage + auto also fooled into V3 family — endorses
+        # the same wrong-family class.
+        or (template is None and auto_parser in _DEEPSEEK_V3_FAMILY_PARSERS)
+    )
+    suggestion = (
+        ""
+        if suppress_suggestion
+        else f" Auto-detect would pick '{auto_parser}' for this model."
+    )
+
+    # Tailor the diagnosis to the failure class so the message is
+    # actionable instead of generic.
+    if template in {"v3", "v31"}:
+        # Cross-sub-family inside the V3 template lineage. Use single
+        # backticks around the V3.1 body but plain quotes around the V3
+        # body example because the latter contains literal backticks
+        # (the JSON fence) — wrapping it in another backtick produced a
+        # confusing four-backtick tail (codex r8 NIT). Plain quotes
+        # render cleanly in every log sink.
+        expected_body = (
+            "`NAME<｜tool▁sep｜>{…json…}`"
+            if template == "v31"
+            else "function<｜tool▁sep｜>NAME\\n```json\\n{…}\\n```"
+        )
+        return (
+            f"--tool-call-parser={tool_call_parser!r} is bound to "
+            f"{model_path!r}, which inherits the DeepSeek-V3.{('1' if template == 'v31' else '0')}"
+            f" chat template (body shape {expected_body}). The bound "
+            "parser expects a DIFFERENT body shape — tool-call blocks "
+            f"will be dropped and arguments will be empty.{suggestion} "
+            "Drop the explicit --tool-call-parser flag to let "
+            "auto-detect pick the matching V3-family parser."
+        )
+
+    # Out-of-lineage (Sven r12 HIGH-1 case). The remediation depends on
+    # what auto-detect would do for this same path. Three cases:
+    #
+    #   1. ``auto_parser`` is a V3-family parser (codex r5): a parent
+    #      dir like ``/models/DeepSeek-V3/qwen-model`` fools the
+    #      full-path regex even though the checkpoint name itself is
+    #      non-V3. "Drop the flag" is actively bad advice — pin to
+    #      ``hermes`` directly.
+    #   2. ``auto_parser is None`` (codex r6 PR-validate NIT): unknown
+    #      model, no regex match. "Drop the flag" leaves the user with
+    #      no tool parser at all, which is worse than the current
+    #      misbind. Pin explicitly to ``hermes`` for the typical
+    #      Qwen/Llama-arch case.
+    #   3. ``auto_parser`` is a non-V3 family parser: the auto-detect
+    #      knows the right answer (e.g. ``deepseek`` for R1-Distill).
+    #      Dropping the flag is the right call.
+    if auto_parser in _DEEPSEEK_V3_FAMILY_PARSERS:
+        remediation = "Pass --tool-call-parser hermes for this Qwen/Llama-arch model."
+    elif auto_parser is None:
+        remediation = (
+            "Pass --tool-call-parser hermes for this Qwen/Llama-arch model "
+            "(auto-detect has no fallback for unknown checkpoints)."
+        )
+    else:
+        remediation = (
+            "Drop the explicit --tool-call-parser flag to let auto-detect "
+            "choose, or use --tool-call-parser hermes for Qwen/Llama-arch "
+            "distills."
+        )
+    return (
+        f"--tool-call-parser={tool_call_parser!r} is bound to "
+        f"{model_path!r}, which is NOT a DeepSeek-V3 chat-template "
+        "checkpoint. The V3-family parsers expect the "
+        "<｜tool▁calls▁begin｜>function<｜tool▁sep｜>NAME\\n```json\\n{…}\\n``` "
+        "envelope; non-V3 checkpoints (R1-Distill-Qwen/-Llama, V2.x, "
+        "Qwen2/Llama-arch SFTs) cannot emit it and tool calls will "
+        f"have empty arguments.{suggestion} {remediation}"
+    )
+
+
 def enrich_model_config(cfg: ModelConfig | None, model: Any) -> ModelConfig:
     """Runtime-enrich a ``ModelConfig`` from a loaded mlx-lm model.
 

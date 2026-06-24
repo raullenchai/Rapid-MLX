@@ -9,6 +9,7 @@ from vllm_mlx.model_auto_config import (
     format_profile_summary,
     format_profile_table,
     get_profile,
+    warn_misbound_deepseek_v3_parser,
 )
 
 
@@ -301,6 +302,41 @@ class TestDetectModelConfig:
         config = detect_model_config("deepseek-ai/DeepSeek-R1")
         assert config is not None
         assert config.tool_call_parser == "deepseek"
+        assert config.reasoning_parser == "deepseek_r1"
+
+    # R12-S1 (Sven r12 HIGH-1 verdict): DeepSeek-R1-Distill-* checkpoints
+    # are Qwen2 / Llama2-arch SFTs whose tokenizers do NOT carry the
+    # V3 fullwidth-pipe special tokens — they emit the V2-style envelope
+    # the legacy ``deepseek`` parser handles, NOT the V3 fenced-JSON
+    # envelope ``deepseek_v3`` expects. The regex ordering MUST keep
+    # these models on the legacy parser; if a future edit flipped them
+    # to ``deepseek_v3`` (because the family name still contains "r1"),
+    # Sven's HIGH-1 would re-surface as a default-config regression
+    # rather than a wrong-flag misbind.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit",
+            "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit",
+            "mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit",
+            "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit",
+            "mlx-community/DeepSeek-R1-Distill-Llama-8B-4bit",
+            "mlx-community/DeepSeek-R1-Distill-Llama-70B-4bit",
+            "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+            "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+        ],
+    )
+    def test_deepseek_r1_distill_routes_to_legacy_parser(self, model_path):
+        config = detect_model_config(model_path)
+        assert config is not None
+        # MUST be the legacy ``deepseek`` parser, NOT ``deepseek_v3`` —
+        # the distills cannot emit the V3 wire shape.
+        assert config.tool_call_parser == "deepseek", (
+            f"{model_path}: tool_call_parser must be 'deepseek' (legacy), "
+            f"got {config.tool_call_parser!r}. R1-Distill family is "
+            "Qwen2/Llama2-arch SFT and cannot emit the V3 fenced-JSON "
+            "envelope. See Sven r12 dogfood HIGH-1 verdict (R12-S1)."
+        )
         assert config.reasoning_parser == "deepseek_r1"
 
     # DeepSeek V2.5 (and older non-R1) → legacy ``deepseek`` parser.
@@ -801,3 +837,483 @@ class TestGetProfile:
         cfg = get_profile("mystery-model", HybridStub())
         assert cfg.is_hybrid is True
         assert cfg.supports_spec_decode is False
+
+
+class TestWarnMisboundDeepseekV3Parser:
+    """R12-S1: cover the misbind-warning helper added in response to
+    Sven r12 dogfood HIGH-1. The auto-detect path already routes the
+    R1-distill family to the legacy ``deepseek`` parser (covered by
+    ``test_deepseek_r1_distill_routes_to_legacy_parser`` above); this
+    helper exists so an EXPLICIT override (``--tool-call-parser
+    deepseek_v3``) on a non-V3 model surfaces a loud startup warning
+    instead of silently shipping ``arguments="{}"`` tool calls.
+    """
+
+    # No warning when no parser is bound at all.
+    def test_no_warn_when_parser_unset(self):
+        assert (
+            warn_misbound_deepseek_v3_parser(
+                "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit", None
+            )
+            is None
+        )
+
+    # No warning for non-V3 parsers (hermes, deepseek, llama, etc.) —
+    # the helper only fires on the V3-family parsers it knows about.
+    @pytest.mark.parametrize(
+        "parser",
+        [
+            "hermes",
+            "deepseek",
+            "deepseek_r1",
+            "llama",
+            "mistral",
+            "kimi",
+            "auto",
+        ],
+    )
+    def test_no_warn_for_non_v3_family_parsers(self, parser):
+        # Even on a model whose name would otherwise look suspicious to a
+        # naive substring matcher, the helper should not warn unless the
+        # bound parser is in the V3 family.
+        assert (
+            warn_misbound_deepseek_v3_parser(
+                "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit", parser
+            )
+            is None
+        )
+
+    # In-spec: V3-line checkpoints (V3 / R1-0528 / V4 / V5) emit the V3
+    # fenced-JSON body, matched by deepseek_v3 / deepseek_r1_0528.
+    # V3.1-line checkpoints emit the V3.1 plain-JSON body, matched by
+    # deepseek_v31. Matching combos warn nothing.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            ("mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit", "deepseek_v3"),
+            ("mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit", "deepseek_r1_0528"),
+            ("deepseek-ai/DeepSeek-V3-0324", "deepseek_v3"),
+            ("mlx-community/DeepSeek-V3-0324-4bit", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V3.1-0324", "deepseek_v31"),
+            ("mlx-community/DeepSeek-V3.1-MLX-4bit", "deepseek_v31"),
+            # Forward-cover V4 / V5 — V3 template lineage per upstream
+            # V4 card. The helper should accept these without warning.
+            ("deepseek-ai/DeepSeek-V4", "deepseek_v3"),
+            ("mlx-community/DeepSeek-V5-MLX-4bit", "deepseek_v3"),
+        ],
+    )
+    def test_no_warn_for_matching_sub_family(self, model_path, parser):
+        assert warn_misbound_deepseek_v3_parser(model_path, parser) is None
+
+    # Cross-sub-family misbind (codex r1 P2): V3.1 model + V3 parser, or
+    # V3 model + V3.1 parser. Both ends sit inside the V3 template
+    # lineage so the outer envelope matches, but the per-block body
+    # shapes are incompatible — same empty-args failure as the
+    # out-of-lineage case. The warning MUST fire here too.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            # V3.1 model + V3 body parser → blocks dropped, empty args.
+            ("deepseek-ai/DeepSeek-V3.1-0324", "deepseek_v3"),
+            ("mlx-community/DeepSeek-V3.1-MLX-4bit", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V3.1-0324", "deepseek_r1_0528"),
+            # V3-line model + V3.1 body parser → same.
+            ("mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit", "deepseek_v31"),
+            ("deepseek-ai/DeepSeek-V3-0324", "deepseek_v31"),
+            ("deepseek-ai/DeepSeek-V4", "deepseek_v31"),
+        ],
+    )
+    def test_warn_on_cross_sub_family_misbind(self, model_path, parser):
+        msg = warn_misbound_deepseek_v3_parser(model_path, parser)
+        assert msg is not None, (
+            f"cross-sub-family misbind {parser} on {model_path} must warn"
+        )
+        # Must name the offending flag, the model, and reference the
+        # body-shape mismatch so the user knows it's not the same as the
+        # out-of-lineage case.
+        assert parser in msg
+        assert model_path in msg
+        # Cross-sub-family messages mention the chat-template family
+        # (V3.0 or V3.1) rather than the generic "non-V3" framing used
+        # by the out-of-lineage warning.
+        assert ("V3.0" in msg) or ("V3.1" in msg)
+
+    # The Sven HIGH-1 repro: forcing deepseek_v3 on an R1-Distill (Qwen2
+    # arch) MUST surface a warning. Covers every common distill flavour
+    # (1.5B, 7B, 14B, 32B Qwen + 8B/70B Llama) and every V3-family
+    # parser alias the user might pick.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit",
+            "mlx-community/DeepSeek-R1-Distill-Qwen-7B-4bit",
+            "mlx-community/DeepSeek-R1-Distill-Qwen-14B-4bit",
+            "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit",
+            "mlx-community/DeepSeek-R1-Distill-Llama-8B-4bit",
+            "mlx-community/DeepSeek-R1-Distill-Llama-70B-4bit",
+            "deepseek-ai/DeepSeek-R1-Distill-Qwen-1.5B",
+            "deepseek-ai/DeepSeek-R1-Distill-Llama-8B",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "parser",
+        ["deepseek_v3", "deepseek_v31", "deepseek_r1_0528"],
+    )
+    def test_warn_on_r1_distill_misbind(self, model_path, parser):
+        msg = warn_misbound_deepseek_v3_parser(model_path, parser)
+        assert msg is not None
+        # Must name the offending flag and the model so the user can
+        # locate the misconfiguration without grepping the source.
+        assert parser in msg
+        assert model_path in msg
+        # Must point at the auto-detected suggestion (``deepseek`` for
+        # the R1-distill family) so the fix is one flag-flip away.
+        assert "deepseek" in msg
+        # Must mention the actionable remediation — drop the flag or
+        # switch to hermes for Qwen/Llama-arch SFTs.
+        assert "auto-detect" in msg.lower() or "hermes" in msg.lower()
+
+    # Also warn on V2.x and bare Qwen/Llama paths that someone might
+    # explicitly try to coerce to the V3 parser.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "mlx-community/DeepSeek-V2.5-4bit",
+            "mlx-community/Qwen3-0.6B-MLX-4bit",
+            "mlx-community/Meta-Llama-3.1-8B-Instruct-4bit",
+        ],
+    )
+    def test_warn_on_non_v3_explicit_override(self, model_path):
+        msg = warn_misbound_deepseek_v3_parser(model_path, "deepseek_v3")
+        assert msg is not None
+        assert model_path in msg
+
+    # Unknown models (no regex match) still get a warning when bound to
+    # a V3-family parser, but the message degrades gracefully (no
+    # auto-detect suggestion, AND the "drop the flag" advice is
+    # replaced with an explicit hermes pin — codex r6 PR-validate NIT,
+    # because dropping the flag on an unknown model leaves the user
+    # with no tool parser at all).
+    def test_warn_on_unknown_model_no_suggestion(self):
+        msg = warn_misbound_deepseek_v3_parser(
+            "brand-new-org/MysteryModel-2026-7B", "deepseek_v3"
+        )
+        assert msg is not None
+        # No `auto-detect would pick 'X'` blurb when there's no match.
+        assert "Auto-detect would pick" not in msg
+        # No "Drop the explicit ... flag" — auto-detect has nothing to
+        # fall back to. The remediation must explicitly recommend
+        # ``hermes``.
+        assert "Drop the explicit" not in msg
+        assert "hermes" in msg
+        # Must call out that auto-detect has no fallback so the user
+        # understands why the standard remediation doesn't apply.
+        assert "no fallback" in msg.lower() or "unknown" in msg.lower()
+        # Still mentions the bound parser so the user can locate the
+        # offending flag.
+        assert "deepseek_v3" in msg
+
+    # Codex round-2 P2 regression: when the user serves a built-in
+    # alias (``deepseek-r1-8b-4bit``) whose name itself does not carry
+    # the ``0528`` / ``v3`` marker but whose ``hf_path`` resolves to a
+    # V3-template checkpoint, the bare-text classifier returns ``None``
+    # — and the auto-detect path sets ``args.tool_call_parser`` to
+    # ``deepseek_v3``. Without resolving the alias here, the misbind
+    # warning fires falsely on a perfectly correct default serve. The
+    # helper MUST resolve aliases before classifying.
+    def test_no_warn_on_v3_alias_with_v3_parser(self):
+        # The alias name has no V3 marker — only the resolved HF path
+        # (``mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit``) does.
+        # The helper must do the alias lookup itself.
+        assert (
+            warn_misbound_deepseek_v3_parser("deepseek-r1-8b-4bit", "deepseek_v3")
+            is None
+        )
+        # The matching ``deepseek_r1_0528`` alias on the same parser
+        # family is also in-spec.
+        assert (
+            warn_misbound_deepseek_v3_parser("deepseek-r1-8b-4bit", "deepseek_r1_0528")
+            is None
+        )
+
+    # Conversely, when the user serves the same V3 alias with a V3.1
+    # parser (cross-sub-family), the warning MUST still fire — the alias
+    # resolution is informational, not a free pass.
+    def test_warn_on_v3_alias_with_v31_parser(self):
+        msg = warn_misbound_deepseek_v3_parser("deepseek-r1-8b-4bit", "deepseek_v31")
+        assert msg is not None
+        # Cross-sub-family framing: the helper recognised the alias as
+        # a V3.0 (not V3.1) checkpoint.
+        assert "V3.0" in msg
+
+    # Codex round-3 P3 regression: when a user serves a legitimate V3 or
+    # V3.1 checkpoint from a local path whose PARENT DIRECTORY contains
+    # ``distill`` / ``distillations`` / ``distilled``, the substring
+    # check used to short-circuit on the full path and falsely classify
+    # the model as a non-V3 checkpoint — emitting a misbind warning on
+    # a perfectly correct serve. The distill reject must be scoped to
+    # the model-name component (last path segment) only.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            (
+                "/models/distillations/deepseek-ai/DeepSeek-V3.1-0324",
+                "deepseek_v31",
+            ),
+            ("/tmp/distilled/DeepSeek-V3-0324", "deepseek_v3"),
+            (
+                "/home/me/distilled-set/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+                "deepseek_v3",
+            ),
+        ],
+    )
+    def test_no_warn_when_parent_dir_only_contains_distill(self, model_path, parser):
+        # Tail segment is a real V3 / V3.1 checkpoint name; the parent
+        # ``distill*`` directory must NOT trip the rejection gate.
+        assert warn_misbound_deepseek_v3_parser(model_path, parser) is None
+
+    # Counterpart: when the model-name component itself carries
+    # ``distill`` (the actual R1-Distill family), the rejection still
+    # fires regardless of how deep the parent path goes.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "/home/me/random/dir/DeepSeek-R1-Distill-Qwen-1.5B-4bit",
+            "/var/cache/mlx-community/DeepSeek-R1-Distill-Llama-8B",
+        ],
+    )
+    def test_warn_when_name_component_contains_distill(self, model_path):
+        msg = warn_misbound_deepseek_v3_parser(model_path, "deepseek_v3")
+        assert msg is not None
+        assert model_path in msg
+
+    # Codex round-4 BLOCKING regression: the r3 fix scoped the
+    # ``distill`` REJECT to the tail segment but left the V3 / V3.1 /
+    # R1-0528 / V4-V5 POSITIVE classifiers running against the full
+    # path. That falsely classified a non-V3 checkpoint as v3/v31 when
+    # an unrelated parent directory carried the family marker — e.g.
+    # ``/models/DeepSeek-V3/qwen-model`` resolved to ``"v3"`` and
+    # SUPPRESSED the misbind warning even with the wrong parser. All
+    # classifiers must scope to the model-name component.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            ("/models/DeepSeek-V3/qwen-model", "deepseek_v3"),
+            ("/models/DeepSeek-V3.1/qwen-model", "deepseek_v31"),
+            ("/models/DeepSeek-R1-0528/random-model", "deepseek_v3"),
+            ("/models/DeepSeek-V4/qwen-model", "deepseek_v3"),
+        ],
+    )
+    def test_warn_when_only_parent_dir_carries_v3_marker(self, model_path, parser):
+        # The model-NAME component is a non-V3 checkpoint (``qwen-model``
+        # / ``random-model``). The misbind warning must fire even when
+        # the parent dir is named after a V3 family — the parent dir
+        # tells us nothing about the actual checkpoint.
+        msg = warn_misbound_deepseek_v3_parser(model_path, parser)
+        assert msg is not None, (
+            f"non-V3 checkpoint under V3-named parent ({model_path!r}) "
+            f"with {parser!r} must still warn — classifier must scope to "
+            "the model-name component, not the full path."
+        )
+
+    # Codex round-5 P2 regression: when auto-detect would ALSO pick a
+    # V3-family parser for the same path (because its regex still runs
+    # against the full path and the parent dir matches the family),
+    # surfacing "Auto-detect would pick 'deepseek_v3'" + "Drop the flag
+    # to let auto-detect choose" creates a contradiction — auto-detect
+    # would silently keep the same wrong parser. The warning must
+    # suppress the auto-detect suggestion in that case AND switch the
+    # remediation to "Pass --tool-call-parser hermes" (since dropping
+    # the flag wouldn't help).
+    def test_no_contradiction_when_auto_detect_also_misclassifies(self):
+        msg = warn_misbound_deepseek_v3_parser(
+            "/models/DeepSeek-V3/qwen-model", "deepseek_v3"
+        )
+        assert msg is not None
+        # No "Auto-detect would pick 'deepseek_v3'" — suppressed.
+        assert "Auto-detect would pick" not in msg
+        # No "drop the explicit ... flag to let auto-detect choose" —
+        # would silently keep the wrong parser. The replacement
+        # remediation pins to hermes.
+        assert "Drop the explicit" not in msg
+        assert "hermes" in msg
+
+    # Sanity check that the suggestion path still fires for the common
+    # case (non-V3-named parent, R1-Distill family, auto suggests the
+    # legacy ``deepseek`` parser).
+    def test_suggestion_still_fires_when_auto_picks_non_v3(self):
+        msg = warn_misbound_deepseek_v3_parser(
+            "mlx-community/DeepSeek-R1-Distill-Qwen-1.5B-4bit", "deepseek_v3"
+        )
+        assert msg is not None
+        assert "Auto-detect would pick 'deepseek'" in msg
+        assert "Drop the explicit" in msg
+
+    # Codex r5 follow-up nit: even when auto-detect's pick is a
+    # DIFFERENT V3-family parser than the one bound (so the suggestion
+    # would have fired under the r5 same-parser-only gate), suppress
+    # it for out-of-lineage models because auto-detect was fooled by a
+    # parent dir — endorsing a different-but-still-V3 parser would
+    # nudge the user toward another wrong-family choice.
+    def test_no_suggestion_when_auto_picks_other_v3_for_out_of_lineage(self):
+        # Parent dir is ``DeepSeek-V3.1`` so auto-detect picks
+        # ``deepseek_v31``. User bound ``deepseek_v3``. Tail name is
+        # ``qwen-model`` — out-of-lineage. Even though auto-detect's
+        # pick differs from the bound parser, the suggestion must be
+        # suppressed (both V3-family picks would be wrong).
+        msg = warn_misbound_deepseek_v3_parser(
+            "/models/DeepSeek-V3.1/qwen-model", "deepseek_v3"
+        )
+        assert msg is not None
+        assert "Auto-detect would pick" not in msg
+        # The hermes-pinning remediation kicks in instead.
+        assert "hermes" in msg
+
+    # The cross-sub-family auto-detect suggestion MUST still fire on
+    # real V3-template checkpoints (template != None). Codex r5's
+    # original wins must not regress.
+    def test_cross_sub_family_suggestion_still_fires_on_real_v3_template(self):
+        msg = warn_misbound_deepseek_v3_parser(
+            "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit", "deepseek_v31"
+        )
+        assert msg is not None
+        # Auto-detect correctly picks ``deepseek_v3`` for R1-0528.
+        assert "Auto-detect would pick 'deepseek_v3'" in msg
+
+    # PR-validate codex r6 BLOCKING (HF cache layout): a HuggingFace
+    # cache path resolves the model name to ``<sha>`` if you naively
+    # take the last segment. The classifier must walk past ``snapshots``
+    # / ``blobs`` / ``refs`` markers and SHA-shaped segments, then
+    # unpack the ``models--<org>--<name>`` flat-org form to recover the
+    # canonical model name.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            # V3-line model in HF cache, V3 parser → no warn (in-spec).
+            (
+                "models--mlx-community--DeepSeek-R1-0528-Qwen3-8B-4bit/snapshots/abc123def456",
+                "deepseek_v3",
+            ),
+            # Full absolute HF cache path.
+            (
+                "/Users/me/.cache/huggingface/hub/models--mlx-community--DeepSeek-R1-0528-Qwen3-8B-4bit/snapshots/0123456789abcdef",
+                "deepseek_v3",
+            ),
+            # V3.1 model in HF cache, V3.1 parser → no warn.
+            (
+                "models--deepseek-ai--DeepSeek-V3.1-0324/snapshots/cafebabe1234567890",
+                "deepseek_v31",
+            ),
+        ],
+    )
+    def test_no_warn_on_hf_cache_layout_with_matching_parser(self, model_path, parser):
+        assert warn_misbound_deepseek_v3_parser(model_path, parser) is None
+
+    # Counterpart: HF cache paths still WARN when the canonical model
+    # name is non-V3 (e.g. an R1-Distill model whose cache layout
+    # buries the model name under ``snapshots/<sha>``).
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "models--mlx-community--DeepSeek-R1-Distill-Qwen-1.5B-4bit/snapshots/abc123def456",
+            "/home/me/.cache/huggingface/hub/models--mlx-community--DeepSeek-R1-Distill-Llama-8B-4bit/snapshots/0badc0ffee",
+        ],
+    )
+    def test_warn_on_hf_cache_layout_when_name_is_distill(self, model_path):
+        msg = warn_misbound_deepseek_v3_parser(model_path, "deepseek_v3")
+        assert msg is not None, (
+            f"HF cache path with R1-Distill name component ({model_path!r}) "
+            "must still warn — the classifier must look past "
+            "``snapshots/<sha>`` to the canonical name."
+        )
+
+    # PR-validate codex r8 BLOCKING: the prior SHA-skipping heuristic
+    # was triggered on ANY all-hex segment >=7 chars regardless of
+    # path context. A legitimate local model directory whose final
+    # name happens to be all-hex (e.g. ``/models/abcdef1234``) had
+    # its name silently dropped and the parent dir classified instead.
+    # The SHA-skip must be gated on the path actually being an HF
+    # cache layout (containing ``snapshots`` / ``blobs`` / ``refs``).
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            # All-hex local directories — NOT HF cache, so no SHA
+            # skipping. Classifier returns None (unknown family) and
+            # the misbind warning fires as out-of-lineage.
+            ("/models/abcdef1234", "deepseek_v3"),
+            ("/home/me/checkpoints/0123456789abcdef", "deepseek_v3"),
+            # A regular path whose final component is hex but where
+            # NO HF cache marker is present must still classify based
+            # on the (hex) tail, not the parent dir.
+            ("/some/random/parent/deadbeef1234567", "deepseek_v3"),
+        ],
+    )
+    def test_warn_on_local_hex_named_dirs_not_in_hf_cache(self, model_path, parser):
+        # These should warn because the helper classifies the hex
+        # tail as out-of-lineage (not a V3 checkpoint). Critically,
+        # the warning should NOT mention the V3-family parent dir
+        # via a fooled classifier.
+        msg = warn_misbound_deepseek_v3_parser(model_path, parser)
+        assert msg is not None
+        # The exact tail (hex name) appears in the message — proving
+        # the classifier saw the tail, not the parent.
+        assert model_path in msg
+
+    # Same hex-style tail BUT under an HF cache layout: the SHA
+    # skipping IS safe and the canonical name is recovered.
+    def test_no_warn_on_hex_sha_under_hf_cache(self):
+        # SHA sits under ``snapshots`` — gate triggers.
+        assert (
+            warn_misbound_deepseek_v3_parser(
+                "models--mlx-community--DeepSeek-R1-0528-Qwen3-8B-4bit/snapshots/deadbeef1234567",
+                "deepseek_v3",
+            )
+            is None
+        )
+
+    # PR-validate codex r6 BLOCKING (V4/V5 boundary): the original
+    # ``v[45]`` regex had no boundary, so future variants like
+    # ``DeepSeek-V40-*`` or ``DeepSeek-V5Beta-*`` would silently match
+    # the V3-template lineage and SUPPRESS the misbind warning. The
+    # boundary must require end-of-string OR a separator after the
+    # version token.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            # Hypothetical V40 / V5Beta variants — must NOT match V3
+            # lineage (we have no evidence about their chat template).
+            "mlx-community/DeepSeek-V40-Special-4bit",
+            "mlx-community/DeepSeek-V5Beta-Special-4bit",
+            "mlx-community/DeepSeek-V42-MoE-4bit",
+            # V3Beta hallucination — V3 pattern needs the same boundary.
+            "mlx-community/DeepSeek-V3Beta-Special",
+            "mlx-community/DeepSeek-V30Special-4bit",
+        ],
+    )
+    def test_warn_on_hallucinated_version_variants(self, model_path):
+        # If these are NOT classified as V3 lineage, the misbind warning
+        # fires for the deepseek_v3 parser binding — which is correct
+        # because we don't know the wire shape of a hypothetical
+        # ``DeepSeek-V40`` or ``DeepSeek-V5Beta`` checkpoint.
+        msg = warn_misbound_deepseek_v3_parser(model_path, "deepseek_v3")
+        assert msg is not None, (
+            f"hallucinated version variant ({model_path!r}) must NOT "
+            "silently match V3-template lineage — the version tokens "
+            "need a boundary to keep ``v[345]`` from matching ``v40``, "
+            "``v5beta``, ``v3beta``, etc."
+        )
+
+    # Counterpart: real V3 / V3.1 / V4 / V5 variants STILL match
+    # after the boundary tightening.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            ("mlx-community/DeepSeek-V4-Flash-4bit", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V4", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V5", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V3-0324", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V3.1-0324", "deepseek_v31"),
+        ],
+    )
+    def test_no_warn_on_real_versioned_variants(self, model_path, parser):
+        assert warn_misbound_deepseek_v3_parser(model_path, parser) is None
