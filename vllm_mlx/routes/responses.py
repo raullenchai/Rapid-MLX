@@ -2220,18 +2220,26 @@ async def _stream_responses(
         if accumulated_reasoning_text:
             reasoning_output_index = len(completed_output)
             reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
-            # R11-B codex r2 BLOCKING: scope reasoning ``status`` to
+            # R11-B codex r5 BLOCKING: scope reasoning ``status`` to
             # "cut off mid-think" — NOT every ``finish_reason=length``.
             # Mirror the non-stream gating in
             # ``openai_to_responses`` (responses_adapter.py L487):
-            # reasoning stays ``completed`` whenever a message body
-            # shipped, because the model already CLOSED ``</think>``
-            # and only the assistant message body was truncated. Pre-
-            # fix this branch flipped reasoning to ``incomplete`` even
-            # in the mixed reasoning+message case, diverging from the
-            # non-stream surface for the same response shape.
+            # reasoning stays ``completed`` whenever ANY downstream
+            # output landed after the ``<think>`` block, because the
+            # model already CLOSED ``</think>`` to get there. The
+            # r2 fix only checked ``accumulated_text`` — that missed
+            # the tool-call-only case (closed ``</think>`` then
+            # function_call emit, ``finish_reason=length`` on the
+            # tool args). In that shape ``accumulated_text`` is
+            # empty but reasoning IS completed; we must check
+            # ``tool_calls`` too. Any of the three downstream
+            # signals (text body, structured tool_calls, or open
+            # message item) proves the parser closed reasoning.
+            downstream_output_seen = bool(
+                (accumulated_text or "").strip() or tool_calls or message_open
+            )
             mid_think_cutoff = (
-                last_finish_reason == "length" and not (accumulated_text or "").strip()
+                last_finish_reason == "length" and not downstream_output_seen
             )
             reasoning_status = "incomplete" if mid_think_cutoff else "completed"
             reasoning_item_payload_added = {

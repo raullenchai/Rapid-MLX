@@ -244,6 +244,63 @@ class _ReasoningMessageToolEngine:
             )
 
 
+# Reasoning + tool_call + length cutoff engine for codex r5 BLOCKING:
+# the model closes ``</think>``, emits a function_call, and hits
+# ``finish_reason="length"`` on the tool args. ``accumulated_text``
+# is empty BUT reasoning is completed (closed ``</think>`` to reach
+# the tool emit). Pre-fix the streaming path flagged reasoning
+# ``incomplete`` because the check only looked at ``accumulated_text``.
+_REASONING_THEN_TOOL_CHUNKS = [
+    "Let me think.",
+    "</think>",
+]
+
+
+class _ReasoningToolCallLengthEngine:
+    """Streams reasoning, closes ``</think>``, emits a tool_call on
+    the last chunk with ``finish_reason="length"``. No assistant
+    text body — only reasoning + tool_call before the budget is
+    exhausted on the tool arguments."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+        self._tool_calls = [
+            {
+                "id": "call_test_002",
+                "name": "get_weather",
+                "arguments": '{"city":"Pittsburgh"}',
+            }
+        ]
+
+    async def chat(self, messages, **kwargs):
+        full = "".join(_REASONING_THEN_TOOL_CHUNKS)
+        return _GenerationOutput(
+            text="",
+            raw_text=full,
+            reasoning_text="Let me think.",
+            prompt_tokens=4,
+            completion_tokens=len(_REASONING_THEN_TOOL_CHUNKS),
+            finish_reason="length",
+            tool_calls=self._tool_calls,
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        accumulated = ""
+        for i, chunk in enumerate(_REASONING_THEN_TOOL_CHUNKS):
+            accumulated += chunk
+            is_last = i == len(_REASONING_THEN_TOOL_CHUNKS) - 1
+            yield _GenerationOutput(
+                text=accumulated,
+                new_text=chunk,
+                prompt_tokens=4 if i == 0 else 0,
+                completion_tokens=i + 1,
+                finish_reason="length" if is_last else None,
+                tool_calls=self._tool_calls if is_last else None,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Test fixture — mirrors ``tests/test_responses_sse_event_order.py``'s
 # lightweight engine swap so we don't need to load a real MLX model.
@@ -430,6 +487,68 @@ def reasoning_message_tool_client(monkeypatch):
     cfg = reset_config()
     cfg.api_key = "test-secret"
     cfg.engine = _ReasoningMessageToolEngine()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = "qwen3"
+
+    rate_limiter.enabled = False
+    rate_limiter.requests_per_minute = 60
+    rate_limiter._requests.clear()
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(router)
+    yield SimpleNamespace(client=TestClient(app), engine=cfg.engine)
+
+    reset_config()
+    rate_limiter.enabled = False
+    rate_limiter.requests_per_minute = 60
+    rate_limiter._requests.clear()
+
+    for name, previous in previous_modules.items():
+        if previous is _MISSING:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+
+    for (module_name, attr), previous in previous_attrs.items():
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        if previous is _MISSING:
+            if hasattr(module, attr):
+                delattr(module, attr)
+        else:
+            setattr(module, attr, previous)
+
+
+@pytest.fixture
+def reasoning_tool_length_client(monkeypatch):
+    """Fixture for the reasoning+tool_call+length cutoff regression
+    (codex r5 BLOCKING). Same wiring as ``responses_client`` but
+    swaps in ``_ReasoningToolCallLengthEngine`` so reasoning closes,
+    a tool_call lands, and ``finish_reason="length"`` fires. Pre-fix
+    this shape flipped reasoning to ``incomplete`` because the
+    ``mid_think_cutoff`` check only inspected ``accumulated_text``."""
+    previous_modules = {n: sys.modules.get(n, _MISSING) for n in _IMPORTED}
+    previous_attrs = {}
+    for module_name, attr in _PARENT_ATTRS:
+        module = sys.modules.get(module_name)
+        previous_attrs[(module_name, attr)] = (
+            getattr(module, attr, _MISSING) if module is not None else _MISSING
+        )
+
+    _install_lightweight_engine_modules(monkeypatch)
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.middleware.auth import rate_limiter
+    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+    from vllm_mlx.routes.responses import router
+
+    cfg = reset_config()
+    cfg.api_key = "test-secret"
+    cfg.engine = _ReasoningToolCallLengthEngine()
     cfg.model_name = "test-model"
     cfg.model_registry = None
     cfg.reasoning_parser_name = "qwen3"
@@ -866,20 +985,25 @@ class TestReasoningPlusMessageOutputIndexAlignment:
 
 
 # =============================================================================
-# R11-B codex r3 NIT — reasoning + message + tool_call output_index coverage
+# R11-B codex r3 NIT — reasoning + tool_call output_index coverage
+# (renamed per codex r5 NIT #3 — the route folds the message body into
+# the function_call envelope, so this exercise is really reasoning+
+# tool_call, not three-way reasoning+message+tool_call)
 # =============================================================================
 
 
-class TestReasoningMessageToolOutputIndexAlignment:
+class TestReasoningToolOutputIndexAlignment:
     """Codex round-3 NIT regression guard. The
     ``tool_output_index = len(completed_output)`` change in r1 was
     motivated by the message+reasoning+tool_call case, but the test
-    suite only exercised reasoning+message. This test pins the full
-    mixed shape: every emitted ``output_item.done`` event's
-    ``output_index`` matches its position in the terminal
-    ``response.output[]`` by id, and no two events share an index."""
+    suite only exercised reasoning+message. This test pins the
+    reasoning+tool_call shape (the route folds short message bodies
+    into the function_call envelope): every emitted
+    ``output_item.done`` event's ``output_index`` matches its
+    position in the terminal ``response.output[]`` by id, and no
+    two events share an index."""
 
-    def test_message_reasoning_tool_indices_align(self, reasoning_message_tool_client):
+    def test_reasoning_tool_indices_align(self, reasoning_message_tool_client):
         with reasoning_message_tool_client.client.stream(
             "POST",
             "/v1/responses",
@@ -953,4 +1077,73 @@ class TestReasoningMessageToolOutputIndexAlignment:
         ]
         assert len(done_indices) == len(set(done_indices)), (
             f"duplicate output_index in output_item.done events: {done_indices}"
+        )
+
+
+# =============================================================================
+# R11-B codex r5 BLOCKING — reasoning + tool_call + length cutoff
+# =============================================================================
+
+
+class TestReasoningCompletedWhenToolCallOnlyAfterThink:
+    """Codex round-5 BLOCKING regression guard. When the model closes
+    ``</think>`` and then emits ONLY a tool_call (no text) before
+    ``finish_reason="length"`` fires on the tool args, the reasoning
+    item must still be ``completed`` — the model already left the
+    thinking block to reach the tool emit. Pre-fix the streaming
+    ``mid_think_cutoff`` check only inspected ``accumulated_text``,
+    so this shape incorrectly flipped reasoning to ``incomplete``
+    (text was empty even though reasoning was complete)."""
+
+    def test_reasoning_completed_with_tool_call_under_length(
+        self, reasoning_tool_length_client
+    ):
+        with reasoning_tool_length_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": "Weather?",
+                "stream": True,
+                "max_output_tokens": 4,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "city": {"type": "string"},
+                                },
+                                "required": ["city"],
+                            },
+                        },
+                    }
+                ],
+            },
+            headers=HEADERS,
+        ) as resp:
+            assert resp.status_code == 200
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        completed = next(d for n, d in events if n == "response.completed")
+        output = completed["response"]["output"]
+
+        # Sanity: reasoning + function_call shipped.
+        types_seen = [item["type"] for item in output]
+        assert "reasoning" in types_seen, f"reasoning item missing; types={types_seen}"
+        assert "function_call" in types_seen, (
+            f"function_call item missing; types={types_seen}"
+        )
+
+        # The headline assertion: reasoning is ``completed`` even
+        # though ``finish_reason="length"`` and ``accumulated_text``
+        # is empty — the tool_call landing proves the model closed
+        # ``</think>``.
+        reasoning_item = next(item for item in output if item["type"] == "reasoning")
+        assert reasoning_item["status"] == "completed", (
+            f"reasoning must be ``completed`` when ``</think>`` closed "
+            f"before tool_call emit (text empty but tool_calls present); "
+            f"got status={reasoning_item['status']!r}"
         )
