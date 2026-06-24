@@ -655,25 +655,13 @@ _DEEPSEEK_V31_BODY_PARSERS = frozenset({"deepseek_v31"})
 _DEEPSEEK_V3_FAMILY_PARSERS = _DEEPSEEK_V3_BODY_PARSERS | _DEEPSEEK_V31_BODY_PARSERS
 
 
-def _deepseek_template_family(model_path: str) -> str | None:
-    """Identify which DeepSeek chat-template sub-family a checkpoint
-    belongs to, by name pattern.
-
-    Returns one of:
-      * ``"v3"``     — V3 chat template (vanilla V3, R1-0528, V4, V5)
-                       → emits the V3 fenced-JSON body shape
-      * ``"v31"``    — V3.1 chat template (DeepSeek-V3.1-*)
-                       → emits the V3.1 plain-JSON body shape
-      * ``None``     — not a V3-template checkpoint (R1-Distill family,
-                       V2.x, Qwen2/Llama-arch SFTs, unknowns).
-
-    The R1-distill family (``DeepSeek-R1-Distill-Qwen-*``,
-    ``-Llama-*``) is EXCLUDED from both V3 sub-families because those
-    are SFTs on Qwen2 / Llama2 base tokenizers that do not carry the V3
-    fullwidth-pipe special tokens, and binding either V3-family parser
-    to them lands ``arguments="{}"`` (Sven r12 HIGH-1).
+def _classify_deepseek_template_name(s: str) -> str | None:
+    """Inner name-pattern classifier — see ``_deepseek_template_family``
+    for the public contract. Pulled out so the public helper can run the
+    classifier on BOTH the user-supplied path AND the alias-resolved HF
+    path without duplicating the pattern logic.
     """
-    s = model_path.lower()
+    s = s.lower()
     # R1-Distill family is V2 / Qwen2-arch, NOT V3. Explicit reject for
     # BOTH sub-families.
     if "distill" in s:
@@ -695,6 +683,51 @@ def _deepseek_template_family(model_path: str) -> str | None:
     if re.search(r"deepseek[-_/]*v[45]", s):
         return "v3"
     return None
+
+
+def _deepseek_template_family(model_path: str) -> str | None:
+    """Identify which DeepSeek chat-template sub-family a checkpoint
+    belongs to, by name pattern.
+
+    Returns one of:
+      * ``"v3"``     — V3 chat template (vanilla V3, R1-0528, V4, V5)
+                       → emits the V3 fenced-JSON body shape
+      * ``"v31"``    — V3.1 chat template (DeepSeek-V3.1-*)
+                       → emits the V3.1 plain-JSON body shape
+      * ``None``     — not a V3-template checkpoint (R1-Distill family,
+                       V2.x, Qwen2/Llama-arch SFTs, unknowns).
+
+    The R1-distill family (``DeepSeek-R1-Distill-Qwen-*``,
+    ``-Llama-*``) is EXCLUDED from both V3 sub-families because those
+    are SFTs on Qwen2 / Llama2 base tokenizers that do not carry the V3
+    fullwidth-pipe special tokens, and binding either V3-family parser
+    to them lands ``arguments="{}"`` (Sven r12 HIGH-1).
+
+    Codex r2 P2 fix: also classify by the alias-resolved HF path when
+    the user-supplied name is an alias whose textual form alone doesn't
+    encode the family (e.g. ``deepseek-r1-8b-4bit`` resolves to
+    ``mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit`` — the alias name
+    contains no ``0528`` marker, so the bare-text classifier would
+    return ``None`` and the misbind warning would fire falsely on a
+    perfectly correct default serve).
+    """
+    # First pass: classify by the user-supplied string itself. This
+    # covers HF paths and any alias whose name already carries a family
+    # marker.
+    family = _classify_deepseek_template_name(model_path)
+    if family is not None:
+        return family
+    # Second pass: resolve as an alias and classify the canonical HF
+    # path. Pulled in lazily so a degraded ``model_aliases`` import
+    # cannot kill the warning path (the helper falls back to the
+    # name-only classification, which is the previous behaviour).
+    try:
+        profile = resolve_profile(model_path)
+    except Exception:  # noqa: BLE001
+        return None
+    if profile is None:
+        return None
+    return _classify_deepseek_template_name(profile.hf_path)
 
 
 def warn_misbound_deepseek_v3_parser(

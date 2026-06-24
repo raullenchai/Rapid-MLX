@@ -999,3 +999,36 @@ class TestWarnMisboundDeepseekV3Parser:
         # No `auto-detect would pick 'X'` blurb when there's no match.
         # The actionable nudge is still present (drop the flag).
         assert "deepseek_v3" in msg
+
+    # Codex round-2 P2 regression: when the user serves a built-in
+    # alias (``deepseek-r1-8b-4bit``) whose name itself does not carry
+    # the ``0528`` / ``v3`` marker but whose ``hf_path`` resolves to a
+    # V3-template checkpoint, the bare-text classifier returns ``None``
+    # — and the auto-detect path sets ``args.tool_call_parser`` to
+    # ``deepseek_v3``. Without resolving the alias here, the misbind
+    # warning fires falsely on a perfectly correct default serve. The
+    # helper MUST resolve aliases before classifying.
+    def test_no_warn_on_v3_alias_with_v3_parser(self):
+        # The alias name has no V3 marker — only the resolved HF path
+        # (``mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit``) does.
+        # The helper must do the alias lookup itself.
+        assert (
+            warn_misbound_deepseek_v3_parser("deepseek-r1-8b-4bit", "deepseek_v3")
+            is None
+        )
+        # The matching ``deepseek_r1_0528`` alias on the same parser
+        # family is also in-spec.
+        assert (
+            warn_misbound_deepseek_v3_parser("deepseek-r1-8b-4bit", "deepseek_r1_0528")
+            is None
+        )
+
+    # Conversely, when the user serves the same V3 alias with a V3.1
+    # parser (cross-sub-family), the warning MUST still fire — the alias
+    # resolution is informational, not a free pass.
+    def test_warn_on_v3_alias_with_v31_parser(self):
+        msg = warn_misbound_deepseek_v3_parser("deepseek-r1-8b-4bit", "deepseek_v31")
+        assert msg is not None
+        # Cross-sub-family framing: the helper recognised the alias as
+        # a V3.0 (not V3.1) checkpoint.
+        assert "V3.0" in msg
