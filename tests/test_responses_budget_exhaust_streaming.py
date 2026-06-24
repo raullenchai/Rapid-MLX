@@ -186,6 +186,66 @@ class _ReasoningThenMessageEngine:
             )
 
 
+# Reasoning + message + tool_call engine for codex r3 NIT regression:
+# verify ``tool_output_index = len(completed_output)`` accounts for
+# BOTH the message AND the reasoning items already appended. Pre-fix
+# (before r1 HIGH #1) ``tool_output_index = (message_output_index + 1)
+# if message_open else 0`` collided with the reasoning slot.
+_REASONING_THEN_MESSAGE_THEN_TOOL_CHUNKS = [
+    "Let me think.",
+    "</think>",
+    "\n\nI'll check that for you.",
+]
+
+
+class _ReasoningMessageToolEngine:
+    """Streams reasoning, then a brief assistant message, then emits a
+    tool_call on the final chunk — the full mixed shape that
+    exercises ``tool_output_index`` after both message and reasoning
+    have been appended to ``completed_output``."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+        # Flat-dict shape the engine surfaces to
+        # ``_parse_tool_calls_with_parser`` — see
+        # ``tests/test_responses_bundle.py::_make_function_call``.
+        self._tool_calls = [
+            {
+                "id": "call_test_001",
+                "name": "get_weather",
+                "arguments": '{"city":"Pittsburgh"}',
+            }
+        ]
+
+    async def chat(self, messages, **kwargs):
+        full = "".join(_REASONING_THEN_MESSAGE_THEN_TOOL_CHUNKS)
+        return _GenerationOutput(
+            text="I'll check that for you.",
+            raw_text=full,
+            reasoning_text="Let me think.",
+            prompt_tokens=4,
+            completion_tokens=len(_REASONING_THEN_MESSAGE_THEN_TOOL_CHUNKS),
+            finish_reason="tool_calls",
+            tool_calls=self._tool_calls,
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        accumulated = ""
+        for i, chunk in enumerate(_REASONING_THEN_MESSAGE_THEN_TOOL_CHUNKS):
+            accumulated += chunk
+            is_last = i == len(_REASONING_THEN_MESSAGE_THEN_TOOL_CHUNKS) - 1
+            yield _GenerationOutput(
+                text=accumulated,
+                new_text=chunk,
+                prompt_tokens=4 if i == 0 else 0,
+                completion_tokens=i + 1,
+                finish_reason="tool_calls" if is_last else None,
+                tool_calls=self._tool_calls if is_last else None,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Test fixture — mirrors ``tests/test_responses_sse_event_order.py``'s
 # lightweight engine swap so we don't need to load a real MLX model.
@@ -310,6 +370,68 @@ def reasoning_then_message_client(monkeypatch):
     cfg = reset_config()
     cfg.api_key = "test-secret"
     cfg.engine = _ReasoningThenMessageEngine()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = "qwen3"
+
+    rate_limiter.enabled = False
+    rate_limiter.requests_per_minute = 60
+    rate_limiter._requests.clear()
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(router)
+    yield SimpleNamespace(client=TestClient(app), engine=cfg.engine)
+
+    reset_config()
+    rate_limiter.enabled = False
+    rate_limiter.requests_per_minute = 60
+    rate_limiter._requests.clear()
+
+    for name, previous in previous_modules.items():
+        if previous is _MISSING:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+
+    for (module_name, attr), previous in previous_attrs.items():
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        if previous is _MISSING:
+            if hasattr(module, attr):
+                delattr(module, attr)
+        else:
+            setattr(module, attr, previous)
+
+
+@pytest.fixture
+def reasoning_message_tool_client(monkeypatch):
+    """Fixture for the reasoning+message+tool_call regression. Same
+    wiring as ``responses_client`` but swaps in
+    ``_ReasoningMessageToolEngine`` so the stream emits a reasoning
+    item, a message item, AND a tool_call — exercising
+    ``tool_output_index`` after both have been appended to
+    ``completed_output``."""
+    previous_modules = {n: sys.modules.get(n, _MISSING) for n in _IMPORTED}
+    previous_attrs = {}
+    for module_name, attr in _PARENT_ATTRS:
+        module = sys.modules.get(module_name)
+        previous_attrs[(module_name, attr)] = (
+            getattr(module, attr, _MISSING) if module is not None else _MISSING
+        )
+
+    _install_lightweight_engine_modules(monkeypatch)
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.middleware.auth import rate_limiter
+    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+    from vllm_mlx.routes.responses import router
+
+    cfg = reset_config()
+    cfg.api_key = "test-secret"
+    cfg.engine = _ReasoningMessageToolEngine()
     cfg.model_name = "test-model"
     cfg.model_registry = None
     cfg.reasoning_parser_name = "qwen3"
@@ -724,6 +846,100 @@ class TestReasoningPlusMessageOutputIndexAlignment:
         # Pre-fix the reasoning event reported ``output_index=1`` while
         # being inserted at array position 0 — that's the collision
         # this test pins.
+        for ev_name, payload in events:
+            if ev_name != "response.output_item.done":
+                continue
+            idx = payload["output_index"]
+            ev_item_id = payload["item"]["id"]
+            assert 0 <= idx < len(output), (
+                f"output_index={idx} out of range for output[] of len "
+                f"{len(output)} on item {ev_item_id!r}"
+            )
+            assert output[idx]["id"] == ev_item_id, (
+                f"output_index/array mismatch at idx={idx}: "
+                f"event item id={ev_item_id!r}, "
+                f"output[{idx}].id={output[idx]['id']!r}"
+            )
+
+        # No two ``output_item.done`` events share an output_index.
+        done_indices = [
+            payload["output_index"]
+            for ev_name, payload in events
+            if ev_name == "response.output_item.done"
+        ]
+        assert len(done_indices) == len(set(done_indices)), (
+            f"duplicate output_index in output_item.done events: "
+            f"{done_indices}"
+        )
+
+
+# =============================================================================
+# R11-B codex r3 NIT — reasoning + message + tool_call output_index coverage
+# =============================================================================
+
+
+class TestReasoningMessageToolOutputIndexAlignment:
+    """Codex round-3 NIT regression guard. The
+    ``tool_output_index = len(completed_output)`` change in r1 was
+    motivated by the message+reasoning+tool_call case, but the test
+    suite only exercised reasoning+message. This test pins the full
+    mixed shape: every emitted ``output_item.done`` event's
+    ``output_index`` matches its position in the terminal
+    ``response.output[]`` by id, and no two events share an index."""
+
+    def test_message_reasoning_tool_indices_align(
+        self, reasoning_message_tool_client
+    ):
+        with reasoning_message_tool_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": "What's the weather?",
+                "stream": True,
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "get_weather",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "city": {"type": "string"},
+                                },
+                                "required": ["city"],
+                            },
+                        },
+                    }
+                ],
+            },
+            headers=HEADERS,
+        ) as resp:
+            assert resp.status_code == 200
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        completed = next(d for n, d in events if n == "response.completed")
+        output = completed["response"]["output"]
+
+        # Sanity: reasoning AND function_call both shipped. (The
+        # message body in this engine is short and the route may
+        # roll it into the function_call envelope depending on
+        # ``preserve_native_tool_format``; we don't pin its
+        # presence — the important invariant is that BOTH the
+        # reasoning slot and the tool slot land without index
+        # collision.)
+        types_seen = [item["type"] for item in output]
+        assert "reasoning" in types_seen, (
+            f"reasoning item missing from output[]; types={types_seen}"
+        )
+        assert "function_call" in types_seen, (
+            f"function_call item missing from output[]; types={types_seen}"
+        )
+
+        # Every ``output_item.done`` event's ``output_index`` matches
+        # the array position of its ``item.id`` in the terminal
+        # ``output[]``. Pre-fix the tool_call's output_index could
+        # collide with the reasoning slot's output_index.
         for ev_name, payload in events:
             if ev_name != "response.output_item.done":
                 continue
