@@ -22,9 +22,7 @@ from . import _common
 # Silicon-first; the rapid-mlx target platform) and Linux (a small but
 # growing fraction of Cursor users since the official Linux build
 # shipped). Windows isn't supported by rapid-mlx and so isn't probed.
-_CONFIG_DIR_MAC = (
-    Path.home() / "Library" / "Application Support" / "Cursor" / "User"
-)
+_CONFIG_DIR_MAC = Path.home() / "Library" / "Application Support" / "Cursor" / "User"
 _CONFIG_DIR_LINUX = Path.home() / ".config" / "Cursor" / "User"
 
 _SETTINGS_FILENAME = "settings.json"

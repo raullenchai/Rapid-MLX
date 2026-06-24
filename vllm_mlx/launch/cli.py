@@ -154,8 +154,7 @@ def launch_command(args: argparse.Namespace) -> None:
         if args.client not in ADAPTERS:
             supported = ", ".join(ADAPTERS.keys())
             print(
-                f"launch: unknown client {args.client!r}. "
-                f"Supported: {supported}.",
+                f"launch: unknown client {args.client!r}. Supported: {supported}.",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -179,13 +178,9 @@ def launch_command(args: argparse.Namespace) -> None:
             adapter = ADAPTERS[name]
             path = adapter.current_config_path()
             installed = adapter.detect()
-            print(
-                f"[dry-run] {name}: detected={installed} would-patch={path}"
-            )
+            print(f"[dry-run] {name}: detected={installed} would-patch={path}")
         if args.start_server:
-            print(
-                f"[dry-run] would spawn: rapid-mlx serve {model} --port {args.port}"
-            )
+            print(f"[dry-run] would spawn: rapid-mlx serve {model} --port {args.port}")
         return
 
     # Real patch path. Track per-client success so we can exit non-zero
@@ -224,9 +219,7 @@ def launch_command(args: argparse.Namespace) -> None:
             )
         else:
             pid = _start_server_background(model, args.port)
-            print(
-                f"  Started: rapid-mlx serve {model} --port {args.port} (pid {pid})"
-            )
+            print(f"  Started: rapid-mlx serve {model} --port {args.port} (pid {pid})")
             print(f"  PID file: {PID_FILE}")
 
     if succeeded:

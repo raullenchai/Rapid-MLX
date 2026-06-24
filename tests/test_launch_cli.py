@@ -22,13 +22,13 @@ import pytest
 
 from vllm_mlx.launch import (
     ADAPTERS,
+    _common,
     claude_code,
     cline,
     continue_dev,
     cursor,
 )
-from vllm_mlx.launch import _common, cli as launch_cli
-
+from vllm_mlx.launch import cli as launch_cli
 
 # --------------------------------------------------------------------
 # Shared fixture: pin Path.home() to a per-test tmp_path so adapter
@@ -93,10 +93,7 @@ class TestCline:
         # Materialise the extension settings dir but not the file —
         # detect() should still report True (installed, uninitialised).
         ext_dir = (
-            fake_home
-            / "vscode-globalStorage"
-            / "saoudrizwan.claude-dev"
-            / "settings"
+            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
         )
         ext_dir.mkdir(parents=True)
         assert cline.detect() is True
@@ -106,10 +103,7 @@ class TestCline:
 
     def test_write_preserves_existing_keys(self, fake_home):
         ext_dir = (
-            fake_home
-            / "vscode-globalStorage"
-            / "saoudrizwan.claude-dev"
-            / "settings"
+            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
         )
         ext_dir.mkdir(parents=True)
         path = ext_dir / "cline_mcp_settings.json"
@@ -149,10 +143,7 @@ class TestCline:
         """User passes ``http://127.0.0.1:8000/v1`` — must NOT
         produce ``/v1/v1``."""
         ext_dir = (
-            fake_home
-            / "vscode-globalStorage"
-            / "saoudrizwan.claude-dev"
-            / "settings"
+            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
         )
         ext_dir.mkdir(parents=True)
         cline.write_or_patch_config(
@@ -202,9 +193,7 @@ class TestClaudeCode:
                 }
             )
         )
-        claude_code.write_or_patch_config(
-            "http://127.0.0.1:8000", "qwen3.5-4b-4bit"
-        )
+        claude_code.write_or_patch_config("http://127.0.0.1:8000", "qwen3.5-4b-4bit")
         data = json.loads(cfg.read_text())
         # Untouched.
         assert data["permissions"] == {"allow": ["Bash(git:*)"]}
@@ -247,9 +236,7 @@ class TestContinueDev:
                 }
             )
         )
-        continue_dev.write_or_patch_config(
-            "http://127.0.0.1:8000", "qwen3.5-4b-4bit"
-        )
+        continue_dev.write_or_patch_config("http://127.0.0.1:8000", "qwen3.5-4b-4bit")
         data = json.loads(cfg.read_text())
         assert len(data["models"]) == 2
         rapid = next(m for m in data["models"] if m["title"] == "rapid-mlx")
@@ -267,9 +254,7 @@ class TestContinueDev:
         continue_dev.write_or_patch_config("http://127.0.0.1:8000", "model-b")
         cfg = continue_dev.current_config_path()
         data = json.loads(cfg.read_text())
-        rapid_entries = [
-            m for m in data["models"] if m.get("title") == "rapid-mlx"
-        ]
+        rapid_entries = [m for m in data["models"] if m.get("title") == "rapid-mlx"]
         assert len(rapid_entries) == 1
         assert rapid_entries[0]["model"] == "model-b"
 
@@ -289,14 +274,9 @@ class TestCursor:
 
     def test_write_sets_dotted_keys(self, fake_home):
         (fake_home / "Cursor/User").mkdir(parents=True)
-        path = cursor.write_or_patch_config(
-            "http://127.0.0.1:8000", "qwen3.5-9b-4bit"
-        )
+        path = cursor.write_or_patch_config("http://127.0.0.1:8000", "qwen3.5-9b-4bit")
         data = json.loads(path.read_text())
-        assert (
-            data["cursor.aiprovider.openai.baseUrl"]
-            == "http://127.0.0.1:8000/v1"
-        )
+        assert data["cursor.aiprovider.openai.baseUrl"] == "http://127.0.0.1:8000/v1"
         assert data["cursor.aiprovider.openai.model"] == "qwen3.5-9b-4bit"
         assert data["cursor.aiprovider.openai.apiKey"] == "sk-noop"
 
@@ -425,17 +405,12 @@ class TestLaunchCommand:
         # Mark cline as detected so the dispatcher reaches the
         # would-patch line.
         ext_dir = (
-            fake_home
-            / "vscode-globalStorage"
-            / "saoudrizwan.claude-dev"
-            / "settings"
+            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
         )
         ext_dir.mkdir(parents=True)
         before = list(ext_dir.iterdir())
 
-        launch_cli.launch_command(
-            _make_args(client="cline", dry_run=True)
-        )
+        launch_cli.launch_command(_make_args(client="cline", dry_run=True))
         out = capsys.readouterr().out
         assert "[dry-run]" in out
         assert "cline" in out
@@ -444,15 +419,10 @@ class TestLaunchCommand:
 
     def test_real_patch_writes_file(self, fake_home, capsys):
         ext_dir = (
-            fake_home
-            / "vscode-globalStorage"
-            / "saoudrizwan.claude-dev"
-            / "settings"
+            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
         )
         ext_dir.mkdir(parents=True)
-        launch_cli.launch_command(
-            _make_args(client="cline", model="qwen3.5-4b-4bit")
-        )
+        launch_cli.launch_command(_make_args(client="cline", model="qwen3.5-4b-4bit"))
         target = ext_dir / "cline_mcp_settings.json"
         assert target.exists()
         data = json.loads(target.read_text())
@@ -472,10 +442,7 @@ class TestLaunchCommand:
 
     def test_start_server_spawns_and_writes_pid(self, fake_home, capsys):
         ext_dir = (
-            fake_home
-            / "vscode-globalStorage"
-            / "saoudrizwan.claude-dev"
-            / "settings"
+            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
         )
         ext_dir.mkdir(parents=True)
         fake_proc = MagicMock()
@@ -501,23 +468,23 @@ class TestLaunchCommand:
         # PID file written.
         assert launch_cli.PID_FILE.read_text().strip() == "99999"
 
-    def test_start_server_skipped_when_no_clients_patched(
-        self, fake_home, capsys
-    ):
+    def test_start_server_skipped_when_no_clients_patched(self, fake_home, capsys):
         # cline is NOT detected on this fake_home. --start-server must
         # NOT spawn a child server when zero clients were patched
         # successfully — otherwise we leak a detached server + PID file
         # for a setup the user can't actually use.
-        with patch.object(subprocess, "Popen") as popen:
-            with pytest.raises(SystemExit) as excinfo:
-                launch_cli.launch_command(
-                    _make_args(
-                        client="cline",
-                        model="qwen3.5-4b-4bit",
-                        start_server=True,
-                        port=8102,
-                    )
+        with (
+            patch.object(subprocess, "Popen") as popen,
+            pytest.raises(SystemExit) as excinfo,
+        ):
+            launch_cli.launch_command(
+                _make_args(
+                    client="cline",
+                    model="qwen3.5-4b-4bit",
+                    start_server=True,
+                    port=8102,
                 )
+            )
         assert excinfo.value.code == 1
         popen.assert_not_called()
         assert not launch_cli.PID_FILE.exists()
@@ -529,15 +496,10 @@ class TestLaunchCommand:
         the launch command should patch with the ORIGINAL alias so the
         IDE client requests the short name from rapid-mlx."""
         ext_dir = (
-            fake_home
-            / "vscode-globalStorage"
-            / "saoudrizwan.claude-dev"
-            / "settings"
+            fake_home / "vscode-globalStorage" / "saoudrizwan.claude-dev" / "settings"
         )
         ext_dir.mkdir(parents=True)
-        ns = _make_args(
-            client="cline", model="mlx-community/Qwen3.5-4B-MLX-4bit"
-        )
+        ns = _make_args(client="cline", model="mlx-community/Qwen3.5-4B-MLX-4bit")
         # Simulate what ``main()`` does on the way in.
         ns._original_alias = "qwen3.5-4b-4bit"
         launch_cli.launch_command(ns)
@@ -559,7 +521,6 @@ def test_launch_help_text_is_registered(tmp_path):
     (regression guard: a future refactor of cli.py's subparser block
     that drops the ``_register_launch(subparsers)`` call would let the
     feature silently disappear)."""
-    import vllm_mlx.cli as top_cli
 
     # We don't actually run main() — just walk its argparse tree.
     parser = argparse.ArgumentParser()
