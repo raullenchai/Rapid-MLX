@@ -348,17 +348,32 @@ class TestLeadingItemOrdering:
         client = make_client.set(_EngineEmptyReasoning())
         events = _stream_and_parse(client, _stream_payload())
 
-        # Pull added events keyed by output_index.
+        # Pull added events keyed by output_index. R12-M3 codex r1 NIT:
+        # guard against duplicate output_index emissions — each wire
+        # ``output_item.added`` must own a unique ``output_index``; the
+        # terminal ``response.output[]`` is indexed in the same space,
+        # so duplicates would silently mask wire bugs.
         added_by_idx: dict[int, str] = {}
         for name, data in events:
             if name != "response.output_item.added":
                 continue
-            added_by_idx[data["output_index"]] = data["item"]["type"]
+            idx = data["output_index"]
+            assert idx not in added_by_idx, (
+                f"duplicate output_index={idx} in response.output_item.added "
+                f"events: existing={added_by_idx[idx]}, new={data['item']['type']}"
+            )
+            added_by_idx[idx] = data["item"]["type"]
 
         # Terminal completed payload.
         completed = [d for (n, d) in events if n == "response.completed"]
         assert completed, "missing response.completed event"
         output_arr = completed[0]["response"]["output"]
+        # Index space must be 1:1 between wire-added and completed[].
+        assert len(added_by_idx) == len(output_arr), (
+            f"wire emitted {len(added_by_idx)} added events but completed "
+            f"has {len(output_arr)} entries: added={added_by_idx}, "
+            f"completed={[it['type'] for it in output_arr]}"
+        )
         for i, item in enumerate(output_arr):
             assert added_by_idx.get(i) == item["type"], (
                 f"Index mismatch at position {i}: added_by_idx={added_by_idx}, "

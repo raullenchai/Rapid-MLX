@@ -2599,7 +2599,22 @@ async def _stream_responses(
         downstream_output_seen = bool(
             reasoning_block_closed or tool_calls or message_open
         )
-        mid_think_cutoff = last_finish_reason == "length" and not downstream_output_seen
+        # R12-M3 codex r1 BLOCKING: ``mid_think_cutoff`` is the
+        # "cut off while still inside ``<think>``" signal; it must
+        # additionally require reasoning bytes actually accumulated.
+        # Without this guard, a length-cut response that never produced
+        # reasoning bytes but DID open the message could in principle
+        # flip to ``incomplete`` on a future refactor of
+        # ``downstream_output_seen`` — making the explicit text-gate
+        # an invariant that mirrors the semantic ("mid-think" implies
+        # "produced think tokens"). Today ``message_open`` already
+        # contributes to ``downstream_output_seen`` so the outcome is
+        # the same, but the guard pins the contract.
+        mid_think_cutoff = (
+            last_finish_reason == "length"
+            and not downstream_output_seen
+            and bool(accumulated_reasoning_text)
+        )
         reasoning_status = "incomplete" if mid_think_cutoff else "completed"
 
         if reasoning_item_added:
