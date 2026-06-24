@@ -34,7 +34,7 @@ from . import _mlx_compat as _mlx_compat
 
 _mlx_compat.install()
 
-from mlx_lm.sample_utils import make_sampler  # noqa: E402
+from mlx_lm.sample_utils import make_logits_processors, make_sampler  # noqa: E402
 
 from .multimodal_processor import MultimodalProcessor  # noqa: E402
 from .vision_embedding_cache import VisionEmbeddingCache  # noqa: E402
@@ -59,6 +59,15 @@ class MLLMBatchRequest:
     max_tokens: int = 256
     temperature: float = 0.7
     top_p: float = 0.9
+    # OpenAI-spec penalties (#512) — wired into mlx-lm's
+    # ``make_logits_processors`` inside ``_step``. ``repetition_penalty`` is
+    # a rapid-mlx extension (mlx-lm-native semantics); ``presence_penalty``
+    # and ``frequency_penalty`` follow the OpenAI spec. Defaults match the
+    # neutral values that ``make_logits_processors`` treats as "disabled"
+    # so the homogeneous-default fast path stays a no-op.
+    repetition_penalty: float = 1.0
+    presence_penalty: float = 0.0
+    frequency_penalty: float = 0.0
     video_fps: float | None = None  # Caller-specified video FPS
     video_max_frames: int | None = None  # Caller-specified max video frames
 
@@ -288,6 +297,47 @@ def _left_pad_prompts(
     if max_length is None:
         max_length = max(len(p) for p in prompts)
     return mx.array([[0] * (max_length - len(p)) + list(p) for p in prompts])
+
+
+def _maybe_apply_penalty_processors(
+    req: MLLMBatchRequest, logits: mx.array, row: int
+) -> None:
+    """Mutate ``logits[row:row+1]`` in-place with the request's penalty processors (#512).
+
+    Builds and memoises a list of ``mlx_lm.sample_utils.make_logits_processors``
+    callables on the request when at least one of ``repetition_penalty`` /
+    ``presence_penalty`` / ``frequency_penalty`` is non-neutral. The neutral
+    fast path returns immediately with zero allocation so default-sampling
+    batches keep the pre-#512 step time. Tokens-history is the request's
+    own ``output_tokens`` (mlx-lm processors no-op on empty history, so the
+    first generated token from the VLM prefill — sampled before any
+    output_tokens accumulate — is unaffected). Matches the LLM scheduler's
+    OpenAI-spec context-size policy (``scheduler.py:4124``).
+    """
+    rep = req.repetition_penalty
+    pres = req.presence_penalty
+    freq = req.frequency_penalty
+    if rep == 1.0 and pres == 0.0 and freq == 0.0:
+        return
+    cached = getattr(req, "_cached_penalty_processors", None)
+    key = (rep, pres, freq)
+    if cached is None or cached[0] != key:
+        processors = make_logits_processors(
+            repetition_penalty=rep if rep != 1.0 else None,
+            presence_penalty=pres if pres != 0.0 else None,
+            presence_context_size=4096,
+            frequency_penalty=freq if freq != 0.0 else None,
+            frequency_context_size=4096,
+        )
+        cached = (key, processors)
+        req._cached_penalty_processors = cached
+    if not cached[1]:
+        return
+    row_logits = logits[row : row + 1]
+    tokens = req.output_tokens
+    for processor in cached[1]:
+        row_logits = processor(tokens, row_logits)
+    logits[row : row + 1] = row_logits
 
 
 class MLLMBatchGenerator:
@@ -1000,6 +1050,27 @@ class MLLMBatchGenerator:
 
         logits = logits[:, -1, :]
 
+        # Apply per-request OpenAI-spec penalty processors (#512) BEFORE
+        # the softmax → sampler chain. The outer ``any(...)`` gate keeps
+        # the neutral-default path allocation-free AND skip the per-row
+        # Python loop entirely so default-sampling batches retain the
+        # pre-#512 step time. The per-request helper mutates
+        # ``logits[i:i+1]`` using each request's own generated-token
+        # history (``req.output_tokens``), so the cross-request batch
+        # layout is preserved — same shape, same dtype.
+        if (
+            requests
+            and len(requests) == logits.shape[0]
+            and any(
+                r.repetition_penalty != 1.0
+                or r.presence_penalty != 0.0
+                or r.frequency_penalty != 0.0
+                for r in requests
+            )
+        ):
+            for i, req in enumerate(requests):
+                _maybe_apply_penalty_processors(req, logits, i)
+
         # Sample per-request with correct temperature/top_p.
         # Fast path: when all requests in the batch share (temp, top_p),
         # invoke a single batched sampler on [B, vocab] instead of B
@@ -1011,7 +1082,8 @@ class MLLMBatchGenerator:
         #
         # WARNING: ``_shared_batch_sampler`` is keyed only on
         # ``(temperature, top_p)``. If we ever add per-request sampling
-        # knobs (top_k, min_p, repetition_penalty) to ``MLLMBatchRequest``,
+        # knobs (top_k, min_p) that change the sampler's *shape* (not just
+        # the per-row logits, which the penalty processors above handle),
         # the key MUST grow accordingly — otherwise homogeneous-looking
         # batches would silently share an incorrect sampler. The single
         # ``MLLMScheduler`` worker thread (see mlx-lm 0.31.3+ stream

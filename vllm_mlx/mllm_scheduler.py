@@ -428,10 +428,21 @@ class MLLMScheduler:
                 f"(currently {len(self.requests)} in-flight)"
             )
 
+        # OpenAI-spec penalty passthrough (#512). Pop with the same defaults
+        # ``SamplingParams`` uses so the MLLM path matches the LLM path's
+        # "absence == neutral" contract. Callers that never set these keys
+        # (every non-OpenAI MLLM caller pre-#512) get the no-op fast path
+        # inside ``_maybe_apply_penalty_processors``.
+        repetition_penalty = float(kwargs.pop("repetition_penalty", 1.0) or 1.0)
+        presence_penalty = float(kwargs.pop("presence_penalty", 0.0) or 0.0)
+        frequency_penalty = float(kwargs.pop("frequency_penalty", 0.0) or 0.0)
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
         )
 
         request = MLLMRequest(
@@ -650,6 +661,11 @@ class MLLMScheduler:
                 max_tokens=request.sampling_params.max_tokens,
                 temperature=request.sampling_params.temperature,
                 top_p=request.sampling_params.top_p,
+                # OpenAI-spec penalty passthrough (#512). Default neutral
+                # values are no-ops inside ``_maybe_apply_penalty_processors``.
+                repetition_penalty=request.sampling_params.repetition_penalty,
+                presence_penalty=request.sampling_params.presence_penalty,
+                frequency_penalty=request.sampling_params.frequency_penalty,
                 video_fps=request.video_fps,
                 video_max_frames=request.video_max_frames,
             )
