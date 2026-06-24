@@ -315,33 +315,9 @@ class TestStreaming:
         assert result["content"] == "Let me check the weather. "
 
 
-# --------------------------------------------------------------------
-# Forced-tool-choice prefix injection (D-TOOLCHOICE-R1 T2 +
-# R12-5). The chat route's ``_forced_tool_call_prefix`` must produce a
-# V3 prefix for the ``deepseek_v3`` and ``deepseek_r1_0528`` parsers,
-# and that prefix MUST be re-consumable by ``extract_tool_calls`` once
-# the model completes the body.
-# --------------------------------------------------------------------
-class TestForcedPrefixRoundTrip:
-    def test_v3_prefix_round_trips_through_extract(
-        self, v3_parser: DeepSeekV3ToolParser
-    ) -> None:
-        from vllm_mlx.routes.chat import _forced_tool_call_prefix
-
-        prefix = _forced_tool_call_prefix("deepseek_v3", "get_weather")
-        assert prefix is not None
-        # Simulate the model continuing past the injected prefix.
-        completion = '{"city": "Tokyo"}\n```' + C_CLOSE + TC_CLOSE
-        full = prefix + completion
-        result = v3_parser.extract_tool_calls(full)
-        assert result.tools_called is True
-        assert result.tool_calls[0]["name"] == "get_weather"
-        assert json.loads(result.tool_calls[0]["arguments"]) == {"city": "Tokyo"}
-
-    def test_r1_0528_alias_uses_same_prefix(self) -> None:
-        from vllm_mlx.routes.chat import _forced_tool_call_prefix
-
-        a = _forced_tool_call_prefix("deepseek_v3", "x")
-        b = _forced_tool_call_prefix("deepseek_r1_0528", "x")
-        assert a == b
-        assert a is not None
+# Forced-tool-choice prefix coverage lives in
+# ``tests/test_tool_choice_enforcement.py`` (which already imports
+# ``vllm_mlx.routes.chat`` for the prefix helper). Keeping the
+# round-trip test there avoids forcing this parser-regression file
+# to pull in the full route module — and lets parser-only CI shards
+# run without a Metal device (codex round-4 P2).

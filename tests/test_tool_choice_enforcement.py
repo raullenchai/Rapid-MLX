@@ -327,12 +327,50 @@ def test_t2_deepseek_v31_parser_consumes_assembled_envelope():
     result = parser.extract_tool_calls(full, None)
     assert result.tools_called
     assert result.tool_calls[0]["name"] == "get_weather"
+
+
+def test_t2_deepseek_v3_parser_consumes_assembled_envelope():
+    """R12-5 round-trip: the V3 prefix opens through the
+    ``function<sep>NAME\\n``\\`json\\n`` fence opener. When the model
+    continues with the arguments body + closing fence + envelope
+    closers, ``DeepSeekV3ToolParser.extract_tool_calls`` must extract
+    the call with the right name and a JSON-parseable arguments
+    string."""
     import json as _json
 
-    args = _json.loads(result.tool_calls[0]["arguments"])
-    assert args == {"city": "Tokyo", "units": "c"}, (
-        f"deepseek_v31 forced prefix did not produce real arguments; got {args!r}"
+    from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import (
+        DeepSeekV3ToolParser,
     )
+
+    prefix = _forced_tool_call_prefix("deepseek_v3", "get_weather")
+    assert prefix is not None
+    # Model continues with the JSON body, the closing fence, then the
+    # block + envelope closers (exactly what the V3 chat template
+    # emits at end-of-tool).
+    full = (
+        prefix
+        + '{"city":"Tokyo","units":"c"}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>'
+    )
+    parser = DeepSeekV3ToolParser(tokenizer=None)
+    parser.reset()
+    result = parser.extract_tool_calls(full, None)
+    assert result.tools_called
+    assert result.tool_calls[0]["name"] == "get_weather"
+    assert _json.loads(result.tool_calls[0]["arguments"]) == {
+        "city": "Tokyo",
+        "units": "c",
+    }
+
+
+def test_t2_deepseek_v3_alias_uses_same_prefix_as_r1_0528():
+    """R12-5: ``deepseek_v3`` and ``deepseek_r1_0528`` are aliases of
+    the same V3 parser and MUST produce identical forced-tool prefixes.
+    Pinning equality here means any future divergence (a follow-up that
+    adds a third alias and forgets one of them) fails this assertion."""
+    a = _forced_tool_call_prefix("deepseek_v3", "x")
+    b = _forced_tool_call_prefix("deepseek_r1_0528", "x")
+    assert a == b
+    assert a is not None
 
 
 def test_t2_chat_route_wires_deepseek_v31_prefix_to_engine():
