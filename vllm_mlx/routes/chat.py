@@ -3312,6 +3312,14 @@ async def stream_chat_completion(
         # compliant clients stop reading at the first finish_reason and
         # silently drop the tool call (#v0.6.63 onboarding sweep finding #3).
         buffered_finish: tuple | None = None
+        # R11-A codex r1 HIGH #1: when a streaming ``tool_call`` event
+        # also carries the terminal ``finish_reason="tool_calls"`` (the
+        # postprocessor stamps it inline on the final engine chunk —
+        # see ``StreamingPostProcessor.process_chunk`` tool-call emit
+        # sites), we must NOT also fall through to the R11-V2 synthetic
+        # finish branch below or the wire ends up with TWO terminal
+        # finish chunks. Track inline emission here.
+        inline_terminal_finish_emitted = False
 
         # D-STOP-THINK codex round-6 BLOCKING (PR #799):
         # accumulate ``output.matched_stop`` from streamed chunks so the
@@ -3442,6 +3450,18 @@ async def stream_chat_completion(
                         _tc_count,
                         _tc_finish,
                     )
+                    # R11-A codex r1 HIGH #1: latch on an inline
+                    # terminal finish (postprocessor stamps
+                    # ``finish_reason="tool_calls"`` on the tool_call
+                    # event for the final engine chunk). Prevents the
+                    # post-loop R11-V2 synthetic-finish branch from
+                    # firing a SECOND terminal chunk with
+                    # ``finish_reason="stop"`` — spec-compliant clients
+                    # would stop at the first reason and silently drop
+                    # the tool call, or — worse — process both and
+                    # double-emit the turn end.
+                    if event.finish_reason is not None:
+                        inline_terminal_finish_emitted = True
                     yield _tc_sse
 
                 elif event.type == "finish":
@@ -3810,7 +3830,7 @@ async def stream_chat_completion(
             _fb_sse = f"data: {tool_chunk.model_dump_json(exclude_none=True)}\n\n"
             logger.info(f"[SSE-FALLBACK-TC] {_fb_sse.strip()[:300]}")
             yield _fb_sse
-        else:
+        elif not inline_terminal_finish_emitted:
             # R11-A / R11-V2 invariant guard: every closed SSE stream
             # MUST emit exactly one terminal chunk carrying a
             # ``finish_reason`` BEFORE ``[DONE]``. Pre-fix, 4/10 streams
@@ -3825,6 +3845,16 @@ async def stream_chat_completion(
             # accumulated content / reasoning has already been streamed
             # as per-delta chunks during the loop, so this synthetic
             # chunk is structurally additive only.
+            #
+            # Codex r1 HIGH #1 gate: only fire when the loop did NOT
+            # already emit a tool_call chunk carrying an inline
+            # ``finish_reason`` (the postprocessor stamps it on the
+            # final tool_call event for the last engine chunk). Without
+            # the latch, a valid final-chunk tool call would produce
+            # TWO terminal chunks — first ``finish_reason="tool_calls"``
+            # on the tool_call chunk, then ``finish_reason="stop"`` from
+            # this synthetic — violating the "exactly one finish_reason"
+            # invariant the rest of this PR pins.
             synthetic_finish = ChatCompletionChunk(
                 id=response_id,
                 created=_sse_created,

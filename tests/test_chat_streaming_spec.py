@@ -689,5 +689,185 @@ def test_synthetic_terminal_chunk_does_not_replay_accumulated_text(monkeypatch):
     )
 
 
+# -----------------------------------------------------------------------
+# R11-A: route-level exactly-one-finish-reason invariants
+# -----------------------------------------------------------------------
+
+
+class _InlineToolCallFinishEngine:
+    """Mock engine that produces a SINGLE final chunk carrying a complete
+    hermes tool_call. The hermes streaming parser will surface a
+    ``tool_call`` StreamEvent with ``finish_reason="tool_calls"`` inline
+    on the finished chunk — the codex r1 HIGH #1 path that, pre-fix,
+    fell through to the new synthetic finish branch and emitted a SECOND
+    terminal chunk with ``finish_reason="stop"``.
+    """
+
+    preserve_native_tool_format = False
+    is_mllm = False
+    supports_guided_generation = False
+    tokenizer = None
+
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        return "PROMPT"
+
+    async def stream_chat(self, messages, **kwargs):
+        body = (
+            '<tool_call>\n'
+            '{"name": "get_weather", "arguments": {"city": "Paris"}}\n'
+            "</tool_call>"
+        )
+        yield GenerationOutput(
+            text=body,
+            new_text=body,
+            prompt_tokens=4,
+            completion_tokens=1,
+            finished=True,
+            finish_reason="stop",
+            channel=None,
+        )
+
+
+def test_r11a_inline_tool_call_finish_does_not_double_emit_terminal():
+    """Codex r1 HIGH #1 regression: a single-chunk valid tool call ends
+    with the postprocessor stamping ``finish_reason="tool_calls"`` on
+    the tool_call event itself (no separate ``finish`` event). The
+    route MUST NOT fall through to the R11-V2 synthetic-finish branch
+    and emit a SECOND terminal chunk. The wire MUST carry exactly one
+    chunk with a non-null finish_reason.
+    """
+    cfg = reset_config()
+    cfg.engine = _InlineToolCallFinishEngine()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+    cfg.enable_auto_tool_choice = True
+    cfg.tool_call_parser = "hermes"
+
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "weather?"}],
+            "tools": [
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "get weather",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"city": {"type": "string"}},
+                        },
+                    },
+                }
+            ],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events, saw_done = _parse_sse_events(resp.text)
+    assert saw_done
+
+    # Invariant: exactly one chunk on the wire with a non-null
+    # finish_reason, and that reason MUST be "tool_calls" (the inline
+    # stamping wins, the synthetic-finish branch is gated off).
+    finish_chunks: list = []
+    for ev in events:
+        for ch in ev.get("choices", []):
+            if ch.get("finish_reason") is not None:
+                finish_chunks.append(ch["finish_reason"])
+    assert len(finish_chunks) == 1, (
+        f"R11-A codex r1 HIGH #1: expected exactly one terminal "
+        f"finish_reason on the wire, got {finish_chunks!r}. A second "
+        f"finish_reason=stop chunk from the R11-V2 synthetic-finish "
+        f"branch would split the spec-mandated 'exactly one finish' "
+        f"contract."
+    )
+    assert finish_chunks[0] == "tool_calls"
+    # And the tool_call delta MUST be on the wire (consistency check
+    # — the inline-finish stamping only happens on tool_call events).
+    tool_call_delta_count = 0
+    for ev in events:
+        for ch in ev.get("choices", []):
+            delta = ch.get("delta") or {}
+            if delta.get("tool_calls"):
+                tool_call_delta_count += len(delta["tool_calls"])
+    assert tool_call_delta_count >= 1
+
+
+def test_r11a_v2_synthetic_finish_fires_when_no_inline_finish():
+    """R11-V2 positive case: when the engine ends WITHOUT surfacing a
+    finished chunk AND finalize() recovers nothing, the route's
+    synthetic-finish branch MUST fire so the wire envelope is
+    well-formed (exactly one chunk with finish_reason). Without the
+    branch, spec-compliant clients stall at ``[DONE]`` with no
+    terminal marker.
+    """
+
+    class _NoFinishEngine:
+        preserve_native_tool_format = False
+        is_mllm = False
+        supports_guided_generation = False
+        tokenizer = None
+
+        def build_prompt(self, messages, tools=None, enable_thinking=None):
+            return "PROMPT"
+
+        async def stream_chat(self, messages, **kwargs):
+            # Surface some text but never set finished=True. The
+            # postprocessor will not emit a finish event, finalize()
+            # has no tool material to recover, so the route's R11-V2
+            # branch must synthesize the terminal chunk.
+            yield GenerationOutput(
+                text="hi",
+                new_text="hi",
+                prompt_tokens=4,
+                completion_tokens=1,
+                finished=False,
+                finish_reason=None,
+                channel=None,
+            )
+
+    cfg = reset_config()
+    cfg.engine = _NoFinishEngine()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
+    cfg.no_thinking = True
+
+    app = FastAPI()
+    app.include_router(chat_router)
+    client = TestClient(app)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "test-model",
+            "stream": True,
+            "max_tokens": 32,
+            "messages": [{"role": "user", "content": "hi"}],
+        },
+    )
+    assert resp.status_code == 200, resp.text
+    events, saw_done = _parse_sse_events(resp.text)
+    assert saw_done
+
+    finish_chunks: list = []
+    for ev in events:
+        for ch in ev.get("choices", []):
+            if ch.get("finish_reason") is not None:
+                finish_chunks.append(ch["finish_reason"])
+    # Exactly one synthesized "stop" — R11-V2 invariant met.
+    assert finish_chunks == ["stop"], (
+        f"R11-V2 regression: expected synthetic finish_reason=stop "
+        f"when engine never emitted a finished chunk; got {finish_chunks!r}"
+    )
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
