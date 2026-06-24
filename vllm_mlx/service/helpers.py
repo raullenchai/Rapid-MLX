@@ -1246,13 +1246,22 @@ def _apply_reasoning_cutoff_notice(
 
     Otherwise returns the rescue payload produced by
     :func:`_build_reasoning_rescue_payload` — the canonical shape is
-    ``sentinel + "\\n\\n" + sanitized_tail``, where ``sanitized_tail``
-    is ``reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]`` run through
-    :func:`strip_reasoning_channel_markup` (channel-aware ``<think>`` /
-    ``</think>`` strip) and :func:`sanitize_output` (general special-
-    token catch-all). When that sanitization collapses the tail to
-    empty (e.g. ``reasoning_text="<think>"`` at ``max_tokens=1``), the
-    rescue builder returns the bare sentinel — clients still see the
+    ``sentinel + "\\n\\n" + sanitized_tail``. The builder applies
+    operations in this order (codex r3 P2 strip-before-slice):
+
+    1. :func:`strip_reasoning_channel_markup` on
+       ``reasoning_text.rstrip()`` — strips ``<think>`` / ``</think>``
+       on the FULL trace so the next slice operates on a clean,
+       in-channel byte stream. Doing it before the slice means a tag
+       straddling the ``L - RESCUE_TAIL_LENGTH`` boundary can never
+       leave an orphan ``<th`` / ``ink>`` fragment in the tail.
+    2. ``[-RESCUE_TAIL_LENGTH:]`` slice on the stripped trace.
+    3. :func:`sanitize_output` on the slice — general special-token
+       catch-all (``<|...|>``, harmony markers, ``</tool_call>``, …).
+
+    When sanitization collapses the tail to empty (e.g.
+    ``reasoning_text="<think>"`` at ``max_tokens=1``), the rescue
+    builder returns the bare sentinel — clients still see the
     structural truncation signal without a stray markup byte in
     ``content``. The caller writes the returned string into
     ``message.content`` (non-stream) or the final SSE ``delta.content``

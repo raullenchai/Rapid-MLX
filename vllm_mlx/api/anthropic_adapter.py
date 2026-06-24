@@ -308,10 +308,15 @@ def _thinking_block_content(
        that looks like a rescue payload on a non-length finish (e.g.
        a model legitimately echoing the literal sentinel followed by
        ``\\n\\n`` and more text) is NOT a rescue artifact and the
-       dedupe must not fire. Defaults to ``None`` for back-compat
-       with external callers that don't pass the field; in that case
-       only the shape gate applies (matching the pre-r4 behaviour
-       for any tests or third-party adapter callers).
+       dedupe must not fire. ``finish_reason`` defaults to ``None``
+       for back-compat with external callers that don't pass the
+       field; in that case the dedupe is SKIPPED entirely (the full
+       sanitized reasoning trace is preserved in the thinking block).
+       This is the safe default: when the caller can't tell us
+       whether the truncation was a length-cut, we MUST NOT silently
+       drop a legitimate suffix of the reasoning trace. Direct
+       callers that intend to trigger the dedupe MUST pass
+       ``finish_reason="length"``.
 
     Returns ``None`` when sanitization + trimming leave nothing —
     callers MUST treat ``None`` as "do not emit a thinking block",
