@@ -823,7 +823,10 @@ class TestOpenaiToResponses:
         crashed with IndexError / KeyError."""
         chat_resp = _chat_response(text=None, finish_reason="stop")
         resp = openai_to_responses(
-            chat_resp, model="granite4-h-micro-4bit", request=_bare_request(), created_at=0
+            chat_resp,
+            model="granite4-h-micro-4bit",
+            request=_bare_request(),
+            created_at=0,
         )
         assert len(resp.output) == 1, (
             "D-MISSING-CONTENT-KEY: empty stop must surface an assistant "
