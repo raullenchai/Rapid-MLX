@@ -32,21 +32,38 @@ from .steps.test_plan_check import TestPlanCheckStep
 # Step order — see scripts/pr_validate/README.md for the rationale.
 # Codex review goes early so cheap critical thinking happens before
 # we spend 10 minutes on tests.
+#
+# ORDERING INVARIANT (#275 / codex review on #885): SupplyChainStep
+# must run BEFORE any step that auto-installs from the PR's working
+# tree (currently only TestEnvCheckStep). Otherwise an external PR
+# that adds a malicious build hook or a fake package source to
+# ``pyproject.toml`` would get its code executed inside the validator
+# venv before the supply-chain scan ever flagged the change. The
+# ``test_supply_chain_runs_before_auto_installing_steps`` invariant
+# test in ``tests/test_pr_validate_runner.py`` pins this order so a
+# future refactor can't silently regress it.
 STEPS: list[Step] = [
     FetchStep(),  # 0 — fetch PR + diff + classify blast radius
     TestPlanCheckStep(),  # 0.5 — unchecked test-plan items block merge (#427 lesson)
     CLDescriptionQualityStep(),  # 0.7 — title + body rationale (Google eng-practices)
+    # 0.75 — supply-chain scan must run BEFORE any step that might
+    # ``pip install`` from the PR's working tree. Otherwise a
+    # malicious build hook / fake package source in pyproject.toml
+    # would execute inside the validator venv before the gate that
+    # was supposed to flag it. See #275.
+    SupplyChainStep(),
     # 0.8 — verify pytest plugins importable in the same Python pytest
     # will be invoked with. Closes #185 (was failing the targeted_tests
     # + full_unit gates with cryptic "async def functions are not
     # natively supported" pytest errors when pytest-asyncio fell out of
-    # the host env). Placed BEFORE codex_review because codex review is
-    # the most expensive step here that depends on the diff but not the
-    # test env; failing the env check first avoids spending a codex
-    # round on a PR that pr_validate can't ultimately test.
+    # the host env). MUST run AFTER ``supply_chain`` because this step
+    # may ``pip install '.[test]'`` to auto-recover a missing plugin,
+    # and that install would execute attacker-controlled code from a
+    # tampered pyproject.toml. The auto-install path is also disabled
+    # when the diff touches dep-declaration files — see ``_test_env.py``
+    # for the gate.
     TestEnvCheckStep(),
     CodexReviewStep(),  # 6 — adversarial review (codex exec, gpt-5.5)
-    SupplyChainStep(),  # 1 — pip-audit, license, install hooks
     LintStep(),  # 2 — ruff check + format
     TargetedTestsStep(),  # 3 — diff-aware test selection + neg control
     FullUnitStep(),  # 4 — full pytest, gated on blast radius

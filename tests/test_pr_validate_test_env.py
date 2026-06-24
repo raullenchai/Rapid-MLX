@@ -356,10 +356,15 @@ class TestStepIntegration:
         assert "auto-install disabled" in result.summary
 
     def test_auto_install_attempts_and_recovers(self, fake_ctx):
-        """Initial probe fails; auto-install path runs; post-install
-        probe passes. The step must report `pass` and the summary
-        must mention "installed" so the operator knows the run
-        recovered (and the host was mutated)."""
+        """Initial probe fails; the trusted-pins install path (added
+        for #275) runs first and recovers — the step must report
+        ``pass`` with a summary mentioning "trusted-pins" so the
+        operator knows the PyPI-only path (not the PR's working
+        tree) was the source.
+
+        Critically, ``install_test_extras`` must NOT be called when
+        trusted pins suffice — that's the whole #275 fix.
+        """
         broken = TestEnvStatus(
             ok=False,
             missing=("pytest_asyncio",),
@@ -373,7 +378,7 @@ class TestStepIntegration:
             interpreter=sys.executable,
         )
         # Two-shot probe: first call sees the broken state, second
-        # (after install) sees the recovered state.
+        # (after the trusted-pins install) sees the recovered state.
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PR_VALIDATE_NO_AUTO_INSTALL", None)
             with (
@@ -382,42 +387,54 @@ class TestStepIntegration:
                     side_effect=[broken, healthy],
                 ),
                 patch(
-                    "scripts.pr_validate.steps.test_env_check.install_test_extras",
+                    "scripts.pr_validate.steps.test_env_check.install_trusted_pins",
                     return_value=(
                         True,
                         "Successfully installed pytest-asyncio-0.21.0\n",
                     ),
+                ) as mock_pins,
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.install_test_extras",
                 ) as mock_install,
             ):
                 step = TestEnvCheckStep()
                 result = step.run(fake_ctx)
 
         assert result.status == "pass"
-        assert "installed" in result.summary
-        # Install was called once with the ctx's repo root.
-        assert mock_install.call_count == 1
+        assert "trusted-pins" in result.summary or "installed" in result.summary
+        # Trusted-pins path runs exactly once.
+        assert mock_pins.call_count == 1
+        # Project-extras path MUST NOT run when trusted pins recover —
+        # that's the supply-chain integrity guarantee.
+        assert mock_install.call_count == 0
 
     def test_auto_install_runs_but_does_not_fix(self, fake_ctx):
-        """Initial probe fails; pip succeeds (exit 0); post-install
-        probe STILL fails. This is the "pip silently fell back to
-        --user and the plugin is in the wrong site-packages" case —
-        the step must report fail with both the initial AND
-        post-install missing list so the operator sees the install
-        didn't take."""
+        """Initial probe fails; trusted-pins succeed but don't fix
+        everything; project-extras install runs (PR didn't touch dep
+        files); post-install probe STILL fails. This is the "pip
+        silently fell back to --user and the plugin is in the wrong
+        site-packages" case — the step must report fail with both
+        the initial AND post-install missing list so the operator
+        sees the install didn't take."""
         broken = TestEnvStatus(
             ok=False,
             missing=("pytest_asyncio",),
             message="missing required test packages: pytest_asyncio",
             interpreter=sys.executable,
         )
-        # Same broken status both times — install reported success
-        # but the import still doesn't work.
+        # Three probes: initial (broken), after trusted-pins
+        # (still broken — so we fall through to project-extras), and
+        # after project-extras (still broken — install didn't take).
         with patch.dict(os.environ, {}, clear=False):
             os.environ.pop("PR_VALIDATE_NO_AUTO_INSTALL", None)
             with (
                 patch(
                     "scripts.pr_validate.steps.test_env_check.check_test_env",
-                    side_effect=[broken, broken],
+                    side_effect=[broken, broken, broken],
+                ),
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.install_trusted_pins",
+                    return_value=(True, "(fake trusted-pins output)"),
                 ),
                 patch(
                     "scripts.pr_validate.steps.test_env_check.install_test_extras",
@@ -457,3 +474,336 @@ class TestRequiredPackages:
             assert any(c in pip_name for c in (">=", "==", "~=", ">")), (
                 f"{pip_name!r} for {pkg!r} has no version constraint"
             )
+
+
+# ---------------------------------------------------------------------------
+# Supply-chain integrity (#275 / codex review on PR #885)
+# ---------------------------------------------------------------------------
+
+
+class TestSupplyChainIntegrity:
+    """Pin the #275 fix: the test_env_check step MUST NOT auto-install
+    from the PR's working tree when the PR has touched a dep-declaration
+    file, because the install would execute attacker-controlled build
+    hooks inside the validator venv.
+
+    The trusted-pins path (hardcoded version-pinned PyPI install) is the
+    safe substitute; the project-extras path is the unsafe one.
+    """
+
+    def test_pr_touches_dep_files_flags_pyproject_toml(self):
+        """The canonical case — a PR that modifies pyproject.toml is
+        the exact threat #275 describes."""
+        from scripts.pr_validate._test_env import pr_touches_dep_files
+
+        assert pr_touches_dep_files(["pyproject.toml"]) == ["pyproject.toml"]
+        assert pr_touches_dep_files(["docs/foo.md", "pyproject.toml"]) == [
+            "pyproject.toml"
+        ]
+
+    def test_pr_touches_dep_files_returns_empty_for_safe_diffs(self):
+        """A diff that only touches docs / source must NOT trip the
+        safety gate — otherwise every non-trivial PR would block at
+        test_env_check."""
+        from scripts.pr_validate._test_env import pr_touches_dep_files
+
+        assert pr_touches_dep_files(["docs/foo.md"]) == []
+        assert pr_touches_dep_files(["vllm_mlx/server.py"]) == []
+        assert pr_touches_dep_files([]) == []
+
+    def test_pr_touches_dep_files_catches_all_dep_files(self):
+        """Every entry in DEP_DECLARATION_FILES_DENYLIST must be
+        detectable — a typo there would silently disable the gate."""
+        from scripts.pr_validate._test_env import (
+            DEP_DECLARATION_FILES_DENYLIST,
+            pr_touches_dep_files,
+        )
+
+        for dep_file in DEP_DECLARATION_FILES_DENYLIST:
+            assert pr_touches_dep_files([dep_file]) == [dep_file], (
+                f"{dep_file!r} not detected by pr_touches_dep_files"
+            )
+
+    def test_auto_install_refused_when_pr_touches_pyproject(self, fake_ctx):
+        """The headline #275 test: when the PR modifies pyproject.toml
+        and the trusted-pins install doesn't fully recover, the step
+        REFUSES to fall back to ``pip install '.[test]'`` and reports
+        ``fail`` with the offending file named in the warning."""
+        broken = TestEnvStatus(
+            ok=False,
+            missing=("pytest_asyncio",),
+            message="missing required test packages: pytest_asyncio",
+            interpreter=sys.executable,
+        )
+        fake_ctx.files_changed = ["pyproject.toml", "scripts/foo.py"]
+
+        install_called = {"yes": False}
+
+        def fail_if_install_runs(*_args, **_kwargs):
+            install_called["yes"] = True
+            return (True, "ATTACK: build hook ran from pyproject.toml")
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PR_VALIDATE_NO_AUTO_INSTALL", None)
+            with (
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.check_test_env",
+                    side_effect=[broken, broken],
+                ),
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.install_trusted_pins",
+                    return_value=(True, "trusted-pins partial recovery"),
+                ),
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.install_test_extras",
+                    side_effect=fail_if_install_runs,
+                ),
+            ):
+                step = TestEnvCheckStep()
+                result = step.run(fake_ctx)
+
+        assert result.status == "fail"
+        # The offending file MUST be named in the warning so the
+        # operator knows what to scrutinize before installing manually.
+        assert "pyproject.toml" in result.details
+        # Summary must call out the refusal so it's visible without
+        # opening the details block.
+        assert (
+            "refused" in result.summary.lower()
+            or "project-extras" in result.summary.lower()
+        )
+        # The unsafe install path MUST NOT have run.
+        assert install_called["yes"] is False, (
+            "install_test_extras ran despite the PR touching pyproject.toml — "
+            "this is the supply-chain integrity bug #275 is supposed to fix"
+        )
+
+    def test_auto_install_proceeds_when_pr_does_not_touch_dep_files(self, fake_ctx):
+        """No regression on happy path: a PR that doesn't touch any
+        dep file still gets the project-extras fallback when trusted
+        pins don't fully recover."""
+        broken = TestEnvStatus(
+            ok=False,
+            missing=("pytest_asyncio",),
+            message="missing required test packages: pytest_asyncio",
+            interpreter=sys.executable,
+        )
+        healthy = TestEnvStatus(
+            ok=True,
+            missing=(),
+            message="all 2 required test packages importable",
+            interpreter=sys.executable,
+        )
+        # Pure source-only change — must NOT be flagged.
+        fake_ctx.files_changed = ["vllm_mlx/scheduler.py", "tests/test_scheduler.py"]
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PR_VALIDATE_NO_AUTO_INSTALL", None)
+            with (
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.check_test_env",
+                    side_effect=[broken, broken, healthy],
+                ),
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.install_trusted_pins",
+                    return_value=(True, "trusted-pins partial"),
+                ),
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.install_test_extras",
+                    return_value=(True, "Successfully installed"),
+                ) as mock_install,
+            ):
+                step = TestEnvCheckStep()
+                result = step.run(fake_ctx)
+
+        assert result.status == "pass"
+        # The project-extras path DID run since trusted pins were
+        # insufficient and the PR was clean.
+        assert mock_install.call_count == 1
+
+    def test_trusted_pins_path_used_first_even_on_clean_pr(self, fake_ctx):
+        """Trusted-pins runs FIRST regardless of whether the PR is
+        clean. That's the design — never install from the PR's working
+        tree unless we have to. A clean PR is just allowed to fall
+        through to the project-extras path if trusted pins fall short."""
+        broken = TestEnvStatus(
+            ok=False,
+            missing=("pytest_asyncio",),
+            message="missing required test packages: pytest_asyncio",
+            interpreter=sys.executable,
+        )
+        healthy = TestEnvStatus(
+            ok=True,
+            missing=(),
+            message="all 2 required test packages importable",
+            interpreter=sys.executable,
+        )
+        fake_ctx.files_changed = ["vllm_mlx/scheduler.py"]
+
+        call_order: list[str] = []
+
+        def trusted_pins(*_args, **_kwargs):
+            call_order.append("trusted_pins")
+            return (True, "trusted")
+
+        def project_extras(*_args, **_kwargs):
+            call_order.append("project_extras")
+            return (True, "extras")
+
+        with patch.dict(os.environ, {}, clear=False):
+            os.environ.pop("PR_VALIDATE_NO_AUTO_INSTALL", None)
+            with (
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.check_test_env",
+                    side_effect=[broken, healthy],
+                ),
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.install_trusted_pins",
+                    side_effect=trusted_pins,
+                ),
+                patch(
+                    "scripts.pr_validate.steps.test_env_check.install_test_extras",
+                    side_effect=project_extras,
+                ),
+            ):
+                step = TestEnvCheckStep()
+                step.run(fake_ctx)
+
+        assert call_order[0] == "trusted_pins", (
+            "trusted_pins must run BEFORE project_extras"
+        )
+
+    def test_trusted_pins_uses_isolated_pip_flag(self):
+        """``--isolated`` blocks a user-level ``pip.conf`` from injecting
+        a malicious ``--extra-index-url`` while the validator's
+        recovery install is running. Pin the flag so a "simplification"
+        refactor can't quietly drop it."""
+        import subprocess as _sub
+
+        from scripts.pr_validate import _test_env as mod
+
+        captured: dict = {}
+
+        def fake_run(cmd, **kwargs):
+            captured["cmd"] = cmd
+            return _sub.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        with patch.object(mod.subprocess, "run", side_effect=fake_run):
+            ok, _ = mod.install_trusted_pins()
+
+        assert ok is True
+        assert "--isolated" in captured["cmd"], (
+            "pip must run with --isolated to block user-level config injection"
+        )
+        # Every TRUSTED_TEST_PINS entry must appear in the install command —
+        # if a future edit drops one, the validator silently degrades.
+        for pin in mod.TRUSTED_TEST_PINS:
+            assert pin in captured["cmd"]
+
+    def test_supply_chain_runs_before_auto_installing_steps(self):
+        """ORDERING INVARIANT (#275): ``supply_chain`` MUST appear in
+        ``STEPS`` before ``test_env_check`` and before any other step
+        that may ``pip install`` from the PR's working tree.
+
+        Otherwise a malicious PR can get its build hook executed inside
+        the validator venv before the supply-chain scan flags it. This
+        test exists so the invariant is preserved across future
+        refactors — a `grep`able guarantee, not a code-review hope."""
+        from scripts.pr_validate.runner import STEPS
+
+        names = [s.name for s in STEPS]
+        assert "supply_chain" in names
+        assert "test_env_check" in names
+
+        sc_idx = names.index("supply_chain")
+        tec_idx = names.index("test_env_check")
+        assert sc_idx < tec_idx, (
+            f"supply_chain (idx {sc_idx}) must run BEFORE test_env_check "
+            f"(idx {tec_idx}) — see scripts/pr_validate/README.md "
+            "'Threat model' (#275)"
+        )
+
+    def test_malicious_pyproject_blocked_at_supply_chain_before_test_env(
+        self, tmp_path, monkeypatch, capsys
+    ):
+        """End-to-end simulation of the #275 attack: an external-author
+        PR whose diff adds a build-hook to ``pyproject.toml``. The
+        supply-chain step MUST flag it [BLOCKING] BEFORE
+        test_env_check has a chance to run ``pip install '.[test]'``."""
+        from scripts.pr_validate.runner import run_pipeline
+        from scripts.pr_validate.steps.supply_chain import SupplyChainStep
+        from scripts.pr_validate.steps.test_env_check import TestEnvCheckStep
+
+        # Build a fake repo root so Context.__post_init__ is happy.
+        (tmp_path / "pyproject.toml").write_text("[project]\nname='fake'\n")
+        monkeypatch.chdir(tmp_path)
+
+        # Malicious diff: external PR adds a build hook in pyproject.toml.
+        # Note the `+++ b/` path, a hunk header, and an added line that
+        # would execute on `pip install` (a fake build-backend swap).
+        diff_path = tmp_path / "pr.diff"
+        diff_path.write_text(
+            "diff --git a/pyproject.toml b/pyproject.toml\n"
+            "--- a/pyproject.toml\n"
+            "+++ b/pyproject.toml\n"
+            "@@ -1,3 +1,4 @@\n"
+            " [build-system]\n"
+            "+requires = ['evil-build-backend @ file:///tmp/attack']\n"
+            ' build-backend = "setuptools.build_meta"\n'
+        )
+
+        # Stand-in fetch step that wires up the Context fields the
+        # supply-chain + test-env steps read.
+        from scripts.pr_validate.base import Step, StepResult
+
+        class _MaliciousFetch(Step):
+            name = "fetch"
+            description = "fake malicious PR fetch"
+
+            def run(self, ctx):  # type: ignore[no-untyped-def]
+                ctx.pr_title = "innocent looking title"
+                ctx.pr_author = "untrusted-contributor"
+                ctx.head_sha = "deadbeef"
+                ctx.diff_path = str(diff_path)
+                ctx.files_changed = ["pyproject.toml"]
+                ctx.pr_is_external = True  # critical: external author
+                return StepResult(name=self.name, status="pass", summary="ok")
+
+        # Sentinel: if test_env_check EVER calls install_test_extras
+        # in this scenario, the bug is back.
+        install_ran = {"yes": False}
+
+        def trap_install(*_args, **_kwargs):
+            install_ran["yes"] = True
+            return (True, "PWNED — build hook would have run here")
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.test_env_check.install_test_extras",
+            trap_install,
+        )
+
+        # Use a real SupplyChainStep + TestEnvCheckStep so we exercise
+        # the actual ordering invariant.
+        steps = [_MaliciousFetch(), SupplyChainStep(), TestEnvCheckStep()]
+        rc = run_pipeline(pr_number=275, fail_fast=True, steps=steps)
+        captured = capsys.readouterr()
+
+        # 1. Pipeline exits non-zero because supply_chain blocked.
+        assert rc == 1, (
+            f"pipeline should have BLOCKED, got rc={rc}. stdout:\n"
+            f"{captured.out}\nstderr:\n{captured.err}"
+        )
+        # 2. supply_chain ran and flagged the change.
+        assert "## [supply_chain]" in captured.err
+        # 3. With fail_fast=True, test_env_check should NOT have run
+        # AFTER supply_chain failed.
+        assert "## [test_env_check]" not in captured.err, (
+            "test_env_check ran after supply_chain failed — fail-fast "
+            "should have stopped the pipeline before the unsafe install"
+        )
+        # 4. The unsafe install path was never invoked.
+        assert install_ran["yes"] is False, (
+            "install_test_extras was called from a malicious-pyproject PR — "
+            "this is the exact #275 bug; supply_chain must run first AND "
+            "block AND test_env_check's auto-install must be gated"
+        )

@@ -40,10 +40,21 @@ from ..base import Step, StepResult
 from ..context import Context
 
 # Files that gain code-execution capability when modified — install
-# hooks, CI config, anything that runs unattended.
+# hooks, CI config, anything that runs unattended. ``pyproject.toml``
+# and ``requirements*.txt`` are here because pr_validate's own
+# ``TestEnvCheckStep`` may ``pip install '.[test]'`` to recover a
+# missing pytest plugin; if a malicious PR adds a build-hook or fake
+# package source, that install would execute the attacker's code in
+# the validator's interpreter. Flagging the file as a hook means an
+# external-author PR that touches it is [BLOCKING] at this step BEFORE
+# any auto-installing step downstream runs — see threat-model section
+# of scripts/pr_validate/README.md.
 HOOK_PATHS = (
     "setup.py",
     "setup.cfg",
+    "pyproject.toml",
+    "requirements.txt",
+    "requirements-dev.txt",
     "conftest.py",  # runs on every `pytest`
     "tests/conftest.py",
     ".github/workflows/",

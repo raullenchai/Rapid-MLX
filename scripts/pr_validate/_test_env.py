@@ -78,6 +78,39 @@ REQUIRED_TEST_PACKAGES: tuple[tuple[str, str, str], ...] = (
 # update this constant too (and the unit test that pins it).
 TEST_EXTRAS_NAME = "test"
 
+# Files whose modification by an external PR makes the auto-install
+# path UNSAFE — installing from the PR's working tree would let the
+# attacker's build hook / fake package source run inside the
+# validator venv. Detection is conservative: if ANY of these paths
+# show up in ``ctx.files_changed`` we refuse to auto-install and
+# require the operator to either install manually (after reading the
+# diff) or re-run with the dep-file change rolled back. See
+# scripts/pr_validate/README.md "Threat model".
+DEP_DECLARATION_FILES_DENYLIST: tuple[str, ...] = (
+    "pyproject.toml",
+    "setup.py",
+    "setup.cfg",
+    "requirements.txt",
+    "requirements-dev.txt",
+    "requirements-pin.txt",  # pr_validate's own pin list
+)
+
+# Hardcoded, version-pinned set of pytest plugins pr_validate needs
+# IN ITS OWN venv to run ``targeted_tests`` / ``full_unit`` reliably.
+# Installed from PyPI directly (not from the PR's working tree) so a
+# malicious PR that ships a typo-squat or replaces ``pytest-asyncio``
+# in pyproject.toml CANNOT subvert the validator's runtime. Keep this
+# list tiny and pinned to a narrow range: the goal is "validator
+# always boots", not "validator can run every test in every PR".
+#
+# Versions chosen to track the project's ``[test]`` extras at the
+# time of pinning (#275). A bump here is a deliberate operator
+# decision; pr_validate refuses to silently follow a PR's lead.
+TRUSTED_TEST_PINS: tuple[str, ...] = (
+    "pytest>=7.0.0,<9",
+    "pytest-asyncio>=0.21.0,<1",
+)
+
 
 @dataclass(frozen=True)
 class TestEnvStatus:
@@ -198,6 +231,64 @@ def auto_install_disabled() -> bool:
         "yes",
         "on",
     )
+
+
+def pr_touches_dep_files(files_changed: list[str]) -> list[str]:
+    """Return the subset of ``files_changed`` that overlaps with
+    ``DEP_DECLARATION_FILES_DENYLIST``.
+
+    Returning the (possibly empty) list rather than a bool lets the
+    caller surface the exact filenames in the warning the operator
+    sees — "skipped because the PR touches pyproject.toml" is much
+    more actionable than just "skipped". An empty list means the
+    auto-install path is safe to take.
+
+    Matching is exact-path (no prefix). pr_validate doesn't try to be
+    clever about renames or symlinks — anything fancier is a manual
+    review case anyway.
+    """
+    denylist = set(DEP_DECLARATION_FILES_DENYLIST)
+    return [f for f in files_changed if f in denylist]
+
+
+def install_trusted_pins(python: str | None = None) -> tuple[bool, str]:
+    """Install ``TRUSTED_TEST_PINS`` from PyPI into ``python``.
+
+    Bypasses the PR's pyproject.toml entirely — the pin list is
+    hardcoded above and version-bounded so a malicious PR cannot
+    influence what gets installed into the validator venv. Used as
+    the recovery path when ``pr_touches_dep_files`` reports the PR
+    has modified dep-declaration files (in which case
+    ``install_test_extras`` is unsafe).
+
+    Returns ``(ok, log)`` mirroring ``install_test_extras``. ``--no-deps``
+    is intentionally NOT passed — pytest-asyncio needs its own
+    transitive deps and those come from PyPI too, not the PR.
+
+    ``--isolated`` blocks the user's pip.conf from injecting a
+    malicious index URL via ``--extra-index-url``; combined with the
+    pinned versions this gives the validator a stable install path.
+    """
+    interp = python or sys.executable
+    cmd = [
+        interp,
+        "-m",
+        "pip",
+        "install",
+        "--quiet",
+        "--isolated",
+        "--disable-pip-version-check",
+        *TRUSTED_TEST_PINS,
+    ]
+    proc = subprocess.run(  # noqa: S603
+        cmd,
+        capture_output=True,
+        text=True,
+    )
+    log = (proc.stdout or "") + (proc.stderr or "")
+    if len(log) > 2048:
+        log = log[:1024] + "\n…[truncated]…\n" + log[-1024:]
+    return proc.returncode == 0, log
 
 
 def install_test_extras(repo_root: Path, python: str | None = None) -> tuple[bool, str]:

@@ -25,9 +25,9 @@ python3.12 -m scripts.pr_validate <PR#> -v
 | 0 | `fetch` | always (fail-fast) | ~3s |
 | 0.5 | `test_plan_check` | always | <1s |
 | 0.7 | `cl_description_quality` | always (skip via `PR_VALIDATE_SKIP_DESC=1`) | <1s |
+| 0.75 | `supply_chain` | always | ~5s |
 | 0.8 | `test_env_check` | always (auto-install opt-out: `PR_VALIDATE_NO_AUTO_INSTALL=1`) | <1s (≈10s if install runs) |
 | 6 | `codex_review` | always (skip if codex CLI missing / not logged in) | 30–180s |
-| 1 | `supply_chain` | always | ~5s |
 | 2 | `lint` | when diff has .py | ~3s |
 | 3 | `targeted_tests` | when diff has .py | 30s–3min |
 | 4 | `full_unit` | blast ≥ medium | ~25s |
@@ -37,6 +37,44 @@ python3.12 -m scripts.pr_validate <PR#> -v
 thinking *before* spending 10 minutes on tests. The two cheapest
 description-quality gates run first so a bad title or empty body
 fails in under a second without burning the codex budget.)
+
+## Threat model (#275)
+
+`pr_validate` itself executes inside a venv that has the project
+installed. Two of its steps are capable of *executing PR-controlled
+code on the validator host*:
+
+1. **`test_env_check`** may run `pip install '.[test]'` from the PR's
+   working tree to recover a missing pytest plugin. That install
+   evaluates `pyproject.toml` (including build hooks like
+   `[build-system].build-backend`) and any `setup.py` shim.
+2. **`targeted_tests` / `full_unit`** run `pytest`, which evaluates
+   `conftest.py` and any plugin entrypoints registered by deps
+   declared in `pyproject.toml`.
+
+The validator can't trust the PR's `pyproject.toml` until the
+supply-chain scan has had a chance to flag it. Therefore the step
+order is **non-negotiable**:
+
+* `supply_chain` runs at index ≈ 0.75 — BEFORE any
+  auto-installing step. Any modification to `pyproject.toml`,
+  `requirements*.txt`, `setup.py`, `setup.cfg`, `conftest.py`,
+  `.github/workflows/`, `Makefile`, `.pre-commit-config.yaml`, or
+  `Formula/` from an external author is `[BLOCKING]`.
+* `test_env_check` runs at index ≈ 0.8 — AFTER `supply_chain`.
+  Its `pip install '.[test]'` fallback is also gated: if the PR
+  diff touches any dep-declaration file, the project-extras path
+  is REFUSED and the step falls back to installing a hardcoded,
+  version-pinned set of trusted plugins (`TRUSTED_TEST_PINS` in
+  `_test_env.py`) directly from PyPI. That set never reads the
+  PR's working tree.
+
+The invariant is locked in by
+`tests/test_pr_validate_runner.py::test_supply_chain_runs_before_auto_installing_steps`.
+
+If you add a future step that auto-installs anything, put it AFTER
+`supply_chain` and gate it on `pr_touches_dep_files(ctx.files_changed)`
+the same way `test_env_check` does.
 
 ## Verdict
 
@@ -144,11 +182,28 @@ suite needs (chiefly `pytest_asyncio` — `pytest.ini` sets
 fails at collection with "async def functions are not natively
 supported").
 
-When a plugin is missing, the step attempts a one-shot
-`pip install '.[test]'` from the repo root, then re-checks. If the
-re-check still fails, the step reports `fail` with the missing-package
-list and the canonical recovery command (`<interp> -m pip install
-'.[test]'`) so the operator can fix it manually.
+When a plugin is missing, the step's recovery path runs in two
+attempts:
+
+1. **Trusted pins (always tried first).** Installs
+   `TRUSTED_TEST_PINS` (a hardcoded, version-pinned set defined in
+   `_test_env.py` — currently `pytest>=7,<9`,
+   `pytest-asyncio>=0.21,<1`) from PyPI directly with
+   `pip install --isolated`. This bypasses the PR's `pyproject.toml`
+   entirely so a malicious PR cannot poison the validator's runtime
+   (#275).
+2. **Project extras (gated).** If the trusted-pins install doesn't
+   resolve everything AND the PR's diff does NOT touch any
+   dep-declaration file (`pyproject.toml`, `requirements*.txt`,
+   `setup.py`, `setup.cfg`), falls back to `pip install '.[test]'`
+   from the repo root. If the PR touches a dep file, the
+   project-extras path is REFUSED — the step reports `fail` and the
+   operator is asked to review the diff before installing manually.
+
+If both attempts still leave a plugin missing, the step reports
+`fail` with the missing-package list and the canonical recovery
+command (`<interp> -m pip install '.[test]'`) so the operator can
+fix it manually.
 
 Closes #185 — the prior implementation had no env check at all,
 which meant a host that had lost `pytest-asyncio` (typically after an
@@ -210,10 +265,16 @@ Replaces the previous DeepSeek V4 Pro step. See the
 switched — DeepSeek is asymptotic across rounds; codex converges in a
 small bounded number.
 
-### `supply_chain` (step 1)
+### `supply_chain` (step 0.75)
 
-* Flags any modification to install hooks, CI workflows, Makefile,
-  Homebrew tap (BLOCKING for external authors, warning for collaborators).
+Runs BEFORE any auto-installing step so a malicious PR can't get its
+build-hook executed inside the validator venv before the scan flags
+it (see "Threat model" above, #275).
+
+* Flags any modification to install hooks (`pyproject.toml`,
+  `requirements*.txt`, `setup.py`, `setup.cfg`, `conftest.py`,
+  CI workflows, Makefile, Homebrew tap, pre-commit config):
+  BLOCKING for external authors, warning for collaborators.
 * Greps added lines for suspicious patterns (`eval`, `exec`,
   `pickle.loads`, `subprocess(... shell=True)`, hardcoded URLs/IPs,
   large hex/base64 blobs).
