@@ -301,6 +301,7 @@ def _make_serve_args(model: str) -> Namespace:
     return Namespace(
         model=model,
         embedding_model=None,
+        served_model_name=None,
         no_mllm=True,
         mllm=False,
         max_tokens=None,
@@ -627,4 +628,313 @@ class TestModelsCommandListsAudio:
         assert "qwen3.6" in out.lower() or "qwen3.5" in out.lower(), (
             "Text alias listing disappeared after the audio section "
             "was added — both must coexist."
+        )
+
+
+# ---------------------------------------------------------------------------
+# H) R11-K / task #258 — audio serve honors --served-model-name +
+#    --embedding-model (deferred R10-I carry).
+# ---------------------------------------------------------------------------
+
+
+class TestAudioServeHonorsServedModelName:
+    """Pre-fix ``_serve_audio_mode`` silently dropped
+    ``--served-model-name``: ``server._model_name`` was always
+    ``entry.hf_id``, so operators wrapping ``rapid-mlx serve kokoro``
+    behind a gateway with a fixed ``model_name`` saw the raw HF id on
+    ``/v1/models`` and the gateway's allowlist 404'd.
+
+    The text path's contract (see ``server.load_model``:
+    ``_model_name = served_model_name or model_name``) must mirror
+    1:1 on the audio path. ``_model_alias`` must still surface the
+    friendly short alias so ``/v1/models`` lists BOTH the custom name
+    and the alias — same wire shape as text.
+    """
+
+    def test_served_model_name_overrides_audio_model_name(self):
+        """``--served-model-name custom-tts`` -> ``cfg.model_name`` == ``custom-tts``."""
+        from vllm_mlx import cli, server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.model_name = None
+        cfg.model_alias = None
+        cfg.model_path = None
+        server._model_name = None
+        server._model_alias = None
+        server._model_path = None
+
+        with (
+            patch.object(cli, "_run_uvicorn"),
+            patch.object(cli, "_port_preflight_or_die"),
+        ):
+            args = _make_serve_args("kokoro")
+            args.served_model_name = "custom-tts"
+            cli.serve_command(args)
+
+        cfg = get_config()
+        # The custom name lands on the primary id (what /v1/models'
+        # first row reports) — same contract as text mode.
+        assert cfg.model_name == "custom-tts", (
+            "R11-K / #258 regression: audio --served-model-name was "
+            "ignored. ``cfg.model_name`` should hold the operator's "
+            "custom name, not the underlying HF id."
+        )
+        # Friendly alias still exposed so the alias->custom mapping
+        # is discoverable on /v1/models.
+        assert cfg.model_alias == "kokoro"
+        # The underlying HF id remains the engine's input — used as
+        # the cache dir and (not affected by --served-model-name).
+        assert cfg.model_path == "mlx-community/Kokoro-82M-bf16"
+
+    def test_no_served_model_name_keeps_hf_id_as_model_name(self):
+        """Default (no flag) behavior must NOT regress — alias mapping
+        stays as it was before R11-K. This guards the 12-alias Bo r12
+        dogfood: every alias must still boot with the same wire shape."""
+        from vllm_mlx import cli, server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.model_name = None
+        cfg.model_alias = None
+        cfg.model_path = None
+        server._model_name = None
+        server._model_alias = None
+        server._model_path = None
+
+        with (
+            patch.object(cli, "_run_uvicorn"),
+            patch.object(cli, "_port_preflight_or_die"),
+        ):
+            args = _make_serve_args("kokoro")
+            # served_model_name is None (default) — fixture is r11-K aware.
+            cli.serve_command(args)
+
+        cfg = get_config()
+        # Same pre-fix shape: HF id as the primary, alias as the secondary.
+        assert cfg.model_name == "mlx-community/Kokoro-82M-bf16"
+        assert cfg.model_alias == "kokoro"
+
+    @pytest.mark.parametrize(
+        "alias",
+        [
+            # 12 Bo r12 dogfood aliases — must keep booting cleanly.
+            "kokoro",
+            "kokoro-4bit",
+            "chatterbox",
+            "vibevoice",
+            "voxcpm",
+            "dia",
+            "whisper",
+            "whisper-1",
+            "whisper-tiny",
+            "whisper-base",
+            "parakeet",
+            "parakeet-v3",
+        ],
+    )
+    def test_all_r12_audio_aliases_boot_with_served_model_name(self, alias):
+        """No-regression: all 12 Bo r12 audio aliases must still take
+        the audio fork AND honor ``--served-model-name``."""
+        from vllm_mlx import cli, server
+        from vllm_mlx.config import get_config
+
+        cfg = get_config()
+        cfg.model_name = None
+        cfg.model_alias = None
+        server._model_name = None
+        server._model_alias = None
+
+        with (
+            patch.object(cli, "_run_uvicorn"),
+            patch.object(cli, "_port_preflight_or_die"),
+        ):
+            args = _make_serve_args(alias)
+            args.served_model_name = f"gateway/{alias}"
+            cli.serve_command(args)
+
+        assert get_config().model_name == f"gateway/{alias}", alias
+        assert get_config().model_alias is not None, alias
+
+
+class TestTextServeServedModelNameDoesNotRegress:
+    """The text-mode ``--served-model-name`` contract is fixed at
+    ``server.load_model`` (``_model_name = served_model_name or
+    model_name``). The R11-K fix only touches the audio dispatcher;
+    the text-mode wiring at ``serve_command`` must NOT shift.
+
+    Brittleness note: running ``serve_command`` end-to-end for a
+    text alias requires mocking ~40 SchedulerConfig / engine knobs.
+    Instead we pin the contract at the two call sites that matter
+    (DFlash + load_model) via source-level inspection — the text
+    fix lives there, and any refactor that drops the ``args.served_model_name``
+    forwarding will be caught by this static check.
+    """
+
+    def test_load_model_call_site_threads_served_model_name(self):
+        """``serve_command`` forwards ``args.served_model_name``
+        verbatim to ``load_model`` and ``run_dflash_server``. Pin
+        BOTH call sites — a refactor that drops either silently
+        regresses the text-mode contract."""
+        import inspect
+
+        from vllm_mlx import cli
+
+        src = inspect.getsource(cli.serve_command)
+        # load_model call site (non-DFlash text path).
+        assert "served_model_name=args.served_model_name" in src, (
+            "text-mode regression: serve_command no longer forwards "
+            "args.served_model_name to load_model. The audio R11-K "
+            "fix MUST NOT touch this contract."
+        )
+        # DFlash call site (text path with --enable-dflash).
+        assert "served_model_name=args.served_model_name or _alias_name" in src, (
+            "text-mode (DFlash) regression: serve_command no longer "
+            "forwards args.served_model_name to run_dflash_server."
+        )
+
+    def test_server_load_model_still_maps_served_to_model_name(self):
+        """``server.load_model``: ``_model_name = served_model_name
+        or model_name``. The audio dispatcher mirrors this exact
+        contract (with ``entry.hf_id`` as the model_name fallback);
+        if the text-side semantics shift the audio mirror would
+        drift."""
+        import inspect
+
+        from vllm_mlx import server
+
+        src = inspect.getsource(server.load_model)
+        # The fallback expression — same shape audio mirror uses.
+        assert "served_model_name or model_name" in src, (
+            "server.load_model no longer assigns "
+            "``_model_name = served_model_name or model_name``. "
+            "The audio dispatcher mirrors this exact expression "
+            "with entry.hf_id; if the text side changes shape, the "
+            "audio mirror must change in lockstep — failing this "
+            "test signals both sides need to be re-aligned."
+        )
+
+
+class TestAudioServeHonorsEmbeddingModel:
+    """R11-K decision call: audio + embedding compose cleanly via
+    ``_load_embedding_model_or_exit`` (intentionally orthogonal to
+    the text-LM engine). Audio engines stay lazy on /v1/audio/*,
+    the embeddings sidecar serves /v1/embeddings on the same app.
+    The helper's docstring explicitly anticipated this audio
+    integration."""
+
+    def test_embedding_model_pre_loads_in_audio_mode(self):
+        """``--embedding-model bge`` on audio serve calls the shared
+        helper exactly the same way text mode does."""
+        from vllm_mlx import cli, server
+
+        calls = []
+
+        def _capture(name, lock=False):
+            calls.append((name, lock))
+
+        with (
+            patch.object(cli, "_run_uvicorn"),
+            patch.object(cli, "_port_preflight_or_die"),
+            patch.object(server, "load_embedding_model", side_effect=_capture),
+            patch("vllm_mlx.embedding.require_mlx_embeddings_or_exit"),
+        ):
+            args = _make_serve_args("kokoro")
+            args.embedding_model = "mlx-community/all-MiniLM-L6-v2-4bit"
+            cli.serve_command(args)
+
+        assert calls, (
+            "R11-K / #258 regression: audio --embedding-model did "
+            "NOT pre-load via server.load_embedding_model. Audio + "
+            "embedding compose cleanly; the helper must be invoked "
+            "the same way text mode invokes it."
+        )
+        # First positional arg is the model id; lock=True mirrors text mode.
+        assert calls[0][0] == "mlx-community/all-MiniLM-L6-v2-4bit"
+        assert calls[0][1] is True
+
+    def test_audio_mode_without_embedding_does_not_call_loader(self):
+        """No-regression: ``serve kokoro`` (no --embedding-model) must
+        NOT trigger the embeddings install guard or loader. The
+        embedding loader must stay strictly opt-in."""
+        from vllm_mlx import cli, server
+
+        calls = []
+
+        def _capture(name, lock=False):
+            calls.append((name, lock))
+
+        with (
+            patch.object(cli, "_run_uvicorn"),
+            patch.object(cli, "_port_preflight_or_die"),
+            patch.object(server, "load_embedding_model", side_effect=_capture),
+        ):
+            args = _make_serve_args("kokoro")
+            # embedding_model stays None (fixture default).
+            cli.serve_command(args)
+
+        assert not calls, (
+            "Audio mode pre-loaded an embedding model without "
+            "--embedding-model — the loader must be strictly opt-in."
+        )
+
+
+class TestAudioServeArgparseAcceptsBothFlags:
+    """Argparse-level smoke test: both flags are REGISTERED on the
+    serve subparser (they were before the fix, the bug was downstream
+    in ``_serve_audio_mode``), so ``rapid-mlx serve kokoro
+    --embedding-model ... --served-model-name ...`` parses without
+    an argparse error. Guards against an accidental subparser
+    refactor that drops these flags."""
+
+    def test_both_flags_parse_on_audio_alias(self, monkeypatch):
+        """``rapid-mlx serve kokoro --embedding-model ... --served-model-name ...``
+        must parse without an argparse error and forward both flags
+        to ``serve_command``. ``main()`` reads sys.argv, so we patch
+        argv and stub the dispatch.
+
+        Both flags WERE registered on the serve subparser before
+        R11-K (the bug was downstream in ``_serve_audio_mode``); this
+        guards against an accidental subparser refactor that drops
+        them and makes the audio invocation fail at argparse time.
+        """
+        import sys as _sys
+
+        from vllm_mlx import cli as _cli
+
+        captured = {}
+
+        def _capture(args):
+            captured["served_model_name"] = args.served_model_name
+            captured["embedding_model"] = args.embedding_model
+            captured["model"] = args.model
+
+        monkeypatch.setattr(
+            _sys,
+            "argv",
+            [
+                "rapid-mlx",
+                "serve",
+                "kokoro",
+                "--embedding-model",
+                "mlx-community/embeddinggemma-300m-6bit",
+                "--served-model-name",
+                "my-tts",
+                "--port",
+                "8102",
+            ],
+        )
+        with patch.object(_cli, "serve_command", side_effect=_capture):
+            try:
+                _cli.main()
+            except SystemExit:
+                # ``main()`` may sys.exit(0) on consent / version
+                # paths even when the parse succeeded; we only need
+                # the captured-args dict populated.
+                pass
+
+        assert captured.get("model") == "kokoro"
+        assert captured.get("served_model_name") == "my-tts"
+        assert (
+            captured.get("embedding_model") == "mlx-community/embeddinggemma-300m-6bit"
         )

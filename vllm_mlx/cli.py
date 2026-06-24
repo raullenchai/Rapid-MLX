@@ -535,7 +535,18 @@ def _serve_audio_mode(args, entry) -> None:
         # short alias from the registry so /v1/models still shows the
         # friendly name, not the bare HF path.
         server._model_alias = entry.alias
-    server._model_name = entry.hf_id
+    # R11-K / task #258: honor ``--served-model-name`` on the audio
+    # path, mirroring the text-mode contract at ``server.load_model``
+    # (``_model_name = served_model_name or model_name``). Pre-fix the
+    # audio dispatcher ignored the flag, so operators wrapping
+    # ``rapid-mlx serve kokoro`` behind a gateway with a stable
+    # ``model_name`` saw the raw HF id on ``/v1/models`` and the
+    # gateway's model-id allowlist 404'd. The underlying HF id stays
+    # on ``_model_path`` (cache dir / engine input), and the friendly
+    # short alias stays on ``_model_alias`` so ``/v1/models`` lists
+    # both the custom name AND the alias — same wire shape as text.
+    _served_name = getattr(args, "served_model_name", None)
+    server._model_name = _served_name or entry.hf_id
     server._model_path = entry.hf_id
 
     # Mirror the text path's security configuration. Audio routes use
@@ -589,6 +600,22 @@ def _serve_audio_mode(args, entry) -> None:
         "  Audio engines load lazily on the first /v1/audio/* request "
         "(no boot-time weight download)."
     )
+
+    # R11-K / task #258: honor ``--embedding-model`` on the audio
+    # path. The shared helper (``_load_embedding_model_or_exit``) is
+    # intentionally orthogonal to the text-LM engine — it only goes
+    # through ``server.load_embedding_model`` — so audio + embedding
+    # compose cleanly: the audio engines stay lazy on /v1/audio/*
+    # while the embeddings sidecar serves /v1/embeddings from the
+    # same FastAPI app. Mirrors the text-mode call site at
+    # ``serve_command`` (post-``load_model``); see the helper's
+    # docstring "Audio-mode integration" note (R11-K coordination)
+    # — single source of truth for the install + alias + error wrap.
+    # Ordered after the banner so the operator sees the audio model
+    # banner FIRST (matches the text-mode visual ordering where the
+    # ``Model:`` line prints before ``Pre-loading embedding model:``).
+    if getattr(args, "embedding_model", None):
+        _load_embedding_model_or_exit(args, server.load_embedding_model)
 
     # Stamp the bind source-of-truth so the lifespan "Ready:" banner
     # prints the right URL. Mirrors the text-path block.
