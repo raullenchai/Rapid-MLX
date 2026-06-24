@@ -1146,7 +1146,26 @@ async def _non_stream(
     # OpenAI's ``strict=true`` semantics. Counter ticks for ops
     # visibility, then 502 so the client sees the contract breach
     # instead of silently consuming garbage.
-    if _strict_schema and output is not None:
+    #
+    # R12-T1F-267-a (PR #878 codex follow-up): this gate must mirror
+    # chat.py's ``if strict_mode and use_guided and json_schema and
+    # output is not None:`` — i.e. it ONLY fires on the
+    # CONSTRAINED-DECODING (guided) path. When the engine does NOT
+    # support guided generation, the unconstrained path has its own
+    # post-decode validator + repair retry block ABOVE (gated by
+    # ``strict_enforcement_enabled()`` at line ~937), and the
+    # ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` escape hatch correctly
+    # short-circuits that block. Without the ``supports_guided_generation``
+    # gate here, the disable flag was effectively ignored — the
+    # non-guided branch logged "falling through to prompt-injection
+    # only" and then the unconditional 502 at this site fired
+    # regardless, breaking parity with /v1/chat/completions. Match
+    # chat's gate exactly: only the guided path runs this validator.
+    if (
+        _strict_schema
+        and engine.supports_guided_generation
+        and output is not None
+    ):
         ok, err = validate_output_against_schema(output.text or "", _strict_schema)
         if not ok:
             incr_strict_violation()

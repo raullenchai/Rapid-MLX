@@ -1886,6 +1886,74 @@ def test_responses_strict_true_with_tools_returns_400(_rate_limiter_state):
     assert engine.chat_calls == []
 
 
+def test_responses_strict_true_guided_unavailable_disable_flag_skips_enforcement(
+    monkeypatch, _rate_limiter_state
+):
+    """R12-T1F-267-a (PR #878 codex review follow-up): the
+    ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` escape hatch must restore
+    legacy pass-through behavior on /v1/responses too — not just on
+    /v1/chat/completions. Pre-fix the route correctly skipped the
+    non-guided post-generate validation block, then immediately
+    tripped the UNGATED post-decode validator below it and
+    returned 502 regardless. Schema-violating output with the
+    disable flag set must come back as 200 + zero violation /
+    repair counters (parity with
+    ``test_strict_true_guided_unavailable_disable_flag_skips_enforcement``
+    on the chat route).
+    """
+    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA", "off")
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    client = _make_responses_client(engine, _rate_limiter_state)
+    resp = client.post("/v1/responses", json=_responses_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    # Counter still ticks (operator observability) but no violation or
+    # repair attempt — the disable flag short-circuits enforcement.
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
+    assert snap["strict_repairs_attempted_total"] == 0
+    # The unconstrained chat path was used (no guided dispatch).
+    assert len(engine.chat_calls) == 1
+    assert engine.guided_calls == []
+
+
+def test_responses_strict_true_guided_unavailable_default_on_invalid_returns_422(
+    _rate_limiter_state,
+):
+    """R12-T1F-267-a — positive regression for the default
+    enforcement path. With ``RAPID_MLX_STRICT_JSON_SCHEMA`` unset
+    (default = on) and the engine reporting
+    ``supports_guided_generation=False``, invalid output MUST
+    surface as 422 ``json_schema_violation`` (NOT 502
+    ``strict_schema_violation``) — the same canonical envelope
+    chat.py emits via its R12-4 post-generate validation block.
+    The fix in this PR (gating the unconditional post-decode
+    validator to the guided path) must not regress this case: the
+    422 here comes from the non-guided ``use_strict_postgen_validation``
+    branch at the TOP of the function, NOT from the post-decode
+    502 gate below.
+    """
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    client = _make_responses_client(engine, _rate_limiter_state)
+    resp = client.post("/v1/responses", json=_responses_payload(strict=True))
+    # Canonical non-guided enforcement envelope: 422 (parity with chat).
+    assert resp.status_code == 422, resp.text
+    body = resp.json()
+    assert body["error"]["code"] == "json_schema_violation"
+    assert body["error"]["type"] == "validation_error"
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+    # Repair was attempted (single retry) — parity with chat.
+    assert snap["strict_repairs_attempted_total"] == 1
+
+
 def test_strict_helper_composition_extract_returns_none_for_empty_schema():
     """Unit-level pin on the ``strict_mode AND no schema`` shape.
 
