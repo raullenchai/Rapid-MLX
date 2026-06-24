@@ -187,6 +187,36 @@ class ResponsesRequest(BaseModel):
     # r10-R1: every value (int / list / null / case-variant / garbage
     # string) 200'd on this surface pre-fix.
     reasoning_effort: str | None = None
+    # R12-M2 (Mira r12 / finding R-1) — surface parity with
+    # ``ChatCompletionRequest`` for the two thinking-control knobs.
+    # Pre-fix /v1/responses had no declared field for either, so a
+    # client sending ``chat_template_kwargs={"enable_thinking":false}``
+    # (the OpenAI-extension shape Qwen / DeepSeek-R1 honor) had the key
+    # silently dropped by Pydantic, then the route's
+    # ``_resolve_enable_thinking`` consult returned ``None`` (template
+    # default = True for the Qwen3 family) and the model burned the
+    # whole token budget inside ``<think>`` before emitting JSON. The
+    # strict-json_schema path then 422'd with ``reason:"invalid_json"``
+    # on a perfectly valid happy-path prompt — a soft-broken state
+    # for SDK consumers because the envelope incorrectly suggests
+    # their schema is at fault. Declaring the fields here makes the
+    # passthrough first-class on this surface (parity with chat) and
+    # ``responses_to_openai`` forwards them onto the materialized
+    # ``ChatCompletionRequest`` so the existing
+    # ``_resolve_enable_thinking`` helper resolves them identically
+    # to /v1/chat/completions.
+    #
+    # ``chat_template_kwargs`` is intentionally typed as a dict — the
+    # only key rapid-mlx consumes today is ``enable_thinking`` (other
+    # keys round-trip but no-op), and the chat surface uses the same
+    # unconstrained ``dict`` shape (api/models.py line 1511) so the
+    # two routes share one contract.
+    chat_template_kwargs: dict | None = None
+    # ``enable_thinking`` is the rapid-mlx convenience top-level knob;
+    # the OpenAI-extension shape ``chat_template_kwargs.enable_thinking``
+    # wins when both are set (see service/helpers.py
+    # ``_extract_thinking_from_request`` precedence).
+    enable_thinking: bool | None = None
 
     @field_validator("seed", mode="before")
     @classmethod

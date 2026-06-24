@@ -82,6 +82,7 @@ from ..service.helpers import (
     _check_admission_or_503,
     _disconnect_guard,
     _effective_enable_thinking,
+    _extract_thinking_from_request,
     _finalize_content_and_reasoning,
     _parse_tool_calls_with_parser,
     _release_admission_unless_committed,
@@ -496,6 +497,55 @@ async def create_response(request: Request):
                         "[guided] — engaging R12-4 post-generate "
                         "validation + repair retry."
                     )
+
+            # R12-M2 (Mira r12 / finding R-2) — auto-disable thinking
+            # on the strict json_schema path WHEN the client did not
+            # express a preference. The chat surface lets users opt
+            # out via ``chat_template_kwargs={"enable_thinking":false}``;
+            # R12-M2 wires that knob through to /v1/responses too
+            # (finding R-1). But operator preference is "convenience
+            # for agents" — most strict-json callers care about the
+            # final JSON, not the chain-of-thought, and on thinking
+            # models (Qwen3 / DeepSeek-R1) the default-on
+            # ``<think>`` channel routinely exhausts the token budget
+            # before the schema-conformant body is emitted, turning
+            # every strict request into a 422 ``invalid_json`` on the
+            # happy path. So under strict json_schema we flip the
+            # default from "template default (= thinking on)" to
+            # "thinking off" — same shape OpenAI's structured-output
+            # mode uses (reasoning is off unless the caller asks for
+            # it).
+            #
+            # Gated on _both_ knobs being unset: when the client
+            # EXPLICITLY set ``chat_template_kwargs.enable_thinking``
+            # (either True or False) or the top-level
+            # ``enable_thinking`` field, we honor their choice and do
+            # NOT override (a strict caller who deliberately wants
+            # thinking-on can ask for it and accept the budget risk —
+            # they just have to raise ``max_output_tokens``). We
+            # express the override by injecting
+            # ``chat_template_kwargs.enable_thinking=False`` onto the
+            # materialized ``ChatCompletionRequest`` so every
+            # downstream consult (the token-budget gate immediately
+            # below, ``engine.chat`` / ``generate_with_schema``,
+            # ``_finalize_content_and_reasoning``) sees the same
+            # resolved choice.
+            if _extract_thinking_from_request(openai_request) is None:
+                existing_ctk = openai_request.chat_template_kwargs or {}
+                # Merge rather than replace so any non-thinking keys
+                # the client passed survive (forward-compat).
+                merged_ctk = dict(existing_ctk)
+                merged_ctk["enable_thinking"] = False
+                openai_request.chat_template_kwargs = merged_ctk
+                logger.info(
+                    "R12-M2 auto-disable: strict json_schema on "
+                    "/v1/responses with no client-set thinking "
+                    "preference — injecting "
+                    "chat_template_kwargs.enable_thinking=False so "
+                    "thinking models do not burn the token budget "
+                    "inside <think>. Set chat_template_kwargs."
+                    "enable_thinking=true to opt back in."
+                )
 
         try:
             validate_content_blocks_for_capabilities(
