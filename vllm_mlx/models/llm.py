@@ -45,6 +45,11 @@ class StreamingOutput:
     prompt_tokens: int = 0
     # See ``GenerationOutput.matched_stop`` (issue #469).
     matched_stop: str | None = None
+    # Set on synthetic terminal chunks emitted purely to drain the
+    # stop-string safety-window buffer.  Consumers MUST NOT increment
+    # any per-token counter (completion_tokens, sampler-tick metrics)
+    # for these chunks; they carry text but represent zero new samples.
+    is_drain: bool = False
 
 
 class MLXLanguageModel:
@@ -410,6 +415,7 @@ class MLXLanguageModel:
                     finish_reason="stop",
                     prompt_tokens=num_prompt_tokens,
                     matched_stop=None,
+                    is_drain=True,
                 )
 
     def chat(

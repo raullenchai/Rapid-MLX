@@ -1043,7 +1043,11 @@ class SimpleEngine(BaseEngine):
                         if hasattr(chunk, "prompt_tokens") and chunk.prompt_tokens
                         else prompt_tokens
                     )
-                    completion_tokens += 1
+                    # Synthetic stop-window drain chunks carry text but
+                    # represent zero new samples; don't double-count
+                    # them (codex r8 NIT).
+                    if not getattr(chunk, "is_drain", False):
+                        completion_tokens += 1
                     if request_id in self._active_requests:
                         self._active_requests[request_id].update(
                             {
@@ -1339,6 +1343,14 @@ class SimpleEngine(BaseEngine):
             accumulated_text = ""
             token_count = 0
 
+            # Stop-sequence enforcement gate for both MLLM paths below
+            # (issue #469, codex r8).  ``self._model.stream_chat`` doesn't
+            # enforce ``stop`` itself, so we hold-back-buffer and surface
+            # ``matched_stop`` here exactly like the LLM/spec-prefill
+            # paths do above.
+            _mllm_stop = kwargs.get("stop") or []
+            _mllm_stop_gate = _StopStreamGate(_mllm_stop)
+
             # Text-only fallback when no TextModel exists: keep execution on the
             # current thread. Routing through to_thread can break mlx_vlm stream
             # ownership on some models (Stream(gpu, N) mismatch).
@@ -1355,10 +1367,31 @@ class SimpleEngine(BaseEngine):
                         **local_kwargs,
                     ):
                         token_count += 1
-                        new_text = chunk.text if hasattr(chunk, "text") else str(chunk)
-                        accumulated_text += new_text
+                        raw_new_text = (
+                            chunk.text if hasattr(chunk, "text") else str(chunk)
+                        )
+                        new_text, stop_hit, matched_here = _mllm_stop_gate.feed(
+                            raw_new_text
+                        )
+                        if _mllm_stop_gate.enabled:
+                            accumulated_text = _mllm_stop_gate.buf
+                        else:
+                            accumulated_text += raw_new_text
 
-                        finished = chunk.finish_reason is not None
+                        upstream_finish = chunk.finish_reason
+                        finished = stop_hit or upstream_finish is not None
+                        if stop_hit:
+                            finish_reason = "stop"
+                        else:
+                            finish_reason = upstream_finish if finished else None
+
+                        # On non-stop-match termination, drain the safety
+                        # window so the trailing chars don't disappear.
+                        if finished and not stop_hit and _mllm_stop_gate.enabled:
+                            tail, _ = _mllm_stop_gate.flush()
+                            if tail:
+                                new_text = (new_text or "") + tail
+                                accumulated_text = _mllm_stop_gate.buf
 
                         yield GenerationOutput(
                             text=accumulated_text,
@@ -1366,13 +1399,30 @@ class SimpleEngine(BaseEngine):
                             prompt_tokens=getattr(chunk, "prompt_tokens", 0),
                             completion_tokens=token_count,
                             finished=finished,
-                            finish_reason=chunk.finish_reason if finished else None,
+                            finish_reason=finish_reason,
                             mtp_drafts=getattr(chunk, "mtp_drafts", 0),
                             mtp_accepted=getattr(chunk, "mtp_accepted", 0),
+                            matched_stop=matched_here,
                         )
 
                         if finished:
                             break
+                    else:
+                        # Upstream stream_chat exhausted without setting
+                        # ``finish_reason`` AND we never matched/broke.
+                        # Drain the gate so safety-window bytes ship.
+                        if _mllm_stop_gate.enabled:
+                            tail, _ = _mllm_stop_gate.flush()
+                            if tail:
+                                accumulated_text = _mllm_stop_gate.buf
+                                yield GenerationOutput(
+                                    text=accumulated_text,
+                                    new_text=tail,
+                                    prompt_tokens=0,
+                                    completion_tokens=token_count,
+                                    finished=True,
+                                    finish_reason="stop",
+                                )
                 return
 
             # Run stream_chat in thread pool since it's synchronous
@@ -1390,12 +1440,33 @@ class SimpleEngine(BaseEngine):
 
             chunks = await self._run_blocking_serialized(run_stream)
 
+            broke_on_stop = False
             for chunk in chunks:
                 token_count += 1
-                new_text = chunk.text if hasattr(chunk, "text") else str(chunk)
-                accumulated_text += new_text
+                raw_new_text = (
+                    chunk.text if hasattr(chunk, "text") else str(chunk)
+                )
+                new_text, stop_hit, matched_here = _mllm_stop_gate.feed(
+                    raw_new_text
+                )
+                if _mllm_stop_gate.enabled:
+                    accumulated_text = _mllm_stop_gate.buf
+                else:
+                    accumulated_text += raw_new_text
 
-                finished = chunk.finish_reason is not None
+                upstream_finish = chunk.finish_reason
+                finished = stop_hit or upstream_finish is not None
+                if stop_hit:
+                    finish_reason = "stop"
+                    broke_on_stop = True
+                else:
+                    finish_reason = upstream_finish if finished else None
+
+                if finished and not stop_hit and _mllm_stop_gate.enabled:
+                    tail, _ = _mllm_stop_gate.flush()
+                    if tail:
+                        new_text = (new_text or "") + tail
+                        accumulated_text = _mllm_stop_gate.buf
 
                 yield GenerationOutput(
                     text=accumulated_text,
@@ -1403,13 +1474,35 @@ class SimpleEngine(BaseEngine):
                     prompt_tokens=getattr(chunk, "prompt_tokens", 0),
                     completion_tokens=token_count,
                     finished=finished,
-                    finish_reason=chunk.finish_reason if finished else None,
+                    finish_reason=finish_reason,
                     mtp_drafts=getattr(chunk, "mtp_drafts", 0),
                     mtp_accepted=getattr(chunk, "mtp_accepted", 0),
+                    matched_stop=matched_here,
                 )
 
                 if finished:
                     break
+
+            # If the buffered chunk-list exhausted without any chunk
+            # marking finished AND no stop match landed, drain the
+            # safety window so trailing chars don't disappear.
+            if (
+                not broke_on_stop
+                and chunks
+                and chunks[-1].finish_reason is None
+                and _mllm_stop_gate.enabled
+            ):
+                tail, _ = _mllm_stop_gate.flush()
+                if tail:
+                    accumulated_text = _mllm_stop_gate.buf
+                    yield GenerationOutput(
+                        text=accumulated_text,
+                        new_text=tail,
+                        prompt_tokens=0,
+                        completion_tokens=token_count,
+                        finished=True,
+                        finish_reason="stop",
+                    )
             return
 
         # For LLM, apply chat template and stream
