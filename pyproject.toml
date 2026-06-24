@@ -123,24 +123,59 @@ all = [
     "mlx-embeddings>=0.1.0",
     # dflash (text-only path covered by mlx-vlm above; listed for clarity)
 ]
+# Test runtime — the *minimum* deps `pytest tests/` needs to import the
+# suite and collect every test without a plugin-missing error. Kept
+# narrow on purpose so:
+#   1. `pr_validate` (scripts/pr_validate/_test_env.py) can install JUST
+#      this when its env check finds plugins missing, without dragging
+#      in the linter/typer toolchain.
+#   2. Contributors who only want to run tests don't have to install the
+#      full dev toolbox.
+# The canonical source of truth: if pytest needs it to collect/run a
+# test, it goes here, not in `dev`.
+# Closes #185 — pr_validate's targeted_tests + full_unit gates have
+# been crashing across multiple fix waves because pytest-asyncio
+# (required by `asyncio_mode = auto` in pytest.ini) keeps falling out
+# of the host Python after `pip install --no-deps --force-reinstall .`
+# in orchestrated runs. The systematic fix is to publish the test deps
+# as their own extras so pr_validate can re-install them from the
+# canonical source, instead of every script hand-maintaining a list.
+test = [
+    "pytest>=7.0.0",
+    # pytest-asyncio is REQUIRED — pytest.ini sets `asyncio_mode = auto`,
+    # which means every `async def test_*` is collected as an asyncio
+    # test. Without the plugin, those tests fail at collection with
+    # "async def functions are not natively supported".
+    "pytest-asyncio>=0.21.0",
+    # Parse the /metrics output through the official Prometheus parser
+    # to catch format regressions. NOT used at runtime — the route
+    # hand-rolls the exposition format to avoid a runtime dep.
+    "prometheus_client>=0.16.0",
+    # Parse pyproject.toml in the L-07 vision-extra lock-in tests
+    # (tests/test_vision_extra_install.py). ``tomllib`` is stdlib on
+    # Python ≥3.11; the environment marker pins ``tomli`` only on
+    # Python 3.10 so the L-07 suite always runs against the documented
+    # supported floor (codex round-2 BLOCKING — without this, CI on 3.10
+    # would module-skip the entire lock-in suite and let a future
+    # refactor silently drop the ``[vision]`` extra).
+    'tomli>=2.0.1; python_version < "3.11"',
+]
 dev = [
+    # Test runtime (must mirror the `test` extras above; a unit test in
+    # tests/test_pr_validate_test_env.py asserts every `test` dep is
+    # also in `dev` so a future drift can't silently break the
+    # "install dev, run pytest" workflow contributors have used since
+    # day one).
     "pytest>=7.0.0",
     "pytest-asyncio>=0.21.0",
+    "prometheus_client>=0.16.0",
+    'tomli>=2.0.1; python_version < "3.11"',
+    # Linters / typer — NOT in the `test` extras because pr_validate
+    # only needs to *run* the tests; lint is its own pipeline step
+    # (ruff) and runs from the host environment.
     "black>=23.0.0",
     "ruff>=0.1.0",
     "mypy>=1.0.0",
-    # Test-only: parse the /metrics output through the official Prometheus
-    # parser to catch format regressions. NOT used at runtime — the route
-    # hand-rolls the exposition format to avoid a runtime dep.
-    "prometheus_client>=0.16.0",
-    # Test-only: parse pyproject.toml in the L-07 vision-extra lock-in
-    # tests (tests/test_vision_extra_install.py). ``tomllib`` is stdlib
-    # on Python ≥3.11; the environment marker pins ``tomli`` only on
-    # Python 3.10 so the L-07 suite always runs against the documented
-    # supported floor (codex round-2 BLOCKING — without this, CI on
-    # 3.10 would module-skip the entire lock-in suite and let a future
-    # refactor silently drop the ``[vision]`` extra).
-    'tomli>=2.0.1; python_version < "3.11"',
 ]
 vllm = [
     "vllm>=0.4.0",
