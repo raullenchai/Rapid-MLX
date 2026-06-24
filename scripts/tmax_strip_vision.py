@@ -30,11 +30,10 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 import shutil
 import sys
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable
 
 try:
     from safetensors import safe_open
@@ -97,7 +96,7 @@ def _strip_shard(shard_path: Path, prefixes: Iterable[str]) -> tuple[int, int]:
     dropped: list[str] = []
     kept_keys: list[str] = []
     with safe_open(str(shard_path), framework="numpy") as f:
-        for k in f.keys():
+        for k in f:
             if _key_has_vision_prefix(k, prefixes):
                 dropped.append(k)
             else:
@@ -137,7 +136,9 @@ def _prune_index(index_path: Path, prefixes: Iterable[str], dir_path: Path) -> b
     return True
 
 
-def strip(snapshot_dir: Path, prefixes: Iterable[str] = DEFAULT_VISION_PREFIXES) -> dict:
+def strip(
+    snapshot_dir: Path, prefixes: Iterable[str] = DEFAULT_VISION_PREFIXES
+) -> dict:
     snapshot_dir = Path(snapshot_dir)
     report: dict = {"dir": str(snapshot_dir), "shards": []}
 
