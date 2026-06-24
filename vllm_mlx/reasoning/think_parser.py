@@ -95,10 +95,11 @@ def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
             continue
         if "<" in stripped or "{" in stripped or "}" in stripped:
             # XML/JSON-ish — still inside the tool_call body. Update
-            # net brace depth so subsequent pretty-printed JSON value
-            # lines are recognised as still-inside-body even though
-            # they have no structural chars.
-            json_depth += stripped.count("{") - stripped.count("}")
+            # net brace depth using a string-aware scan so braces
+            # inside JSON string literals (e.g. ``"pattern": "}}"``)
+            # don't close the body prematurely — codex round-5
+            # finding #4.
+            json_depth += _net_brace_delta_outside_strings(stripped)
             promoted_lines.append(line)
             continue
         if json_depth > 0:
@@ -114,6 +115,40 @@ def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
     if trailing_prose:
         trailing_prose = "\n" + trailing_prose
     return promoted_block, trailing_prose
+
+
+def _net_brace_delta_outside_strings(text: str) -> int:
+    """Net ``{ vs }`` delta in ``text``, ignoring chars inside JSON
+    string literals.
+
+    Tracks a tiny string-state machine: characters inside a
+    double-quoted JSON string are skipped (including escaped quotes
+    via ``\\"``). Only braces outside strings count toward the depth.
+    This prevents string contents like ``"pattern": "}}"`` from
+    artificially closing the JSON body — codex round-5 finding #4.
+    """
+    delta = 0
+    in_string = False
+    escape = False
+    for ch in text:
+        if in_string:
+            if escape:
+                escape = False
+                continue
+            if ch == "\\":
+                escape = True
+                continue
+            if ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+            continue
+        if ch == "{":
+            delta += 1
+        elif ch == "}":
+            delta -= 1
+    return delta
 
 
 def _partial_tool_call_open_suffix(text: str) -> int:
