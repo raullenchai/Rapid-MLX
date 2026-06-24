@@ -674,29 +674,32 @@ def test_streaming_rescue_noop_when_reasoning_is_whitespace_only():
         events = _parse_sse(resp.text)
         assert events, "expected at least one SSE chunk"
 
-        # Codex round-4 BLOCKING on #676: collect EVERY non-null
+        # Codex round-4 BLOCKING on #676: collect EVERY promoted
         # ``delta.content`` value without stripping, so an
         # incorrectly-emitted whitespace-only payload (``"   \n\t  "``)
         # is caught instead of being silently coerced to empty by
         # ``.strip()``. Pre-fix this assertion was
         # ``not streamed_content.strip()``, which would still pass
         # under the exact regression we're guarding against — a
-        # self-defeating test. The new shape lists every raw
+        # self-defeating test. The new shape lists every PROMOTED
         # ``delta.content`` value emitted on any chunk and asserts
-        # the list is empty; any non-null emission at all
-        # (whitespace, empty string, real text) is a regression.
+        # the list is empty; any non-empty, non-null emission
+        # (whitespace, real text) is a regression.
         #
         # F-040 / D-MISSING-CONTENT-KEY: ``content: ""`` (and prior
         # ``content: null``) is now an INTENTIONAL part of the
-        # streaming shape on reasoning-only deltas (so clients reading
-        # ``delta.content`` on the terminal chunk don't crash with a
-        # KeyError). The original test caught any presence of the
-        # ``content`` key including ``None``; we tighten the check to
-        # only flag actual *promotions* (a non-null, non-empty value
-        # — i.e. real promoted text), which is the regression we
-        # care about here. D-MISSING-CONTENT-KEY flipped the
-        # placeholder from ``null`` to ``""`` for strongly-typed
-        # client parity, so we also filter out empty strings here.
+        # streaming shape on reasoning-only / tool-call-only deltas
+        # (so clients reading ``delta.content`` on the terminal chunk
+        # don't crash with a KeyError). The original test caught any
+        # presence of the ``content`` key including ``None``; we
+        # tighten the check to only flag actual *promotions* (a
+        # non-null AND non-empty value — i.e. real promoted text),
+        # which is the regression we care about here.
+        # D-MISSING-CONTENT-KEY flipped the placeholder from ``null``
+        # to ``""`` for strongly-typed client parity (Swift Codable /
+        # Rust serde / pydantic strict decode cleanly into a
+        # non-Optional ``String``), so the filter below also drops
+        # ``""`` alongside ``None``.
         content_values = [
             (choice.get("delta") or {}).get("content")
             for ev in events
