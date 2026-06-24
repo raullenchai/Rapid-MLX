@@ -558,6 +558,78 @@ class TestR12_8RescuePayloadShape:
             f"all-markup tail must degrade to bare sentinel; got {result!r}"
         )
 
+    @pytest.mark.parametrize(
+        "real_content,description",
+        [
+            (
+                "[truncated — reasoning incomplete; raise max_tokens] is the "
+                "literal text the server uses for the rescue.",
+                "model echoes sentinel inline as part of an explanation",
+            ),
+            (
+                "[truncated — reasoning incomplete; raise max_tokens] - see "
+                "docs for opt-out.",
+                "model echoes sentinel followed by a space-then-dash, NOT \\n\\n",
+            ),
+            (
+                "[truncated — reasoning incomplete; raise max_tokens]extra",
+                "sentinel immediately followed by non-whitespace (no separator)",
+            ),
+        ],
+    )
+    def test_rescue_shape_gate_does_not_misclassify_legitimate_content(
+        self, real_content, description
+    ):
+        """Codex pr_validate r1 (R12-8): the rescue-detection gate must
+        be tighter than ``startswith(SENTINEL)``. A legitimate model
+        response that starts with the sentinel literal but is NOT in
+        the rescue shape (bare sentinel OR ``sentinel + \\n\\n + tail``)
+        must NOT be misclassified as a synthetic rescue payload.
+        ``is_rescue_payload`` returns False for these false-positives.
+        """
+        from vllm_mlx.api.constants import is_rescue_payload
+
+        assert is_rescue_payload(real_content) is False, (
+            f"{description}: should NOT be classified as rescue; "
+            f"got is_rescue_payload({real_content!r})=True"
+        )
+
+    @pytest.mark.parametrize(
+        "rescue_content,description",
+        [
+            (
+                "[truncated — reasoning incomplete; raise max_tokens]",
+                "bare sentinel (sanitizer stripped the tail)",
+            ),
+            (
+                "[truncated — reasoning incomplete; raise max_tokens]\n\nsome tail",
+                "sentinel + \\n\\n + non-empty tail (normal rescue shape)",
+            ),
+        ],
+    )
+    def test_rescue_shape_gate_recognizes_real_rescue_payloads(
+        self, rescue_content, description
+    ):
+        """Both rescue-payload shapes produced by
+        ``_build_reasoning_rescue_payload`` MUST be recognized by
+        ``is_rescue_payload`` so the non-stream Responses adapter
+        correctly excludes them from ``downstream_output_seen``."""
+        from vllm_mlx.api.constants import is_rescue_payload
+
+        assert is_rescue_payload(rescue_content) is True, (
+            f"{description}: should be classified as rescue; "
+            f"got is_rescue_payload({rescue_content!r})=False"
+        )
+
+    def test_rescue_shape_gate_handles_none_and_empty(self):
+        """``is_rescue_payload(None)`` and ``is_rescue_payload("")`` MUST
+        return False — the rescue helper always returns at least the
+        sentinel, so an empty/None content is never a rescue."""
+        from vllm_mlx.api.constants import is_rescue_payload
+
+        assert is_rescue_payload(None) is False
+        assert is_rescue_payload("") is False
+
 
 class TestR12_8RescueEnvVar:
     """R12-8 / issue #259: the primary env var is

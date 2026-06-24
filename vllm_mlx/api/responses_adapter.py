@@ -18,7 +18,7 @@ import uuid
 
 from fastapi import HTTPException
 
-from .constants import REASONING_CUTOFF_SENTINEL
+from .constants import REASONING_CUTOFF_SENTINEL, is_rescue_payload
 from .models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
@@ -502,15 +502,22 @@ def openai_to_responses(
             # partial conclusion — but it's still a UX rescue, NOT
             # "real downstream output" from the model, so it must not
             # flip ``reasoning_item_status`` from ``incomplete`` to
-            # ``completed``. Use ``startswith`` (not exact-match) so
-            # the gate catches both the pre-R12-8 bare-sentinel shape
-            # AND the R12-8 sentinel+tail shape. This brings the non-
-            # stream surface into parity with the streaming surface's
+            # ``completed``. This brings the non-stream surface into
+            # parity with the streaming surface's
             # ``reasoning_block_closed`` predicate (which never sees
             # the sentinel because streaming injects it as a terminal
             # delta, never as the parser's content channel).
+            #
+            # Codex pr_validate r1 (R12-8): the original ``startswith``
+            # check would also flag a legitimate model response that
+            # happens to begin with the sentinel literal but is NOT a
+            # rescue payload (e.g. a model echoing the sentinel text in
+            # its real reply). Use the exact two-shape gate exposed by
+            # :func:`is_rescue_payload` — bare sentinel OR sentinel +
+            # ``\n\n`` + non-empty tail — both of which can ONLY be
+            # produced by ``_build_reasoning_rescue_payload``.
             content_for_downstream_check = choice.message.content or ""
-            if content_for_downstream_check.startswith(REASONING_CUTOFF_SENTINEL):
+            if is_rescue_payload(content_for_downstream_check):
                 content_for_downstream_check = ""
             downstream_output_seen = bool(
                 content_for_downstream_check.strip() or choice.message.tool_calls
