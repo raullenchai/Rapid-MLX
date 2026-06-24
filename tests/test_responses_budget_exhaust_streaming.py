@@ -136,6 +136,56 @@ class _ReasoningCutoffEngine:
             )
 
 
+# Reasoning-then-message engine for codex r1 HIGH #1 regression: the
+# model closes ``</think>`` mid-stream then emits an assistant message
+# and STILL hits ``finish_reason="length"`` before finishing the
+# message. This is the mixed case that exposed the original
+# ``output_index`` collision (reasoning wire-index = 1, but array
+# position = 0).
+_REASONING_THEN_MESSAGE_CHUNKS = [
+    "Let me think.",
+    "</think>",
+    "\n\nHello there!",
+    " How can I help",
+]
+
+
+class _ReasoningThenMessageEngine:
+    """Streams a complete <think> block followed by a partial assistant
+    message, terminating with ``finish_reason="length"``. The qwen3
+    parser splits the bytes before/after ``</think>`` into reasoning
+    vs content."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        full = "".join(_REASONING_THEN_MESSAGE_CHUNKS)
+        return _GenerationOutput(
+            text=" How can I help",
+            raw_text=full,
+            reasoning_text="Let me think.",
+            prompt_tokens=4,
+            completion_tokens=len(_REASONING_THEN_MESSAGE_CHUNKS),
+            finish_reason="length",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        accumulated = ""
+        for i, chunk in enumerate(_REASONING_THEN_MESSAGE_CHUNKS):
+            accumulated += chunk
+            is_last = i == len(_REASONING_THEN_MESSAGE_CHUNKS) - 1
+            yield _GenerationOutput(
+                text=accumulated,
+                new_text=chunk,
+                prompt_tokens=4 if i == 0 else 0,
+                completion_tokens=i + 1,
+                finish_reason="length" if is_last else None,
+            )
+
+
 # ---------------------------------------------------------------------------
 # Test fixture — mirrors ``tests/test_responses_sse_event_order.py``'s
 # lightweight engine swap so we don't need to load a real MLX model.
@@ -201,6 +251,67 @@ def responses_client(monkeypatch):
     # Wire the Qwen3 reasoning parser — that's the path the bug repro
     # used (the live Mira R1 F1 server ran ``--reasoning-parser qwen3``
     # auto-configured from the model family detector).
+    cfg.reasoning_parser_name = "qwen3"
+    cfg.reasoning_parser = "qwen3"
+
+    rate_limiter.enabled = False
+    rate_limiter.requests_per_minute = 60
+    rate_limiter._requests.clear()
+
+    app = FastAPI()
+    install_exception_handlers(app)
+    app.include_router(router)
+    yield SimpleNamespace(client=TestClient(app), engine=cfg.engine)
+
+    reset_config()
+    rate_limiter.enabled = False
+    rate_limiter.requests_per_minute = 60
+    rate_limiter._requests.clear()
+
+    for name, previous in previous_modules.items():
+        if previous is _MISSING:
+            sys.modules.pop(name, None)
+        else:
+            sys.modules[name] = previous
+
+    for (module_name, attr), previous in previous_attrs.items():
+        module = sys.modules.get(module_name)
+        if module is None:
+            continue
+        if previous is _MISSING:
+            if hasattr(module, attr):
+                delattr(module, attr)
+        else:
+            setattr(module, attr, previous)
+
+
+@pytest.fixture
+def reasoning_then_message_client(monkeypatch):
+    """Sibling fixture for the reasoning+message cutoff regression. Same
+    wiring as ``responses_client`` but swaps in
+    ``_ReasoningThenMessageEngine`` so the stream emits BOTH a
+    ``reasoning`` and a ``message`` item before hitting
+    ``finish_reason="length"``."""
+    previous_modules = {n: sys.modules.get(n, _MISSING) for n in _IMPORTED}
+    previous_attrs = {}
+    for module_name, attr in _PARENT_ATTRS:
+        module = sys.modules.get(module_name)
+        previous_attrs[(module_name, attr)] = (
+            getattr(module, attr, _MISSING) if module is not None else _MISSING
+        )
+
+    _install_lightweight_engine_modules(monkeypatch)
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.middleware.auth import rate_limiter
+    from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+    from vllm_mlx.routes.responses import router
+
+    cfg = reset_config()
+    cfg.api_key = "test-secret"
+    cfg.engine = _ReasoningThenMessageEngine()
+    cfg.model_name = "test-model"
+    cfg.model_registry = None
     cfg.reasoning_parser_name = "qwen3"
     cfg.reasoning_parser = "qwen3"
 
@@ -369,9 +480,10 @@ class TestStreamingBudgetExhaustEmitsReasoningItem:
         completed = next(d for n, d in events if n == "response.completed")
         output = completed["response"]["output"]
         assert len(output) >= 1, f"completed.output is empty: {output}"
-        # Reasoning item is FIRST in ``output[]`` (mirrors the non-stream
-        # ``openai_to_responses`` ordering — ``reasoning`` precedes
-        # ``message`` in spec order).
+        # Pure-reasoning cutoff: no message item was opened, so reasoning
+        # lands at array index 0. (Mixed reasoning+message streams are
+        # covered separately under R11-B codex r1 HIGH #1 — see
+        # ``test_output_index_aligns_with_completed_output_position``.)
         assert output[0]["type"] == "reasoning"
         assert output[0]["status"] == "incomplete"
         assert output[0]["summary"], "summary[] is empty"
@@ -392,6 +504,44 @@ class TestStreamingBudgetExhaustEmitsReasoningItem:
         assert summary_text.count("Okay, the user said") == 1, (
             f"reasoning text duplicated:\n  {summary_text!r}"
         )
+
+    def test_output_index_aligns_with_completed_output_position(
+        self, responses_client
+    ):
+        """R11-B codex r1 HIGH #1 regression guard. ``output_index`` on a
+        streaming event is the position of that item in the terminal
+        ``Response.output[]`` array — NOT just a wire-event ordinal.
+        Pre-fix the reasoning emit used ``(message_output_index + 1)``
+        as its wire index but was inserted at ``completed_output[0]``,
+        which broke SDK consumers that index into ``response.output[]``
+        by event ``output_index``. This test pins the invariant that
+        ``output[i].id == output_item.done[output_index=i].item.id``
+        for every emitted item."""
+        with responses_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json=_stream_payload(),
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        completed = next(d for n, d in events if n == "response.completed")
+        output = completed["response"]["output"]
+
+        for ev_name, payload in events:
+            if ev_name != "response.output_item.done":
+                continue
+            idx = payload["output_index"]
+            ev_item_id = payload["item"]["id"]
+            assert 0 <= idx < len(output), (
+                f"output_index={idx} out of range for output[] of len "
+                f"{len(output)}"
+            )
+            assert output[idx]["id"] == ev_item_id, (
+                f"output_index/array mismatch at idx={idx}: "
+                f"event item id={ev_item_id!r}, output[{idx}].id="
+                f"{output[idx]['id']!r}"
+            )
 
     def test_reasoning_tokens_credited_under_cutoff(self, responses_client):
         """``usage.output_tokens_details.reasoning_tokens`` MUST be > 0
@@ -490,3 +640,74 @@ class TestStreamingNonStreamingParity:
         assert stream_output[0]["type"] == "reasoning"
         assert non_stream_output[0]["status"] == stream_output[0]["status"]
         assert non_stream_output[0]["status"] == "incomplete"
+
+
+# =============================================================================
+# R11-B codex r1 HIGH #1 — mixed reasoning + message cutoff
+# =============================================================================
+
+
+class TestReasoningPlusMessageOutputIndexAlignment:
+    """The bug surfaced in codex round 1: when the stream emits BOTH a
+    message item (because ``</think>`` closed mid-stream) AND a
+    reasoning item (because we accumulated the pre-``</think>`` bytes
+    and hit ``finish_reason="length"`` before the message finished),
+    the wire ``output_index`` must equal the array position of that
+    item in ``response.output[]``."""
+
+    def test_message_then_reasoning_indices_align(
+        self, reasoning_then_message_client
+    ):
+        with reasoning_then_message_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": "Hi",
+                "stream": True,
+                "max_output_tokens": 32,
+            },
+            headers=HEADERS,
+        ) as resp:
+            assert resp.status_code == 200
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        completed = next(d for n, d in events if n == "response.completed")
+        output = completed["response"]["output"]
+
+        # Sanity: at least one message and one reasoning item shipped.
+        types_seen = [item["type"] for item in output]
+        assert "reasoning" in types_seen, (
+            f"reasoning item missing from output[]; types={types_seen}"
+        )
+
+        # Walk every ``output_item.done`` and verify its
+        # ``output_index`` matches its position in ``output[]`` by id.
+        # Pre-fix the reasoning event reported ``output_index=1`` while
+        # being inserted at array position 0 — that's the collision
+        # this test pins.
+        for ev_name, payload in events:
+            if ev_name != "response.output_item.done":
+                continue
+            idx = payload["output_index"]
+            ev_item_id = payload["item"]["id"]
+            assert 0 <= idx < len(output), (
+                f"output_index={idx} out of range for output[] of len "
+                f"{len(output)} on item {ev_item_id!r}"
+            )
+            assert output[idx]["id"] == ev_item_id, (
+                f"output_index/array mismatch at idx={idx}: "
+                f"event item id={ev_item_id!r}, "
+                f"output[{idx}].id={output[idx]['id']!r}"
+            )
+
+        # No two ``output_item.done`` events share an output_index.
+        done_indices = [
+            payload["output_index"]
+            for ev_name, payload in events
+            if ev_name == "response.output_item.done"
+        ]
+        assert len(done_indices) == len(set(done_indices)), (
+            f"duplicate output_index in output_item.done events: "
+            f"{done_indices}"
+        )

@@ -2203,10 +2203,24 @@ async def _stream_responses(
         # in ``summary[0].summary_text`` — rapid-mlx does not run a
         # separate summarization model, matching ``_build_reasoning_output_item``
         # on the non-stream side.
+        # R11-B codex r1 HIGH #1: ``output_index`` is the position in
+        # the terminal ``Response.output[]`` array, not just an SSE
+        # ordinal. The earlier draft inserted the reasoning item at
+        # ``completed_output[0]`` to mirror non-stream order BUT kept
+        # the wire ``output_index`` at ``(message_output_index + 1)``
+        # — that broke SDK consumers (openai-python) that index events
+        # against the final array. It also collided with the
+        # tool-call ``tool_output_index`` computed below. Fix: append
+        # reasoning AT THE END of ``completed_output`` and use the
+        # NEXT available index. Cross-path text ordering (reasoning →
+        # message in the non-stream surface) is not strictly required
+        # on the streaming wire — SDK consumers iterate ``output[]``
+        # by type, not by literal index. The non-stream
+        # ``openai_to_responses`` still ships reasoning-first; this
+        # streaming compromise keeps the wire indices consistent with
+        # the final array.
         if accumulated_reasoning_text:
-            reasoning_output_index = (
-                (message_output_index + 1) if message_open else 0
-            )
+            reasoning_output_index = len(completed_output)
             reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
             reasoning_status = (
                 "incomplete" if last_finish_reason == "length" else "completed"
@@ -2244,12 +2258,7 @@ async def _stream_responses(
                     "item": reasoning_item_payload_done,
                 },
             )
-            # Mirror the non-stream ``openai_to_responses`` ordering:
-            # reasoning appears FIRST in ``output[]`` so SDK consumers
-            # walking ``output[i].type`` see the same shape on both
-            # surfaces. We may have already appended a message item at
-            # ``completed_output[0]`` — insert reasoning before it.
-            completed_output.insert(0, reasoning_item_payload_done)
+            completed_output.append(reasoning_item_payload_done)
 
         # Ana C-06 (0.8.5 dogfood): when the request used Computer-Use,
         # translate ``function.name == "computer"`` tool_calls into the
@@ -2257,7 +2266,14 @@ async def _stream_responses(
         # ``output_item.type`` for ``computer_call`` find them.
         uses_computer_use = request_uses_computer_use(responses_request)
 
-        tool_output_index = (message_output_index + 1) if message_open else 0
+        # R11-B codex r1 HIGH #1: derive ``tool_output_index`` from
+        # ``len(completed_output)`` so it accounts for ALL items
+        # already appended (message + reasoning), not just the
+        # pre-R11 message-only shape. Pre-fix, when the stream
+        # emitted both a message AND reasoning item before any
+        # tool_call, ``tool_output_index`` collided with the
+        # reasoning item's index (both were 1).
+        tool_output_index = len(completed_output)
         for tc in tool_calls or []:
             # R10-C3: inline the tool-call event triplet here (instead of
             # delegating to ``_emit_function_call_item`` / ``_emit_computer_call_item``)
