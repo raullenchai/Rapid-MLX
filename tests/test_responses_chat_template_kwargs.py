@@ -47,11 +47,7 @@ from vllm_mlx.api.responses_models import ResponsesRequest
 from vllm_mlx.config import reset_config
 from vllm_mlx.engine.base import GenerationOutput
 from vllm_mlx.middleware.exception_handlers import install_exception_handlers
-from vllm_mlx.service.helpers import (
-    _extract_thinking_from_request,
-    _resolve_enable_thinking,
-)
-
+from vllm_mlx.service.helpers import _resolve_enable_thinking
 
 # ---------------------------------------------------------------------------
 # (1) Pydantic-model parity — fields are no longer silently dropped
@@ -270,7 +266,7 @@ def _strict_responses_payload(
 ) -> dict:
     body: dict = {
         "model": "test-model",
-        "input": "Return {\"age\":25}",
+        "input": 'Return {"age":25}',
         "text": {
             "format": {
                 "type": "json_schema",
@@ -288,9 +284,7 @@ def _strict_responses_payload(
 
 
 class TestStrictAutoDisableThinking:
-    def test_strict_with_explicit_disable_kwarg_returns_200(
-        self, _rate_limiter_state
-    ):
+    def test_strict_with_explicit_disable_kwarg_returns_200(self, _rate_limiter_state):
         """Probe-3a parity: strict + valid prompt + explicit
         ``chat_template_kwargs={"enable_thinking":false}`` → 200 with
         valid JSON. Pre-fix the kwarg was silently dropped and the
@@ -365,7 +359,7 @@ class TestStrictAutoDisableThinking:
         assert engine.chat_calls, "engine.chat was not called"
         assert engine.chat_calls[0]["kwargs"].get("enable_thinking") is True
 
-    def test_non_strict_request_does_NOT_auto_disable(self, _rate_limiter_state):
+    def test_non_strict_request_does_not_auto_disable(self, _rate_limiter_state):  # noqa: N802
         """Auto-disable is scoped strictly to strict json_schema. A
         plain prompt (no response_format) must reach the engine with
         whatever the client expressed (None here)."""
@@ -466,7 +460,11 @@ class TestBatchedEngineGuidedHonorsEnableThinking:
         return engine, BatchedEngine
 
     def _run_engine_with_capture(
-        self, engine, engine_cls, *, enable_thinking=...,
+        self,
+        engine,
+        engine_cls,
+        *,
+        enable_thinking=...,
     ):
         """Drive ``engine.generate_with_schema`` with prompt-render +
         ``_run_guided_generation`` stubbed; return the captured
@@ -589,9 +587,7 @@ class TestBatchedEngineGuidedHonorsEnableThinking:
                 "vllm_mlx.engine.batched.shared_apply_chat_template",
                 return_value="PROMPT",
             ),
-            patch.object(
-                engine, "_run_guided_generation", return_value=None
-            ),
+            patch.object(engine, "_run_guided_generation", return_value=None),
             patch.object(engine, "chat", side_effect=_fake_chat),
             patch("asyncio.to_thread", side_effect=_sync_run),
         ):
