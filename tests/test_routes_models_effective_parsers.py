@@ -411,5 +411,52 @@ def test_effective_parsers_helper_lookup_order():
         assert reasoning is None
 
 
+def test_entry_with_none_parser_does_not_fall_back_to_profile():
+    """Codex round-1 BLOCKING regression test.
+
+    When a multi-model registry entry exists for a model whose
+    operator deliberately bound NO tool/reasoning parser (e.g.
+    ``--no-tool-call-parser``, or the auto-detector saw a model
+    without native tool support), the entry's ``tool_call_parser`` /
+    ``reasoning_parser`` are ``None`` BY DESIGN — that ``None`` is
+    the live runtime state.
+
+    The pre-fix Tier-1 branch fell back to the alias profile
+    default when the entry field was falsy, which would re-introduce
+    the original V-1/S-2 misreport: ``/v1/models`` would advertise
+    a parser the runtime is NOT using. Clients tool-calling against
+    the advertised parser would then mis-attribute or miss tool
+    output entirely.
+
+    Pin: when the registry entry is present, its parser fields are
+    authoritative — ``None`` on the entry must surface as ``null``
+    on the wire, NEVER as the alias profile default.
+    """
+    from vllm_mlx.routes.models import effective_parsers_for
+
+    entry = _make_entry(
+        model_name="mlx-community/Qwen3-0.6B-bf16",
+        tool_call_parser=None,  # operator deliberately bound no parser
+        reasoning_parser=None,
+    )
+    registry = _make_registry(entry)
+    with _mounted(model_name=None, model_registry=registry):
+        # Profile default is non-None — simulates an alias whose
+        # static aliases.json default would otherwise leak through.
+        tool, reasoning = effective_parsers_for(
+            "mlx-community/Qwen3-0.6B-bf16",
+            "profile-tool",
+            "profile-reasoning",
+        )
+        assert tool is None, (
+            f"entry's live ``tool_call_parser=None`` must surface as null; "
+            f"got {tool!r} (alias profile leak — codex r1 blocker)"
+        )
+        assert reasoning is None, (
+            f"entry's live ``reasoning_parser=None`` must surface as null; "
+            f"got {reasoning!r} (alias profile leak — codex r1 blocker)"
+        )
+
+
 if __name__ == "__main__":  # pragma: no cover — convenience only
     pytest.main([__file__, "-v"])

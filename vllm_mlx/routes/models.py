@@ -481,19 +481,26 @@ def effective_parsers_for(
     except Exception:  # noqa: BLE001
         entry = None
     if entry is not None:
-        # Per-entry live state is authoritative for the registry case.
-        # When the entry exists but carries no live parsers (e.g. a
-        # multi-model serve where one entry was loaded with no parser
-        # bound), the route falls back to the alias profile default
-        # for THIS entry — NOT to the server-global. The server global
-        # is single-model state and would leak the wrong parser onto
-        # unrelated registry entries (codex r4 BLOCKING on PR #804;
-        # same gate as :func:`_tools_capable` / :func:`_is_served_model`).
-        entry_tool = _coerce(getattr(entry, "tool_call_parser", None))
-        entry_reasoning = _coerce(getattr(entry, "reasoning_parser", None))
+        # Per-entry live state is AUTHORITATIVE for the registry case.
+        # ``server.load_model`` writes ``tool_call_parser`` /
+        # ``reasoning_parser`` onto the ``ModelEntry`` from the resolved
+        # globals AFTER ``_detect_native_tool_support`` — so an entry
+        # field of ``None`` means the runtime is deliberately running
+        # this model WITHOUT that parser (operator passed
+        # ``--no-tool-call-parser`` or the auto-detector saw a model
+        # without native tool support). Falling back to the alias
+        # profile default in that case would lie about the live state
+        # and re-introduce the very V-1/S-2 bug this PR was opened
+        # to fix — clients would tool-call against a parser that isn't
+        # actually bound, and tool-output extraction would silently
+        # mis-attribute on the response. Codex review (round 1) flagged
+        # this as a blocking regression: when the entry exists, return
+        # the entry's fields directly; do NOT use the profile default
+        # as a backstop. The profile default only applies to ids with
+        # NO live entry / NO server-global binding (Tier 3 below).
         return (
-            entry_tool or profile_tool_parser,
-            entry_reasoning or profile_reasoning_parser,
+            _coerce(getattr(entry, "tool_call_parser", None)),
+            _coerce(getattr(entry, "reasoning_parser", None)),
         )
 
     # Tier 2 — per-server live state (single-model serve without registry)
