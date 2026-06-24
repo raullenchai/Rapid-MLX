@@ -679,19 +679,29 @@ def _extract_model_name_segment(path: str) -> str:
     parts = [p for p in path.rstrip("/").split("/") if p]
     if not parts:
         return path
-    # Walk from the end, skipping HF cache intermediate segments and
-    # bare-hex SHA fragments. Once a segment that isn't one of those
-    # is reached, that's our candidate name component.
+    # SHA-skipping is gated on the path actually being an HF cache
+    # layout (codex r8 BLOCKING). Without this gate, a legitimate
+    # local-model directory whose final name happens to be all-hex
+    # (e.g. ``/models/abcdef1234``) would have its name silently
+    # dropped and the parent classified instead — false-misbind on a
+    # perfectly valid checkpoint. We look for any HF cache
+    # intermediate marker (``snapshots`` / ``blobs`` / ``refs``)
+    # anywhere in the path; if present, the path IS HF cache and
+    # SHA-shaped segments below the marker can be safely skipped.
+    in_hf_cache_layout = any(p in _HF_CACHE_INTERMEDIATE_SEGMENTS for p in parts)
     candidate = None
     for seg in reversed(parts):
         if seg in _HF_CACHE_INTERMEDIATE_SEGMENTS:
             continue
-        # Skip 40-char hex SHAs (HF snapshot revision dirs) and short
-        # bare-hex aliases (``refs/main`` etc become just ``main`` so
-        # those don't match this guard). Bounded length check keeps
-        # the heuristic narrow — anything 7+ hex chars is almost
-        # certainly a commit SHA.
-        if len(seg) >= 7 and all(c in "0123456789abcdef" for c in seg.lower()):
+        # Only skip SHA-shaped segments when we KNOW the path is an HF
+        # cache layout. ``len(seg) >= 7`` is the conventional minimum
+        # abbreviated-SHA width; ``all hex`` keeps the heuristic
+        # narrow enough to not eat real model names.
+        if (
+            in_hf_cache_layout
+            and len(seg) >= 7
+            and all(c in "0123456789abcdef" for c in seg.lower())
+        ):
             continue
         candidate = seg
         break
@@ -894,11 +904,16 @@ def warn_misbound_deepseek_v3_parser(
     # Tailor the diagnosis to the failure class so the message is
     # actionable instead of generic.
     if template in {"v3", "v31"}:
-        # Cross-sub-family inside the V3 template lineage.
+        # Cross-sub-family inside the V3 template lineage. Use single
+        # backticks around the V3.1 body but plain quotes around the V3
+        # body example because the latter contains literal backticks
+        # (the JSON fence) — wrapping it in another backtick produced a
+        # confusing four-backtick tail (codex r8 NIT). Plain quotes
+        # render cleanly in every log sink.
         expected_body = (
             "`NAME<｜tool▁sep｜>{…json…}`"
             if template == "v31"
-            else "`function<｜tool▁sep｜>NAME\\n```json\\n{…}\\n````"
+            else "function<｜tool▁sep｜>NAME\\n```json\\n{…}\\n```"
         )
         return (
             f"--tool-call-parser={tool_call_parser!r} is bound to "
@@ -943,7 +958,7 @@ def warn_misbound_deepseek_v3_parser(
         f"--tool-call-parser={tool_call_parser!r} is bound to "
         f"{model_path!r}, which is NOT a DeepSeek-V3 chat-template "
         "checkpoint. The V3-family parsers expect the "
-        "`<｜tool▁calls▁begin｜>function<｜tool▁sep｜>NAME\\n```json\\n{…}\\n```` "
+        "<｜tool▁calls▁begin｜>function<｜tool▁sep｜>NAME\\n```json\\n{…}\\n``` "
         "envelope; non-V3 checkpoints (R1-Distill-Qwen/-Llama, V2.x, "
         "Qwen2/Llama-arch SFTs) cannot emit it and tool calls will "
         f"have empty arguments.{suggestion} {remediation}"

@@ -1498,12 +1498,12 @@ def serve_command(args):
                 # tool-call capability, which is the actually-correct
                 # action for an out-of-lineage checkpoint.
                 logger.warning(
-                    "  ↳ This binding came from AUTO-DETECT, not an "
-                    "explicit --tool-call-parser flag. The "
-                    "detect_model_config() regex was fooled by the "
-                    "path. Override with --tool-call-parser hermes "
-                    "(or whatever your checkpoint actually emits) to "
-                    "recover tool-call capability."
+                    "  Auto-detect note: this binding came from "
+                    "AUTO-DETECT, not an explicit --tool-call-parser "
+                    "flag. The detect_model_config() regex was fooled "
+                    "by the path. Override with --tool-call-parser "
+                    "hermes (or whatever your checkpoint actually "
+                    "emits) to recover tool-call capability."
                 )
     except Exception as e:  # noqa: BLE001
         logger.debug(f"deepseek_v3 misbind check failed (non-fatal): {e}")

@@ -1227,6 +1227,50 @@ class TestWarnMisboundDeepseekV3Parser:
             "``snapshots/<sha>`` to the canonical name."
         )
 
+    # PR-validate codex r8 BLOCKING: the prior SHA-skipping heuristic
+    # was triggered on ANY all-hex segment >=7 chars regardless of
+    # path context. A legitimate local model directory whose final
+    # name happens to be all-hex (e.g. ``/models/abcdef1234``) had
+    # its name silently dropped and the parent dir classified instead.
+    # The SHA-skip must be gated on the path actually being an HF
+    # cache layout (containing ``snapshots`` / ``blobs`` / ``refs``).
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            # All-hex local directories — NOT HF cache, so no SHA
+            # skipping. Classifier returns None (unknown family) and
+            # the misbind warning fires as out-of-lineage.
+            ("/models/abcdef1234", "deepseek_v3"),
+            ("/home/me/checkpoints/0123456789abcdef", "deepseek_v3"),
+            # A regular path whose final component is hex but where
+            # NO HF cache marker is present must still classify based
+            # on the (hex) tail, not the parent dir.
+            ("/some/random/parent/deadbeef1234567", "deepseek_v3"),
+        ],
+    )
+    def test_warn_on_local_hex_named_dirs_not_in_hf_cache(self, model_path, parser):
+        # These should warn because the helper classifies the hex
+        # tail as out-of-lineage (not a V3 checkpoint). Critically,
+        # the warning should NOT mention the V3-family parent dir
+        # via a fooled classifier.
+        msg = warn_misbound_deepseek_v3_parser(model_path, parser)
+        assert msg is not None
+        # The exact tail (hex name) appears in the message — proving
+        # the classifier saw the tail, not the parent.
+        assert model_path in msg
+
+    # Same hex-style tail BUT under an HF cache layout: the SHA
+    # skipping IS safe and the canonical name is recovered.
+    def test_no_warn_on_hex_sha_under_hf_cache(self):
+        # SHA sits under ``snapshots`` — gate triggers.
+        assert (
+            warn_misbound_deepseek_v3_parser(
+                "models--mlx-community--DeepSeek-R1-0528-Qwen3-8B-4bit/snapshots/deadbeef1234567",
+                "deepseek_v3",
+            )
+            is None
+        )
+
     # PR-validate codex r6 BLOCKING (V4/V5 boundary): the original
     # ``v[45]`` regex had no boundary, so future variants like
     # ``DeepSeek-V40-*`` or ``DeepSeek-V5Beta-*`` would silently match
