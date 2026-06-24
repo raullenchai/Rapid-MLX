@@ -397,6 +397,45 @@ class TestStreamingPromotion:
         assert "<function=f>" in content
         assert "Done." in content
 
+    def test_stream_carry_then_single_delta_shortcut_preserves_reasoning(self, parser):
+        """Regression for the single-delta promotion shortcut: when a
+        prior delta withheld a partial ``<tool_call>`` opener in
+        ``_reasoning_carry`` and the NEXT delta arrives with both
+        reasoning AND content (the post-think segment), the shortcut
+        must NOT bypass ``_absorb_reasoning_chunk`` — otherwise the
+        carried prefix is silently dropped from the wire.
+
+        Setup: chunk_size 5 splits ``<tool_call>`` across the boundary
+        so a carry is set, then the trailing chunk completes the tag
+        AND closes ``</think>`` plus post-think content in the same
+        delta. The streaming output must be byte-equivalent to the
+        non-streaming extract for the same text."""
+        text = (
+            "<think>R\n"
+            "<tool_call>\n"
+            "<function=f><parameter=x>1</parameter></function>\n"
+            "</tool_call>\n"
+            "</think>\nPost."
+        )
+        # Non-streaming reference shape.
+        ref_reasoning, ref_content = parser.extract_reasoning(text)
+        # Try several chunk sizes that force partial-opener carries.
+        for cs in (3, 5, 7, 11):
+            stream_reasoning, stream_content = _stream(parser, text, chunk_size=cs)
+            assert stream_content is not None, cs
+            assert "<function=f>" in stream_content, cs
+            assert "Post." in stream_content, cs
+            # The carried "<tool_ca…" prefix must not disappear: the
+            # reasoning prefix ``R\n`` survives, and ``<tool_call>``
+            # never leaks into reasoning.
+            assert stream_reasoning is not None, cs
+            assert "R" in stream_reasoning, cs
+            assert "<tool_call>" not in stream_reasoning, cs
+            # Same wire shape (modulo whitespace) as non-streaming.
+            assert ("<function=f>" in (ref_content or "")) == (
+                "<function=f>" in stream_content
+            ), cs
+
 
 # ── Multi-family parity ─────────────────────────────────────────────
 
