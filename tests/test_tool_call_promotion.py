@@ -274,9 +274,7 @@ class TestStreamingPromotion:
     def test_stream_finalize_with_buffered_tool_call(self, parser):
         """Stream ends mid-tool-call — flushed by finalize as content."""
         text = (
-            "<think>\n"
-            "<tool_call>\n"
-            "<function=f><parameter=x>1</parameter></function>\n"
+            "<think>\n<tool_call>\n<function=f><parameter=x>1</parameter></function>\n"
         )
         reasoning, content = _stream(parser, text)
         assert content is not None
