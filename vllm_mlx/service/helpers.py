@@ -3677,6 +3677,70 @@ def enforce_context_length_for_messages(
     return prompt_tokens
 
 
+def repair_messages_fit_context(
+    engine,
+    repair_messages: list,
+    *,
+    tools: list | None = None,
+    max_tokens: int | None = None,
+) -> bool:
+    """Re-check the context-length gate for the R12-4 strict-mode
+    repair-retry prompt (H-06 #267b).
+
+    Codex review on PR #878 surfaced that ``build_repair_messages``
+    builds a strictly LARGER prompt than the initial request — it
+    prepends repair instructions, repeats the schema, and includes
+    up to 4 KiB of the failed output. A request that passed the
+    initial ``enforce_context_length_for_messages`` gate can therefore
+    blow the context window only on the repair attempt and surface
+    as ``502 strict_repair_engine_failure`` instead of a deterministic
+    422 validation outcome.
+
+    This helper mirrors :func:`enforce_context_length_for_messages`
+    but RETURNS a boolean (``True`` = fits, ``False`` = does not
+    fit) rather than raising. The caller skips the retry when this
+    returns ``False`` and returns the ORIGINAL 422 envelope it would
+    have returned without the retry — so the client always sees a
+    consistent json-schema-violation outcome.
+
+    On permissive-skip paths (MLLM engine, missing ``build_prompt``,
+    empty rendered prompt, tokenizer-returned-zero) this returns
+    ``True`` to preserve the existing behavior — the initial-request
+    gate also skips those paths so the repair gate should not be
+    stricter than the initial one. The strict-mode + tools combo is
+    already rejected upstream by ``strict_with_tools_unsupported``,
+    so for repair-prompt accounting the ``tools`` argument is
+    effectively always ``None``; we still thread it through for
+    contract symmetry with the initial gate.
+
+    Used by ``routes/chat.py`` and ``routes/responses.py`` so the
+    same gate logic is applied at both call sites and cannot drift.
+    """
+    if getattr(engine, "is_mllm", False):
+        return True
+    build_prompt = getattr(engine, "build_prompt", None)
+    if build_prompt is None:
+        return True
+    try:
+        prompt = build_prompt(repair_messages, tools=tools)
+    except Exception:
+        # If the repair prompt can't even be rendered, we can't make
+        # a useful "fits" judgement — defer to the engine error path
+        # (the existing 502 ``strict_repair_engine_failure`` handler
+        # already covers an unrenderable repair turn). Return ``True``
+        # so the existing surface is preserved; do NOT raise here.
+        return True
+    if not prompt:
+        return True
+    prompt_tokens = count_prompt_tokens(engine, prompt)
+    if prompt_tokens <= 0:
+        return True
+    max_context = get_model_max_context(engine)
+    completion = int(max_tokens) if max_tokens else 0
+    requested_total = int(prompt_tokens) + max(0, completion)
+    return requested_total <= max_context
+
+
 def enforce_context_length_for_prompt(
     engine,
     prompt,

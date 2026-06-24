@@ -32,6 +32,7 @@ from ..api.models import (
 )
 from ..api.response_format_metrics import (
     incr_strict_repair_attempt,
+    incr_strict_repair_skipped_context_overflow,
     incr_strict_repair_success,
     incr_strict_request,
     incr_strict_violation,
@@ -95,6 +96,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     enforce_context_length_for_messages,
     get_engine,
+    repair_messages_fit_context,
 )
 
 logger = logging.getLogger(__name__)
@@ -939,13 +941,6 @@ async def _non_stream(
         ok, failure_details = validate_and_envelope(output.text or "", _strict_schema)
         attempts = 1
         if not ok and repair_retry_enabled():
-            incr_strict_repair_attempt()
-            attempts = 2
-            logger.info(
-                "R12-4 strict json_schema first attempt failed on "
-                "/v1/responses (%s); attempting repair retry.",
-                (failure_details or {}).get("reason", "?"),
-            )
             repair_messages = build_repair_messages(
                 messages,
                 output.text or "",
@@ -955,53 +950,90 @@ async def _non_stream(
             repair_kwargs = dict(chat_kwargs)
             for _k in ("tools", "tool_choice", "logprobs", "top_logprobs"):
                 repair_kwargs.pop(_k, None)
-            try:
-                repair_output = await _wait_with_disconnect(
-                    engine.chat(messages=repair_messages, **repair_kwargs),
-                    request,
-                    timeout=timeout,
-                )
-            except HTTPException:
-                raise
-            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
-                raise
-            except Exception as repair_err:
-                # Codex r1 #4 parity with chat.py: a non-timeout,
-                # non-disconnect engine exception during the repair
-                # turn is a SERVER failure, not a client schema-
-                # validation failure. Surface as 502 instead of
-                # swallowing into a 422 ``json_schema_violation``
-                # that would mislead the client into thinking their
-                # schema was the problem.
+            # H-06 #267b: re-check context-length AGAINST the post-build
+            # repair prompt. ``build_repair_messages`` builds a strictly
+            # larger prompt than the initial request (prepended
+            # instructions, repeated schema, up to 4 KiB of failed
+            # output), so a request that passed the initial gate can
+            # blow context only on the repair attempt — pre-fix that
+            # surfaced as the opaque ``502 strict_repair_engine_failure``
+            # instead of a deterministic ``422 json_schema_violation``.
+            # Centralized helper shared with chat.py keeps the gate
+            # logic from drifting between the two surfaces.
+            _repair_fits = repair_messages_fit_context(
+                engine,
+                repair_messages,
+                tools=None,
+                max_tokens=repair_kwargs.get("max_tokens"),
+            )
+            repair_output = None
+            if not _repair_fits:
+                incr_strict_repair_skipped_context_overflow()
                 logger.warning(
-                    "R12-4 /v1/responses strict repair retry raised %s: %s; "
-                    "surfacing as 502 (server-side generation failure, "
-                    "NOT a schema-validation contract breach).",
-                    type(repair_err).__name__,
-                    repair_err,
+                    "R12-4 /v1/responses strict json_schema repair retry "
+                    "SKIPPED: post-build repair prompt would exceed model "
+                    "context window. Surfacing the ORIGINAL 422 "
+                    "json_schema_violation envelope instead of attempting "
+                    "a retry that would either 502 or truncate."
                 )
-                raise HTTPException(
-                    status_code=502,
-                    detail={
-                        "error": {
-                            "message": (
-                                "Strict json_schema repair retry failed on "
-                                "/v1/responses: the engine raised "
-                                f"{type(repair_err).__name__} during the "
-                                "second generation attempt. The initial "
-                                "output had also failed schema validation; "
-                                "investigate server logs."
-                            ),
-                            "type": "api_error",
-                            "code": "strict_repair_engine_failure",
-                            "param": "text.format",
-                            "details": {
-                                "initial_failure": failure_details,
-                                "repair_exception": type(repair_err).__name__,
-                            },
-                        }
-                    },
-                ) from repair_err
+                # Fall through to the existing ``if not ok:`` below with
+                # ``attempts == 1`` so the envelope reflects the single
+                # generation attempt the client actually saw.
+            else:
+                incr_strict_repair_attempt()
+                attempts = 2
+                logger.info(
+                    "R12-4 strict json_schema first attempt failed on "
+                    "/v1/responses (%s); attempting repair retry.",
+                    (failure_details or {}).get("reason", "?"),
+                )
+                try:
+                    repair_output = await _wait_with_disconnect(
+                        engine.chat(messages=repair_messages, **repair_kwargs),
+                        request,
+                        timeout=timeout,
+                    )
+                except HTTPException:
+                    raise
+                except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                    raise
+                except Exception as repair_err:
+                    # Codex r1 #4 parity with chat.py: a non-timeout,
+                    # non-disconnect engine exception during the repair
+                    # turn is a SERVER failure, not a client schema-
+                    # validation failure. Surface as 502 instead of
+                    # swallowing into a 422 ``json_schema_violation``
+                    # that would mislead the client into thinking their
+                    # schema was the problem.
+                    logger.warning(
+                        "R12-4 /v1/responses strict repair retry raised %s: %s; "
+                        "surfacing as 502 (server-side generation failure, "
+                        "NOT a schema-validation contract breach).",
+                        type(repair_err).__name__,
+                        repair_err,
+                    )
+                    raise HTTPException(
+                        status_code=502,
+                        detail={
+                            "error": {
+                                "message": (
+                                    "Strict json_schema repair retry failed on "
+                                    "/v1/responses: the engine raised "
+                                    f"{type(repair_err).__name__} during the "
+                                    "second generation attempt. The initial "
+                                    "output had also failed schema validation; "
+                                    "investigate server logs."
+                                ),
+                                "type": "api_error",
+                                "code": "strict_repair_engine_failure",
+                                "param": "text.format",
+                                "details": {
+                                    "initial_failure": failure_details,
+                                    "repair_exception": type(repair_err).__name__,
+                                },
+                            }
+                        },
+                    ) from repair_err
             if repair_output is not None:
                 ok2, failure2 = validate_and_envelope(
                     repair_output.text or "", _strict_schema
