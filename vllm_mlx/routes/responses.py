@@ -2704,101 +2704,107 @@ async def _stream_responses(
         # output_text.done → content_part.done → output_item.done
         # ladder. Gating mirrors `_apply_reasoning_cutoff_notice` —
         # message_open + tool_calls already preclude rescue.
-        # R12-M3: only meaningful when reasoning text exists; preserve
-        # original semantics (rescue is the recovery path for mid-think
-        # cut-offs with reasoning bytes).
-        if accumulated_reasoning_text:
-            if mid_think_cutoff and not message_open and not tool_calls:
-                rescue_text = _apply_reasoning_cutoff_notice(
-                    final_content=None,
-                    reasoning_text=accumulated_reasoning_text,
-                    tool_calls=None,
-                    finish_reason=last_finish_reason,
+        # R12-M3 codex r2 BLOCKING: gate the rescue path on
+        # ``mid_think_cutoff`` directly (the single source of truth for
+        # "model was still mid-think when cut off"), not on a redundant
+        # ``accumulated_reasoning_text`` check. ``mid_think_cutoff``
+        # itself already requires ``bool(accumulated_reasoning_text)``
+        # above, so this is equivalent today, but the structural change
+        # ensures that any future widening of the rescue trigger (e.g.,
+        # rescue on a different cap signal) routes through the same
+        # invariant rather than getting silently skipped because the
+        # outer text gate was forgotten.
+        if mid_think_cutoff and not message_open and not tool_calls:
+            rescue_text = _apply_reasoning_cutoff_notice(
+                final_content=None,
+                reasoning_text=accumulated_reasoning_text,
+                tool_calls=None,
+                finish_reason=last_finish_reason,
+            )
+            if rescue_text:
+                rescue_output_index = len(completed_output)
+                rescue_item_id = f"msg_{uuid.uuid4().hex[:24]}"
+                rescue_part = {
+                    "type": "output_text",
+                    "text": rescue_text,
+                    "annotations": [],
+                }
+                yield _emit(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": rescue_output_index,
+                        "item": {
+                            "type": "message",
+                            "id": rescue_item_id,
+                            "status": "in_progress",
+                            "role": "assistant",
+                            "content": [],
+                        },
+                    },
                 )
-                if rescue_text:
-                    rescue_output_index = len(completed_output)
-                    rescue_item_id = f"msg_{uuid.uuid4().hex[:24]}"
-                    rescue_part = {
-                        "type": "output_text",
+                yield _emit(
+                    "response.content_part.added",
+                    {
+                        "type": "response.content_part.added",
+                        "item_id": rescue_item_id,
+                        "output_index": rescue_output_index,
+                        "content_index": 0,
+                        "part": {
+                            "type": "output_text",
+                            "text": "",
+                            "annotations": [],
+                        },
+                    },
+                )
+                yield _emit(
+                    "response.output_text.delta",
+                    {
+                        "type": "response.output_text.delta",
+                        "item_id": rescue_item_id,
+                        "output_index": rescue_output_index,
+                        "content_index": 0,
+                        "delta": rescue_text,
+                        "logprobs": [],
+                    },
+                )
+                yield _emit(
+                    "response.output_text.done",
+                    {
+                        "type": "response.output_text.done",
+                        "item_id": rescue_item_id,
+                        "output_index": rescue_output_index,
+                        "content_index": 0,
                         "text": rescue_text,
-                        "annotations": [],
-                    }
-                    yield _emit(
-                        "response.output_item.added",
-                        {
-                            "type": "response.output_item.added",
-                            "output_index": rescue_output_index,
-                            "item": {
-                                "type": "message",
-                                "id": rescue_item_id,
-                                "status": "in_progress",
-                                "role": "assistant",
-                                "content": [],
-                            },
-                        },
-                    )
-                    yield _emit(
-                        "response.content_part.added",
-                        {
-                            "type": "response.content_part.added",
-                            "item_id": rescue_item_id,
-                            "output_index": rescue_output_index,
-                            "content_index": 0,
-                            "part": {
-                                "type": "output_text",
-                                "text": "",
-                                "annotations": [],
-                            },
-                        },
-                    )
-                    yield _emit(
-                        "response.output_text.delta",
-                        {
-                            "type": "response.output_text.delta",
-                            "item_id": rescue_item_id,
-                            "output_index": rescue_output_index,
-                            "content_index": 0,
-                            "delta": rescue_text,
-                            "logprobs": [],
-                        },
-                    )
-                    yield _emit(
-                        "response.output_text.done",
-                        {
-                            "type": "response.output_text.done",
-                            "item_id": rescue_item_id,
-                            "output_index": rescue_output_index,
-                            "content_index": 0,
-                            "text": rescue_text,
-                            "logprobs": [],
-                        },
-                    )
-                    yield _emit(
-                        "response.content_part.done",
-                        {
-                            "type": "response.content_part.done",
-                            "item_id": rescue_item_id,
-                            "output_index": rescue_output_index,
-                            "content_index": 0,
-                            "part": rescue_part,
-                        },
-                    )
-                    rescue_message_done = {
-                        "type": "message",
-                        "id": rescue_item_id,
-                        "status": "completed",
-                        "role": "assistant",
-                        "content": [rescue_part],
-                    }
-                    yield _emit(
-                        "response.output_item.done",
-                        {
-                            "type": "response.output_item.done",
-                            "output_index": rescue_output_index,
-                            "item": rescue_message_done,
-                        },
-                    )
-                    completed_output.append(rescue_message_done)
+                        "logprobs": [],
+                    },
+                )
+                yield _emit(
+                    "response.content_part.done",
+                    {
+                        "type": "response.content_part.done",
+                        "item_id": rescue_item_id,
+                        "output_index": rescue_output_index,
+                        "content_index": 0,
+                        "part": rescue_part,
+                    },
+                )
+                rescue_message_done = {
+                    "type": "message",
+                    "id": rescue_item_id,
+                    "status": "completed",
+                    "role": "assistant",
+                    "content": [rescue_part],
+                }
+                yield _emit(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": rescue_output_index,
+                        "item": rescue_message_done,
+                    },
+                )
+                completed_output.append(rescue_message_done)
 
         # Ana C-06 (0.8.5 dogfood): when the request used Computer-Use,
         # translate ``function.name == "computer"`` tool_calls into the
