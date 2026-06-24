@@ -539,22 +539,26 @@ def effective_parsers_for(
             except Exception:  # noqa: BLE001
                 live_reasoning = None
         # Server-global live state is AUTHORITATIVE for the single-model
-        # serve case — same Tier 1 reasoning. Codex review (round 2)
-        # flagged that the previous ``live_tool or profile_tool_parser``
-        # backfill would, for an alias served with only ONE parser bound
-        # (e.g. operator passed ``--tool-call-parser hermes`` but no
-        # ``--reasoning-parser``), falsely advertise the alias's static
-        # ``reasoning_parser`` from ``aliases.json`` even though the
-        # runtime is NOT using it. Return live fields independently and
-        # do not backfill missing sides from the profile.
-        #
-        # Gate: only return live state when AT LEAST ONE side is bound.
-        # If BOTH sides are unbound the server-global path has no
-        # information to surface; fall through to the alias profile
-        # default (Tier 3) so discovery clients still see the curated
-        # static defaults rather than null.
-        if live_tool or live_reasoning:
-            return (_coerce(live_tool), _coerce(live_reasoning))
+        # serve case — same Tier 1 reasoning. Once ``_is_served_model``
+        # has confirmed this id IS the model the server is currently
+        # serving, the per-server globals describe its live binding
+        # exhaustively — including the case where BOTH sides are
+        # ``None`` (operator passed ``--no-tool-call-parser`` and
+        # ``--no-reasoning-parser``, or auto-detect found neither).
+        # Codex review (rounds 2 + 3) flagged two related leaks:
+        #   - r2: ``live_tool or profile_tool_parser`` backfilled a
+        #     missing live side from the alias profile (one-sided bind
+        #     case) — falsely advertising a parser the runtime is NOT
+        #     using.
+        #   - r3: gating Tier 2 on ``live_tool or live_reasoning``
+        #     fell through to the profile default when BOTH sides were
+        #     unbound for a served alias — same lie, just the all-off
+        #     case.
+        # Fix: return the coerced live fields authoritatively whenever
+        # ``_is_served_model`` is True. Never backfill from the profile
+        # for an id we're actively serving — the alias profile default
+        # only applies to ids with NO live binding at all (Tier 3).
+        return (_coerce(live_tool), _coerce(live_reasoning))
 
     # Tier 3 / 4 — alias profile default (which may itself be None)
     return profile_tool_parser, profile_reasoning_parser

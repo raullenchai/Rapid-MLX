@@ -626,11 +626,23 @@ class TestModelsRoutes:
         can bootstrap calibrated sampling on first chat. Profiles
         without ``recommended_sampling`` MUST still surface
         ``is_hybrid`` + parser pair + modality so the desktop can
-        decide whether to show the "Show reasoning" toggle."""
+        decide whether to show the "Show reasoning" toggle.
+
+        R12 V-1/S-2: live runtime state is authoritative for the
+        served id. ``model_auto_config.detect_model_config`` populates
+        ``args.tool_call_parser`` / ``args.reasoning_parser`` from the
+        alias profile before the server boots, so by the time
+        ``/v1/models`` runs the server-globals match the alias
+        profile defaults. Reflect that real-world post-CLI state in
+        the live-state knobs so the test exercises the actual code
+        path users hit.
+        """
         orig = self._set_config(
             model_registry=None,
             model_name="mlx-community/Qwen3.5-4B-MLX-4bit",
             model_alias="qwen3.5-4b-4bit",
+            tool_call_parser="hermes",
+            reasoning_parser_name="qwen3",
             api_key=None,
         )
         try:
@@ -745,11 +757,20 @@ class TestModelsRoutes:
         alias entry, not just the singleton retrieval path. Without
         this the desktop's catalog pre-fetch (one round trip on
         startup) wouldn't get profile data and would fall back to
-        per-alias N+1 calls."""
+        per-alias N+1 calls.
+
+        R12 V-1/S-2: alias-resolved server-globals are pre-populated
+        before the server boots; mirror that here so the test exercises
+        the real code path. See
+        :meth:`test_retrieve_known_alias_populates_extensions` for the
+        contract.
+        """
         orig = self._set_config(
             model_registry=None,
             model_name="mlx-community/Qwen3.5-4B-MLX-4bit",
             model_alias="qwen3.5-4b-4bit",
+            tool_call_parser="hermes",
+            reasoning_parser_name="qwen3",
             api_key=None,
         )
         try:

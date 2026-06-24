@@ -257,11 +257,22 @@ def test_alias_cli_override_beats_alias_default():
 
 
 def test_alias_no_cli_override_keeps_alias_default():
-    """When no CLI override is bound for an aliased model, the alias
-    profile default still surfaces. The helper falls back to the
-    profile when no live runtime parser is set. This pins that
-    discovery clients still see the curated alias profile for
-    pre-flight capability checks.
+    """When no explicit CLI override is passed for an aliased serve,
+    the runtime still ends up with the alias profile parsers bound
+    (``model_auto_config.detect_model_config`` applies the profile
+    to ``args.tool_call_parser`` / ``args.reasoning_parser`` BEFORE
+    the server boots — by the time ``effective_parsers_for`` runs,
+    ``_tool_call_parser`` is populated with the alias profile value).
+
+    This pins that the listing surfaces those parsers, matching what
+    the runtime is actually using.
+
+    Note: the live runtime state is AUTHORITATIVE for served ids
+    (Tier 2). The alias profile default at Tier 3 only applies to
+    ids the server is NOT actively serving (discovery clients
+    pre-flighting an alias they might switch to). Pinning that
+    Tier 3 behavior is covered by
+    :func:`test_effective_parsers_helper_lookup_order` Tier 3.
     """
     from vllm_mlx.model_aliases import resolve_profile
 
@@ -271,9 +282,16 @@ def test_alias_no_cli_override_keeps_alias_default():
         pytest.skip(
             "Sentinel alias lost its parser default; pick another alias to pin fallback."
         )
+    # Real-world post-CLI state: the alias-resolution path has
+    # populated the server globals from the alias profile. The
+    # listing should surface those (which happen to match the
+    # alias profile default — but the source of truth is the live
+    # runtime, NOT the profile read directly).
     with _mounted(
         model_name=profile.hf_path,
         model_alias=alias,
+        tool_call_parser=profile.tool_call_parser,
+        reasoning_parser_name=profile.reasoning_parser,
     ) as client:
         body = client.get("/v1/models").json()
     entry = _by_id(body, alias)
@@ -565,6 +583,43 @@ def test_tier1_matches_guard_rejects_non_bool_truthy():
         # Fell through to profile default per the lookup-order contract.
         assert tool == "profile-tool"
         assert reasoning == "profile-reasoning"
+
+
+def test_tier2_served_with_both_sides_unbound_does_not_fall_back_to_profile():
+    """Codex round-3 BLOCKING regression test.
+
+    For a served alias whose runtime has BOTH parser sides explicitly
+    unbound (operator passed ``--no-tool-call-parser`` AND
+    ``--no-reasoning-parser``, OR auto-detect found neither), Tier 2
+    must NOT fall through to the alias profile default. The runtime
+    is NOT using parsers; advertising the alias's static defaults
+    would lie.
+
+    Pre-fix the gate was ``if live_tool or live_reasoning:`` —
+    falsey on the (None, None) case → fell through to Tier 3 →
+    advertised the alias profile defaults. Now: ``_is_served_model``
+    True is authoritative, including for the all-off case.
+    """
+    from vllm_mlx.routes.models import effective_parsers_for
+
+    with _mounted(
+        model_name="mlx-community/Qwen3-0.6B-bf16",
+        tool_call_parser=None,
+        reasoning_parser_name=None,
+    ):
+        tool, reasoning = effective_parsers_for(
+            "mlx-community/Qwen3-0.6B-bf16",
+            "profile-tool-default",  # would lie if backfilled
+            "profile-reasoning-default",
+        )
+        assert tool is None, (
+            f"Tier 2 must NOT fall back to profile default for a served "
+            f"id with both sides unbound; got {tool!r}"
+        )
+        assert reasoning is None, (
+            f"Tier 2 must NOT fall back to profile default for a served "
+            f"id with both sides unbound; got {reasoning!r}"
+        )
 
 
 if __name__ == "__main__":  # pragma: no cover — convenience only
