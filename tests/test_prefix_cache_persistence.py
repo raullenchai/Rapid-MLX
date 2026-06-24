@@ -2758,13 +2758,12 @@ def test_r12_metrics_exposes_save_drift_drops():
     carries a ``save_drift_drops`` field. Pin the wiring so a future
     metrics refactor doesn't silently drop it.
     """
-    from vllm_mlx.routes.metrics import _coerce_number  # noqa: F401 — import probe
-
     # Synthesize a tiny stats payload and run the cache-stats block.
     # We inspect the names emitted by the metrics module's source as
     # a cheap structural check; deep wiring is exercised in the
     # /metrics route's own tests.
     import vllm_mlx.routes.metrics as metrics_mod
+    from vllm_mlx.routes.metrics import _coerce_number  # noqa: F401 — import probe
 
     src = Path(metrics_mod.__file__).read_text()
     assert "rapid_mlx_prefix_cache_save_drift_drops_total" in src, (
