@@ -9,6 +9,7 @@ from vllm_mlx.api.tool_calling import parse_tool_calls
 from vllm_mlx.tool_parsers import (
     AutoToolParser,
     DeepSeekToolParser,
+    DeepSeekV3ToolParser,
     FunctionaryToolParser,
     GraniteToolParser,
     HermesToolParser,
@@ -55,7 +56,8 @@ class TestToolParserManager:
             ("llama4", LlamaToolParser),
             ("auto", AutoToolParser),
             ("deepseek", DeepSeekToolParser),
-            ("deepseek_v3", DeepSeekToolParser),
+            ("deepseek_v3", DeepSeekV3ToolParser),
+            ("deepseek_r1_0528", DeepSeekV3ToolParser),
             ("deepseek_r1", DeepSeekToolParser),
             ("kimi", KimiToolParser),
             ("kimi_k2", KimiToolParser),

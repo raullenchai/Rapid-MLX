@@ -605,7 +605,7 @@
   },
   "deepseek-r1-8b-4bit": {
     "hf_path": "mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit",
-    "tool_call_parser": "deepseek_v31",
+    "tool_call_parser": "deepseek_v3",
     "reasoning_parser": "deepseek_r1",
     "is_hybrid": false,
     "supports_spec_decode": true,

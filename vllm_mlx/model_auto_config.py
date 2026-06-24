@@ -131,11 +131,21 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
         ),
     ),
-    # DeepSeek V3.1 / R1-0528 — dedicated parser, before generic deepseek
+    # DeepSeek V3.1 (thinking-channel wire shape: NAME<sep>{json}).
+    # Matched before V3 / R1-0528 so the more specific pattern wins.
     (
-        re.compile(r"deepseek.*(v3\.1|r1[-_]?0528)", re.IGNORECASE),
+        re.compile(r"deepseek.*v3\.1", re.IGNORECASE),
         ModelConfig(
             tool_call_parser="deepseek_v31",
+            reasoning_parser="deepseek_r1",
+        ),
+    ),
+    # DeepSeek-R1-0528 (V3 chat template — function-typed fenced JSON).
+    # R12-5: split off the V3.1 parser to its own DeepSeekV3ToolParser.
+    (
+        re.compile(r"deepseek.*r1[-_]?0528", re.IGNORECASE),
+        ModelConfig(
+            tool_call_parser="deepseek_v3",
             reasoning_parser="deepseek_r1",
         ),
     ),

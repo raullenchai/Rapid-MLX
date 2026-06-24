@@ -255,23 +255,58 @@ def test_t2_forced_prefix_deepseek_rejects_unsafe_tool_names():
 
 
 def test_t2_forced_prefix_deepseek_r1_0528_alias():
-    """``deepseek_r1_0528`` is the second alias the same parser
-    registers under. It must produce the same prefix as
-    ``deepseek_v31`` so DeepSeek-R1 distills (which load under either
-    alias depending on config) get consistent forcing."""
+    """R12-5: ``deepseek_r1_0528`` is an alias of the V3 parser, NOT
+    the V3.1 parser. Both produce non-None prefixes but with different
+    body shapes (V3 wraps the arguments in a JSON fence; V3.1 is bare
+    ``NAME<sep>{json}``)."""
     a = _forced_tool_call_prefix("deepseek_v31", "x")
     b = _forced_tool_call_prefix("deepseek_r1_0528", "x")
-    assert a == b
     assert a is not None
+    assert b is not None
+    # Both share the outer markers.
+    assert b.startswith("<｜tool▁calls▁begin｜>")
+    # V3 prefix lands inside the fence opener; V3.1 stops at the separator.
+    assert b.endswith("```json\n")
+    assert a.endswith("<｜tool▁sep｜>")
+
+
+def test_t2_forced_prefix_deepseek_v3_emits_v3_shape():
+    """R12-5: ``deepseek_v3`` is the dedicated V3 parser (was previously
+    aliased to the V1 ``DeepSeekToolParser`` and returned ``None``).
+    The forced prefix now opens through the literal ``function`` type
+    tag and the opening JSON fence so the model continues directly
+    with the arguments object body."""
+    out = _forced_tool_call_prefix("deepseek_v3", "get_weather")
+    assert out is not None
+    assert "<｜tool▁calls▁begin｜>" in out
+    assert "<｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather" in out
+    assert out.endswith("```json\n")
 
 
 def test_t2_forced_prefix_deepseek_v1_still_returns_none():
-    """The V1 ``deepseek`` parser has a different body shape and
-    shares only the outer markers. We intentionally did NOT add it to
-    the allowlist — leaving it on the synthesis fallback is safer than
+    """The V1 ``deepseek`` / ``deepseek_r1`` parsers' body shapes are
+    not auto-detected. We intentionally did NOT add them to the
+    allowlist — leaving them on the synthesis fallback is safer than
     risking a wrong wire."""
     assert _forced_tool_call_prefix("deepseek", "x") is None
-    assert _forced_tool_call_prefix("deepseek_v3", "x") is None
+    assert _forced_tool_call_prefix("deepseek_r1", "x") is None
+
+
+def test_t2_forced_prefix_deepseek_v3_rejects_unsafe_tool_names():
+    """The V3 prefix interpolates the tool name into a non-JSON wire
+    position (between ``function<sep>`` and the opening fence). Same
+    name-safety guard as V3.1 — reject anything that could corrupt the
+    wire."""
+    for name in (
+        "bad name",
+        "bad\nname",
+        'bad"quote',
+        "bad.name",
+        "x" * 65,
+        "bad<tool_call>",
+    ):
+        assert _forced_tool_call_prefix("deepseek_v3", name) is None
+        assert _forced_tool_call_prefix("deepseek_r1_0528", name) is None
 
 
 def test_t2_deepseek_v31_parser_consumes_assembled_envelope():

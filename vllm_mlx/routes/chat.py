@@ -202,8 +202,8 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
         # corrupt the wire envelope or inject extra fields. Codex r4
         # BLOCKING — direct f-string interpolation was vulnerable.
         return f'<tool_call>\n{{"name": {json.dumps(function_name)}, "arguments": '
-    # D-TOOLCHOICE-R1 T2: DeepSeek-R1 distill + ``deepseek_v31`` /
-    # ``deepseek_r1_0528`` parsers share the V3.1 wire shape
+    # D-TOOLCHOICE-R1 T2 / R12-5: DeepSeek-V3.1 parser uses the
+    # thinking-channel wire
     # ``<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>NAME<｜tool▁sep｜>{json}<｜tool▁call▁end｜><｜tool▁calls▁end｜>``.
     # Pre 0.8.3, this family fell through to ``None`` here — so
     # ``tool_choice="required"`` with a single tool only ever produced
@@ -214,16 +214,13 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
     # ``DeepSeekV31ToolParser.extract_tool_calls`` on the assembled
     # ``<...begin>name<sep>{...}<...end>...end>`` payload).
     #
-    # The two registered aliases (``deepseek_v31``, ``deepseek_r1_0528``)
-    # share one parser class; both get the same prefix. ``deepseek``
-    # (V1) is intentionally NOT listed — that parser's envelope is
-    # different and shares the marker tokens, but the body shape is
-    # not auto-detected (see ``deepseek_tool_parser.py``).
-    _verified_deepseek_v31_parsers = {
-        "deepseek_v31",
-        "deepseek_r1_0528",
-    }
-    if parser_name in _verified_deepseek_v31_parsers:
+    # R12-5: ``deepseek_v31`` and ``deepseek_v3`` are now DIFFERENT
+    # parsers with DIFFERENT wire shapes. Only ``deepseek_v31`` uses
+    # the bare ``NAME<sep>`` body; ``deepseek_v3`` uses
+    # ``function<sep>NAME\n``\`json\n{...}\n``\` and is handled by its
+    # own branch below. ``deepseek`` (V2 / R1-distill) is intentionally
+    # NOT listed — that parser's body shape is not auto-detected.
+    if parser_name == "deepseek_v31":
         # V3.1 body: ``NAME<sep>{json}``. The model continues with the
         # arguments object and closer. The name is interpolated raw
         # because the V3.1 body is NOT JSON-bodied at this position —
@@ -242,6 +239,19 @@ def _forced_tool_call_prefix(parser_name: str | None, function_name: str) -> str
             return None
         return (
             f"<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>{function_name}<｜tool▁sep｜>"
+        )
+    # R12-5: DeepSeek-V3 body — ``function<sep>NAME\n``\`json\n{...}\n``\`.
+    # Forced-prefix opens through the envelope, the literal ``function``
+    # type tag, the separator, the name, and the opening JSON fence so
+    # the model picks up directly with the arguments object body. The
+    # same name-safety guard as V3.1 applies (defense-in-depth against
+    # marker-bearing tool names).
+    if parser_name in ("deepseek_v3", "deepseek_r1_0528"):
+        if not _SAFE_DEEPSEEK_TOOL_NAME_RE.fullmatch(function_name):
+            return None
+        return (
+            "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>"
+            f"function<｜tool▁sep｜>{function_name}\n```json\n"
         )
     # Channel-routed (harmony / gemma4) and parsers whose wire shape
     # we have NOT audited: no prefix injection. The post-parse

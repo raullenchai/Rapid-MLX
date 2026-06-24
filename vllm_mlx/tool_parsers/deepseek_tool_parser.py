@@ -28,10 +28,15 @@ def generate_tool_id() -> str:
     return f"call_{uuid.uuid4().hex[:8]}"
 
 
-@ToolParserManager.register_module(["deepseek", "deepseek_v3", "deepseek_r1"])
+# Note: ``deepseek_v3`` was previously aliased here. As of R12-5 it is
+# owned by ``DeepSeekV3ToolParser`` (deepseek_v3_tool_parser.py) — the
+# dedicated, block-wise V3 parser. This legacy parser retains the
+# ``deepseek`` / ``deepseek_r1`` names for backward compatibility with
+# pre-R12-5 configurations (DeepSeek V2 distill / R1 non-0528 family).
+@ToolParserManager.register_module(["deepseek", "deepseek_r1"])
 class DeepSeekToolParser(ToolParser):
     """
-    Tool call parser for DeepSeek V3 and R1 models.
+    Tool call parser for DeepSeek V2 / R1 (non-0528) models.
 
     Supports DeepSeek's tool call format with special unicode tokens:
     <｜tool▁calls▁begin｜>
