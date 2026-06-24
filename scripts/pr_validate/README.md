@@ -25,6 +25,7 @@ python3.12 -m scripts.pr_validate <PR#> -v
 | 0 | `fetch` | always (fail-fast) | ~3s |
 | 0.5 | `test_plan_check` | always | <1s |
 | 0.7 | `cl_description_quality` | always (skip via `PR_VALIDATE_SKIP_DESC=1`) | <1s |
+| 0.8 | `test_env_check` | always (auto-install opt-out: `PR_VALIDATE_NO_AUTO_INSTALL=1`) | <1s (≈10s if install runs) |
 | 6 | `codex_review` | always (skip if codex CLI missing / not logged in) | 30–180s |
 | 1 | `supply_chain` | always | ~5s |
 | 2 | `lint` | when diff has .py | ~3s |
@@ -133,6 +134,34 @@ Three checks:
 
 Override: `PR_VALIDATE_SKIP_DESC=1` for two-line dep-bumps where
 rationale is genuinely overkill.
+
+### `test_env_check` (step 0.8)
+
+Verifies that the same Python interpreter `targeted_tests` and
+`full_unit` will hand to pytest can actually import the plugins the
+suite needs (chiefly `pytest_asyncio` — `pytest.ini` sets
+`asyncio_mode = auto`, so without the plugin every `async def test_*`
+fails at collection with "async def functions are not natively
+supported").
+
+When a plugin is missing, the step attempts a one-shot
+`pip install '.[test]'` from the repo root, then re-checks. If the
+re-check still fails, the step reports `fail` with the missing-package
+list and the canonical recovery command (`<interp> -m pip install
+'.[test]'`) so the operator can fix it manually.
+
+Closes #185 — the prior implementation had no env check at all,
+which meant a host that had lost `pytest-asyncio` (typically after an
+orchestrated `pip install --no-deps --force-reinstall .`) would crash
+the `full_unit` step with 124+ "async functions not supported" pytest
+errors that looked like regressions. The canonical test-deps live in
+`pyproject.toml[project.optional-dependencies].test` — the step does
+NOT maintain a hand-edited duplicate list.
+
+Override: `PR_VALIDATE_NO_AUTO_INSTALL=1` disables the auto-recover
+`pip install` (the step still detects + reports the missing packages,
+it just won't mutate the host Python). Use this in CI sandboxes that
+must keep the runner image read-only.
 
 ### `codex_review` (step 6, runs early)
 

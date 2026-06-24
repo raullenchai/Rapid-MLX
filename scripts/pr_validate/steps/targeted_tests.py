@@ -34,6 +34,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import sys
 import tempfile
 from pathlib import Path
 
@@ -205,8 +206,15 @@ def _select_test_files(ctx: Context) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
+# Use ``sys.executable`` so pytest runs in the *same* interpreter as
+# pr_validate itself. The test_env_check step verifies pytest-asyncio
+# (etc.) are importable in this Python; if we hardcoded ``python3.12``
+# we could end up handing pytest to a sibling Python where the
+# self-check never ran. Closes #185 — the prior ``python3.12`` literal
+# meant a venv-installed pr_validate could collect 124 async-test
+# failures because the system python3.12 didn't have the plugin.
 _PYTEST_CMD = [
-    "python3.12",
+    sys.executable,
     "-m",
     "pytest",
     "-q",
