@@ -660,11 +660,24 @@ def _classify_deepseek_template_name(s: str) -> str | None:
     for the public contract. Pulled out so the public helper can run the
     classifier on BOTH the user-supplied path AND the alias-resolved HF
     path without duplicating the pattern logic.
+
+    Codex r3 P3 fix: the R1-Distill reject is scoped to the model-name
+    component (last path segment) rather than the full path, because a
+    legitimate local serve like
+    ``/models/distillations/deepseek-ai/DeepSeek-V3.1-0324`` carries
+    ``distill`` in the parent directory but the checkpoint itself is a
+    valid V3.1 model. A full-path substring match would warn falsely
+    there even on the correct ``deepseek_v31`` parser.
     """
     s = s.lower()
+    # Extract the model-name component (last non-empty path segment).
+    # Empty or all-slash inputs collapse to the full string so the
+    # classifier still produces ``None`` rather than crashing.
+    tail = s.rstrip("/").rsplit("/", 1)[-1] or s
     # R1-Distill family is V2 / Qwen2-arch, NOT V3. Explicit reject for
-    # BOTH sub-families.
-    if "distill" in s:
+    # BOTH sub-families. Scoped to ``tail`` so a ``distillations``
+    # parent dir doesn't trip the gate.
+    if "distill" in tail:
         return None
     # V3.1 — distinct chat template, ordered BEFORE the bare V3 check
     # so the more specific pattern wins (V3.1 contains "v3" as a

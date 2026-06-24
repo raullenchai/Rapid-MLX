@@ -1032,3 +1032,44 @@ class TestWarnMisboundDeepseekV3Parser:
         # Cross-sub-family framing: the helper recognised the alias as
         # a V3.0 (not V3.1) checkpoint.
         assert "V3.0" in msg
+
+    # Codex round-3 P3 regression: when a user serves a legitimate V3 or
+    # V3.1 checkpoint from a local path whose PARENT DIRECTORY contains
+    # ``distill`` / ``distillations`` / ``distilled``, the substring
+    # check used to short-circuit on the full path and falsely classify
+    # the model as a non-V3 checkpoint — emitting a misbind warning on
+    # a perfectly correct serve. The distill reject must be scoped to
+    # the model-name component (last path segment) only.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            (
+                "/models/distillations/deepseek-ai/DeepSeek-V3.1-0324",
+                "deepseek_v31",
+            ),
+            ("/tmp/distilled/DeepSeek-V3-0324", "deepseek_v3"),
+            (
+                "/home/me/distilled-set/deepseek-ai/DeepSeek-R1-0528-Qwen3-8B",
+                "deepseek_v3",
+            ),
+        ],
+    )
+    def test_no_warn_when_parent_dir_only_contains_distill(self, model_path, parser):
+        # Tail segment is a real V3 / V3.1 checkpoint name; the parent
+        # ``distill*`` directory must NOT trip the rejection gate.
+        assert warn_misbound_deepseek_v3_parser(model_path, parser) is None
+
+    # Counterpart: when the model-name component itself carries
+    # ``distill`` (the actual R1-Distill family), the rejection still
+    # fires regardless of how deep the parent path goes.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "/home/me/random/dir/DeepSeek-R1-Distill-Qwen-1.5B-4bit",
+            "/var/cache/mlx-community/DeepSeek-R1-Distill-Llama-8B",
+        ],
+    )
+    def test_warn_when_name_component_contains_distill(self, model_path):
+        msg = warn_misbound_deepseek_v3_parser(model_path, "deepseek_v3")
+        assert msg is not None
+        assert model_path in msg
