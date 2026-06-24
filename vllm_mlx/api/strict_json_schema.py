@@ -188,6 +188,27 @@ def validate_and_envelope(
     except TypeError:
         validator_cls = Draft202012Validator
 
+    # Codex r10 NIT #2: validate the SCHEMA itself before constructing
+    # the validator. The chat / responses routes do call
+    # ``check_schema_validity()`` (in ``api.tool_calling``) BEFORE
+    # reaching this helper, so under the route the malformed-schema
+    # path raises 400 before we ever get here. But this helper is
+    # ALSO called directly from test paths and could be reached by a
+    # future refactor that bypasses the route-level gate. Pinning
+    # ``check_schema()`` here turns a malformed schema into a clear
+    # ``invalid_schema`` envelope (consistent with the rest of the
+    # 422 surface) instead of a confusing late-stage validator error
+    # mid-validation. ``check_schema`` raises ``SchemaError``;
+    # catching it here keeps the helper's ``(ok, details)`` contract
+    # intact.
+    try:
+        validator_cls.check_schema(json_schema)
+    except Exception as exc:  # jsonschema.SchemaError — broad import-light catch
+        return False, {
+            "reason": "invalid_schema",
+            "message": f"json_schema itself is malformed: {exc}",
+        }
+
     # Codex r1 BLOCKING #1: pass a ``FormatChecker`` so JSON Schema
     # ``format`` constraints (``"email"``, ``"uri"``, ``"date"``, …)
     # are enforced rather than treated as annotations. Pre-fix,
@@ -358,12 +379,38 @@ def build_repair_messages(
         f"JSON Schema:\n```json\n{schema_str}\n```"
     )
 
-    # The repair turn is a fresh system + user pair appended to the
-    # original conversation. No ``assistant`` turn — the failed output
-    # lives inside the system hint as quoted reference data (see
-    # docstring + codex r5 #2).
-    repair = list(original_messages)
-    repair.append({"role": "system", "content": hint})
+    # Codex r10 #2: chat-template / provider role ordering. Many
+    # tokenizers (Qwen, Gemma, some Llama variants) require
+    # ``system`` messages ONLY at the start of the conversation and
+    # raise or silently truncate when a ``system`` turn appears
+    # AFTER user/assistant turns. Pre-fix this function appended a
+    # fresh ``system`` turn at the END of the conversation, which
+    # was wire-correct for OpenAI's API but rejected by some
+    # chat-templates we route through.
+    #
+    # Strategy: prepend a FRESH leading system message carrying the
+    # repair instructions, then keep the original user/assistant
+    # turns intact, then append a single trailing user turn that
+    # re-issues the request. If the original conversation already
+    # has a leading ``system`` message, we MERGE the repair hint
+    # into it (preserving its prefix) instead of injecting a second
+    # leading system message — same chat-template safety rationale.
+    repair: list[dict[str, Any]] = []
+    if original_messages and original_messages[0].get("role") == "system":
+        # Merge: keep the original system prefix, add a separator,
+        # then the repair hint. This ALSO addresses the de-dup case
+        # called out in the docstring — the schema is still in the
+        # original system message AND in the repair hint, but they
+        # share a single message so we don't pay a 2x role-marker
+        # overhead.
+        merged_system = original_messages[0].get("content", "") + "\n\n---\n\n" + hint
+        repair.append({"role": "system", "content": merged_system})
+        repair.extend(original_messages[1:])
+    else:
+        # No existing system message — synthesize one at the front
+        # so chat-template invariants hold.
+        repair.append({"role": "system", "content": hint})
+        repair.extend(original_messages)
     repair.append(
         {
             "role": "user",

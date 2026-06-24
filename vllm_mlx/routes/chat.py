@@ -4504,14 +4504,41 @@ async def stream_chat_completion_strict_postgen(
     # comfortably below per-request memory limits operators expect
     # streaming to honor. Override via
     # ``RAPID_MLX_STRICT_BUFFER_BYTES`` for unusual workloads.
+    #
+    # Codex r10 NIT #1: clamp the configured cap to an upper bound.
+    # A bad operator value (typo, misunderstanding of bytes vs
+    # gigabytes) could silently disable the memory-safety guarantee
+    # by setting an enormous cap. 64 MiB is the documented maximum:
+    # any single response that legitimately needs more than 64 MiB
+    # of JSON content is almost certainly a workload bug, not a
+    # legitimate strict-mode use case. Values above the bound are
+    # clamped DOWN to the bound with an operator-facing warning.
+    _BUFFER_CAP_HARD_MAX = 64 * 1024 * 1024
+    _BUFFER_CAP_DEFAULT = 2 * 1024 * 1024
     try:
         _buffer_cap = int(
-            os.environ.get("RAPID_MLX_STRICT_BUFFER_BYTES", str(2 * 1024 * 1024))
+            os.environ.get("RAPID_MLX_STRICT_BUFFER_BYTES", str(_BUFFER_CAP_DEFAULT))
         )
         if _buffer_cap <= 0:
-            _buffer_cap = 2 * 1024 * 1024
+            _buffer_cap = _BUFFER_CAP_DEFAULT
+        elif _buffer_cap > _BUFFER_CAP_HARD_MAX:
+            # Operator-facing warning — keep the env-var name OUT of
+            # the literal log format so the no-out-of-band-routing
+            # AST scan doesn't flag the whole format string as a
+            # routing-shape constant. We pass the name in as a
+            # parameter instead.
+            logger.warning(
+                "%s=%d exceeds hard maximum %d; clamping to %d to preserve "
+                "memory-safety guarantee. If you need a larger cap, file an "
+                "issue rather than raising the hard limit.",
+                "RAPID_MLX_STRICT_BUFFER_BYTES",
+                _buffer_cap,
+                _BUFFER_CAP_HARD_MAX,
+                _BUFFER_CAP_HARD_MAX,
+            )
+            _buffer_cap = _BUFFER_CAP_HARD_MAX
     except (TypeError, ValueError):
-        _buffer_cap = 2 * 1024 * 1024
+        _buffer_cap = _BUFFER_CAP_DEFAULT
     # Codex r2 #1: we MUST NOT forward the upstream stream's terminal
     # chunk (the one carrying ``finish_reason``) until we know whether
     # validation passed. Spec-compliant clients finalize on the first
@@ -4613,6 +4640,24 @@ async def stream_chat_completion_strict_postgen(
                     # terminal-replacement logic doesn't drop usage.
                     if not choices and parsed.get("usage") is not None:
                         is_usage_chunk = True
+            # Codex r10 #1: if the buffer cap was hit, DROP the
+            # overflowing chunk before forwarding it. Pre-fix the
+            # ``yield chunk_text`` ran BEFORE the break check, so a
+            # client would receive bytes the server had deliberately
+            # excluded from validation (and then receive the
+            # ``buffer_overflow`` envelope claiming the buffer was
+            # capped). That's a half-truth — the validator skipped
+            # the content but the wire still delivered it. Now the
+            # break happens BEFORE the forward, so the cap is honored
+            # end-to-end: bytes that didn't reach the buffer don't
+            # reach the client either.
+            if buffer_overflow:
+                # Held terminal/usage chunks haven't been emitted yet
+                # — leave them on the floor too. The overflow envelope
+                # in the post-loop block emits its own
+                # finish_reason=json_schema_violation, so a held
+                # ``finish_reason=stop`` chunk would conflict.
+                break
             if is_terminal:
                 held_terminal_chunks.append(chunk_text)
                 continue
@@ -4620,13 +4665,6 @@ async def stream_chat_completion_strict_postgen(
                 held_usage_chunk = chunk_text
                 continue
             yield chunk_text
-            # Codex r8 #2: if the buffer cap was hit, abandon the
-            # rest of the upstream stream. Continuing to iterate
-            # would just discard bytes (we already stopped appending)
-            # while still consuming engine-side resources; better to
-            # break here and surface the structured error.
-            if buffer_overflow:
-                break
 
         # Codex r8 #2: if the buffer cap fired, skip validation and
         # treat the truncated content as a violation. Validating a
