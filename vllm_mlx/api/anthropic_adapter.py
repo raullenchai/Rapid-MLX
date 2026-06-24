@@ -307,15 +307,19 @@ def _thinking_block_content(
     """
     if not reasoning_text:
         return None
-    # Dedupe rescue tail FIRST so the trim works on the raw
-    # reasoning_text bytes (matching the same slice boundary the
-    # rescue helper used in ``_build_reasoning_rescue_payload``).
-    # ``_build_reasoning_rescue_payload`` does
-    # ``reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]`` then sanitizes
-    # — so we trim the same suffix on the rstripped reasoning and
-    # sanitize the prefix that remains.
+    # Dedupe rescue tail: strip channel markup FIRST so the trim
+    # boundary aligns with the rescue builder's slice boundary (which
+    # ALSO strips first — see
+    # ``service.helpers._build_reasoning_rescue_payload``). Codex r3
+    # P2 (R12-M1b): if we slice the raw reasoning bytes, a
+    # ``<think>`` tag that straddles the slice boundary leaves an
+    # orphaned ``<th`` / ``ink>`` fragment in the thinking block (the
+    # regex stripper no longer matches the orphaned partial). Stripping
+    # first means the slice operates on the clean, in-channel byte
+    # stream and can never bisect a tag because there are no tags
+    # left to bisect.
     if is_rescue_payload(text):
-        stripped = reasoning_text.rstrip()
+        stripped = strip_reasoning_channel_markup(reasoning_text.rstrip())
         prefix = (
             stripped[:-RESCUE_TAIL_LENGTH] if len(stripped) > RESCUE_TAIL_LENGTH else ""
         )
@@ -326,7 +330,12 @@ def _thinking_block_content(
             # truncated reasoning excerpt; clients still see the full
             # structural truncation signal via ``stop_reason="max_tokens"``.
             return None
-        return _sanitize_reasoning_channel(prefix)
+        # Channel markup already stripped above; only the general
+        # special-token catch-all remains.
+        sanitized = sanitize_output(prefix)
+        if not sanitized or not sanitized.strip():
+            return None
+        return sanitized
     return _sanitize_reasoning_channel(reasoning_text)
 
 
@@ -413,22 +422,31 @@ def openai_to_anthropic(
         # which signals "do not emit a thinking block" (same shape as
         # the previous whitespace-only guard).
         thinking_body = _thinking_block_content(reasoning_text, text)
-        # Compare the POST-sanitize thinking payload against ``text`` —
-        # not the raw ``reasoning_text``. Codex r1 P2 on R12-M1b: when
-        # ``reasoning_text="<think>done</think>"`` and ``text="done"``,
-        # the channel-aware sanitizer normalizes the thinking payload
-        # to ``"done"`` (correctly stripping the reasoning-channel
-        # tags), but the raw byte comparison ``reasoning_text != text``
-        # is True — so both blocks would emit with the same visible
-        # bytes (``thinking="done"`` AND ``text="done"``), which is
-        # exactly the duplicate-block case this gate was supposed to
-        # prevent. Gating on ``thinking_body != text`` collapses the
-        # markup-only-delta case correctly while preserving the
-        # original intent on the raw-equality case (the rescue path,
-        # which the dedupe helper above already handles, returns a
-        # trimmed prefix so ``thinking_body != text`` holds there too).
+        # Compare BOTH sides post-sanitize so visible-byte equality
+        # decides the duplicate-block gate. Codex r1 P2 + r3 BLOCKING
+        # on R12-M1b: the prior implementation compared the sanitized
+        # ``thinking_body`` against the raw ``text``. That left a
+        # second markup-only-delta hole — when ``text`` itself carries
+        # removable markup that the canonical content-channel
+        # sanitizer collapses to the same visible bytes as
+        # ``thinking_body`` (e.g. ``text="done</think>"`` which the
+        # Anthropic route's ``sanitize_output`` pass on ``final_content``
+        # already strips to ``"done"`` upstream, OR a non-route caller
+        # of ``openai_to_anthropic`` that hasn't sanitized ``text``
+        # before passing it in), the raw comparison would report
+        # "different" and both blocks would render the same VISIBLE
+        # bytes to the client. Normalising ``text`` with the canonical
+        # content-channel ``sanitize_output`` here makes the gate
+        # robust regardless of how much upstream sanitization has
+        # already run. The rescue path is unaffected:
+        # ``_thinking_block_content`` already trims the rescue-tail
+        # suffix from ``thinking_body`` before this gate runs, so the
+        # comparison stays True there.
+        sanitized_text = sanitize_output(text) if text else text
         emit_thinking = (
-            reasoning_enabled and thinking_body is not None and thinking_body != text
+            reasoning_enabled
+            and thinking_body is not None
+            and thinking_body != sanitized_text
         )
         # Add thinking block FIRST so it appears before the answer text,
         # matching Anthropic's extended-thinking SDK convention. Without

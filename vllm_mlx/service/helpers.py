@@ -1167,24 +1167,35 @@ def _build_reasoning_rescue_payload(reasoning_text: str) -> str:
     whitespace (see ``_apply_reasoning_cutoff_notice``), so an empty
     tail is impossible by construction.
 
-    The tail is run through :func:`strip_reasoning_channel_markup`
-    (strips ``<think>`` opener + closer — both, because the rescue
-    tail is sourced from the reasoning channel) and then through
+    The reasoning trace is stripped of channel markup BEFORE the
+    tail slice is chosen, then the slice runs through
     :func:`sanitize_output` (general special-token catch-all:
-    ``<|...|>``, harmony channel markers, ``</tool_call>``, etc.)
-    BEFORE injection. ``reasoning_content`` keeps the full original
-    trace addressable for clients that walk both fields. Codex r1
-    (R12-8): the rescue path previously bypassed the sanitizer that
-    ``content`` consumers rely on. R12-M1b (Mira r12 R-3 bonus
-    regression): also strip the ``<think>`` OPENER from the rescue
-    tail — at ``max_tokens=1`` the reasoning trace IS the literal
-    opener, and ``sanitize_output`` deliberately leaves the opener
-    alone on the ``content`` channel (where it can be legit Nemotron
-    prefix injection or literal-tag prose). The rescue tail is from
-    the reasoning channel, so the channel-aware strip applies.
+    ``<|...|>``, harmony channel markers, ``</tool_call>``, etc.).
+    The strip-before-slice order matters: a naive slice of the raw
+    reasoning bytes can bisect a structural ``<think>`` /
+    ``</think>`` tag (codex r3 P2: when reasoning is just slightly
+    longer than ``RESCUE_TAIL_LENGTH`` and starts with ``<think>``,
+    the raw slice begins ``hink>...`` and the regex stripper no
+    longer matches the orphaned fragment — so the literal ``ink>``
+    bytes leak into ``content``). Stripping channel markup first
+    means the slice operates on the clean, in-channel byte stream
+    and can never bisect a tag because there are no tags left to
+    bisect.
+    ``reasoning_content`` keeps the full original trace addressable
+    for clients that walk both fields. Codex r1 (R12-8): the rescue
+    path previously bypassed the sanitizer that ``content``
+    consumers rely on. R12-M1b (Mira r12 R-3 bonus regression):
+    also strip the ``<think>`` OPENER — at ``max_tokens=1`` the
+    reasoning trace IS the literal opener, and ``sanitize_output``
+    deliberately leaves the opener alone on the ``content`` channel
+    (where it can be legit Nemotron prefix injection or literal-tag
+    prose). The rescue tail is from the reasoning channel, so the
+    channel-aware strip applies.
     """
-    tail = reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]
-    tail = strip_reasoning_channel_markup(tail)
+    # Strip BEFORE slicing — see docstring for the bisection
+    # regression this order closes.
+    stripped = strip_reasoning_channel_markup(reasoning_text.rstrip())
+    tail = stripped[-RESCUE_TAIL_LENGTH:]
     sanitized = sanitize_output(tail)
     if not sanitized:
         return REASONING_CUTOFF_SENTINEL

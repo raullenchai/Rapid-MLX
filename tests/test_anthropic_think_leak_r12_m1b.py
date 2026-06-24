@@ -85,12 +85,19 @@ def _make_rescue_payload(reasoning_text: str) -> str:
     same layout the helper writes — without importing the helper
     itself. ``sanitized_tail`` runs through both stages of the
     channel-aware sanitizer (matching
-    ``_build_reasoning_rescue_payload``). When the tail collapses to
-    empty after sanitization, the rescue is just the bare sentinel
-    (matching the helper's all-markup fallback).
+    ``_build_reasoning_rescue_payload``).
+
+    Strip-before-slice order mirrors the helper (codex r3 P2 fix):
+    sanitizing channel markup before choosing the tail boundary
+    means a ``<think>`` tag straddling the slice can't leak a
+    partial fragment into the rescue tail.
+
+    When the tail collapses to empty after sanitization, the rescue
+    is just the bare sentinel (matching the helper's all-markup
+    fallback).
     """
-    tail = reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]
-    tail = strip_reasoning_channel_markup(tail)
+    stripped = strip_reasoning_channel_markup(reasoning_text.rstrip())
+    tail = stripped[-RESCUE_TAIL_LENGTH:]
     sanitized = sanitize_output(tail)
     if not sanitized:
         return REASONING_CUTOFF_SENTINEL
@@ -697,3 +704,89 @@ class TestMarkupOnlyDelta:
         assert thinking_blocks[0].thinking == "let me think about this carefully"
         assert len(text_blocks) == 1
         assert text_blocks[0].text == "the answer"
+
+
+class TestSliceBisectsThinkTag:
+    """Codex r3 P2 (R12-M1b): the slice-bisects-tag boundary case.
+
+    When ``reasoning_text`` is just slightly longer than
+    ``RESCUE_TAIL_LENGTH`` and contains a ``<think>`` tag near the
+    boundary, a naive ``reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]``
+    slice can bisect the tag, leaving an orphan ``<th`` /  ``ink>``
+    fragment that the regex stripper no longer matches.
+
+    Fix: strip channel markup BEFORE choosing the tail boundary so
+    the slice operates on the clean, in-channel byte stream — no
+    tags left to bisect by construction.
+    """
+
+    @pytest.mark.parametrize(
+        "prefix_len,total_len",
+        [
+            # Reasoning lengths that force ``<think>`` to straddle
+            # the L - RESCUE_TAIL_LENGTH boundary. Each pinning shape
+            # gets tested under both the rescue helper (text block)
+            # and the adapter dedupe (thinking block) — symmetric
+            # because both helpers now strip-before-slice.
+            (1, 203),  # '<think>' at positions 1-7, boundary at 3
+            (3, 205),  # '<think>' at positions 3-9, boundary at 5
+            (5, 207),  # '<think>' at positions 5-11, boundary at 7
+        ],
+    )
+    def test_no_partial_think_fragment_in_any_block(
+        self, prefix_len: int, total_len: int
+    ):
+        """Slice-bisects-``<think>`` pinning: NO ``<th`` / ``ink>``
+        fragment may appear in the rescue payload OR in the thinking
+        block. Parametrized over multiple boundary alignments so the
+        invariant is enforced uniformly across slice positions.
+        """
+        prefix = "A" * prefix_len
+        # The total reasoning length is fixed; fill remaining with B's
+        body_len = total_len - prefix_len - len("<think>")
+        reasoning = prefix + "<think>" + "B" * body_len
+        assert len(reasoning) == total_len, "test setup invariant"
+
+        rescue_text = _make_rescue_payload(reasoning)
+
+        resp = ChatCompletionResponse(
+            model="qwen3-0.6b-bf16",
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message=AssistantMessage(
+                        role="assistant",
+                        content=rescue_text,
+                        reasoning_content=reasoning,
+                        tool_calls=None,
+                    ),
+                    finish_reason="length",
+                )
+            ],
+            usage=Usage(
+                prompt_tokens=10,
+                completion_tokens=total_len,
+                total_tokens=10 + total_len,
+            ),
+        )
+        anth = openai_to_anthropic(resp, "qwen3-0.6b-bf16", reasoning_enabled=True)
+
+        # No partial think fragment in either block on the wire.
+        for block in anth.content:
+            body = block.thinking if block.type == "thinking" else (block.text or "")
+            assert "<think>" not in (body or ""), (
+                f"<think> literal leaked into {block.type}: {body!r}"
+            )
+            assert "</think>" not in (body or ""), (
+                f"</think> literal leaked into {block.type}: {body!r}"
+            )
+            # The partial-fragment failure mode: regex misses the
+            # bisected tail / head bytes.
+            assert "ink>" not in (body or ""), (
+                f"orphan 'ink>' fragment leaked into {block.type} "
+                f"(slice bisected '<think>' tag): {body!r}"
+            )
+            assert "<th" not in (body or ""), (
+                f"orphan '<th' fragment leaked into {block.type} "
+                f"(slice bisected '<think>' tag): {body!r}"
+            )
