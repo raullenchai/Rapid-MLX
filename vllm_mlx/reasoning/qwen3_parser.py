@@ -186,7 +186,12 @@ class Qwen3ReasoningParser(BaseThinkingReasoningParser):
             # Treat everything after <think> as reasoning, content is None.
             if self.start_token in model_output:
                 _, _, reasoning = model_output.partition(self.start_token)
-                return reasoning.strip() or None, None
+                r = reasoning.strip() or None
+                # Apply the shared tool_call promoter so a CLOSED
+                # ``<tool_call>…</tool_call>`` block inside the
+                # truncated reasoning still surfaces on the content
+                # channel for the downstream tool parser (#344 port).
+                return self._promote_tool_calls(r, None)
             # #575 — when ``enable_thinking=True`` the chat template
             # pre-injected ``<think>\n`` into the prompt, so a no-tag
             # response is a truncated thought trace (the streaming

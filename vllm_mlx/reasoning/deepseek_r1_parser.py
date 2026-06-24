@@ -63,7 +63,9 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             reasoning, _, content = model_output.partition(self.end_token)
             reasoning = reasoning.strip() or None
             content = content.strip() or None
-            return reasoning, content
+            # Promote any ``<tool_call>`` blocks from the implicit
+            # reasoning span to content (waybarrios#433 port / #344).
+            return self._promote_tool_calls(reasoning, content)
 
         # If neither token, return as pure content — UNLESS the caller
         # explicitly set enable_thinking=True, in which case the chat
@@ -125,8 +127,13 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
             # Under threshold: delegate to base (defaults to reasoning
             # for early implicit mode, will be corrected by finalize)
 
-        # First try base class logic
-        result = super().extract_reasoning_streaming(
+        # First try base class logic. Use the UNFILTERED inner method so
+        # the tool-call promotion filter only runs ONCE at the end of
+        # this dispatcher (after our DeepSeek-R1 special case below has
+        # had a chance to override). Otherwise a buffered ``<tool_call>``
+        # would be partially flushed by the inner filter and then
+        # overwritten — losing the buffered bytes.
+        result = super()._extract_reasoning_streaming_inner(
             previous_text, current_text, delta_text
         )
 
@@ -142,12 +149,16 @@ class DeepSeekR1ReasoningParser(BaseThinkingReasoningParser):
                 idx = delta_text.find(self.end_token)
                 reasoning_part = delta_text[:idx]
                 content_part = delta_text[idx + len(self.end_token) :]
-                return DeltaMessage(
+                result = DeltaMessage(
                     reasoning=reasoning_part if reasoning_part else None,
                     content=content_part if content_part else None,
                 )
 
-        return result
+        # Apply the shared tool-call promotion filter (waybarrios#433
+        # port / #344) to whichever DeltaMessage we settled on so a
+        # ``<tool_call>`` inside the reasoning channel gets re-routed
+        # to ``content`` for the downstream tool parser.
+        return self._apply_tool_call_promotion(result)
 
     def finalize_streaming(
         self,

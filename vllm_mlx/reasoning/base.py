@@ -213,7 +213,19 @@ def finalize_streaming_compat(
     prompt_thinking_active: bool = False,
     finish_reason: str | None = None,
 ) -> DeltaMessage | None:
-    """Call ``finalize_streaming`` without breaking legacy parsers."""
+    """Call ``finalize_streaming`` without breaking legacy parsers.
+
+    Also flushes any pending streaming ``<tool_call>`` buffer if the
+    parser supports the promotion port (waybarrios#433 / #344). A
+    pending buffer means the stream ended after a ``<tool_call>``
+    opener but before the closer — the bytes must be flushed to
+    ``content`` so the downstream tool parser sees them. The flush
+    output is merged with the subclass's ``finalize_streaming`` return
+    (subclass content + tool buffer concatenated; subclass reasoning
+    preserved) so finalize behaviour for non-promotion paths
+    (D-STOP-THINK suppression, bare-text fallback, #569 rescue) is
+    unchanged.
+    """
     params = inspect.signature(parser.finalize_streaming).parameters
     supports_kwargs = any(
         p.kind is inspect.Parameter.VAR_KEYWORD for p in params.values()
@@ -224,13 +236,39 @@ def finalize_streaming_compat(
         "finish_reason",
     }.issubset(params)
     if supports_new_args:
-        return parser.finalize_streaming(
+        msg = parser.finalize_streaming(
             accumulated_text,
             matched_stop=matched_stop,
             prompt_thinking_active=prompt_thinking_active,
             finish_reason=finish_reason,
         )
-    return parser.finalize_streaming(accumulated_text)
+    else:
+        msg = parser.finalize_streaming(accumulated_text)
+
+    # Tool-call promotion flush — only fires when the parser carries
+    # an unflushed ``<tool_call>`` buffer from streaming. Local import
+    # avoids a circular import between ``base.py`` and
+    # ``think_parser.py``.
+    flush_method = getattr(parser, "_flush_pending_tool_call", None)
+    if callable(flush_method):
+        flush = flush_method()
+        if flush is not None:
+            if msg is None:
+                return flush
+            # Merge: subclass content + flushed tool_call; subclass
+            # reasoning preserved (the flush is a content-only emit).
+            merged_content_parts: list[str] = []
+            if msg.content:
+                merged_content_parts.append(msg.content)
+            if flush.content:
+                merged_content_parts.append(flush.content)
+            merged_content = "".join(merged_content_parts) or None
+            return DeltaMessage(
+                role=msg.role,
+                reasoning=msg.reasoning,
+                content=merged_content,
+            )
+    return msg
 
 
 def finalize_truncation(

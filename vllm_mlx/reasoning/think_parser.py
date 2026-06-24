@@ -11,9 +11,109 @@ Supports three scenarios:
 3. No tags: pure content
 """
 
+import logging
+import re
 from abc import abstractmethod
 
 from .base import DeltaMessage, ReasoningParser
+
+logger = logging.getLogger(__name__)
+
+# ── Tool-call promotion (port of waybarrios#433 / closes #344) ──────
+#
+# Thinking models (Qwen 3.5/3.6, Hermes-distill, …) sometimes emit
+# ``<tool_call>`` XML/JSON blocks INSIDE the ``<think>`` block. The
+# default parser pipeline classifies everything between ``<think>``
+# and ``</think>`` as reasoning, so the tool parser downstream never
+# sees the call. Promotion re-routes the tool_call block from
+# ``reasoning`` to ``content`` so the tool parser can pick it up.
+#
+# The constants and regex live at module scope so the regex objects
+# are compiled once. The promotion logic is centralised in
+# ``_promote_tool_calls`` (non-streaming) and a streaming buffer
+# state machine; both pipelines use the SAME tag literals so a single
+# definition keeps streaming/non-streaming parity by construction.
+_TOOL_CALL_START = "<tool_call>"
+_TOOL_CALL_END = "</tool_call>"
+# Closed block: ``<tool_call>…</tool_call>`` (non-greedy across newlines).
+_TOOL_CALL_CLOSED_RE = re.compile(r"<tool_call>(.*?)</tool_call>", re.DOTALL)
+# Unclosed block: ``<tool_call>`` followed by ``{`` or ``<`` (JSON or XML
+# structural opener) plus arbitrary tail. The structural guard prevents
+# prose mentions like ``"I would use <tool_call> to call functions"``
+# from being promoted as a faux tool call — a bare ``<tool_call>``
+# followed by free text never matches.
+_TOOL_CALL_UNCLOSED_RE = re.compile(r"<tool_call>\s*[\{<].*$", re.DOTALL)
+
+
+def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
+    """Trim trailing prose from an unclosed ``<tool_call>`` body.
+
+    The upstream regex ``<tool_call>\\s*[\\{<].*$`` (DOTALL) eats
+    everything up to end-of-string. That's fine for a TRULY truncated
+    tool_call — every line is ``<…>`` / ``</…>`` / JSON — but the
+    model occasionally emits a malformed call and then resumes plain
+    reasoning (e.g. ``<tool_call>{json}</function>\\nDone thinking.``).
+    The trailing prose ``Done thinking.`` belongs in reasoning, not
+    in the promoted block.
+
+    Walk the body line-by-line starting AFTER ``<tool_call>``. The
+    FIRST line that is purely prose (no ``<`` and no ``{``) marks
+    the end of the tool_call body. Returns
+    ``(promoted_block, trailing_prose)`` where ``trailing_prose``
+    begins with the prose line (and is empty when the entire body
+    is tool-call-shaped).
+    """
+    # Strip the ``<tool_call>`` opener for inspection — the opener
+    # itself must always go into the promoted block.
+    if not unclosed_block.startswith(_TOOL_CALL_START):
+        # Defensive: the caller passed in a match that doesn't start
+        # at the opener. Leave it intact.
+        return unclosed_block, ""
+    head = unclosed_block[: len(_TOOL_CALL_START)]
+    body = unclosed_block[len(_TOOL_CALL_START) :]
+    lines = body.split("\n")
+    promoted_lines: list[str] = []
+    trailing_lines: list[str] = []
+    boundary_hit = False
+    for line in lines:
+        if boundary_hit:
+            trailing_lines.append(line)
+            continue
+        stripped = line.strip()
+        if stripped == "":
+            # Blank lines are ambiguous — keep with promoted block.
+            promoted_lines.append(line)
+            continue
+        if "<" in stripped or "{" in stripped or "}" in stripped:
+            # XML/JSON-ish — still inside the tool_call body.
+            promoted_lines.append(line)
+            continue
+        # Pure prose line — boundary.
+        boundary_hit = True
+        trailing_lines.append(line)
+    promoted_block = head + "\n".join(promoted_lines)
+    trailing_prose = "\n".join(trailing_lines)
+    if trailing_prose:
+        trailing_prose = "\n" + trailing_prose
+    return promoted_block, trailing_prose
+
+
+def _partial_tool_call_open_suffix(text: str) -> int:
+    """Length of the suffix of ``text`` that could be a strict prefix of
+    ``<tool_call>``.
+
+    Used by the streaming promotion filter to withhold trailing bytes
+    that look like a partial ``<tool_call>`` opener so a tag straddling
+    SSE chunks reassembles correctly on the next delta. The full match
+    case is excluded — if ``text`` already ends in the complete opener
+    the buffer branch handles it.
+    """
+    tag = _TOOL_CALL_START
+    max_len = min(len(tag) - 1, len(text))
+    for n in range(max_len, 0, -1):
+        if text.endswith(tag[:n]):
+            return n
+    return 0
 
 
 class BaseThinkingReasoningParser(ReasoningParser):
@@ -50,6 +150,24 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # prefix. Used to flush them on the next delta when the prefix
         # turned out NOT to be a tag.
         self._held_tag_suffix_len = 0
+        # Tool-call promotion state (port of waybarrios#433 / #344).
+        # When the model emits ``<tool_call>`` INSIDE a ``<think>`` block,
+        # the bytes must be promoted from the reasoning channel into the
+        # content channel so the downstream tool parser can find them.
+        # ``_in_tool_call`` flips to True the moment we observe the
+        # ``<tool_call>`` opener while routing a delta as reasoning;
+        # subsequent reasoning deltas are buffered into
+        # ``_tool_call_buffer`` until ``</tool_call>`` arrives (closed
+        # promotion) OR ``</think>`` arrives first (unclosed flush) OR
+        # the stream ends (finalize flush).
+        self._in_tool_call: bool = False
+        self._tool_call_buffer: str = ""
+        # SSE-boundary carry for the ``<tool_call>`` opener. When the
+        # tag straddles a chunk boundary (e.g. delta ends with ``<too``,
+        # next starts with ``l_call>``), the trailing partial-tag bytes
+        # are stashed here so they reassemble with the next chunk
+        # instead of leaking into the reasoning channel.
+        self._reasoning_carry: str = ""
         # Codex r3 BLOCKING on PR #722: track streaming phase
         # explicitly instead of recomputing it from whole-history
         # ``previous_text.count(...)``. Counting historical tag
@@ -71,6 +189,9 @@ class BaseThinkingReasoningParser(ReasoningParser):
         self._saw_any_tag = False
         self._held_tag_suffix_len = 0
         self._streaming_phase = None
+        self._in_tool_call = False
+        self._tool_call_buffer = ""
+        self._reasoning_carry = ""
 
     def is_open_in_think(self, accumulated_text: str) -> bool:
         """Return True iff the accumulated text shows an opened but
@@ -165,7 +286,9 @@ class BaseThinkingReasoningParser(ReasoningParser):
             # would otherwise ship the trailing ``<think>`` or
             # ``</think>`` literal bytes through to ``message.content``.
             reasoning, content = self._sweep_residual_think_tags(reasoning, content)
-            return reasoning.strip() or None, content.strip() or None
+            r = reasoning.strip() or None
+            c = content.strip() or None
+            return self._promote_tool_calls(r, c)
 
         # Case 2: Only closing tag (think was injected in prompt)
         # Everything before </think> is reasoning
@@ -177,12 +300,15 @@ class BaseThinkingReasoningParser(ReasoningParser):
             # implicit-think analogue of the phi-4-mini-reasoning
             # repro).
             reasoning, content = self._sweep_residual_think_tags(reasoning, content)
-            return reasoning.strip() or None, content.strip() or None
+            r = reasoning.strip() or None
+            c = content.strip() or None
+            return self._promote_tool_calls(r, c)
 
         # Case 3: Only start tag (incomplete reasoning, no end yet)
         if self.start_token in text:
             _, _, reasoning = text.partition(self.start_token)
-            return reasoning.strip() or None, None
+            r = reasoning.strip() or None
+            return self._promote_tool_calls(r, None)
 
         # Case 4: No tags at all. With ``enable_thinking=True`` the
         # chat template already injected ``<think>`` into the
@@ -196,6 +322,30 @@ class BaseThinkingReasoningParser(ReasoningParser):
         return None, model_output
 
     def extract_reasoning_streaming(
+        self,
+        previous_text: str,
+        current_text: str,
+        delta_text: str,
+    ) -> DeltaMessage | None:
+        """Public streaming entry point.
+
+        Composes the existing think-tag state machine
+        (``_extract_reasoning_streaming_inner``) with the tool-call
+        promotion filter (``_apply_tool_call_promotion``). The filter
+        watches the reasoning channel for ``<tool_call>`` blocks and
+        re-routes them to the content channel — port of waybarrios#433
+        (closes #344). Centralising the promotion at this seam keeps
+        the inner state machine untouched (no per-emit-point
+        modifications) and ensures the same filter fires for every
+        ``<think>``-tag subclass (Qwen3 / DeepSeek-R1 / Glm4 /
+        VibeThinker / …) without per-subclass duplication.
+        """
+        msg = self._extract_reasoning_streaming_inner(
+            previous_text, current_text, delta_text
+        )
+        return self._apply_tool_call_promotion(msg)
+
+    def _extract_reasoning_streaming_inner(
         self,
         previous_text: str,
         current_text: str,
@@ -1010,3 +1160,321 @@ class BaseThinkingReasoningParser(ReasoningParser):
         else:
             # Still in implicit reasoning phase
             return DeltaMessage(reasoning=delta_text)
+
+    # ── Tool-call promotion (port of waybarrios#433 / #344) ─────────
+    #
+    # Thinking models occasionally emit ``<tool_call>`` blocks INSIDE
+    # ``<think>``. The base think state machine routes those bytes to
+    # the reasoning channel, so the downstream tool parser never sees
+    # them. The promotion logic below re-routes the bytes to the
+    # content channel for both the non-streaming
+    # (``_promote_tool_calls``) and streaming
+    # (``_apply_tool_call_promotion`` filter + ``finalize_streaming``
+    # flush hook) paths. The shared filter lives on the base class so
+    # every ``<think>``-tag subclass benefits without per-parser
+    # duplication.
+
+    @classmethod
+    def _promote_tool_calls(
+        cls, reasoning: str | None, content: str | None
+    ) -> tuple[str | None, str | None]:
+        """Move ``<tool_call>`` blocks from ``reasoning`` into ``content``.
+
+        Non-streaming half of the promotion port. Applied AFTER the
+        normal think-tag split so the structural separation of
+        reasoning vs content is preserved — only the tool-call XML/JSON
+        blocks move.
+
+        Algorithm:
+
+        * Pull every CLOSED ``<tool_call>…</tool_call>`` block out of
+          ``reasoning`` and append it to ``content`` (chronological
+          order — the thinking happened before the answer).
+        * Pull the LAST UNCLOSED ``<tool_call>`` block out (if present)
+          and PREPEND it to ``content`` — the spanning shape is
+          ``<think>R<tool_call>partial</think>rest</tool_call>C``
+          where the closer and remainder land in ``content``; the
+          buffered head must reassemble with that remainder, hence
+          prepend.
+        * Structural guard via ``_TOOL_CALL_UNCLOSED_RE``: requires
+          ``<tool_call>`` to be followed by ``{`` or ``<`` (JSON or
+          XML opener). Prose mentions like ``"use <tool_call> to
+          invoke functions"`` never match — preventing false
+          positives that would clobber legitimate reasoning text.
+        * Logs a warning summarising the number of blocks moved, so
+          operators monitoring reasoning-channel health can see the
+          promotion firing.
+        """
+        if not reasoning or _TOOL_CALL_START not in reasoning:
+            return reasoning, content
+
+        # Closed regex first: extract complete <tool_call>...</tool_call> blocks.
+        # Then unclosed regex on the already-stripped reasoning.
+        closed: list[str] = []
+
+        def _collect_closed(match: re.Match[str]) -> str:
+            closed.append(match.group(0))
+            return ""
+
+        cleaned = _TOOL_CALL_CLOSED_RE.sub(_collect_closed, reasoning)
+
+        unclosed_match = _TOOL_CALL_UNCLOSED_RE.search(cleaned)
+        unclosed_block: str | None = None
+        if unclosed_match:
+            unclosed_block = unclosed_match.group(0)
+            unclosed_start = unclosed_match.start()
+            # Trim trailing prose: the upstream regex eats everything
+            # up to end-of-string with ``.*$`` DOTALL, but the model
+            # sometimes emits a MALFORMED tool_call and then returns
+            # to plain reasoning (e.g. ``<tool_call>{json}</function>
+            # \nDone thinking.``). The trailing prose belongs in
+            # reasoning, not in the promoted block. Detect the
+            # boundary by walking the unclosed body line-by-line:
+            # the first line that is purely prose (no ``<`` and no
+            # ``{``) marks the END of the tool_call body. This keeps
+            # the upstream behaviour for well-formed truncated calls
+            # (every line is ``<…>`` / ``</…>`` / JSON) while letting
+            # the existing wire-scrub pipeline handle malformed-wire +
+            # returned-to-reasoning shapes — closes the over-promotion
+            # gap exposed by ``test_t3_chat_route_scrubs_wire_leak_from_reasoning_content``.
+            trimmed_block, trailing_prose = _split_unclosed_at_prose_boundary(
+                unclosed_block
+            )
+            unclosed_block = trimmed_block
+            cleaned = cleaned[:unclosed_start] + trailing_prose
+
+        cleaned = cleaned.strip() or None
+        promoted_count = len(closed) + (1 if unclosed_block else 0)
+
+        if promoted_count == 0:
+            return reasoning, content
+
+        result_content = content or ""
+
+        if unclosed_block:
+            result_content = (
+                unclosed_block + "\n" + result_content
+                if result_content
+                else unclosed_block
+            )
+
+        if closed:
+            closed_text = "\n".join(closed)
+            result_content = (
+                result_content + "\n" + closed_text if result_content else closed_text
+            )
+
+        result_content = result_content.strip() or None
+
+        logger.warning(
+            "Promoted %d tool_call block(s) from reasoning to content "
+            "(%d closed, %d unclosed)",
+            promoted_count,
+            len(closed),
+            1 if unclosed_block else 0,
+        )
+
+        return cleaned, result_content
+
+    def _apply_tool_call_promotion(
+        self, msg: DeltaMessage | None
+    ) -> DeltaMessage | None:
+        """Streaming half of the promotion port — per-delta filter.
+
+        Watches the reasoning channel for ``<tool_call>`` and buffers
+        bytes between ``<tool_call>`` and ``</tool_call>`` so they can
+        be flushed into the content channel instead. The filter is
+        composed at the public ``extract_reasoning_streaming`` seam so
+        every ``<think>``-tag subclass picks it up uniformly.
+
+        Six cases the filter handles:
+
+        1. ``msg is None`` (skip) — pass through.
+        2. Not buffering, no ``<tool_call>`` in reasoning — pass through.
+        3. Not buffering, ``<tool_call>`` appears mid-reasoning — emit
+           the prefix as reasoning, start buffering the rest (which may
+           ALSO contain ``</tool_call>`` if the whole call lands in one
+           delta; the recursive flush handles closure correctly).
+        4. Buffering, more reasoning arrives — append to buffer. If the
+           buffer now contains ``</tool_call>``, flush the closed
+           portion as content; the post-close remainder may start
+           another buffer or continue as reasoning.
+        5. Buffering, ``msg.content`` arrives (think ended while
+           buffering) — flush the buffered prefix as content (unclosed
+           promotion), then concatenate ``msg.content`` after.
+        6. Always carry through ``msg.content`` unchanged when not
+           buffering — the content channel is not subject to promotion.
+
+        Streaming/non-streaming parity invariant: when the entire
+        output lands in a SINGLE delta (e.g. tests that feed the
+        whole text at once), the inner state machine returns one
+        ``DeltaMessage(reasoning=R, content=C)`` and the filter
+        delegates to ``_promote_tool_calls(R, C)`` — guaranteeing
+        the same wire shape as the non-streaming path.
+        """
+        if msg is None:
+            return None
+
+        r_in = msg.reasoning
+        c_in = msg.content
+
+        # Single-delta catch-all: the inner ran the WHOLE state machine
+        # in this delta (the SSE-boundary tests feed
+        # chunk_size=len(text)) and emitted reasoning + content
+        # together. Delegate to the non-streaming promoter so the
+        # streaming wire shape matches the non-streaming wire shape
+        # exactly. This is upstream's ``_transition_to_content``
+        # catch-all in spirit, recast in our wrapper.
+        if (
+            not self._in_tool_call
+            and r_in
+            and c_in is not None
+            and _TOOL_CALL_START in r_in
+        ):
+            new_r, new_c = self._promote_tool_calls(r_in, c_in)
+            if new_r is None and new_c is None:
+                return None
+            return DeltaMessage(
+                role=msg.role,
+                reasoning=new_r,
+                content=new_c,
+            )
+
+        # Otherwise walk the per-channel state machine.
+        out_reasoning_parts: list[str] = []
+        out_content_parts: list[str] = []
+
+        if r_in:
+            self._absorb_reasoning_chunk(r_in, out_reasoning_parts, out_content_parts)
+
+        # Content channel: if we were buffering when content arrived,
+        # the think block ended mid-tool-call. Flush the buffered head
+        # as content first, then append the inner's content.
+        if c_in is not None:
+            # The carry held a partial ``<tool_call>`` opener that
+            # straddled across deltas. Now that the think block is
+            # ending, the carry is unresolved — flush it back as
+            # reasoning so no bytes are silently dropped.
+            if self._reasoning_carry:
+                out_reasoning_parts.append(self._reasoning_carry)
+                self._reasoning_carry = ""
+            if self._in_tool_call and self._tool_call_buffer:
+                flushed = self._tool_call_buffer
+                self._tool_call_buffer = ""
+                self._in_tool_call = False
+                logger.warning(
+                    "Promoted unclosed streaming tool_call "
+                    "(think ended before tool_call closed)"
+                )
+                out_content_parts.append(flushed)
+            out_content_parts.append(c_in)
+
+        new_r = "".join(out_reasoning_parts) or None
+        new_c = "".join(out_content_parts) or None
+        if new_r is None and new_c is None:
+            return None
+        return DeltaMessage(role=msg.role, reasoning=new_r, content=new_c)
+
+    def _absorb_reasoning_chunk(
+        self,
+        text: str,
+        out_reasoning: list[str],
+        out_content: list[str],
+    ) -> None:
+        """Walk one reasoning-channel chunk through the tool-call buffer.
+
+        Loops until the chunk is fully consumed, alternating between
+        buffer (inside ``<tool_call>``) and direct reasoning emit
+        (outside). Mutates ``out_reasoning`` and ``out_content`` in
+        place — each emit goes to the appropriate output channel.
+
+        SSE-boundary safety: when the ``<tool_call>`` opener straddles
+        chunk boundaries (e.g. ``<too`` then ``l_call>X``), the filter
+        carries the unresolved tail in
+        ``self._reasoning_carry`` so a partial opener at the end of
+        one chunk reassembles with the head of the next. Same idea as
+        the inner state machine's ``_held_tag_suffix_len`` but scoped
+        to the ``<tool_call>`` / ``</tool_call>`` tag set instead of
+        ``<think>`` / ``</think>``.
+
+        Promotion is symmetric across nested deltas: if the same
+        chunk contains multiple ``<tool_call>…</tool_call>`` blocks
+        the loop promotes each one individually.
+        """
+        # Prepend any unresolved partial-opener carry from prior deltas
+        # so a straddled ``<tool_call>`` opener reassembles.
+        remaining = self._reasoning_carry + text
+        self._reasoning_carry = ""
+        while remaining:
+            if self._in_tool_call:
+                # Buffering. Look for </tool_call> close.
+                self._tool_call_buffer += remaining
+                end_idx = self._tool_call_buffer.find(_TOOL_CALL_END)
+                if end_idx < 0:
+                    # Whole chunk consumed by buffer — still open.
+                    return
+                # Closed: split buffer at the closer.
+                promoted = self._tool_call_buffer[: end_idx + len(_TOOL_CALL_END)]
+                tail = self._tool_call_buffer[end_idx + len(_TOOL_CALL_END) :]
+                out_content.append(promoted)
+                self._tool_call_buffer = ""
+                self._in_tool_call = False
+                logger.warning("Promoted streaming tool_call block from reasoning")
+                remaining = tail
+                continue
+            # Not buffering — look for <tool_call> in remaining.
+            start_idx = remaining.find(_TOOL_CALL_START)
+            if start_idx < 0:
+                # No full opener — but the trailing bytes may be a
+                # PARTIAL opener (``<``, ``<t``, ``<tool_call`` …).
+                # Withhold the longest matching suffix so a straddled
+                # tag reassembles on the next call.
+                carry_len = _partial_tool_call_open_suffix(remaining)
+                if carry_len > 0:
+                    safe = remaining[:-carry_len]
+                    self._reasoning_carry = remaining[-carry_len:]
+                    if safe:
+                        out_reasoning.append(safe)
+                else:
+                    out_reasoning.append(remaining)
+                return
+            # Emit prefix as reasoning, start buffering from opener.
+            if start_idx > 0:
+                out_reasoning.append(remaining[:start_idx])
+            self._in_tool_call = True
+            self._tool_call_buffer = ""
+            remaining = remaining[start_idx:]
+            # Loop continues — the buffer branch will consume
+            # ``remaining`` (which starts with ``<tool_call>``).
+
+    def _flush_pending_tool_call(self) -> DeltaMessage | None:
+        """Flush any buffered ``<tool_call>`` bytes at end of stream.
+
+        Called from ``finalize_streaming`` (this class and Qwen3
+        override below). The streaming filter buffers bytes after a
+        ``<tool_call>`` opener so they can be promoted to ``content``
+        once ``</tool_call>`` arrives. If the stream ends before the
+        closer (truncation or natural EOS mid-call), the buffered
+        bytes would otherwise be silently dropped — exactly the
+        wire-shape gap waybarrios#433 closed for the closed-block
+        case. Flushing as ``content`` preserves the tool-call XML/JSON
+        for the downstream tool parser.
+
+        Also flushes any leftover ``_reasoning_carry`` as reasoning —
+        a partial-tag opener withheld at the SSE boundary that turned
+        out NOT to be a tool_call must NOT be silently dropped at
+        end-of-stream.
+        """
+        reasoning_flush: str | None = None
+        if self._reasoning_carry:
+            reasoning_flush = self._reasoning_carry
+            self._reasoning_carry = ""
+        content_flush: str | None = None
+        if self._in_tool_call and self._tool_call_buffer:
+            content_flush = self._tool_call_buffer
+            self._tool_call_buffer = ""
+            self._in_tool_call = False
+            logger.warning("Promoted unclosed streaming tool_call at stream end")
+        if reasoning_flush is None and content_flush is None:
+            return None
+        return DeltaMessage(reasoning=reasoning_flush, content=content_flush)
