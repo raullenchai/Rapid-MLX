@@ -1683,9 +1683,7 @@ async def _stream_responses(
                     # of an empty one. Cap reclassification still wins
                     # over accumulation for overflow bytes (those leave
                     # as ``content`` per the original contract).
-                    kept_reasoning, overflow, _ = _account_for_reasoning(
-                        delta_text
-                    )
+                    kept_reasoning, overflow, _ = _account_for_reasoning(delta_text)
                     if kept_reasoning:
                         accumulated_reasoning_text += kept_reasoning
                     # Reasoning-cap reclassification: once the per-request
@@ -2233,8 +2231,7 @@ async def _stream_responses(
             # in the mixed reasoning+message case, diverging from the
             # non-stream surface for the same response shape.
             mid_think_cutoff = (
-                last_finish_reason == "length"
-                and not (accumulated_text or "").strip()
+                last_finish_reason == "length" and not (accumulated_text or "").strip()
             )
             reasoning_status = "incomplete" if mid_think_cutoff else "completed"
             reasoning_item_payload_added = {
@@ -2471,9 +2468,7 @@ async def _stream_responses(
         # consumers see a non-zero credit on extremely short reasoning.
         reasoning_token_credit = 0
         if accumulated_reasoning_text:
-            reasoning_token_credit = max(
-                1, len(accumulated_reasoning_text) // 4
-            )
+            reasoning_token_credit = max(1, len(accumulated_reasoning_text) // 4)
         usage_payload = {
             "input_tokens": prompt_tokens,
             "output_tokens": completion_tokens,

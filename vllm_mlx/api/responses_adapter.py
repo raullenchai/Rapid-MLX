@@ -486,7 +486,10 @@ def openai_to_responses(
             # truncated chain-of-thought correctly.
             reasoning_item_status = (
                 "incomplete"
-                if (choice.finish_reason == "length" and not (choice.message.content or "").strip())
+                if (
+                    choice.finish_reason == "length"
+                    and not (choice.message.content or "").strip()
+                )
                 else "completed"
             )
             output.append(

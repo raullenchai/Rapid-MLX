@@ -41,7 +41,6 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-
 # ---------------------------------------------------------------------------
 # Engine stub: streams a reasoning-only output that ends with
 # ``finish_reason="length"``. Mirrors the live-server shape Mira R1 F1
@@ -58,8 +57,7 @@ class _Tokenizer:
     # the qwen3 finalize correctly classify the cut-off thought trace as
     # ``DeltaMessage(reasoning=...)`` instead of leaking to ``content``.
     chat_template = (
-        "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n"
-        "{% endif %}"
+        "{% if add_generation_prompt %}<|im_start|>assistant\n<think>\n{% endif %}"
     )
 
     def encode(self, text: str) -> list[int]:
@@ -93,7 +91,7 @@ class _GenerationOutput:
 # trips before ``</think>`` arrives. NO ``</think>`` token here.
 _REASONING_CHUNKS = [
     "Okay, the user said",
-    " \"Hi\". I should respond",
+    ' "Hi". I should respond',
     " politely. Let me",
     " start with a greeting.",
 ]
@@ -627,9 +625,7 @@ class TestStreamingBudgetExhaustEmitsReasoningItem:
             f"reasoning text duplicated:\n  {summary_text!r}"
         )
 
-    def test_output_index_aligns_with_completed_output_position(
-        self, responses_client
-    ):
+    def test_output_index_aligns_with_completed_output_position(self, responses_client):
         """R11-B codex r1 HIGH #1 regression guard. ``output_index`` on a
         streaming event is the position of that item in the terminal
         ``Response.output[]`` array — NOT just a wire-event ordinal.
@@ -656,8 +652,7 @@ class TestStreamingBudgetExhaustEmitsReasoningItem:
             idx = payload["output_index"]
             ev_item_id = payload["item"]["id"]
             assert 0 <= idx < len(output), (
-                f"output_index={idx} out of range for output[] of len "
-                f"{len(output)}"
+                f"output_index={idx} out of range for output[] of len {len(output)}"
             )
             assert output[idx]["id"] == ev_item_id, (
                 f"output_index/array mismatch at idx={idx}: "
@@ -777,9 +772,7 @@ class TestReasoningPlusMessageOutputIndexAlignment:
     the wire ``output_index`` must equal the array position of that
     item in ``response.output[]``."""
 
-    def test_message_then_reasoning_indices_align(
-        self, reasoning_then_message_client
-    ):
+    def test_message_then_reasoning_indices_align(self, reasoning_then_message_client):
         with reasoning_then_message_client.client.stream(
             "POST",
             "/v1/responses",
@@ -868,8 +861,7 @@ class TestReasoningPlusMessageOutputIndexAlignment:
             if ev_name == "response.output_item.done"
         ]
         assert len(done_indices) == len(set(done_indices)), (
-            f"duplicate output_index in output_item.done events: "
-            f"{done_indices}"
+            f"duplicate output_index in output_item.done events: {done_indices}"
         )
 
 
@@ -887,9 +879,7 @@ class TestReasoningMessageToolOutputIndexAlignment:
     ``output_index`` matches its position in the terminal
     ``response.output[]`` by id, and no two events share an index."""
 
-    def test_message_reasoning_tool_indices_align(
-        self, reasoning_message_tool_client
-    ):
+    def test_message_reasoning_tool_indices_align(self, reasoning_message_tool_client):
         with reasoning_message_tool_client.client.stream(
             "POST",
             "/v1/responses",
@@ -962,6 +952,5 @@ class TestReasoningMessageToolOutputIndexAlignment:
             if ev_name == "response.output_item.done"
         ]
         assert len(done_indices) == len(set(done_indices)), (
-            f"duplicate output_index in output_item.done events: "
-            f"{done_indices}"
+            f"duplicate output_index in output_item.done events: {done_indices}"
         )
