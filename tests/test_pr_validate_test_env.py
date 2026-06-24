@@ -196,6 +196,53 @@ class TestCheckTestEnv:
         assert f"'.[{TEST_EXTRAS_NAME}]'" in status.install_hint
         assert str(python) in status.install_hint
 
+    def test_batch_fail_with_individual_passes_is_treated_as_fail(self, tmp_path):
+        """Codex r1 BLOCKING: previously a batch-import failure that
+        re-probed clean per-module returned ``ok=True``. That hides a
+        real failure mode pytest hits at startup (plugin registration
+        order, sys.path mutation by one import that breaks the next).
+        We simulate it by patching subprocess.run so the batch probe
+        exits non-zero with a recognizable stderr while each
+        individual probe exits 0 — the helper must report
+        ``ok=False`` and surface the batch stderr."""
+        import subprocess
+
+        from scripts.pr_validate import _test_env as mod
+
+        # The batch probe is the FIRST call (one combined "import X;
+        # import Y" command); individual probes are subsequent calls.
+        # We construct a side_effect list that returns a non-zero
+        # CompletedProcess for the batch and zero for each individual.
+        batch_stderr = (
+            "Traceback (most recent call last):\n"
+            "  File '<string>', line 1, in <module>\n"
+            "RuntimeError: simulated plugin-order collision\n"
+        )
+        n_packages = len(mod.REQUIRED_TEST_PACKAGES)
+        results = [
+            subprocess.CompletedProcess(
+                args=[], returncode=1, stdout="", stderr=batch_stderr
+            ),
+            *[
+                subprocess.CompletedProcess(args=[], returncode=0, stdout="", stderr="")
+                for _ in range(n_packages)
+            ],
+        ]
+        with patch("scripts.pr_validate._test_env.subprocess.run", side_effect=results):
+            status = mod.check_test_env(python="/fake/python")
+
+        assert status.ok is False, (
+            "batch-fail+individual-pass must report broken, not ok — the "
+            "combined import is the order pytest will actually take"
+        )
+        # The diagnostic surfaces the batch stderr so the operator can
+        # see WHY the batch failed without re-running by hand.
+        assert "simulated plugin-order collision" in status.message
+        # `missing` should be populated (the helper marks every package
+        # as suspect when it can't pinpoint which one breaks the batch)
+        # so downstream auto-install still has something to act on.
+        assert len(status.missing) == n_packages
+
     def test_install_hint_uses_the_probed_interpreter_not_sys_executable(self):
         """Edge: a TestEnvStatus constructed for some OTHER python (a
         CI worker, a docker container) must surface THAT interpreter

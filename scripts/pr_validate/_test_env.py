@@ -153,14 +153,24 @@ def check_test_env(python: str | None = None) -> TestEnvStatus:
 
     if not missing:
         # The batch probe failed but every individual import passed.
-        # Surfaces as an OK status — the batch failure was likely a
-        # transient subprocess oddity, not a real missing module.
+        # This is a real condition pytest will hit at startup — plugin
+        # registration order / "plugin already registered" / a sys.path
+        # mutation by one import that breaks the next. Codex r1
+        # BLOCKING: returning ok=True here let a broken env masquerade
+        # as healthy, exactly the failure mode #185 is about.
+        # Surface the batch stderr so the operator can diagnose
+        # without re-running by hand.
+        batch_err = (proc.stderr or proc.stdout or "").strip() or (
+            "(no diagnostic output from the failing import batch — "
+            f"exit code: {proc.returncode})"
+        )
         return TestEnvStatus(
-            ok=True,
-            missing=(),
+            ok=False,
+            missing=tuple(import_names),
             message=(
-                "batch import probe failed but every individual import "
-                f"passed (interpreter: {interp})"
+                "batch import probe failed (every individual import "
+                "passed, but the combined load order pytest takes is "
+                f"broken). Diagnostic: {batch_err[:512]}"
             ),
             interpreter=interp,
         )
