@@ -18,7 +18,7 @@ import uuid
 
 from fastapi import HTTPException
 
-from .constants import REASONING_CUTOFF_SENTINEL, is_rescue_payload
+from .constants import is_rescue_payload
 from .models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
