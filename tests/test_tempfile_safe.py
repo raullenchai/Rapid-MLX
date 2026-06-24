@@ -314,6 +314,67 @@ def test_setup_window_exception_does_not_leak_path(monkeypatch, tmp_path):
     assert _tempfile_safe._pending_snapshot() == baseline
 
 
+def test_cleanup_unlinks_before_discarding_from_registry(monkeypatch, tmp_path):
+    """Codex round-3 BLOCKING: ordering inside the cleanup ``finally``.
+
+    The original order — ``_pending_paths.discard(path)`` first, then
+    ``os.unlink(path)`` — had a window in which a ``BaseException``
+    (Ctrl-C, SIGTERM-induced ``SystemExit``) landing between the two
+    statements would leave the file on disk WITHOUT a registry entry.
+    The atexit fallback could never see it.
+
+    Fix: unlink first, discard second. If unlink raises a
+    ``BaseException``, the path stays in the registry and atexit
+    reaps it.
+
+    Test: patch ``os.unlink`` to raise ``KeyboardInterrupt`` exactly
+    once, drive the context-exit cleanup path, and assert the path
+    is still in ``_pending_paths`` so atexit can reap it.
+    """
+    from vllm_mlx import _tempfile_safe
+
+    real_unlink = os.unlink
+    raised = {"n": 0}
+
+    def _boom_unlink(p):
+        if raised["n"] == 0 and "ut-clean-" in os.path.basename(p):
+            raised["n"] += 1
+            raise KeyboardInterrupt("simulated Ctrl-C during unlink")
+        return real_unlink(p)
+
+    monkeypatch.setattr(os, "unlink", _boom_unlink)
+
+    captured_path: list[str] = []
+    with (
+        pytest.raises(KeyboardInterrupt, match="Ctrl-C during unlink"),
+        managed_tempfile_path(
+            prefix="ut-clean-", suffix=".tmp", dir=str(tmp_path)
+        ) as h,
+    ):
+        captured_path.append(h.path)
+        assert os.path.exists(h.path)
+
+    assert captured_path, "context manager never yielded a handle"
+    leaked = captured_path[0]
+    # File survived the interrupted unlink — that's expected.
+    assert os.path.exists(leaked), (
+        "test setup error: unlink wasn't actually intercepted"
+    )
+    # BLOCKING fix: path must still be in the registry so atexit
+    # can reap it. Pre-fix the discard ran first → registry was
+    # empty → atexit blind.
+    assert leaked in _tempfile_safe._pending_snapshot(), (
+        f"registry ordering regression: {leaked} dropped from "
+        f"_pending_paths before unlink completed, atexit can no "
+        f"longer reap it"
+    )
+    # Manual cleanup to avoid polluting $TMPDIR.
+    monkeypatch.undo()
+    real_unlink(leaked)
+    with _tempfile_safe._pending_lock:
+        _tempfile_safe._pending_paths.discard(leaked)
+
+
 def _count_in_dir(d: str) -> int:
     """Count ``rapid-mlx-chat-*.log`` files in ``d``."""
     try:

@@ -228,20 +228,23 @@ def managed_tempfile_path(
         with _pending_lock:
             _pending_paths.add(path)
     except BaseException:
-        # Setup failed: close FD if still open, drop from registry if
-        # we managed to add it, unlink the file, then re-raise. Each
-        # step is best-effort because we are already unwinding an
-        # exception — we must not mask it.
+        # Setup failed: close FD if still open, unlink the file, then
+        # drop from the registry only after the file is actually gone.
+        # Ordering matters (codex round-3 BLOCKING): if we discarded
+        # from the registry first and then got a second interrupt
+        # inside ``os.unlink``, the file would survive WITHOUT atexit
+        # being able to see it. Re-raise after best-effort cleanup so
+        # we don't mask the original exception.
         try:
             os.close(fd)
         except OSError:
             pass
-        with _pending_lock:
-            _pending_paths.discard(path)
         try:
             os.unlink(path)
         except OSError:
             pass
+        with _pending_lock:
+            _pending_paths.discard(path)
         raise
 
     handle = _TempfileHandle(path)
@@ -249,8 +252,16 @@ def managed_tempfile_path(
         yield handle
     finally:
         if not handle.released:
-            with _pending_lock:
-                _pending_paths.discard(path)
+            # Codex round-3 BLOCKING: unlink BEFORE discarding from
+            # the registry. The original order (discard → unlink) had
+            # a window where a ``BaseException`` (Ctrl-C, SIGTERM-
+            # induced ``SystemExit``) landing between the two
+            # statements would leave the file on disk with no entry
+            # in ``_pending_paths`` — the atexit fallback could never
+            # see it. The reverse order is safe: a later atexit pass
+            # tolerates ``FileNotFoundError``, so leaving the entry
+            # registered until the file is gone (or was gone) is
+            # always recoverable.
             try:
                 os.unlink(path)
             except FileNotFoundError:
@@ -261,6 +272,8 @@ def managed_tempfile_path(
                 # the real exception (if any) propagating through
                 # the ``finally``.
                 pass
+            with _pending_lock:
+                _pending_paths.discard(path)
 
 
 def _pending_snapshot() -> set[str]:
