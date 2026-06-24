@@ -36,13 +36,6 @@ from ..api.response_format_metrics import (
     incr_strict_request,
     incr_strict_violation,
 )
-from ..api.strict_json_schema import (
-    build_repair_messages,
-    build_violation_envelope,
-    repair_retry_enabled,
-    strict_enforcement_enabled,
-    validate_and_envelope,
-)
 from ..api.responses_adapter import (
     normalize_responses_tool_types,
     openai_to_responses,
@@ -52,6 +45,13 @@ from ..api.responses_adapter import (
     validate_responses_tool_types,
 )
 from ..api.responses_models import ResponsesRequest, ResponsesResponse, ResponsesUsage
+from ..api.strict_json_schema import (
+    build_repair_messages,
+    build_violation_envelope,
+    repair_retry_enabled,
+    strict_enforcement_enabled,
+    validate_and_envelope,
+)
 from ..api.tool_calling import (
     check_schema_validity,
     convert_tools_for_template,
@@ -886,9 +886,7 @@ async def _non_stream(
         and not engine.supports_guided_generation
         and strict_enforcement_enabled()
     ):
-        ok, failure_details = validate_and_envelope(
-            output.text or "", _strict_schema
-        )
+        ok, failure_details = validate_and_envelope(output.text or "", _strict_schema)
         attempts = 1
         if not ok and repair_retry_enabled():
             incr_strict_repair_attempt()
@@ -960,9 +958,7 @@ async def _non_stream(
                 )
                 if ok2:
                     incr_strict_repair_success()
-                    logger.info(
-                        "R12-4 /v1/responses strict repair retry succeeded."
-                    )
+                    logger.info("R12-4 /v1/responses strict repair retry succeeded.")
                     # Codex r2 #3 parity with chat.py: aggregate
                     # token usage across BOTH attempts before
                     # swapping ``output`` so the client-facing
@@ -975,12 +971,10 @@ async def _non_stream(
                     output = _dc_replace(
                         repair_output,
                         prompt_tokens=(
-                            initial_prompt_tokens
-                            + repair_output.prompt_tokens
+                            initial_prompt_tokens + repair_output.prompt_tokens
                         ),
                         completion_tokens=(
-                            initial_completion_tokens
-                            + repair_output.completion_tokens
+                            initial_completion_tokens + repair_output.completion_tokens
                         ),
                     )
                     ok = True

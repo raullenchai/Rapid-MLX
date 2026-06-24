@@ -286,7 +286,11 @@ _CONSTRAINT_MATRIX: list[tuple[str, dict, str, str]] = [
         {
             "type": "object",
             "properties": {
-                "ids": {"type": "array", "items": {"type": "integer"}, "uniqueItems": True},
+                "ids": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "uniqueItems": True,
+                },
             },
             "required": ["ids"],
         },
@@ -408,6 +412,10 @@ def test_strict_constraint_matrix_disable_flag_returns_200_for_all(monkeypatch):
         client, engine = _client(violating_body)
         resp = client.post("/v1/chat/completions", json=_payload(schema=schema))
         # Legacy behavior: 200 even with schema-violating body.
-        assert resp.status_code == 200, f"{label} should fall through under disable flag: {resp.text}"
+        assert resp.status_code == 200, (
+            f"{label} should fall through under disable flag: {resp.text}"
+        )
         # Only the initial chat call should fire; no repair retry path.
-        assert len(engine.chat_calls) == 1, f"{label}: repair retry must NOT fire under disable flag"
+        assert len(engine.chat_calls) == 1, (
+            f"{label}: repair retry must NOT fire under disable flag"
+        )

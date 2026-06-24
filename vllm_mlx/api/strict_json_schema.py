@@ -25,6 +25,7 @@ prompt-injection behavior. Operators who rely on the pre-R12-4
 silent-pass-through behavior get the legacy code path back without
 having to pin to an older release.
 """
+
 from __future__ import annotations
 
 import json
@@ -316,9 +317,7 @@ def build_repair_messages(
     repair.append(
         {
             "role": "user",
-            "content": (
-                "Retry the previous request. Emit ONLY the JSON object."
-            ),
+            "content": ("Retry the previous request. Emit ONLY the JSON object."),
         }
     )
     return repair

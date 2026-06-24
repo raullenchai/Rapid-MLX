@@ -1,5 +1,6 @@
 # SPDX-License-Identifier: Apache-2.0
 """R12-4 — unit tests for the strict-json-schema helper module."""
+
 from __future__ import annotations
 
 import json
@@ -15,7 +16,6 @@ from vllm_mlx.api.strict_json_schema import (
     validate_and_envelope,
 )
 
-
 # ---------------------------------------------------------------------------
 # Feature flags
 # ---------------------------------------------------------------------------
@@ -26,7 +26,9 @@ def test_strict_enforcement_enabled_default_true(monkeypatch):
     assert strict_enforcement_enabled() is True
 
 
-@pytest.mark.parametrize("value", ["off", "0", "false", "no", "disable", "disabled", "OFF", "False"])
+@pytest.mark.parametrize(
+    "value", ["off", "0", "false", "no", "disable", "disabled", "OFF", "False"]
+)
 def test_strict_enforcement_enabled_off_values_disable(monkeypatch, value):
     monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA", value)
     assert strict_enforcement_enabled() is False
@@ -59,7 +61,7 @@ def test_extract_json_payload_strips_outer_fence():
 
 
 def test_extract_json_payload_strips_fence_without_language_tag():
-    raw = "```\n{\"x\": 1}\n```"
+    raw = '```\n{"x": 1}\n```'
     assert extract_json_payload(raw) == '{"x": 1}'
 
 
@@ -96,9 +98,7 @@ _SCHEMA = {
 
 
 def test_validate_and_envelope_accepts_valid_input():
-    ok, details = validate_and_envelope(
-        json.dumps({"age": 30, "name": "Ada"}), _SCHEMA
-    )
+    ok, details = validate_and_envelope(json.dumps({"age": 30, "name": "Ada"}), _SCHEMA)
     assert ok is True
     assert details is None
 
@@ -116,9 +116,7 @@ def test_validate_and_envelope_rejects_invalid_json():
 
 
 def test_validate_and_envelope_schema_violation_minimum():
-    ok, details = validate_and_envelope(
-        json.dumps({"age": 5, "name": "Ada"}), _SCHEMA
-    )
+    ok, details = validate_and_envelope(json.dumps({"age": 5, "name": "Ada"}), _SCHEMA)
     assert ok is False
     assert details["reason"] == "schema_violation"
     assert details["failing_path"] == "/age"

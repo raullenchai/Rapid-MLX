@@ -2781,14 +2781,8 @@ async def _create_chat_completion_impl(
     # error. Strict + tools is already rejected by the upstream
     # ``strict_with_tools_unsupported`` gate, so we can assume no
     # tool_calls path here.
-    if (
-        use_strict_postgen_validation
-        and json_schema
-        and output is not None
-    ):
-        ok, failure_details = validate_and_envelope(
-            output.text or "", json_schema
-        )
+    if use_strict_postgen_validation and json_schema and output is not None:
+        ok, failure_details = validate_and_envelope(output.text or "", json_schema)
         attempts = 1
         if not ok and repair_retry_enabled():
             incr_strict_repair_attempt()
@@ -2885,9 +2879,7 @@ async def _create_chat_completion_impl(
                 )
                 if ok2:
                     incr_strict_repair_success()
-                    logger.info(
-                        "R12-4 strict json_schema repair retry succeeded."
-                    )
+                    logger.info("R12-4 strict json_schema repair retry succeeded.")
                     # Codex r2 #3: aggregate token usage across BOTH
                     # attempts before swapping ``output``. Pre-fix
                     # we discarded the initial attempt's token usage
@@ -2905,12 +2897,10 @@ async def _create_chat_completion_impl(
                     output = _dc_replace(
                         repair_output,
                         prompt_tokens=(
-                            initial_prompt_tokens
-                            + repair_output.prompt_tokens
+                            initial_prompt_tokens + repair_output.prompt_tokens
                         ),
                         completion_tokens=(
-                            initial_completion_tokens
-                            + repair_output.completion_tokens
+                            initial_completion_tokens + repair_output.completion_tokens
                         ),
                     )
                     ok = True
@@ -2928,8 +2918,7 @@ async def _create_chat_completion_impl(
                 attempts=attempts,
             )
             logger.warning(
-                "R12-4 strict json_schema validation failed after "
-                "%d attempt(s): %s",
+                "R12-4 strict json_schema validation failed after %d attempt(s): %s",
                 attempts,
                 (failure_details or {}).get("message"),
             )
@@ -4603,11 +4592,7 @@ async def stream_chat_completion_strict_postgen(
                 )
             ],
         )
-        yield (
-            "data: "
-            + violation_chunk.model_dump_json(exclude_none=True)
-            + "\n\n"
-        )
+        yield ("data: " + violation_chunk.model_dump_json(exclude_none=True) + "\n\n")
         # Codex r2 #2: emit BOTH a named SSE event (``event:
         # chat.completion.error``) AND a plain ``data:`` chunk
         # carrying the envelope. EventSource-style clients reading
@@ -4627,12 +4612,7 @@ async def stream_chat_completion_strict_postgen(
         # encoding used elsewhere in this module.
         error_payload = json.dumps(error_event, separators=(",", ":"))
         # Named SSE event form for EventSource clients.
-        yield (
-            "event: chat.completion.error\n"
-            + "data: "
-            + error_payload
-            + "\n\n"
-        )
+        yield ("event: chat.completion.error\n" + "data: " + error_payload + "\n\n")
         # Plain ``data:`` form for OpenAI-SDK / curl clients (no
         # ``event:`` line prefix). These clients ignore unknown SSE
         # fields, so the named event above is silently skipped on
