@@ -55,6 +55,7 @@ from ..api.utils import (
     extract_json_from_response,
     extract_multimodal_content,
     sanitize_output,
+    sanitize_reasoning_for_stream,
     strip_thinking_tags,
     validate_content_blocks_for_capabilities,
 )
@@ -3472,8 +3473,18 @@ async def stream_chat_completion(
             therefore double-counted every reasoning token. The
             OpenAI o1-style spec uses ``reasoning_content`` only;
             there is no ``reasoning`` key on chat-completions deltas.
+
+            R12-FIX-V2 (Vlad r12 MED-2): sanitize ``text`` against
+            special-token markup leaks before serializing. This path
+            bypasses the pydantic ``ChatCompletionChunkDelta``
+            validator that catches the same leak in the
+            non-fast-path streaming branch — so it gets the same
+            sanitization explicitly. The systematic principle is
+            "every user-visible string that originated from a raw
+            token decode flows through the same final sanitizer",
+            including the streaming hot path.
             """
-            escaped = json.dumps(text)
+            escaped = json.dumps(sanitize_reasoning_for_stream(text))
             return f'{_sse_prefix}"{field}":{escaped}{_sse_suffix}'
 
         # First chunk with role

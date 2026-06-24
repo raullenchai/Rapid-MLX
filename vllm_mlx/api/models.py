@@ -1905,6 +1905,28 @@ class AssistantMessage(BaseModel):
     )
     tool_calls: list[ToolCall] | None = None
 
+    # R12-FIX-V2 (Vlad r12 MED-2): centralize special-token sanitization
+    # on the assistant message envelope. Pre-fix the chat route called
+    # ``sanitize_output`` on ``final_content`` only — ``reasoning_content``
+    # was passed through to ``AssistantMessage`` untouched, and
+    # ``<|im_start|>`` leaked verbatim on the ``tool_choice="required"``
+    # branch for qwen3-0.6b-4bit. Anthropic + Responses adapters then
+    # propagated the leaked token into ``thinking`` / ``reasoning``
+    # output items.
+    #
+    # The field validator approach is the systematic fix: every code path
+    # that constructs an ``AssistantMessage`` (chat route, Responses
+    # adapter input, Anthropic adapter input) automatically gets
+    # sanitized fields. New call sites cannot reopen the leak by
+    # forgetting to sanitize — the contract is enforced at the type
+    # boundary.
+    @field_validator("content", "reasoning_content", mode="after")
+    @classmethod
+    def _sanitize_user_visible_strings(cls, v: str | None) -> str | None:
+        from .utils import sanitize_reasoning_content
+
+        return sanitize_reasoning_content(v)
+
     def model_post_init(self, __context) -> None:
         """Reserved hook (previously seeded a ``reasoning`` alias)."""
         pass
@@ -2727,6 +2749,40 @@ class ChatCompletionChunkDelta(BaseModel):
     content: str | None = None
     reasoning_content: str | None = None
     tool_calls: list[dict] | None = None
+
+    # R12-FIX-V2 (Vlad r12 MED-2): streaming-side parity for the
+    # non-stream ``AssistantMessage`` sanitizer. Terminal SSE chunks that
+    # carry a final ``reasoning_content`` must not leak special tokens
+    # either — the same Vlad-r12 ``tool_choice="required"`` leak repro
+    # but on the streaming surface. The ``_fast_sse_chunk`` per-delta
+    # path is sanitized separately at the emit call site (see
+    # ``routes/chat.py`` ``_fast_sse_chunk``) because it bypasses
+    # pydantic serialization.
+    #
+    # Codex R3 [P2] (R12-FIX-V2 follow-up): when ``logprobs`` is
+    # enabled, per-delta content/reasoning chunks ARE serialized through
+    # this validator (see ``routes/chat.py`` streaming loop — the
+    # logprobs branch builds a ``ChatCompletionChunk`` via pydantic
+    # instead of the ``_fast_sse_chunk`` fast path). The same cross-delta
+    # whitespace concatenation contract applies: trimming leading /
+    # trailing whitespace from an individual delta after marker removal
+    # corrupts the client's concatenated view. Use the
+    # whitespace-preserving stream variant instead of the final-string
+    # ``sanitize_reasoning_content`` (which calls ``.strip()``) so the
+    # logprobs streaming path produces the same on-wire bytes as the
+    # non-logprobs ``_fast_sse_chunk`` path.
+    @field_validator("content", "reasoning_content", mode="after")
+    @classmethod
+    def _sanitize_user_visible_strings(cls, v: str | None) -> str | None:
+        from .utils import sanitize_reasoning_for_stream
+
+        if v is None:
+            return None
+        sanitized = sanitize_reasoning_for_stream(v)
+        # Mirror the field's nullable contract: an empty post-sanitization
+        # result collapses to ``None`` so ``exclude_none`` drops the
+        # field cleanly on the wire when the delta was entirely markup.
+        return sanitized if sanitized != "" else None
 
     @model_serializer(mode="wrap")
     def _serialize_chunk_delta(self, handler):

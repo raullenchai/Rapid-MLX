@@ -87,6 +87,20 @@ _FINAL_SANITIZER = re.compile(
     # [Calling tool:...] or [Calling tool="..."] or bare "[Calling tool" (Gemma 4 mimicry)
     r"|\[Calling\s+tool[^\]]*\]?"
     # Stray closing tags
+    #
+    # Codex R4 [P2] on R12-FIX-V2 was considered and rejected: adding
+    # plain ``<tool_call>`` opener stripping to this global sanitizer
+    # breaks the existing T1/T2/T3 ``tool_choice="required"`` test
+    # suite (``test_tool_choice_enforcement.py`` r7/r8/r9 BLOCKING
+    # codex rounds), which intentionally pin that legitimate prose
+    # mentioning ``<tool_call>`` as text MUST survive. The
+    # route-level ``_scrub_visible_tool_wire_leaks`` already
+    # discriminates structural wire vs literal-token-mention via
+    # ``_contains_structural_tool_wire_leak`` and runs on
+    # ``reasoning_text`` for the forced/required path
+    # (``routes/chat.py:~3245``). Defense-in-depth at the global
+    # sanitizer would over-strip; the existing layered gate is the
+    # correct architecture.
     r"|</think>|</tool_call>",
     re.DOTALL,
 )
@@ -167,6 +181,80 @@ def sanitize_output(text: str) -> str:
         if ch in _SPECIAL_TOKEN_CHARS:
             cleaned = _FINAL_SANITIZER.sub("", text).strip()
             return cleaned or None  # collapse empty to None
+    return text
+
+
+def sanitize_reasoning_content(text: str | None) -> str | None:
+    """Sanitize ``reasoning_content`` so chat-template special tokens never
+    reach the wire.
+
+    Vlad r12 dogfood (0.8.15) MED-2: ``<|im_start|>`` leaked verbatim into
+    ``message.reasoning_content`` on the ``tool_choice="required"`` branch
+    for ``qwen3-0.6b-4bit``. The non-stream chat route ran ``sanitize_output``
+    on the visible ``content`` only — the ``reasoning_content`` companion
+    field was passed through to ``AssistantMessage`` untouched. Streaming
+    deltas had the same gap. The systematic fix: **every** user-visible
+    string field that originated from a raw token decode (``content``,
+    ``reasoning_content``, Anthropic ``thinking`` blocks, Responses
+    ``output_text``) must flow through the same final sanitizer.
+
+    Mirrors ``sanitize_output`` semantics:
+
+    - Empty / ``None`` input → returned as-is (no rewrite cost on the
+      hot path; reasoning_content is frequently absent).
+    - Plain text with no special-token marker chars → returned unchanged
+      (fast-path bypass via the ``_SPECIAL_TOKEN_CHARS`` membership
+      check).
+    - Text containing markup → stripped via the same ``_FINAL_SANITIZER``
+      regex; collapses to ``None`` if the entire string was markup
+      (so callers writing the field through pydantic + ``exclude_none``
+      drop it cleanly rather than emitting an empty string).
+
+    Use ``sanitize_reasoning_for_stream`` (defined below) when the call
+    site can't tolerate a ``None`` return (per-delta streaming where a
+    None would change the field's type contract).
+    """
+    return sanitize_output(text)
+
+
+def sanitize_reasoning_for_stream(text: str | None) -> str:
+    """Streaming variant of :func:`sanitize_reasoning_content`.
+
+    Per-delta streaming emits chunks via ``_fast_sse_chunk`` and must
+    write a STRING value into the JSON envelope — a ``None`` here would
+    serialize as JSON ``null`` and change the field's type contract on
+    the wire (clients consume ``delta.reasoning_content`` as a string).
+
+    **Whitespace preservation contract**: streaming clients concatenate
+    deltas verbatim, so ``.strip()``-ing an individual delta corrupts
+    cross-delta boundaries — e.g. a prior delta ``"foo"`` followed by
+    ``" bar <|im_start|>"`` would arrive as ``"foobar"`` instead of
+    ``"foo bar"`` if the sanitizer trimmed leading whitespace after
+    removing the marker. This variant therefore removes ONLY the marker
+    bytes via :data:`_FINAL_SANITIZER` and leaves all surrounding
+    whitespace intact. (The non-stream :func:`sanitize_output` strips
+    because it operates on a fully-assembled final string where leading/
+    trailing whitespace is cosmetic.)
+
+    Codex R2 [P2] on R12-FIX-V2.
+
+    Returns:
+        - ``""`` for ``None`` / empty input so callers can use the
+          return as the JSON value directly.
+        - The marker-stripped text otherwise (whitespace preserved).
+          May still be ``""`` if the input was entirely markup — the
+          caller decides whether to suppress the empty delta.
+    """
+    if not text:
+        return ""
+    # Fast-path bypass: no marker characters → no rewrite at all
+    # (preserves identity, no whitespace touched).
+    for ch in text:
+        if ch in _SPECIAL_TOKEN_CHARS:
+            # Strip markers ONLY — do NOT ``.strip()`` the whitespace
+            # around them, because cross-delta whitespace is
+            # load-bearing in the streaming concatenation contract.
+            return _FINAL_SANITIZER.sub("", text)
     return text
 
 
