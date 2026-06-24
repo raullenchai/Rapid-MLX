@@ -234,6 +234,32 @@ class TestNonStreamingPromotion:
         assert "<tool_call>" in content
         assert "Done thinking." not in content
 
+    def test_unclosed_json_with_braces_in_string_not_truncated(self, parser):
+        """Codex round-5 finding #4: the JSON-aware brace counter must
+        ignore ``{`` / ``}`` inside JSON string literals — otherwise
+        a valid argument like ``"pattern": "}}"`` would drive the
+        depth to zero early and the next value line would be
+        misclassified as trailing prose.
+        """
+        output = (
+            "<think>Calling.\n"
+            "<tool_call>\n"
+            "{\n"
+            '  "name": "match",\n'
+            '  "arguments": {\n'
+            '    "pattern": "}}",\n'
+            '    "input": "abc"\n'
+            "</think>"
+        )
+        reasoning, content = parser.extract_reasoning(output)
+        assert content is not None
+        # The full JSON body must survive — the ``}}`` inside the
+        # string must not have closed the brace depth and triggered
+        # a premature prose-boundary cut.
+        assert '"pattern"' in content
+        assert '"input"' in content
+        assert '"abc"' in content
+
     def test_unclosed_pretty_printed_json_not_truncated_at_value_line(self, parser):
         """Codex round-4 finding #8: an unclosed multi-line JSON
         ``<tool_call>`` body where some inner lines are pretty-printed
@@ -396,6 +422,42 @@ class TestStreamingPromotion:
         # times (would indicate duplication) or once (would indicate
         # the first was clobbered).
         assert final.content.count("<tool_call>") == 2
+
+    def test_deepseek_threshold_crossing_with_reasoning_carry(self):
+        """Codex round-5 BLOCKING finding #1: when ``<tool_call>`` is
+        SPLIT across the NO_TAG_CONTENT_THRESHOLD boundary (e.g. the
+        opener arrives as ``<tool_ca`` under threshold and the rest
+        ``ll>...`` after), the under-threshold partial-opener is
+        held in ``_reasoning_carry``. The threshold-crossing content
+        delta must prepend that carry so the opener reassembles on
+        the wire — otherwise the prefix is silently dropped or
+        emitted as reasoning later by finalize."""
+        cls = get_parser("deepseek_r1")
+        p = cls()
+        p.reset_state()
+        # Build text that places the ``<tool_call>`` opener so it
+        # straddles the threshold (64). Under-threshold step
+        # populates ``_reasoning_carry`` with the partial opener;
+        # the next step crosses the threshold.
+        accumulated = ""
+        under_chunk = "x" * 48 + "<tool_ca"  # 56 chars: under 64
+        previous = accumulated
+        accumulated += under_chunk
+        p.extract_reasoning_streaming(previous, accumulated, under_chunk)
+        # Carry should now hold the partial opener.
+        assert p._reasoning_carry == "<tool_ca"
+        # Now the rest of the opener + body crosses the threshold.
+        rest = "ll>\n<function=f><parameter=x>1</parameter></function>"
+        previous = accumulated
+        accumulated += rest
+        result = p.extract_reasoning_streaming(previous, accumulated, rest)
+        assert result is not None
+        content_seen = result.content or ""
+        # The reassembled opener must be on the wire.
+        assert "<tool_call>" in content_seen
+        assert "<function=f>" in content_seen
+        # Carry should have been drained.
+        assert p._reasoning_carry == ""
 
     def test_deepseek_threshold_crossing_with_buffered_tool_call(self):
         """Codex round-4 BLOCKING finding #1: the DeepSeek no-tag
