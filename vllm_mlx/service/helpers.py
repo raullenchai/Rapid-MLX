@@ -21,16 +21,20 @@ from collections.abc import AsyncIterator
 from fastapi import HTTPException
 from starlette.requests import Request
 
-# Re-export of the wire-level sentinel literal. Single source of truth
-# lives in :mod:`vllm_mlx.api.constants` to preserve the layering rule
-# (api is the lower layer that service depends on, not the reverse) so
-# the Responses adapter can exclude this sentinel from its
-# ``downstream_output_seen`` check (issue #858 → PR #860 follow-up)
-# without dragging the engine into the adapter's import graph. The name
-# is re-exported through this module so existing callers that import
-# ``REASONING_CUTOFF_SENTINEL`` from ``vllm_mlx.service.helpers``
-# (route helpers + their tests) continue to work unchanged.
-from ..api.constants import REASONING_CUTOFF_SENTINEL  # noqa: F401
+# Re-export of the wire-level sentinel literal + rescue-tail length.
+# Single source of truth lives in :mod:`vllm_mlx.api.constants` to
+# preserve the layering rule (api is the lower layer that service
+# depends on, not the reverse) so the Responses adapter and the
+# Anthropic adapter can both consume them without dragging the engine
+# into the adapter's import graph. The names are re-exported through
+# this module so existing callers that import
+# ``REASONING_CUTOFF_SENTINEL`` / ``RESCUE_TAIL_LENGTH`` from
+# ``vllm_mlx.service.helpers`` (route helpers + their tests) continue
+# to work unchanged.
+from ..api.constants import (  # noqa: F401
+    REASONING_CUTOFF_SENTINEL,
+    RESCUE_TAIL_LENGTH,
+)
 from ..api.models import (
     CompletionTokensDetails,
     FunctionCall,
@@ -41,7 +45,7 @@ from ..api.models import (
     Usage,
 )
 from ..api.tool_calling import parse_tool_calls
-from ..api.utils import sanitize_output
+from ..api.utils import sanitize_output, strip_reasoning_channel_markup
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
 from ..tool_parsers import ToolParserManager
@@ -1066,17 +1070,13 @@ def _rescue_silent_drop_from_reasoning(
 # no token-by-token leak of the sentinel string itself.)
 
 
-#: How many trailing characters of ``reasoning_content`` to copy into
-#: the rescue ``content`` after the sentinel prefix. Chosen empirically:
-#: ~200 chars is roughly the last 2-3 sentences of typical qwen3 /
-#: deepseek_r1 chain-of-thought, which is the granularity a human user
-#: needs to recognise what the model was working on without dumping the
-#: whole trace into ``content`` (which would re-introduce the
-#: D-STOP-THINK / D-HARMONY-LEAK byte-identical leak shape). The tail
-#: is added AFTER the sentinel so the literal cue still anchors the
-#: opening of the rescue string — agentic auto-retry clients can match
-#: on the sentinel prefix regardless of the tail content.
-RESCUE_TAIL_LENGTH = 200
+#: ``RESCUE_TAIL_LENGTH`` is re-exported above from
+#: :mod:`vllm_mlx.api.constants` — kept at module scope so existing
+#: callers (route helpers + tests) continue to import it from
+#: ``vllm_mlx.service.helpers``. The Anthropic adapter consumes the
+#: SAME constant from the lower-layer ``api.constants`` to compute the
+#: matching suffix it must trim from the ``thinking`` content block
+#: (R12-M1b dedupe fix).
 
 #: Env var values that EXPLICITLY DISABLE the rescue notice. The
 #: primary knob is ``RAPID_MLX_REASONING_RESCUE`` (R12-8 / issue #259);
@@ -1167,17 +1167,35 @@ def _build_reasoning_rescue_payload(reasoning_text: str) -> str:
     whitespace (see ``_apply_reasoning_cutoff_notice``), so an empty
     tail is impossible by construction.
 
-    The tail is run through :func:`sanitize_output` BEFORE injection
-    so any leaked special-token markers (``</think>``, ``<|...|>``,
-    harmony channel markers, ``</tool_call>``, etc.) that a reasoning
-    parser may have left in the trace are stripped on the way to
-    user-visible ``content``. ``reasoning_content`` keeps the full
-    original trace addressable for clients that walk both fields.
-    Codex r1 (R12-8): the rescue path previously bypassed the
-    sanitizer that ``content`` consumers rely on; reasoning markers
-    must not surface in the user-rendered field.
+    The reasoning trace is stripped of channel markup BEFORE the
+    tail slice is chosen, then the slice runs through
+    :func:`sanitize_output` (general special-token catch-all:
+    ``<|...|>``, harmony channel markers, ``</tool_call>``, etc.).
+    The strip-before-slice order matters: a naive slice of the raw
+    reasoning bytes can bisect a structural ``<think>`` /
+    ``</think>`` tag (codex r3 P2: when reasoning is just slightly
+    longer than ``RESCUE_TAIL_LENGTH`` and starts with ``<think>``,
+    the raw slice begins ``hink>...`` and the regex stripper no
+    longer matches the orphaned fragment — so the literal ``ink>``
+    bytes leak into ``content``). Stripping channel markup first
+    means the slice operates on the clean, in-channel byte stream
+    and can never bisect a tag because there are no tags left to
+    bisect.
+    ``reasoning_content`` keeps the full original trace addressable
+    for clients that walk both fields. Codex r1 (R12-8): the rescue
+    path previously bypassed the sanitizer that ``content``
+    consumers rely on. R12-M1b (Mira r12 R-3 bonus regression):
+    also strip the ``<think>`` OPENER — at ``max_tokens=1`` the
+    reasoning trace IS the literal opener, and ``sanitize_output``
+    deliberately leaves the opener alone on the ``content`` channel
+    (where it can be legit Nemotron prefix injection or literal-tag
+    prose). The rescue tail is from the reasoning channel, so the
+    channel-aware strip applies.
     """
-    tail = reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]
+    # Strip BEFORE slicing — see docstring for the bisection
+    # regression this order closes.
+    stripped = strip_reasoning_channel_markup(reasoning_text.rstrip())
+    tail = stripped[-RESCUE_TAIL_LENGTH:]
     sanitized = sanitize_output(tail)
     if not sanitized:
         return REASONING_CUTOFF_SENTINEL
@@ -1226,9 +1244,28 @@ def _apply_reasoning_cutoff_notice(
       model produced nothing semantically, which is a different bug
       class and shouldn't get a "raise max_tokens" hint)
 
-    Otherwise returns ``sentinel + "\\n\\n" + reasoning_text[-RESCUE_TAIL_LENGTH:]``.
-    The caller writes it into ``message.content`` (non-stream) or the
-    final SSE ``delta.content`` chunk (stream).
+    Otherwise returns the rescue payload produced by
+    :func:`_build_reasoning_rescue_payload` — the canonical shape is
+    ``sentinel + "\\n\\n" + sanitized_tail``. The builder applies
+    operations in this order (codex r3 P2 strip-before-slice):
+
+    1. :func:`strip_reasoning_channel_markup` on
+       ``reasoning_text.rstrip()`` — strips ``<think>`` / ``</think>``
+       on the FULL trace so the next slice operates on a clean,
+       in-channel byte stream. Doing it before the slice means a tag
+       straddling the ``L - RESCUE_TAIL_LENGTH`` boundary can never
+       leave an orphan ``<th`` / ``ink>`` fragment in the tail.
+    2. ``[-RESCUE_TAIL_LENGTH:]`` slice on the stripped trace.
+    3. :func:`sanitize_output` on the slice — general special-token
+       catch-all (``<|...|>``, harmony markers, ``</tool_call>``, …).
+
+    When sanitization collapses the tail to empty (e.g.
+    ``reasoning_text="<think>"`` at ``max_tokens=1``), the rescue
+    builder returns the bare sentinel — clients still see the
+    structural truncation signal without a stray markup byte in
+    ``content``. The caller writes the returned string into
+    ``message.content`` (non-stream) or the final SSE ``delta.content``
+    chunk (stream).
     """
     if not _cutoff_notice_enabled():
         return final_content
