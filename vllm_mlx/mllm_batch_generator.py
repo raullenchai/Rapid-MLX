@@ -300,25 +300,31 @@ def _left_pad_prompts(
 
 
 def _maybe_apply_penalty_processors(
-    req: MLLMBatchRequest, logits: mx.array, row: int
-) -> None:
-    """Mutate ``logits[row:row+1]`` in-place with the request's penalty processors (#512).
+    req: MLLMBatchRequest, row_logits: mx.array
+) -> mx.array:
+    """Return ``row_logits`` after applying the request's penalty processors (#512).
 
     Builds and memoises a list of ``mlx_lm.sample_utils.make_logits_processors``
     callables on the request when at least one of ``repetition_penalty`` /
     ``presence_penalty`` / ``frequency_penalty`` is non-neutral. The neutral
-    fast path returns immediately with zero allocation so default-sampling
-    batches keep the pre-#512 step time. Tokens-history is the request's
-    own ``output_tokens`` (mlx-lm processors no-op on empty history, so the
-    first generated token from the VLM prefill — sampled before any
-    output_tokens accumulate — is unaffected). Matches the LLM scheduler's
-    OpenAI-spec context-size policy (``scheduler.py:4124``).
+    fast path returns the input row unchanged (no allocation, no work) so
+    default-sampling batches keep the pre-#512 step time. Tokens-history is
+    the request's own ``output_tokens`` (mlx-lm processors no-op on empty
+    history, so the first generated token from the VLM prefill — sampled
+    before any output_tokens accumulate — is unaffected). Matches the LLM
+    scheduler's OpenAI-spec context-size policy (``scheduler.py:4124``).
+
+    Returns a fresh row array (not an in-place mutation) so the caller can
+    build a concatenated ``[B, vocab]`` tensor without depending on
+    ``mx.array.__setitem__`` reflection semantics. Mirrors the LLM path's
+    ``scheduler.py:944-952`` shape — accumulate processed rows, then
+    ``mx.concatenate(rows, axis=0)``.
     """
     rep = req.repetition_penalty
     pres = req.presence_penalty
     freq = req.frequency_penalty
     if rep == 1.0 and pres == 0.0 and freq == 0.0:
-        return
+        return row_logits
     cached = getattr(req, "_cached_penalty_processors", None)
     key = (rep, pres, freq)
     if cached is None or cached[0] != key:
@@ -332,12 +338,11 @@ def _maybe_apply_penalty_processors(
         cached = (key, processors)
         req._cached_penalty_processors = cached
     if not cached[1]:
-        return
-    row_logits = logits[row : row + 1]
+        return row_logits
     tokens = req.output_tokens
     for processor in cached[1]:
         row_logits = processor(tokens, row_logits)
-    logits[row : row + 1] = row_logits
+    return row_logits
 
 
 class MLLMBatchGenerator:
@@ -1052,12 +1057,14 @@ class MLLMBatchGenerator:
 
         # Apply per-request OpenAI-spec penalty processors (#512) BEFORE
         # the softmax → sampler chain. The outer ``any(...)`` gate keeps
-        # the neutral-default path allocation-free AND skip the per-row
+        # the neutral-default path allocation-free AND skips the per-row
         # Python loop entirely so default-sampling batches retain the
-        # pre-#512 step time. The per-request helper mutates
-        # ``logits[i:i+1]`` using each request's own generated-token
-        # history (``req.output_tokens``), so the cross-request batch
-        # layout is preserved — same shape, same dtype.
+        # pre-#512 step time. When at least one request carries a
+        # non-neutral penalty we build a fresh ``[B, vocab]`` tensor via
+        # ``mx.concatenate`` of per-row results — mirrors the LLM-path
+        # pattern at ``scheduler.py:944-952`` and avoids depending on
+        # ``mx.array.__setitem__`` reflection semantics across MLX
+        # versions (codex r1 MAJOR #1).
         if (
             requests
             and len(requests) == logits.shape[0]
@@ -1068,8 +1075,12 @@ class MLLMBatchGenerator:
                 for r in requests
             )
         ):
+            processed_rows = []
             for i, req in enumerate(requests):
-                _maybe_apply_penalty_processors(req, logits, i)
+                processed_rows.append(
+                    _maybe_apply_penalty_processors(req, logits[i : i + 1])
+                )
+            logits = mx.concatenate(processed_rows, axis=0)
 
         # Sample per-request with correct temperature/top_p.
         # Fast path: when all requests in the batch share (temp, top_p),

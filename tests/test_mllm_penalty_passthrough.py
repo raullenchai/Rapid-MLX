@@ -51,10 +51,9 @@ def test_neutral_defaults_skip_processor_allocation():
     tensor returned unchanged. Pre-#512 every MLLM step paid this cost
     once allocation was added defensively; we keep the fast path."""
     req = _make_req()  # all penalties at neutral defaults
-    logits = mx.ones((1, 8))
-    before = mx.array(logits)
-    _maybe_apply_penalty_processors(req, logits, 0)
-    assert mx.array_equal(logits, before), "neutral knobs must not touch logits"
+    row = mx.ones((1, 8))
+    out = _maybe_apply_penalty_processors(req, row)
+    assert out is row, "neutral knobs must return the input row unchanged"
     assert not hasattr(req, "_cached_penalty_processors"), (
         "neutral defaults must not allocate processor cache"
     )
@@ -66,9 +65,9 @@ def test_repetition_penalty_suppresses_already_seen_tokens():
     Pre-fix this knob never reached the VLM sampler."""
     req = _make_req(repetition_penalty=2.0)
     req.output_tokens.extend([0, 1])  # tokens "already generated"
-    logits = mx.array([[10.0, 10.0, 10.0]])  # row of three positive logits
-    _maybe_apply_penalty_processors(req, logits, 0)
-    vals = logits.tolist()[0]
+    row = mx.array([[10.0, 10.0, 10.0]])  # row of three positive logits
+    out = _maybe_apply_penalty_processors(req, row)
+    vals = out.tolist()[0]
     # Seen tokens (0, 1) penalised; unseen token (2) untouched.
     assert vals[0] == pytest.approx(5.0), "seen token 0 should be /2"
     assert vals[1] == pytest.approx(5.0), "seen token 1 should be /2"
@@ -81,9 +80,9 @@ def test_presence_penalty_subtracts_constant_from_seen_tokens():
     not multiplicative — the multiplicative one is repetition_penalty)."""
     req = _make_req(presence_penalty=0.5)
     req.output_tokens.append(2)
-    logits = mx.array([[1.0, 1.0, 1.0]])
-    _maybe_apply_penalty_processors(req, logits, 0)
-    vals = logits.tolist()[0]
+    row = mx.array([[1.0, 1.0, 1.0]])
+    out = _maybe_apply_penalty_processors(req, row)
+    vals = out.tolist()[0]
     assert vals[0] == pytest.approx(1.0)
     assert vals[1] == pytest.approx(1.0)
     assert vals[2] == pytest.approx(0.5)
@@ -96,9 +95,9 @@ def test_frequency_penalty_scales_with_occurrence_count():
     occurrence-counting processor, not the presence-counting one."""
     req = _make_req(frequency_penalty=0.25)
     req.output_tokens.extend([1, 1, 1])  # token 1 seen 3x
-    logits = mx.array([[2.0, 2.0]])
-    _maybe_apply_penalty_processors(req, logits, 0)
-    vals = logits.tolist()[0]
+    row = mx.array([[2.0, 2.0]])
+    out = _maybe_apply_penalty_processors(req, row)
+    vals = out.tolist()[0]
     assert vals[0] == pytest.approx(2.0)
     assert vals[1] == pytest.approx(2.0 - 0.25 * 3)
 
@@ -109,10 +108,10 @@ def test_processor_cache_reused_across_steps():
     token; this keeps the per-token overhead at one dict-lookup."""
     req = _make_req(presence_penalty=0.5)
     req.output_tokens.append(0)
-    logits = mx.array([[1.0, 1.0]])
-    _maybe_apply_penalty_processors(req, logits, 0)
+    row = mx.array([[1.0, 1.0]])
+    _maybe_apply_penalty_processors(req, row)
     first_cache = req._cached_penalty_processors
-    _maybe_apply_penalty_processors(req, logits, 0)
+    _maybe_apply_penalty_processors(req, row)
     assert req._cached_penalty_processors is first_cache, "cache must be reused"
 
 
@@ -122,10 +121,9 @@ def test_first_token_no_history_is_unchanged():
     Confirms our gate doesn't accidentally penalise the prefill token."""
     req = _make_req(repetition_penalty=2.0, presence_penalty=0.5, frequency_penalty=0.5)
     # output_tokens is empty (first generated token, no history yet)
-    logits = mx.array([[3.0, 3.0]])
-    before = mx.array(logits)
-    _maybe_apply_penalty_processors(req, logits, 0)
-    assert mx.array_equal(logits, before)
+    row = mx.array([[3.0, 3.0]])
+    out = _maybe_apply_penalty_processors(req, row)
+    assert mx.array_equal(out, mx.array([[3.0, 3.0]]))
 
 
 # =============================================================================
@@ -185,6 +183,29 @@ def test_scheduler_add_request_defaults_neutral_when_omitted():
     rid = scheduler.add_request(prompt="hi", max_tokens=8)
     req = scheduler.requests[rid]
     assert req.sampling_params.repetition_penalty == 1.0
+    assert req.sampling_params.presence_penalty == 0.0
+    assert req.sampling_params.frequency_penalty == 0.0
+
+
+def test_scheduler_add_request_preserves_explicit_zero_values():
+    """Codex r1 MAJOR #2 guard: an explicit ``repetition_penalty=0.0``
+    is a legitimate (if extreme) request the API schema accepts and the
+    LLM path preserves on ``SamplingParams``. The earlier
+    ``kwargs.pop(...) or NEUTRAL`` pattern silently rewrote ``0.0`` to
+    ``1.0`` for ``repetition_penalty`` because ``0.0 or 1.0`` is ``1.0``
+    in Python. Only ``None`` (absent kwarg) may collapse to neutral."""
+    scheduler = _stub_scheduler()
+    rid = scheduler.add_request(
+        prompt="hi",
+        max_tokens=8,
+        repetition_penalty=0.0,
+        presence_penalty=0.0,
+        frequency_penalty=0.0,
+    )
+    req = scheduler.requests[rid]
+    assert req.sampling_params.repetition_penalty == 0.0, (
+        "explicit repetition_penalty=0.0 must NOT be coerced to 1.0"
+    )
     assert req.sampling_params.presence_penalty == 0.0
     assert req.sampling_params.frequency_penalty == 0.0
 

@@ -433,9 +433,19 @@ class MLLMScheduler:
         # "absence == neutral" contract. Callers that never set these keys
         # (every non-OpenAI MLLM caller pre-#512) get the no-op fast path
         # inside ``_maybe_apply_penalty_processors``.
-        repetition_penalty = float(kwargs.pop("repetition_penalty", 1.0) or 1.0)
-        presence_penalty = float(kwargs.pop("presence_penalty", 0.0) or 0.0)
-        frequency_penalty = float(kwargs.pop("frequency_penalty", 0.0) or 0.0)
+        #
+        # Default only on ``None`` (not falsy numeric values) — the API
+        # schema accepts ``repetition_penalty=0.0`` (a legitimate, if
+        # extreme, value) and the LLM path preserves it on the
+        # ``SamplingParams``; collapsing via ``or 1.0`` would silently
+        # rewrite that to neutral (codex r1 MAJOR #2).
+        def _pop_penalty(name: str, neutral: float) -> float:
+            raw = kwargs.pop(name, None)
+            return neutral if raw is None else float(raw)
+
+        repetition_penalty = _pop_penalty("repetition_penalty", 1.0)
+        presence_penalty = _pop_penalty("presence_penalty", 0.0)
+        frequency_penalty = _pop_penalty("frequency_penalty", 0.0)
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
