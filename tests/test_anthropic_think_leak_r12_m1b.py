@@ -58,7 +58,44 @@ from vllm_mlx.api.models import (
     Usage,
 )
 from vllm_mlx.api.utils import sanitize_output, strip_reasoning_channel_markup
-from vllm_mlx.service.helpers import _apply_reasoning_cutoff_notice
+
+# ---------------------------------------------------------------------------
+# Pure-API rescue-payload reconstruction.
+#
+# Codex r2 P1 (R12-M1b): the test file previously imported
+# ``_apply_reasoning_cutoff_notice`` from ``vllm_mlx.service.helpers``,
+# which transitively pulls the engine layer into pytest collection.
+# Existing route-helper tests already follow that pattern (see
+# ``tests/test_reasoning_content_null_rescue.py``) and the CI test
+# matrices stay green, but keeping THIS file pure-API removes a class
+# of headless-environment failure modes by construction.
+#
+# The rescue payload shape is the public contract documented in
+# ``api.constants.is_rescue_payload`` and the
+# ``service.helpers._build_reasoning_rescue_payload`` docstring; we
+# reconstruct it here against those same public symbols so the test
+# pins the wire shape rather than the helper's call signature.
+# ---------------------------------------------------------------------------
+
+
+def _make_rescue_payload(reasoning_text: str) -> str:
+    """Reconstruct the canonical rescue payload from public symbols.
+
+    Pins the wire shape ``sentinel + "\\n\\n" + sanitized_tail`` —
+    same layout the helper writes — without importing the helper
+    itself. ``sanitized_tail`` runs through both stages of the
+    channel-aware sanitizer (matching
+    ``_build_reasoning_rescue_payload``). When the tail collapses to
+    empty after sanitization, the rescue is just the bare sentinel
+    (matching the helper's all-markup fallback).
+    """
+    tail = reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]
+    tail = strip_reasoning_channel_markup(tail)
+    sanitized = sanitize_output(tail)
+    if not sanitized:
+        return REASONING_CUTOFF_SENTINEL
+    return f"{REASONING_CUTOFF_SENTINEL}\n\n{sanitized}"
+
 
 # ---------------------------------------------------------------------------
 # Bug #1 — ``<think>`` literal does NOT appear in ANY content block at
@@ -136,12 +173,7 @@ class TestThinkLiteralLeak:
         # Enable the rescue (default-on, but pin for hermetic test).
         monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
         reasoning_text = "<think>"
-        final_content = _apply_reasoning_cutoff_notice(
-            None,  # final_content empty (parser routed everything to reasoning)
-            reasoning_text,
-            None,  # no tool calls
-            "length",  # cut by max_tokens budget
-        )
+        final_content = _make_rescue_payload(reasoning_text)
         # Build the OpenAI-side response that the route hands to the
         # adapter (matches the call shape in routes/anthropic.py).
         resp = ChatCompletionResponse(
@@ -181,9 +213,7 @@ class TestThinkLiteralLeak:
         """
         monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
         reasoning_text = "<think>"
-        final_content = _apply_reasoning_cutoff_notice(
-            None, reasoning_text, None, "length"
-        )
+        final_content = _make_rescue_payload(reasoning_text)
         resp = ChatCompletionResponse(
             model="qwen3-0.6b-bf16",
             choices=[
@@ -236,9 +266,7 @@ class TestRescueTailNoDuplication:
         prefix = "A" * (RESCUE_TAIL_LENGTH * 2)  # 400 chars of filler
         tail_marker = "UNIQUE_TAIL_MARKER_XYZ"
         reasoning_text = prefix + " ... " + tail_marker + " conclusion."
-        final_content = _apply_reasoning_cutoff_notice(
-            None, reasoning_text, None, "length"
-        )
+        final_content = _make_rescue_payload(reasoning_text)
         # Confirm the marker landed in the rescue payload (sanity).
         assert tail_marker in final_content, (
             "test setup invariant: marker must be inside the rescue tail slice"
@@ -288,9 +316,7 @@ class TestRescueTailNoDuplication:
         """
         monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
         reasoning_text = "X" * 500 + " final partial conclusion."
-        final_content = _apply_reasoning_cutoff_notice(
-            None, reasoning_text, None, "length"
-        )
+        final_content = _make_rescue_payload(reasoning_text)
         # Extract the tail substring from the rescue payload.
         separator = "\n\n"
         rescue_tail = final_content.split(separator, 1)[1]
@@ -345,9 +371,7 @@ class TestRescueTailNoDuplication:
         monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
         prefix = "BEGINNING THOUGHT PROCESS HERE. "
         reasoning_text = prefix + "X" * (RESCUE_TAIL_LENGTH + 50)
-        final_content = _apply_reasoning_cutoff_notice(
-            None, reasoning_text, None, "length"
-        )
+        final_content = _make_rescue_payload(reasoning_text)
         resp = ChatCompletionResponse(
             model="qwen3-0.6b-bf16",
             choices=[
@@ -385,9 +409,7 @@ class TestRescueTailNoDuplication:
         assert len(reasoning_text) <= RESCUE_TAIL_LENGTH, (
             "test invariant: reasoning must be shorter than the tail length"
         )
-        final_content = _apply_reasoning_cutoff_notice(
-            None, reasoning_text, None, "length"
-        )
+        final_content = _make_rescue_payload(reasoning_text)
         resp = ChatCompletionResponse(
             model="qwen3-0.6b-bf16",
             choices=[
@@ -442,9 +464,7 @@ class TestRescueSurfacesToAnthropic:
     ):
         monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "on")
         reasoning_text = "Mid-think reasoning that got cut by max_tokens."
-        final_content = _apply_reasoning_cutoff_notice(
-            None, reasoning_text, None, "length"
-        )
+        final_content = _make_rescue_payload(reasoning_text)
         resp = ChatCompletionResponse(
             model="qwen3-0.6b-bf16",
             choices=[
@@ -476,18 +496,23 @@ class TestRescueSurfacesToAnthropic:
             f"rescue text block payload failed the canonical shape gate: {text_payload!r}"
         )
 
-    def test_rescue_does_not_fire_when_opted_out(self, monkeypatch):
-        """The rescue is opt-out via either env var; when the operator
-        disables it, the text block must be empty / suppressed and
-        the thinking block carries the (sanitized) reasoning trace.
+    def test_opt_out_path_adapter_emits_only_thinking_block(self):
+        """When the operator opts out of the rescue (the route helper
+        returns ``content=None`` instead of the sentinel-prefixed
+        payload), the adapter must:
+          * NOT emit a text block (no rescue cue)
+          * emit the thinking block carrying the full sanitized
+            reasoning trace (no dedupe — ``content`` is None, so
+            ``is_rescue_payload(content)`` is False and no suffix is
+            trimmed)
+        Mirrors the wire shape ``routes/anthropic.py`` produces when
+        ``RAPID_MLX_REASONING_RESCUE=off`` /
+        ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``.
         """
-        monkeypatch.setenv("RAPID_MLX_REASONING_RESCUE", "off")
+        # No env var manipulation needed — we drive the adapter with
+        # ``content=None`` directly, which is what the helper would
+        # return on the opt-out branch.
         reasoning_text = "Mid-think reasoning."
-        final_content = _apply_reasoning_cutoff_notice(
-            None, reasoning_text, None, "length"
-        )
-        # With rescue off, helper returns the original empty content.
-        assert final_content is None
         resp = ChatCompletionResponse(
             model="qwen3-0.6b-bf16",
             choices=[
@@ -495,7 +520,7 @@ class TestRescueSurfacesToAnthropic:
                     index=0,
                     message=AssistantMessage(
                         role="assistant",
-                        content=final_content,
+                        content=None,
                         reasoning_content=reasoning_text,
                         tool_calls=None,
                     ),
@@ -507,8 +532,14 @@ class TestRescueSurfacesToAnthropic:
         anth = openai_to_anthropic(resp, "qwen3-0.6b-bf16", reasoning_enabled=True)
         # No text block (no rescue), thinking block carries reasoning.
         thinking_blocks = [b for b in anth.content if b.type == "thinking"]
+        text_blocks = [b for b in anth.content if b.type == "text"]
         assert len(thinking_blocks) == 1
         assert reasoning_text in (thinking_blocks[0].thinking or "")
+        # No rescue → no non-empty text block. (The adapter always adds
+        # a zero-length placeholder text block when content_blocks is
+        # otherwise empty, but the thinking block above prevents that.)
+        non_empty_text_blocks = [b for b in text_blocks if (b.text or "").strip()]
+        assert non_empty_text_blocks == []
 
 
 # ---------------------------------------------------------------------------
