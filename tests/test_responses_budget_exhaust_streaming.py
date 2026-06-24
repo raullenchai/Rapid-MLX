@@ -646,18 +646,33 @@ HEADERS = {"Authorization": "Bearer test-secret"}
 
 
 def _stream_payload(**overrides):
+    # R12-T2F-276 (PR #XXX): the casual-chat auto-disable flips the
+    # default ``enable_thinking`` to False on a thinking-capable model
+    # when the request has no explicit reasoning signal. These tests
+    # are EXPLICITLY about the reasoning-emission path, so they opt
+    # into reasoning via the OpenAI-spec ``reasoning.effort`` knob —
+    # the helper's no-auto-disable contract for explicit reasoning
+    # intent then keeps the engine kwarg unset (template default =
+    # True for non-coder Qwen3) and the reasoning streaming path runs.
     base = {
         "model": "test-model",
         "input": "Hi",
         "stream": True,
         "max_output_tokens": 32,
+        "reasoning": {"effort": "medium"},
     }
     base.update(overrides)
     return base
 
 
 def _non_stream_payload(**overrides):
-    base = {"model": "test-model", "input": "Hi", "max_output_tokens": 32}
+    # See _stream_payload — same R12-T2F-276 opt-in.
+    base = {
+        "model": "test-model",
+        "input": "Hi",
+        "max_output_tokens": 32,
+        "reasoning": {"effort": "medium"},
+    }
     base.update(overrides)
     return base
 
