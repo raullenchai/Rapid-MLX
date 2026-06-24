@@ -326,6 +326,47 @@ class TestSchedulerStopSequenceEnforcement:
         assert "N" not in streamed
         assert "D" not in streamed
 
+    def test_length_finish_with_stop_match_reports_stop_sequence(self):
+        # Codex r2 regression: the token that hits max_tokens MAY also be
+        # the one that completes the stop string.  The Anthropic-spec-
+        # correct answer is ``stop_sequence``, not ``max_tokens``.
+        sched = _make_scheduler()
+        _make_running_request(sched, "r8", uid=80, stop=["END"])
+
+        class FakeDetok:
+            def __init__(self):
+                self._segs = []
+                self.last_segment = ""
+                self.text = ""
+
+            def add_token(self, t):
+                seg = {1: "hi ", 2: "END"}.get(t, "")
+                self.last_segment = seg
+                self._segs.append(seg)
+                self.text = "".join(self._segs)
+
+            def finalize(self):
+                self.text = "".join(self._segs)
+
+        sched._detokenizer_pool["r8"] = FakeDetok()
+        sched.batch_generator = MagicMock()
+        outs1, _ = sched._process_batch_responses(
+            [_fake_response(80, token=1, finish_reason=None)]
+        )
+        # Final token: max_tokens hit AND completes the stop string.
+        outs2, fin2 = sched._process_batch_responses(
+            [_fake_response(80, token=2, finish_reason="length")]
+        )
+        assert "r8" in fin2
+        last = outs2[-1]
+        # spec-correct: report stop_sequence, NOT max_tokens
+        assert last.matched_stop == "END"
+        assert last.finish_reason == "stop"
+        assert last.output_text == "hi "
+        streamed = "".join(o.new_text for o in outs1 + outs2)
+        assert "END" not in streamed
+        assert streamed == "hi "
+
     def test_held_back_tail_flushed_on_length_termination(self):
         # When stops are supplied but the engine finishes via "length"
         # (max_tokens hit) without any match, the held-back tail MUST be

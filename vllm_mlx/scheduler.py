@@ -2208,56 +2208,63 @@ class Scheduler:
                 if new_text:
                     request.output_text = (request.output_text or "") + new_text
                 buf = request.output_text or ""
-                if response.finish_reason is None:
-                    best_idx: Optional[int] = None
-                    for cand in stops:
-                        idx = buf.find(cand)
-                        if idx == -1:
-                            continue
-                        if best_idx is None or idx < best_idx or (
-                            idx == best_idx and len(cand) > len(matched_stop or "")
-                        ):
-                            best_idx = idx
-                            matched_stop = cand
-                    if matched_stop is not None and best_idx is not None:
-                        request.output_text = buf[:best_idx]
-                        # Drop from the active batch so the next generation
-                        # step doesn't keep producing tokens for this uid.
-                        if request_id in self.request_id_to_uid:
-                            uid = self.request_id_to_uid[request_id]
-                            if self.batch_generator is not None:
-                                try:
-                                    self.batch_generator.remove([uid])
-                                except Exception as exc:  # pragma: no cover
-                                    logger.debug(
-                                        "[stop_seq] failed to remove uid=%s "
-                                        "for %s: %s",
-                                        uid,
-                                        request_id[:12],
-                                        exc,
-                                    )
-                            self.uid_to_request_id.pop(uid, None)
-                            self.request_id_to_uid.pop(request_id, None)
-                        try:
-                            response.finish_reason = "stop"
-                        except (AttributeError, TypeError):  # pragma: no cover
-                            pass
-                        new_text = request.output_text[
-                            request.published_text_len:
-                        ]
-                        request.published_text_len = len(request.output_text)
+                # Always scan for a stop match first — the token that hits
+                # max_tokens may ALSO be the one that completes a client
+                # stop string, in which case the spec-correct answer is
+                # ``stop_sequence`` not ``max_tokens``.
+                best_idx: Optional[int] = None
+                for cand in stops:
+                    idx = buf.find(cand)
+                    if idx == -1:
+                        continue
+                    if best_idx is None or idx < best_idx or (
+                        idx == best_idx and len(cand) > len(matched_stop or "")
+                    ):
+                        best_idx = idx
+                        matched_stop = cand
+                if matched_stop is not None and best_idx is not None:
+                    request.output_text = buf[:best_idx]
+                    # Drop from the active batch so the next generation
+                    # step doesn't keep producing tokens for this uid.
+                    # Only needed when generation hasn't already finished.
+                    if (
+                        response.finish_reason is None
+                        and request_id in self.request_id_to_uid
+                    ):
+                        uid = self.request_id_to_uid[request_id]
+                        if self.batch_generator is not None:
+                            try:
+                                self.batch_generator.remove([uid])
+                            except Exception as exc:  # pragma: no cover
+                                logger.debug(
+                                    "[stop_seq] failed to remove uid=%s "
+                                    "for %s: %s",
+                                    uid,
+                                    request_id[:12],
+                                    exc,
+                                )
+                        self.uid_to_request_id.pop(uid, None)
+                        self.request_id_to_uid.pop(request_id, None)
+                    try:
+                        response.finish_reason = "stop"
+                    except (AttributeError, TypeError):  # pragma: no cover
+                        pass
+                    new_text = request.output_text[
+                        request.published_text_len:
+                    ]
+                    request.published_text_len = len(request.output_text)
+                elif response.finish_reason is None:
+                    hold_back = max(len(s) for s in stops) - 1
+                    safe_end = max(0, len(buf) - hold_back)
+                    if safe_end > request.published_text_len:
+                        new_text = buf[request.published_text_len:safe_end]
+                        request.published_text_len = safe_end
                     else:
-                        hold_back = max(len(s) for s in stops) - 1
-                        safe_end = max(0, len(buf) - hold_back)
-                        if safe_end > request.published_text_len:
-                            new_text = buf[request.published_text_len:safe_end]
-                            request.published_text_len = safe_end
-                        else:
-                            new_text = ""
+                        new_text = ""
                 else:
-                    # length/abort termination — emit any remaining buffer
-                    # the held-back-tail safety window prevented from
-                    # streaming earlier.
+                    # length/abort termination, no stop match — flush
+                    # whatever the safety window held back so the client
+                    # sees the complete output.
                     new_text = buf[request.published_text_len:]
                     request.published_text_len = len(buf)
 
