@@ -21,6 +21,16 @@ from collections.abc import AsyncIterator
 from fastapi import HTTPException
 from starlette.requests import Request
 
+# Re-export of the wire-level sentinel literal. Single source of truth
+# lives in :mod:`vllm_mlx.api.constants` to preserve the layering rule
+# (api is the lower layer that service depends on, not the reverse) so
+# the Responses adapter can exclude this sentinel from its
+# ``downstream_output_seen`` check (issue #858 → PR #860 follow-up)
+# without dragging the engine into the adapter's import graph. The name
+# is re-exported through this module so existing callers that import
+# ``REASONING_CUTOFF_SENTINEL`` from ``vllm_mlx.service.helpers``
+# (route helpers + their tests) continue to work unchanged.
+from ..api.constants import REASONING_CUTOFF_SENTINEL  # noqa: F401
 from ..api.models import (
     CompletionTokensDetails,
     FunctionCall,
@@ -1054,12 +1064,6 @@ def _rescue_silent_drop_from_reasoning(
 # sentinel as one final-chunk ``delta.content`` event, not per-token, so
 # no token-by-token leak of the sentinel string itself.)
 
-#: Literal sentinel surfaced to ``content`` on ``finish_reason="length"``
-#: when generation is cut short mid-think (default ON; opt out via the
-#: env var documented below). Kept short and unambiguous so agentic
-#: clients can pattern-match if they want to auto-retry with a larger
-#: ``max_tokens``.
-REASONING_CUTOFF_SENTINEL = "[truncated — reasoning incomplete; raise max_tokens]"
 
 #: Env var values that EXPLICITLY DISABLE the sentinel notice (issue #858
 #: revert of R-01: default is now back to ON, matching the original H-01 /

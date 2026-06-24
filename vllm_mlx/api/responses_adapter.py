@@ -18,13 +18,7 @@ import uuid
 
 from fastapi import HTTPException
 
-# Issue #858 → PR #860 enabled the in-band reasoning cutoff sentinel by
-# default; this constant is also injected into ``message.content`` by
-# the chat / anthropic / responses non-stream paths. The adapter must
-# exclude it from the ``downstream_output_seen`` check below — see
-# ``_compute_reasoning_status``.
-from vllm_mlx.service.helpers import REASONING_CUTOFF_SENTINEL
-
+from .constants import REASONING_CUTOFF_SENTINEL
 from .models import (
     ChatCompletionRequest,
     ChatCompletionResponse,
