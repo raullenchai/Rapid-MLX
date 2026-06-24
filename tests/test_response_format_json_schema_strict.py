@@ -363,48 +363,197 @@ def test_strict_true_responses_validate_for_10_distinct_valid_payloads(valid_pay
 # ---------------------------------------------------------------------------
 
 
-def test_strict_true_guided_unavailable_returns_canonical_400_non_streaming():
-    """``[guided]`` missing must surface as 400 with the H-17 envelope shape."""
-    engine = _Engine(supports_guided=False)
+def test_strict_true_guided_unavailable_returns_422_on_violation_non_streaming():
+    """R12-4 — pre-R12-4 ``[guided]`` missing returned 400
+    ``guided_extra_required`` and broke pydantic-ai. Post-R12-4 the
+    request runs UNCONSTRAINED via ``engine.chat`` (no outlines),
+    the route then validates the output against the schema and
+    surfaces 422 with a structured ``json_schema_violation``
+    envelope when validation fails after one repair retry.
+
+    This test uses ``chat_text`` that violates the schema; both the
+    initial generation and the repair retry will return the same
+    invalid body, so the route must 422.
+    """
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
     client = _make_client(engine)
 
     resp = client.post("/v1/chat/completions", json=_payload(strict=True))
-    assert resp.status_code == 400, resp.text
+    assert resp.status_code == 422, resp.text
     body = resp.json()
 
-    # H-17 canonical envelope shape: top-level "error" key, with
-    # message / type / code / param subkeys.
     assert "error" in body
     err = body["error"]
-    assert err["type"] == "invalid_request_error"
-    assert err["code"] == "guided_extra_required"
-    assert "rapid-mlx[guided]" in err["message"]
-    assert "pip install" in err["message"]
-    # ``param`` must point at the strict flag specifically — clients
-    # parsing the envelope use this to surface a targeted SDK error.
-    assert "strict" in (err.get("param") or "")
+    assert err["type"] == "validation_error"
+    assert err["code"] == "json_schema_violation"
+    assert err["param"] == "response_format.json_schema"
+    # Structured envelope so SDKs (pydantic-ai) can decode the failing
+    # path programmatically.
+    details = err["details"]
+    assert details["attempts"] == 2  # initial + repair
+    assert details["reason"] == "schema_violation"
+    assert details["failing_path"] == "/value"
+    assert "maximum" in details["expected"]
 
-    # No fallback to unconstrained generation: the 400 short-circuits
-    # before either guided or chat is hit.
+    # The chat path WAS invoked twice — once initially, once for the
+    # repair retry. Guided path is NEVER hit on a non-guided engine.
     assert engine.guided_calls == []
-    assert engine.chat_calls == []
+    assert len(engine.chat_calls) == 2
 
-    # Counter still ticks: operators tracking strict traffic want to
-    # see the rate even on installs that 400 them.
+    # Counter still ticks for traffic shape AND violation surfacing.
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+    assert snap["strict_repairs_attempted_total"] == 1
+    assert snap["strict_repairs_succeeded_total"] == 0
 
 
-def test_strict_true_guided_unavailable_returns_canonical_400_streaming():
-    """Streaming strict=true + no guided → same 400 BEFORE SSE begins."""
-    engine = _Engine(supports_guided=False)
+def test_strict_true_guided_unavailable_returns_200_when_initial_output_valid():
+    """R12-4 happy-path — strict+no-guided + initial output valid →
+    200 with the validated body (no repair retry needed)."""
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
     client = _make_client(engine)
 
-    resp = client.post("/v1/chat/completions", json=_payload(strict=True, stream=True))
-    assert resp.status_code == 400, resp.text
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
+    assert snap["strict_repairs_attempted_total"] == 0
+    # Only the initial chat call should fire; no repair retry needed.
+    assert len(engine.chat_calls) == 1
+
+
+def test_strict_true_guided_unavailable_repair_succeeds_returns_200():
+    """R12-4 — first attempt invalid → repair attempt valid → 200 with
+    repaired body. Pins the counter pair (attempts + successes both
+    tick exactly once) and verifies the repair message carries the
+    failure hint."""
+
+    class _RepairingEngine(_Engine):
+        """Returns invalid on first call, valid on every subsequent call.
+
+        We detect the repair turn by call-index, NOT by message count —
+        the route's prompt-injection helper adds a system message before
+        the initial generation, so the FIRST call already has multiple
+        messages. Counting calls is unambiguous.
+        """
+
+        def __init__(self):
+            super().__init__(supports_guided=False)
+            self.chat_text_first = _INVALID_PAYLOAD_OUT_OF_RANGE
+            self.chat_text_repair = _VALID_PAYLOAD
+
+        async def chat(self, *, messages, **kwargs):
+            is_repair = len(self.chat_calls) > 0
+            self.chat_calls.append({"messages": messages, "kwargs": kwargs})
+            return GenerationOutput(
+                text=self.chat_text_repair if is_repair else self.chat_text_first,
+                new_text=self.chat_text_repair if is_repair else self.chat_text_first,
+                prompt_tokens=4,
+                completion_tokens=5,
+                finished=True,
+                finish_reason="stop",
+                channel=None,
+            )
+
+    engine = _RepairingEngine()
+    client = _make_client(engine)
+
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
+    assert snap["strict_repairs_attempted_total"] == 1
+    assert snap["strict_repairs_succeeded_total"] == 1
+    assert len(engine.chat_calls) == 2
+    # Repair call must have the structured hint in its messages.
+    repair_messages = engine.chat_calls[1]["messages"]
+    assert any(
+        m.get("role") == "system" and "REPAIR" in (m.get("content") or "").upper()
+        for m in repair_messages
+    )
+
+
+def test_strict_true_guided_unavailable_disable_flag_skips_enforcement(monkeypatch):
+    """R12-4 escape hatch — ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` restores
+    the pre-R12-4 silent-pass-through behavior. Schema-violating output
+    is returned as 200 (legacy compat) instead of 422."""
+    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA", "off")
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    client = _make_client(engine)
+
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    # Counter still ticks (operator observability) but no violation or
+    # repair attempt — the disable flag short-circuits enforcement.
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
+    assert snap["strict_repairs_attempted_total"] == 0
+
+
+def test_strict_true_guided_unavailable_repair_disable_flag_skips_retry(monkeypatch):
+    """R12-4 — ``RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR=off`` disables ONLY
+    the repair retry; the post-decode validation + 422 envelope still
+    fires (strict mode stays a hard contract; only the retry is
+    skipped). One chat call (no retry) then 422."""
+    monkeypatch.setenv("RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR", "off")
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    client = _make_client(engine)
+
+    resp = client.post("/v1/chat/completions", json=_payload(strict=True))
+    assert resp.status_code == 422, resp.text
     body = resp.json()
-    assert body["error"]["code"] == "guided_extra_required"
-    assert engine.stream_calls == []
+    assert body["error"]["code"] == "json_schema_violation"
+    assert body["error"]["details"]["attempts"] == 1
+    assert len(engine.chat_calls) == 1
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_repairs_attempted_total"] == 0
+
+
+def test_strict_true_guided_unavailable_streaming_emits_violation_finish():
+    """R12-4 streaming variant — the unconstrained stream is emitted
+    as usual; on validation failure the wrapper appends an extra
+    chunk with ``finish_reason="json_schema_violation"`` plus a
+    non-content ``error`` event before ``[DONE]``."""
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json=_payload(strict=True, stream=True),
+    )
+    assert resp.status_code == 200, resp.text  # SSE wire is 200; body carries the error
+    body = resp.text
+    # The new finish_reason value must be present.
+    assert "json_schema_violation" in body
+    # The 422-shaped error envelope must appear inline as a non-
+    # content SSE event. Tolerate both compact and spaced JSON
+    # encoding so encoder changes don't bite the test.
+    assert "json_schema_violation" in body
+    assert "chat.completion.error" in body
+    # Spec-mandated terminal [DONE] sentinel.
+    assert "[DONE]" in body
+    # On streaming we do NOT run repair retry — no attempt counter
+    # increment.
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+    assert snap["strict_repairs_attempted_total"] == 0
 
 
 # ---------------------------------------------------------------------------
@@ -518,20 +667,12 @@ def test_post_decode_schema_violation_returns_502():
 
 
 def test_strict_true_with_outlines_module_faked_absent(monkeypatch):
-    """Codex r4 BLOCKING #1: when ``guided.HAS_OUTLINES`` is False,
-    the production ``BatchedEngine.supports_guided_generation``
-    property composes to False (it reads ``HAS_GUIDED`` which
-    derives from ``HAS_OUTLINES``). This test asserts that
-    composition contract: monkeypatch ``HAS_OUTLINES`` and verify
-    ``is_guided_available()`` reflects it, so a hypothetical engine
-    that calls ``is_guided_available()`` at request time would see
-    the override and fall through the 400 gate.
-
-    The pre-r4 form of this test paired the monkeypatch with
-    ``supports_guided=False`` so it never exercised the
-    monkeypatched module — codex caught the mock-not-actually-
-    used issue. We now exercise the helper directly to prove the
-    HAS_OUTLINES → guided-availability link is wired."""
+    """R12-4 — when ``guided.HAS_OUTLINES`` is False the production
+    ``BatchedEngine.supports_guided_generation`` property composes
+    to False. Post-R12-4, that no longer triggers a 400 — it
+    triggers the post-generate validation + repair retry path.
+    Pin the composition contract here so refactors that decouple
+    HAS_OUTLINES → guided-availability are caught."""
     from vllm_mlx.api import guided as guided_mod
 
     # Before the monkeypatch, the guided extra IS installed.
@@ -542,17 +683,14 @@ def test_strict_true_with_outlines_module_faked_absent(monkeypatch):
     # After the monkeypatch, the helper composes to False.
     assert guided_mod.is_guided_available() is False
     # An engine honestly reporting ``supports_guided_generation=False``
-    # (the production shape on a HAS_OUTLINES=False install) then
-    # 400s as ``guided_extra_required`` — the operator-actionable
-    # signal that the extra needs installing.
-    engine = _Engine(supports_guided=False)
+    # (the production shape on a HAS_OUTLINES=False install) now
+    # runs the unconstrained chat path and validates; with a valid
+    # output the request returns 200.
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
     client = _make_client(engine)
     resp = client.post("/v1/chat/completions", json=_payload(strict=True))
-    assert resp.status_code == 400
-    body = resp.json()
-    assert body["error"]["code"] == "guided_extra_required"
-    assert "pip install" in body["error"]["message"]
-    assert "rapid-mlx[guided]" in body["error"]["message"]
+    assert resp.status_code == 200
+    assert len(engine.chat_calls) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -673,21 +811,45 @@ def _responses_payload(*, strict: bool, stream: bool = False) -> dict:
     }
 
 
-def test_responses_strict_true_guided_unavailable_returns_400(_rate_limiter_state):
-    """Codex r1 BLOCKING parity: /v1/responses + strict=true + no
-    guided → canonical 400 with the same envelope shape the chat
-    route emits. The two surfaces must agree on the contract."""
-    engine = _Engine(supports_guided=False)
+def test_responses_strict_true_guided_unavailable_runs_postgen_validation(
+    _rate_limiter_state,
+):
+    """R12-4 parity on /v1/responses — pre-R12-4 the route 400'd
+    ``guided_extra_required`` here. Post-R12-4 the route runs the
+    unconstrained chat path, validates the output, attempts a single
+    repair retry on failure, and surfaces 422 if both attempts
+    fail. The two surfaces (chat + responses) must agree on the
+    contract."""
+    engine = _Engine(
+        supports_guided=False,
+        chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
+    )
     client = _make_responses_client(engine, _rate_limiter_state)
     resp = client.post("/v1/responses", json=_responses_payload(strict=True))
-    assert resp.status_code == 400, resp.text
+    assert resp.status_code == 422, resp.text
     body = resp.json()
-    assert body["error"]["code"] == "guided_extra_required"
-    assert "rapid-mlx[guided]" in body["error"]["message"]
-    # Counter must tick on /v1/responses too — the same strict-traffic
-    # series spans both surfaces.
+    assert body["error"]["code"] == "json_schema_violation"
+    assert body["error"]["type"] == "validation_error"
+    assert body["error"]["param"] == "text.format"
+    # Counter must tick on /v1/responses too.
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 1
+    assert snap["strict_repairs_attempted_total"] == 1
+
+
+def test_responses_strict_true_guided_unavailable_valid_returns_200(
+    _rate_limiter_state,
+):
+    """R12-4 happy path on /v1/responses — strict + no guided +
+    valid output → 200, no violation counter increment."""
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    client = _make_responses_client(engine, _rate_limiter_state)
+    resp = client.post("/v1/responses", json=_responses_payload(strict=True))
+    assert resp.status_code == 200, resp.text
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
 
 
 def test_responses_strict_true_guided_available_routes_to_constrained(

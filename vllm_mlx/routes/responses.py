@@ -31,8 +31,17 @@ from ..api.models import (
     ChatCompletionResponse,
 )
 from ..api.response_format_metrics import (
+    incr_strict_repair_attempt,
+    incr_strict_repair_success,
     incr_strict_request,
     incr_strict_violation,
+)
+from ..api.strict_json_schema import (
+    build_repair_messages,
+    build_violation_envelope,
+    repair_retry_enabled,
+    strict_enforcement_enabled,
+    validate_and_envelope,
 )
 from ..api.responses_adapter import (
     normalize_responses_tool_types,
@@ -465,21 +474,28 @@ async def create_response(request: Request):
                     },
                 )
             if not engine.supports_guided_generation:
-                raise HTTPException(
-                    status_code=400,
-                    detail={
-                        "error": {
-                            "message": (
-                                "text.format with strict=true requires "
-                                "the [guided] optional extra. Install "
-                                "with: pip install 'rapid-mlx[guided]'"
-                            ),
-                            "type": "invalid_request_error",
-                            "code": "guided_extra_required",
-                            "param": "text.format.strict",
-                        }
-                    },
-                )
+                # R12-4: pre-R12-4 this branch raised 400
+                # ``guided_extra_required``. The new path falls
+                # through to post-generate validation + repair retry
+                # below (mirrored from chat.py). The
+                # ``strict_stream_unsupported`` gate above already
+                # rejects streaming on this surface, so we know we
+                # are about to take the non-stream branch. The
+                # disable flag ``RAPID_MLX_STRICT_JSON_SCHEMA=off``
+                # restores the legacy silent-pass-through behavior.
+                if not strict_enforcement_enabled():
+                    logger.warning(
+                        "Strict json_schema on /v1/responses requested "
+                        "without [guided] AND "
+                        "RAPID_MLX_STRICT_JSON_SCHEMA=off — falling "
+                        "through to prompt-injection only."
+                    )
+                else:
+                    logger.info(
+                        "Strict json_schema on /v1/responses without "
+                        "[guided] — engaging R12-4 post-generate "
+                        "validation + repair retry."
+                    )
 
         try:
             validate_content_blocks_for_capabilities(
@@ -856,6 +872,86 @@ async def _non_stream(
 
     if output is None:
         return Response(status_code=499)
+
+    # R12-4: when the strict path took the unconstrained branch
+    # (i.e. ``_strict_schema`` was set but ``supports_guided_generation``
+    # was False — the route gate now lets us through instead of
+    # raising ``guided_extra_required``), run the same post-generate
+    # validation + single repair retry the chat route runs. On
+    # validation failure we surface 422 with the structured
+    # ``json_schema_violation`` envelope so SDK consumers can read
+    # ``error.details.failing_path`` programmatically.
+    if (
+        _strict_schema
+        and not engine.supports_guided_generation
+        and strict_enforcement_enabled()
+    ):
+        ok, failure_details = validate_and_envelope(
+            output.text or "", _strict_schema
+        )
+        attempts = 1
+        if not ok and repair_retry_enabled():
+            incr_strict_repair_attempt()
+            attempts = 2
+            logger.info(
+                "R12-4 strict json_schema first attempt failed on "
+                "/v1/responses (%s); attempting repair retry.",
+                (failure_details or {}).get("reason", "?"),
+            )
+            repair_messages = build_repair_messages(
+                messages,
+                output.text or "",
+                _strict_schema,
+                failure_details or {},
+            )
+            repair_kwargs = dict(chat_kwargs)
+            for _k in ("tools", "tool_choice", "logprobs", "top_logprobs"):
+                repair_kwargs.pop(_k, None)
+            try:
+                repair_output = await _wait_with_disconnect(
+                    engine.chat(messages=repair_messages, **repair_kwargs),
+                    request,
+                    timeout=timeout,
+                )
+            except HTTPException:
+                raise
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                raise
+            except Exception as repair_err:
+                logger.warning(
+                    "R12-4 /v1/responses strict repair retry raised %s; "
+                    "surfacing original failure as 422.",
+                    type(repair_err).__name__,
+                )
+                repair_output = None
+            if repair_output is not None:
+                ok2, failure2 = validate_and_envelope(
+                    repair_output.text or "", _strict_schema
+                )
+                if ok2:
+                    incr_strict_repair_success()
+                    logger.info(
+                        "R12-4 /v1/responses strict repair retry succeeded."
+                    )
+                    output = repair_output
+                    ok = True
+                    failure_details = None
+                else:
+                    failure_details = failure2
+        if not ok:
+            incr_strict_violation()
+            envelope = build_violation_envelope(
+                failure_details or {"reason": "schema_violation"},
+                param="text.format",
+                attempts=attempts,
+            )
+            logger.warning(
+                "R12-4 /v1/responses strict json_schema validation "
+                "failed after %d attempt(s): %s",
+                attempts,
+                (failure_details or {}).get("message"),
+            )
+            raise HTTPException(status_code=422, detail=envelope)
 
     # r6-A R6-C2: detect a degenerate engine output — no text, no
     # reasoning, no tool_calls, zero output_tokens, AND

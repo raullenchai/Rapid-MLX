@@ -27,8 +27,17 @@ from ..api.models import (
     Usage,
 )
 from ..api.response_format_metrics import (
+    incr_strict_repair_attempt,
+    incr_strict_repair_success,
     incr_strict_request,
     incr_strict_violation,
+)
+from ..api.strict_json_schema import (
+    build_repair_messages,
+    build_violation_envelope,
+    repair_retry_enabled,
+    strict_enforcement_enabled,
+    validate_and_envelope,
 )
 from ..api.tool_calling import (
     build_json_system_prompt,
@@ -2207,6 +2216,18 @@ async def _create_chat_completion_impl(
     # waybarrios#548.
     use_guided = False
     json_schema = None
+    # R12-4: when strict=true is set but the engine cannot guide (no
+    # ``[guided]`` extra), we now run the engine UNCONSTRAINED and
+    # validate the output against the schema after generation. If
+    # validation fails AND the disable flag is unset, the route
+    # performs ONE repair retry with a system-prompt-injected hint
+    # naming the failing path. If that still fails, the route
+    # returns 422 with a structured envelope. This replaces the
+    # legacy ``guided_extra_required`` 400 — see the R12-4 PR body
+    # for the design rationale (post-generate validation gives us
+    # spec-compliant behavior without the multi-week effort of
+    # plumbing native constrained decoding into the MLX engine).
+    use_strict_postgen_validation = False
     # H-06: strict mode means the OpenAI contract REQUIRES the model
     # output to validate against the schema. Pre-fix, ``strict=true``
     # was suggestion-only — the route dropped the flag at
@@ -2214,6 +2235,13 @@ async def _create_chat_completion_impl(
     # whatever the model produced. Distinguish the two modes here so
     # the rest of the function can react.
     strict_mode = is_strict_json_schema(response_format)
+    # R12-4: respect the ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` escape
+    # hatch — operators who depended on the pre-R12-4 silent-200
+    # behavior keep the legacy code path. The flag is intentionally
+    # checked ONCE per request (not at import time) so an operator
+    # can toggle it on a running process via ``os.environ`` (the
+    # rapid-mlx desktop client relies on this).
+    strict_enforcement_active = strict_mode and strict_enforcement_enabled()
 
     # Codex r3 BLOCKING #2 + defense-in-depth: ``strict=true`` with
     # tools set (the route's existing ``if response_format and not
@@ -2313,44 +2341,50 @@ async def _create_chat_completion_impl(
             # contract is explicit.
             use_guided = engine.supports_guided_generation
             if strict_mode:
-                # Tick the strict-request counter BEFORE the 400 gate so
-                # operators can see traffic shape even on installs that
-                # are missing the [guided] extra. The violations counter
-                # is incremented separately if jsonschema.validate ever
-                # rejects a guided response post-decode.
+                # Tick the strict-request counter BEFORE any branching
+                # so operators see uniform traffic shape across the
+                # guided / postgen-validation / disabled arms.
                 incr_strict_request()
                 if not use_guided:
-                    # OpenAI's structured-output spec treats strict=true
-                    # as a hard contract — the response MUST validate
-                    # against the schema. Without outlines we cannot
-                    # make that guarantee, so 400 is the correct shape
-                    # (and matches what OpenAI returns when a model
-                    # doesn't support strict structured outputs).
-                    # Envelope is hand-rolled here to match the H-17
-                    # sanitized 400 shape that the global exception
-                    # handlers emit for malformed bodies; clients keying
-                    # off ``error.code`` see ``guided_extra_required``
-                    # so an SDK can decode the install hint
-                    # programmatically.
-                    raise HTTPException(
-                        status_code=400,
-                        detail={
-                            "error": {
-                                "message": (
-                                    "response_format.json_schema.strict=true "
-                                    "requires the [guided] optional extra. "
-                                    "Install with: pip install "
-                                    "'rapid-mlx[guided]'"
-                                ),
-                                "type": "invalid_request_error",
-                                "code": "guided_extra_required",
-                                "param": "response_format.json_schema.strict",
-                            }
-                        },
+                    # R12-4: pre-R12-4 this branch raised 400
+                    # ``guided_extra_required``. That broke
+                    # pydantic-ai end-to-end (Astrid r3) — every
+                    # retry hit the same deterministic empty-args
+                    # synthetic ``final_result`` tool_call and the
+                    # client exhausted ``max_retries`` against a
+                    # server-side blocker the SDK could not
+                    # circumvent. The new path runs the engine
+                    # UNCONSTRAINED, validates the output against
+                    # the schema after generation, attempts a single
+                    # repair retry on validation failure, and
+                    # surfaces 422 only if BOTH attempts fail. The
+                    # disable flag
+                    # ``RAPID_MLX_STRICT_JSON_SCHEMA=off`` (checked
+                    # at request time) restores the legacy
+                    # silent-pass-through behavior for operators
+                    # who need the escape hatch.
+                    if strict_enforcement_active:
+                        use_strict_postgen_validation = True
+                        logger.info(
+                            "Strict json_schema mode active without "
+                            "[guided] extra — engaging R12-4 "
+                            "post-generate validation + single "
+                            "repair retry path."
+                        )
+                    else:
+                        logger.warning(
+                            "Strict json_schema mode requested but "
+                            "RAPID_MLX_STRICT_JSON_SCHEMA=off — "
+                            "falling through to prompt-injection "
+                            "only (legacy silent-pass-through). "
+                            "Unset the env var to restore "
+                            "enforcement."
+                        )
+                else:
+                    logger.info(
+                        "Using guided generation for JSON schema "
+                        "enforcement (strict=true)"
                     )
-                logger.info(
-                    "Using guided generation for JSON schema enforcement (strict=true)"
-                )
             elif use_guided:
                 logger.info("Using guided generation for JSON schema enforcement")
             else:
@@ -2360,7 +2394,8 @@ async def _create_chat_completion_impl(
                 # `rapid-mlx` without the `[guided]` extra). When
                 # ``strict=false`` the OpenAI contract is suggestion-only
                 # so we fall through to prompt-injection (existing
-                # behavior). When ``strict=true`` we 400 above.
+                # behavior). When ``strict=true`` see the R12-4 branch
+                # above.
                 logger.warning(
                     "json_schema response_format requested but guided "
                     "generation is unavailable (engine="
@@ -2427,6 +2462,40 @@ async def _create_chat_completion_impl(
                         request,
                         json_schema,
                         strict_mode=strict_mode,
+                        **chat_kwargs,
+                    ),
+                    raw_request,
+                    engine=engine,
+                    request_id_holder=request_id_holder,
+                ),
+                media_type="text/event-stream",
+                headers=_sse_headers,
+            )
+        if use_strict_postgen_validation and json_schema:
+            # R12-4 streaming variant: the unconstrained stream is
+            # emitted as usual; we buffer the content deltas and run
+            # post-stream validation. On failure we synthesize an
+            # extra terminal chunk carrying
+            # ``finish_reason="json_schema_violation"`` plus a
+            # non-content event with the 422-shaped error envelope
+            # BEFORE ``[DONE]``. The asymmetry vs. non-streaming is
+            # intentional and documented — streaming clients receive
+            # the content (so they can show partial output) AND the
+            # error signal, while non-streaming clients see a clean
+            # HTTP 422 with no body. The repair retry is not run on
+            # the streaming path because re-prompting after the wire
+            # is already open is structurally incompatible with SSE
+            # (no second response_id; clients would mis-attribute the
+            # retry tokens to the first stream). The strict-request
+            # counter has already ticked above when ``strict_mode``
+            # was detected — no double-count here.
+            return StreamingResponse(
+                _disconnect_guard(
+                    stream_chat_completion_strict_postgen(
+                        engine,
+                        messages,
+                        request,
+                        json_schema,
                         **chat_kwargs,
                     ),
                     raw_request,
@@ -2701,6 +2770,106 @@ async def _create_chat_completion_impl(
                     }
                 },
             )
+
+    # R12-4: non-guided strict-mode enforcement. The engine ran
+    # UNCONSTRAINED above; now we validate the buffered output and
+    # — if it doesn't validate — attempt ONE repair retry with a
+    # system-prompt-injected hint naming the failing path. If the
+    # repair also fails we surface 422 with a structured envelope so
+    # SDK consumers (pydantic-ai) can read ``error.details.failing_path``
+    # / ``expected`` / ``got`` instead of looping against an opaque
+    # error. Strict + tools is already rejected by the upstream
+    # ``strict_with_tools_unsupported`` gate, so we can assume no
+    # tool_calls path here.
+    if (
+        use_strict_postgen_validation
+        and json_schema
+        and output is not None
+    ):
+        ok, failure_details = validate_and_envelope(
+            output.text or "", json_schema
+        )
+        attempts = 1
+        if not ok and repair_retry_enabled():
+            incr_strict_repair_attempt()
+            attempts = 2
+            logger.info(
+                "R12-4 strict json_schema first attempt failed "
+                "validation (%s); attempting single repair retry.",
+                failure_details.get("reason") if failure_details else "?",
+            )
+            repair_messages = build_repair_messages(
+                messages,
+                output.text or "",
+                json_schema,
+                failure_details or {},
+            )
+            # The repair turn deliberately drops ``logprobs`` / forced
+            # ``tool_choice`` / other request features so the model has
+            # the cleanest possible path to "emit JSON only". Most of
+            # ``chat_kwargs`` is preserved (model, temperature, max_tokens)
+            # so the repair turn respects the operator's runtime caps.
+            repair_kwargs = dict(chat_kwargs)
+            for _k in (
+                "tools",
+                "tool_choice",
+                "request_id_holder",
+                "logprobs",
+                "top_logprobs",
+            ):
+                repair_kwargs.pop(_k, None)
+            try:
+                repair_output = await _wait_with_disconnect(
+                    engine.chat(messages=repair_messages, **repair_kwargs),
+                    raw_request,
+                    timeout=timeout,
+                )
+            except HTTPException:
+                raise
+            except (TimeoutError, asyncio.TimeoutError, asyncio.CancelledError):
+                raise
+            except Exception as repair_err:
+                # Treat repair-side exceptions as a failed repair; we
+                # still surface the 422 below using the ORIGINAL
+                # validation failure (the most actionable signal for
+                # the client).
+                logger.warning(
+                    "R12-4 strict json_schema repair retry raised %s; "
+                    "surfacing original validation failure as 422.",
+                    type(repair_err).__name__,
+                )
+                repair_output = None
+            if repair_output is not None:
+                ok2, failure2 = validate_and_envelope(
+                    repair_output.text or "", json_schema
+                )
+                if ok2:
+                    incr_strict_repair_success()
+                    logger.info(
+                        "R12-4 strict json_schema repair retry succeeded."
+                    )
+                    output = repair_output
+                    ok = True
+                    failure_details = None
+                else:
+                    # Repair also failed — keep the SECOND failure
+                    # details for the envelope since it reflects what
+                    # the client just saw. The "attempts" count in
+                    # the envelope already reflects the retry.
+                    failure_details = failure2
+        if not ok:
+            incr_strict_violation()
+            envelope = build_violation_envelope(
+                failure_details or {"reason": "schema_violation"},
+                attempts=attempts,
+            )
+            logger.warning(
+                "R12-4 strict json_schema validation failed after "
+                "%d attempt(s): %s",
+                attempts,
+                (failure_details or {}).get("message"),
+            )
+            raise HTTPException(status_code=422, detail=envelope)
 
     # Parse tool calls from output using configured parser.
     # ``output.tool_calls`` is non-None when the engine's
@@ -4220,3 +4389,144 @@ async def stream_chat_completion_guided(
         if cfg.gc_control and gc_was_enabled:
             gc.enable()
             gc.collect()
+
+
+async def stream_chat_completion_strict_postgen(
+    engine,
+    messages: list,
+    request: ChatCompletionRequest,
+    json_schema: dict,
+    **kwargs,
+) -> AsyncIterator[str]:
+    """R12-4 — streaming variant of post-generate strict enforcement.
+
+    Streams the unconstrained chat completion as ``stream_chat_completion``
+    would, but buffers the per-delta content deltas client-side. After
+    the upstream stream emits ``[DONE]`` we run the same
+    :func:`validate_and_envelope` check used by the non-streaming
+    path. On failure we synthesize ONE extra terminal chunk carrying
+    ``finish_reason="json_schema_violation"`` plus a non-content
+    ``error`` event before re-emitting ``[DONE]``.
+
+    The asymmetry vs. the non-streaming path is intentional:
+    streaming clients have already received the content tokens so a
+    silent in-place 422 is impossible (the wire is already open).
+    Surfacing the violation as an extra finish_reason value lets
+    spec-aware clients distinguish "the server detected a strict
+    contract breach" from a normal ``stop`` finish, while
+    spec-unaware clients still see the content they need to retry
+    against. The repair retry is deliberately NOT run here — re-
+    prompting after a stream is in flight would require either
+    closing the wire (defeating SSE) or attributing the retry tokens
+    to the first stream's ``response_id`` (defeating the client's
+    ability to distinguish them).
+
+    Buffering rule: we accumulate the ``content`` deltas from each
+    SSE chunk's ``choices[0].delta.content`` field, IGNORING
+    ``reasoning_content`` (which is not part of the user-visible
+    JSON the schema is supposed to constrain). If a future chunk
+    format adds a different content surface we'll need to extend the
+    accumulator — the buffer payload is small (one JSON object) so
+    the memory cost of "buffer the whole stream" is trivial.
+    """
+    # Generate a stable response_id so the failure chunk we append at
+    # the end shares the id with the upstream stream's content chunks
+    # — clients group by id, so a fresh uuid here would surface as a
+    # second un-associated completion.
+    response_id = f"chatcmpl-{uuid.uuid4().hex[:8]}"
+    created = int(time.time())
+    model_name = _resolve_model_name(request.model)
+
+    buffered_content: list[str] = []
+    saw_done = False
+
+    async for chunk_text in stream_chat_completion(
+        engine,
+        messages,
+        request,
+        response_id=response_id,
+        created=created,
+        **kwargs,
+    ):
+        # Detect the upstream [DONE] sentinel so we know when to run
+        # validation. We delay yielding [DONE] until AFTER the
+        # validation pass so the post-validation chunks land BEFORE
+        # the terminal marker the spec requires last.
+        if chunk_text.strip() == "data: [DONE]":
+            saw_done = True
+            continue
+        # Snoop content deltas without disturbing the byte stream.
+        if chunk_text.startswith("data: "):
+            payload = chunk_text[len("data: ") :].strip()
+            try:
+                parsed = json.loads(payload)
+            except (json.JSONDecodeError, TypeError, ValueError):
+                parsed = None
+            if isinstance(parsed, dict):
+                choices = parsed.get("choices") or []
+                for ch in choices:
+                    if not isinstance(ch, dict):
+                        continue
+                    delta = ch.get("delta") or {}
+                    if isinstance(delta, dict):
+                        c = delta.get("content")
+                        if isinstance(c, str):
+                            buffered_content.append(c)
+        yield chunk_text
+
+    # Stream completed — run validation. We do NOT incr_strict_violation()
+    # on the happy path; only when we surface the failure event.
+    full_content = "".join(buffered_content)
+    ok, failure_details = validate_and_envelope(full_content, json_schema)
+    if not ok:
+        incr_strict_violation()
+        envelope = build_violation_envelope(
+            failure_details or {"reason": "schema_violation"},
+            attempts=1,
+        )
+        # Synthesize an extra terminal chunk carrying the new
+        # ``finish_reason="json_schema_violation"`` value. Spec-aware
+        # clients (notably pydantic-ai once it adopts this) can react;
+        # spec-unaware clients will treat the unknown enum as "stream
+        # ended" which is still safe.
+        violation_chunk = ChatCompletionChunk(
+            id=response_id,
+            created=created,
+            model=model_name,
+            choices=[
+                ChatCompletionChunkChoice(
+                    delta=ChatCompletionChunkDelta(),
+                    finish_reason="json_schema_violation",
+                )
+            ],
+        )
+        yield (
+            "data: "
+            + violation_chunk.model_dump_json(exclude_none=True)
+            + "\n\n"
+        )
+        # Non-content error event with the 422-shaped envelope. The
+        # ``object`` field signals "this is not a chat.completion.chunk
+        # — it carries an error envelope" so byte-faithful clients can
+        # ignore it if they want.
+        error_event = {
+            "id": response_id,
+            "object": "chat.completion.error",
+            "created": created,
+            "model": model_name,
+            **envelope,
+        }
+        # Use compact JSON encoding (no spaces) to match the SSE
+        # chunk encoding used elsewhere in this module — clients
+        # streaming with byte-level matchers expect ``"key":"val"``
+        # not ``"key": "val"``.
+        yield "data: " + json.dumps(error_event, separators=(",", ":")) + "\n\n"
+        logger.warning(
+            "R12-4 strict json_schema streaming validation failed: %s",
+            (failure_details or {}).get("message"),
+        )
+    # Always emit the terminal [DONE] last; even on failure the wire
+    # envelope MUST close with the spec-mandated sentinel so clients
+    # don't stall.
+    if saw_done:
+        yield "data: [DONE]\n\n"

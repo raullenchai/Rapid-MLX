@@ -283,6 +283,21 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # ``vllm_mlx/server.py``'s lifespan to decide whether to fire
         # the deep probe at boot.
         "RAPID_MLX_AUDIO_DEEP_PROBE",
+        # R12-4 strict ``response_format.json_schema`` enforcement
+        # escape hatch (``off`` falls through to legacy silent-pass-
+        # through; default is on). Pure behaviour-policy knob —
+        # never selects a model, parser, or routing tier; consumed
+        # only by ``vllm_mlx.api.strict_json_schema`` to decide
+        # whether the post-generate validation gate fires. See PR
+        # fix/r12-4-strict-json-schema-enforcement.
+        "RAPID_MLX_STRICT_JSON_SCHEMA",
+        # R12-4 strict-mode auto-repair retry toggle. Setting to
+        # ``off`` disables ONLY the single repair retry — the
+        # post-decode validation + 422 envelope still fires. Pure
+        # cost-sensitivity knob — never selects a model, parser, or
+        # routing tier. Same module / same PR as the parent
+        # ``RAPID_MLX_STRICT_JSON_SCHEMA`` knob.
+        "RAPID_MLX_STRICT_JSON_SCHEMA_REPAIR",
     }
 )
 
