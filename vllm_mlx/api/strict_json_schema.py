@@ -446,37 +446,44 @@ def build_repair_messages(
     # has a leading ``system`` message, we MERGE the repair hint
     # into it (preserving its prefix) instead of injecting a second
     # leading system message — same chat-template safety rationale.
+    # Codex r14 #2: filter out prior ``assistant`` turns from the
+    # original conversation when building the repair context.
+    # Reasoning: the repair invariant (codex r5 #2) is that NO
+    # assistant turn appears in the repair conversation so the
+    # failed output cannot be re-fed as authoritative prior
+    # generation context. But on multi-turn conversations the
+    # original messages list ALREADY contains prior assistant
+    # turns — preserving them would let the model treat those
+    # earlier assistant outputs (which may themselves have been
+    # JSON near-misses, partial JSON, or other content the model
+    # was rewarded for) as legitimate context to continue from.
+    # Strategy: keep system + user turns, drop assistant turns.
+    # For multi-turn flows this means the repair gets the USER
+    # questions but not the model's prior responses — which is
+    # the correct shape for "retry and produce ONLY valid JSON".
+    # If a future use case needs the assistant turns preserved
+    # (e.g. tool-result threading), it can be added behind a
+    # ``preserve_assistant_history`` flag.
+    non_assistant = [m for m in original_messages if m.get("role") != "assistant"]
     repair: list[dict[str, Any]] = []
-    if original_messages and original_messages[0].get("role") == "system":
+    if non_assistant and non_assistant[0].get("role") == "system":
         # Merge: keep the original system prefix, add a separator,
         # then the repair hint.
         #
         # Codex r13 #2: OpenAI-compatible chat-completions allows
         # message content to be EITHER a string OR a structured
-        # list of content-parts (``[{"type": "text", ...},
-        # {"type": "image_url", ...}, ...]``). Pre-fix we did
-        # ``str + str`` which raised TypeError on the list shape
-        # — strict mode would surface a 500 on any multimodal
-        # request that hit the repair path. Normalize the existing
-        # content into a text representation we can safely
-        # concatenate. The strategy:
-        #   - str: pass through unchanged;
-        #   - list of parts: extract the ``text`` field from each
-        #     ``{"type":"text"}`` part and join with newlines;
-        #     non-text parts (images, etc.) are summarized as a
-        #     placeholder so the model still sees that
-        #     non-textual context existed;
-        #   - anything else: ``str()`` fallback.
-        existing_content = original_messages[0].get("content", "")
+        # list of content-parts. Normalize via ``_content_to_text``
+        # so the concat is type-safe.
+        existing_content = non_assistant[0].get("content", "")
         existing_text = _content_to_text(existing_content)
         merged_system = existing_text + "\n\n---\n\n" + hint
         repair.append({"role": "system", "content": merged_system})
-        repair.extend(original_messages[1:])
+        repair.extend(non_assistant[1:])
     else:
         # No existing system message — synthesize one at the front
         # so chat-template invariants hold.
         repair.append({"role": "system", "content": hint})
-        repair.extend(original_messages)
+        repair.extend(non_assistant)
     repair.append(
         {
             "role": "user",

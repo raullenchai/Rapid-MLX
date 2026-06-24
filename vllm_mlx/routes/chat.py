@@ -4707,31 +4707,17 @@ async def stream_chat_completion_strict_postgen(
                 # in the post-loop block emits its own
                 # finish_reason=json_schema_violation, so a held
                 # ``finish_reason=stop`` chunk would conflict.
-                # Codex r13 #1: ``aclose()`` the upstream generator
-                # BEFORE breaking so the engine's per-request
-                # cleanup runs synchronously and we don't leave a
-                # zombie generation task. ``aclose()`` propagates
-                # ``GeneratorExit`` into the upstream generator,
-                # which is exactly the cancellation signal the
-                # engine's own cleanup hooks listen for.
-                try:
-                    await upstream_agen.aclose()
-                except (asyncio.CancelledError, GeneratorExit):
-                    # The upstream generator may itself need a few
-                    # cycles to unwind — propagate cancellation
-                    # cleanly. ``aclose`` raising one of these is
-                    # the documented "successful close" shape.
-                    pass
-                except Exception:  # noqa: BLE001
-                    # Any other exception during upstream cleanup
-                    # is a worse failure than leaving the engine
-                    # to its natural terminus; log + continue so
-                    # we still deliver the buffer_overflow
-                    # envelope to the client.
-                    logger.warning(
-                        "R12-4 upstream aclose() raised during buffer overflow cleanup",
-                        exc_info=True,
-                    )
+                # Codex r13 #1 + r14 #1: break out of the loop FIRST;
+                # the ``aclose()`` call happens AFTER we exit the
+                # ``async for`` block (see the post-loop aclose
+                # block below). Calling ``aclose()`` from INSIDE the
+                # active ``async for`` raises
+                # ``RuntimeError: aclose(): asynchronous generator
+                # is already running`` for real (non-mock) async
+                # generators — the generator is mid-``__anext__``
+                # from the wrapper's perspective. Exiting the loop
+                # first releases the iteration handle so aclose()
+                # can run cleanly.
                 break
             if is_terminal:
                 held_terminal_chunks.append(chunk_text)
@@ -4740,6 +4726,34 @@ async def stream_chat_completion_strict_postgen(
                 held_usage_chunk = chunk_text
                 continue
             yield chunk_text
+
+        # Codex r14 #1: after exiting the ``async for`` block we are
+        # NO LONGER inside the generator's iteration, so it is safe
+        # to ``aclose()`` it. On the happy path (loop exhausted
+        # normally) aclose is a no-op. On the overflow break path
+        # aclose propagates ``GeneratorExit`` into the upstream
+        # generator so the engine's per-request cleanup runs
+        # synchronously and we don't leave a zombie generation
+        # task consuming compute. We do this for BOTH paths so
+        # the resource-management story is uniform; on the
+        # already-exhausted path the second-order cost is trivial.
+        if buffer_overflow:
+            try:
+                await upstream_agen.aclose()
+            except (asyncio.CancelledError, GeneratorExit):
+                # Documented "successful close" shape — the
+                # upstream generator unwound via the cancellation
+                # signal we sent it.
+                pass
+            except Exception:  # noqa: BLE001
+                # Any other exception during upstream cleanup is
+                # worse than leaving the engine to its natural
+                # terminus; log + continue so we still deliver the
+                # buffer_overflow envelope to the client.
+                logger.warning(
+                    "R12-4 upstream aclose() raised during buffer overflow cleanup",
+                    exc_info=True,
+                )
 
         # Codex r8 #2: if the buffer cap fired, skip validation and
         # treat the truncated content as a violation. Validating a

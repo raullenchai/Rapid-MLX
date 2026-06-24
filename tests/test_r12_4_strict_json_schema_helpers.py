@@ -306,6 +306,65 @@ def test_validate_and_envelope_rejects_malformed_schema():
     assert "schema" in details["message"].lower()
 
 
+def test_build_repair_messages_filters_assistant_turns_from_multiturn():
+    """Codex r14 #2 — when the original conversation is multi-turn
+    (system + user + assistant + user + ... pattern), the assistant
+    turns MUST be stripped from the repair context. The repair
+    invariant (codex r5 #2) is that no assistant turn appears so
+    the failed output cannot be re-fed as authoritative prior
+    context — but pre-fix the function only avoided ADDING a new
+    assistant turn; it still passed through any assistant turns
+    that were already in ``original_messages``. On multi-turn
+    flows the model could treat its OWN earlier responses (which
+    may have been near-miss JSON that earned partial reward) as
+    authoritative context to continue from.
+    """
+    original = [
+        {"role": "system", "content": "You produce JSON."},
+        {"role": "user", "content": "make a JSON for an apple"},
+        {"role": "assistant", "content": '{"fruit": "apple", "color": '},
+        {"role": "user", "content": "now do a banana"},
+        {"role": "assistant", "content": '{"fruit": "banana", "color":'},
+        {"role": "user", "content": "now do a cherry"},
+    ]
+    failure = {"reason": "schema_violation", "failing_path": "/color"}
+    repair = build_repair_messages(original, '{"fruit": "cherry"}', _SCHEMA, failure)
+    # No assistant turn anywhere in the repair conversation.
+    assert all(m["role"] != "assistant" for m in repair), (
+        f"assistant turn leaked into repair: {repair!r}"
+    )
+    # The user turns ARE preserved (so the model has context for
+    # what was being asked).
+    user_contents = [m["content"] for m in repair if m["role"] == "user"]
+    assert any("apple" in c for c in user_contents)
+    assert any("banana" in c for c in user_contents)
+    assert any("cherry" in c for c in user_contents)
+    # And the prior assistant outputs (which may have been
+    # near-miss JSON) MUST NOT appear verbatim — they could
+    # otherwise steer the repair.
+    full_text = "\n".join(_content_to_text_for_test(m["content"]) for m in repair)
+    # Check the FRAGMENT '{"fruit": "apple"' — the apple-near-miss
+    # MUST be filtered out.
+    assert '"fruit": "apple"' not in full_text, (
+        "prior assistant near-miss leaked into repair context"
+    )
+    assert '"fruit": "banana"' not in full_text, (
+        "prior assistant near-miss leaked into repair context"
+    )
+
+
+def _content_to_text_for_test(content) -> str:
+    """Helper for the multi-turn assistant-filter test."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            p.get("text", "") if isinstance(p, dict) and p.get("type") == "text" else ""
+            for p in content
+        )
+    return str(content) if content is not None else ""
+
+
 def test_build_repair_messages_handles_multimodal_system_content():
     """Codex r13 #2 — chat-completions allows message content to be
     a list of content-parts (multimodal). Pre-fix the merge did
