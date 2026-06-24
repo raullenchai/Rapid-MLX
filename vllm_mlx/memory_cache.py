@@ -175,17 +175,15 @@ def _peek_tokens_bin_header(path: str) -> tuple[int | None, str | None, str]:
                 return None, None, "tokens.bin truncated at fixed prefix"
             if head[: len(_TOKENS_MAGIC)] != _TOKENS_MAGIC:
                 return None, None, "tokens.bin missing v3 magic"
-            token_count, uuid_len = _struct.unpack(
-                "<II", head[len(_TOKENS_MAGIC) :]
-            )
+            token_count, uuid_len = _struct.unpack("<II", head[len(_TOKENS_MAGIC) :])
             if uuid_len > 64:
-                return None, None, (
-                    f"save_uuid_len {uuid_len} exceeds bound 64"
-                )
+                return None, None, (f"save_uuid_len {uuid_len} exceeds bound 64")
             uuid_bytes = f.read(uuid_len)
             if len(uuid_bytes) != uuid_len:
-                return None, None, (
-                    f"save_uuid short read ({len(uuid_bytes)}/{uuid_len})"
+                return (
+                    None,
+                    None,
+                    (f"save_uuid short read ({len(uuid_bytes)}/{uuid_len})"),
                 )
             return token_count, uuid_bytes.decode("ascii", errors="replace"), ""
     except OSError as exc:

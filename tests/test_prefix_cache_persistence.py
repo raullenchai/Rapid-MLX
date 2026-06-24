@@ -2482,7 +2482,12 @@ def test_r12_five_cycle_sigterm_stress(tmp_path):
         # Add 2 more entries per cycle (mutates state, mirrors Talia's
         # "a few new requests per cycle" repro).
         for j in range(2):
-            toks = list(range(500_000 + cycle * 10_000 + j * 100, 500_000 + cycle * 10_000 + j * 100 + 11))
+            toks = list(
+                range(
+                    500_000 + cycle * 10_000 + j * 100,
+                    500_000 + cycle * 10_000 + j * 100 + 11,
+                )
+            )
             c.store(toks, make_kvcache(num_tokens=11, fill=float(cycle * 10 + j)))
             cumulative.append(toks)
         assert c.save_to_disk(str(cache_dir)) is True
