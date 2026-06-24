@@ -39,9 +39,7 @@ def _count_chat_logs() -> int:
     """Return the number of ``rapid-mlx-chat-*.log`` stragglers."""
     tmp = Path(tempfile.gettempdir())
     try:
-        return sum(
-            1 for name in os.listdir(tmp) if name.startswith("rapid-mlx-chat-")
-        )
+        return sum(1 for name in os.listdir(tmp) if name.startswith("rapid-mlx-chat-"))
     except OSError:
         return 0
 
@@ -60,11 +58,13 @@ def test_happy_path_unlinks_on_exit():
 def test_exception_in_body_still_unlinks():
     """try/finally — unlink runs even when the body raises."""
     sentinel: list[str] = []
-    with pytest.raises(RuntimeError, match="boom"):
-        with managed_tempfile_path(prefix="ut-exc-", suffix=".tmp") as h:
-            sentinel.append(h.path)
-            assert os.path.exists(h.path)
-            raise RuntimeError("boom")
+    with (
+        pytest.raises(RuntimeError, match="boom"),
+        managed_tempfile_path(prefix="ut-exc-", suffix=".tmp") as h,
+    ):
+        sentinel.append(h.path)
+        assert os.path.exists(h.path)
+        raise RuntimeError("boom")
     assert not os.path.exists(sentinel[0])
 
 
@@ -212,9 +212,7 @@ def test_atexit_fallback_via_subprocess_os_exit_skips_context_exit():
 def _count_in_dir(d: str) -> int:
     """Count ``rapid-mlx-chat-*.log`` files in ``d``."""
     try:
-        return sum(
-            1 for name in os.listdir(d) if name.startswith("rapid-mlx-chat-")
-        )
+        return sum(1 for name in os.listdir(d) if name.startswith("rapid-mlx-chat-"))
     except OSError:
         return 0
 

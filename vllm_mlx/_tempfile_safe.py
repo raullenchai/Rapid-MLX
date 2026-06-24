@@ -66,7 +66,6 @@ import tempfile
 import threading
 from collections.abc import Iterator
 
-
 # Module-level set of every path the helper is currently watching.
 # A single shared atexit hook walks this set on interpreter exit so
 # we don't register N hooks for N tempfiles (atexit walks them all
