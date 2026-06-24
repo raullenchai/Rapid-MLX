@@ -284,6 +284,51 @@ class TestFormatAliasLegacyToResponseFormat:
             f"silently overrode the explicit field."
         )
 
+    @pytest.mark.parametrize(
+        "bad_legacy",
+        [
+            123,  # int
+            True,  # bool
+            [],  # list
+            {},  # dict
+        ],
+    )
+    def test_nonstring_format_alias_400s(self, monkeypatch, bad_legacy):
+        """Codex r1 #1 BLOCKING (review-20260315-103736-152fd1.md): a
+        non-string legacy ``format`` value (``{"format":123}``) MUST 400
+        on ``response_format``, NOT silently fall through to the
+        ``"wav"`` default. The before-validator now folds EVERY legacy
+        value into ``response_format`` so the field-level type-check
+        produces the same 400 envelope a wrong-typed
+        ``response_format`` would emit. Pre-codex this passed through
+        verbatim and ``response_format`` defaulted to ``"wav"`` — the
+        exact silent-downgrade shape F-2 exists to prevent."""
+        _install_fake_mlx_audio(monkeypatch)
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/speech",
+                json={
+                    "model": "kokoro",
+                    "input": "Hi",
+                    "voice": "af_heart",
+                    "format": bad_legacy,
+                },
+            )
+        finally:
+            restore()
+
+        assert r.status_code == 400, (
+            f"R11-B-F2 codex r1 regression: format={bad_legacy!r} "
+            f"returned {r.status_code}, expected 400. Body: {r.text[:500]}"
+        )
+        body = r.json()
+        # The envelope must surface ``response_format`` as the failing
+        # field (NOT ``format``) so the caller learns the spec-correct
+        # field name even when they used the legacy alias.
+        assert body["error"]["param"] == "response_format", body
+        assert body["error"]["type"] == "invalid_request_error", body
+
     def test_unknown_format_alias_still_400s(self, monkeypatch):
         """The alias only changes the SOURCE of the value, not the
         allowed-set contract. A legacy ``{"format":"jpeg"}`` (not in

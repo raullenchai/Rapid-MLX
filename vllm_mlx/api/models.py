@@ -2536,7 +2536,9 @@ class AudioSpeechRequest(BaseModel):
             # (already a BaseModel instance, list, ...) skip the alias
             # — the field-level validators still fire.
             return data
-        legacy = data.get("format")
+        if "format" not in data:
+            return data
+        legacy = data["format"]
         if legacy is None:
             return data
         # Only fold the alias when the spec-correct field is unset.
@@ -2544,13 +2546,19 @@ class AudioSpeechRequest(BaseModel):
         # is the caller's choice and surfaces through the field
         # validator as a 400 like any other invalid value.
         if "response_format" not in data or data.get("response_format") is None:
-            # Only string-shaped legacy values get folded — non-strings
-            # would cascade into a Pydantic type error two layers down
-            # with a confusing trace; let the field validator reject
-            # them with the documented allowed-set message instead by
-            # passing them through verbatim.
-            if isinstance(legacy, str):
-                data["response_format"] = legacy
+            # Codex r1: fold EVERY non-None legacy value into
+            # ``response_format`` — including non-strings like
+            # ``{"format": 123}``. Pre-codex this guarded the assign
+            # behind ``isinstance(legacy, str)`` so non-string aliases
+            # silently fell through to ``response_format="wav"`` (the
+            # exact silent-downgrade shape the field exists to prevent;
+            # see codex review #1 on PR review-20260315-103736). Pydantic's
+            # field validator runs next and surfaces an
+            # ``invalid_request_error`` with ``param="response_format"``
+            # so the caller learns the field is unhappy with the type
+            # they sent — the same envelope an explicit
+            # ``{"response_format": 123}`` would get.
+            data["response_format"] = legacy
         return data
 
     @field_validator("input")
