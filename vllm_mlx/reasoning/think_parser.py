@@ -62,6 +62,14 @@ def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
     ``(promoted_block, trailing_prose)`` where ``trailing_prose``
     begins with the prose line (and is empty when the entire body
     is tool-call-shaped).
+
+    JSON-aware (codex round-4 finding #8): once an unmatched ``{``
+    opens a JSON body, track brace depth and DO NOT treat
+    pretty-printed JSON content lines (e.g. ``"name": "get_weather",``)
+    as prose even when they contain none of ``<``, ``{``, ``}``.
+    Only after the brace depth returns to zero — i.e. the JSON object
+    has closed — can a subsequent bare-text line be classified as
+    trailing prose.
     """
     # Strip the ``<tool_call>`` opener for inspection — the opener
     # itself must always go into the promoted block.
@@ -75,6 +83,7 @@ def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
     promoted_lines: list[str] = []
     trailing_lines: list[str] = []
     boundary_hit = False
+    json_depth = 0  # net {…} depth across processed lines
     for line in lines:
         if boundary_hit:
             trailing_lines.append(line)
@@ -85,7 +94,16 @@ def _split_unclosed_at_prose_boundary(unclosed_block: str) -> tuple[str, str]:
             promoted_lines.append(line)
             continue
         if "<" in stripped or "{" in stripped or "}" in stripped:
-            # XML/JSON-ish — still inside the tool_call body.
+            # XML/JSON-ish — still inside the tool_call body. Update
+            # net brace depth so subsequent pretty-printed JSON value
+            # lines are recognised as still-inside-body even though
+            # they have no structural chars.
+            json_depth += stripped.count("{") - stripped.count("}")
+            promoted_lines.append(line)
+            continue
+        if json_depth > 0:
+            # Pretty-printed JSON value line inside an open ``{…}`` —
+            # NOT prose. Keep it in the promoted block.
             promoted_lines.append(line)
             continue
         # Pure prose line — boundary.

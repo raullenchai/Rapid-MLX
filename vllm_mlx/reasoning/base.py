@@ -278,15 +278,31 @@ def finalize_streaming_compat(
             subclass_reasoning = msg.reasoning
             if flush.content:
                 # The flush content is the buffered tool-call XML/JSON
-                # block (always trailing). ``rstrip`` reaches it
-                # whether it sits at the end of content or reasoning.
-                if subclass_content and flush.content in subclass_content:
-                    subclass_content = (
-                        subclass_content.replace(flush.content, "", 1) or None
-                    )
-                if subclass_reasoning and flush.content in subclass_reasoning:
-                    subclass_reasoning = (
-                        subclass_reasoning.replace(flush.content, "", 1) or None
+                # block — ALWAYS the trailing in-progress call (the
+                # only unclosed one at stream end). Use ``rfind`` and
+                # only strip when the match is at the END of the
+                # subclass output (modulo trailing whitespace). An
+                # earlier completed call may share the same prefix
+                # (e.g. two ``<tool_call>\n{"name": "f"…`` blocks);
+                # a first-occurrence ``replace`` could corrupt that
+                # earlier block instead of removing the trailing
+                # buffered duplicate — codex round-4 finding #7.
+                def _strip_trailing(buf: str, span: str) -> str | None:
+                    idx = buf.rfind(span)
+                    if idx < 0:
+                        return buf or None
+                    # Trailing modulo whitespace: any chars after the
+                    # match must be only whitespace.
+                    if buf[idx + len(span) :].strip() != "":
+                        return buf or None
+                    stripped = buf[:idx] + buf[idx + len(span) :]
+                    return stripped or None
+
+                if subclass_content:
+                    subclass_content = _strip_trailing(subclass_content, flush.content)
+                if subclass_reasoning:
+                    subclass_reasoning = _strip_trailing(
+                        subclass_reasoning, flush.content
                     )
             merged_content_parts: list[str] = []
             if subclass_content:
