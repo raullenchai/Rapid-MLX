@@ -222,6 +222,36 @@ class TestSanitizeReasoningHelpers:
         ]:
             assert sanitize_reasoning_content(text) == sanitize_output(text)
 
+    def test_sanitize_reasoning_preserves_literal_tool_call_mention(self):
+        """Codex r4 [P2] on R12-FIX-V2 considered and rejected:
+        adding plain ``<tool_call>`` opener stripping to the global
+        sanitizer would break the existing T1/T2/T3
+        ``tool_choice="required"`` test suite, which intentionally
+        pins that legitimate prose mentioning ``<tool_call>`` as text
+        MUST survive (e.g. a model explaining the wire format). The
+        route-level ``_scrub_visible_tool_wire_leaks`` already
+        discriminates structural wire vs literal-token-mention via
+        ``_contains_structural_tool_wire_leak`` and runs on
+        ``reasoning_text`` for the forced/required path. Defense-
+        in-depth at the global sanitizer would over-strip.
+
+        Pin: ``sanitize_reasoning_content`` does NOT remove a literal
+        ``<tool_call>`` mention from prose — the contract is
+        preserved.
+        """
+        text = "I cannot call tools here, but the literal token is <tool_call>."
+        # Marker char ``<`` triggers the regex pass but the result
+        # still contains the bare opener — that's intentional, the
+        # layered architecture handles structural leaks at the
+        # route level.
+        out = sanitize_reasoning_content(text)
+        assert out is not None
+        assert "<tool_call>" in out, (
+            f"sanitize_output must NOT strip literal <tool_call> mention; "
+            f"existing route-level scrubber owns structural detection. "
+            f"got {out!r}"
+        )
+
 
 class TestAssistantMessageSanitizes:
     """The ``AssistantMessage`` field validator is the chokepoint.

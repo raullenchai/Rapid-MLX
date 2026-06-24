@@ -68,6 +68,20 @@ _FINAL_SANITIZER = re.compile(
     # [Calling tool:...] or [Calling tool="..."] or bare "[Calling tool" (Gemma 4 mimicry)
     r"|\[Calling\s+tool[^\]]*\]?"
     # Stray closing tags
+    #
+    # Codex R4 [P2] on R12-FIX-V2 was considered and rejected: adding
+    # plain ``<tool_call>`` opener stripping to this global sanitizer
+    # breaks the existing T1/T2/T3 ``tool_choice="required"`` test
+    # suite (``test_tool_choice_enforcement.py`` r7/r8/r9 BLOCKING
+    # codex rounds), which intentionally pin that legitimate prose
+    # mentioning ``<tool_call>`` as text MUST survive. The
+    # route-level ``_scrub_visible_tool_wire_leaks`` already
+    # discriminates structural wire vs literal-token-mention via
+    # ``_contains_structural_tool_wire_leak`` and runs on
+    # ``reasoning_text`` for the forced/required path
+    # (``routes/chat.py:~3245``). Defense-in-depth at the global
+    # sanitizer would over-strip; the existing layered gate is the
+    # correct architecture.
     r"|</think>|</tool_call>",
     re.DOTALL,
 )
