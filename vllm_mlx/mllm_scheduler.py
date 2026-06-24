@@ -428,10 +428,31 @@ class MLLMScheduler:
                 f"(currently {len(self.requests)} in-flight)"
             )
 
+        # OpenAI-spec penalty passthrough (#512). Pop with the same defaults
+        # ``SamplingParams`` uses so the MLLM path matches the LLM path's
+        # "absence == neutral" contract. Callers that never set these keys
+        # (every non-OpenAI MLLM caller pre-#512) get the no-op fast path
+        # inside ``_maybe_apply_penalty_processors``.
+        #
+        # Default only on ``None`` (not falsy numeric values) — the API
+        # schema accepts ``repetition_penalty=0.0`` (a legitimate, if
+        # extreme, value) and the LLM path preserves it on the
+        # ``SamplingParams``; collapsing via ``or 1.0`` would silently
+        # rewrite that to neutral (codex r1 MAJOR #2).
+        def _pop_penalty(name: str, neutral: float) -> float:
+            raw = kwargs.pop(name, None)
+            return neutral if raw is None else float(raw)
+
+        repetition_penalty = _pop_penalty("repetition_penalty", 1.0)
+        presence_penalty = _pop_penalty("presence_penalty", 0.0)
+        frequency_penalty = _pop_penalty("frequency_penalty", 0.0)
         sampling_params = SamplingParams(
             max_tokens=max_tokens,
             temperature=temperature,
             top_p=top_p,
+            repetition_penalty=repetition_penalty,
+            presence_penalty=presence_penalty,
+            frequency_penalty=frequency_penalty,
         )
 
         request = MLLMRequest(
@@ -650,6 +671,11 @@ class MLLMScheduler:
                 max_tokens=request.sampling_params.max_tokens,
                 temperature=request.sampling_params.temperature,
                 top_p=request.sampling_params.top_p,
+                # OpenAI-spec penalty passthrough (#512). Default neutral
+                # values are no-ops inside ``_maybe_apply_penalty_processors``.
+                repetition_penalty=request.sampling_params.repetition_penalty,
+                presence_penalty=request.sampling_params.presence_penalty,
+                frequency_penalty=request.sampling_params.frequency_penalty,
                 video_fps=request.video_fps,
                 video_max_frames=request.video_max_frames,
             )

@@ -1021,6 +1021,18 @@ class BatchedEngine(BaseEngine):
             # fallback because the parser sees only the model
             # continuation, not the prefixed envelope).
             mllm_assistant_text_prefix = kwargs.pop("_assistant_text_prefix", "") or ""
+            # OpenAI-spec penalty passthrough (#512). Mirror the LLM
+            # branch below: pop the three penalty knobs out of kwargs
+            # and forward to the MLLM scheduler so the route-layer
+            # cascade (chat / completions / responses / anthropic) reaches
+            # the per-request logits processors inside the VLM batch
+            # generator. ``top_k`` / ``min_p`` / ``seed`` MLLM passthrough
+            # is intentionally NOT in scope here — see #512 follow-ups.
+            _mllm_penalty_kwargs = {
+                k: kwargs.pop(k)
+                for k in ("repetition_penalty", "presence_penalty", "frequency_penalty")
+                if k in kwargs
+            }
             output = await self._mllm_scheduler.generate(
                 prompt=prompt,
                 images=images,
@@ -1031,6 +1043,7 @@ class BatchedEngine(BaseEngine):
                 stop=stop,
                 video_fps=kwargs.pop("video_fps", None),
                 video_max_frames=kwargs.pop("video_max_frames", None),
+                **_mllm_penalty_kwargs,
             )
             mllm_full_text = output.output_text or ""
             if mllm_assistant_text_prefix:
@@ -1199,6 +1212,13 @@ class BatchedEngine(BaseEngine):
 
         if self._is_mllm and self._mllm_scheduler:
             # Use MLLM scheduler for all streaming when model is multimodal
+            # OpenAI-spec penalty passthrough (#512) — see ``generate()``
+            # MLLM branch above for the rationale.
+            _mllm_penalty_kwargs = {
+                k: kwargs.pop(k)
+                for k in ("repetition_penalty", "presence_penalty", "frequency_penalty")
+                if k in kwargs
+            }
             request_id = await self._mllm_scheduler.add_request_async(
                 prompt=prompt,
                 images=images,
@@ -1209,6 +1229,7 @@ class BatchedEngine(BaseEngine):
                 stop=stop,
                 video_fps=kwargs.pop("video_fps", None),
                 video_max_frames=kwargs.pop("video_max_frames", None),
+                **_mllm_penalty_kwargs,
             )
             # C-01 force-abort: publish the scheduler request id so the
             # route's disconnect_guard can call abort_request directly.
