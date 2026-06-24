@@ -705,6 +705,56 @@ class TestMarkupOnlyDelta:
         assert len(text_blocks) == 1
         assert text_blocks[0].text == "the answer"
 
+    def test_unsanitised_text_with_removable_markup_still_dedupes(self):
+        """Codex r3 BLOCKING (R12-M1b): the dedupe gate must compare
+        ``thinking_body`` against ``text`` POST-sanitize on BOTH sides,
+        not just one. Hostile shape:
+
+        * ``reasoning_text="<think>done</think>"`` — channel-aware
+          sanitizer normalizes the thinking payload to ``"done"``.
+        * ``text="done</think>"`` — the canonical content-channel
+          ``sanitize_output`` collapses this to ``"done"`` too.
+
+        The Anthropic route layer runs ``sanitize_output`` on
+        ``final_content`` before handing it to ``openai_to_anthropic``,
+        so the in-route path normally never exhibits this shape. BUT
+        if a non-route caller (test helper, future SSE finalize path,
+        a future internal route that forgets the route's sanitization
+        step) hands the adapter a raw ``text`` carrying removable
+        markup, the dedupe gate must STILL refuse to render the same
+        visible bytes twice. Gate on post-sanitize equality on both
+        sides closes the hole regardless of upstream sanitization
+        state.
+        """
+        reasoning_text = "<think>done</think>"
+        text = "done</think>"  # carries removable markup
+        resp = ChatCompletionResponse(
+            model="qwen3-0.6b-bf16",
+            choices=[
+                ChatCompletionChoice(
+                    index=0,
+                    message=AssistantMessage(
+                        role="assistant",
+                        content=text,
+                        reasoning_content=reasoning_text,
+                        tool_calls=None,
+                    ),
+                    finish_reason="stop",
+                )
+            ],
+            usage=Usage(prompt_tokens=5, completion_tokens=5, total_tokens=10),
+        )
+        anth = openai_to_anthropic(resp, "qwen3-0.6b-bf16", reasoning_enabled=True)
+        thinking_blocks = [b for b in anth.content if b.type == "thinking"]
+        # The thinking block MUST be suppressed: post-sanitize, both
+        # sides reduce to ``"done"`` — emitting both would render the
+        # answer twice on the wire (codex r3 BLOCKING dupe shape).
+        assert thinking_blocks == [], (
+            "thinking block must be suppressed when its post-sanitize "
+            "payload equals the post-sanitize text payload (codex r3 "
+            f"BLOCKING dupe shape); got {[b.thinking for b in thinking_blocks]!r}"
+        )
+
 
 class TestSliceBisectsThinkTag:
     """Codex r3 P2 (R12-M1b): the slice-bisects-tag boundary case.
