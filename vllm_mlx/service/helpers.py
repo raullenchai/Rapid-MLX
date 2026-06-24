@@ -1830,6 +1830,10 @@ def maybe_auto_disable_thinking_for_tools(request) -> bool:
     merged_ctk = dict(existing_ctk)
     merged_ctk["enable_thinking"] = False
     request.chat_template_kwargs = merged_ctk
+    # Codex r1 MEDIUM #2 (R12-T2F-276): tag the request so the L-05
+    # ``enable_thinking_warning_header`` does NOT fire spuriously on
+    # non-qwen3 parsers — the server injected the flag, not the client.
+    _mark_thinking_auto_disabled(request)
     return True
 
 
@@ -1939,6 +1943,30 @@ def maybe_auto_disable_thinking_for_casual_chat(
     # default would have applied.
     if not getattr(cfg, "reasoning_parser_name", None):
         return False
+    # Codex r1 NIT: when the operator pinned ``--no-thinking`` at the
+    # server level, ``_resolve_enable_thinking`` already forces False
+    # downstream — so the auto-disable injection here is purely
+    # cosmetic noise (extra log line, mutated request, AND on non-
+    # qwen3 parsers it would feed the L-05 spurious warning below).
+    # Short-circuit so the operator kill switch keeps a single resolution
+    # site instead of two.
+    if getattr(cfg, "no_thinking", False):
+        return False
+    # Codex r1 MEDIUM #1: ``tool_choice="none"`` defeats the casual
+    # helper. The R12-T1F tools helper at line 1821-1823 correctly
+    # SKIPS for the ``tool_choice="none"`` case (the model is told to
+    # answer in prose, no tool_call expected) — but pre-fix the casual
+    # helper then fell through and injected ``enable_thinking=False``
+    # anyway, silently turning a Qwen3 prose-on-tool-defs request into
+    # no-thinking. Mirror the tools-helper gate AND also skip when
+    # ``tools`` is non-empty without a ``"none"`` choice, because that
+    # branch is already owned by R12-T1F TOOLS-AUTO (composition: T1F
+    # either fires and injects ``False`` itself OR skips because client
+    # opted out; either way the casual helper has nothing to add). Net
+    # effect: the casual-chat gate has the cleanest possible boundary
+    # — it ONLY governs the no-tools prose path.
+    if getattr(request, "tools", None):
+        return False
     # Explicit thinking preference (top-level OR nested kwarg) wins.
     # Same precedence ``_extract_thinking_from_request`` uses across
     # the rest of the codebase.
@@ -1963,11 +1991,21 @@ def maybe_auto_disable_thinking_for_casual_chat(
         if getattr(src, "reasoning_effort", None) is not None:
             return False
         # ``reasoning`` is the native Responses-API shape
-        # (``{"effort": "low|medium|high", ...}``). Defensive
-        # ``isinstance(dict)`` so a malformed payload that survived
-        # schema validation does not silently lose the gate.
+        # (``{"effort": "low|medium|high", ...}``). Codex r1 MEDIUM #3:
+        # gate specifically on a NON-NULL ``effort`` rather than "any
+        # non-empty dict". The Responses spec allows
+        # ``reasoning={"effort": null}`` (the schema's
+        # ``_validate_reasoning_dict_effort`` explicitly lets ``None``
+        # through) and ``reasoning={"summary": "auto"}`` (summary is a
+        # SDK convenience flag, NOT a reasoning-intent signal). Pre-fix
+        # both shapes were treated as opt-in and skipped the auto-
+        # disable, leaving the default-thinking-ON budget-burn intact.
+        # Now only an explicit non-null ``effort`` counts as
+        # "client wants reasoning". Defensive ``isinstance(dict)`` so a
+        # malformed payload that survived schema validation does not
+        # silently lose the gate.
         reasoning = getattr(src, "reasoning", None)
-        if isinstance(reasoning, dict) and reasoning:
+        if isinstance(reasoning, dict) and reasoning.get("effort") is not None:
             return False
     existing_ctk = getattr(request, "chat_template_kwargs", None) or {}
     # Merge rather than replace so any non-thinking keys the client
@@ -1976,7 +2014,44 @@ def maybe_auto_disable_thinking_for_casual_chat(
     merged_ctk = dict(existing_ctk)
     merged_ctk["enable_thinking"] = False
     request.chat_template_kwargs = merged_ctk
+    # Codex r1 MEDIUM #2: mark the request so ``enable_thinking_warning_header``
+    # can distinguish a SERVER-injected ``enable_thinking=False`` from a
+    # client-supplied hint. Without this marker the L-05 warning would
+    # fire spuriously on non-qwen3 parsers, telling the client "your
+    # enable_thinking was ignored" even though the client never sent the
+    # hint. Pydantic's private-attribute escape hatch (``_`` prefix)
+    # is allowed by both the chat and responses request schemas, so
+    # ``setattr`` on this name is safe across surfaces.
+    _mark_thinking_auto_disabled(request)
     return True
+
+
+def _mark_thinking_auto_disabled(request) -> None:
+    """Tag ``request`` so the downstream L-05 warning header skips a
+    server-injected ``chat_template_kwargs.enable_thinking=False``.
+
+    Used by every auto-disable helper in the family — R12-M2 strict-json
+    (responses.py inline), R12-T1F tools (this module's
+    ``maybe_auto_disable_thinking_for_tools``), and R12-T2F casual chat
+    (``maybe_auto_disable_thinking_for_casual_chat``). Single source of
+    truth so a future surface that calls one of these helpers inherits
+    the warning-suppression contract for free.
+
+    Pydantic permits ``setattr`` on names with a leading underscore even
+    on models declared with ``extra="forbid"``, so this works
+    transparently on the typed ``ChatCompletionRequest`` /
+    ``ResponsesRequest`` and on the ``SimpleNamespace`` shapes the unit
+    tests use.
+    """
+    try:
+        request._auto_disabled_thinking = True
+    except Exception:
+        # Defensive: a request shape that rejects private-attr setattr
+        # (e.g. a slotted dataclass) falls through silently — the
+        # warning header consults the attribute via ``getattr`` with a
+        # default, so the worst case is the spurious-warning shape we
+        # had pre-fix.
+        pass
 
 
 # L-05: the set of reasoning parsers that actually honor
@@ -2025,6 +2100,18 @@ def enable_thinking_warning_header(request, parser_name: str | None) -> dict[str
         return {}
     ctk = getattr(request, "chat_template_kwargs", None)
     if not isinstance(ctk, dict) or "enable_thinking" not in ctk:
+        return {}
+    # Codex r1 MEDIUM #2 (R12-T2F-276): when the auto-disable family
+    # (R12-M2 strict-json / R12-T1F tools / R12-T2F casual chat)
+    # injected ``chat_template_kwargs.enable_thinking=False`` server-
+    # side, the L-05 warning ("your enable_thinking was ignored") is
+    # actively misleading — the CLIENT never sent the hint, so there's
+    # nothing to warn about. The auto-disable helpers tag the request
+    # via ``_mark_thinking_auto_disabled`` for exactly this consult;
+    # ``getattr`` with default ``False`` is back-compat for request
+    # shapes that never went through a helper (e.g. legacy callers, or
+    # the L-05 sibling tests that build a SimpleNamespace directly).
+    if getattr(request, "_auto_disabled_thinking", False):
         return {}
     return {"X-RapidMLX-Warning": (f"enable_thinking ignored for parser={parser_name}")}
 

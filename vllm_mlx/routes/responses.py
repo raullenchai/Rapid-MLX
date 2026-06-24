@@ -541,6 +541,16 @@ async def create_response(request: Request):
                 merged_ctk = dict(existing_ctk)
                 merged_ctk["enable_thinking"] = False
                 openai_request.chat_template_kwargs = merged_ctk
+                # Codex r1 MEDIUM #2 (R12-T2F-276): tag the request so
+                # the L-05 ``enable_thinking_warning_header`` does NOT
+                # fire spuriously on non-qwen3 parsers — the server
+                # injected the flag, not the client. Mirrors the
+                # ``_mark_thinking_auto_disabled`` call inside the
+                # R12-T1F / R12-T2F helpers so all three auto-disable
+                # paths share one warning-suppression contract.
+                from ..service.helpers import _mark_thinking_auto_disabled
+
+                _mark_thinking_auto_disabled(openai_request)
                 logger.info(
                     "R12-M2 auto-disable: strict json_schema on "
                     "/v1/responses with no client-set thinking "

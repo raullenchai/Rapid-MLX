@@ -366,6 +366,224 @@ class TestHelperAutoDisableForCasualChat:
 
 
 # ---------------------------------------------------------------------------
+# (1b) Helper-level: codex r1 follow-up findings
+# ---------------------------------------------------------------------------
+#
+# Codex round-1 review on the initial implementation surfaced four
+# concrete trigger-design issues. The four tests below pin the post-
+# fix contract so a future refactor doesn't silently undo any of them.
+
+
+class TestHelperCodexR1FollowUps:
+    def test_tools_present_short_circuits_casual_helper(
+        self, _thinking_parser_cfg
+    ):
+        """Codex r1 MEDIUM #1: ``tool_choice="none"`` was being
+        defeated. The tools helper at line 1821 correctly SKIPS the
+        ``tool_choice="none"`` branch, but pre-fix the casual helper
+        then ran and injected ``enable_thinking=False`` anyway —
+        silently turning a Qwen3 prose-on-tool-defs request into
+        no-thinking. The casual gate now skips for ANY non-empty
+        ``tools`` shape (handled by R12-T1F TOOLS-AUTO) so the casual
+        helper governs ONLY the no-tools prose path."""
+        req = SimpleNamespace(
+            tools=[{"type": "function", "function": {"name": "x"}}],
+            tool_choice="none",
+            chat_template_kwargs=None,
+            enable_thinking=None,
+            reasoning_max_tokens=None,
+            reasoning_effort=None,
+        )
+        # tools helper skips because tool_choice="none".
+        from vllm_mlx.service.helpers import maybe_auto_disable_thinking_for_tools
+
+        assert maybe_auto_disable_thinking_for_tools(req) is False
+        # casual helper MUST also skip — the helper now gates on
+        # ``tools`` being empty/None.
+        assert maybe_auto_disable_thinking_for_casual_chat(req) is False
+        assert req.chat_template_kwargs is None
+
+    def test_tools_present_without_tool_choice_none_also_short_circuits(
+        self, _thinking_parser_cfg
+    ):
+        """Generalized form of the codex r1 MEDIUM #1 gate: ANY
+        non-empty tools list owns the auto-disable decision via R12-T1F
+        TOOLS-AUTO, not the casual helper. So even when ``tool_choice``
+        is ``"auto"`` / ``"required"`` / a named-function dict, the
+        casual helper short-circuits. (R12-T1F TOOLS-AUTO has its own
+        coverage for those cases.)"""
+        req = SimpleNamespace(
+            tools=[{"type": "function", "function": {"name": "x"}}],
+            tool_choice="auto",
+            chat_template_kwargs=None,
+            enable_thinking=None,
+            reasoning_max_tokens=None,
+            reasoning_effort=None,
+        )
+        assert maybe_auto_disable_thinking_for_casual_chat(req) is False
+        assert req.chat_template_kwargs is None
+
+    def test_no_thinking_server_flag_short_circuits(self):
+        """Codex r1 NIT #4: when the operator pinned ``--no-thinking``
+        server-side, ``_resolve_enable_thinking`` already forces
+        ``False``. The auto-disable injection is purely cosmetic noise
+        (extra log entry + mutated request) AND on non-qwen3 parsers
+        feeds the L-05 spurious-warning shape this helper family is
+        trying to avoid. Short-circuit so the operator kill switch
+        keeps a single resolution site."""
+        from unittest.mock import patch
+
+        with patch(
+            "vllm_mlx.service.helpers.get_config",
+            return_value=SimpleNamespace(
+                no_thinking=True,
+                reasoning_parser_name="qwen3",
+            ),
+        ):
+            req = SimpleNamespace(
+                tools=None,
+                chat_template_kwargs=None,
+                enable_thinking=None,
+                reasoning_max_tokens=None,
+                reasoning_effort=None,
+            )
+            assert maybe_auto_disable_thinking_for_casual_chat(req) is False
+            assert req.chat_template_kwargs is None
+
+    def test_reasoning_dict_with_null_effort_is_NOT_signal(
+        self, _thinking_parser_cfg
+    ):
+        """Codex r1 MEDIUM #3: ``reasoning={"effort": null}`` is
+        EXPLICITLY allowed by the Responses-API schema
+        (``_validate_reasoning_dict_effort`` lets ``None`` flow
+        through). Pre-fix the helper treated any non-empty dict as
+        reasoning intent and skipped the auto-disable; a client that
+        round-trips ``reasoning={"effort": null}`` (e.g. an SDK that
+        always serializes the key even when no effort is chosen) would
+        bypass the budget-burn fix. The fix gates specifically on
+        ``effort is not None``."""
+        req = SimpleNamespace(
+            tools=None,
+            chat_template_kwargs=None,
+            enable_thinking=None,
+            reasoning_max_tokens=None,
+            reasoning_effort=None,
+            reasoning={"effort": None},
+        )
+        assert maybe_auto_disable_thinking_for_casual_chat(req) is True
+        assert req.chat_template_kwargs == {"enable_thinking": False}
+
+    def test_reasoning_dict_with_only_summary_is_NOT_signal(
+        self, _thinking_parser_cfg
+    ):
+        """Codex r1 MEDIUM #3 (sibling): ``reasoning={"summary":
+        "auto"}`` is a SDK convenience flag (controls whether the
+        Responses SDK emits a ``reasoning.summary`` block), NOT a
+        reasoning-intent signal. The pre-fix "any non-empty dict"
+        gate would have treated this as opt-in and skipped the auto-
+        disable. The ``effort``-specific gate now correctly fires."""
+        req = SimpleNamespace(
+            tools=None,
+            chat_template_kwargs=None,
+            enable_thinking=None,
+            reasoning_max_tokens=None,
+            reasoning_effort=None,
+            reasoning={"summary": "auto"},
+        )
+        assert maybe_auto_disable_thinking_for_casual_chat(req) is True
+        assert req.chat_template_kwargs == {"enable_thinking": False}
+
+    def test_marker_set_on_auto_disable_fire(self, _thinking_parser_cfg):
+        """Codex r1 MEDIUM #2: the helper tags the request via
+        ``_auto_disabled_thinking=True`` so the downstream L-05
+        ``enable_thinking_warning_header`` can distinguish a server-
+        injected ``enable_thinking=False`` from a client-supplied hint.
+        Pinned here so a refactor cannot drop the marker silently."""
+        req = SimpleNamespace(
+            tools=None,
+            chat_template_kwargs=None,
+            enable_thinking=None,
+            reasoning_max_tokens=None,
+            reasoning_effort=None,
+        )
+        assert maybe_auto_disable_thinking_for_casual_chat(req) is True
+        assert getattr(req, "_auto_disabled_thinking", False) is True
+
+    def test_marker_NOT_set_on_skip(self, _thinking_parser_cfg):
+        """Inverse: when the helper SKIPS (client opted in), the marker
+        MUST NOT be set — otherwise a downstream L-05 warning would
+        be suppressed for a request where the client DID supply the
+        hint."""
+        req = SimpleNamespace(
+            tools=None,
+            chat_template_kwargs={"enable_thinking": True},
+            enable_thinking=None,
+            reasoning_max_tokens=None,
+            reasoning_effort=None,
+        )
+        assert maybe_auto_disable_thinking_for_casual_chat(req) is False
+        assert getattr(req, "_auto_disabled_thinking", False) is False
+
+
+class TestL05WarningSuppressedOnAutoDisable:
+    """Codex r1 MEDIUM #2: the L-05 warning header MUST distinguish a
+    server-injected ``chat_template_kwargs.enable_thinking=False``
+    (auto-disable family) from a client-supplied hint. The auto-
+    disable helpers tag the request via ``_auto_disabled_thinking``;
+    the warning header consults that flag and skips the warning when
+    set. Test the contract end-to-end at the warning-header layer."""
+
+    def test_warning_suppressed_when_auto_disable_marker_set(self):
+        from vllm_mlx.service.helpers import enable_thinking_warning_header
+
+        req = SimpleNamespace(
+            chat_template_kwargs={"enable_thinking": False},
+            enable_thinking=None,
+            _auto_disabled_thinking=True,
+        )
+        # A non-qwen3 parser would normally fire the warning — but the
+        # auto-disable marker suppresses it because the client never
+        # supplied the hint.
+        assert enable_thinking_warning_header(req, "deepseek_r1") == {}
+
+    def test_warning_still_fires_when_client_supplied_hint(self):
+        """Negative control: WITHOUT the auto-disable marker, the L-05
+        warning still fires as before. This protects the pre-fix
+        contract: a real client-supplied hint on a non-honoring parser
+        still surfaces the silent-drop signal."""
+        from vllm_mlx.service.helpers import enable_thinking_warning_header
+
+        req = SimpleNamespace(
+            chat_template_kwargs={"enable_thinking": False},
+            enable_thinking=None,
+        )
+        assert enable_thinking_warning_header(req, "deepseek_r1") == {
+            "X-RapidMLX-Warning": "enable_thinking ignored for parser=deepseek_r1"
+        }
+
+    def test_tools_helper_also_sets_marker(self):
+        """The same warning-suppression contract MUST apply to the
+        R12-T1F tools helper — the marker is set there too, so a
+        tools-on-non-qwen3-parser request doesn't get a spurious
+        warning."""
+        from vllm_mlx.service.helpers import (
+            enable_thinking_warning_header,
+            maybe_auto_disable_thinking_for_tools,
+        )
+
+        req = SimpleNamespace(
+            tools=[{"type": "function", "function": {"name": "x"}}],
+            tool_choice=None,
+            chat_template_kwargs=None,
+            enable_thinking=None,
+        )
+        assert maybe_auto_disable_thinking_for_tools(req) is True
+        # Warning suppressed on non-qwen3 parser because the marker
+        # is set.
+        assert enable_thinking_warning_header(req, "deepseek_r1") == {}
+
+
+# ---------------------------------------------------------------------------
 # (2) /v1/chat/completions: route-level integration
 # ---------------------------------------------------------------------------
 
