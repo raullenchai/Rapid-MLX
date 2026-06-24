@@ -432,6 +432,97 @@ class TestStrictAutoDisableThinking:
 
 
 class TestBatchedEngineGuidedHonorsEnableThinking:
+    def _build_engine_stub(self):
+        """Build a ``BatchedEngine`` instance that exits the guard
+        rails and reaches ``shared_apply_chat_template`` without
+        loading a real model.
+
+        ``BatchedEngine.__new__`` is used so we don't run ``__init__``
+        (which loads weights + spins up a step thread). The test
+        then assigns the minimal private fields the method reads
+        (``_loaded``, ``_is_mllm``, ``_tokenizer``, ``_processor``,
+        ``_model_name``, ``_model_load_executor``).
+
+        The guard the method enters first is ``supports_guided_generation``
+        which is a ``@property`` on the class — we patch it at the
+        class level INSIDE a ``with patch.object(...)`` block (the
+        caller is responsible for the patch) so the override is
+        scoped to the test and does NOT pollute later tests. Codex
+        round-2 P2 caught this — an unscoped class mutation would
+        make MLLM / no-[guided] tests downstream observe guided
+        support as always enabled, producing order-dependent failures.
+        """
+        from unittest.mock import MagicMock
+
+        from vllm_mlx.engine.batched import BatchedEngine
+
+        engine = BatchedEngine.__new__(BatchedEngine)
+        engine._loaded = True
+        engine._is_mllm = False
+        engine._model_name = "qwen3-test"
+        engine._tokenizer = MagicMock()
+        engine._processor = None
+        engine._model_load_executor = None
+        return engine, BatchedEngine
+
+    def _run_engine_with_capture(
+        self, engine, engine_cls, *, enable_thinking=...,
+    ):
+        """Drive ``engine.generate_with_schema`` with prompt-render +
+        ``_run_guided_generation`` stubbed; return the captured
+        ``enable_thinking`` value the renderer saw."""
+        import asyncio
+        from unittest.mock import patch
+
+        captured: dict = {}
+
+        def _fake_render(tok, messages, *, tools, enable_thinking, model_name):
+            captured["enable_thinking"] = enable_thinking
+            return "PROMPT"
+
+        kwargs = {}
+        if enable_thinking is not ...:
+            kwargs["enable_thinking"] = enable_thinking
+
+        # ``patch.object(engine_cls, ...)`` scopes the property override
+        # to this ``with`` block — codex round-2 P2 fix.
+        with (
+            patch.object(
+                engine_cls,
+                "supports_guided_generation",
+                new_callable=lambda: property(lambda self: True),
+            ),
+            patch(
+                "vllm_mlx.engine.batched.shared_apply_chat_template",
+                side_effect=_fake_render,
+            ),
+            patch.object(
+                engine,
+                "_run_guided_generation",
+                return_value=GenerationOutput(
+                    text="{}",
+                    new_text="{}",
+                    prompt_tokens=1,
+                    completion_tokens=1,
+                    finished=True,
+                    finish_reason="stop",
+                    channel=None,
+                ),
+            ),
+            patch(
+                "asyncio.to_thread",
+                side_effect=_sync_run,
+            ),
+        ):
+            asyncio.run(
+                engine.generate_with_schema(
+                    messages=[{"role": "user", "content": "hi"}],
+                    json_schema={"type": "object"},
+                    **kwargs,
+                )
+            )
+        return captured
+
     def test_generate_with_schema_pops_enable_thinking_and_forwards_to_render(
         self,
     ):
@@ -440,69 +531,10 @@ class TestBatchedEngineGuidedHonorsEnableThinking:
         through to ``shared_apply_chat_template`` identically to the
         non-guided ``chat()`` path. Pre-fix the value was hard-coded
         to None, defeating the route-level auto-disable."""
-        from unittest.mock import MagicMock, patch
-
-        from vllm_mlx.engine.batched import BatchedEngine
-
-        # Build a minimal stub that satisfies the guard rails so we
-        # reach the ``shared_apply_chat_template`` call. We patch the
-        # method itself instead of constructing a full engine — the
-        # contract under test is the kwarg plumbing, not engine init.
-        engine = BatchedEngine.__new__(BatchedEngine)
-        engine._loaded = True
-        engine._is_mllm = False
-        engine._model_name = "qwen3-test"
-        engine._tokenizer = MagicMock()
-        engine._processor = None
-        # Force the supports_guided_generation gate to pass; the real
-        # property reads HAS_GUIDED + ``_is_mllm``. Override on the
-        # instance so the test does not depend on the optional
-        # [guided] extra being installed.
-        type(engine).supports_guided_generation = property(lambda self: True)
-
-        captured: dict = {}
-
-        def _fake_render(tok, messages, *, tools, enable_thinking, model_name):
-            captured["enable_thinking"] = enable_thinking
-            return "PROMPT"
-
-        # Patch BOTH the prompt render and the heavy ``_run_guided_generation``
-        # so the test never has to spin up outlines / mlx.
-        with (
-            patch(
-                "vllm_mlx.engine.batched.shared_apply_chat_template",
-                side_effect=_fake_render,
-            ),
-            patch.object(
-                engine,
-                "_run_guided_generation",
-                return_value=GenerationOutput(
-                    text="{}",
-                    new_text="{}",
-                    prompt_tokens=1,
-                    completion_tokens=1,
-                    finished=True,
-                    finish_reason="stop",
-                    channel=None,
-                ),
-            ),
-            patch(
-                "asyncio.to_thread",
-                side_effect=lambda fn, **kw: _sync_run(fn, **kw),
-            ),
-        ):
-            # ``_model_load_executor`` None forces the to_thread branch
-            engine._model_load_executor = None
-            import asyncio
-
-            asyncio.run(
-                engine.generate_with_schema(
-                    messages=[{"role": "user", "content": "hi"}],
-                    json_schema={"type": "object"},
-                    enable_thinking=False,
-                )
-            )
-
+        engine, engine_cls = self._build_engine_stub()
+        captured = self._run_engine_with_capture(
+            engine, engine_cls, enable_thinking=False
+        )
         assert captured.get("enable_thinking") is False, (
             "BatchedEngine.generate_with_schema must thread "
             "enable_thinking from kwargs into shared_apply_chat_template"
@@ -511,59 +543,69 @@ class TestBatchedEngineGuidedHonorsEnableThinking:
     def test_generate_with_schema_default_enable_thinking_none(self):
         """Back-compat: when caller passes no ``enable_thinking`` kwarg,
         the render still receives ``None`` (template default)."""
-        from unittest.mock import MagicMock, patch
+        engine, engine_cls = self._build_engine_stub()
+        captured = self._run_engine_with_capture(engine, engine_cls)
+        assert captured.get("enable_thinking") is None, (
+            "Default enable_thinking must be None (template default)"
+        )
 
-        from vllm_mlx.engine.batched import BatchedEngine
+    def test_generate_with_schema_preserves_enable_thinking_on_guided_fallback(
+        self,
+    ):
+        """Codex round-2 P2 fix: when ``_run_guided_generation``
+        returns ``None`` and ``raise_on_failure`` is False (the
+        non-strict path), the method falls back to
+        ``self.chat(messages=..., **kwargs)``. The pre-fix code path
+        popped ``enable_thinking`` out of kwargs without re-injecting,
+        so an explicit client preference (or the R12-M2 route-level
+        auto-disable) was silently dropped on the fallback. This
+        test pins the re-injection: ``self.chat`` receives the
+        explicit value in its kwargs."""
+        import asyncio
+        from unittest.mock import patch
 
-        engine = BatchedEngine.__new__(BatchedEngine)
-        engine._loaded = True
-        engine._is_mllm = False
-        engine._model_name = "qwen3-test"
-        engine._tokenizer = MagicMock()
-        engine._processor = None
-        type(engine).supports_guided_generation = property(lambda self: True)
+        engine, engine_cls = self._build_engine_stub()
+        chat_kwargs_seen: dict = {}
 
-        captured: dict = {}
-
-        def _fake_render(tok, messages, *, tools, enable_thinking, model_name):
-            captured["enable_thinking"] = enable_thinking
-            return "PROMPT"
+        async def _fake_chat(*, messages, **kwargs):
+            chat_kwargs_seen.update(kwargs)
+            return GenerationOutput(
+                text="{}",
+                new_text="{}",
+                prompt_tokens=1,
+                completion_tokens=1,
+                finished=True,
+                finish_reason="stop",
+                channel=None,
+            )
 
         with (
+            patch.object(
+                engine_cls,
+                "supports_guided_generation",
+                new_callable=lambda: property(lambda self: True),
+            ),
             patch(
                 "vllm_mlx.engine.batched.shared_apply_chat_template",
-                side_effect=_fake_render,
+                return_value="PROMPT",
             ),
             patch.object(
-                engine,
-                "_run_guided_generation",
-                return_value=GenerationOutput(
-                    text="{}",
-                    new_text="{}",
-                    prompt_tokens=1,
-                    completion_tokens=1,
-                    finished=True,
-                    finish_reason="stop",
-                    channel=None,
-                ),
+                engine, "_run_guided_generation", return_value=None
             ),
-            patch(
-                "asyncio.to_thread",
-                side_effect=lambda fn, **kw: _sync_run(fn, **kw),
-            ),
+            patch.object(engine, "chat", side_effect=_fake_chat),
+            patch("asyncio.to_thread", side_effect=_sync_run),
         ):
-            engine._model_load_executor = None
-            import asyncio
-
             asyncio.run(
                 engine.generate_with_schema(
                     messages=[{"role": "user", "content": "hi"}],
                     json_schema={"type": "object"},
+                    enable_thinking=False,
                 )
             )
 
-        assert captured.get("enable_thinking") is None, (
-            "Default enable_thinking must be None (template default)"
+        assert chat_kwargs_seen.get("enable_thinking") is False, (
+            "Guided fallback to self.chat must preserve the client's "
+            "enable_thinking choice (codex round-2 P2)"
         )
 
 

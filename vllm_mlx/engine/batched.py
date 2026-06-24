@@ -2224,6 +2224,21 @@ class BatchedEngine(BaseEngine):
             logger.warning(
                 "Guided generation failed, falling back to regular generation"
             )
+            # R12-M2 (codex round-2 P2): re-inject enable_thinking
+            # into the fallback kwargs. We popped it out above so the
+            # guided prompt render could consume it explicitly; the
+            # fallback ``self.chat(...)`` runs its own prompt render
+            # (via ``_apply_chat_template``) and reads
+            # ``enable_thinking`` off ``**kwargs`` (batched.py L1439).
+            # Without this re-injection an explicit
+            # ``enable_thinking=False`` (or the R12-M2 route-level
+            # auto-disable on strict json_schema) would be lost on
+            # the fallback path, reverting to the template default.
+            # Non-strict json_schema callers leave ``raise_on_failure``
+            # at its default ``False`` so this is a reachable code
+            # path, not a defense-in-depth nit.
+            if enable_thinking is not None:
+                kwargs["enable_thinking"] = enable_thinking
             return await self.chat(messages=messages, max_tokens=max_tokens, **kwargs)
 
         # Tokenize for completion count
