@@ -33,7 +33,6 @@ from vllm_mlx.mllm_batch_generator import (
     _maybe_apply_penalty_processors,
 )
 
-
 # =============================================================================
 # Layer 1 — logits-processor application
 # =============================================================================
