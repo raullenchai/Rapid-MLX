@@ -475,6 +475,60 @@ class TestSimpleEngineStopEnforcement:
                 import mlx_lm as _mlx_lm  # noqa: F811
                 _mlx_lm.stream_generate = original_stream_generate
 
+    def test_stream_generate_flushes_safety_window_on_natural_exhaustion(
+        self,
+    ):
+        """Codex r7 regression: when upstream ``mlx_lm.stream_generate``
+        exhausts naturally (EOS / generator end) before either a stop
+        match or the ``max_tokens`` cap, the safety window holding the
+        trailing ``max_stop_len - 1`` chars used to vanish silently.
+        The post-loop drain must publish that tail."""
+        from vllm_mlx.models.llm import MLXLanguageModel, StreamingOutput
+
+        class FakeResp:
+            def __init__(self, text, token=1):
+                self.text = text
+                self.token = token
+
+        # Output never contains a stop match; ends after 2 chunks.
+        seq = [FakeResp("hello"), FakeResp(" wo")]
+
+        original_stream_generate = None
+        try:
+            import mlx_lm as _mlx_lm
+            original_stream_generate = _mlx_lm.stream_generate
+            _mlx_lm.stream_generate = lambda *a, **kw: iter(seq)
+            model = MLXLanguageModel.__new__(MLXLanguageModel)
+            model._loaded = True
+            model._mtp = False
+            model._mtp_num_draft_tokens = 1
+            model.model = MagicMock()
+            model.tokenizer = MagicMock()
+            model.tokenizer.encode = lambda s: list(range(len(s.split())))
+            model._create_sampler = lambda *a, **kw: None
+            model._create_logits_processors = lambda *a, **kw: None
+
+            chunks = list(
+                model.stream_generate(
+                    prompt="ignored",
+                    max_tokens=10,  # > 2, so we don't hit max_tokens
+                    stop=["XYZ"],  # max_len=3, hold-back=2
+                )
+            )
+            assert chunks, "stream_generate yielded nothing"
+            terminal = chunks[-1]
+            assert isinstance(terminal, StreamingOutput)
+            assert terminal.finished is True
+            # All originally-fed chars must reach the wire across deltas.
+            streamed = "".join(c.text for c in chunks)
+            assert streamed == "hello wo", (
+                f"safety-window tail lost on natural exhaustion: {streamed!r}"
+            )
+        finally:
+            if original_stream_generate is not None:
+                import mlx_lm as _mlx_lm  # noqa: F811
+                _mlx_lm.stream_generate = original_stream_generate
+
     def test_generate_truncates_and_surfaces_matched_stop(self):
         # Non-streaming path: mlx_lm.generate has no native stop support,
         # so our wrapper scans + truncates after the fact and surfaces

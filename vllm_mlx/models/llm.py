@@ -395,6 +395,22 @@ class MLXLanguageModel:
 
             if finished:
                 break
+        else:
+            # Codex r7: ``mlx_lm.stream_generate`` exhausted naturally
+            # (EOS / generator end) before hitting ``max_tokens`` and
+            # without a stop-string match.  Drain the safety window so
+            # the trailing ``max_stop_len - 1`` chars don't disappear.
+            if stop_list and published_text_len < len(cumulative_text):
+                tail = cumulative_text[published_text_len:]
+                published_text_len = len(cumulative_text)
+                yield StreamingOutput(
+                    text=tail,
+                    token=0,
+                    finished=True,
+                    finish_reason="stop",
+                    prompt_tokens=num_prompt_tokens,
+                    matched_stop=None,
+                )
 
     def chat(
         self,
