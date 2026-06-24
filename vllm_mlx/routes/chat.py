@@ -4593,14 +4593,21 @@ async def stream_chat_completion_strict_postgen(
             ],
         )
         yield ("data: " + violation_chunk.model_dump_json(exclude_none=True) + "\n\n")
-        # Codex r2 #2: emit BOTH a named SSE event (``event:
-        # chat.completion.error``) AND a plain ``data:`` chunk
-        # carrying the envelope. EventSource-style clients reading
-        # ``onerror`` / named-event handlers receive the named form;
-        # plain-data clients (the OpenAI Python SDK, curl, AI SDK)
-        # decode the JSON the same way they decode every other
-        # ``data:`` line. The two emissions carry the same envelope
-        # JSON so byte-level dedupe is trivial.
+        # Codex r5 #1: emit ONE error frame, not two. A previous
+        # iteration (codex r2) split the envelope into a named SSE
+        # event (``event: chat.completion.error\ndata: ...``) AND a
+        # plain ``data: ...`` line carrying the same payload. The
+        # double-emit is harmful: a client that consumes both named
+        # SSE events AND plain ``data:`` lines (EventSource subclasses,
+        # custom dispatchers) handles the same terminal error twice,
+        # producing double-billing in observability and potentially
+        # duplicate user-facing toasts. We pick the named form: per
+        # SSE spec, ``event: chat.completion.error\ndata: <json>``
+        # is parsed as ONE message event by EventSource (dispatched
+        # to the ``chat.completion.error`` listener) AND as ONE
+        # ``data:`` line by plain-line consumers (OpenAI Python SDK,
+        # curl, AI SDK), who ignore the unknown ``event:`` field.
+        # Both client classes receive the envelope exactly once.
         error_event = {
             "id": response_id,
             "object": "chat.completion.error",
@@ -4611,14 +4618,7 @@ async def stream_chat_completion_strict_postgen(
         # Compact JSON encoding (no spaces) matches the SSE chunk
         # encoding used elsewhere in this module.
         error_payload = json.dumps(error_event, separators=(",", ":"))
-        # Named SSE event form for EventSource clients.
         yield ("event: chat.completion.error\n" + "data: " + error_payload + "\n\n")
-        # Plain ``data:`` form for OpenAI-SDK / curl clients (no
-        # ``event:`` line prefix). These clients ignore unknown SSE
-        # fields, so the named event above is silently skipped on
-        # their side and they consume the envelope through this
-        # plain message.
-        yield "data: " + error_payload + "\n\n"
         # Drop the held usage chunk on failure: emitting it after a
         # ``finish_reason=json_schema_violation`` would imply the
         # violation was a successful generation, which contradicts

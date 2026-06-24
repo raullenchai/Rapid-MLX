@@ -621,16 +621,18 @@ def test_strict_true_guided_unavailable_streaming_emits_violation_finish():
     """R12-4 streaming variant — the unconstrained stream is emitted
     as usual; on validation failure the wrapper REPLACES the upstream
     terminal ``finish_reason="stop"`` chunk with ``finish_reason="json_schema_violation"``
-    and emits the 422-shaped envelope as BOTH a named SSE event
-    (``event: chat.completion.error``) AND a plain ``data:`` chunk
-    before ``[DONE]``.
+    and emits the 422-shaped envelope as a SINGLE named SSE event
+    (``event: chat.completion.error\\ndata: ...``) before ``[DONE]``.
 
-    The parsed-frames assertions (codex r2 #4) pin:
+    The parsed-frames assertions pin:
         * the FIRST finish_reason a client sees on a violating
           response is ``json_schema_violation`` (NOT a leading
           ``stop`` chunk that lets the client finalize early);
-        * the error envelope appears as a named SSE event the
-          EventSource ``onerror`` family can dispatch on;
+        * the error envelope appears as a named SSE event exactly
+          once — codex r5 #1 explicitly rejected the prior
+          double-emit (named + plain-data) because a client that
+          consumes both forms would handle the same terminal error
+          twice;
         * ``[DONE]`` arrives last so the wire envelope still closes.
     """
     engine = _Engine(
@@ -678,22 +680,53 @@ def test_strict_true_guided_unavailable_streaming_emits_violation_finish():
         f"json_schema_violation. The upstream terminal chunk leaked through."
     )
 
-    # Codex r2 #2: the envelope MUST be emitted as a named SSE event
-    # so EventSource clients can dispatch on ``addEventListener(
-    # 'chat.completion.error', ...)``. The plain-data form is also
-    # emitted for OpenAI-SDK / curl clients, but the named event
-    # form is the load-bearing surface for EventSource consumers.
+    # Codex r5 #1: the envelope MUST be emitted as a SINGLE named SSE
+    # event (``event: chat.completion.error\ndata: <json>``) — NOT
+    # also as a separate plain ``data: <json>`` line. A prior
+    # iteration emitted both; clients that read both named events AND
+    # plain data lines would then handle the same terminal error
+    # twice. Per SSE spec the ``event: chat.completion.error`` form
+    # is parsed as one message event by both EventSource (dispatched
+    # to the named listener) AND plain-line consumers like the OpenAI
+    # SDK or curl (who ignore the ``event:`` field and consume the
+    # ``data:`` payload).
     named_error_events = [
         ev for ev in events if ev.get("event") == "chat.completion.error"
     ]
-    assert named_error_events, (
-        "no named `event: chat.completion.error` SSE block emitted; "
-        "EventSource clients listening for the named error event will "
-        "never receive it."
+    assert len(named_error_events) == 1, (
+        f"expected EXACTLY ONE named `event: chat.completion.error` SSE "
+        f"block; got {len(named_error_events)}. A double-emit causes "
+        f"clients reading both named events AND plain data: lines to "
+        f"double-count the terminal error."
     )
     err_payload = json.loads(named_error_events[0]["data"])
     assert err_payload["error"]["code"] == "json_schema_violation"
     assert err_payload["object"] == "chat.completion.error"
+
+    # Codex r5 #1 negative-pin: there must be NO plain-data envelope
+    # carrying the ``chat.completion.error`` object. The error event
+    # is single-emit, named-only.
+    plain_data_error_count = 0
+    for ev in events:
+        if ev.get("event") != "message":
+            continue
+        data = ev.get("data", "")
+        if data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if (
+            isinstance(payload, dict)
+            and payload.get("object") == "chat.completion.error"
+        ):
+            plain_data_error_count += 1
+    assert plain_data_error_count == 0, (
+        f"found {plain_data_error_count} plain-data `chat.completion.error` "
+        f"envelopes — codex r5 #1 banned this double-emit. The error event "
+        f"must be the named form only."
+    )
 
     # On streaming we do NOT run repair retry — no attempt counter
     # increment.
