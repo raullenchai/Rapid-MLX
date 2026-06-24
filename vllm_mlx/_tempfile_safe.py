@@ -151,10 +151,29 @@ class _TempfileHandle:
             with managed_tempfile_path(...) as h:
                 proc = spawn(h)  # spawn registers h.path on the proc
                 final_path = h.release()
+
+        Codex round-4 finding: discard from the registry BEFORE
+        setting ``self._released = True``, under the lock. The
+        reverse order had a window where an interruption left
+        ``released=True`` (so the context manager's ``finally``
+        would skip the unlink) while the path was still in
+        ``_pending_paths`` — atexit would then unlink a file the
+        caller has just taken ownership of. With this ordering,
+        an interruption mid-call either:
+
+        - happens before the discard → ``released`` is still
+          ``False``, ``finally`` reaps the path (and the atexit
+          fallback would also reap it).
+        - happens after the discard but before ``_released=True``
+          → ``released`` is still ``False``, ``finally`` reaps the
+          path (the caller's "I took ownership" is incomplete; the
+          helper conservatively still owns).
+        - happens after ``_released=True`` → call has completed
+          successfully; both context manager and atexit step away.
         """
-        self._released = True
         with _pending_lock:
             _pending_paths.discard(self._path)
+            self._released = True
         return self._path
 
     # Make the handle interchangeable with the path string for code
@@ -228,13 +247,26 @@ def managed_tempfile_path(
         with _pending_lock:
             _pending_paths.add(path)
     except BaseException:
-        # Setup failed: close FD if still open, unlink the file, then
-        # drop from the registry only after the file is actually gone.
-        # Ordering matters (codex round-3 BLOCKING): if we discarded
-        # from the registry first and then got a second interrupt
-        # inside ``os.unlink``, the file would survive WITHOUT atexit
-        # being able to see it. Re-raise after best-effort cleanup so
-        # we don't mask the original exception.
+        # Setup failed. Codex pr_validate round-1 BLOCKING: the cleanup
+        # MUST leave the file owned by SOMETHING (this finally, or the
+        # shared atexit registry) regardless of how it unwinds. The
+        # simplest invariant: ensure the path is in ``_pending_paths``
+        # BEFORE we attempt the best-effort unlink, and only discard
+        # AFTER a successful unlink. That way:
+        #   - If the helper made it to ``_pending_paths.add`` already,
+        #     the discard-on-success ordering hands ownership cleanly.
+        #   - If the exception came from BEFORE the ``add`` (e.g.
+        #     ``_ensure_atexit_registered`` raised), we still arm the
+        #     registry here so a second interrupt during ``os.unlink``
+        #     below does NOT strand the file outside the registry.
+        # Atexit also has to be registered at this point, otherwise
+        # adding to the set is useless.
+        try:
+            _ensure_atexit_registered()
+        except BaseException:  # noqa: BLE001 — best-effort
+            pass
+        with _pending_lock:
+            _pending_paths.add(path)
         try:
             os.close(fd)
         except OSError:
@@ -242,9 +274,13 @@ def managed_tempfile_path(
         try:
             os.unlink(path)
         except OSError:
+            # File still exists OR we don't have perms. Either way the
+            # registry now owns it for the atexit pass; do NOT discard.
             pass
-        with _pending_lock:
-            _pending_paths.discard(path)
+        else:
+            # Unlink succeeded — drop from the registry.
+            with _pending_lock:
+                _pending_paths.discard(path)
         raise
 
     handle = _TempfileHandle(path)
@@ -258,22 +294,32 @@ def managed_tempfile_path(
             # induced ``SystemExit``) landing between the two
             # statements would leave the file on disk with no entry
             # in ``_pending_paths`` — the atexit fallback could never
-            # see it. The reverse order is safe: a later atexit pass
-            # tolerates ``FileNotFoundError``, so leaving the entry
-            # registered until the file is gone (or was gone) is
-            # always recoverable.
+            # see it.
+            #
+            # Pr_validate round-4 BLOCKING refinement: only discard
+            # from the registry after a SUCCESSFUL unlink (or
+            # ``FileNotFoundError``, which means the file was already
+            # gone). If ``os.unlink`` raises another ``OSError`` (EBUSY,
+            # EPERM, EIO), the file may still be on disk; the atexit
+            # hook is then the only fallback that could retry, so we
+            # keep the registry entry. ``BaseException`` (KI/SE) from
+            # ``os.unlink`` propagates out before we reach the
+            # ``else`` clause — same effect: entry stays.
+            unlinked = False
             try:
                 os.unlink(path)
+                unlinked = True
             except FileNotFoundError:
-                pass
+                unlinked = True
             except OSError:
                 # Same rationale as ``_atexit_reap_all``: best-
                 # effort cleanup; do not let a cleanup error mask
                 # the real exception (if any) propagating through
                 # the ``finally``.
                 pass
-            with _pending_lock:
-                _pending_paths.discard(path)
+            if unlinked:
+                with _pending_lock:
+                    _pending_paths.discard(path)
 
 
 def _pending_snapshot() -> set[str]:

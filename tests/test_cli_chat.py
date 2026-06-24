@@ -2358,12 +2358,33 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
         assert getattr(proc, "_rapid_mlx_log_path", None) == handle.path
 
     # Both SIGTERM and SIGINT must have been masked with SIG_IGN, then
-    # restored to their previous handlers. We assert at least one
-    # SIG_IGN install for each.
+    # restored to their previous handlers. We assert:
+    #   (a) at least one SIG_IGN install for each signum, and
+    #   (b) the LAST install for each signum is the restored handler
+    #       (i.e. not SIG_IGN). The pre-test handler for both is the
+    #       default handler captured by ``real_signal``; the spawn
+    #       should restore that exact value.
     sig_ign_signums = {s for s, h in signal_changes if h is _signal.SIG_IGN}
     assert _signal.SIGTERM in sig_ign_signums, (
         f"SIGTERM not masked during handoff; changes={signal_changes}"
     )
     assert _signal.SIGINT in sig_ign_signums, (
         f"SIGINT not masked during handoff; changes={signal_changes}"
+    )
+    # Codex pr_validate round-1 NIT: explicitly verify the mask was
+    # restored — the last install for each signum should NOT still be
+    # SIG_IGN.
+    last_term = next(
+        (h for s, h in reversed(signal_changes) if s == _signal.SIGTERM), None
+    )
+    last_int = next(
+        (h for s, h in reversed(signal_changes) if s == _signal.SIGINT), None
+    )
+    assert last_term is not _signal.SIG_IGN, (
+        f"SIGTERM mask never restored; last install was SIG_IGN. "
+        f"changes={signal_changes}"
+    )
+    assert last_int is not _signal.SIG_IGN, (
+        f"SIGINT mask never restored; last install was SIG_IGN. "
+        f"changes={signal_changes}"
     )
