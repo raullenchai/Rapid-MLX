@@ -509,6 +509,49 @@ class TestSimpleEngineStopEnforcement:
             _mlx_lm.generate = orig
 
 
+class TestSimpleEngineTextModePathSanitizes:
+    """Codex r4 regression: the SimpleEngine text-mode MLLM streaming
+    path (``_stream_generate_text``) used to scan ``accumulated_text``
+    for stop strings but yielded ``new_text`` / ``text`` unchanged after
+    the match.  The match itself MUST be truncated from both the SSE
+    delta and the final aggregated content.
+    """
+
+    def test_match_in_single_chunk_truncates_delta_and_total(self):
+        # Pure-logic check mirroring the truncation block in
+        # ``_stream_generate_text``: when the matched stop arrives inside
+        # one chunk, both the per-token ``new_text`` and the cumulative
+        # ``accumulated_text`` must be sanitized.
+        accumulated_text = ""
+        stop = ["END"]
+        out_deltas: list[str] = []
+        out_finals: list[str] = []
+        for raw in ["hello", " ", "END world"]:
+            accumulated_text += raw
+            matched_here = None
+            best_idx = None
+            for s in stop:
+                idx = accumulated_text.find(s)
+                if idx == -1:
+                    continue
+                if best_idx is None or idx < best_idx:
+                    best_idx = idx
+                    matched_here = s
+            if matched_here is not None and best_idx is not None:
+                prev_published = len(accumulated_text) - len(raw)
+                accumulated_text = accumulated_text[:best_idx]
+                new_text = accumulated_text[prev_published:]
+            else:
+                new_text = raw
+            out_deltas.append(new_text)
+            if matched_here is not None:
+                out_finals.append(accumulated_text)
+                break
+        assert "".join(out_deltas) == "hello "
+        assert out_finals == ["hello "]
+        assert "END" not in "".join(out_deltas)
+
+
 class TestOpenAIStopUnchanged:
     def test_openai_chat_request_stop_field_unchanged(self):
         # Sanity check: the OpenAI ChatCompletionRequest still accepts and

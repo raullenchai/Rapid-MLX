@@ -1889,6 +1889,12 @@ class SimpleEngine(BaseEngine):
                             SimpleNamespace(
                                 text=new_text,
                                 finish_reason=getattr(chunk, "finish_reason", None),
+                                # Preserve matched_stop from the model
+                                # layer so the Anthropic adapter can
+                                # report stop_sequence (issue #469).
+                                matched_stop=getattr(
+                                    chunk, "matched_stop", None
+                                ),
                             )
                         )
 
@@ -1916,6 +1922,7 @@ class SimpleEngine(BaseEngine):
                     SimpleNamespace(
                         text=new_text,
                         finish_reason=getattr(chunk, "finish_reason", None),
+                        matched_stop=getattr(chunk, "matched_stop", None),
                     )
                 )
             return results
@@ -2652,24 +2659,45 @@ class SimpleEngine(BaseEngine):
                 resp = payload
 
                 token_count += 1
-                new_text = resp.text if hasattr(resp, "text") else str(resp)
-                accumulated_text += new_text
+                raw_new_text = resp.text if hasattr(resp, "text") else str(resp)
+                accumulated_text += raw_new_text
 
-                stop_hit = False
+                # Identify the earliest matching stop string (issue #469)
+                # and truncate ``accumulated_text``/``new_text`` so neither
+                # the SSE delta nor the final aggregated text leaks the
+                # matched suffix.
+                matched_here: str | None = None
                 if stop:
-                    stop_hit = any(stop_seq in accumulated_text for stop_seq in stop)
+                    best_idx: int | None = None
+                    for stop_seq in stop:
+                        if not stop_seq:
+                            continue
+                        idx = accumulated_text.find(stop_seq)
+                        if idx == -1:
+                            continue
+                        if best_idx is None or idx < best_idx or (
+                            idx == best_idx
+                            and len(stop_seq) > len(matched_here or "")
+                        ):
+                            best_idx = idx
+                            matched_here = stop_seq
+                    if matched_here is not None and best_idx is not None:
+                        # Truncate the cumulative buffer and the per-token
+                        # delta so the matched string never reaches the
+                        # client as either streamed text or final content.
+                        prev_published = len(accumulated_text) - len(
+                            raw_new_text
+                        )
+                        accumulated_text = accumulated_text[:best_idx]
+                        new_text = accumulated_text[prev_published:]
+                    else:
+                        new_text = raw_new_text
+                else:
+                    new_text = raw_new_text
+
+                stop_hit = matched_here is not None
                 finished = stop_hit or token_count >= max_tokens
                 finish_reason = getattr(resp, "finish_reason", None)
-                # Identify which stop string fired (issue #469) so the
-                # Anthropic adapter can emit ``stop_sequence``.
-                matched_here: str | None = None
-                if stop_hit and stop:
-                    for stop_seq in stop:
-                        if stop_seq and stop_seq in accumulated_text:
-                            if matched_here is None or accumulated_text.find(
-                                stop_seq
-                            ) < accumulated_text.find(matched_here):
-                                matched_here = stop_seq
                 if stop_hit:
                     finish_reason = "stop"
                 elif finish_reason is None and finished:
