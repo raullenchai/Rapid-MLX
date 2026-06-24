@@ -926,9 +926,15 @@ class TestResponsesStreamR10C3:
 
     def test_completed_payload_carries_output_array(self, responses_client):
         """``response.completed.response.output`` must be a non-empty list
-        whose first item is the assistant message with the concatenated
-        delta text — Sven r10-R1 saw this field MISSING entirely on 0.8.11
-        and the openai-python SDK raised on Response.output validation."""
+        carrying the assistant message with the concatenated delta text —
+        Sven r10-R1 saw this field MISSING entirely on 0.8.11 and the
+        openai-python SDK raised on Response.output validation.
+
+        R12-M3 (Mira r12 R-4): the OpenAI Responses spec requires the
+        ``reasoning`` item to land BEFORE the ``message`` item on the
+        wire, so the assistant message item now sits at ``output[1]`` with
+        the leading reasoning item at ``output[0]``.
+        """
         client = responses_client.client
 
         with client.stream(
@@ -949,20 +955,28 @@ class TestResponsesStreamR10C3:
         )
         output = response_obj["output"]
         assert isinstance(output, list)
-        assert len(output) >= 1
-        first_item = output[0]
-        assert first_item["type"] == "message"
-        assert first_item["status"] == "completed"
-        assert first_item["role"] == "assistant"
-        assert first_item["content"][0]["type"] == "output_text"
-        assert first_item["content"][0]["text"] == "Hello from rapid"
+        assert len(output) >= 2  # reasoning + message (R12-M3)
+        # R12-M3: leading reasoning item at index 0.
+        assert output[0]["type"] == "reasoning"
+        # Message item now at index 1, preserving its prior shape.
+        message_item = next(item for item in output if item["type"] == "message")
+        assert message_item["status"] == "completed"
+        assert message_item["role"] == "assistant"
+        assert message_item["content"][0]["type"] == "output_text"
+        assert message_item["content"][0]["text"] == "Hello from rapid"
 
     def test_completed_output_text_equals_concatenated_deltas(self, responses_client):
         """The concatenated ``response.output_text.delta`` payloads MUST
-        equal ``response.completed.response.output[0].content[0].text``.
-        This pins the streaming-vs-completed invariant — the streaming
-        payload reconstructs the same final response object the non-
-        streaming path returns."""
+        equal the assistant message's ``content[0].text`` in
+        ``response.completed.response.output[]``. This pins the
+        streaming-vs-completed invariant — the streaming payload
+        reconstructs the same final response object the non-streaming
+        path returns.
+
+        R12-M3 (Mira r12 R-4): the message item is no longer guaranteed
+        to sit at ``output[0]`` (a leading ``reasoning`` item lands first
+        per spec), so the lookup is by ``type=="message"``.
+        """
         client = responses_client.client
 
         with client.stream(
@@ -978,7 +992,12 @@ class TestResponsesStreamR10C3:
             d["delta"] for (n, d) in events if n == "response.output_text.delta"
         )
         completed = next(d for (n, d) in events if n == "response.completed")
-        final_text = completed["response"]["output"][0]["content"][0]["text"]
+        message_item = next(
+            item
+            for item in completed["response"]["output"]
+            if item["type"] == "message"
+        )
+        final_text = message_item["content"][0]["text"]
         assert deltas == final_text == "Hello from rapid"
 
     def test_stream_event_payloads_validate_against_sdk_event_models(

@@ -1416,16 +1416,26 @@ async def _stream_responses(
 
     Event order Codex expects:
       1. ``response.created`` — once, before any deltas
-      2. ``response.output_item.added`` (message item) — when first text
+      2. ``response.in_progress`` — lifecycle transition (R10-C3 / R6-H7)
+      3. ``response.output_item.added`` (reasoning item, leading — R12-M3) —
+         flushed immediately before the message item. Carries an empty
+         ``summary`` at open; the matching ``response.output_item.done``
+         (with the accumulated chain-of-thought) ships after the message
+         item closes. The reasoning item ALWAYS leads the message on the
+         wire — matching the OpenAI Responses reference even when the
+         reasoning text is empty.
+      4. ``response.output_item.added`` (message item) — when first text
          delta arrives
-      3. ``response.output_text.delta`` — each chunk of assistant text
-      4. ``response.output_item.done`` (message item) — when text ends,
-         before any tool_calls
-      5. For each tool call:
+      5. ``response.output_text.delta`` — each chunk of assistant text
+      6. ``response.output_item.done`` (message item) — when text ends,
+         before the leading reasoning item's ``done`` event
+      7. ``response.output_item.done`` (reasoning item) — closes the
+         leading item with the accumulated summary
+      8. For each tool call:
          ``response.output_item.added`` (function_call item) +
          ``response.function_call_arguments.delta`` (full JSON args) +
          ``response.output_item.done`` (function_call item)
-      6. ``response.completed`` — terminal event, carries final usage
+      9. ``response.completed`` — terminal event, carries final usage
 
     Errors emit ``response.failed`` then close. Codex treats
     stream-close-without-``response.completed`` as a hard failure, so
@@ -1634,6 +1644,36 @@ async def _stream_responses(
         # part and the final ``response.completed`` consumer raises.
         content_part_open = False
 
+        # R12-M3 (Mira r12 dogfood, R-4): the OpenAI Responses SSE spec
+        # requires "leading" items (``reasoning``, and any pre-message
+        # tool-call/function-call items) to land on the wire BEFORE the
+        # ``message`` item — even when the leading item is empty. Pre-fix
+        # the streaming surface emitted the ``reasoning`` item AFTER the
+        # message item in the post-loop block, so SDK clients that index
+        # the stream by item order saw ``message`` first and either
+        # discarded the late ``reasoning`` event or rejected the stream as
+        # malformed. The OpenAI reference implementation always emits a
+        # ``reasoning`` item (possibly with empty ``summary``) before the
+        # first ``message`` item, so we match that contract here.
+        #
+        # Mechanism: pre-allocate the reasoning item id + index, then have
+        # ``_open_message_item`` flush the leading reasoning ``added`` event
+        # FIRST so the message ``added`` event always lands at a strictly
+        # later index. The post-loop reasoning emitter then ships only the
+        # ``done`` event (with the accumulated chain-of-thought) instead of
+        # the full added → done pair. When the turn has neither a message
+        # item nor any reasoning text (pure-tool-call shape), the leading
+        # reasoning item is suppressed to keep the non-stream parity:
+        # the non-stream ``openai_to_responses`` shim only emits a
+        # ``reasoning`` item when reasoning text exists.
+        reasoning_item_id: str | None = None
+        reasoning_output_index: int | None = None
+        # Whether the leading reasoning ``added`` event has been emitted.
+        # Set by ``_emit_pending_leading_items`` (called from
+        # ``_open_message_item``) so the post-loop reasoning emitter
+        # knows whether it still needs to ship ``added`` or only ``done``.
+        reasoning_item_added = False
+
         # Per-request reasoning parser instance (matches anthropic.py).
         reasoning_parser = None
         if cfg.reasoning_parser_name:
@@ -1699,6 +1739,49 @@ async def _stream_responses(
             _reasoning_cap_hit = True
             return text[:keep_chars], text[keep_chars:], True
 
+        def _emit_pending_leading_items() -> list[str]:
+            """Emit any "leading" output items that MUST land before the
+            message item per the OpenAI Responses SSE spec.
+
+            Today the only leading item is ``reasoning`` (Mira r12 R-4:
+            even when the model produced no reasoning text, the canonical
+            /v1/responses surface emits an empty ``reasoning`` item BEFORE
+            the message). Future leading-item kinds (e.g. pre-message
+            ``function_call`` items for parallel tool calls) hook in here.
+
+            Idempotent: subsequent calls return ``[]`` once the leading
+            items have been emitted. The reasoning ``done`` event is shipped
+            from the post-loop emitter with the accumulated chain-of-thought,
+            so this helper only opens the item (status="in_progress",
+            summary=[]).
+            """
+            nonlocal reasoning_item_id, reasoning_output_index, reasoning_item_added
+            events: list[str] = []
+            if not reasoning_item_added:
+                reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+                # Leading items occupy the lowest output indices. The
+                # message item (and any post-message tool_call items)
+                # take strictly later indices, computed in
+                # ``_open_message_item`` and the tool_call loop.
+                reasoning_output_index = 0
+                reasoning_item_added = True
+                events.append(
+                    _emit(
+                        "response.output_item.added",
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": reasoning_output_index,
+                            "item": {
+                                "type": "reasoning",
+                                "id": reasoning_item_id,
+                                "status": "in_progress",
+                                "summary": [],
+                            },
+                        },
+                    )
+                )
+            return events
+
         async def _open_message_item() -> list[str]:
             """Emit response.output_item.added + response.content_part.added.
 
@@ -1712,17 +1795,35 @@ async def _stream_responses(
             the openai-python SDK's ``AsyncResponseStreamManager`` therefore
             never materialized the ``output_text`` content part and the
             terminal ``response.completed`` consumer raised on missing state.
+
+            R12-M3 (Mira r12 R-4): leading items (currently just
+            ``reasoning``) MUST be flushed BEFORE the message ``added``
+            event. The ``_emit_pending_leading_items`` call below is the
+            ordering-invariant fix — the message item's wire ``output_index``
+            is computed AFTER any leading items have been claimed, so the
+            indices stay monotonically consistent with the terminal
+            ``response.completed.response.output[]`` array.
             """
             nonlocal \
                 message_item_id, \
                 message_output_index, \
                 message_open, \
                 content_part_open
+            # Flush any leading items first — the ordering invariant.
+            leading_events = _emit_pending_leading_items()
             message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
-            message_output_index = 0
+            # Leading-item count drives the message's output_index. Today
+            # the only leading item is reasoning (index 0 when emitted), so
+            # the message lands at index 1; pre-fix (and when no leading
+            # items ship, e.g. nothing else to come) it stays at 0. The
+            # latter never happens in the lazy-open path today but the
+            # arithmetic stays correct if a future leading-item kind opts
+            # out of emission.
+            message_output_index = 1 if reasoning_item_added else 0
             message_open = True
             content_part_open = True
             return [
+                *leading_events,
                 _emit(
                     "response.output_item.added",
                     {
@@ -2367,7 +2468,25 @@ async def _stream_responses(
         # because ``Response.output`` is a required list field. Mirror what the
         # non-streaming path emits via ``openai_to_responses`` so streaming
         # and non-streaming consumers see the same final shape.
+        #
+        # R12-M3 (Mira r12 R-4): the array is built in spec order
+        # ``reasoning → message → function_call/computer_call`` so the wire
+        # ``output_index`` (claimed in ``_emit_pending_leading_items`` /
+        # ``_open_message_item`` / the tool_call loop) lines up 1:1 with
+        # the array position. Reasoning is reserved at index 0 whenever
+        # the leading item was emitted on the wire.
         completed_output: list[dict] = []
+        # Reserve the reasoning slot at index 0 with a placeholder so the
+        # message/tool-call append calls below put items at the correct
+        # subsequent indices. The placeholder is overwritten in the
+        # post-loop reasoning emitter; if the reasoning leading item was
+        # NOT emitted on the wire (no message and no reasoning text — a
+        # pure-tool-call shape), the placeholder is dropped before
+        # ``response.completed`` ships so the terminal array stays
+        # consistent with what the wire actually showed.
+        _reasoning_slot_reserved = reasoning_item_added
+        if _reasoning_slot_reserved:
+            completed_output.append({})  # placeholder filled below
 
         # Close the message item if we ever opened it.
         if message_open:
@@ -2425,63 +2544,102 @@ async def _stream_responses(
             )
             completed_output.append(message_item_payload)
 
-        # R11-B (R11-M-F1): emit a ``reasoning`` output item carrying any
-        # accumulated chain-of-thought. Pre-fix the streaming path dropped
-        # every reasoning delta on the floor — so when ``max_output_tokens``
-        # cut the model off WHILE STILL inside ``<think>...</think>`` the
-        # message item never opened, ``completed_output`` shipped empty,
-        # and the terminal ``response.completed`` ran with ``output:[]`` +
-        # ``status:"completed"`` (the wire shape Mira R1 F1 captured).
-        # The non-streaming path always surfaced this same input as a
-        # ``reasoning`` item + ``status:"incomplete"`` via
-        # ``openai_to_responses``; this block closes the cross-path parity
-        # gap.
+        # R11-B (R11-M-F1) + R12-M3 (Mira r12 R-4): emit / finalize the
+        # ``reasoning`` output item carrying any accumulated chain-of-thought.
+        #
+        # Two cases:
+        #
+        # 1. ``reasoning_item_added`` (R12-M3 leading slot was already
+        #    flushed by ``_open_message_item``): the wire already saw the
+        #    ``response.output_item.added`` event at ``output_index=0``
+        #    BEFORE the message item. Here we only ship the matching
+        #    ``response.output_item.done`` event with the accumulated
+        #    summary (empty if the model produced no reasoning bytes —
+        #    matches the OpenAI reference, which always emits a reasoning
+        #    item before the message).
+        #
+        # 2. ``not reasoning_item_added`` (the leading slot was never
+        #    claimed — no message was emitted): if reasoning text exists,
+        #    emit BOTH added + done at the next available output_index
+        #    (preserves pre-R12-M3 behaviour for pure-tool-call shapes
+        #    with reasoning). If reasoning text is empty AND no message
+        #    was emitted, suppress the reasoning item entirely to match
+        #    the non-stream ``openai_to_responses`` shape (reasoning-only
+        #    or tool-only turns don't get a phantom empty reasoning item).
         #
         # Item status mirrors the non-stream convention:
         # ``incomplete`` when the engine reported ``finish_reason=="length"``
-        # (the model was still mid-think when its budget ran out), else
-        # ``completed``. The reasoning text itself is delivered verbatim
-        # in ``summary[0].summary_text`` — rapid-mlx does not run a
-        # separate summarization model, matching ``_build_reasoning_output_item``
-        # on the non-stream side.
-        # R11-B codex r1 HIGH #1: ``output_index`` is the position in
-        # the terminal ``Response.output[]`` array, not just an SSE
-        # ordinal. The earlier draft inserted the reasoning item at
-        # ``completed_output[0]`` to mirror non-stream order BUT kept
-        # the wire ``output_index`` at ``(message_output_index + 1)``
-        # — that broke SDK consumers (openai-python) that index events
-        # against the final array. It also collided with the
-        # tool-call ``tool_output_index`` computed below. Fix: append
-        # reasoning AT THE END of ``completed_output`` and use the
-        # NEXT available index. Cross-path text ordering (reasoning →
-        # message in the non-stream surface) is not strictly required
-        # on the streaming wire — SDK consumers iterate ``output[]``
-        # by type, not by literal index. The non-stream
-        # ``openai_to_responses`` still ships reasoning-first; this
-        # streaming compromise keeps the wire indices consistent with
-        # the final array.
-        if accumulated_reasoning_text:
+        # AND no downstream output was seen (the model was still mid-think
+        # when its budget ran out), else ``completed``.
+        #
+        # Pre-fix the streaming path dropped every reasoning delta on the
+        # floor — so when ``max_output_tokens`` cut the model off WHILE
+        # STILL inside ``<think>...</think>`` the message item never
+        # opened, ``completed_output`` shipped empty, and the terminal
+        # ``response.completed`` ran with ``output:[]`` + ``status:"completed"``
+        # (the wire shape Mira R1 F1 captured). The non-streaming path
+        # always surfaced this same input as a ``reasoning`` item +
+        # ``status:"incomplete"`` via ``openai_to_responses``; both R11-B
+        # and R12-M3 close cross-path parity gaps.
+        # R11-B codex r7 BLOCKING: ``reasoning_block_closed`` is
+        # the precise signal — set ONLY when the parser/router
+        # emitted a TRUE content/tool channel chunk. We can't use
+        # ``accumulated_text`` here because reasoning-cap overflow
+        # bytes also land in ``accumulated_text`` via
+        # ``_emit_text_delta``, but the parser may still be
+        # logically mid-think (overflow only promotes after a
+        # successful ``</think>`` flip). ``reasoning_block_closed``
+        # is true whenever the parser's OWN content/text channel
+        # emitted; tool_calls is the orthogonal "closed-then-tool-emit"
+        # signal. Message_open is also a downstream-output signal
+        # (R12-M3: the leading reasoning slot fires alongside the
+        # message ``added`` event — so by the time we reach this
+        # post-loop block with ``message_open=True``, the model
+        # definitionally produced downstream content).
+        downstream_output_seen = bool(
+            reasoning_block_closed or tool_calls or message_open
+        )
+        mid_think_cutoff = last_finish_reason == "length" and not downstream_output_seen
+        reasoning_status = "incomplete" if mid_think_cutoff else "completed"
+
+        if reasoning_item_added:
+            # Case 1 (R12-M3): leading slot was flushed pre-message. Ship
+            # only the matching ``done`` event using the pre-allocated id +
+            # index, then overwrite the placeholder slot reserved at index 0
+            # of ``completed_output``.
+            reasoning_item_payload_done = {
+                "type": "reasoning",
+                "id": reasoning_item_id,
+                "status": reasoning_status,
+                "summary": (
+                    [
+                        {
+                            "type": "summary_text",
+                            "text": accumulated_reasoning_text,
+                        }
+                    ]
+                    if accumulated_reasoning_text
+                    else []
+                ),
+            }
+            yield _emit(
+                "response.output_item.done",
+                {
+                    "type": "response.output_item.done",
+                    "output_index": reasoning_output_index,
+                    "item": reasoning_item_payload_done,
+                },
+            )
+            completed_output[reasoning_output_index] = reasoning_item_payload_done
+        elif accumulated_reasoning_text:
+            # Case 2 (legacy R11-B path): the leading slot was never
+            # claimed (no message was emitted), but the model did
+            # produce reasoning bytes — emit added + done at the next
+            # available index. R11-B codex r1 HIGH #1: ``output_index``
+            # is the position in the terminal ``Response.output[]``
+            # array, not just an SSE ordinal, so use ``len(completed_output)``.
             reasoning_output_index = len(completed_output)
             reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
-            # R11-B codex r7 BLOCKING: ``reasoning_block_closed`` is
-            # the precise signal — set ONLY when the parser/router
-            # emitted a TRUE content/tool channel chunk. We can't use
-            # ``accumulated_text`` here because reasoning-cap overflow
-            # bytes also land in ``accumulated_text`` via
-            # ``_emit_text_delta``, but the parser may still be
-            # logically mid-think (overflow only promotes after a
-            # successful ``</think>`` flip). The previous r5 gate
-            # (``accumulated_text or tool_calls or message_open``)
-            # therefore mis-classified a mid-think length cutoff
-            # AFTER a reasoning-cap overflow as a clean completion.
-            # ``reasoning_block_closed`` is true whenever the
-            # parser's OWN content/text channel emitted; tool_calls
-            # is the orthogonal "closed-then-tool-emit" signal.
-            downstream_output_seen = bool(reasoning_block_closed or tool_calls)
-            mid_think_cutoff = (
-                last_finish_reason == "length" and not downstream_output_seen
-            )
-            reasoning_status = "incomplete" if mid_think_cutoff else "completed"
             reasoning_item_payload_added = {
                 "type": "reasoning",
                 "id": reasoning_item_id,
@@ -2517,20 +2675,24 @@ async def _stream_responses(
             )
             completed_output.append(reasoning_item_payload_done)
 
-            # R12-8 codex r2 #4: streaming Responses parity with non-stream.
-            # Non-stream Responses runs `_apply_reasoning_cutoff_notice` via
-            # the chat layer, then `openai_to_responses` materializes the
-            # rescue text into an `output_text` message item. The streaming
-            # path emits the reasoning item with status=incomplete (above)
-            # but never surfaces the rescue payload — clients rendering only
-            # text output see empty output despite the reasoning being
-            # available. Mirror the non-stream shape: when the mid-think
-            # cutoff fired AND no real downstream output was seen, build the
-            # rescue payload and emit a synthetic message item using the
-            # canonical added → content_part.added → output_text.delta →
-            # output_text.done → content_part.done → output_item.done
-            # ladder. Gating mirrors `_apply_reasoning_cutoff_notice` —
-            # message_open + tool_calls already preclude rescue.
+        # R12-8 codex r2 #4: streaming Responses parity with non-stream.
+        # Non-stream Responses runs `_apply_reasoning_cutoff_notice` via
+        # the chat layer, then `openai_to_responses` materializes the
+        # rescue text into an `output_text` message item. The streaming
+        # path emits the reasoning item with status=incomplete (above)
+        # but never surfaces the rescue payload — clients rendering only
+        # text output see empty output despite the reasoning being
+        # available. Mirror the non-stream shape: when the mid-think
+        # cutoff fired AND no real downstream output was seen, build the
+        # rescue payload and emit a synthetic message item using the
+        # canonical added → content_part.added → output_text.delta →
+        # output_text.done → content_part.done → output_item.done
+        # ladder. Gating mirrors `_apply_reasoning_cutoff_notice` —
+        # message_open + tool_calls already preclude rescue.
+        # R12-M3: only meaningful when reasoning text exists; preserve
+        # original semantics (rescue is the recovery path for mid-think
+        # cut-offs with reasoning bytes).
+        if accumulated_reasoning_text:
             if mid_think_cutoff and not message_open and not tool_calls:
                 rescue_text = _apply_reasoning_cutoff_notice(
                     final_content=None,
