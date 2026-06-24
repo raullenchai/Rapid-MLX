@@ -1050,20 +1050,32 @@ def _rescue_silent_drop_from_reasoning(
 #: want to auto-retry with a larger ``max_tokens``.
 REASONING_CUTOFF_SENTINEL = "[truncated — reasoning incomplete; raise max_tokens]"
 
-#: Env var values that EXPLICITLY ENABLE the sentinel notice (R-01 flip:
-#: default is now OFF). Anything outside this set — including unset —
-#: keeps the strict-null behaviour (no synthetic text injection).
-_CUTOFF_NOTICE_ENABLED_VALUES = frozenset({"1", "true", "on", "yes", "enabled"})
+#: Env var values that EXPLICITLY DISABLE the sentinel notice (issue #858
+#: revert of R-01: default is now back to ON, matching the original H-01 /
+#: PR #802 behaviour). GUI clients (rapid-desktop ChatView, OpenAI-SDK
+#: consumers, etc.) render blank message bubbles when ``content`` is
+#: ``None`` even though ``finish_reason="length"`` is set — the literal
+#: sentinel is the user-facing signal that ``max_tokens`` was too low.
+#: Power callers that prefer the strict-null shape can opt out via
+#: ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` (or ``0`` / ``false`` /
+#: ``no`` / ``off``).
+_CUTOFF_NOTICE_DISABLED_VALUES = frozenset(
+    {"0", "false", "no", "off", "disabled"}
+)
 
 
 def _cutoff_notice_enabled() -> bool:
     """Whether the cutoff sentinel is enabled for this process.
 
-    R-01 flip: default is OFF. The structured truncation signal carried by
-    every transport (``finish_reason="length"`` /
-    ``status="incomplete"`` / ``stop_reason="max_tokens"``) is the
-    canonical truncation cue. The literal sentinel is opt-in via
-    ``RAPID_MLX_REASONING_CUTOFF_NOTICE``.
+    Issue #858 revert: default is ON, matching PR #802 (H-01) semantics.
+    The R-01 flip-to-OFF (PR #815) caused a GUI regression — clients
+    that only render the ``content`` text block (rapid-desktop
+    ChatView, OpenWebUI-compat layers, vanilla OpenAI SDK consumers)
+    show an empty bubble even though ``finish_reason="length"`` is
+    set, and have no in-text cue that ``max_tokens`` was too low.
+    Restoring the literal sentinel by default fixes that without
+    affecting the structured truncation fields every transport already
+    carries.
 
     Reads the env var on each call so test harnesses can flip the gate
     per-request via ``monkeypatch.setenv`` without restarting the
@@ -1071,16 +1083,16 @@ def _cutoff_notice_enabled() -> bool:
     lookup) and matches how every other ``RAPID_MLX_*`` env-gated knob
     is read in this module.
 
-    Accepted enable values (case-insensitive, surrounding whitespace
-    stripped): ``"1"`` / ``"true"`` / ``"on"`` / ``"yes"`` /
-    ``"enabled"``. Anything else — including unset, the empty string,
-    ``"0"``, ``"false"``, ``"no"``, ``"off"``, ``"disabled"``, or any
-    arbitrary unrecognised value — leaves the sentinel disabled.
+    Accepted disable values (case-insensitive, surrounding whitespace
+    stripped): ``"0"`` / ``"false"`` / ``"no"`` / ``"off"`` /
+    ``"disabled"``. Anything else — including unset, the empty string,
+    ``"1"``, ``"true"``, ``"on"``, ``"yes"``, ``"enabled"``, or any
+    arbitrary unrecognised value — leaves the sentinel enabled.
     """
     raw = os.environ.get("RAPID_MLX_REASONING_CUTOFF_NOTICE")
     if raw is None:
-        return False  # R-01: default OFF
-    return raw.strip().lower() in _CUTOFF_NOTICE_ENABLED_VALUES
+        return True  # issue #858: default ON (PR #802 behaviour restored)
+    return raw.strip().lower() not in _CUTOFF_NOTICE_DISABLED_VALUES
 
 
 def _apply_reasoning_cutoff_notice(

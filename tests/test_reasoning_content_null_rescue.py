@@ -60,13 +60,14 @@ class TestApplyReasoningCutoffNotice:
     drift between surfaces fails here first.
     """
 
-    def test_default_is_disabled_when_env_unset(self, monkeypatch):
-        """R-01 contract: unset env var → sentinel disabled. Strict-null
-        contract is the default — the structured truncation signal on
-        every transport (``finish_reason`` / ``status`` / ``stop_reason``)
-        is the canonical cue, so the route ships ``content=None`` and
-        clients render whatever they render for null content."""
-        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+    def test_opt_out_env_disables_sentinel(self, monkeypatch):
+        """Issue #858 opt-out: when
+        ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` is set
+        explicitly, the helper must be a no-op so power callers that
+        want strict-null behaviour (the R-01 contract) can still get
+        it. Disable-spelling parity is covered by
+        ``test_env_non_enable_values_keep_sentinel_disabled`` below."""
+        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
         result = _apply_reasoning_cutoff_notice(
             final_content=None,
             reasoning_text="<incomplete thought>",
@@ -74,7 +75,28 @@ class TestApplyReasoningCutoffNotice:
             finish_reason="length",
         )
         assert result is None, (
-            f"R-01: unset env var must keep the helper as a no-op; got {result!r}"
+            f"issue #858 opt-out: explicit 'disabled' must keep the "
+            f"helper as a no-op; got {result!r}"
+        )
+
+    def test_default_is_enabled_when_env_unset_regression_858(self, monkeypatch):
+        """Regression pin for issue #858: with the env var UNSET (the
+        default user experience in rapid-desktop and vanilla SDK
+        callers), the helper MUST fire the sentinel on length-cut
+        mid-think. PR #815 flipped the default to OFF, which produced
+        empty bubbles in every GUI client — issue #858 reverts that
+        back to PR #802 (H-01) semantics: default ON, opt-out via
+        ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``."""
+        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text="<incomplete thought>",
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result == REASONING_CUTOFF_SENTINEL, (
+            f"issue #858: unset env var must enable the sentinel "
+            f"(default ON, PR #802 behaviour restored); got {result!r}"
         )
 
     @pytest.mark.parametrize(
@@ -98,30 +120,19 @@ class TestApplyReasoningCutoffNotice:
         )
 
     @pytest.mark.parametrize(
-        "non_enable_value",
-        # Documented disable spellings + arbitrary unknown strings.
-        # R-01 closes the ENABLE set, so anything outside it stays off.
-        [
-            "0",
-            "false",
-            "FALSE",
-            "no",
-            "off",
-            "disabled",
-            "",
-            "anything",
-            "garbage",
-            "maybe",
-        ],
+        "disable_value",
+        # Documented disable spellings. Issue #858 closes the DISABLE
+        # set; only these values opt out of the default-on sentinel.
+        ["0", "false", "FALSE", "no", "off", "disabled", "DISABLED"],
     )
-    def test_env_non_enable_values_keep_sentinel_disabled(
-        self, monkeypatch, non_enable_value
+    def test_env_disable_values_keep_sentinel_disabled(
+        self, monkeypatch, disable_value
     ):
-        """R-01 closes the enable set: anything outside
-        ``{1, true, on, yes, enabled}`` (case-insensitive) leaves the
-        sentinel disabled — including the empty string and any
-        arbitrary unrecognised value."""
-        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", non_enable_value)
+        """Issue #858 closes the disable set: only
+        ``{0, false, no, off, disabled}`` (case-insensitive) opts out
+        of the default-on sentinel. Power callers that want strict-null
+        behaviour set the env var to one of these spellings."""
+        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", disable_value)
         result = _apply_reasoning_cutoff_notice(
             final_content=None,
             reasoning_text="<truncated thought>",
@@ -129,7 +140,34 @@ class TestApplyReasoningCutoffNotice:
             finish_reason="length",
         )
         assert result is None, (
-            f"env value {non_enable_value!r} must keep the sentinel disabled"
+            f"env value {disable_value!r} must opt out of the sentinel"
+        )
+
+    @pytest.mark.parametrize(
+        "unknown_value",
+        # Arbitrary unknown strings (NOT in the disable set) — issue #858
+        # default-on contract: anything outside the disable set leaves
+        # the sentinel enabled. The empty string also flows through to
+        # default-on so a misconfigured ``RAPID_MLX_REASONING_CUTOFF_NOTICE=``
+        # does not silently swallow the user-visible cue.
+        ["", "anything", "garbage", "maybe"],
+    )
+    def test_env_unknown_values_keep_sentinel_enabled(
+        self, monkeypatch, unknown_value
+    ):
+        """Issue #858: anything outside the disable set — including
+        the empty string and arbitrary unrecognised values — keeps the
+        sentinel ENABLED (default-on). This is the safe default for
+        GUI clients."""
+        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", unknown_value)
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text="<truncated thought>",
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result == REASONING_CUTOFF_SENTINEL, (
+            f"env value {unknown_value!r} must leave the sentinel enabled"
         )
 
     # ----- opt-in branch: the legacy H-01 truth table still holds -----
@@ -394,11 +432,21 @@ def parser_case(request):
 
 
 class TestParserWideLengthCutMidThinkDefault:
-    """R-01 default-off: length-cut mid-think must produce strict-null
-    content (NO sentinel) for every reasoning parser family. The
-    structured truncation signal (``finish_reason="length"`` +
-    ``reasoning_content``) is the canonical cue.
+    """Issue #858 opt-out path: with the env knob set to ``disabled``,
+    length-cut mid-think must produce strict-null content (NO sentinel)
+    for every reasoning parser family. The structured truncation signal
+    (``finish_reason="length"`` + ``reasoning_content``) is the cue for
+    power callers that take the opt-out branch.
+
+    Each test under this class runs with the env knob explicitly set to
+    ``disabled`` via the autouse fixture below. The default-on (issue
+    #858) parser-wide contract is covered by the opt-in class — opt-in
+    is now the default since #858 reverts the R-01 flip.
     """
+
+    @pytest.fixture(autouse=True)
+    def _opt_out_env(self, monkeypatch):
+        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
 
     def test_length_cut_mid_think_no_sentinel_by_default(self, parser_case):
         """Default-off contract: length-cut with an unclosed reasoning
@@ -511,7 +559,7 @@ class TestGemma4HarmonyEngineRouted:
     """
 
     def test_default_off_no_sentinel_on_empty_cleaned_text(self, monkeypatch):
-        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
         content = _apply_reasoning_cutoff_notice(
             final_content=None,
             reasoning_text=("The user wants to know about the weather. Let me think"),
@@ -531,7 +579,7 @@ class TestGemma4HarmonyEngineRouted:
         assert content == REASONING_CUTOFF_SENTINEL
 
     def test_harmony_analysis_only_default_off(self, monkeypatch):
-        monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+        monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
         content = _apply_reasoning_cutoff_notice(
             final_content=None,
             reasoning_text=(
@@ -698,7 +746,7 @@ def test_streaming_default_off_no_sentinel_in_terminal_chunk(monkeypatch):
     streamed but no content streamed AND ``finish_reason="length"``,
     NO sentinel must appear in any ``delta.content`` event. Per-delta
     ``reasoning_content`` chunks still flow during the loop."""
-    monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
     events = _stream_post(
         ["Let me think about ", "the weather query. ", "I should call"],
         finish_reason="length",
@@ -801,7 +849,7 @@ def test_streaming_happy_path_no_sentinel_when_content_streamed(monkeypatch):
     answer), the assembled content stream MUST equal the original
     output. No sentinel sneaks in via the length-finish path when
     content was actually emitted."""
-    monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -977,7 +1025,7 @@ def test_chat_route_default_off_no_sentinel_on_length_cut(monkeypatch):
     a length-cut mid-think envelope under the default env settings must
     NOT carry the sentinel. The structured truncation signal
     (``finish_reason="length"`` + ``reasoning_content``) is the cue."""
-    monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -1064,7 +1112,7 @@ def test_anthropic_route_default_off_no_sentinel_on_length_cut(monkeypatch):
     the sentinel into any content block. ``stop_reason="max_tokens"``
     + the ``thinking`` content block are the canonical truncation
     cues."""
-    monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 
@@ -1159,7 +1207,7 @@ def test_responses_route_default_off_no_sentinel_on_length_cut(monkeypatch):
     the sentinel into any output_text block. ``status="incomplete"`` +
     ``usage.output_tokens_details.reasoning_tokens`` are the canonical
     truncation cues."""
-    monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
     from fastapi import FastAPI
     from fastapi.testclient import TestClient
 

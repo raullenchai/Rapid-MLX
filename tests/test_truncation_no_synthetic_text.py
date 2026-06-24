@@ -1,12 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
-"""R-01 cross-route truncation contract: no synthetic text injection.
+"""Cross-route truncation contract under the opt-out env var: no
+synthetic text injection when the operator explicitly disables the
+sentinel.
+
+NOTE — issue #858 (0.8.11) reverts R-01. The default is now ON again
+(PR #802 / H-01 restored), because GUI clients that only render the
+``content`` field showed empty bubbles under R-01's default-off. This
+file pins the OPT-OUT branch: with
+``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` set, every transport
+must keep ``content``/``output_text``/``text`` free of the literal
+sentinel. The autouse fixture below sets that env var for every test
+in this module.
 
 When a reasoning model is cut short mid-``<think>`` by a ``max_tokens``
 cap, no transport may inject a literal placeholder string into the
-model's ``content`` / ``output_text`` / ``text`` field. Every transport
-already carries an unambiguous structured truncation signal — that, plus
-the populated ``reasoning_content`` (or ``thinking`` block), is the
-canonical cue.
+model's ``content`` / ``output_text`` / ``text`` field under the
+opt-out env var. Every transport already carries an unambiguous
+structured truncation signal — that, plus the populated
+``reasoning_content`` (or ``thinking`` block), is the canonical cue
+for callers that take the opt-out path.
 
 Transports under test:
     * ``/v1/chat/completions``    → ``finish_reason="length"``
@@ -158,12 +170,13 @@ def _parse_sse_named(text: str) -> list[tuple[str | None, dict]]:
 
 @pytest.fixture(autouse=True)
 def _default_off_env(monkeypatch):
-    """Every R-01 test runs with the env knob explicitly unset, so the
-    R-01 default-off behaviour is what the assertions exercise. Tests
-    that want to verify the opt-in path live in
-    ``test_reasoning_content_null_rescue.py`` — this file is the
-    cross-route no-injection contract."""
-    monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+    """Issue #858 revert: default is now ON, so this file pins the
+    explicit-opt-out branch (``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``).
+    The cross-route no-injection contract still holds — callers who set
+    the opt-out env var get strict-null on every transport. The default-on
+    path (PR #802 / H-01 restored) is exercised in
+    ``test_reasoning_content_null_rescue.py``."""
+    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
 
 
 # ---------------------------------------------------------------------
@@ -492,13 +505,16 @@ def test_messages_stream_no_truncated_injection():
 # ---------------------------------------------------------------------
 
 
-def test_helper_returns_none_on_default_env(monkeypatch):
-    """Direct helper assertion at default-off — pins that no synthetic
-    text can leak even if a future route call site forgets to pass
-    every predicate. The helper itself defaults to no-op."""
+def test_helper_returns_none_on_opt_out_env(monkeypatch):
+    """Direct helper assertion at opt-out: when
+    ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` is set (the only way
+    to suppress the sentinel since the issue #858 revert flipped the
+    default back to ON), the helper must be a strict no-op. Pins that
+    no synthetic text can leak under the opt-out path even if a future
+    route call site forgets to pass every predicate."""
     from vllm_mlx.service.helpers import _apply_reasoning_cutoff_notice
 
-    monkeypatch.delenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", raising=False)
+    monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "disabled")
     result = _apply_reasoning_cutoff_notice(
         final_content=None,
         reasoning_text="<incomplete thought>",
@@ -506,7 +522,8 @@ def test_helper_returns_none_on_default_env(monkeypatch):
         finish_reason="length",
     )
     assert result is None, (
-        f"R-01 helper default must return None on length-cut mid-think; got {result!r}"
+        f"issue #858 opt-out: helper must return None on length-cut "
+        f"mid-think when env var disables the sentinel; got {result!r}"
     )
 
 
