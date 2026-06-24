@@ -562,7 +562,31 @@ class TestVoiceValidation:
 class TestAllowedVoicesHelper:
     """Pin the ``_allowed_voices_for`` helper's family detection so a
     future engine added to the registry can't accidentally diverge
-    from the route's voice-validation rule."""
+    from the route's voice-validation rule.
+
+    R11-B-F1 (Bo 0.8.12 dogfood) refactored the helper to enumerate
+    the snapshot's ``voices/`` dir at request time and fall back to
+    the per-family static list when the snapshot isn't cached locally.
+    The cold-start (fallback) path is the contract pinned here —
+    monkeypatching ``_list_snapshot_voices`` to ``[]`` forces the
+    static branch so the assertions stay deterministic regardless of
+    the test runner's HuggingFace cache state.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _force_static_fallback(self, monkeypatch):
+        # Pin the static-fallback branch by forcing the dynamic
+        # enumeration to return empty. The dynamic-success path is
+        # covered by ``TestAllowedVoicesDynamicEnumeration`` below.
+        import vllm_mlx.routes.audio as audio_route
+
+        # ``_allowed_voices_for`` calls ``_list_snapshot_voices`` via
+        # a lazy ``from ..audio.tts import ...`` inside the helper, so
+        # the monkeypatch lands on the source attribute.
+        from vllm_mlx.audio import tts as tts_module
+
+        monkeypatch.setattr(tts_module, "_list_snapshot_voices", lambda _name: [])
+        yield audio_route  # nothing for the tests to consume
 
     def test_kokoro_short_alias_returns_kokoro_voices(self):
         from vllm_mlx.audio.tts import KOKORO_VOICES
@@ -584,10 +608,295 @@ class TestAllowedVoicesHelper:
 
         assert _allowed_voices_for("chatterbox") == list(CHATTERBOX_VOICES)
 
+    def test_vibevoice_returns_seeded_english_voices(self):
+        # R11-B-F1: pre-fix the helper hard-coded ``["default"]`` for
+        # every non-kokoro/non-chatterbox family. The new cold-start
+        # fallback for VibeVoice seeds the English voice set so the
+        # 400 envelope's ``Available:`` preview is informative even
+        # before the snapshot has been downloaded — and so a request
+        # carrying ``voice="en-Grace_woman"`` (the registry default)
+        # passes voice validation on the first call.
+        from vllm_mlx.routes.audio import _allowed_voices_for
+
+        voices = _allowed_voices_for("vibevoice")
+        assert "en-Grace_woman" in voices, (
+            "VibeVoice cold-start fallback must include en-Grace_woman "
+            f"(registry default). Got: {voices}"
+        )
+        # Pre-fix this would have included only ``"default"``, which
+        # is precisely the value VibeVoice does NOT ship.
+        assert "default" not in voices, (
+            "VibeVoice has no default.safetensors in its snapshot — "
+            "the cold-start fallback MUST NOT advertise it as a valid "
+            f"voice. Got: {voices}"
+        )
+
     def test_unknown_family_returns_default(self):
         from vllm_mlx.routes.audio import _allowed_voices_for
 
         assert _allowed_voices_for("some/UnknownEngine") == ["default"]
+
+
+class TestAllowedVoicesDynamicEnumeration:
+    """R11-B-F1: when the snapshot is cached locally the helper must
+    enumerate the actual ``voices/`` dir, not the per-family static
+    list. Covers the warm-path: chatterbox/voxcpm/dia all ship a
+    single ``default.safetensors`` so the enumeration returns the
+    same ``["default"]`` the static list had; kokoro / vibevoice
+    ship richer voice sets and the enumeration must surface them."""
+
+    def test_enumeration_strips_safetensors_extension(self, tmp_path, monkeypatch):
+        # Build a fake snapshot dir matching the real HF cache shape.
+        snapshot = tmp_path / "snapshot"
+        (snapshot / "voices").mkdir(parents=True)
+        (snapshot / "voices" / "en-Grace_woman.safetensors").write_bytes(b"x")
+        (snapshot / "voices" / "en-Mike_man.safetensors").write_bytes(b"x")
+        # A non-safetensors sibling MUST be ignored — VibeVoice ships
+        # neither but kokoro snapshots include ``.pt`` mirrors of every
+        # voice.
+        (snapshot / "voices" / "en-Grace_woman.pt").write_bytes(b"x")
+        # The helper uses ``config.json`` as the cache probe.
+        (snapshot / "config.json").write_bytes(b"{}")
+
+        from huggingface_hub import try_to_load_from_cache as real_helper  # noqa: F401
+
+        def fake_cache_lookup(repo_id, filename):
+            assert filename == "config.json"
+            return str(snapshot / "config.json")
+
+        monkeypatch.setattr(
+            "huggingface_hub.try_to_load_from_cache", fake_cache_lookup
+        )
+
+        from vllm_mlx.audio.tts import _list_snapshot_voices
+
+        result = _list_snapshot_voices("mlx-community/VibeVoice-Realtime-0.5B-4bit")
+        assert result == ["en-Grace_woman", "en-Mike_man"], result
+
+    def test_enumeration_returns_empty_when_snapshot_missing(self, monkeypatch):
+        # Local-only lookup: ``try_to_load_from_cache`` returns ``None``
+        # for a repo not on disk. We MUST NOT trigger a download from
+        # inside the voice-validation path.
+        monkeypatch.setattr(
+            "huggingface_hub.try_to_load_from_cache",
+            lambda repo_id, filename: None,
+        )
+
+        from vllm_mlx.audio.tts import _list_snapshot_voices
+
+        assert _list_snapshot_voices("mlx-community/Nonexistent-Repo") == []
+
+    def test_enumeration_returns_empty_when_voices_dir_missing(
+        self, tmp_path, monkeypatch
+    ):
+        # Snapshot cached but no ``voices/`` dir — engines that pull
+        # voices from a different layout (or no per-voice files at
+        # all) must NOT crash the enumeration. The caller falls back
+        # to the per-family static list.
+        snapshot = tmp_path / "snapshot"
+        snapshot.mkdir()
+        (snapshot / "config.json").write_bytes(b"{}")
+
+        monkeypatch.setattr(
+            "huggingface_hub.try_to_load_from_cache",
+            lambda repo_id, filename: str(snapshot / "config.json"),
+        )
+
+        from vllm_mlx.audio.tts import _list_snapshot_voices
+
+        assert _list_snapshot_voices("mlx-community/Whatever") == []
+
+    def test_alias_short_form_resolves_via_registry(self, tmp_path, monkeypatch):
+        # A short alias (``"vibevoice"``) must map to its HF id via
+        # the registry before the cache lookup — that way the alias
+        # AND the full HF id resolve to the same snapshot.
+        snapshot = tmp_path / "snapshot"
+        (snapshot / "voices").mkdir(parents=True)
+        (snapshot / "voices" / "en-Grace_woman.safetensors").write_bytes(b"x")
+        (snapshot / "config.json").write_bytes(b"{}")
+
+        captured = {}
+
+        def fake_cache_lookup(repo_id, filename):
+            captured["repo_id"] = repo_id
+            return str(snapshot / "config.json")
+
+        monkeypatch.setattr(
+            "huggingface_hub.try_to_load_from_cache", fake_cache_lookup
+        )
+
+        from vllm_mlx.audio.tts import _list_snapshot_voices
+
+        result = _list_snapshot_voices("vibevoice")
+        assert captured["repo_id"] == "mlx-community/VibeVoice-Realtime-0.5B-4bit"
+        assert result == ["en-Grace_woman"]
+
+
+class TestVibevoiceDefaultSentinelResolves:
+    """R11-B-F1: a request carrying ``voice="default"`` against an
+    alias whose registry ``default_voice`` is something else (here
+    VibeVoice's ``"en-Grace_woman"``) must be remapped to the registry
+    default BEFORE voice validation. Pre-fix the literal ``"default"``
+    would hit the static voice list which only contained ``"default"``,
+    then fall through to ``mlx_audio.tts.models.vibevoice.Model.load
+    _voice("default")`` which 500'd with ``FileNotFoundError: Voice
+    cache not found: .../voices/default.safetensors``.
+
+    Engines whose registry ``default_voice`` IS ``"default"``
+    (chatterbox / voxcpm / dia) must keep their current behaviour —
+    the remap is a no-op there.
+    """
+
+    def _patch_static_fallback(self, monkeypatch):
+        # The test harness may run on a workstation whose HF cache
+        # already has the VibeVoice / chatterbox snapshot. Force
+        # ``_list_snapshot_voices`` to ``[]`` so the assertions pin
+        # the cold-start fallback path deterministically.
+        from vllm_mlx.audio import tts as tts_module
+
+        monkeypatch.setattr(tts_module, "_list_snapshot_voices", lambda _name: [])
+
+    def test_vibevoice_default_remaps_to_registry_default(self, monkeypatch):
+        self._patch_static_fallback(monkeypatch)
+        voices_seen: list[str] = []
+        audio_route, _models = _stub_engine(monkeypatch, voice_observed=voices_seen)
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/speech",
+                json={
+                    "model": "vibevoice",
+                    "input": "hello",
+                    "voice": "default",
+                    "response_format": "wav",
+                },
+            )
+        finally:
+            restore()
+            audio_route._tts_engine = None
+
+        assert r.status_code == 200, (
+            f"R11-B-F1 regression: vibevoice voice=default returned "
+            f"{r.status_code}; expected 200 after remap to "
+            f"registry default_voice. Body: {r.text[:500]}"
+        )
+        # Engine receives the remapped voice, not the literal sentinel.
+        assert voices_seen == ["en-Grace_woman"], voices_seen
+
+    def test_chatterbox_default_stays_default(self, monkeypatch):
+        # Chatterbox's registry ``default_voice`` IS ``"default"`` —
+        # the remap is structurally a no-op. Regression guard for the
+        # opposite direction (we don't want to accidentally rewrite
+        # ``"default"`` to ``"af_heart"`` or anything else).
+        self._patch_static_fallback(monkeypatch)
+        voices_seen: list[str] = []
+        audio_route, _models = _stub_engine(monkeypatch, voice_observed=voices_seen)
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/speech",
+                json={
+                    "model": "chatterbox",
+                    "input": "hello",
+                    "voice": "default",
+                    "response_format": "wav",
+                },
+            )
+        finally:
+            restore()
+            audio_route._tts_engine = None
+
+        assert r.status_code == 200, r.text
+        assert voices_seen == ["default"], voices_seen
+
+    def test_vibevoice_explicit_voice_is_respected(self, monkeypatch):
+        # Explicit non-sentinel voices bypass the remap branch. A
+        # client that explicitly asks for ``en-Mike_man`` must reach
+        # the engine with exactly that string.
+        # The dynamic enumeration would return ``[]`` here (no real
+        # snapshot in the test harness) so the cold-start fallback
+        # list must include ``en-Mike_man`` for validation to pass.
+        self._patch_static_fallback(monkeypatch)
+        voices_seen: list[str] = []
+        audio_route, _models = _stub_engine(monkeypatch, voice_observed=voices_seen)
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/speech",
+                json={
+                    "model": "vibevoice",
+                    "input": "hello",
+                    "voice": "en-Mike_man",
+                    "response_format": "wav",
+                },
+            )
+        finally:
+            restore()
+            audio_route._tts_engine = None
+
+        assert r.status_code == 200, r.text
+        assert voices_seen == ["en-Mike_man"], voices_seen
+
+    def test_voxcpm_and_dia_default_still_accepted(self, monkeypatch):
+        # Regression guard: voxcpm and dia ship a single
+        # ``default.safetensors``; their registry ``default_voice`` is
+        # ``"default"`` so the remap is a no-op AND the static
+        # fallback ``["default"]`` accepts the request. Pre-R11-B-F1
+        # path stays alive.
+        self._patch_static_fallback(monkeypatch)
+        for alias in ("voxcpm", "dia"):
+            voices_seen: list[str] = []
+            audio_route, _models = _stub_engine(
+                monkeypatch, voice_observed=voices_seen
+            )
+            client, restore = _mount_audio_app()
+            try:
+                r = client.post(
+                    "/v1/audio/speech",
+                    json={
+                        "model": alias,
+                        "input": "hello",
+                        "voice": "default",
+                        "response_format": "wav",
+                    },
+                )
+            finally:
+                restore()
+                audio_route._tts_engine = None
+
+            assert r.status_code == 200, (
+                f"{alias} voice=default returned {r.status_code}; "
+                f"expected 200. Body: {r.text[:500]}"
+            )
+            assert voices_seen == ["default"], (alias, voices_seen)
+
+    def test_kokoro_default_remaps_to_af_heart(self, monkeypatch):
+        # Kokoro's registry ``default_voice`` is ``"af_heart"`` so a
+        # request that explicitly sends ``voice="default"`` must be
+        # remapped — same contract as vibevoice. This is the codepath
+        # the task brief calls out as "Bo confirmed kokoro fallback
+        # works"; pre-fix it actually 400'd here because ``"default"``
+        # wasn't in ``KOKORO_VOICES``.
+        self._patch_static_fallback(monkeypatch)
+        voices_seen: list[str] = []
+        audio_route, _models = _stub_engine(monkeypatch, voice_observed=voices_seen)
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/speech",
+                json={
+                    "model": "kokoro",
+                    "input": "hello",
+                    "voice": "default",
+                    "response_format": "wav",
+                },
+            )
+        finally:
+            restore()
+            audio_route._tts_engine = None
+
+        assert r.status_code == 200, r.text
+        assert voices_seen == ["af_heart"], voices_seen
 
 
 # ---------------------------------------------------------------------------

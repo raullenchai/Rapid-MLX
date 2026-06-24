@@ -40,6 +40,104 @@ KOKORO_VOICES = [
 CHATTERBOX_VOICES = ["default"]  # Uses reference audio for voice
 
 
+def _list_snapshot_voices(model_name: str) -> list[str]:
+    """Return the safetensors voice files cached for ``model_name``.
+
+    R11-B-F1 (Bo 0.8.12 dogfood): pre-fix the route hard-coded a
+    static voice list per family — ``["default"]`` for everything
+    except kokoro / chatterbox. VibeVoice's HF repo ships per-language
+    voice caches (``en-Grace_woman.safetensors``, ``en-Mike_man.safe
+    tensors``, the eight non-English ``Spk0/Spk1`` pairs, ...) and NO
+    ``default.safetensors`` — so EVERY ``/v1/audio/speech`` call 500'd:
+    ``voice="default"`` -> ``FileNotFoundError`` deep in
+    ``mlx_audio.tts.models.vibevoice.Model.load_voice``; a real name
+    like ``en-Grace_woman`` -> the route's 400 ``invalid_voice``
+    because the static list only contained ``"default"``.
+
+    The fix is structural — enumerate the snapshot's ``voices/`` dir at
+    validation time and use THAT list, instead of pinning a per-family
+    constant. The helper:
+
+    * Returns ``[]`` when the snapshot isn't cached locally — the
+      caller falls back to the static list so the FIRST request (which
+      triggers the download via ``load_model``) still proceeds. Once
+      the snapshot is on disk every subsequent request validates
+      against the true voice set.
+    * Accepts both short aliases (``"vibevoice"``) and HF ids
+      (``"mlx-community/VibeVoice-Realtime-0.5B-4bit"``) by going
+      through ``huggingface_hub.try_to_load_from_cache`` on
+      ``config.json`` to resolve the snapshot path. We never trigger a
+      download here — this is a synchronous request-path call and
+      blocking on a 500 MB pull would convert "validate voice" into
+      "wait two minutes".
+    * Strips the ``.safetensors`` suffix and sorts the result so the
+      400 envelope's ``Available:`` preview is deterministic.
+
+    Applies UNIFORMLY to every TTS family (kokoro, chatterbox,
+    voxcpm, dia, vibevoice, ...). Chatterbox/voxcpm/dia ship a single
+    ``default.safetensors`` so the enumeration returns ``["default"]``
+    — same behaviour as the pre-fix static list. Kokoro's snapshot
+    actually ships 50+ voice files (the pre-fix static list named only
+    11), so the enumeration is a strict superset there.
+
+    Local-only by design (``local_files_only=True``): we MUST NOT
+    issue an HTTP roundtrip from inside ``_allowed_voices_for`` — the
+    pre-flight 400 lookup runs before any weight load and a network
+    stall would convert "client sent invalid voice" into "server
+    appears to hang then times out".
+    """
+    # Local imports keep ``vllm_mlx.audio.tts`` cheap to import on
+    # API-only runners that don't install huggingface_hub (the audio
+    # extras pin it, but the boot-guard path probes this module
+    # without the extras).
+    try:
+        from huggingface_hub import try_to_load_from_cache
+    except ImportError:  # pragma: no cover — covered by ``[audio]``
+        return []
+
+    # Strip a leading registry alias to its HF id so both shapes
+    # resolve to the same snapshot. The lazy import avoids a hard
+    # circular: registry doesn't import this module.
+    try:
+        from .registry import resolve_audio_alias
+    except ImportError:
+        resolve_audio_alias = None  # type: ignore[assignment]
+
+    hf_id = model_name
+    if resolve_audio_alias is not None:
+        entry = resolve_audio_alias(model_name)
+        if entry is not None:
+            hf_id = entry.hf_id
+
+    # ``/`` is the HF-id separator — a bare alias that didn't resolve
+    # in the registry (e.g. a typo) won't be in the cache either, so
+    # short-circuit to ``[]`` and let the caller fall back to its
+    # static list. The same guard catches HF passthrough ids that
+    # haven't been downloaded yet.
+    if "/" not in hf_id:
+        return []
+
+    # Pick a small file every snapshot has so ``try_to_load_from
+    # _cache`` returns the snapshot's resolved path without triggering
+    # a download. ``config.json`` is universal across mlx-audio TTS
+    # repos (kokoro / chatterbox / vibevoice / voxcpm / dia all ship
+    # one at the snapshot root).
+    cached = try_to_load_from_cache(repo_id=hf_id, filename="config.json")
+    if not cached or not isinstance(cached, str):
+        # Snapshot not on disk yet — caller falls back to static.
+        return []
+
+    voices_dir = Path(cached).parent / "voices"
+    if not voices_dir.is_dir():
+        return []
+
+    # ``.stem`` strips the ``.safetensors`` suffix; the registry
+    # advertises voices by their bare name. Sorting makes the
+    # ``Available:`` 400 preview deterministic so doc snapshots and
+    # operator scripts don't churn.
+    return sorted(p.stem for p in voices_dir.glob("*.safetensors"))
+
+
 class UnsupportedAudioFormatError(Exception):
     """The requested TTS ``response_format`` cannot be encoded here.
 

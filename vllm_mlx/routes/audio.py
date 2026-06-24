@@ -1291,22 +1291,75 @@ def _allowed_voices_for(model_name: str) -> list[str]:
     name" — that way both ``kokoro`` and the full HF id
     ``mlx-community/Kokoro-82M-bf16`` honour the same voice list.
 
-    The detection mirrors :func:`vllm_mlx.audio.tts.TTSEngine._detect_family`
-    so the answers stay aligned: a single substring switch ensures the
-    route AND the engine agree on which family a name belongs to, so
-    a future engine added to the registry is wired into voice
-    validation by editing one helper, not two.
+    R11-B-F1 (Bo 0.8.12 dogfood): pre-fix the per-family branch hard-
+    coded the voice list to ``["default"]`` for everything except
+    kokoro / chatterbox. That collapsed two real bugs into one
+    end-to-end 500:
+
+    * VibeVoice ships per-language voice caches (``en-Grace_woman.
+      safetensors``, ``en-Mike_man.safetensors``, the eight non-
+      English ``Spk0/Spk1`` pairs) and NO ``default.safetensors``,
+      so ``voice="default"`` 500'd in
+      ``mlx_audio.tts.models.vibevoice.Model.load_voice``.
+    * A real file name like ``en-Grace_woman`` 400'd here because
+      the static list only contained ``"default"``.
+
+    The fix is to enumerate the snapshot's ``voices/`` dir at
+    request time and use THAT list — see
+    :func:`vllm_mlx.audio.tts._list_snapshot_voices`. This applies
+    uniformly to every TTS family: chatterbox / voxcpm / dia ship a
+    single ``default.safetensors`` so the enumeration returns the
+    same ``["default"]`` the pre-fix static list had; kokoro ships
+    50+ voice files (the pre-fix static list listed only 11) so the
+    enumeration is a strict superset.
+
+    Fallback path: when the snapshot isn't cached locally (first
+    request, fresh install) the enumeration returns ``[]`` and we
+    fall back to the per-family static list. That way the FIRST
+    ``/v1/audio/speech`` call — which triggers the snapshot download
+    via ``load_model`` — still passes voice validation against the
+    registry default. After the snapshot lands the next request
+    validates against the true voice set. The registry's
+    ``default_voice`` MUST be a real voice that exists in the
+    upstream snapshot so the cold-start path doesn't 500.
     """
     # Lazy import: ``vllm_mlx.audio.tts`` transitively pulls ``numpy``
     # which the API-only test runners don't install. Same lazy pattern
     # the route uses elsewhere.
-    from ..audio.tts import CHATTERBOX_VOICES, KOKORO_VOICES
+    from ..audio.tts import (
+        CHATTERBOX_VOICES,
+        KOKORO_VOICES,
+        _list_snapshot_voices,
+    )
+
+    # Preferred path: enumerate the snapshot. Returns ``[]`` if the
+    # repo isn't cached yet (local-only lookup; no HTTP). Falling back
+    # to the static list keeps the first request alive — the engine
+    # will pull the snapshot on ``load_model`` and subsequent calls
+    # then validate against the true set.
+    dynamic = _list_snapshot_voices(model_name)
+    if dynamic:
+        return dynamic
 
     name_lower = model_name.lower()
     if "kokoro" in name_lower:
         return list(KOKORO_VOICES)
     if "chatterbox" in name_lower:
         return list(CHATTERBOX_VOICES)
+    if "vibevoice" in name_lower:
+        # Cold-start fallback for VibeVoice — the canonical English
+        # default is ``en-Grace_woman`` (per the upstream repo's
+        # voice manifest). Listed alongside the other English voices
+        # so the 400 envelope's ``Available:`` preview is informative
+        # even before the snapshot has been downloaded.
+        return [
+            "en-Grace_woman",
+            "en-Mike_man",
+            "en-Carter_man",
+            "en-Davis_man",
+            "en-Emma_woman",
+            "en-Frank_man",
+        ]
     # Unknown family — accept ``"default"`` (the catch-all the engine
     # falls back to in :meth:`TTSEngine.get_voices`) so callers
     # passing a HF id we don't have a voice list for can still drive
@@ -1379,14 +1432,29 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # handler body.
         model_name = _resolve_tts_model(model)
 
-        # R11-B-F3 (Bo 0.8.12 dogfood): translate the literal
+        # R11-B-F3 (Bo 0.8.12 dogfood, PR #863): translate the literal
         # ``voice="default"`` to the registry's ``default_voice`` BEFORE
         # the allowlist check below. Pre-fix the obvious naive caller
         # value (``"default"``) was rejected by the kokoro allowlist
         # even though the registry already advertises
-        # ``default_voice="af_heart"`` for it. The omitted-voice path
-        # (Pydantic default ``"af_heart"``) is unaffected — this hook
-        # only fires when the literal ``"default"`` is on the wire.
+        # ``default_voice="af_heart"`` for it.
+        #
+        # R11-B-F1 (Bo 0.8.12 dogfood, this PR): the same resolver also
+        # fires when ``voice`` was OMITTED from the JSON body. The
+        # Pydantic model defaults ``voice`` to ``"af_heart"`` (kokoro's
+        # canonical voice) for OpenAI-SDK parity. That default is
+        # correct for kokoro but wrong for VibeVoice (no
+        # ``af_heart.safetensors``) and Chatterbox/VoxCPM/Dia (expect
+        # ``"default"``). The omitted-voice shape arrives here as
+        # ``voice="af_heart"`` and 400'd against every non-kokoro
+        # family. Treat the omitted-voice case the same way as the
+        # literal ``"default"`` sentinel — both resolve to the registry
+        # default. A client that EXPLICITLY sends ``voice="af_heart"``
+        # against vibevoice keeps that value (the validator then
+        # surfaces the 400 with the real available list).
+        voice_omitted = "voice" not in request.model_fields_set
+        if voice_omitted:
+            voice = "default"
         voice = _resolve_default_voice_literal(model_name, voice)
 
         # R8-M4 (Bo 0.8.9 dogfood): validate ``voice`` against the
@@ -1538,11 +1606,12 @@ async def list_voices(model: str = "kokoro"):
 
     require_mlx_audio_tts()
 
-    from ..audio.tts import CHATTERBOX_VOICES, KOKORO_VOICES
-
-    if "kokoro" in model.lower():
-        return {"voices": KOKORO_VOICES}
-    elif "chatterbox" in model.lower():
-        return {"voices": CHATTERBOX_VOICES}
-    else:
-        return {"voices": ["default"]}
+    # R11-B-F1: route the listing through the SAME helper the
+    # speech-route's voice validator uses, so a snapshot that ships
+    # ``en-Grace_woman.safetensors`` doesn't show up as ``["default"]``
+    # on ``/v1/audio/voices`` and then 400 with ``invalid_voice`` on
+    # ``/v1/audio/speech``. The helper resolves the alias to its HF id
+    # via the registry and falls back to the per-family static list
+    # when the snapshot isn't cached locally — same contract as the
+    # speech route.
+    return {"voices": _allowed_voices_for(model)}

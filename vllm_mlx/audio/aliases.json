@@ -70,14 +70,14 @@
     "type": "tts",
     "hf_id": "mlx-community/VibeVoice-Realtime-0.5B-4bit",
     "family": "vibevoice",
-    "default_voice": "default",
-    "notes": "Realtime low-latency TTS, 0.5B 4bit."
+    "default_voice": "en-Grace_woman",
+    "notes": "Realtime low-latency TTS, 0.5B 4bit. Per-language voice caches; en-Grace_woman is the canonical English-female default. Full set: en-{Grace_woman,Mike_man,Carter_man,Davis_man,Frank_man,Emma_woman} + de/fr/it/jp/kr/nl/pl/pt/sp Spk0/Spk1 pairs + in-Samuel_man."
   },
   "vibevoice-realtime": {
     "type": "tts",
     "hf_id": "mlx-community/VibeVoice-Realtime-0.5B-4bit",
     "family": "vibevoice",
-    "default_voice": "default",
+    "default_voice": "en-Grace_woman",
     "notes": "Long-form alias for ``vibevoice``."
   },
 
