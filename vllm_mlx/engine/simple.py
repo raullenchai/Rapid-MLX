@@ -2066,9 +2066,18 @@ class SimpleEngine(BaseEngine):
                 break
 
         if not finished:
+            # Drain any chars the safety window held back so the client
+            # doesn't lose the trailing ``max_stop_len - 1`` bytes on
+            # generator-exhaustion / EOS termination (codex r6).
+            tail_text = ""
+            if _stop_gate.enabled:
+                tail, _ = _stop_gate.flush()
+                if tail:
+                    tail_text = tail
+                    accumulated_text = _stop_gate.buf
             yield GenerationOutput(
                 text=accumulated_text,
-                new_text="",
+                new_text=tail_text,
                 prompt_tokens=n_tokens,
                 completion_tokens=token_count,
                 finished=True,
@@ -2816,9 +2825,18 @@ class SimpleEngine(BaseEngine):
             await producer_task
 
         if not finished:
+            # Drain any chars the safety window held back so the client
+            # doesn't lose the trailing ``max_stop_len - 1`` bytes on
+            # producer-done / cancellation / EOS termination (codex r6).
+            tail_text = ""
+            if _stop_gate.enabled:
+                tail, _ = _stop_gate.flush()
+                if tail:
+                    tail_text = tail
+                    accumulated_text = _stop_gate.buf
             yield GenerationOutput(
                 text=accumulated_text,
-                new_text="",
+                new_text=tail_text,
                 prompt_tokens=full_token_count or 0,
                 completion_tokens=token_count,
                 finished=True,

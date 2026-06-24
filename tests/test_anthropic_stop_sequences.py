@@ -573,6 +573,42 @@ class TestStopStreamGate:
         assert tail == "wo"
         assert gate.buf == "hello wo"
 
+    def test_flush_after_producer_done_drains_safety_window(self):
+        """Codex r6 regression: when the upstream producer signals
+        ``done`` (vs. an explicit ``finished=True`` chunk) the consuming
+        loop must still call ``flush()`` so the trailing
+        ``max_stop_len - 1`` chars don't disappear.  Simulates the
+        ``_stream_generate_text`` / ``_stream_generate_specprefill``
+        terminal-done branch.
+        """
+        gate = self._gate(["XYZ"])
+        emitted: list[str] = []
+        for chunk in ["hello"]:
+            d, fin, _ = gate.feed(chunk)
+            emitted.append(d)
+            assert fin is False
+        # Producer says done before any finished=True chunk arrived —
+        # the consumer used to yield new_text="" and lose the tail.
+        # The fix calls flush() in the !finished branch.
+        tail, _ = gate.flush()
+        emitted.append(tail)
+        # All originally-fed chars must reach the wire.
+        assert "".join(emitted) == "hello"
+        assert gate.buf == "hello"
+
+    def test_flush_after_done_drains_partial_stop_prefix(self):
+        """Edge case: the safety window may hold up to ``max_len - 1``
+        chars of a prefix that never resolves into a full match (e.g.
+        the producer ends mid-``EN``).  Flush must emit those bytes."""
+        gate = self._gate(["END"])
+        d1, fin1, _ = gate.feed("hello EN")
+        # "EN" sits inside the safety window — held back.
+        assert d1 == "hello "
+        assert fin1 is False
+        tail, _ = gate.flush()
+        assert tail == "EN"
+        assert gate.buf == "hello EN"
+
 
 class TestOpenAIStopUnchanged:
     def test_openai_chat_request_stop_field_unchanged(self):
