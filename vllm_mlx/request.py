@@ -138,6 +138,13 @@ class Request:
     first_token_time: Optional[float] = (
         None  # Time when first output token was generated
     )
+    # Number of characters of ``output_text`` that have already been emitted
+    # as streaming ``new_text`` deltas.  Used by the stop-sequence enforcement
+    # path (issue #469) to (a) hold back the trailing ``max_stop_len - 1``
+    # chars so a partial match never leaks to the client, and (b) recompute
+    # the terminal ``new_text`` from the truncated buffer instead of the raw
+    # detokenizer segment (which would still contain the matched suffix).
+    published_text_len: int = 0
     cache_hit_type: Optional[str] = (
         None  # Type of cache hit: exact/prefix/supersequence/lcp/miss
     )

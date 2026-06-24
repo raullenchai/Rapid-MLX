@@ -121,6 +121,10 @@ class MLLMRequest:
     # Timing
     first_token_time: Optional[float] = None
 
+    # Streaming-emit cursor used by the stop-sequence enforcement path
+    # (issue #469) — see ``Request.published_text_len`` for full rationale.
+    published_text_len: int = 0
+
 
 @dataclass
 class MLLMSchedulerOutput:
@@ -642,20 +646,21 @@ class MLLMScheduler:
                 new_text = detok.last_segment
 
             # Enforce SamplingParams.stop on the cumulative output text
-            # (issue #469).  Mirrors the LLM scheduler path: maintain a
-            # running buffer only when stop strings are present, scan for
-            # the earliest match, truncate, and schedule the request's uid
-            # for removal from the active batch.
+            # (issue #469).  Mirrors the LLM scheduler path; see
+            # ``scheduler.py:_process_batch_responses`` for full rationale.
             matched_stop: Optional[str] = None
-            if request.sampling_params.stop and response.finish_reason is None:
+            stops = (
+                [s for s in request.sampling_params.stop if s]
+                if request.sampling_params.stop
+                else []
+            )
+            if stops:
                 if new_text:
                     request.output_text = (request.output_text or "") + new_text
                 buf = request.output_text or ""
-                if buf:
+                if response.finish_reason is None:
                     best_idx: Optional[int] = None
-                    for cand in request.sampling_params.stop:
-                        if not cand:
-                            continue
+                    for cand in stops:
                         idx = buf.find(cand)
                         if idx == -1:
                             continue
@@ -670,7 +675,9 @@ class MLLMScheduler:
                             uid = self.request_id_to_uid[request_id]
                             if self.batch_generator is not None:
                                 try:
-                                    self.batch_generator.schedule_removal([uid])
+                                    self.batch_generator.schedule_removal(
+                                        [uid]
+                                    )
                                 except Exception as exc:  # pragma: no cover
                                     logger.debug(
                                         "[stop_seq][mllm] schedule_removal "
@@ -685,6 +692,23 @@ class MLLMScheduler:
                             response.finish_reason = "stop"
                         except (AttributeError, TypeError):  # pragma: no cover
                             pass
+                        new_text = request.output_text[
+                            request.published_text_len:
+                        ]
+                        request.published_text_len = len(request.output_text)
+                    else:
+                        hold_back = max(len(s) for s in stops) - 1
+                        safe_end = max(0, len(buf) - hold_back)
+                        if safe_end > request.published_text_len:
+                            new_text = buf[
+                                request.published_text_len:safe_end
+                            ]
+                            request.published_text_len = safe_end
+                        else:
+                            new_text = ""
+                else:
+                    new_text = buf[request.published_text_len:]
+                    request.published_text_len = len(buf)
 
             # Create output
             output = RequestOutput(
@@ -712,11 +736,11 @@ class MLLMScheduler:
                 finished_ids.add(request_id)
 
                 # Finalize streaming detokenizer and get full output.  When
-                # a client stop_sequence triggered early termination, keep
-                # our pre-truncated buffer instead of the full detokenizer
-                # text (which still contains the matched suffix).
+                # stops are active, our cumulative buffer is authoritative
+                # (matched_stop → truncated; length/abort → full); otherwise
+                # fall back to the detokenizer.
                 detok = self._detokenizer_pool.pop(request_id, None)
-                if matched_stop is not None:
+                if stops:
                     output.output_text = request.output_text or ""
                 elif detok is not None:
                     detok.finalize()

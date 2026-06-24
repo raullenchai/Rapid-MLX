@@ -278,6 +278,95 @@ class TestSchedulerStopSequenceEnforcement:
         assert last.matched_stop == "END"
         assert last.output_text == "hi"
 
+    def test_streamed_new_text_never_leaks_matched_suffix(self):
+        # Regression: per-token ``new_text`` is what SSE clients see as
+        # ``content_block_delta``.  The terminal chunk MUST NOT contain the
+        # matched stop string, and the sum of all emitted deltas MUST equal
+        # the final ``output_text`` exactly.
+        sched = _make_scheduler()
+        _make_running_request(sched, "r5", uid=50, stop=["END"])
+        outputs, finished = _stream_text_into_request(
+            sched,
+            "r5",
+            50,
+            ["hello ", "wor", "ld", "END"],
+        )
+        assert "r5" in finished
+        # Concatenated stream of new_text deltas must equal final output.
+        streamed = "".join(o.new_text for o in outputs)
+        assert "END" not in streamed
+        assert streamed == outputs[-1].output_text == "hello world"
+
+    def test_partial_stop_prefix_is_held_back_until_disambiguated(self):
+        # When the model emits a chunk we don't yet know whether the tail
+        # is the start of a stop string — the scheduler MUST hold back
+        # the trailing ``max_stop_len - 1`` chars until the next token
+        # disambiguates.  For ``stop=["END"]`` (len 3) hold-back is 2.
+        sched = _make_scheduler()
+        _make_running_request(sched, "r6", uid=60, stop=["END"])
+        outputs, finished = _stream_text_into_request(
+            sched,
+            "r6",
+            60,
+            ["hello ", "E", "ND"],
+        )
+        assert "r6" in finished
+        # Buffer "hello " (6 chars) → safe to emit "hell" (len-2), hold "o ".
+        assert outputs[0].new_text == "hell"
+        # "E" arrives → buf="hello E" (7 chars) → safe_end=5, published=4
+        # → delta is buf[4:5]="o".  The space and "E" stay held back.
+        assert outputs[1].new_text == "o"
+        # Cumulative "hello END" — match fires, truncate to "hello ".
+        assert outputs[-1].matched_stop == "END"
+        assert outputs[-1].output_text == "hello "
+        # No partial-of-stop ever reached the client stream.
+        streamed = "".join(o.new_text for o in outputs)
+        assert streamed == "hello "
+        assert "E" not in streamed
+        assert "N" not in streamed
+        assert "D" not in streamed
+
+    def test_held_back_tail_flushed_on_length_termination(self):
+        # When stops are supplied but the engine finishes via "length"
+        # (max_tokens hit) without any match, the held-back tail MUST be
+        # flushed into the terminal new_text so the client sees the full
+        # output.  ("stop" termination skips content decoding by design —
+        # that's an EOS token, not content — so no flush is needed there.)
+        sched = _make_scheduler()
+        _make_running_request(sched, "r7", uid=70, stop=["XYZ"])
+
+        class FakeDetok:
+            def __init__(self):
+                self._segs = []
+                self.last_segment = ""
+                self.text = ""
+
+            def add_token(self, t):
+                seg = {1: "hello", 2: " ", 3: "wo"}.get(t, "")
+                self.last_segment = seg
+                self._segs.append(seg)
+                self.text = "".join(self._segs)
+
+            def finalize(self):
+                self.text = "".join(self._segs)
+
+        sched._detokenizer_pool["r7"] = FakeDetok()
+        sched.batch_generator = MagicMock()
+        outs1, _ = sched._process_batch_responses(
+            [_fake_response(70, token=1, finish_reason=None)]
+        )
+        outs2, _ = sched._process_batch_responses(
+            [_fake_response(70, token=2, finish_reason=None)]
+        )
+        outs3, fin3 = sched._process_batch_responses(
+            [_fake_response(70, token=3, finish_reason="length")]
+        )
+        assert "r7" in fin3
+        streamed = "".join(o.new_text for o in outs1 + outs2 + outs3)
+        # Held-back portion must reappear in the terminal flush.
+        assert streamed == "hello wo"
+        assert outs3[-1].output_text == "hello wo"
+
 
 # ---------------------------------------------------------------------------
 # OpenAI /v1/chat/completions: no regression — stop param still flows through

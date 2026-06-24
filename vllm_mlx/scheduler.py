@@ -2179,62 +2179,87 @@ class Scheduler:
                 new_text = detok.last_segment
 
             # Enforce SamplingParams.stop on the cumulative output text
-            # (issue #469).  We only maintain the running text buffer when
-            # the client actually supplied stop strings — the per-token
-            # string concat is wasted work otherwise.  When a stop sequence
-            # matches we truncate at the match, mark the request finished,
-            # and pull its uid out of the batch generator so we stop wasting
-            # decode cycles on it.  The earliest match wins for determinism;
-            # on tie the longer candidate wins.
+            # (issue #469).  The streaming contract requires that we
+            # NEVER emit a chunk that contains (or even prefixes) a
+            # client-supplied stop string, so when stops are active we
+            # take over the ``new_text`` budget entirely:
+            #
+            #   1. Accumulate ``new_text`` into ``request.output_text``
+            #      (skipped entirely when no stop strings — zero perf
+            #      cost path for the common case).
+            #   2. Scan the cumulative buffer for the earliest stop match.
+            #   3. On match: truncate at the match, drop the uid from the
+            #      active batch, force finish, and emit only the still-
+            #      truncated tail not yet published as a delta.
+            #   4. On no match (still generating): hold back the trailing
+            #      ``max_stop_len - 1`` chars from emission so a partial
+            #      prefix (e.g. ``"E"`` before the next token reveals
+            #      ``"ND"``) does not leak as a SSE text_delta.
+            #   5. On length termination (max_tokens hit, no match): flush
+            #      whatever remains in the held-back tail so the client
+            #      sees the complete output.
             matched_stop: Optional[str] = None
-            if request.sampling_params.stop and response.finish_reason is None:
+            stops = (
+                [s for s in request.sampling_params.stop if s]
+                if request.sampling_params.stop
+                else []
+            )
+            if stops:
                 if new_text:
                     request.output_text = (request.output_text or "") + new_text
-            if (
-                response.finish_reason is None
-                and request.sampling_params.stop
-                and request.output_text
-            ):
-                buf = request.output_text
-                best_idx: Optional[int] = None
-                for cand in request.sampling_params.stop:
-                    if not cand:
-                        continue
-                    idx = buf.find(cand)
-                    if idx == -1:
-                        continue
-                    if best_idx is None or idx < best_idx or (
-                        idx == best_idx and len(cand) > len(matched_stop or "")
-                    ):
-                        best_idx = idx
-                        matched_stop = cand
-                if matched_stop is not None and best_idx is not None:
-                    truncated = buf[:best_idx]
-                    request.output_text = truncated
-                    # Drop this request from the active batch so the next
-                    # generation step doesn't keep producing tokens for it.
-                    if request_id in self.request_id_to_uid:
-                        uid = self.request_id_to_uid[request_id]
-                        if self.batch_generator is not None:
-                            try:
-                                self.batch_generator.remove([uid])
-                            except Exception as exc:  # pragma: no cover - defensive
-                                logger.debug(
-                                    "[stop_seq] failed to remove uid=%s for %s: %s",
-                                    uid,
-                                    request_id[:12],
-                                    exc,
-                                )
-                        self.uid_to_request_id.pop(uid, None)
-                        self.request_id_to_uid.pop(request_id, None)
-                    # Override response so downstream finalization treats
-                    # this as a normal stop with our truncated text.
-                    try:
-                        response.finish_reason = "stop"
-                    except (AttributeError, TypeError):  # pragma: no cover
-                        # Immutable Response variant — fall back to mirroring
-                        # the finish_reason on the output object only.
-                        pass
+                buf = request.output_text or ""
+                if response.finish_reason is None:
+                    best_idx: Optional[int] = None
+                    for cand in stops:
+                        idx = buf.find(cand)
+                        if idx == -1:
+                            continue
+                        if best_idx is None or idx < best_idx or (
+                            idx == best_idx and len(cand) > len(matched_stop or "")
+                        ):
+                            best_idx = idx
+                            matched_stop = cand
+                    if matched_stop is not None and best_idx is not None:
+                        request.output_text = buf[:best_idx]
+                        # Drop from the active batch so the next generation
+                        # step doesn't keep producing tokens for this uid.
+                        if request_id in self.request_id_to_uid:
+                            uid = self.request_id_to_uid[request_id]
+                            if self.batch_generator is not None:
+                                try:
+                                    self.batch_generator.remove([uid])
+                                except Exception as exc:  # pragma: no cover
+                                    logger.debug(
+                                        "[stop_seq] failed to remove uid=%s "
+                                        "for %s: %s",
+                                        uid,
+                                        request_id[:12],
+                                        exc,
+                                    )
+                            self.uid_to_request_id.pop(uid, None)
+                            self.request_id_to_uid.pop(request_id, None)
+                        try:
+                            response.finish_reason = "stop"
+                        except (AttributeError, TypeError):  # pragma: no cover
+                            pass
+                        new_text = request.output_text[
+                            request.published_text_len:
+                        ]
+                        request.published_text_len = len(request.output_text)
+                    else:
+                        hold_back = max(len(s) for s in stops) - 1
+                        safe_end = max(0, len(buf) - hold_back)
+                        if safe_end > request.published_text_len:
+                            new_text = buf[request.published_text_len:safe_end]
+                            request.published_text_len = safe_end
+                        else:
+                            new_text = ""
+                else:
+                    # length/abort termination — emit any remaining buffer
+                    # the held-back-tail safety window prevented from
+                    # streaming earlier.
+                    new_text = buf[request.published_text_len:]
+                    request.published_text_len = len(buf)
 
             # Create output
             output = RequestOutput(
@@ -2259,12 +2284,13 @@ class Scheduler:
                 output.matched_stop = matched_stop
                 finished_ids.add(request_id)
 
-                # Finalize streaming detokenizer and get full output.  When a
-                # client stop_sequence triggered early termination we keep
-                # the buffer we already truncated above and skip the
-                # detokenizer text (which still contains the matched suffix).
+                # Finalize streaming detokenizer and get full output.  When
+                # stops are active the buffer we maintained above already
+                # holds the authoritative text (matched_stop → truncated;
+                # length/abort → full); otherwise fall back to the
+                # detokenizer.
                 detok = self._detokenizer_pool.get(request_id)
-                if matched_stop is not None:
+                if stops:
                     output.output_text = request.output_text or ""
                 elif detok is not None:
                     detok.finalize()
