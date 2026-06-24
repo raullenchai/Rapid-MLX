@@ -287,7 +287,25 @@ def managed_tempfile_path(
     try:
         yield handle
     finally:
-        if not handle.released:
+        # Codex round-5 finding #2: read ``handle.released`` under the
+        # registry lock so a concurrent ``release()`` cannot interleave
+        # between the read and the unlink. With the lock-held check,
+        # either:
+        #   - ``release()`` finished first → ``released=True`` → we
+        #     skip the unlink (caller now owns).
+        #   - ``release()`` is concurrent → it blocks on the lock,
+        #     reads ``released=False``, and we unlink. The unlink is
+        #     idempotent (``FileNotFoundError`` is tolerated by
+        #     ``release()``'s atexit pass), so even if release()
+        #     observes ``released=False`` and the caller later
+        #     unlinks again, nothing breaks.
+        # This serializes the ownership transition for the multi-
+        # threaded edge case codex flagged. The chat REPL is
+        # single-threaded today; the lock is cheap and removes the
+        # foot-gun for future callers.
+        with _pending_lock:
+            should_unlink = not handle.released
+        if should_unlink:
             # Codex round-3 BLOCKING: unlink BEFORE discarding from
             # the registry. The original order (discard → unlink) had
             # a window where a ``BaseException`` (Ctrl-C, SIGTERM-

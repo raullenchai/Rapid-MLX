@@ -3279,26 +3279,19 @@ def _spawn_chat_server(
     # see a stdin pipe and re-evaluate against a potentially-stale cache.
     child_env = os.environ.copy()
     child_env["RAPID_MLX_CHAT_SPAWN"] = "1"
-    try:
-        proc = subprocess.Popen(  # noqa: S603
-            cmd,
-            stdout=log,
-            stderr=subprocess.STDOUT,
-            start_new_session=True,
-            env=child_env,
-        )
-    except (OSError, ValueError):
-        # Popen raised before constructing the child — the log handle
-        # would otherwise leak. Re-raise after closing.
-        log.close()
-        raise
-    # Atomic ownership-transfer critical section: mask SIGTERM/SIGINT so
-    # ``_cleanup`` (which walks ``_active_procs`` and applies
-    # ``_teardown_proc``'s keep-non-empty-log policy) cannot interleave
-    # between the append and the ``log_handle.release()`` call. Without
-    # the mask, a signal here would fire ``_teardown_proc`` (which may
-    # keep the log) and then the surrounding ``with`` block's ``finally``
-    # would unlink it anyway. See docstring for the full race.
+    # Atomic critical section: mask SIGTERM/SIGINT around the whole
+    # ``Popen()`` + register + attribute-set + ``release()`` sequence.
+    # Codex round-5 BLOCKING: the mask MUST be installed BEFORE
+    # ``Popen()`` runs, not after. If we masked only the post-Popen
+    # block, a signal could land between ``Popen()`` returning and the
+    # mask going up; the chat's SIGTERM handler would then run
+    # ``_cleanup()`` against an empty ``_active_procs`` and ``sys.exit``,
+    # orphaning the just-spawned child. Masking around the whole
+    # sequence closes that window — the orphan child case from #719 is
+    # now actually impossible for SIGTERM/SIGINT delivery on the main
+    # thread. (Other signals or asynchronous exceptions on background
+    # threads remain best-effort; the rest of the chat REPL is
+    # single-threaded.)
     _prev_term = _prev_int = None
     try:
         try:
@@ -3309,6 +3302,20 @@ def _spawn_chat_server(
             _prev_int = _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
         except (ValueError, OSError):
             pass
+        try:
+            proc = subprocess.Popen(  # noqa: S603
+                cmd,
+                stdout=log,
+                stderr=subprocess.STDOUT,
+                start_new_session=True,
+                env=child_env,
+            )
+        except (OSError, ValueError):
+            # Popen raised before constructing the child — the log handle
+            # would otherwise leak. Re-raise after closing. The ``finally``
+            # below still restores the signal handlers.
+            log.close()
+            raise
         # Register first so a SIGTERM landing between here and the caller's
         # next statement still tears the child down.
         if register_in is not None:

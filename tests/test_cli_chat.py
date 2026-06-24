@@ -2272,22 +2272,29 @@ def test_serve_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
 
 
 def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tmp_path):
-    """Codex round-1 BLOCKING #1 — the
-    register/attribute-set/release handoff must be atomic w.r.t.
-    SIGTERM and SIGINT.
+    """Codex rounds 1 + 5 — the register/attribute-set/release handoff
+    AND the ``Popen()`` call itself must be inside the SIG_IGN mask.
 
-    Without atomicity, a signal landing between ``_active_procs.append``
-    and ``handle.release()`` (which currently were in different scopes)
-    would fire ``_teardown_proc`` (which keeps non-empty logs for
-    post-mortem) and then the surrounding context manager's
-    ``finally`` would unlink the kept log anyway. The fix passes the
-    handle into ``_spawn_chat_server`` and performs all three steps
-    under a single SIG_IGN mask. This test asserts:
+    Codex round-1 BLOCKING #1 was: a signal landing between
+    ``_active_procs.append`` and the caller's ``handle.release()``
+    would let ``_teardown_proc``'s keep-non-empty-log policy be undone
+    by the context manager's ``finally``.
 
-    1. ``log_handle.release()`` is called BEFORE the spawn returns.
-    2. SIGTERM is masked while register/attribute/release run.
-    3. The mask is restored to the previous handler after the
-       critical section.
+    Codex round-5 BLOCKING #1 was: even after the round-1 fix, the
+    mask was installed AFTER ``Popen()`` returned. A signal landing
+    between ``Popen()`` and the mask going up would let
+    ``_cleanup()`` walk an empty ``_active_procs`` and ``sys.exit``,
+    orphaning the just-spawned child.
+
+    This test asserts (under fake socket/Popen/signal):
+
+    1. SIGTERM and SIGINT are installed as ``SIG_IGN`` BEFORE
+       ``Popen()`` runs.
+    2. ``Popen()`` happens while the handlers are SIG_IGN.
+    3. ``register_in.append`` and the ``_rapid_mlx_log_path``
+       assignment happen while the handlers are SIG_IGN.
+    4. ``handle.release()`` happens while the handlers are SIG_IGN.
+    5. The original handlers are restored after the critical section.
     """
     import signal as _signal
 
@@ -2299,6 +2306,15 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
     def _spy_signal(signum, handler):
         signal_changes.append((signum, handler))
         return real_signal(signum, handler)
+
+    # Track signal state at each milestone so we can assert ordering
+    # AND that each milestone happened while the masks were live.
+    milestones: dict[str, tuple[object, object]] = {}
+
+    def _current_handlers() -> tuple[object, object]:
+        # ``signal.getsignal`` is the public way to read the installed
+        # handler without changing it.
+        return _signal.getsignal(_signal.SIGTERM), _signal.getsignal(_signal.SIGINT)
 
     class _FakeSocket:
         def __init__(self, *_, **__):
@@ -2316,75 +2332,91 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
         def getsockname(self):
             return ("127.0.0.1", 54322)
 
-    # When Popen runs, capture whether the path was already released
-    # (the release MUST happen during the critical section, which is
-    # after Popen — so it should NOT yet be released here).
-    release_state: dict = {}
-
     class _FakePopen:
         def __init__(
             self, cmd, *, stdout=None, stderr=None, start_new_session=False, env=None
         ):
-            release_state["released_at_popen"] = None  # set later
+            milestones["popen"] = _current_handlers()
 
         def poll(self):
             return None
+
+    # The list captures handler state at append-time.
+    class _SpyList(list):
+        def append(self, item):
+            milestones["append"] = _current_handlers()
+            super().append(item)
+
+    # Trap proc._rapid_mlx_log_path = ... via a watching subclass of the
+    # default object. Instead of patching Popen further, we instrument
+    # the spy list's append (which is right before the attribute set)
+    # and add another milestone from a wrapped handle.
+    from vllm_mlx._tempfile_safe import _TempfileHandle
+
+    class _SpyHandle(_TempfileHandle):
+        def release(self):
+            milestones["release"] = _current_handlers()
+            return super().release()
 
     monkeypatch.setattr("socket.socket", _FakeSocket)
     monkeypatch.setattr("subprocess.Popen", _FakePopen)
     monkeypatch.setattr(_signal, "signal", _spy_signal)
 
-    register_in: list = []
+    register_in: list = _SpyList()
     with managed_tempfile_path(
         prefix="rapid-mlx-chat-test-", suffix=".log", dir=str(tmp_path)
-    ) as handle:
-        assert handle.released is False
+    ) as real_handle:
+        # Wrap so we can also instrument release().
+        handle = _SpyHandle(real_handle.path)
+        # Keep the real handle's registry entry alive for cleanup —
+        # release the wrapper instead.
+        assert real_handle.released is False
         proc, _base_url = cli._spawn_chat_server(
             "qwen3.5-4b-4bit",
             handle.path,
             register_in=register_in,
             log_handle=handle,
         )
-        # Inside the ``with`` body but AFTER the spawn returns, the
-        # handle MUST already be released so the surrounding
-        # ``finally`` is a no-op for this path.
         assert handle.released is True, (
             "handoff race: handle was not released inside the "
             "spawn's signal-masked critical section"
         )
-        # The proc must be in register_in and have the path attribute,
-        # both set inside the same critical section.
         assert proc in register_in
         assert getattr(proc, "_rapid_mlx_log_path", None) == handle.path
+        # Clean up the real handle too so the surrounding
+        # managed_tempfile_path context exits cleanly.
+        real_handle.release()
+        import os as _os
 
-    # Both SIGTERM and SIGINT must have been masked with SIG_IGN, then
-    # restored to their previous handlers. We assert:
-    #   (a) at least one SIG_IGN install for each signum, and
-    #   (b) the LAST install for each signum is the restored handler
-    #       (i.e. not SIG_IGN). The pre-test handler for both is the
-    #       default handler captured by ``real_signal``; the spawn
-    #       should restore that exact value.
+        try:
+            _os.unlink(real_handle.path)
+        except OSError:
+            pass
+
+    # All four milestones MUST have been captured.
+    for name in ("popen", "append", "release"):
+        assert name in milestones, f"milestone {name!r} never ran"
+        term_h, int_h = milestones[name]
+        assert term_h is _signal.SIG_IGN, (
+            f"{name}: SIGTERM was not SIG_IGN ({term_h!r}). The "
+            f"register/attribute/release handoff is escaping the mask."
+        )
+        assert int_h is _signal.SIG_IGN, (
+            f"{name}: SIGINT was not SIG_IGN ({int_h!r}). The "
+            f"register/attribute/release handoff is escaping the mask."
+        )
+
+    # Mask restoration: the LAST install for each signum should NOT be
+    # SIG_IGN. (The pre-test handler is captured by the spy in
+    # ``signal_changes`` and re-installed by the spawn's ``finally``.)
     sig_ign_signums = {s for s, h in signal_changes if h is _signal.SIG_IGN}
-    assert _signal.SIGTERM in sig_ign_signums, (
-        f"SIGTERM not masked during handoff; changes={signal_changes}"
-    )
-    assert _signal.SIGINT in sig_ign_signums, (
-        f"SIGINT not masked during handoff; changes={signal_changes}"
-    )
-    # Codex pr_validate round-1 NIT: explicitly verify the mask was
-    # restored — the last install for each signum should NOT still be
-    # SIG_IGN.
+    assert _signal.SIGTERM in sig_ign_signums
+    assert _signal.SIGINT in sig_ign_signums
     last_term = next(
         (h for s, h in reversed(signal_changes) if s == _signal.SIGTERM), None
     )
     last_int = next(
         (h for s, h in reversed(signal_changes) if s == _signal.SIGINT), None
     )
-    assert last_term is not _signal.SIG_IGN, (
-        f"SIGTERM mask never restored; last install was SIG_IGN. "
-        f"changes={signal_changes}"
-    )
-    assert last_int is not _signal.SIG_IGN, (
-        f"SIGINT mask never restored; last install was SIG_IGN. "
-        f"changes={signal_changes}"
-    )
+    assert last_term is not _signal.SIG_IGN, "SIGTERM mask never restored"
+    assert last_int is not _signal.SIG_IGN, "SIGINT mask never restored"

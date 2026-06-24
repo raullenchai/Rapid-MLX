@@ -480,6 +480,19 @@ def test_chat_command_does_not_leak_tempfile_on_spawn_readiness_failure(tmp_path
         fake_proc.wait.return_value = 0
 
         def fake_spawn(model, log_path, served_name=None, *, register_in=None, log_handle=None):
+            # Codex round-5 #4: explicitly REQUIRE the chat callsite to
+            # pass log_handle. Without this assertion, the test could
+            # silently pass even if the callsite stopped wiring the
+            # managed handle through (then the context manager's own
+            # finally would unlink the path and the count delta would
+            # still be zero — false-negative).
+            assert log_handle is not None, (
+                "chat callsite regressed: log_handle was not passed "
+                "through to _spawn_chat_server"
+            )
+            assert log_handle.released is False, (
+                "chat callsite released the handle BEFORE the spawn"
+            )
             log_fh = open(log_path, "w")
             fake_proc._rapid_mlx_log = log_fh
             fake_proc._rapid_mlx_log_path = log_path
@@ -487,8 +500,8 @@ def test_chat_command_does_not_leak_tempfile_on_spawn_readiness_failure(tmp_path
                 register_in.append(fake_proc)
             # Mirror the real spawn's hand-off so the chat REPL's
             # ``_teardown_proc`` is the one that decides when to unlink.
-            if log_handle is not None:
-                log_handle.release()
+            log_handle.release()
+            assert log_handle.released is True
             return fake_proc, "http://127.0.0.1:9999"
 
         def fake_wait(base_url, proc, timeout_s=600):
