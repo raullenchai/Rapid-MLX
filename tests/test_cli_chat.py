@@ -2272,49 +2272,69 @@ def test_serve_allow_abbrev_disabled_rejects_ambiguous_no_thi(capsys):
 
 
 def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tmp_path):
-    """Codex rounds 1 + 5 — the register/attribute-set/release handoff
-    AND the ``Popen()`` call itself must be inside the SIG_IGN mask.
+    """Codex rounds 1 + 5 + pr_validate r2 — the
+    register/attribute-set/release handoff AND the ``Popen()`` call
+    itself must run with SIGTERM/SIGINT BLOCKED (not ignored).
 
-    Codex round-1 BLOCKING #1 was: a signal landing between
+    Codex round-1 BLOCKING #1: a signal landing between
     ``_active_procs.append`` and the caller's ``handle.release()``
     would let ``_teardown_proc``'s keep-non-empty-log policy be undone
     by the context manager's ``finally``.
 
-    Codex round-5 BLOCKING #1 was: even after the round-1 fix, the
-    mask was installed AFTER ``Popen()`` returned. A signal landing
-    between ``Popen()`` and the mask going up would let
-    ``_cleanup()`` walk an empty ``_active_procs`` and ``sys.exit``,
-    orphaning the just-spawned child.
+    Codex round-5 BLOCKING #1: the mask was installed AFTER ``Popen()``
+    returned. A signal landing between ``Popen()`` and the mask going
+    up would let ``_cleanup()`` walk an empty ``_active_procs`` and
+    ``sys.exit``, orphaning the just-spawned child.
 
-    This test asserts (under fake socket/Popen/signal):
+    Pr_validate round-2 BLOCKING: the prior fix used
+    ``signal.signal(SIG_IGN)``. Signal *disposition* is inherited by
+    forked children — so the spawned server inherited ``SIG_IGN`` and
+    refused to honour normal shutdown signals. The fix is
+    ``pthread_sigmask(SIG_BLOCK, ...)``, which only affects the
+    parent's thread mask and is reset to the default at ``exec``.
 
-    1. SIGTERM and SIGINT are installed as ``SIG_IGN`` BEFORE
-       ``Popen()`` runs.
-    2. ``Popen()`` happens while the handlers are SIG_IGN.
-    3. ``register_in.append`` and the ``_rapid_mlx_log_path``
-       assignment happen while the handlers are SIG_IGN.
-    4. ``handle.release()`` happens while the handlers are SIG_IGN.
-    5. The original handlers are restored after the critical section.
+    This test asserts (under fake socket/Popen + spy on
+    ``pthread_sigmask``):
+
+    1. SIGTERM and SIGINT are in the BLOCKED set BEFORE ``Popen()``
+       runs.
+    2. ``Popen()`` happens while the signals are blocked.
+    3. ``register_in.append`` happens while blocked.
+    4. ``handle.release()`` happens while blocked.
+    5. The original mask is restored after the critical section.
+    6. The installed signal HANDLER (disposition) is never changed —
+       so children inherit the parent's default, NOT ``SIG_IGN``.
     """
     import signal as _signal
 
     from vllm_mlx._tempfile_safe import managed_tempfile_path
 
-    signal_changes: list[tuple[int, object]] = []
+    # Track every ``pthread_sigmask`` call. Each milestone reads the
+    # CURRENT blocked set so we can assert it includes SIGTERM+SIGINT.
+    sigmask_calls: list[tuple[int, set, set]] = []
+    real_pthread_sigmask = _signal.pthread_sigmask
+
+    def _spy_pthread_sigmask(how, mask):
+        # Capture the mask BEFORE applying.
+        prev = real_pthread_sigmask(how, mask)
+        sigmask_calls.append((how, set(mask), set(prev)))
+        return prev
+
+    # Also spy on signal.signal — for this test it MUST NOT change the
+    # SIGTERM/SIGINT disposition.
+    signal_disposition_changes: list[tuple[int, object]] = []
     real_signal = _signal.signal
 
     def _spy_signal(signum, handler):
-        signal_changes.append((signum, handler))
+        signal_disposition_changes.append((signum, handler))
         return real_signal(signum, handler)
 
-    # Track signal state at each milestone so we can assert ordering
-    # AND that each milestone happened while the masks were live.
-    milestones: dict[str, tuple[object, object]] = {}
+    milestones: dict[str, set] = {}
 
-    def _current_handlers() -> tuple[object, object]:
-        # ``signal.getsignal`` is the public way to read the installed
-        # handler without changing it.
-        return _signal.getsignal(_signal.SIGTERM), _signal.getsignal(_signal.SIGINT)
+    def _current_blocked() -> set:
+        # ``SIG_BLOCK`` with an empty set queries the current mask
+        # without changing it.
+        return set(real_pthread_sigmask(_signal.SIG_BLOCK, set()))
 
     class _FakeSocket:
         def __init__(self, *_, **__):
@@ -2336,40 +2356,33 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
         def __init__(
             self, cmd, *, stdout=None, stderr=None, start_new_session=False, env=None
         ):
-            milestones["popen"] = _current_handlers()
+            milestones["popen"] = _current_blocked()
 
         def poll(self):
             return None
 
-    # The list captures handler state at append-time.
     class _SpyList(list):
         def append(self, item):
-            milestones["append"] = _current_handlers()
+            milestones["append"] = _current_blocked()
             super().append(item)
 
-    # Trap proc._rapid_mlx_log_path = ... via a watching subclass of the
-    # default object. Instead of patching Popen further, we instrument
-    # the spy list's append (which is right before the attribute set)
-    # and add another milestone from a wrapped handle.
     from vllm_mlx._tempfile_safe import _TempfileHandle
 
     class _SpyHandle(_TempfileHandle):
         def release(self):
-            milestones["release"] = _current_handlers()
+            milestones["release"] = _current_blocked()
             return super().release()
 
     monkeypatch.setattr("socket.socket", _FakeSocket)
     monkeypatch.setattr("subprocess.Popen", _FakePopen)
+    monkeypatch.setattr(_signal, "pthread_sigmask", _spy_pthread_sigmask)
     monkeypatch.setattr(_signal, "signal", _spy_signal)
 
     register_in: list = _SpyList()
     with managed_tempfile_path(
         prefix="rapid-mlx-chat-test-", suffix=".log", dir=str(tmp_path)
     ) as real_handle:
-        # Wrap so we can also instrument release().
         handle = _SpyHandle(real_handle.path)
-        # Keep the real handle's registry entry alive for cleanup —
-        # release the wrapper instead.
         assert real_handle.released is False
         proc, _base_url = cli._spawn_chat_server(
             "qwen3.5-4b-4bit",
@@ -2379,12 +2392,12 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
         )
         assert handle.released is True, (
             "handoff race: handle was not released inside the "
-            "spawn's signal-masked critical section"
+            "spawn's signal-blocked critical section"
         )
         assert proc in register_in
         assert getattr(proc, "_rapid_mlx_log_path", None) == handle.path
-        # Clean up the real handle too so the surrounding
-        # managed_tempfile_path context exits cleanly.
+        # Clean up the real handle too so the surrounding context
+        # exits cleanly.
         real_handle.release()
         import os as _os
 
@@ -2393,30 +2406,44 @@ def test_spawn_chat_server_releases_log_handle_under_signal_mask(monkeypatch, tm
         except OSError:
             pass
 
-    # All four milestones MUST have been captured.
+    # Each milestone MUST have had both signals in the blocked set.
     for name in ("popen", "append", "release"):
         assert name in milestones, f"milestone {name!r} never ran"
-        term_h, int_h = milestones[name]
-        assert term_h is _signal.SIG_IGN, (
-            f"{name}: SIGTERM was not SIG_IGN ({term_h!r}). The "
-            f"register/attribute/release handoff is escaping the mask."
+        blocked = milestones[name]
+        assert _signal.SIGTERM in blocked, (
+            f"{name}: SIGTERM not blocked; blocked={blocked}"
         )
-        assert int_h is _signal.SIG_IGN, (
-            f"{name}: SIGINT was not SIG_IGN ({int_h!r}). The "
-            f"register/attribute/release handoff is escaping the mask."
+        assert _signal.SIGINT in blocked, (
+            f"{name}: SIGINT not blocked; blocked={blocked}"
         )
 
-    # Mask restoration: the LAST install for each signum should NOT be
-    # SIG_IGN. (The pre-test handler is captured by the spy in
-    # ``signal_changes`` and re-installed by the spawn's ``finally``.)
-    sig_ign_signums = {s for s, h in signal_changes if h is _signal.SIG_IGN}
-    assert _signal.SIGTERM in sig_ign_signums
-    assert _signal.SIGINT in sig_ign_signums
-    last_term = next(
-        (h for s, h in reversed(signal_changes) if s == _signal.SIGTERM), None
+    # The mask must have been restored — the LAST sigmask call should
+    # be a ``SIG_SETMASK`` to the previous mask. The previous mask did
+    # NOT include SIGTERM/SIGINT (the test process didn't block them),
+    # so SIGTERM/SIGINT are NOT in the post-critical-section blocked
+    # set.
+    final_blocked = _current_blocked()
+    assert _signal.SIGTERM not in final_blocked, (
+        f"SIGTERM still blocked after spawn returned; blocked={final_blocked}"
     )
-    last_int = next(
-        (h for s, h in reversed(signal_changes) if s == _signal.SIGINT), None
+    assert _signal.SIGINT not in final_blocked, (
+        f"SIGINT still blocked after spawn returned; blocked={final_blocked}"
     )
-    assert last_term is not _signal.SIG_IGN, "SIGTERM mask never restored"
-    assert last_int is not _signal.SIG_IGN, "SIGINT mask never restored"
+
+    # Pr_validate round-2 BLOCKING: the disposition for SIGTERM/SIGINT
+    # MUST NOT have been touched. If we set SIG_IGN, the just-spawned
+    # child would inherit it. ``signal.signal`` is allowed to be called
+    # for OTHER signums (e.g. by setup hooks elsewhere); we only care
+    # that SIGTERM and SIGINT were never installed as SIG_IGN by the
+    # spawn helper itself.
+    sig_ign_changes = [
+        (s, h)
+        for s, h in signal_disposition_changes
+        if s in (_signal.SIGTERM, _signal.SIGINT) and h is _signal.SIG_IGN
+    ]
+    assert not sig_ign_changes, (
+        "Pr_validate round-2 BLOCKING regression: spawn used "
+        "signal.signal(SIG_IGN) for SIGTERM/SIGINT — child server "
+        "would inherit the ignored disposition and refuse normal "
+        f"shutdown. changes={sig_ign_changes}"
+    )

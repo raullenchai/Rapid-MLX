@@ -287,24 +287,29 @@ def managed_tempfile_path(
     try:
         yield handle
     finally:
-        # Codex round-5 finding #2: read ``handle.released`` under the
-        # registry lock so a concurrent ``release()`` cannot interleave
-        # between the read and the unlink. With the lock-held check,
-        # either:
-        #   - ``release()`` finished first → ``released=True`` → we
-        #     skip the unlink (caller now owns).
-        #   - ``release()`` is concurrent → it blocks on the lock,
-        #     reads ``released=False``, and we unlink. The unlink is
-        #     idempotent (``FileNotFoundError`` is tolerated by
-        #     ``release()``'s atexit pass), so even if release()
-        #     observes ``released=False`` and the caller later
-        #     unlinks again, nothing breaks.
-        # This serializes the ownership transition for the multi-
-        # threaded edge case codex flagged. The chat REPL is
-        # single-threaded today; the lock is cheap and removes the
-        # foot-gun for future callers.
+        # Pr_validate round-2 BLOCKING #2: claim the ownership decision
+        # atomically — set ``_released = True`` under the lock to mark
+        # "context-manager is cleaning up", which makes a subsequent
+        # ``release()`` call a no-op (it also checks ``_released``
+        # under the same lock). Without this, the prior shape
+        # (check under lock → release lock → unlink) had a window
+        # where a concurrent ``release()`` could complete between the
+        # check and the unlink, and the context manager would still
+        # unlink the file the caller has just taken ownership of.
+        #
+        # State table after the lock-held flip:
+        #   - context-mgr won the race → ``_released = True`` (now
+        #     owned by us); we unlink below.
+        #   - ``release()`` won the race → ``_released = True`` was
+        #     already set; the ``should_unlink = not prev_released``
+        #     check picks that up and we skip the unlink.
         with _pending_lock:
-            should_unlink = not handle.released
+            prev_released = handle._released
+            if not prev_released:
+                # Claim the cleanup. Any future ``release()`` sees
+                # ``_released = True`` and becomes a no-op.
+                handle._released = True
+        should_unlink = not prev_released
         if should_unlink:
             # Codex round-3 BLOCKING: unlink BEFORE discarding from
             # the registry. The original order (discard → unlink) had

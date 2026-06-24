@@ -3279,29 +3279,44 @@ def _spawn_chat_server(
     # see a stdin pipe and re-evaluate against a potentially-stale cache.
     child_env = os.environ.copy()
     child_env["RAPID_MLX_CHAT_SPAWN"] = "1"
-    # Atomic critical section: mask SIGTERM/SIGINT around the whole
-    # ``Popen()`` + register + attribute-set + ``release()`` sequence.
-    # Codex round-5 BLOCKING: the mask MUST be installed BEFORE
-    # ``Popen()`` runs, not after. If we masked only the post-Popen
-    # block, a signal could land between ``Popen()`` returning and the
-    # mask going up; the chat's SIGTERM handler would then run
-    # ``_cleanup()`` against an empty ``_active_procs`` and ``sys.exit``,
-    # orphaning the just-spawned child. Masking around the whole
-    # sequence closes that window — the orphan child case from #719 is
-    # now actually impossible for SIGTERM/SIGINT delivery on the main
-    # thread. (Other signals or asynchronous exceptions on background
-    # threads remain best-effort; the rest of the chat REPL is
-    # single-threaded.)
+    # Atomic critical section: block SIGTERM/SIGINT delivery around
+    # the whole ``Popen()`` + register + attribute-set + ``release()``
+    # sequence. Codex pr_validate round-2 BLOCKING: must use
+    # ``pthread_sigmask`` (block), NOT ``signal.signal(SIG_IGN)``
+    # (ignore), because signal DISPOSITION is inherited by ``fork``ed
+    # children. If we set the parent's disposition to ``SIG_IGN`` and
+    # then ``Popen()`` runs, the child server inherits ``SIG_IGN`` for
+    # SIGTERM/SIGINT and will refuse to honour normal shutdown signals
+    # for its entire lifetime. ``pthread_sigmask`` only affects the
+    # signal mask of the current thread, which is NOT inherited
+    # across ``fork`` + ``exec`` because the kernel resets the mask
+    # at exec time. On POSIX systems the child therefore exec's with
+    # the default mask AND default disposition.
+    #
+    # On platforms without ``pthread_sigmask`` (Windows), fall back
+    # to the ``SIG_IGN`` approach and accept the inherit-into-child
+    # caveat — the chat REPL is not a Windows feature anyway.
+    has_pthread_sigmask = hasattr(_signal, "pthread_sigmask")
+    sigset = {_signal.SIGTERM, _signal.SIGINT}
+    _prev_mask = None
     _prev_term = _prev_int = None
     try:
-        try:
-            _prev_term = _signal.signal(_signal.SIGTERM, _signal.SIG_IGN)
-        except (ValueError, OSError):
-            pass
-        try:
-            _prev_int = _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
-        except (ValueError, OSError):
-            pass
+        if has_pthread_sigmask:
+            try:
+                _prev_mask = _signal.pthread_sigmask(_signal.SIG_BLOCK, sigset)
+            except (ValueError, OSError):
+                _prev_mask = None
+        else:
+            # Windows fallback — best effort; the child inherit caveat
+            # applies but the chat REPL targets POSIX.
+            try:
+                _prev_term = _signal.signal(_signal.SIGTERM, _signal.SIG_IGN)
+            except (ValueError, OSError):
+                pass
+            try:
+                _prev_int = _signal.signal(_signal.SIGINT, _signal.SIG_IGN)
+            except (ValueError, OSError):
+                pass
         try:
             proc = subprocess.Popen(  # noqa: S603
                 cmd,
@@ -3313,7 +3328,7 @@ def _spawn_chat_server(
         except (OSError, ValueError):
             # Popen raised before constructing the child — the log handle
             # would otherwise leak. Re-raise after closing. The ``finally``
-            # below still restores the signal handlers.
+            # below still restores the signal mask / handlers.
             log.close()
             raise
         # Register first so a SIGTERM landing between here and the caller's
@@ -3331,16 +3346,26 @@ def _spawn_chat_server(
         if log_handle is not None:
             log_handle.release()
     finally:
-        # Best-effort restore so post-spawn signals route normally.
-        for signum, prev in (
-            (_signal.SIGTERM, _prev_term),
-            (_signal.SIGINT, _prev_int),
-        ):
-            if prev is not None:
+        # Best-effort restore so post-spawn signals route normally. Any
+        # SIGTERM/SIGINT that landed while blocked is delivered HERE
+        # (kernel-queued, exactly the desired behaviour: the chat's
+        # installed handler now sees the proc in ``_active_procs``).
+        if has_pthread_sigmask:
+            if _prev_mask is not None:
                 try:
-                    _signal.signal(signum, prev)
+                    _signal.pthread_sigmask(_signal.SIG_SETMASK, _prev_mask)
                 except (ValueError, OSError):
                     pass
+        else:
+            for signum, prev in (
+                (_signal.SIGTERM, _prev_term),
+                (_signal.SIGINT, _prev_int),
+            ):
+                if prev is not None:
+                    try:
+                        _signal.signal(signum, prev)
+                    except (ValueError, OSError):
+                        pass
     return proc, base_url
 
 

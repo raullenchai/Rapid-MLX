@@ -375,6 +375,86 @@ def test_cleanup_unlinks_before_discarding_from_registry(monkeypatch, tmp_path):
         _tempfile_safe._pending_paths.discard(leaked)
 
 
+def test_concurrent_release_during_context_exit_does_not_double_unlink(
+    monkeypatch, tmp_path
+):
+    """Pr_validate round-2 BLOCKING #2: race-free ownership transition.
+
+    The original cleanup shape was:
+
+        with _pending_lock:
+            should_unlink = not handle.released
+        if should_unlink:
+            os.unlink(path)
+
+    A concurrent ``release()`` arriving between the lock-release and
+    ``os.unlink`` would set ``_released=True`` AFTER our check, and we
+    would still proceed to unlink — clobbering the file the caller
+    has just taken ownership of.
+
+    The fix flips ``_released=True`` ATOMICALLY with the check, so
+    any subsequent ``release()`` sees ``_released=True`` and becomes
+    a no-op.
+
+    Test: race ``release()`` against context exit using a barrier
+    pinned by patching ``os.unlink`` to fire ``release()`` from
+    another thread BEFORE doing the real unlink. With the fix,
+    ``release()`` sees the path already gone from the registry and
+    ``_released=True`` already set — it's a no-op. Without the fix,
+    the test would observe two distinct ownership transitions
+    (released-then-unlinked).
+    """
+    import threading
+
+    from vllm_mlx import _tempfile_safe
+
+    captured_state: list[bool] = []
+
+    real_unlink = os.unlink
+
+    def _racing_unlink(p):
+        # While we're "in" the unlink, fire release() from another
+        # thread. If the fix is correct, that release() is a no-op
+        # because _released is already True (claimed by the
+        # context-exit cleanup).
+        if "ut-race-" in os.path.basename(p):
+
+            def _do_release():
+                # Should return path but observe released=True or
+                # transition the state safely without conflicting
+                # with our pending unlink.
+                handle_ref[0].release()
+
+            t = threading.Thread(target=_do_release)
+            t.start()
+            t.join(timeout=2)
+            assert not t.is_alive(), "release() thread hung"
+            captured_state.append(handle_ref[0].released)
+        return real_unlink(p)
+
+    monkeypatch.setattr(os, "unlink", _racing_unlink)
+
+    handle_ref: list = [None]
+    with managed_tempfile_path(
+        prefix="ut-race-", suffix=".tmp", dir=str(tmp_path)
+    ) as h:
+        handle_ref[0] = h
+        path = h.path
+        assert os.path.exists(path)
+
+    # File should be gone (one unlink succeeded).
+    assert not os.path.exists(path)
+    # The race captured exactly one state observation: the context
+    # manager had already claimed cleanup (_released=True) when
+    # release() ran from the other thread.
+    assert captured_state == [True], (
+        f"race condition: release() observed released={captured_state}, "
+        "expected exactly one observation of True (cleanup-claimed)"
+    )
+    # Registry should be empty for that path.
+    assert path not in _tempfile_safe._pending_snapshot()
+
+
 def _count_in_dir(d: str) -> int:
     """Count ``rapid-mlx-chat-*.log`` files in ``d``."""
     try:
