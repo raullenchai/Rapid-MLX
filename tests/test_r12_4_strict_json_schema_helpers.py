@@ -306,6 +306,34 @@ def test_validate_and_envelope_rejects_malformed_schema():
     assert "schema" in details["message"].lower()
 
 
+def test_validate_and_envelope_json_pointer_escapes_slash_and_tilde():
+    """Codex r15 #1 — failing_path MUST follow RFC 6901 (JSON
+    Pointer). Property names containing ``~`` are escaped to
+    ``~0`` and ``/`` to ``~1`` so the emitted pointer is
+    unambiguously parseable. Pre-fix a property name like ``"a/b"``
+    produced a pointer ``/a/b`` that any spec-compliant parser
+    would split as two segments ``["a", "b"]`` instead of one
+    segment ``["a/b"]``."""
+    schema = {
+        "type": "object",
+        "properties": {
+            "a/b": {"type": "integer"},
+            "c~d": {"type": "integer"},
+        },
+        "required": ["a/b"],
+    }
+    # Failing payload: ``a/b`` value is a string (type violation),
+    # not an integer.
+    ok, details = validate_and_envelope(json.dumps({"a/b": "not-an-int"}), schema)
+    assert ok is False
+    # The failing path MUST be ``/a~1b`` (with ``/`` escaped to ``~1``)
+    # — NOT ``/a/b`` (which would imply two-segment nesting).
+    assert details["failing_path"] == "/a~1b", (
+        f"failing_path must escape '/' as '~1' per RFC 6901; "
+        f"got {details['failing_path']!r}"
+    )
+
+
 def test_build_repair_messages_filters_assistant_turns_from_multiturn():
     """Codex r14 #2 — when the original conversation is multi-turn
     (system + user + assistant + user + ... pattern), the assistant

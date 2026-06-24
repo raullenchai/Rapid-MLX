@@ -236,7 +236,24 @@ def validate_and_envelope(
         first: ValidationError = next(validator.iter_errors(parsed))
     except StopIteration:
         return True, None
-    failing_path = "/" + "/".join(str(p) for p in first.absolute_path)
+
+    # Codex r15 #1: encode the failing path per RFC 6901 (JSON
+    # Pointer). Property names containing ``~`` or ``/`` are
+    # escaped to ``~0`` and ``~1`` respectively so the emitted
+    # pointer is unambiguously parseable and round-trippable. Pre-
+    # fix the helper simply joined with ``/``, which produced
+    # ambiguous pointers for schemas with property names like
+    # ``"a/b"`` (the joined path looked like a two-segment pointer
+    # instead of a one-segment pointer with an embedded slash).
+    def _json_pointer_escape(segment: str) -> str:
+        # Order matters — ``~`` escape MUST run BEFORE the ``/``
+        # escape so ``~`` characters introduced by the first
+        # substitution aren't double-escaped.
+        return segment.replace("~", "~0").replace("/", "~1")
+
+    failing_path = "/" + "/".join(
+        _json_pointer_escape(str(p)) for p in first.absolute_path
+    )
     if failing_path == "/":
         failing_path = "/" if list(first.absolute_path) else ""
     # Compact ``expected`` summary: ``"<validator>: <validator_value>"``
@@ -264,6 +281,26 @@ def validate_and_envelope(
 # ---------------------------------------------------------------------------
 # Repair hint injection
 # ---------------------------------------------------------------------------
+
+
+_SAFE_PTYPE_RE = re.compile(r"^[A-Za-z0-9_\-]+$")
+
+
+def _sanitize_content_type(ptype: Any) -> str:
+    """Codex r15 NIT helper — bound ``type`` field interpolation.
+
+    Returns a short, alphanumeric+dash+underscore-only
+    representation of ``ptype`` suitable for interpolating into
+    operator-facing placeholders. A non-conforming input returns
+    a literal ``"unknown"`` rather than the raw value.
+    """
+    if not isinstance(ptype, str):
+        return "unknown"
+    if len(ptype) > 32:
+        return "unknown"
+    if not _SAFE_PTYPE_RE.match(ptype):
+        return "unknown"
+    return ptype
 
 
 def _content_to_text(content: Any) -> str:
@@ -298,7 +335,16 @@ def _content_to_text(content: Any) -> str:
                     if isinstance(text, str):
                         parts.append(text)
                 else:
-                    parts.append(f"[non-text content omitted: type={ptype}]")
+                    # Codex r15 NIT: bound ``ptype`` to a short
+                    # alphanumeric+dash+underscore-only sanitized
+                    # form before interpolating into the
+                    # placeholder. A malformed content part with a
+                    # huge or control-character ``type`` value
+                    # would otherwise bloat the repair prompt and
+                    # could carry shell-control characters into a
+                    # downstream log surface.
+                    safe_ptype = _sanitize_content_type(ptype)
+                    parts.append(f"[non-text content omitted: type={safe_ptype}]")
             else:
                 parts.append(str(part))
         return "\n".join(parts)
