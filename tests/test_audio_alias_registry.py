@@ -765,53 +765,321 @@ class TestTextServeServedModelNameDoesNotRegress:
 
     Brittleness note: running ``serve_command`` end-to-end for a
     text alias requires mocking ~40 SchedulerConfig / engine knobs.
-    Instead we pin the contract at the two call sites that matter
-    (DFlash + load_model) via source-level inspection — the text
-    fix lives there, and any refactor that drops the ``args.served_model_name``
-    forwarding will be caught by this static check.
+    Instead we use AST parsing to pin the two contract points that
+    matter (call-site keyword + assignment target). Codex r2 BLOCKING
+    feedback flagged the prior substring-check approach as a false
+    pass on comments / dead code — the AST walk below is immune to
+    that class of bug because it only matches real ``ast.Call`` /
+    ``ast.Assign`` nodes, not string literals.
     """
 
+    @staticmethod
+    def _is_args_served_model_name(node) -> bool:
+        """Strict structural match for ``args.served_model_name``.
+
+        Codex r3 BLOCKING #2: a substring check on ``ast.unparse``
+        would false-pass on ``args.served_model_name_backup``,
+        ``not args.served_model_name``, or any expression that
+        merely *mentions* the attribute. Enforce ``ast.Attribute``
+        whose ``value`` is ``ast.Name("args")`` and whose ``attr``
+        is exactly ``"served_model_name"``.
+        """
+        import ast as _ast
+
+        return (
+            isinstance(node, _ast.Attribute)
+            and isinstance(node.value, _ast.Name)
+            and node.value.id == "args"
+            and node.attr == "served_model_name"
+        )
+
+    @staticmethod
+    def _walk_top_level(func_def):
+        """Yield every node inside ``func_def`` reachable WITHOUT
+        crossing a nested scope boundary.
+
+        Codex r4 BLOCKING: bare ``ast.walk`` descends into nested
+        ``FunctionDef`` / ``Lambda`` / ``ClassDef`` bodies, so a
+        copy of the contract expression inside an inner helper
+        would false-pass the live forwarding check. This walker
+        treats those nodes as opaque — descend INTO control flow
+        (``If``/``For``/``Try``/``With``) but NOT into other
+        scopes that have their own name resolution.
+
+        It also stops at constant-False ``if False:`` branches —
+        codex r4 explicitly called out dead-code matches.
+        """
+        import ast as _ast
+
+        # Scope boundaries the walker must not cross.
+        _SCOPE_NODES = (
+            _ast.FunctionDef,
+            _ast.AsyncFunctionDef,
+            _ast.Lambda,
+            _ast.ClassDef,
+        )
+
+        def _constant_test(if_node):
+            """Return ``True`` for ``if True:``-shaped tests,
+            ``False`` for ``if False:`` / ``if 0:`` / ``if None:``-
+            shaped tests, and ``None`` for any non-constant test.
+            """
+            test = if_node.test
+            if isinstance(test, _ast.Constant):
+                return bool(test.value)
+            return None
+
+        stack = list(func_def.body)
+        while stack:
+            node = stack.pop()
+            yield node
+            # Skip descending into nested scopes — their bodies are
+            # treated as opaque.
+            if isinstance(node, _SCOPE_NODES):
+                continue
+            # Constant-test ``If`` nodes: descend ONLY into the
+            # branch the compiler would actually execute. Codex r4
+            # BLOCKING flagged that the prior implementation only
+            # handled ``if False:`` (skip body, take orelse), which
+            # left the symmetric ``if True: ... else: <CONTRACT>``
+            # case false-passing — the unreachable ``else`` was
+            # still walked.
+            if isinstance(node, _ast.If):
+                truth = _constant_test(node)
+                if truth is True:
+                    # ``if True:`` — only the body executes.
+                    stack.extend(node.body)
+                    continue
+                if truth is False:
+                    # ``if False:`` — only the orelse executes.
+                    stack.extend(node.orelse)
+                    continue
+                # Non-constant test: both branches reachable, walk
+                # both via the generic iter_child_nodes path below.
+            # Push the children. Use ``iter_child_nodes`` so the
+            # walk visits sibling order; nested scope filtering on
+            # the next pop handles the recursion stop.
+            stack.extend(_ast.iter_child_nodes(node))
+
     def test_load_model_call_site_threads_served_model_name(self):
-        """``serve_command`` forwards ``args.served_model_name``
-        verbatim to ``load_model`` and ``run_dflash_server``. Pin
-        BOTH call sites — a refactor that drops either silently
-        regresses the text-mode contract."""
+        """``serve_command`` forwards ``args.served_model_name`` to
+        ``load_model`` (verbatim) and to ``run_dflash_server`` (with
+        the ``_alias_name`` fallback).  Strict structural match per
+        codex r3 BLOCKING — no substring fuzziness.
+
+        Pinned contracts:
+          * ``load_model(served_model_name=args.served_model_name, ...)``
+          * ``run_dflash_server(served_model_name=args.served_model_name or _alias_name, ...)``
+
+        Comments and string literals are not ``Call`` nodes — immune
+        to the prior false-pass class.
+        """
+        import ast
         import inspect
 
         from vllm_mlx import cli
 
-        src = inspect.getsource(cli.serve_command)
-        # load_model call site (non-DFlash text path).
-        assert "served_model_name=args.served_model_name" in src, (
-            "text-mode regression: serve_command no longer forwards "
-            "args.served_model_name to load_model. The audio R11-K "
-            "fix MUST NOT touch this contract."
+        tree = ast.parse(inspect.getsource(cli.serve_command))
+        # Locate the FunctionDef itself (inspect.getsource returns the
+        # decorators + def header + body as a module-level fragment).
+        func_def = next((n for n in tree.body if isinstance(n, ast.FunctionDef)), None)
+        assert func_def is not None and func_def.name == "serve_command", (
+            "serve_command source no longer parses to a FunctionDef "
+            "named serve_command — the test scaffold needs an update."
         )
-        # DFlash call site (text path with --enable-dflash).
-        assert "served_model_name=args.served_model_name or _alias_name" in src, (
-            "text-mode (DFlash) regression: serve_command no longer "
-            "forwards args.served_model_name to run_dflash_server."
+
+        # Codex r4 BLOCKING: walk ONLY top-level reachable statements,
+        # NOT nested helper functions or dead-code branches. A call
+        # inside an inner ``def _helper(): load_model(...)`` would
+        # false-pass under the previous ``ast.walk`` approach.
+        # Codex r5 BLOCKING: collect ALL reachable call sites, not
+        # just one — a refactor that adds a second ``load_model``
+        # call missing the kwarg would slip past a first-hit overwrite.
+        load_model_calls = []
+        dflash_calls = []
+        for node in self._walk_top_level(func_def):
+            if not isinstance(node, ast.Call):
+                continue
+            callee = ""
+            if isinstance(node.func, ast.Name):
+                callee = node.func.id
+            elif isinstance(node.func, ast.Attribute):
+                callee = node.func.attr
+            if callee == "load_model":
+                load_model_calls.append(node)
+            elif callee == "run_dflash_server":
+                dflash_calls.append(node)
+
+        # ----- load_model contract: every reachable call must
+        # forward ``served_model_name=args.served_model_name``
+        # verbatim. Codex r5 BLOCKING #1: an overwriting first-hit
+        # check would let a second call site drop the kwarg silently.
+        assert load_model_calls, (
+            "text-mode regression: serve_command no longer calls "
+            "``load_model`` at all. The audio fork must NOT short-"
+            "circuit the text path."
         )
+        for i, call in enumerate(load_model_calls):
+            smn_kw = next(
+                (kw for kw in call.keywords if kw.arg == "served_model_name"),
+                None,
+            )
+            assert smn_kw is not None, (
+                f"text-mode regression: ``load_model(...)`` call "
+                f"#{i + 1} of {len(load_model_calls)} no longer "
+                "receives a ``served_model_name`` keyword. The R11-K "
+                "audio fix MUST NOT touch this contract — every "
+                "reachable call site must forward the kwarg."
+            )
+            # Strict: value MUST be exactly the ``args.served_model_name``
+            # attribute access — no wrapping, no fallback, no rename.
+            assert self._is_args_served_model_name(smn_kw.value), (
+                f"text-mode regression: ``load_model`` call #{i + 1}: "
+                "``served_model_name=...`` is no longer exactly "
+                f"``args.served_model_name`` (got {ast.unparse(smn_kw.value)!r}). "
+                "Any wrapping expression (e.g. "
+                "``not args.served_model_name``, "
+                "``args.served_model_name_backup``) is a contract break."
+            )
+
+        # ----- run_dflash_server contract: every reachable call must
+        # forward ``served_model_name=args.served_model_name or _alias_name``.
+        # Codex r5 BLOCKING #2 — same all-call-sites rule as above.
+        assert dflash_calls, (
+            "text-mode regression: serve_command no longer calls "
+            "``run_dflash_server`` — DFlash text serve broken."
+        )
+        for i, call in enumerate(dflash_calls):
+            smn_kw_d = next(
+                (kw for kw in call.keywords if kw.arg == "served_model_name"),
+                None,
+            )
+            assert smn_kw_d is not None, (
+                f"text-mode (DFlash) regression: ``run_dflash_server(...)`` "
+                f"call #{i + 1} of {len(dflash_calls)} no longer "
+                "receives a ``served_model_name`` keyword."
+            )
+            # Strict: must be ``<args.served_model_name> or <_alias_name>``
+            # — BoolOp with Or + exactly 2 operands in that order.
+            # Codex r3 BLOCKING #1: a permissive check would let the
+            # ``_alias_name`` fallback get dropped silently.
+            d_val = smn_kw_d.value
+            assert isinstance(d_val, ast.BoolOp) and isinstance(d_val.op, ast.Or), (
+                f"text-mode (DFlash) regression: ``run_dflash_server`` "
+                f"call #{i + 1}: ``served_model_name=...`` is no longer "
+                f"an ``or`` expression (got {ast.unparse(d_val)!r}). "
+                "The required shape is "
+                "``args.served_model_name or _alias_name``."
+            )
+            assert len(d_val.values) == 2, (
+                f"text-mode (DFlash) regression: ``run_dflash_server`` "
+                f"call #{i + 1}: served_model_name fallback is no "
+                "longer exactly 2 operands (got "
+                f"{[ast.unparse(v) for v in d_val.values]!r}). The "
+                "required shape is "
+                "``args.served_model_name or _alias_name``."
+            )
+            assert self._is_args_served_model_name(d_val.values[0]), (
+                f"text-mode (DFlash) regression: ``run_dflash_server`` "
+                f"call #{i + 1}: served_model_name first operand is no "
+                f"longer ``args.served_model_name`` (got "
+                f"{ast.unparse(d_val.values[0])!r})."
+            )
+            assert (
+                isinstance(d_val.values[1], ast.Name)
+                and d_val.values[1].id == "_alias_name"
+            ), (
+                f"text-mode (DFlash) regression: ``run_dflash_server`` "
+                f"call #{i + 1}: served_model_name fallback is no "
+                f"longer ``_alias_name`` (got "
+                f"{ast.unparse(d_val.values[1])!r}). This fallback is "
+                "what surfaces the friendly alias on /v1/models when "
+                "the operator did NOT pass --served-model-name."
+            )
 
     def test_server_load_model_still_maps_served_to_model_name(self):
         """``server.load_model``: ``_model_name = served_model_name
         or model_name``. The audio dispatcher mirrors this exact
-        contract (with ``entry.hf_id`` as the model_name fallback);
-        if the text-side semantics shift the audio mirror would
-        drift."""
+        expression with ``entry.hf_id`` as the fallback; if the text
+        side semantics shift the audio mirror would drift.
+
+        Codex r3 BLOCKING #3 strict check: the RHS MUST be an ``Or``
+        BoolOp with EXACTLY two operands in EXACTLY the order
+        ``served_model_name``, ``model_name``. A permissive check
+        would let ``served_model_name or other_name or model_name``
+        (which changes the precedence + adds a new fallback) pass
+        silently.
+        """
+        import ast
         import inspect
 
         from vllm_mlx import server
 
-        src = inspect.getsource(server.load_model)
-        # The fallback expression — same shape audio mirror uses.
-        assert "served_model_name or model_name" in src, (
-            "server.load_model no longer assigns "
-            "``_model_name = served_model_name or model_name``. "
-            "The audio dispatcher mirrors this exact expression "
-            "with entry.hf_id; if the text side changes shape, the "
-            "audio mirror must change in lockstep — failing this "
-            "test signals both sides need to be re-aligned."
+        tree = ast.parse(inspect.getsource(server.load_model))
+        func_def = next((n for n in tree.body if isinstance(n, ast.FunctionDef)), None)
+        assert func_def is not None and func_def.name == "load_model", (
+            "server.load_model source no longer parses to a FunctionDef "
+            "named load_model — the test scaffold needs an update."
+        )
+
+        # Codex r4 BLOCKING: top-level statements only — a copy of
+        # the assignment inside a nested helper or dead branch
+        # would false-pass under bare ``ast.walk``.
+        assign_rhs = None
+        for node in self._walk_top_level(func_def):
+            if not isinstance(node, ast.Assign):
+                continue
+            for tgt in node.targets:
+                if isinstance(tgt, ast.Name) and tgt.id == "_model_name":
+                    assign_rhs = node.value
+                    break
+            if assign_rhs is not None:
+                break
+
+        assert assign_rhs is not None, (
+            "server.load_model no longer assigns to ``_model_name`` "
+            "in a recognisable shape. The audio dispatcher's mirror "
+            "(``server._model_name = served_name or entry.hf_id``) "
+            "depends on this assignment existing on the text side; "
+            "both must change in lockstep."
+        )
+        # Strict: BoolOp + Or + exactly two operands, in order.
+        assert isinstance(assign_rhs, ast.BoolOp) and isinstance(
+            assign_rhs.op, ast.Or
+        ), (
+            "server.load_model ``_model_name = ...`` RHS is no longer "
+            "an ``or`` expression (got "
+            f"{ast.unparse(assign_rhs)!r}). The audio dispatcher's "
+            "mirror would drift — both sides must move together."
+        )
+        assert len(assign_rhs.values) == 2, (
+            "server.load_model ``_model_name`` RHS is no longer "
+            "exactly 2 operands (got "
+            f"{[ast.unparse(v) for v in assign_rhs.values]!r}). "
+            "Any extra fallback (e.g. ``served_model_name or "
+            "other_name or model_name``) changes the contract — "
+            "the audio mirror would need to add the same fallback."
+        )
+        # Order matters: ``served_model_name`` MUST come first, so a
+        # user-supplied value wins over the model_name default.
+        assert (
+            isinstance(assign_rhs.values[0], ast.Name)
+            and assign_rhs.values[0].id == "served_model_name"
+        ), (
+            "server.load_model ``_model_name`` RHS first operand is "
+            f"no longer ``served_model_name`` (got "
+            f"{ast.unparse(assign_rhs.values[0])!r}). Reversing the "
+            "order would make ``model_name`` always win — "
+            "--served-model-name would become inert."
+        )
+        assert (
+            isinstance(assign_rhs.values[1], ast.Name)
+            and assign_rhs.values[1].id == "model_name"
+        ), (
+            "server.load_model ``_model_name`` RHS second operand is "
+            f"no longer ``model_name`` (got "
+            f"{ast.unparse(assign_rhs.values[1])!r}). The fallback "
+            "default must remain the underlying engine model id."
         )
 
 
