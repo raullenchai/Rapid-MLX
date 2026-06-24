@@ -1023,15 +1023,14 @@ async def create_anthropic_message(
             matched_stop=getattr(output, "matched_stop", None),
             prompt_thinking_active=prompt_thinking_active_ns,
         )
-        # R-01 (was H-01): Anthropic-side mirror of the chat-route opt-in
-        # cutoff sentinel. Default-off — the Anthropic envelope already
-        # carries ``stop_reason="max_tokens"`` + the ``thinking`` content
-        # block, so SDK consumers have an unambiguous structured
-        # truncation signal without any synthetic ``text`` block. When
-        # the env knob ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1`` is set,
-        # the helper restores the legacy literal-text cue for callers
-        # who want it (e.g. chat UIs that only render text blocks). See
-        # helper docstring for the full predicate set.
+        # Issue #858: Anthropic-side mirror of the chat-route cutoff
+        # sentinel. Default-on (PR #802 / H-01 semantics restored) — the
+        # Anthropic envelope already carries ``stop_reason="max_tokens"``
+        # + the ``thinking`` content block as the structured truncation
+        # signal, but GUI clients that only render ``text`` blocks
+        # benefit from the literal cue surfacing in ``content`` too.
+        # Opt out via ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``.
+        # See helper docstring for the full predicate set.
         final_content = _apply_reasoning_cutoff_notice(
             final_content,
             reasoning_text,

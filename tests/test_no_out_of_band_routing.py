@@ -256,20 +256,21 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         "RAPID_MLX_CORS_ALLOW_HEADERS",
         "RAPID_MLX_CORS_MAX_AGE",
         "RAPID_MLX_CORS_ALLOW_CREDENTIALS",
-        # R-01 (was H-01) cutoff sentinel opt-IN. Pure UX knob — default
-        # OFF after the R-01 dogfood reversal: every transport already
-        # carries an unambiguous structured truncation signal
-        # (``finish_reason="length"`` / ``status="incomplete"`` /
-        # ``stop_reason="max_tokens"``), so synthesizing a literal text
-        # block the model never produced is treated as harmful
-        # injection. Callers who DO want the legacy literal-text cue
-        # can re-enable it on a single envelope field via
-        # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1`` (or
-        # ``true`` / ``on`` / ``yes`` / ``enabled``). Never selects a
+        # Cutoff sentinel opt-OUT (issue #858, restoring PR #802 /
+        # H-01 semantics after the R-01 (#815) opt-in flip caused
+        # empty-bubble regressions in GUI clients). Pure UX knob —
+        # default ON so clients that render only ``message.content``
+        # see the literal cue ``[truncated — reasoning incomplete;
+        # raise max_tokens]`` on length-cut mid-think. Power callers
+        # that want the strict-null shape (relying on the structured
+        # ``finish_reason="length"`` / ``status="incomplete"`` /
+        # ``stop_reason="max_tokens"`` cue alone) opt out via
+        # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` (or
+        # ``0`` / ``false`` / ``no`` / ``off``). Never selects a
         # model, parser, or routing tier; consumed only by
         # ``vllm_mlx.service.helpers._cutoff_notice_enabled`` to decide
         # whether the sentinel notice is surfaced. See PR
-        # fix/r01-truncated-injection-cross-route.
+        # fix/length-stop-rescue-stub-858.
         "RAPID_MLX_REASONING_CUTOFF_NOTICE",
         # F-K-CAPABILITIES-OMIT-AUDIO opt-in deep audio probe (boolean
         # flag). When set to a truthy value, the lifespan hook runs a

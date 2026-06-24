@@ -1042,14 +1042,12 @@ async def _non_stream(
 
     finish_reason = "tool_calls" if tool_calls else output.finish_reason
 
-    # R-01 (was H-01): /v1/responses mirror of the opt-in cutoff
-    # sentinel. Default-off — the Responses envelope already reports
-    # ``status="incomplete"`` and
-    # ``usage.output_tokens_details.reasoning_tokens``, so SDK consumers
-    # have an unambiguous structured truncation signal without any
-    # synthetic ``output_text`` block. When the env knob
-    # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1`` is set, the helper restores
-    # the legacy literal-text cue for callers who want it. The Responses
+    # Issue #858: /v1/responses mirror of the cutoff sentinel.
+    # Default-on (PR #802 / H-01 semantics restored) — clients that only
+    # render ``output_text`` blocks (rather than walking ``status`` +
+    # ``usage.output_tokens_details.reasoning_tokens``) get the literal
+    # cue in-band. Opt out via
+    # ``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``. The Responses
     # surface intentionally does NOT run
     # ``_rescue_silent_drop_from_reasoning`` (this endpoint never
     # carried the issue#569 silent-drop pre-history), so the helper sees

@@ -18,19 +18,19 @@ History
   literal string ``[truncated — reasoning incomplete; raise max_tokens]``
   into ``content`` by default so SDK consumers saw something instead of
   an empty bubble.
-* R-01 (0.8.5 dogfood) flips the policy: synthesizing a placeholder text
-  block the model never produced is harmful injection. Every transport
-  already carries an unambiguous structured truncation signal
-  (``finish_reason="length"`` / ``status="incomplete"`` /
-  ``stop_reason="max_tokens"``) plus ``reasoning_content`` / ``thinking``
-  populated. The sentinel is preserved as an opt-IN behaviour for callers
-  (e.g. chat UIs that only render text blocks) who still want the legacy
-  literal-text cue.
+* R-01 (PR #815, 0.8.5 dogfood) flipped the policy to opt-IN on
+  structured-purity rationale.
+* Issue #858 (this PR, 0.8.12) reverts R-01 back to PR #802 semantics:
+  GUI clients (rapid-desktop, OpenAI SDK consumers, OpenWebUI compat)
+  showed empty bubbles under R-01's default-off because they only render
+  ``message.content`` and don't walk the structured ``finish_reason``
+  field. The sentinel is the user-visible cue.
 
-Default (R-01) is now OFF. ``RAPID_MLX_REASONING_CUTOFF_NOTICE=1``
-re-enables the sentinel. The helper lives in
-``vllm_mlx.service.helpers._apply_reasoning_cutoff_notice`` and is the
-single source of truth for ``/v1/chat/completions``,
+Default (issue #858) is now ON.
+``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled`` (or ``0`` / ``false`` /
+``no`` / ``off``) opts out for power callers that want strict-null. The
+helper lives in ``vllm_mlx.service.helpers._apply_reasoning_cutoff_notice``
+and is the single source of truth for ``/v1/chat/completions``,
 ``/v1/responses``, and ``/v1/messages``.
 """
 
