@@ -147,6 +147,11 @@ class RequestOutputCollector:
             output_text=new.output_text,  # Use latest cumulative
             finished=new.finished,
             finish_reason=new.finish_reason,
+            # Preserve matched_stop from whichever side set it (the terminal
+            # output is the producer, so ``new`` usually carries it but if the
+            # match landed mid-stream and the terminal carries None we keep
+            # the earlier value).
+            matched_stop=new.matched_stop or existing.matched_stop,
             prompt_tokens=new.prompt_tokens,
             completion_tokens=new.completion_tokens,
         )

@@ -730,6 +730,7 @@ class BatchedEngine(BaseEngine):
                 min_p=kwargs.pop("min_p", 0.0),
                 presence_penalty=kwargs.pop("presence_penalty", 0.0),
                 repetition_penalty=kwargs.pop("repetition_penalty", 1.0),
+                stop=stop or [],
                 logits_processors=kwargs.pop("logits_processors", None),
             )
 
@@ -741,6 +742,7 @@ class BatchedEngine(BaseEngine):
                 finish_reason=output.finish_reason,
                 mtp_drafts=output.mtp_drafts,
                 mtp_accepted=output.mtp_accepted,
+                matched_stop=getattr(output, "matched_stop", None),
             )
 
         # Use LLM engine for text-only (non-MLLM models)
@@ -771,6 +773,7 @@ class BatchedEngine(BaseEngine):
             prompt_tokens=output.prompt_tokens,
             completion_tokens=output.completion_tokens,
             finish_reason=output.finish_reason,
+            matched_stop=getattr(output, "matched_stop", None),
         )
 
     async def stream_generate(
@@ -819,6 +822,7 @@ class BatchedEngine(BaseEngine):
                 min_p=kwargs.pop("min_p", 0.0),
                 presence_penalty=kwargs.pop("presence_penalty", 0.0),
                 repetition_penalty=kwargs.pop("repetition_penalty", 1.0),
+                stop=stop or [],
                 logits_processors=kwargs.pop("logits_processors", None),
             )
 
@@ -832,6 +836,7 @@ class BatchedEngine(BaseEngine):
                     finish_reason=output.finish_reason,
                     mtp_drafts=output.mtp_drafts,
                     mtp_accepted=output.mtp_accepted,
+                    matched_stop=getattr(output, "matched_stop", None),
                 )
             return
 
@@ -867,6 +872,7 @@ class BatchedEngine(BaseEngine):
                 completion_tokens=output.completion_tokens,
                 finished=output.finished,
                 finish_reason=output.finish_reason,
+                matched_stop=getattr(output, "matched_stop", None),
             )
 
     async def chat(

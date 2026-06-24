@@ -102,6 +102,7 @@ def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
 def openai_to_anthropic(
     response: ChatCompletionResponse,
     model: str,
+    matched_stop: str | None = None,
 ) -> AnthropicResponse:
     """
     Convert an OpenAI Chat Completions response to Anthropic Messages API format.
@@ -109,6 +110,10 @@ def openai_to_anthropic(
     Args:
         response: OpenAI ChatCompletionResponse
         model: Model name for the response
+        matched_stop: When a client-supplied ``stop_sequences`` entry
+            triggered termination, the matching string.  Forces
+            ``stop_reason="stop_sequence"`` + ``stop_sequence=<matched>``
+            per the Anthropic Messages API spec (issue #469).
 
     Returns:
         Anthropic Messages API response
@@ -143,9 +148,9 @@ def openai_to_anthropic(
                     )
                 )
 
-        stop_reason = _convert_stop_reason(choice.finish_reason)
+        stop_reason = _convert_stop_reason(choice.finish_reason, matched_stop)
     else:
-        stop_reason = "end_turn"
+        stop_reason = "stop_sequence" if matched_stop else "end_turn"
 
     # If no content blocks, add empty text
     if not content:
@@ -155,6 +160,7 @@ def openai_to_anthropic(
         model=model,
         content=content,
         stop_reason=stop_reason,
+        stop_sequence=matched_stop if stop_reason == "stop_sequence" else None,
         usage=AnthropicUsage(
             input_tokens=response.usage.prompt_tokens if response.usage else 0,
             output_tokens=response.usage.completion_tokens if response.usage else 0,
@@ -302,13 +308,22 @@ def _convert_tool_choice(tool_choice: dict) -> str | dict | None:
     return "auto"
 
 
-def _convert_stop_reason(openai_reason: str | None) -> str:
+def _convert_stop_reason(
+    openai_reason: str | None,
+    matched_stop: str | None = None,
+) -> str:
     """
     Convert OpenAI finish_reason to Anthropic stop_reason.
 
     OpenAI: "stop" | "tool_calls" | "length" | "content_filter"
     Anthropic: "end_turn" | "tool_use" | "max_tokens" | "stop_sequence"
+
+    When ``matched_stop`` is supplied (a client ``stop_sequences`` entry
+    truncated the generation) the Anthropic spec requires
+    ``stop_reason="stop_sequence"`` regardless of the upstream label.
     """
+    if matched_stop:
+        return "stop_sequence"
     if openai_reason is None:
         return "end_turn"
 

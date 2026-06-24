@@ -210,6 +210,12 @@ class RequestOutput:
     # Status
     finished: bool = False
     finish_reason: Optional[str] = None
+    # When finish_reason == "stop" and termination was caused by a client-
+    # supplied stop string (``SamplingParams.stop``) matching in the output
+    # text, this carries the exact sequence that matched.  Surfaced to the
+    # Anthropic ``/v1/messages`` adapter so it can emit the spec-required
+    # ``stop_reason: "stop_sequence"`` + ``stop_sequence: "<matched>"``.
+    matched_stop: Optional[str] = None
     # Timing
     prompt_tokens: int = 0
     completion_tokens: int = 0

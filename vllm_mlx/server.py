@@ -885,6 +885,16 @@ def _prepare_anthropic_invocation(
         )
         chat_kwargs["tools"] = template_tools
 
+    # Forward Anthropic ``stop_sequences`` (mapped to OpenAI ``stop`` by the
+    # adapter) into the engine so the scheduler can enforce truncation
+    # per-token.  Without this the engine ignores the field entirely and
+    # the response would never carry ``stop_reason="stop_sequence"``
+    # (issue #469).
+    parser_name = _tool_call_parser if _enable_auto_tool_choice else None
+    merged_stop = get_parser_stop_tokens(parser_name, openai_request.stop)
+    if merged_stop:
+        chat_kwargs["stop"] = merged_stop
+
     if json_logits_processor is not None:
         json_logits_processor = _attach_response_format_logits_processor(
             chat_kwargs, json_logits_processor
@@ -5159,8 +5169,19 @@ def _inject_json_instruction(messages: list, instruction: str) -> list:
 # =============================================================================
 
 
-def _convert_anthropic_stop_reason(openai_reason: str | None) -> str:
-    """Convert OpenAI finish_reason to Anthropic stop_reason."""
+def _convert_anthropic_stop_reason(
+    openai_reason: str | None,
+    matched_stop: str | None = None,
+) -> str:
+    """Convert OpenAI finish_reason to Anthropic stop_reason.
+
+    When a client-supplied stop sequence triggered termination
+    (``matched_stop`` is non-empty) the Anthropic spec requires
+    ``stop_reason="stop_sequence"`` regardless of how we labelled the
+    upstream OpenAI ``finish_reason``.
+    """
+    if matched_stop:
+        return "stop_sequence"
     mapping = {
         "stop": "end_turn",
         "tool_calls": "tool_use",
@@ -5386,14 +5407,17 @@ async def create_anthropic_message(
         if not content_blocks:
             content_blocks.append(AnthropicResponseContentBlock(type="text", text=""))
 
+        matched_stop = getattr(output, "matched_stop", None)
         stop_reason = _convert_anthropic_stop_reason(
-            "tool_calls" if tool_calls else output.finish_reason
+            "tool_calls" if tool_calls else output.finish_reason,
+            matched_stop=matched_stop,
         )
 
         anthropic_response = AnthropicResponse(
             model=_response_model_name(anthropic_request.model),
             content=content_blocks,
             stop_reason=stop_reason,
+            stop_sequence=matched_stop if stop_reason == "stop_sequence" else None,
             usage=AnthropicUsage(
                 input_tokens=output.prompt_tokens,
                 output_tokens=output.completion_tokens,
@@ -5623,6 +5647,7 @@ async def _stream_anthropic_messages(
     # Stream content deltas
     accumulated_text = ""
     completion_tokens = 0
+    matched_stop: str | None = None
 
     # Tool call streaming suppression — prevents raw tool markup from leaking
     # as text_delta events. Mirrors the OpenAI streaming path logic.
@@ -5633,6 +5658,8 @@ async def _stream_anthropic_messages(
 
     try:
         async for output in engine.stream_chat(messages=messages, **chat_kwargs):
+            if getattr(output, "matched_stop", None) and not matched_stop:
+                matched_stop = output.matched_stop
             if metrics_tracker is not None:
                 metrics_tracker.observe_ttft()
             delta_text = output.new_text
@@ -5780,13 +5807,26 @@ async def _stream_anthropic_messages(
                 yield f"event: content_block_delta\ndata: {json.dumps({'type': 'content_block_delta', 'index': tool_index, 'delta': {'type': 'input_json_delta', 'partial_json': json.dumps(tool_input)}})}\n\n"
                 yield f"event: content_block_stop\ndata: {json.dumps({'type': 'content_block_stop', 'index': tool_index})}\n\n"
 
-        # Determine stop reason
-        stop_reason = "tool_use" if tool_calls else "end_turn"
+        # Determine stop reason.  A client-supplied stop_sequence match
+        # (issue #469) wins over the default "end_turn" so harnesses see
+        # the spec-compliant ``stop_reason``/``stop_sequence`` pair.
+        if tool_calls:
+            stop_reason = "tool_use"
+            stop_sequence_field: str | None = None
+        elif matched_stop:
+            stop_reason = "stop_sequence"
+            stop_sequence_field = matched_stop
+        else:
+            stop_reason = "end_turn"
+            stop_sequence_field = None
 
         # Emit message_delta with stop_reason and usage
         message_delta = {
             "type": "message_delta",
-            "delta": {"stop_reason": stop_reason, "stop_sequence": None},
+            "delta": {
+                "stop_reason": stop_reason,
+                "stop_sequence": stop_sequence_field,
+            },
             "usage": {"output_tokens": completion_tokens},
         }
         yield f"event: message_delta\ndata: {json.dumps(message_delta)}\n\n"

@@ -387,6 +387,7 @@ class MLLMScheduler:
             min_p=kwargs.pop("min_p", 0.0),
             presence_penalty=kwargs.pop("presence_penalty", 0.0),
             repetition_penalty=kwargs.pop("repetition_penalty", 1.0),
+            stop=kwargs.pop("stop", None) or [],
             logits_processors=kwargs.pop("logits_processors", None),
         )
 
@@ -640,6 +641,51 @@ class MLLMScheduler:
                 detok.add_token(response.token)
                 new_text = detok.last_segment
 
+            # Enforce SamplingParams.stop on the cumulative output text
+            # (issue #469).  Mirrors the LLM scheduler path: maintain a
+            # running buffer only when stop strings are present, scan for
+            # the earliest match, truncate, and schedule the request's uid
+            # for removal from the active batch.
+            matched_stop: Optional[str] = None
+            if request.sampling_params.stop and response.finish_reason is None:
+                if new_text:
+                    request.output_text = (request.output_text or "") + new_text
+                buf = request.output_text or ""
+                if buf:
+                    best_idx: Optional[int] = None
+                    for cand in request.sampling_params.stop:
+                        if not cand:
+                            continue
+                        idx = buf.find(cand)
+                        if idx == -1:
+                            continue
+                        if best_idx is None or idx < best_idx or (
+                            idx == best_idx and len(cand) > len(matched_stop or "")
+                        ):
+                            best_idx = idx
+                            matched_stop = cand
+                    if matched_stop is not None and best_idx is not None:
+                        request.output_text = buf[:best_idx]
+                        if request_id in self.request_id_to_uid:
+                            uid = self.request_id_to_uid[request_id]
+                            if self.batch_generator is not None:
+                                try:
+                                    self.batch_generator.schedule_removal([uid])
+                                except Exception as exc:  # pragma: no cover
+                                    logger.debug(
+                                        "[stop_seq][mllm] schedule_removal "
+                                        "failed for uid=%s req=%s: %s",
+                                        uid,
+                                        request_id[:12],
+                                        exc,
+                                    )
+                            self.uid_to_request_id.pop(uid, None)
+                            self.request_id_to_uid.pop(request_id, None)
+                        try:
+                            response.finish_reason = "stop"
+                        except (AttributeError, TypeError):  # pragma: no cover
+                            pass
+
             # Create output
             output = RequestOutput(
                 request_id=request_id,
@@ -650,6 +696,7 @@ class MLLMScheduler:
                 completion_tokens=request.num_output_tokens,
                 mtp_drafts=request.mtp_drafts,
                 mtp_accepted=request.mtp_accepted,
+                matched_stop=matched_stop,
             )
 
             # Check if finished
@@ -661,11 +708,17 @@ class MLLMScheduler:
 
                 output.finished = True
                 output.finish_reason = response.finish_reason
+                output.matched_stop = matched_stop
                 finished_ids.add(request_id)
 
-                # Finalize streaming detokenizer and get full output
+                # Finalize streaming detokenizer and get full output.  When
+                # a client stop_sequence triggered early termination, keep
+                # our pre-truncated buffer instead of the full detokenizer
+                # text (which still contains the matched suffix).
                 detok = self._detokenizer_pool.pop(request_id, None)
-                if detok is not None:
+                if matched_stop is not None:
+                    output.output_text = request.output_text or ""
+                elif detok is not None:
                     detok.finalize()
                     output.output_text = detok.text
                 else:

@@ -35,6 +35,11 @@ class GenerationOutput:
     # MTP speculative decoding counters. Zero means no MTP attempt occurred.
     mtp_drafts: int = 0
     mtp_accepted: int = 0
+    # When finish_reason == "stop" and termination came from a client-supplied
+    # stop string match (vs. an EOS token), this carries the matched string so
+    # the Anthropic adapter can populate ``stop_reason="stop_sequence"`` and
+    # ``stop_sequence="<matched>"`` per the Anthropic Messages API spec.
+    matched_stop: str | None = None
 
 
 class EngineBusy(RuntimeError):

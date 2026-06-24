@@ -2178,6 +2178,64 @@ class Scheduler:
                 detok.add_token(response.token)
                 new_text = detok.last_segment
 
+            # Enforce SamplingParams.stop on the cumulative output text
+            # (issue #469).  We only maintain the running text buffer when
+            # the client actually supplied stop strings — the per-token
+            # string concat is wasted work otherwise.  When a stop sequence
+            # matches we truncate at the match, mark the request finished,
+            # and pull its uid out of the batch generator so we stop wasting
+            # decode cycles on it.  The earliest match wins for determinism;
+            # on tie the longer candidate wins.
+            matched_stop: Optional[str] = None
+            if request.sampling_params.stop and response.finish_reason is None:
+                if new_text:
+                    request.output_text = (request.output_text or "") + new_text
+            if (
+                response.finish_reason is None
+                and request.sampling_params.stop
+                and request.output_text
+            ):
+                buf = request.output_text
+                best_idx: Optional[int] = None
+                for cand in request.sampling_params.stop:
+                    if not cand:
+                        continue
+                    idx = buf.find(cand)
+                    if idx == -1:
+                        continue
+                    if best_idx is None or idx < best_idx or (
+                        idx == best_idx and len(cand) > len(matched_stop or "")
+                    ):
+                        best_idx = idx
+                        matched_stop = cand
+                if matched_stop is not None and best_idx is not None:
+                    truncated = buf[:best_idx]
+                    request.output_text = truncated
+                    # Drop this request from the active batch so the next
+                    # generation step doesn't keep producing tokens for it.
+                    if request_id in self.request_id_to_uid:
+                        uid = self.request_id_to_uid[request_id]
+                        if self.batch_generator is not None:
+                            try:
+                                self.batch_generator.remove([uid])
+                            except Exception as exc:  # pragma: no cover - defensive
+                                logger.debug(
+                                    "[stop_seq] failed to remove uid=%s for %s: %s",
+                                    uid,
+                                    request_id[:12],
+                                    exc,
+                                )
+                        self.uid_to_request_id.pop(uid, None)
+                        self.request_id_to_uid.pop(request_id, None)
+                    # Override response so downstream finalization treats
+                    # this as a normal stop with our truncated text.
+                    try:
+                        response.finish_reason = "stop"
+                    except (AttributeError, TypeError):  # pragma: no cover
+                        # Immutable Response variant — fall back to mirroring
+                        # the finish_reason on the output object only.
+                        pass
+
             # Create output
             output = RequestOutput(
                 request_id=request_id,
@@ -2186,6 +2244,7 @@ class Scheduler:
                 output_token_ids=request.output_token_ids,
                 prompt_tokens=request.num_prompt_tokens,
                 completion_tokens=request.num_output_tokens,
+                matched_stop=matched_stop,
             )
 
             # Check if finished
@@ -2197,11 +2256,17 @@ class Scheduler:
 
                 output.finished = True
                 output.finish_reason = response.finish_reason
+                output.matched_stop = matched_stop
                 finished_ids.add(request_id)
 
-                # Finalize streaming detokenizer and get full output
+                # Finalize streaming detokenizer and get full output.  When a
+                # client stop_sequence triggered early termination we keep
+                # the buffer we already truncated above and skip the
+                # detokenizer text (which still contains the matched suffix).
                 detok = self._detokenizer_pool.get(request_id)
-                if detok is not None:
+                if matched_stop is not None:
+                    output.output_text = request.output_text or ""
+                elif detok is not None:
                     detok.finalize()
                     output.output_text = detok.text
                 else:
