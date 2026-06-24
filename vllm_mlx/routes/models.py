@@ -456,7 +456,11 @@ def effective_parsers_for(
         used in ``tests/test_routes.py``) and any future entry shape
         that stores a non-string sentinel. The wire field is
         ``str | None``; anything else is treated as "no value bound"
-        and falls through to the next tier. Keeps the route 200 even
+        and reported as ``null`` on the wire (the entry branch is
+        authoritative — non-string entry parser fields collapse to
+        ``None`` here rather than falling back to the alias profile
+        default; for unrelated ids the registry guard above already
+        prevents this branch from running). Keeps the route 200 even
         when an entry has a malformed parser field.
         """
         return value if isinstance(value, str) and value else None
