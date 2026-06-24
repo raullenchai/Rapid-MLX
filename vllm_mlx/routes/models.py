@@ -330,6 +330,39 @@ def _reported_modality_for_embedding(locked_id: str) -> str:
     return "text"
 
 
+def _resolve_audio_entry(model_id: str):
+    """Return the audio registry entry for ``model_id`` (alias OR HF id).
+
+    R11-B-F4 (Bo 0.8.12 dogfood): the wire-level ``/v1/models`` listing
+    for an audio-only alias (``rapid-mlx serve kokoro``) advertised
+    ``capabilities=["text"]`` and ``modality=null`` because the
+    capability detector was wired only for text / VLM / embedding
+    lanes. Drop-in OpenAI clients couldn't tell an audio alias from a
+    text model from the wire — and the ``audio_lanes`` field they
+    DID get back was the server-wide lane-health snapshot, not the
+    per-entry capability hint.
+
+    The fix introspects the audio registry (the SAME source of truth
+    that drives ``serve_command``'s audio-mode fork — see
+    :mod:`vllm_mlx.audio.registry`) and returns the resolved entry
+    when ``model_id`` is a known audio alias OR a registered audio HF
+    id. Otherwise returns ``None`` so the text / VLM / embedding path
+    continues to own the entry.
+
+    The lookup is intentionally read-only and exception-tolerant: any
+    failure (``[audio]`` extra not installed, registry JSON parse
+    error) falls through to ``None`` so ``/v1/models`` stays 200.
+    """
+    try:
+        from ..audio.registry import resolve_audio_alias
+    except Exception:  # noqa: BLE001
+        return None
+    try:
+        return resolve_audio_alias(model_id)
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _audio_lane_snapshot() -> dict[str, str] | None:
     """Return the current per-lane audio status, or ``None`` when no
     deep probe has run.
@@ -393,6 +426,32 @@ def _build_model_info(model_id: str) -> ModelInfo:
     # SERVER-WIDE backend health, not per-model audio capability
     # (which would require a separate dry-run per audio alias).
     audio_lanes = _audio_lane_snapshot()
+
+    # R11-B-F4 (Bo 0.8.12 dogfood): audio aliases get an audio-shaped
+    # ModelInfo regardless of whether the registry has a text profile
+    # for the id (it never does — audio aliases are NOT in
+    # ``model_aliases.aliases.json``). The lookup is via
+    # :func:`_resolve_audio_entry` so both the short alias (``kokoro``)
+    # and the registered HF id (``mlx-community/Kokoro-82M-bf16``) land
+    # on the same shape. Pre-fix both forms came back as
+    # ``capabilities=["text"]`` / ``modality=null`` and drop-in OpenAI
+    # clients couldn't tell audio aliases apart from text models.
+    audio_entry = _resolve_audio_entry(model_id)
+    if audio_entry is not None:
+        # The per-entry ``audio.<kind>`` capability + ``modality="audio"``
+        # is the wire-level distinction. ``audio_lanes`` (server-wide
+        # health) is still attached so dashboards see degraded backends
+        # for the audio aliases too.
+        if audio_entry.type == "tts":
+            audio_caps = ["audio.speech"]
+        else:
+            audio_caps = ["audio.transcription"]
+        return ModelInfo(
+            id=model_id,
+            modality="audio",
+            capabilities=audio_caps,
+            audio_lanes=audio_lanes,
+        )
 
     locked = _locked_embedding_id()
     if locked is not None and model_id == locked:

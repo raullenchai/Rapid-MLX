@@ -1239,6 +1239,47 @@ def _resolve_tts_model(model: str | None) -> str:
     return TTS_MODEL_ALIASES.get(model.lower(), model)
 
 
+def _resolve_default_voice_literal(model_name: str, voice: str) -> str:
+    """R11-B-F2/F3 (Bo 0.8.12 dogfood): map the literal ``"default"``
+    voice to the registry's ``default_voice`` for ``model_name``.
+
+    Pre-fix the route silently accepted ``voice`` omitted (the omitted
+    case falls back to the Pydantic default ``"af_heart"``, which is
+    valid for Kokoro), but the literal string ``"default"`` —
+    which is exactly what naive callers and several SDK code samples
+    send when they don't pick a voice — was rejected by
+    :func:`_allowed_voices_for`'s allowlist. The asymmetry was a UX
+    trap: "I sent the obvious value and got 400; what am I supposed
+    to send?" The behaviour was especially confusing for kokoro where
+    the registry already advertises ``default_voice="af_heart"``.
+
+    Resolution rule: when ``voice`` is the literal string ``"default"``
+    AND the resolved audio entry exposes a ``default_voice``, replace
+    the literal with the registry value. Otherwise the literal passes
+    through untouched — :func:`_allowed_voices_for` will let it through
+    for unknown-family engines (their voice list IS ``["default"]``)
+    and reject it for known families that don't ship a default. The
+    "voice omitted → use ``af_heart``" path is unaffected because
+    Pydantic populates the field default BEFORE this resolver runs.
+
+    Resolution is keyed on the same registry helper the audio mode
+    boot uses (``resolve_audio_alias``), so a registered HF id (``mlx-
+    community/Kokoro-82M-bf16``) and its short alias (``kokoro``) both
+    land on the same default. Names the registry doesn't know about
+    (``mlx-community/Some-Future-TTS``) pass through unchanged.
+    """
+    if voice != "default":
+        return voice
+    try:
+        from ..audio.registry import resolve_audio_alias
+    except Exception:  # noqa: BLE001
+        return voice
+    entry = resolve_audio_alias(model_name)
+    if entry is None or entry.default_voice is None:
+        return voice
+    return entry.default_voice
+
+
 def _allowed_voices_for(model_name: str) -> list[str]:
     """Return the voice set the route should accept for ``model_name``.
 
@@ -1337,6 +1378,16 @@ async def create_speech(request: AudioSpeechRequest = Body(...)):
         # the future land in :data:`TTS_MODEL_ALIASES` once, not in the
         # handler body.
         model_name = _resolve_tts_model(model)
+
+        # R11-B-F3 (Bo 0.8.12 dogfood): translate the literal
+        # ``voice="default"`` to the registry's ``default_voice`` BEFORE
+        # the allowlist check below. Pre-fix the obvious naive caller
+        # value (``"default"``) was rejected by the kokoro allowlist
+        # even though the registry already advertises
+        # ``default_voice="af_heart"`` for it. The omitted-voice path
+        # (Pydantic default ``"af_heart"``) is unaffected — this hook
+        # only fires when the literal ``"default"`` is on the wire.
+        voice = _resolve_default_voice_literal(model_name, voice)
 
         # R8-M4 (Bo 0.8.9 dogfood): validate ``voice`` against the
         # model's known voice set BEFORE we load weights. Pre-fix an

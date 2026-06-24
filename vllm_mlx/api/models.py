@@ -2465,8 +2465,28 @@ class AudioSpeechRequest(BaseModel):
     fell through to ``mlx_audio.load_safetensors`` which 500'd on the
     missing voice file, and ``response_format`` was accepted as any
     string then silently mislabeled WAV bytes.
+
+    R11-B-F2 (Bo 0.8.12 dogfood): accept the legacy ``format`` spelling
+    as an alias for ``response_format`` so OpenAI SDKs that still emit
+    the old key (early ``openai-python`` < 1.0, Anthropic sample code,
+    drop-in clients copied from pre-OAI-spec tutorials) actually get
+    the codec they asked for. Pre-fix ``{"format":"mp3"}`` returned
+    HTTP 200 with ``Content-Type: audio/wav`` and RIFF/WAVE bytes —
+    the legacy key was silently dropped and ``response_format`` fell
+    back to its ``"wav"`` default. The alias runs in a
+    ``model_validator(mode="before")`` so the existing
+    ``response_format`` field-validator still enforces the allowed-set
+    contract once the alias has been folded in. The explicit caller
+    (``{"response_format":"mp3"}``) wins on conflict — never the
+    silent override Pre-fix did.
     """
 
+    # ``extra="ignore"`` (the Pydantic default) is intentionally kept so
+    # forward-compatible clients sending future OpenAI fields don't
+    # 422 here. The before-validator below handles the ONE legacy key
+    # we know about (``format``); everything else still passes through
+    # without rejection so a benign extra ``"user":"xyz"`` doesn't break
+    # callers.
     model: str = "kokoro"
     # min_length=1 catches the ``input=""`` shape Bo reported. The
     # ``model_validator`` below catches the whitespace-only shape that
@@ -2479,6 +2499,59 @@ class AudioSpeechRequest(BaseModel):
     # matches the documented contract.
     speed: float = Field(default=1.0, ge=0.25, le=4.0)
     response_format: str = "wav"
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_legacy_format_to_response_format(cls, data):
+        """R11-B-F2: fold the legacy ``format`` key into ``response_format``.
+
+        Some OpenAI-compatible clients (early ``openai-python`` releases,
+        Anthropic sample code, drop-in tutorials copied before the spec
+        was tightened) send ``{"format":"mp3"}`` instead of
+        ``{"response_format":"mp3"}``. Pre-fix the key was silently
+        dropped and ``response_format`` defaulted to ``"wav"`` —
+        callers got HTTP 200 with RIFF/WAVE bytes mislabeled as the
+        requested codec.
+
+        Resolution rules (in order):
+
+        * If ``response_format`` is explicitly set by the caller →
+          keep it; the legacy ``format`` key is ignored (with a debug
+          log) so the explicit, spec-correct field always wins. Never
+          a silent override of caller intent.
+        * Else if ``format`` is present and a string → fold it into
+          ``response_format`` so the downstream field-validator
+          enforces the allowed-set contract on the same value.
+        * Else → leave the payload untouched (``response_format``
+          falls back to its ``"wav"`` default).
+
+        We do NOT remove the ``format`` key from the payload — Pydantic's
+        ``extra="ignore"`` (the model default) drops it before field
+        binding, so leaving it in place is harmless and keeps this
+        validator side-effect-free if a future refactor changes the
+        ConfigDict.
+        """
+        if not isinstance(data, dict):
+            # Pydantic passes the raw payload here; non-dict shapes
+            # (already a BaseModel instance, list, ...) skip the alias
+            # — the field-level validators still fire.
+            return data
+        legacy = data.get("format")
+        if legacy is None:
+            return data
+        # Only fold the alias when the spec-correct field is unset.
+        # ``None``/missing both count as unset; an explicit empty string
+        # is the caller's choice and surfaces through the field
+        # validator as a 400 like any other invalid value.
+        if "response_format" not in data or data.get("response_format") is None:
+            # Only string-shaped legacy values get folded — non-strings
+            # would cascade into a Pydantic type error two layers down
+            # with a confusing trace; let the field validator reject
+            # them with the documented allowed-set message instead by
+            # passing them through verbatim.
+            if isinstance(legacy, str):
+                data["response_format"] = legacy
+        return data
 
     @field_validator("input")
     @classmethod
