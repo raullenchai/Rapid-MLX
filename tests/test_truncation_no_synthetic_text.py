@@ -169,7 +169,7 @@ def _parse_sse_named(text: str) -> list[tuple[str | None, dict]]:
 
 
 @pytest.fixture(autouse=True)
-def _default_off_env(monkeypatch):
+def _opt_out_env(monkeypatch):
     """Issue #858 revert: default is now ON, so this file pins the
     explicit-opt-out branch (``RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled``).
     The cross-route no-injection contract still holds — callers who set

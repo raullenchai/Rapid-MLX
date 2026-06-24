@@ -841,7 +841,8 @@ def test_streaming_enabled_sentinel_is_single_event_not_per_token(monkeypatch):
 def test_streaming_stop_cut_mid_think_no_sentinel_d_stop_think_guard(monkeypatch):
     """SSE D-STOP-THINK regression guard: stop-string cut mid-think
     keeps ``delta.content=None`` on every chunk. The sentinel ONLY
-    fires on ``finish_reason="length"`` even under opt-in."""
+    fires on ``finish_reason="length"`` even when the env var
+    explicitly enables it."""
     monkeypatch.setenv("RAPID_MLX_REASONING_CUTOFF_NOTICE", "1")
     events = _stream_post(
         ["Buffer ", "more ", "thought"],
@@ -1269,8 +1270,9 @@ def test_anthropic_route_enabled_surfaces_sentinel(monkeypatch):
             if block.get("type") == "text"
         ]
         assert any(REASONING_CUTOFF_SENTINEL in t for t in text_blocks), (
-            f"opt-in e2e: /v1/messages must surface sentinel in a text "
-            f"content block on length-cut mid-think; got payload={payload!r}"
+            f"enabled e2e (env=1): /v1/messages must surface sentinel "
+            f"in a text content block on length-cut mid-think; "
+            f"got payload={payload!r}"
         )
     finally:
         reset_config()
@@ -1366,8 +1368,8 @@ def test_responses_route_enabled_surfaces_sentinel(monkeypatch):
                 if block.get("type") == "output_text":
                     sentinel_texts.append(block.get("text") or "")
         assert any(REASONING_CUTOFF_SENTINEL in t for t in sentinel_texts), (
-            f"opt-in e2e: /v1/responses must surface sentinel in an "
-            f"output_text block on length-cut mid-think; "
+            f"enabled e2e (env=1): /v1/responses must surface sentinel "
+            f"in an output_text block on length-cut mid-think; "
             f"got payload={payload!r}"
         )
     finally:
