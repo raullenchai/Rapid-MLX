@@ -989,7 +989,8 @@ def _rescue_silent_drop_from_reasoning(
 
 
 # ---------------------------------------------------------------------------
-# H-01 / R-01: reasoning-cutoff sentinel (opt-in)
+# Reasoning-cutoff sentinel (default ON; opt out via
+# RAPID_MLX_REASONING_CUTOFF_NOTICE=disabled). H-01 / R-01 / issue #858.
 # ---------------------------------------------------------------------------
 #
 # When a reasoning model (qwen3, deepseek_r1, phi-4-mini-reasoning, glm4,

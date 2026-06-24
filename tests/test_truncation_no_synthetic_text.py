@@ -501,7 +501,7 @@ def test_messages_stream_no_truncated_injection():
 
 
 # ---------------------------------------------------------------------
-# Belt-and-braces: helper truth table at default-off
+# Belt-and-braces: helper truth table on the opt-out branch
 # ---------------------------------------------------------------------
 
 
