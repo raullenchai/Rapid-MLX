@@ -299,6 +299,47 @@ class TestChunkDeltaSanitizes:
         delta = ChatCompletionChunkDelta(reasoning_content="next step:")
         assert delta.reasoning_content == "next step:"
 
+    def test_content_delta_preserves_leading_whitespace(self):
+        """Codex r3 [P2] on R12-FIX-V2: with ``logprobs`` enabled, the
+        streaming loop serializes per-delta chunks through pydantic
+        instead of the ``_fast_sse_chunk`` fast path — so the
+        ``ChatCompletionChunkDelta`` validator must use the same
+        whitespace-preserving sanitizer the fast path uses. Pre-fix
+        the validator delegated to ``sanitize_reasoning_content`` which
+        calls ``.strip()`` and would produce ``"foobar"`` from
+        ``"foo"`` + sanitized(``" bar <|im_start|>"``).
+        """
+        delta = ChatCompletionChunkDelta(content=" bar <|im_start|>")
+        assert delta.content is not None
+        assert delta.content.startswith(" "), (
+            f"ChatCompletionChunkDelta must preserve leading whitespace; "
+            f"got {delta.content!r}"
+        )
+        assert "<|im_start|>" not in delta.content
+        assert "bar" in delta.content
+
+    def test_reasoning_delta_preserves_leading_whitespace(self):
+        """Same contract on the reasoning_content side."""
+        delta = ChatCompletionChunkDelta(reasoning_content=" thinking <|im_end|>")
+        assert delta.reasoning_content is not None
+        assert delta.reasoning_content.startswith(" ")
+        assert "<|im_end|>" not in delta.reasoning_content
+
+    def test_content_delta_two_delta_concat_repro(self):
+        """End-to-end of the codex r3 scenario through the pydantic
+        path (the path the logprobs streaming branch takes):
+        ``"foo"`` + ``" bar <|im_start|>"`` must concatenate to
+        ``"foo bar "``, NOT ``"foobar"``.
+        """
+        d1 = ChatCompletionChunkDelta(content="foo")
+        d2 = ChatCompletionChunkDelta(content=" bar <|im_start|>")
+        joined = (d1.content or "") + (d2.content or "")
+        assert "foobar" not in joined, (
+            f"pydantic delta validator must preserve cross-delta whitespace; "
+            f"joined={joined!r}"
+        )
+        assert "foo bar" in joined
+
 
 # ──────────────────────────────────────────────────────────────────
 # End-to-end through the chat route — non-streaming

@@ -2758,12 +2758,31 @@ class ChatCompletionChunkDelta(BaseModel):
     # path is sanitized separately at the emit call site (see
     # ``routes/chat.py`` ``_fast_sse_chunk``) because it bypasses
     # pydantic serialization.
+    #
+    # Codex R3 [P2] (R12-FIX-V2 follow-up): when ``logprobs`` is
+    # enabled, per-delta content/reasoning chunks ARE serialized through
+    # this validator (see ``routes/chat.py`` streaming loop — the
+    # logprobs branch builds a ``ChatCompletionChunk`` via pydantic
+    # instead of the ``_fast_sse_chunk`` fast path). The same cross-delta
+    # whitespace concatenation contract applies: trimming leading /
+    # trailing whitespace from an individual delta after marker removal
+    # corrupts the client's concatenated view. Use the
+    # whitespace-preserving stream variant instead of the final-string
+    # ``sanitize_reasoning_content`` (which calls ``.strip()``) so the
+    # logprobs streaming path produces the same on-wire bytes as the
+    # non-logprobs ``_fast_sse_chunk`` path.
     @field_validator("content", "reasoning_content", mode="after")
     @classmethod
     def _sanitize_user_visible_strings(cls, v: str | None) -> str | None:
-        from .utils import sanitize_reasoning_content
+        from .utils import sanitize_reasoning_for_stream
 
-        return sanitize_reasoning_content(v)
+        if v is None:
+            return None
+        sanitized = sanitize_reasoning_for_stream(v)
+        # Mirror the field's nullable contract: an empty post-sanitization
+        # result collapses to ``None`` so ``exclude_none`` drops the
+        # field cleanly on the wire when the delta was entirely markup.
+        return sanitized if sanitized != "" else None
 
     @model_serializer(mode="wrap")
     def _serialize_chunk_delta(self, handler):
