@@ -2313,6 +2313,112 @@ async def _stream_responses(
             )
             completed_output.append(reasoning_item_payload_done)
 
+            # R12-8 codex r2 #4: streaming Responses parity with non-stream.
+            # Non-stream Responses runs `_apply_reasoning_cutoff_notice` via
+            # the chat layer, then `openai_to_responses` materializes the
+            # rescue text into an `output_text` message item. The streaming
+            # path emits the reasoning item with status=incomplete (above)
+            # but never surfaces the rescue payload — clients rendering only
+            # text output see empty output despite the reasoning being
+            # available. Mirror the non-stream shape: when the mid-think
+            # cutoff fired AND no real downstream output was seen, build the
+            # rescue payload and emit a synthetic message item using the
+            # canonical added → content_part.added → output_text.delta →
+            # output_text.done → content_part.done → output_item.done
+            # ladder. Gating mirrors `_apply_reasoning_cutoff_notice` —
+            # message_open + tool_calls already preclude rescue.
+            if mid_think_cutoff and not message_open and not tool_calls:
+                rescue_text = _apply_reasoning_cutoff_notice(
+                    final_content=None,
+                    reasoning_text=accumulated_reasoning_text,
+                    tool_calls=None,
+                    finish_reason=last_finish_reason,
+                )
+                if rescue_text:
+                    rescue_output_index = len(completed_output)
+                    rescue_item_id = f"msg_{uuid.uuid4().hex[:24]}"
+                    rescue_part = {
+                        "type": "output_text",
+                        "text": rescue_text,
+                        "annotations": [],
+                    }
+                    yield _emit(
+                        "response.output_item.added",
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": rescue_output_index,
+                            "item": {
+                                "type": "message",
+                                "id": rescue_item_id,
+                                "status": "in_progress",
+                                "role": "assistant",
+                                "content": [],
+                            },
+                        },
+                    )
+                    yield _emit(
+                        "response.content_part.added",
+                        {
+                            "type": "response.content_part.added",
+                            "item_id": rescue_item_id,
+                            "output_index": rescue_output_index,
+                            "content_index": 0,
+                            "part": {
+                                "type": "output_text",
+                                "text": "",
+                                "annotations": [],
+                            },
+                        },
+                    )
+                    yield _emit(
+                        "response.output_text.delta",
+                        {
+                            "type": "response.output_text.delta",
+                            "item_id": rescue_item_id,
+                            "output_index": rescue_output_index,
+                            "content_index": 0,
+                            "delta": rescue_text,
+                            "logprobs": [],
+                        },
+                    )
+                    yield _emit(
+                        "response.output_text.done",
+                        {
+                            "type": "response.output_text.done",
+                            "item_id": rescue_item_id,
+                            "output_index": rescue_output_index,
+                            "content_index": 0,
+                            "text": rescue_text,
+                            "logprobs": [],
+                        },
+                    )
+                    yield _emit(
+                        "response.content_part.done",
+                        {
+                            "type": "response.content_part.done",
+                            "item_id": rescue_item_id,
+                            "output_index": rescue_output_index,
+                            "content_index": 0,
+                            "part": rescue_part,
+                        },
+                    )
+                    rescue_message_done = {
+                        "type": "message",
+                        "id": rescue_item_id,
+                        "status": "completed",
+                        "role": "assistant",
+                        "content": [rescue_part],
+                    }
+                    yield _emit(
+                        "response.output_item.done",
+                        {
+                            "type": "response.output_item.done",
+                            "output_index": rescue_output_index,
+                            "item": rescue_message_done,
+                        },
+                    )
+                    completed_output.append(rescue_message_done)
+
         # Ana C-06 (0.8.5 dogfood): when the request used Computer-Use,
         # translate ``function.name == "computer"`` tool_calls into the
         # ``computer_call`` envelope so SDK consumers walking
@@ -2515,11 +2621,19 @@ async def _stream_responses(
         # — a stubbed-short engine (or a model that emits one literal
         # token of long reasoning text) could otherwise report
         # ``reasoning_tokens > output_tokens`` and break SDK arithmetic.
+        # Codex r1 (R12-8): require completion_tokens > 0 to credit
+        # ANY reasoning. Previously the clamp only ran inside the
+        # ``if completion_tokens:`` branch, so a stubbed-short engine
+        # streaming reasoning text with completion_tokens==0 emitted
+        # ``output_tokens: 0`` + ``reasoning_tokens: 1`` — violating
+        # the invariant ``reasoning_tokens <= output_tokens`` that
+        # SDK consumers rely on for usage arithmetic.
         reasoning_token_credit = 0
-        if accumulated_reasoning_text:
-            reasoning_token_credit = max(1, len(accumulated_reasoning_text) // 4)
-            if completion_tokens:
-                reasoning_token_credit = min(reasoning_token_credit, completion_tokens)
+        if accumulated_reasoning_text and completion_tokens:
+            reasoning_token_credit = min(
+                max(1, len(accumulated_reasoning_text) // 4),
+                completion_tokens,
+            )
         usage_payload = {
             "input_tokens": prompt_tokens,
             "output_tokens": completion_tokens,
