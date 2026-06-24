@@ -509,47 +509,69 @@ class TestSimpleEngineStopEnforcement:
             _mlx_lm.generate = orig
 
 
-class TestSimpleEngineTextModePathSanitizes:
-    """Codex r4 regression: the SimpleEngine text-mode MLLM streaming
-    path (``_stream_generate_text``) used to scan ``accumulated_text``
-    for stop strings but yielded ``new_text`` / ``text`` unchanged after
-    the match.  The match itself MUST be truncated from both the SSE
-    delta and the final aggregated content.
+class TestStopStreamGate:
+    """Codex r5 regression: SimpleEngine fan-out paths (text-mode MLLM
+    and spec-prefill) now share a ``_StopStreamGate`` helper so a
+    partial prefix of a stop string (e.g. ``"E"`` before the next chunk
+    reveals ``"ND"``) is held back, matched-suffix is truncated from
+    both the streamed delta and the final ``text``, and ``matched_stop``
+    is reported correctly.
     """
 
-    def test_match_in_single_chunk_truncates_delta_and_total(self):
-        # Pure-logic check mirroring the truncation block in
-        # ``_stream_generate_text``: when the matched stop arrives inside
-        # one chunk, both the per-token ``new_text`` and the cumulative
-        # ``accumulated_text`` must be sanitized.
-        accumulated_text = ""
-        stop = ["END"]
-        out_deltas: list[str] = []
-        out_finals: list[str] = []
-        for raw in ["hello", " ", "END world"]:
-            accumulated_text += raw
-            matched_here = None
-            best_idx = None
-            for s in stop:
-                idx = accumulated_text.find(s)
-                if idx == -1:
-                    continue
-                if best_idx is None or idx < best_idx:
-                    best_idx = idx
-                    matched_here = s
-            if matched_here is not None and best_idx is not None:
-                prev_published = len(accumulated_text) - len(raw)
-                accumulated_text = accumulated_text[:best_idx]
-                new_text = accumulated_text[prev_published:]
-            else:
-                new_text = raw
-            out_deltas.append(new_text)
-            if matched_here is not None:
-                out_finals.append(accumulated_text)
-                break
-        assert "".join(out_deltas) == "hello "
-        assert out_finals == ["hello "]
-        assert "END" not in "".join(out_deltas)
+    def _gate(self, stops):
+        from vllm_mlx.engine.simple import _StopStreamGate
+        return _StopStreamGate(stops)
+
+    def test_match_in_single_chunk_truncates(self):
+        gate = self._gate(["END"])
+        d1, fin1, _ = gate.feed("hello ")
+        d2, fin2, m = gate.feed("END world")
+        assert d1 == "hell"  # hold back "o " (max_len-1 = 2 chars)
+        assert fin1 is False
+        # The pending "o " plus the leading portion of the second chunk
+        # both surface in the terminal delta; the match truncates the
+        # rest before "END" is ever emitted.
+        assert "END" not in d1 + d2
+        assert fin2 is True
+        assert m == "END"
+        assert gate.buf == "hello "
+
+    def test_split_prefix_is_held_back(self):
+        gate = self._gate(["END"])
+        d1, fin1, _ = gate.feed("hello E")
+        # Safety window is max_len-1 = 2 chars, so " E" is held back.
+        assert d1 == "hello"
+        assert "E" not in d1
+        assert fin1 is False
+        d2, fin2, m = gate.feed("ND")
+        # Cumulative "hello END" matches at index 6.  The final delta
+        # covers the published cursor (5) up to the match index (6) —
+        # i.e. the space that was previously held back.
+        assert d2 == " "
+        assert fin2 is True
+        assert m == "END"
+        assert gate.buf == "hello "
+        # Sum of streamed deltas never contains any prefix of the stop.
+        streamed = d1 + d2
+        assert "E" not in streamed
+        assert "N" not in streamed
+        assert "D" not in streamed
+
+    def test_no_stop_supplied_is_passthrough(self):
+        gate = self._gate(None)
+        d1, fin1, m = gate.feed("hello END world")
+        assert d1 == "hello END world"
+        assert fin1 is False
+        assert m is None
+
+    def test_flush_emits_held_back_tail(self):
+        gate = self._gate(["XYZ"])
+        d1, _, _ = gate.feed("hello wo")
+        # Held back: "wo" (max_len-1 = 2 chars).
+        assert d1 == "hello "
+        tail, _ = gate.flush()
+        assert tail == "wo"
+        assert gate.buf == "hello wo"
 
 
 class TestOpenAIStopUnchanged:

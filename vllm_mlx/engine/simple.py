@@ -45,6 +45,95 @@ from ..mlx_streams import bind_generation_streams
 logger = logging.getLogger(__name__)
 
 
+class _StopStreamGate:
+    """Hold-back-tail stop-sequence gate for streaming text deltas.
+
+    Mirrors the scheduler and ``MLXLanguageModel.stream_generate``
+    enforcement (issue #469) so wrapper paths that aggregate model
+    chunks (text-mode MLLM, spec-prefill) get the same guarantees:
+
+      * the matched stop string itself never reaches the client as a
+        streamed text delta;
+      * a partial prefix of any stop string is held back until the next
+        chunk disambiguates it;
+      * the final accumulated buffer is truncated at the match.
+
+    Usage::
+
+        gate = _StopStreamGate(["END", "STOP"])
+        for raw_chunk in upstream:
+            delta, finished, matched = gate.feed(raw_chunk)
+            yield ...delta...
+            if finished:
+                break
+        # Optional flush on length/abort termination:
+        delta, _ = gate.flush()
+    """
+
+    def __init__(self, stop: list[str] | None):
+        self._stops: list[str] = [s for s in (stop or []) if s]
+        self._max_len: int = max((len(s) for s in self._stops), default=0)
+        self._buf: str = ""
+        self._published: int = 0
+        self.matched: str | None = None
+        self.finished: bool = False
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self._stops)
+
+    @property
+    def buf(self) -> str:
+        return self._buf
+
+    def feed(self, chunk: str) -> tuple[str, bool, str | None]:
+        """Append ``chunk`` and return ``(delta_to_emit, finished, matched)``.
+
+        ``delta_to_emit`` may be empty when the current tail is wholly
+        inside the safety window.  ``finished`` is True only when a
+        stop string fully matched; in that case ``matched`` carries it.
+        """
+        if not self._stops:
+            self._buf += chunk
+            self._published = len(self._buf)
+            return chunk, False, None
+
+        self._buf += chunk
+        best_idx: int | None = None
+        for cand in self._stops:
+            idx = self._buf.find(cand)
+            if idx == -1:
+                continue
+            if best_idx is None or idx < best_idx or (
+                idx == best_idx and len(cand) > len(self.matched or "")
+            ):
+                best_idx = idx
+                self.matched = cand
+        if self.matched is not None and best_idx is not None:
+            self._buf = self._buf[:best_idx]
+            delta = self._buf[self._published:]
+            self._published = len(self._buf)
+            self.finished = True
+            return delta, True, self.matched
+
+        # No match — hold back trailing ``max_len - 1`` chars.
+        hold_back = self._max_len - 1
+        safe_end = max(0, len(self._buf) - hold_back)
+        if safe_end > self._published:
+            delta = self._buf[self._published:safe_end]
+            self._published = safe_end
+            return delta, False, None
+        return "", False, None
+
+    def flush(self) -> tuple[str, str | None]:
+        """Emit any remaining buffered text (called on length/abort)."""
+        if self._published >= len(self._buf):
+            return "", self.matched
+        delta = self._buf[self._published:]
+        self._published = len(self._buf)
+        return delta, self.matched
+
+
 def _bind_worker_generation_streams() -> None:
     """Rebind mlx generation streams inside the current worker thread."""
     bind_generation_streams()
@@ -1931,17 +2020,37 @@ class SimpleEngine(BaseEngine):
             _run_all, on_cancel=_request_cancel
         )
 
-        # Yield results as GenerationOutput
+        # Yield results as GenerationOutput.  The seed first-token from
+        # the manual sample plus subsequent stream chunks both flow
+        # through a single stop-stream gate so a stop string that lands
+        # on the seed (or spans seed→continuation) is correctly caught
+        # (issue #469).
         accumulated_text = ""
         token_count = 0
         finished = False
+        _stop_gate = _StopStreamGate(stop)
         for i, resp in enumerate(all_resps):
             token_count += 1
-            new_text = resp.text
-            accumulated_text += new_text
+            raw_new_text = resp.text
+            new_text, stop_hit, matched_here = _stop_gate.feed(raw_new_text)
+            if _stop_gate.enabled:
+                accumulated_text = _stop_gate.buf
+            else:
+                accumulated_text += raw_new_text
 
             is_last = i == len(all_resps) - 1
-            finished = is_last or token_count >= max_tokens
+            finished = stop_hit or is_last or token_count >= max_tokens
+            if stop_hit:
+                finish_reason = "stop"
+            else:
+                finish_reason = resp.finish_reason or (
+                    "stop" if finished else None
+                )
+            if finished and not stop_hit and _stop_gate.enabled:
+                tail, _ = _stop_gate.flush()
+                if tail:
+                    new_text = (new_text or "") + tail
+                    accumulated_text = _stop_gate.buf
 
             yield GenerationOutput(
                 text=accumulated_text,
@@ -1949,8 +2058,8 @@ class SimpleEngine(BaseEngine):
                 prompt_tokens=n_tokens,
                 completion_tokens=token_count,
                 finished=finished,
-                finish_reason=resp.finish_reason or ("stop" if finished else None),
-                matched_stop=getattr(resp, "matched_stop", None),
+                finish_reason=finish_reason,
+                matched_stop=matched_here or getattr(resp, "matched_stop", None),
             )
 
             if finished:
@@ -2649,6 +2758,7 @@ class SimpleEngine(BaseEngine):
         accumulated_text = ""
         token_count = 0
         finished = False
+        _stop_gate = _StopStreamGate(stop)
         try:
             while True:
                 kind, payload = await response_queue.get()
@@ -2660,42 +2770,17 @@ class SimpleEngine(BaseEngine):
 
                 token_count += 1
                 raw_new_text = resp.text if hasattr(resp, "text") else str(resp)
-                accumulated_text += raw_new_text
-
-                # Identify the earliest matching stop string (issue #469)
-                # and truncate ``accumulated_text``/``new_text`` so neither
-                # the SSE delta nor the final aggregated text leaks the
-                # matched suffix.
-                matched_here: str | None = None
-                if stop:
-                    best_idx: int | None = None
-                    for stop_seq in stop:
-                        if not stop_seq:
-                            continue
-                        idx = accumulated_text.find(stop_seq)
-                        if idx == -1:
-                            continue
-                        if best_idx is None or idx < best_idx or (
-                            idx == best_idx
-                            and len(stop_seq) > len(matched_here or "")
-                        ):
-                            best_idx = idx
-                            matched_here = stop_seq
-                    if matched_here is not None and best_idx is not None:
-                        # Truncate the cumulative buffer and the per-token
-                        # delta so the matched string never reaches the
-                        # client as either streamed text or final content.
-                        prev_published = len(accumulated_text) - len(
-                            raw_new_text
-                        )
-                        accumulated_text = accumulated_text[:best_idx]
-                        new_text = accumulated_text[prev_published:]
-                    else:
-                        new_text = raw_new_text
+                # Route the raw chunk through the stop-stream gate so
+                # neither the per-token SSE delta nor the cumulative
+                # ``text`` ever carries the matched stop string or any
+                # of its in-flight prefixes (issue #469).
+                new_text, stop_hit, matched_here = _stop_gate.feed(
+                    raw_new_text
+                )
+                if _stop_gate.enabled:
+                    accumulated_text = _stop_gate.buf
                 else:
-                    new_text = raw_new_text
-
-                stop_hit = matched_here is not None
+                    accumulated_text += raw_new_text
                 finished = stop_hit or token_count >= max_tokens
                 finish_reason = getattr(resp, "finish_reason", None)
                 if stop_hit:
@@ -2704,6 +2789,13 @@ class SimpleEngine(BaseEngine):
                     finish_reason = "stop"
                 elif finish_reason is not None:
                     finished = True
+                # On length/abort termination flush whatever the safety
+                # window held back so the client sees the full output.
+                if finished and not stop_hit and _stop_gate.enabled:
+                    tail, _ = _stop_gate.flush()
+                    if tail:
+                        new_text = (new_text or "") + tail
+                        accumulated_text = _stop_gate.buf
 
                 yield GenerationOutput(
                     text=accumulated_text,
