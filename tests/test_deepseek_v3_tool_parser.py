@@ -419,6 +419,40 @@ class TestV3Streaming:
         content_seen = [ev for ev in events if ev and ev.get("content")]
         assert content_seen, f"No content emitted for pre-envelope tokens. Events: {events!r}"
 
+    def test_pre_envelope_prose_in_same_delta_as_marker_is_emitted(
+        self, v3_parser: DeepSeekV3ToolParser
+    ) -> None:
+        """codex round-2 P2 regression: a delta that carries ordinary
+        prose AND the first envelope marker (``Let me check.<｜tool▁calls▁begin｜>...``
+        in one chunk) MUST surface the prose as ``content``. The
+        finalize recovery replays only the tool calls, not the model's
+        narration leading up to them — without this branch the prose
+        was dropped on the floor.
+        """
+        delta = "Let me check the weather. " + TC_OPEN
+        result = v3_parser.extract_tool_calls_streaming(
+            previous_text="",
+            current_text=delta,
+            delta_text=delta,
+        )
+        assert result is not None
+        assert result.get("content") == "Let me check the weather. "
+
+    def test_subsequent_deltas_after_marker_return_none(
+        self, v3_parser: DeepSeekV3ToolParser
+    ) -> None:
+        """Once the marker has been seen in ``previous_text`` we're
+        fully inside the envelope; finalize handles emission and the
+        streaming path returns ``None``."""
+        prev = "Let me check. " + TC_OPEN
+        delta = C_OPEN + "function" + SEP + "get_weather"
+        result = v3_parser.extract_tool_calls_streaming(
+            previous_text=prev,
+            current_text=prev + delta,
+            delta_text=delta,
+        )
+        assert result is None
+
     def test_v3_stream_emits_no_mid_stream_tool_calls(
         self, v3_parser: DeepSeekV3ToolParser
     ) -> None:

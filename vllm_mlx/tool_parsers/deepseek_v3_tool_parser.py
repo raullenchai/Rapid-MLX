@@ -346,5 +346,21 @@ class DeepSeekV3ToolParser(ToolParser):
         if not has_tool_start:
             return {"content": delta_text}
 
-        # Envelope reached. Stop emitting; let finalize handle it.
-        return None
+        # The envelope marker landed in some chunk. If THIS delta carries
+        # both ordinary prose AND the marker (e.g. "Let me check.<｜tool▁calls▁begin｜>"),
+        # we MUST emit the pre-marker prefix as content — otherwise it's
+        # dropped on the floor (codex round-2 P2). The finalize-recovery
+        # path only replays the model's tool-call output, not the narration
+        # leading up to it. Once the marker has already been seen in a
+        # previous delta, this delta is fully inside (or after) the envelope
+        # and we return ``None`` so finalize handles it.
+        if self.TOOL_CALLS_START in previous_text:
+            return None
+        marker_pos = delta_text.find(self.TOOL_CALLS_START)
+        if marker_pos == -1:
+            # Marker is present in ``current_text`` (token-id signal) but
+            # not in this string delta — nothing to surface here. Defer
+            # to finalize.
+            return None
+        prefix = delta_text[:marker_pos]
+        return {"content": prefix} if prefix else None

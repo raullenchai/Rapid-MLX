@@ -286,15 +286,33 @@ class TestStreaming:
     def test_streaming_stops_emitting_once_envelope_seen(
         self, v3_parser: DeepSeekV3ToolParser
     ) -> None:
-        """The streaming gate suppresses deltas once
-        ``<｜tool▁calls▁begin｜>`` arrives — finalize handles it.
-        Tradeoff documented in the parser module docstring."""
+        """Once the envelope marker has been seen in a previous delta,
+        subsequent deltas return ``None`` — finalize handles
+        emission."""
+        prev = "Let me check " + TC_OPEN
+        # Marker already in previous_text.
         delta = v3_parser.extract_tool_calls_streaming(
-            previous_text="Let me check ",
-            current_text="Let me check " + TC_OPEN,
-            delta_text=TC_OPEN,
+            previous_text=prev,
+            current_text=prev + C_OPEN,
+            delta_text=C_OPEN,
         )
         assert delta is None
+
+    def test_streaming_emits_pre_marker_prose_in_split_delta(
+        self, v3_parser: DeepSeekV3ToolParser
+    ) -> None:
+        """When the marker first arrives in a delta that also carries
+        prior prose, surface the prose as ``content``. Codex round-2
+        P2: dropping it loses the model's narration before the tool
+        call."""
+        delta = "Let me check the weather. " + TC_OPEN
+        result = v3_parser.extract_tool_calls_streaming(
+            previous_text="",
+            current_text=delta,
+            delta_text=delta,
+        )
+        assert result is not None
+        assert result["content"] == "Let me check the weather. "
 
 
 # --------------------------------------------------------------------
