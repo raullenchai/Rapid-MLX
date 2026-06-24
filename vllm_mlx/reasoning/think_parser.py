@@ -1438,7 +1438,39 @@ class BaseThinkingReasoningParser(ReasoningParser):
                 else:
                     out_reasoning.append(remaining)
                 return
-            # Emit prefix as reasoning, start buffering from opener.
+            # Structural guard — parity with non-streaming
+            # ``_TOOL_CALL_UNCLOSED_RE`` (``<tool_call>\s*[\{<]``).
+            # A real tool_call body starts with ``{`` (JSON) or ``<``
+            # (XML opener) after the tag and optional whitespace.
+            # A prose mention like ``use <tool_call> to invoke ...``
+            # has no structural opener after the tag and must NOT be
+            # promoted — otherwise the prose tail leaks into the
+            # content channel via the buffer.
+            after_start = start_idx + len(_TOOL_CALL_START)
+            probe = remaining[after_start:]
+            # Skip whitespace looking for the first non-ws byte.
+            j = 0
+            while j < len(probe) and probe[j] in (" ", "\t", "\n", "\r"):
+                j += 1
+            if j == len(probe):
+                # All whitespace (or empty) after the opener — the
+                # discriminating byte hasn't arrived yet. Emit the
+                # prefix as reasoning and carry the tag + trailing
+                # whitespace so the next chunk reveals whether this
+                # is a real tool_call or a prose mention.
+                if start_idx > 0:
+                    out_reasoning.append(remaining[:start_idx])
+                self._reasoning_carry = remaining[start_idx:]
+                return
+            if probe[j] not in ("{", "<"):
+                # Prose mention — emit up to AND INCLUDING the bare
+                # ``<tool_call>`` tag as reasoning and keep scanning
+                # ``remaining`` past the opener for another candidate.
+                out_reasoning.append(remaining[:after_start])
+                remaining = remaining[after_start:]
+                continue
+            # Real tool_call: emit prefix as reasoning, start buffering
+            # from the opener.
             if start_idx > 0:
                 out_reasoning.append(remaining[:start_idx])
             self._in_tool_call = True
