@@ -266,6 +266,46 @@ def validate_and_envelope(
 # ---------------------------------------------------------------------------
 
 
+def _content_to_text(content: Any) -> str:
+    """Normalize OpenAI-compat message content into a single string.
+
+    Codex r13 #2 helper. Chat-completions message content can be
+    either:
+      - a plain ``str``;
+      - a list of content-parts (``[{"type": "text", "text": "..."}
+        , {"type": "image_url", "image_url": {...}}, ...]``).
+
+    For repair-message merging we need a string we can safely
+    concatenate. Strategy:
+      - str: return as-is;
+      - list: for each part, extract ``"text"`` from text parts and
+        substitute a ``[non-text content omitted]`` placeholder
+        for non-text parts (images / audio / etc.); join with
+        newlines;
+      - other types: best-effort ``str()`` fallback so the merge
+        never crashes — a hostile input would surface as a noisy
+        but bounded string in the repair turn, NOT a 500.
+    """
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for part in content:
+            if isinstance(part, dict):
+                ptype = part.get("type")
+                if ptype == "text":
+                    text = part.get("text", "")
+                    if isinstance(text, str):
+                        parts.append(text)
+                else:
+                    parts.append(f"[non-text content omitted: type={ptype}]")
+            else:
+                parts.append(str(part))
+        return "\n".join(parts)
+    # Fallback — never raise.
+    return str(content) if content is not None else ""
+
+
 def build_repair_messages(
     original_messages: list[dict[str, Any]],
     failed_output: str,
@@ -409,12 +449,27 @@ def build_repair_messages(
     repair: list[dict[str, Any]] = []
     if original_messages and original_messages[0].get("role") == "system":
         # Merge: keep the original system prefix, add a separator,
-        # then the repair hint. This ALSO addresses the de-dup case
-        # called out in the docstring — the schema is still in the
-        # original system message AND in the repair hint, but they
-        # share a single message so we don't pay a 2x role-marker
-        # overhead.
-        merged_system = original_messages[0].get("content", "") + "\n\n---\n\n" + hint
+        # then the repair hint.
+        #
+        # Codex r13 #2: OpenAI-compatible chat-completions allows
+        # message content to be EITHER a string OR a structured
+        # list of content-parts (``[{"type": "text", ...},
+        # {"type": "image_url", ...}, ...]``). Pre-fix we did
+        # ``str + str`` which raised TypeError on the list shape
+        # — strict mode would surface a 500 on any multimodal
+        # request that hit the repair path. Normalize the existing
+        # content into a text representation we can safely
+        # concatenate. The strategy:
+        #   - str: pass through unchanged;
+        #   - list of parts: extract the ``text`` field from each
+        #     ``{"type":"text"}`` part and join with newlines;
+        #     non-text parts (images, etc.) are summarized as a
+        #     placeholder so the model still sees that
+        #     non-textual context existed;
+        #   - anything else: ``str()`` fallback.
+        existing_content = original_messages[0].get("content", "")
+        existing_text = _content_to_text(existing_content)
+        merged_system = existing_text + "\n\n---\n\n" + hint
         repair.append({"role": "system", "content": merged_system})
         repair.extend(original_messages[1:])
     else:

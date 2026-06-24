@@ -1243,6 +1243,103 @@ def test_strict_true_streaming_bounds_buffer_with_overflow_error(monkeypatch):
     assert body.rstrip().endswith("data: [DONE]")
 
 
+def test_strict_true_streaming_overflow_closes_upstream_generator(monkeypatch):
+    """Codex r13 #1 — on buffer overflow the wrapper MUST
+    explicitly ``aclose()`` the upstream async generator so the
+    engine's per-request cleanup runs synchronously. Pre-fix the
+    wrapper used a plain ``async for`` with no handle, so a
+    ``break`` left the upstream generator dangling — the engine
+    kept generating tokens for a request the wrapper had already
+    given up on (wasted compute + held slot).
+
+    Test strategy: build a fake upstream generator that tracks
+    whether ``aclose()`` was called on it; force an overflow; pin
+    that ``aclose()`` ran.
+    """
+    monkeypatch.setenv("RAPID_MLX_STRICT_BUFFER_BYTES", "100")
+
+    import json as _json
+
+    from vllm_mlx.routes import chat as chat_module
+
+    aclose_called = [False]
+
+    class _TrackingStream:
+        """Async generator that tracks ``aclose()`` calls."""
+
+        def __init__(self, response_id, created):
+            self._response_id = response_id
+            self._created = created
+            self._i = 0
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            if self._i >= 200:  # safety bound
+                raise StopAsyncIteration
+            self._i += 1
+            return (
+                "data: "
+                + _json.dumps(
+                    {
+                        "id": self._response_id,
+                        "object": "chat.completion.chunk",
+                        "created": self._created,
+                        "model": "test-model",
+                        "choices": [
+                            {
+                                "index": 0,
+                                "delta": {"content": "x" * 100},
+                                "finish_reason": None,
+                            }
+                        ],
+                    }
+                )
+                + "\n\n"
+            )
+
+        async def aclose(self):
+            aclose_called[0] = True
+
+    def _factory(engine, messages, request, **kwargs):
+        return _TrackingStream(
+            response_id=kwargs.get("response_id", "chatcmpl-test"),
+            created=kwargs.get("created", 0),
+        )
+
+    import asyncio
+
+    from vllm_mlx.api.models import ChatCompletionRequest
+
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    request = ChatCompletionRequest(
+        model="test-model",
+        messages=[{"role": "user", "content": "hi"}],
+        stream=True,
+    )
+    json_schema = {"type": "object", "required": ["v"]}
+
+    async def _run():
+        orig = chat_module.stream_chat_completion
+        chat_module.stream_chat_completion = _factory
+        try:
+            chunks = []
+            async for c in chat_module.stream_chat_completion_strict_postgen(
+                engine, [{"role": "user", "content": "hi"}], request, json_schema
+            ):
+                chunks.append(c)
+            return chunks
+        finally:
+            chat_module.stream_chat_completion = orig
+
+    asyncio.run(_run())
+    assert aclose_called[0], (
+        "wrapper did not call aclose() on the upstream generator on "
+        "buffer overflow; engine keeps generating after wrapper gives up."
+    )
+
+
 def test_strict_true_streaming_buffer_cap_counts_bytes_not_chars(monkeypatch):
     """Codex r9 #1 — the buffer cap MUST count UTF-8 BYTES, not
     Python code points. Pre-fix used ``len(c)`` which counts code

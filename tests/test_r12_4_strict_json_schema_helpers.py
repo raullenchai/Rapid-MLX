@@ -306,6 +306,61 @@ def test_validate_and_envelope_rejects_malformed_schema():
     assert "schema" in details["message"].lower()
 
 
+def test_build_repair_messages_handles_multimodal_system_content():
+    """Codex r13 #2 — chat-completions allows message content to be
+    a list of content-parts (multimodal). Pre-fix the merge did
+    ``str + str`` which raised TypeError on the list shape, surfacing
+    strict mode as 500 on any multimodal request that hit the
+    repair path. Fix: normalize via ``_content_to_text`` so text
+    parts are extracted, non-text parts get a bounded placeholder,
+    and the merge always returns a string."""
+    original = [
+        {
+            "role": "system",
+            "content": [
+                {"type": "text", "text": "You are a JSON producer."},
+                {
+                    "type": "image_url",
+                    "image_url": {"url": "data:image/png;base64,..."},
+                },
+                {"type": "text", "text": "Always emit valid JSON."},
+            ],
+        },
+        {"role": "user", "content": "make a JSON object"},
+    ]
+    failure = {"reason": "schema_violation", "failing_path": "/x"}
+    # MUST NOT raise.
+    repair = build_repair_messages(original, '{"x": 1}', _SCHEMA, failure)
+    assert len(repair) == 3
+    assert repair[0]["role"] == "system"
+    system_content = repair[0]["content"]
+    # The text parts are preserved.
+    assert "You are a JSON producer." in system_content
+    assert "Always emit valid JSON." in system_content
+    # The non-text part is summarized with a bounded placeholder
+    # (NOT serialized as raw base64 — that would blow the context
+    # window AND leak unnecessary data).
+    assert "[non-text content omitted: type=image_url]" in system_content
+    # The repair hint is appended.
+    assert "REPAIR" in system_content.upper()
+
+
+def test_build_repair_messages_handles_none_system_content():
+    """Codex r13 #2 defensive — a hostile / buggy upstream might
+    send ``content=None``. The merge MUST NOT crash. We fall
+    through to an empty-string representation."""
+    original = [
+        {"role": "system", "content": None},
+        {"role": "user", "content": "make JSON"},
+    ]
+    failure = {"reason": "schema_violation", "failing_path": "/x"}
+    repair = build_repair_messages(original, '{"x": 1}', _SCHEMA, failure)
+    assert len(repair) == 3
+    # No crash; the repair hint is still merged into the (empty)
+    # system message.
+    assert "REPAIR" in repair[0]["content"].upper()
+
+
 def test_build_repair_messages_merges_into_existing_system_message():
     """Codex r10 #2 pin — when the original conversation already
     has a leading ``system`` message, the repair hint MUST be

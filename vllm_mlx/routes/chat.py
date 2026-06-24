@@ -4586,15 +4586,25 @@ async def stream_chat_completion_strict_postgen(
     # a closed pipe and mask the original cancellation).
     cancelled = False
 
+    # Codex r13 #1: keep an explicit handle on the upstream async
+    # generator so we can ``aclose()`` it on buffer overflow. Pre-
+    # fix the wrapper used ``async for`` with no handle, so on
+    # ``break`` the upstream generator was left dangling — the
+    # engine kept generating tokens for a request the wrapper had
+    # already given up on (wasted compute, held slot). With a
+    # handle we explicitly close the generator on overflow so the
+    # engine cleanup runs synchronously with the wrapper's
+    # decision to bail.
+    upstream_agen = stream_chat_completion(
+        engine,
+        messages,
+        request,
+        response_id=response_id,
+        created=created,
+        **kwargs,
+    )
     try:
-        async for chunk_text in stream_chat_completion(
-            engine,
-            messages,
-            request,
-            response_id=response_id,
-            created=created,
-            **kwargs,
-        ):
+        async for chunk_text in upstream_agen:
             # Swallow the upstream [DONE] sentinel — we emit our own
             # [DONE] at the END of validation (codex r6 #1,
             # unconditional) so post-validation chunks land BEFORE the
@@ -4697,6 +4707,31 @@ async def stream_chat_completion_strict_postgen(
                 # in the post-loop block emits its own
                 # finish_reason=json_schema_violation, so a held
                 # ``finish_reason=stop`` chunk would conflict.
+                # Codex r13 #1: ``aclose()`` the upstream generator
+                # BEFORE breaking so the engine's per-request
+                # cleanup runs synchronously and we don't leave a
+                # zombie generation task. ``aclose()`` propagates
+                # ``GeneratorExit`` into the upstream generator,
+                # which is exactly the cancellation signal the
+                # engine's own cleanup hooks listen for.
+                try:
+                    await upstream_agen.aclose()
+                except (asyncio.CancelledError, GeneratorExit):
+                    # The upstream generator may itself need a few
+                    # cycles to unwind — propagate cancellation
+                    # cleanly. ``aclose`` raising one of these is
+                    # the documented "successful close" shape.
+                    pass
+                except Exception:  # noqa: BLE001
+                    # Any other exception during upstream cleanup
+                    # is a worse failure than leaving the engine
+                    # to its natural terminus; log + continue so
+                    # we still deliver the buffer_overflow
+                    # envelope to the client.
+                    logger.warning(
+                        "R12-4 upstream aclose() raised during buffer overflow cleanup",
+                        exc_info=True,
+                    )
                 break
             if is_terminal:
                 held_terminal_chunks.append(chunk_text)
@@ -4716,14 +4751,32 @@ async def stream_chat_completion_strict_postgen(
         # runaway model.
         if buffer_overflow:
             incr_strict_violation()
+            # Codex r13 NIT: include both the current cap AND the
+            # documented hard maximum so the operator's guidance
+            # ("raise the cap") is bounded — if they're already at
+            # the hard max, the message tells them to investigate
+            # the runaway generation instead of futilely raising
+            # the env var.
+            if _buffer_cap >= _BUFFER_CAP_HARD_MAX:
+                cap_guidance = (
+                    f"current cap ({_buffer_cap} bytes) is at the hard maximum "
+                    f"({_BUFFER_CAP_HARD_MAX} bytes); investigate the runaway "
+                    "generation rather than raising the cap further."
+                )
+            else:
+                cap_guidance = (
+                    f"raise RAPID_MLX_STRICT_BUFFER_BYTES (current: "
+                    f"{_buffer_cap} bytes, hard maximum: "
+                    f"{_BUFFER_CAP_HARD_MAX} bytes) or investigate a "
+                    "runaway generation."
+                )
             overflow_envelope = build_violation_envelope(
                 {
                     "reason": "buffer_overflow",
                     "message": (
                         f"strict json_schema content buffer exceeded "
                         f"{_buffer_cap} bytes; abandoned validation. "
-                        f"Raise RAPID_MLX_STRICT_BUFFER_BYTES or "
-                        f"investigate a runaway generation."
+                        f"{cap_guidance}"
                     ),
                 },
                 attempts=1,
