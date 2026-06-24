@@ -655,21 +655,74 @@ _DEEPSEEK_V31_BODY_PARSERS = frozenset({"deepseek_v31"})
 _DEEPSEEK_V3_FAMILY_PARSERS = _DEEPSEEK_V3_BODY_PARSERS | _DEEPSEEK_V31_BODY_PARSERS
 
 
+# HF cache layout components that must be stripped before the
+# tail-segment classifier runs. Real layouts:
+#   ~/.cache/huggingface/hub/models--<org>--<name>/snapshots/<sha>/...
+# A bare ``parts[-1]`` would resolve to ``<sha>`` or ``blobs`` and
+# completely miss the model name. Strip these intermediate segments
+# so the classifier sees the canonical model name component.
+_HF_CACHE_INTERMEDIATE_SEGMENTS = frozenset({"snapshots", "blobs", "refs"})
+
+
+def _extract_model_name_segment(path: str) -> str:
+    """Pick the canonical model-name segment from a path that may include
+    HF cache layout intermediates.
+
+    Real-world inputs covered:
+      * ``mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit`` → tail = name
+      * ``/abs/path/mlx-community/DeepSeek-V3-0324`` → tail = name
+      * ``models--mlx-community--DeepSeek-R1-0528-Qwen3-8B-4bit/snapshots/<sha>``
+        → must skip the SHA segment AND the ``snapshots`` marker, then
+        unpack the ``models--<org>--<name>`` form to recover the name.
+      * ``alias-name`` (single token) → tail = name
+    """
+    parts = [p for p in path.rstrip("/").split("/") if p]
+    if not parts:
+        return path
+    # Walk from the end, skipping HF cache intermediate segments and
+    # bare-hex SHA fragments. Once a segment that isn't one of those
+    # is reached, that's our candidate name component.
+    candidate = None
+    for seg in reversed(parts):
+        if seg in _HF_CACHE_INTERMEDIATE_SEGMENTS:
+            continue
+        # Skip 40-char hex SHAs (HF snapshot revision dirs) and short
+        # bare-hex aliases (``refs/main`` etc become just ``main`` so
+        # those don't match this guard). Bounded length check keeps
+        # the heuristic narrow — anything 7+ hex chars is almost
+        # certainly a commit SHA.
+        if len(seg) >= 7 and all(c in "0123456789abcdef" for c in seg.lower()):
+            continue
+        candidate = seg
+        break
+    if candidate is None:
+        candidate = parts[-1]
+    # HF cache flattens ``<org>/<name>`` into ``models--<org>--<name>``.
+    # Pull the original name out so the classifier sees the same string
+    # it would see on a direct HF-path serve.
+    if candidate.startswith("models--") and "--" in candidate[len("models--") :]:
+        candidate = candidate.rsplit("--", 1)[-1]
+    return candidate
+
+
 def _classify_deepseek_template_name(s: str) -> str | None:
     """Inner name-pattern classifier — see ``_deepseek_template_family``
     for the public contract. Pulled out so the public helper can run the
     classifier on BOTH the user-supplied path AND the alias-resolved HF
     path without duplicating the pattern logic.
 
-    All pattern matches are scoped to the model-name component (last
-    non-empty path segment) rather than the full path, so:
+    All pattern matches are scoped to the model-name component
+    (extracted via ``_extract_model_name_segment`` so HF cache layouts
+    like ``models--<org>--<name>/snapshots/<sha>`` resolve to the
+    canonical name and not the SHA), so:
 
     * The R1-Distill reject (codex r3 P3) is not tripped by a
       ``distillations`` parent dir.
     * The V3 / V3.1 / R1-0528 / V4-V5 positive classifiers do not fire
       on a parent dir like ``/models/DeepSeek-V3/qwen-model`` whose
-      checkpoint is actually a Qwen variant (codex r4 BLOCKING — the
-      r3 fix only scoped the reject, not the positive classifiers).
+      checkpoint is actually a Qwen variant (codex r4 BLOCKING).
+    * HF cache snapshot layouts don't get false-negative classified
+      because the tail segment is a SHA (pr-validate codex r6 BLOCKING).
 
     Single-segment scoping works for genuine HF paths because every
     DeepSeek checkpoint's MODEL NAME carries its own family marker:
@@ -679,11 +732,7 @@ def _classify_deepseek_template_name(s: str) -> str | None:
     and never load-bearing for sub-family identification.
     """
     s = s.lower()
-    # Extract the model-name component (last non-empty path segment).
-    # Empty or all-slash inputs collapse to the full string so the
-    # classifier still produces ``None`` rather than crashing.
-    parts = [p for p in s.rstrip("/").split("/") if p]
-    name = parts[-1] if parts else s
+    name = _extract_model_name_segment(s)
     # R1-Distill family is V2 / Qwen2-arch, NOT V3. Explicit reject for
     # BOTH sub-families.
     if "distill" in name:
@@ -693,16 +742,26 @@ def _classify_deepseek_template_name(s: str) -> str | None:
     # substring after the dot is stripped by the loose regex).
     if re.search(r"deepseek[-_]*v3\.\d", name):
         return "v31"
-    # V3 vanilla — V3-0324 etc.
-    if re.search(r"deepseek[-_]*v3(?![._\d])", name):
+    # V3 vanilla — V3-0324 etc. Require ``v3`` to be terminated by
+    # end-of-string or a separator so ``V30``, ``V31`` (which would have
+    # matched V3.1 above anyway), ``V3Beta``, and ``V300`` don't get
+    # mis-classified. ``V3-0324`` matches via the ``-`` boundary.
+    if re.search(r"deepseek[-_]*v3(?=[-_/.\s]|$)", name):
         return "v3"
     # R1-0528 — the R1 retrain on the V3 chat template.
     if re.search(r"deepseek.*r1[-_]?0528", name):
         return "v3"
     # Forward-cover V4 / V5 (per upstream V4 card both inherit the V3
-    # template; cheap to include and avoids a future regression when a
-    # user serves a V4 checkpoint with ``--tool-call-parser deepseek_v3``).
-    if re.search(r"deepseek[-_]*v[45]", name):
+    # template). Require the ``v4`` / ``v5`` token to be terminated by
+    # end-of-string OR a separator character (``-``, ``_``, ``/``, ``.``,
+    # space) so future variants like ``DeepSeek-V40-*``,
+    # ``DeepSeek-V5Beta-*``, or ``DeepSeek-V42-MoE-*`` don't get
+    # silently classified as V3-template just because they share the
+    # ``v4`` / ``v5`` prefix (pr-validate codex r6 BLOCKING — the
+    # missing boundary was a real false-negative path). ``DeepSeek-V4``
+    # and ``DeepSeek-V4-Flash`` still match because the boundary is
+    # satisfied by end-of-string or ``-`` respectively.
+    if re.search(r"deepseek[-_]*v[45](?=[-_/.\s]|$)", name):
         return "v3"
     return None
 

@@ -1179,3 +1179,97 @@ class TestWarnMisboundDeepseekV3Parser:
         assert msg is not None
         # Auto-detect correctly picks ``deepseek_v3`` for R1-0528.
         assert "Auto-detect would pick 'deepseek_v3'" in msg
+
+    # PR-validate codex r6 BLOCKING (HF cache layout): a HuggingFace
+    # cache path resolves the model name to ``<sha>`` if you naively
+    # take the last segment. The classifier must walk past ``snapshots``
+    # / ``blobs`` / ``refs`` markers and SHA-shaped segments, then
+    # unpack the ``models--<org>--<name>`` flat-org form to recover the
+    # canonical model name.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            # V3-line model in HF cache, V3 parser → no warn (in-spec).
+            (
+                "models--mlx-community--DeepSeek-R1-0528-Qwen3-8B-4bit/snapshots/abc123def456",
+                "deepseek_v3",
+            ),
+            # Full absolute HF cache path.
+            (
+                "/Users/me/.cache/huggingface/hub/models--mlx-community--DeepSeek-R1-0528-Qwen3-8B-4bit/snapshots/0123456789abcdef",
+                "deepseek_v3",
+            ),
+            # V3.1 model in HF cache, V3.1 parser → no warn.
+            (
+                "models--deepseek-ai--DeepSeek-V3.1-0324/snapshots/cafebabe1234567890",
+                "deepseek_v31",
+            ),
+        ],
+    )
+    def test_no_warn_on_hf_cache_layout_with_matching_parser(self, model_path, parser):
+        assert warn_misbound_deepseek_v3_parser(model_path, parser) is None
+
+    # Counterpart: HF cache paths still WARN when the canonical model
+    # name is non-V3 (e.g. an R1-Distill model whose cache layout
+    # buries the model name under ``snapshots/<sha>``).
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "models--mlx-community--DeepSeek-R1-Distill-Qwen-1.5B-4bit/snapshots/abc123def456",
+            "/home/me/.cache/huggingface/hub/models--mlx-community--DeepSeek-R1-Distill-Llama-8B-4bit/snapshots/0badc0ffee",
+        ],
+    )
+    def test_warn_on_hf_cache_layout_when_name_is_distill(self, model_path):
+        msg = warn_misbound_deepseek_v3_parser(model_path, "deepseek_v3")
+        assert msg is not None, (
+            f"HF cache path with R1-Distill name component ({model_path!r}) "
+            "must still warn — the classifier must look past "
+            "``snapshots/<sha>`` to the canonical name."
+        )
+
+    # PR-validate codex r6 BLOCKING (V4/V5 boundary): the original
+    # ``v[45]`` regex had no boundary, so future variants like
+    # ``DeepSeek-V40-*`` or ``DeepSeek-V5Beta-*`` would silently match
+    # the V3-template lineage and SUPPRESS the misbind warning. The
+    # boundary must require end-of-string OR a separator after the
+    # version token.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            # Hypothetical V40 / V5Beta variants — must NOT match V3
+            # lineage (we have no evidence about their chat template).
+            "mlx-community/DeepSeek-V40-Special-4bit",
+            "mlx-community/DeepSeek-V5Beta-Special-4bit",
+            "mlx-community/DeepSeek-V42-MoE-4bit",
+            # V3Beta hallucination — V3 pattern needs the same boundary.
+            "mlx-community/DeepSeek-V3Beta-Special",
+            "mlx-community/DeepSeek-V30Special-4bit",
+        ],
+    )
+    def test_warn_on_hallucinated_version_variants(self, model_path):
+        # If these are NOT classified as V3 lineage, the misbind warning
+        # fires for the deepseek_v3 parser binding — which is correct
+        # because we don't know the wire shape of a hypothetical
+        # ``DeepSeek-V40`` or ``DeepSeek-V5Beta`` checkpoint.
+        msg = warn_misbound_deepseek_v3_parser(model_path, "deepseek_v3")
+        assert msg is not None, (
+            f"hallucinated version variant ({model_path!r}) must NOT "
+            "silently match V3-template lineage — the version tokens "
+            "need a boundary to keep ``v[345]`` from matching ``v40``, "
+            "``v5beta``, ``v3beta``, etc."
+        )
+
+    # Counterpart: real V3 / V3.1 / V4 / V5 variants STILL match
+    # after the boundary tightening.
+    @pytest.mark.parametrize(
+        "model_path,parser",
+        [
+            ("mlx-community/DeepSeek-V4-Flash-4bit", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V4", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V5", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V3-0324", "deepseek_v3"),
+            ("deepseek-ai/DeepSeek-V3.1-0324", "deepseek_v31"),
+        ],
+    )
+    def test_no_warn_on_real_versioned_variants(self, model_path, parser):
+        assert warn_misbound_deepseek_v3_parser(model_path, parser) is None
