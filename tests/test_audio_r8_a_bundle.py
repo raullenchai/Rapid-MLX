@@ -870,6 +870,90 @@ class TestVibevoiceDefaultSentinelResolves:
             )
             assert voices_seen == ["default"], (alias, voices_seen)
 
+    def test_vibevoice_voice_omitted_remaps_to_registry_default(self, monkeypatch):
+        # Codex r1 MEDIUM (Diff): pre-fix the Pydantic model defaulted
+        # ``voice`` to ``"af_heart"`` so a request body like
+        # ``{"model":"vibevoice","input":"hi"}`` (no ``voice`` key)
+        # 400'd because ``af_heart`` isn't a real VibeVoice voice.
+        # The omitted-voice shape MUST resolve to the registry default
+        # ``en-Grace_woman``, same as the explicit ``"default"``
+        # sentinel.
+        self._patch_static_fallback(monkeypatch)
+        voices_seen: list[str] = []
+        audio_route, _models = _stub_engine(monkeypatch, voice_observed=voices_seen)
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/speech",
+                json={
+                    "model": "vibevoice",
+                    "input": "hello",
+                    # voice deliberately omitted
+                    "response_format": "wav",
+                },
+            )
+        finally:
+            restore()
+            audio_route._tts_engine = None
+
+        assert r.status_code == 200, (
+            f"R11-B-F1 / codex r1 regression: vibevoice with omitted "
+            f"voice returned {r.status_code}; expected 200 after remap "
+            f"to registry default. Body: {r.text[:500]}"
+        )
+        assert voices_seen == ["en-Grace_woman"], voices_seen
+
+    def test_chatterbox_voice_omitted_remaps_to_default(self, monkeypatch):
+        # Chatterbox's registry default is ``"default"`` — the remap
+        # IS the canonical path because pre-fix this 400'd with
+        # ``voice='af_heart' not recognized for model 'mlx-community/
+        # chatterbox-turbo-fp16'`` whenever a client omitted ``voice``.
+        self._patch_static_fallback(monkeypatch)
+        voices_seen: list[str] = []
+        audio_route, _models = _stub_engine(monkeypatch, voice_observed=voices_seen)
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/speech",
+                json={
+                    "model": "chatterbox",
+                    "input": "hello",
+                    # voice deliberately omitted
+                },
+            )
+        finally:
+            restore()
+            audio_route._tts_engine = None
+
+        assert r.status_code == 200, r.text
+        assert voices_seen == ["default"], voices_seen
+
+    def test_explicit_af_heart_respected_against_kokoro(self, monkeypatch):
+        # Codex r1 MEDIUM regression-guard: an EXPLICIT
+        # ``voice="af_heart"`` from the client must NOT be rewritten
+        # — only the Pydantic-default omitted-voice case routes through
+        # the registry. This pins the boundary between "user said
+        # nothing" and "user explicitly requested af_heart".
+        self._patch_static_fallback(monkeypatch)
+        voices_seen: list[str] = []
+        audio_route, _models = _stub_engine(monkeypatch, voice_observed=voices_seen)
+        client, restore = _mount_audio_app()
+        try:
+            r = client.post(
+                "/v1/audio/speech",
+                json={
+                    "model": "kokoro",
+                    "input": "hello",
+                    "voice": "af_heart",  # explicit
+                },
+            )
+        finally:
+            restore()
+            audio_route._tts_engine = None
+
+        assert r.status_code == 200, r.text
+        assert voices_seen == ["af_heart"], voices_seen
+
     def test_kokoro_default_remaps_to_af_heart(self, monkeypatch):
         # Kokoro's registry ``default_voice`` is ``"af_heart"`` so a
         # request that explicitly sends ``voice="default"`` must be
