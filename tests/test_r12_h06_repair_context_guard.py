@@ -146,6 +146,35 @@ def _reset_metrics_between_tests():
     response_format_metrics.reset_for_tests()
 
 
+@pytest.fixture
+def _rate_limiter_state():
+    """Snapshot + restore the global ``rate_limiter`` state for tests
+    that mount ``/v1/responses``.
+
+    The /v1/responses router is gated by the global ``rate_limiter``;
+    disabling it without restoring leaks state into later tests in the
+    same pytest process — codex pr_validate r1 BLOCKING flagged that
+    pre-fix the responses tests in this file would silently fail or
+    pass downstream tests like
+    ``test_no_routing_shaped_rapid_mlx_env_vars`` based purely on
+    pytest collection order. Mirrors the same fixture pattern in
+    ``tests/test_response_format_json_schema_strict.py``.
+    """
+    from vllm_mlx.middleware.auth import rate_limiter
+
+    saved_enabled = rate_limiter.enabled
+    saved_rpm = rate_limiter.requests_per_minute
+    saved_requests = dict(rate_limiter._requests)
+    rate_limiter.enabled = False
+    rate_limiter.requests_per_minute = 60
+    rate_limiter._requests.clear()
+    yield rate_limiter
+    rate_limiter.enabled = saved_enabled
+    rate_limiter.requests_per_minute = saved_rpm
+    rate_limiter._requests.clear()
+    rate_limiter._requests.update(saved_requests)
+
+
 def _client(*, body: str, max_position_embeddings: int):
     engine = _StubEngine(body=body, max_position_embeddings=max_position_embeddings)
     cfg = reset_config()
@@ -166,21 +195,18 @@ def _responses_client(*, body: str, max_position_embeddings: int):
     (``service.helpers.repair_messages_fit_context``), so we exercise
     the responses surface end-to-end to make sure the wiring at
     ``responses.py:963`` is identical to ``chat.py``.
-    """
-    from vllm_mlx.middleware.auth import rate_limiter
 
+    Callers MUST hold the ``_rate_limiter_state`` fixture so the
+    global rate-limiter is restored on teardown — otherwise this
+    function disables it and never re-enables, polluting later tests
+    in the same pytest process (pr_validate r1 BLOCKING).
+    """
     engine = _StubEngine(body=body, max_position_embeddings=max_position_embeddings)
     cfg = reset_config()
     cfg.engine = engine
     cfg.model_name = "test-model"
     cfg.model_registry = None
     cfg.no_thinking = True
-
-    # /v1/responses is gated by the global rate-limiter; the strict
-    # repair-overflow test file pins counter behaviour and must not
-    # be perturbed by 429s.
-    rate_limiter.enabled = False
-    rate_limiter._requests.clear()
 
     app = FastAPI()
     install_exception_handlers(app)
@@ -440,7 +466,9 @@ def test_repair_fits_helper_returns_true_when_build_prompt_missing():
 # ---------------------------------------------------------------------------
 
 
-def test_responses_repair_skipped_when_repair_prompt_exceeds_context():
+def test_responses_repair_skipped_when_repair_prompt_exceeds_context(
+    _rate_limiter_state,
+):
     """``/v1/responses`` parity for Test 2 (chat-side).
 
     Tight context window: the initial prompt fits but the post-build
@@ -500,7 +528,9 @@ def test_responses_repair_skipped_when_repair_prompt_exceeds_context():
     assert snap["strict_violations_total"] == 1, snap
 
 
-def test_responses_repair_runs_when_both_initial_and_repair_fit_context():
+def test_responses_repair_runs_when_both_initial_and_repair_fit_context(
+    _rate_limiter_state,
+):
     """``/v1/responses`` parity for Test 1 (chat-side).
 
     Sanity-check the responses surface on the HAPPY path: with a
