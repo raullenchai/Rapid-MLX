@@ -335,23 +335,67 @@ class TestStreamingPromotion:
         assert "The answer is 42." in content
 
     def test_stream_prose_mention_not_promoted_at_finalize(self, parser):
-        """When the bare ``<tool_call>`` mention appears mid-reasoning
-        but never closes AND no closer arrives by stream end, the
-        streaming buffer eventually flushes via finalize. The buffer
-        contents are surfaced (matches upstream's stream-end flush
-        contract); the structural guard only applies to the
-        non-streaming promoter."""
+        """Bare ``<tool_call>`` prose mention inside reasoning is NOT
+        promoted in the streaming path either — the structural guard
+        (parity with non-streaming ``_TOOL_CALL_UNCLOSED_RE``) skips
+        the buffer entry when the next non-whitespace byte after the
+        opener is not ``{`` or ``<``. The prose tail must stay in
+        reasoning; post-think content must remain clean."""
         text = (
             "<think>The model should use <tool_call> to invoke functions. "
             "Then it should verify.</think>\n"
             "The answer is 42."
         )
         reasoning, content = _stream(parser, text)
-        # Even if the bare ``<tool_call>`` substring was buffered, the
-        # post-think content delta flushes it. The actual post-think
-        # content must still appear in content.
+        # Bare ``<tool_call>`` must NOT have triggered promotion — the
+        # prose tail "to invoke functions. Then it should verify."
+        # stays in reasoning, not content.
+        assert reasoning is not None
+        assert "to invoke functions" in reasoning
         assert content is not None
         assert "The answer is 42." in content
+        # Post-think content channel must NOT contain the prose tail.
+        assert "to invoke functions" not in content
+
+    @pytest.mark.parametrize("chunk_size", [1, 3, 7, 13, 25])
+    def test_stream_chunked_prose_mention_not_promoted(self, parser, chunk_size):
+        """Regression: chunked streaming of a bare ``<tool_call>``
+        prose mention must NOT promote prose into content, regardless
+        of where SSE boundaries fall (mid-tag, after-tag-whitespace,
+        mid-prose). Exercises the carry-forward case where the
+        discriminating non-whitespace byte arrives in a later chunk."""
+        text = (
+            "<think>The model should use <tool_call> to invoke functions. "
+            "Then it should verify.</think>\n"
+            "The answer is 42."
+        )
+        reasoning, content = _stream(parser, text, chunk_size=chunk_size)
+        assert reasoning is not None
+        assert "to invoke functions" in reasoning
+        assert content is not None
+        assert "The answer is 42." in content
+        assert "to invoke functions" not in content
+
+    def test_stream_chunked_real_tool_call_after_prose_mention(self, parser):
+        """A bare prose ``<tool_call>`` followed later by a real
+        structural ``<tool_call>{json}</tool_call>`` must keep the
+        prose in reasoning AND promote the real call. Verifies the
+        structural-guard loop continues scanning past the prose tag."""
+        text = (
+            "<think>I might use <tool_call> if needed.\n"
+            "<tool_call>\n"
+            "<function=f><parameter=x>1</parameter></function>\n"
+            "</tool_call>\n"
+            "</think>\nDone."
+        )
+        reasoning, content = _stream(parser, text, chunk_size=4)
+        assert reasoning is not None
+        assert "if needed" in reasoning
+        assert content is not None
+        # The structural ``<tool_call>`` (followed by ``<function=…``)
+        # must have been promoted.
+        assert "<function=f>" in content
+        assert "Done." in content
 
 
 # ── Multi-family parity ─────────────────────────────────────────────
