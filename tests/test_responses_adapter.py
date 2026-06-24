@@ -925,7 +925,7 @@ class TestReasoningCutoffSentinelDoesNotMaskIncomplete:
         )
 
     def test_sentinel_in_content_keeps_reasoning_incomplete_on_length(self):
-        from vllm_mlx.service.helpers import REASONING_CUTOFF_SENTINEL
+        from vllm_mlx.api.constants import REASONING_CUTOFF_SENTINEL
 
         chat_resp = self._chat_response_with_reasoning(
             text=REASONING_CUTOFF_SENTINEL,
@@ -984,7 +984,7 @@ class TestReasoningCutoffSentinelDoesNotMaskIncomplete:
         )
 
     def test_sentinel_with_no_finish_length_keeps_reasoning_completed(self):
-        from vllm_mlx.service.helpers import REASONING_CUTOFF_SENTINEL
+        from vllm_mlx.api.constants import REASONING_CUTOFF_SENTINEL
 
         chat_resp = self._chat_response_with_reasoning(
             text=REASONING_CUTOFF_SENTINEL,
