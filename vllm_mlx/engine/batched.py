@@ -2142,6 +2142,22 @@ class BatchedEngine(BaseEngine):
         if not self._loaded:
             await self.start()
 
+        # R12-M2 (codex round-1 P2 follow-up to Mira r12 R-1/R-2):
+        # honour ``enable_thinking`` on the guided path. Pre-fix this
+        # call hard-coded ``enable_thinking=None``, which silently
+        # discarded the route-level auto-disable on strict json_schema
+        # AND any explicit ``chat_template_kwargs={"enable_thinking":
+        # false}`` the client passed. On Qwen3 / DeepSeek-R1 thinking
+        # models the template then pre-injected ``<think>`` and the
+        # model burned the entire ``max_tokens`` budget inside
+        # ``<think>`` before reaching the guided JSON grammar — the
+        # exact half-broken state Mira r12 R-2 documented, just shifted
+        # from the fallback path to the [guided]-installed path.
+        # Pull the kwarg out of ``**kwargs`` BEFORE the prompt render
+        # so the upstream caller's choice (None / True / False) flows
+        # into ``shared_apply_chat_template`` identically to the
+        # non-guided ``chat()`` path.
+        enable_thinking = kwargs.pop("enable_thinking", None)
         # Build prompt from messages. Route through the central
         # ``shared_apply_chat_template`` wrapper so the role-marker
         # sanitisation runs on user/tool message content here too —
@@ -2153,7 +2169,7 @@ class BatchedEngine(BaseEngine):
             tokenizer,
             messages,
             tools=None,
-            enable_thinking=None,
+            enable_thinking=enable_thinking,
             model_name=getattr(self, "_model_name", "") or "",
         )
 
