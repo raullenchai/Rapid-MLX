@@ -2879,7 +2879,31 @@ async def _create_chat_completion_impl(
                     logger.info(
                         "R12-4 strict json_schema repair retry succeeded."
                     )
-                    output = repair_output
+                    # Codex r2 #3: aggregate token usage across BOTH
+                    # attempts before swapping ``output``. Pre-fix
+                    # we discarded the initial attempt's token usage
+                    # entirely, so the client-facing response
+                    # under-reported the prompt + completion tokens
+                    # the server actually billed for. The
+                    # ``raw_text``/``reasoning_text``/etc. fields are
+                    # taken from the SUCCESSFUL repair output since
+                    # those describe what the client receives; only
+                    # the numeric usage fields are summed.
+                    from dataclasses import replace as _dc_replace
+
+                    initial_prompt_tokens = output.prompt_tokens
+                    initial_completion_tokens = output.completion_tokens
+                    output = _dc_replace(
+                        repair_output,
+                        prompt_tokens=(
+                            initial_prompt_tokens
+                            + repair_output.prompt_tokens
+                        ),
+                        completion_tokens=(
+                            initial_completion_tokens
+                            + repair_output.completion_tokens
+                        ),
+                    )
                     ok = True
                     failure_details = None
                 else:
@@ -4470,6 +4494,18 @@ async def stream_chat_completion_strict_postgen(
 
     buffered_content: list[str] = []
     saw_done = False
+    # Codex r2 #1: we MUST NOT forward the upstream stream's terminal
+    # chunk (the one carrying ``finish_reason``) until we know whether
+    # validation passed. Spec-compliant clients finalize on the first
+    # finish_reason they see — if we let the upstream ``stop`` through
+    # before our ``json_schema_violation`` chunk, the client treats
+    # the response as a successful stop and never sees the violation.
+    # Strategy: buffer the LAST chunk that carries a finish_reason
+    # (and any usage chunk that follows it). After validation we
+    # either emit the buffered terminal chunk (if valid) or REPLACE
+    # it with our ``json_schema_violation`` chunk (if invalid).
+    held_terminal_chunks: list[str] = []
+    held_usage_chunk: str | None = None
 
     async for chunk_text in stream_chat_completion(
         engine,
@@ -4486,7 +4522,10 @@ async def stream_chat_completion_strict_postgen(
         if chunk_text.strip() == "data: [DONE]":
             saw_done = True
             continue
-        # Snoop content deltas without disturbing the byte stream.
+        is_terminal = False
+        is_usage_chunk = False
+        # Snoop content deltas + detect terminal finish_reason chunks
+        # without disturbing the byte stream.
         if chunk_text.startswith("data: "):
             payload = chunk_text[len("data: ") :].strip()
             try:
@@ -4503,23 +4542,47 @@ async def stream_chat_completion_strict_postgen(
                         c = delta.get("content")
                         if isinstance(c, str):
                             buffered_content.append(c)
+                    if ch.get("finish_reason"):
+                        is_terminal = True
+                # A usage-only chunk has no choices (or empty choices)
+                # AND carries a ``usage`` field — the upstream
+                # ``stream_chat_completion`` emits one after the
+                # terminal chunk when ``stream_options.include_usage``
+                # is set. We hold it alongside the terminal chunk so
+                # the terminal-replacement logic doesn't drop usage.
+                if not choices and parsed.get("usage") is not None:
+                    is_usage_chunk = True
+        if is_terminal:
+            held_terminal_chunks.append(chunk_text)
+            continue
+        if is_usage_chunk:
+            held_usage_chunk = chunk_text
+            continue
         yield chunk_text
 
     # Stream completed — run validation. We do NOT incr_strict_violation()
     # on the happy path; only when we surface the failure event.
     full_content = "".join(buffered_content)
     ok, failure_details = validate_and_envelope(full_content, json_schema)
-    if not ok:
+    if ok:
+        # Validation passed — release the held terminal + usage chunks
+        # in their original order. The client sees a normal stream.
+        for terminal in held_terminal_chunks:
+            yield terminal
+        if held_usage_chunk is not None:
+            yield held_usage_chunk
+    else:
         incr_strict_violation()
         envelope = build_violation_envelope(
             failure_details or {"reason": "schema_violation"},
             attempts=1,
         )
-        # Synthesize an extra terminal chunk carrying the new
-        # ``finish_reason="json_schema_violation"`` value. Spec-aware
-        # clients (notably pydantic-ai once it adopts this) can react;
-        # spec-unaware clients will treat the unknown enum as "stream
-        # ended" which is still safe.
+        # Codex r2 #1: DROP the held upstream terminal chunk(s); a
+        # client finalizing on the first ``finish_reason`` would
+        # otherwise treat ``stop`` as the verdict and miss the
+        # violation. The R12-4 contract: the FIRST finish_reason a
+        # strict-streaming client sees on a violating response MUST
+        # be ``json_schema_violation``.
         violation_chunk = ChatCompletionChunk(
             id=response_id,
             created=created,
@@ -4536,10 +4599,14 @@ async def stream_chat_completion_strict_postgen(
             + violation_chunk.model_dump_json(exclude_none=True)
             + "\n\n"
         )
-        # Non-content error event with the 422-shaped envelope. The
-        # ``object`` field signals "this is not a chat.completion.chunk
-        # — it carries an error envelope" so byte-faithful clients can
-        # ignore it if they want.
+        # Codex r2 #2: emit BOTH a named SSE event (``event:
+        # chat.completion.error``) AND a plain ``data:`` chunk
+        # carrying the envelope. EventSource-style clients reading
+        # ``onerror`` / named-event handlers receive the named form;
+        # plain-data clients (the OpenAI Python SDK, curl, AI SDK)
+        # decode the JSON the same way they decode every other
+        # ``data:`` line. The two emissions carry the same envelope
+        # JSON so byte-level dedupe is trivial.
         error_event = {
             "id": response_id,
             "object": "chat.completion.error",
@@ -4547,11 +4614,27 @@ async def stream_chat_completion_strict_postgen(
             "model": model_name,
             **envelope,
         }
-        # Use compact JSON encoding (no spaces) to match the SSE
-        # chunk encoding used elsewhere in this module — clients
-        # streaming with byte-level matchers expect ``"key":"val"``
-        # not ``"key": "val"``.
-        yield "data: " + json.dumps(error_event, separators=(",", ":")) + "\n\n"
+        # Compact JSON encoding (no spaces) matches the SSE chunk
+        # encoding used elsewhere in this module.
+        error_payload = json.dumps(error_event, separators=(",", ":"))
+        # Named SSE event form for EventSource clients.
+        yield (
+            "event: chat.completion.error\n"
+            + "data: "
+            + error_payload
+            + "\n\n"
+        )
+        # Plain ``data:`` form for OpenAI-SDK / curl clients (no
+        # ``event:`` line prefix). These clients ignore unknown SSE
+        # fields, so the named event above is silently skipped on
+        # their side and they consume the envelope through this
+        # plain message.
+        yield "data: " + error_payload + "\n\n"
+        # Drop the held usage chunk on failure: emitting it after a
+        # ``finish_reason=json_schema_violation`` would imply the
+        # violation was a successful generation, which contradicts
+        # the contract. The /metrics counters carry the operator-
+        # facing signal instead.
         logger.warning(
             "R12-4 strict json_schema streaming validation failed: %s",
             (failure_details or {}).get("message"),

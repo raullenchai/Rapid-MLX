@@ -477,6 +477,18 @@ def test_strict_true_guided_unavailable_repair_succeeds_returns_200():
         m.get("role") == "system" and "REPAIR" in (m.get("content") or "").upper()
         for m in repair_messages
     )
+    # Codex r2 #3: the response's reported token usage MUST aggregate
+    # both attempts. Each ``_Engine.chat`` call reports
+    # prompt_tokens=4 + completion_tokens=5, so the final response
+    # should bill prompt_tokens=8 + completion_tokens=10.
+    body = resp.json()
+    usage = body["usage"]
+    assert usage["prompt_tokens"] == 8, (
+        f"repair-success path must aggregate prompt tokens (got {usage})"
+    )
+    assert usage["completion_tokens"] == 10, (
+        f"repair-success path must aggregate completion tokens (got {usage})"
+    )
 
 
 def test_strict_true_guided_unavailable_disable_flag_skips_enforcement(monkeypatch):
@@ -561,11 +573,66 @@ def test_strict_true_guided_unavailable_repair_disable_flag_skips_retry(monkeypa
     assert snap["strict_repairs_attempted_total"] == 0
 
 
+def _parse_sse_events(body: str) -> list[dict]:
+    """Parse an SSE response body into a list of ``{event, data}`` dicts.
+
+    Each SSE event is a blank-line-separated block; within a block,
+    ``event:`` and ``data:`` lines accumulate the named event type
+    and the data payload respectively. The ``data:`` field is left
+    as-is (string) so the caller can choose between JSON-decoding and
+    sentinel matching (``[DONE]``). The ``event`` field defaults to
+    the SSE-spec ``"message"`` when no ``event:`` line is present.
+
+    Codex r2 #4: pre-fix the streaming tests grepped the full body
+    for substrings, so an envelope landing AFTER an already-success
+    ``stop`` chunk OR encoded as a non-named SSE event would still
+    pass. Parsing the frames in order lets us assert (a) the
+    violation chunk is the FIRST finish_reason the client sees,
+    (b) the error envelope is wired as a named ``event:
+    chat.completion.error`` block, and (c) ``[DONE]`` arrives last.
+    """
+    events: list[dict] = []
+    current: dict[str, str] = {}
+    for raw_line in body.split("\n"):
+        line = raw_line.rstrip("\r")
+        if line == "":
+            if current:
+                # Default event type per SSE spec.
+                current.setdefault("event", "message")
+                events.append(current)
+                current = {}
+            continue
+        if line.startswith("event: "):
+            current["event"] = line[len("event: ") :]
+        elif line.startswith("data: "):
+            # Multi-line data lines are joined with "\n" per spec.
+            payload = line[len("data: ") :]
+            if "data" in current:
+                current["data"] = current["data"] + "\n" + payload
+            else:
+                current["data"] = payload
+    if current:
+        current.setdefault("event", "message")
+        events.append(current)
+    return events
+
+
 def test_strict_true_guided_unavailable_streaming_emits_violation_finish():
     """R12-4 streaming variant — the unconstrained stream is emitted
-    as usual; on validation failure the wrapper appends an extra
-    chunk with ``finish_reason="json_schema_violation"`` plus a
-    non-content ``error`` event before ``[DONE]``."""
+    as usual; on validation failure the wrapper REPLACES the upstream
+    terminal ``finish_reason="stop"`` chunk with ``finish_reason="json_schema_violation"``
+    and emits the 422-shaped envelope as BOTH a named SSE event
+    (``event: chat.completion.error``) AND a plain ``data:`` chunk
+    before ``[DONE]``.
+
+    The parsed-frames assertions (codex r2 #4) pin:
+        * the FIRST finish_reason a client sees on a violating
+          response is ``json_schema_violation`` (NOT a leading
+          ``stop`` chunk that lets the client finalize early);
+        * the error envelope appears as a named SSE event the
+          EventSource ``onerror`` family can dispatch on;
+        * ``[DONE]`` arrives last so the wire envelope still closes.
+    """
     engine = _Engine(
         supports_guided=False,
         chat_text=_INVALID_PAYLOAD_OUT_OF_RANGE,
@@ -577,22 +644,89 @@ def test_strict_true_guided_unavailable_streaming_emits_violation_finish():
         json=_payload(strict=True, stream=True),
     )
     assert resp.status_code == 200, resp.text  # SSE wire is 200; body carries the error
-    body = resp.text
-    # The new finish_reason value must be present.
-    assert "json_schema_violation" in body
-    # The 422-shaped error envelope must appear inline as a non-
-    # content SSE event. Tolerate both compact and spaced JSON
-    # encoding so encoder changes don't bite the test.
-    assert "json_schema_violation" in body
-    assert "chat.completion.error" in body
-    # Spec-mandated terminal [DONE] sentinel.
-    assert "[DONE]" in body
+    events = _parse_sse_events(resp.text)
+
+    # The body MUST end with [DONE].
+    assert events, "no SSE events parsed from body"
+    assert events[-1]["data"] == "[DONE]", (
+        f"final SSE event must be [DONE], got {events[-1]}"
+    )
+
+    # Codex r2 #1: the FIRST finish_reason the client encounters
+    # MUST be ``json_schema_violation``. A leading ``stop`` chunk
+    # would let spec-compliant clients finalize on success and miss
+    # the violation entirely.
+    first_finish_reason = None
+    for ev in events:
+        data = ev.get("data", "")
+        if data == "[DONE]":
+            continue
+        try:
+            payload = json.loads(data)
+        except (json.JSONDecodeError, TypeError, ValueError):
+            continue
+        if not isinstance(payload, dict):
+            continue
+        for ch in payload.get("choices") or []:
+            if isinstance(ch, dict) and ch.get("finish_reason"):
+                first_finish_reason = ch["finish_reason"]
+                break
+        if first_finish_reason is not None:
+            break
+    assert first_finish_reason == "json_schema_violation", (
+        f"first finish_reason was {first_finish_reason!r}, expected "
+        f"json_schema_violation. The upstream terminal chunk leaked through."
+    )
+
+    # Codex r2 #2: the envelope MUST be emitted as a named SSE event
+    # so EventSource clients can dispatch on ``addEventListener(
+    # 'chat.completion.error', ...)``. The plain-data form is also
+    # emitted for OpenAI-SDK / curl clients, but the named event
+    # form is the load-bearing surface for EventSource consumers.
+    named_error_events = [
+        ev for ev in events if ev.get("event") == "chat.completion.error"
+    ]
+    assert named_error_events, (
+        "no named `event: chat.completion.error` SSE block emitted; "
+        "EventSource clients listening for the named error event will "
+        "never receive it."
+    )
+    err_payload = json.loads(named_error_events[0]["data"])
+    assert err_payload["error"]["code"] == "json_schema_violation"
+    assert err_payload["object"] == "chat.completion.error"
+
     # On streaming we do NOT run repair retry — no attempt counter
     # increment.
     snap = response_format_metrics.snapshot()
     assert snap["strict_requests_total"] == 1
     assert snap["strict_violations_total"] == 1
     assert snap["strict_repairs_attempted_total"] == 0
+
+
+def test_strict_true_guided_unavailable_streaming_happy_path_passes_through():
+    """R12-4 streaming variant happy path — when validation passes,
+    the wrapper releases the held upstream terminal chunk in order
+    (``finish_reason="stop"``) and emits ``[DONE]``. No
+    ``json_schema_violation`` chunk and no ``chat.completion.error``
+    envelope must leak through."""
+    engine = _Engine(supports_guided=False, chat_text=_VALID_PAYLOAD)
+    client = _make_client(engine)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        json=_payload(strict=True, stream=True),
+    )
+    assert resp.status_code == 200, resp.text
+    events = _parse_sse_events(resp.text)
+    # No violation chunk and no error event must appear.
+    body_text = resp.text
+    assert "json_schema_violation" not in body_text
+    assert "chat.completion.error" not in body_text
+    # The last non-DONE event must carry finish_reason="stop".
+    assert events[-1]["data"] == "[DONE]"
+    snap = response_format_metrics.snapshot()
+    assert snap["strict_requests_total"] == 1
+    assert snap["strict_violations_total"] == 0
 
 
 # ---------------------------------------------------------------------------

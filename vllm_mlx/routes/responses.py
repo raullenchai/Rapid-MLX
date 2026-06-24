@@ -963,7 +963,26 @@ async def _non_stream(
                     logger.info(
                         "R12-4 /v1/responses strict repair retry succeeded."
                     )
-                    output = repair_output
+                    # Codex r2 #3 parity with chat.py: aggregate
+                    # token usage across BOTH attempts before
+                    # swapping ``output`` so the client-facing
+                    # response reports the full prompt + completion
+                    # cost the server billed.
+                    from dataclasses import replace as _dc_replace
+
+                    initial_prompt_tokens = output.prompt_tokens
+                    initial_completion_tokens = output.completion_tokens
+                    output = _dc_replace(
+                        repair_output,
+                        prompt_tokens=(
+                            initial_prompt_tokens
+                            + repair_output.prompt_tokens
+                        ),
+                        completion_tokens=(
+                            initial_completion_tokens
+                            + repair_output.completion_tokens
+                        ),
+                    )
                     ok = True
                     failure_details = None
                 else:
