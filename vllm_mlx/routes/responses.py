@@ -2515,11 +2515,19 @@ async def _stream_responses(
         # — a stubbed-short engine (or a model that emits one literal
         # token of long reasoning text) could otherwise report
         # ``reasoning_tokens > output_tokens`` and break SDK arithmetic.
+        # Codex r1 (R12-8): require completion_tokens > 0 to credit
+        # ANY reasoning. Previously the clamp only ran inside the
+        # ``if completion_tokens:`` branch, so a stubbed-short engine
+        # streaming reasoning text with completion_tokens==0 emitted
+        # ``output_tokens: 0`` + ``reasoning_tokens: 1`` — violating
+        # the invariant ``reasoning_tokens <= output_tokens`` that
+        # SDK consumers rely on for usage arithmetic.
         reasoning_token_credit = 0
-        if accumulated_reasoning_text:
-            reasoning_token_credit = max(1, len(accumulated_reasoning_text) // 4)
-            if completion_tokens:
-                reasoning_token_credit = min(reasoning_token_credit, completion_tokens)
+        if accumulated_reasoning_text and completion_tokens:
+            reasoning_token_credit = min(
+                max(1, len(accumulated_reasoning_text) // 4),
+                completion_tokens,
+            )
         usage_payload = {
             "input_tokens": prompt_tokens,
             "output_tokens": completion_tokens,

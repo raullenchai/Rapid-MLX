@@ -134,6 +134,45 @@ class _ReasoningCutoffEngine:
             )
 
 
+class _StubbedShortReasoningEngine:
+    """Codex r1 (R12-8): emits reasoning text but reports
+    ``completion_tokens=0`` throughout the stream — the stubbed-short /
+    speculative-decode-empty edge case where the engine streams
+    reasoning bytes but the token accountant hasn't credited any
+    output. Used to pin the invariant that ``reasoning_tokens`` MUST
+    NOT exceed ``output_tokens`` even when both are zero.
+    """
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        full = "".join(_REASONING_CHUNKS)
+        return _GenerationOutput(
+            text="",
+            raw_text=full,
+            reasoning_text=full,
+            prompt_tokens=4,
+            completion_tokens=0,
+            finish_reason="length",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        accumulated = ""
+        for i, chunk in enumerate(_REASONING_CHUNKS):
+            accumulated += chunk
+            is_last = i == len(_REASONING_CHUNKS) - 1
+            yield _GenerationOutput(
+                text=accumulated,
+                new_text=chunk,
+                prompt_tokens=4 if i == 0 else 0,
+                completion_tokens=0,
+                finish_reason="length" if is_last else None,
+            )
+
+
 # Reasoning-then-message engine for codex r1 HIGH #1 regression: the
 # model closes ``</think>`` mid-stream then emits an assistant message
 # and STILL hits ``finish_reason="length"`` before finishing the
@@ -799,6 +838,94 @@ class TestStreamingBudgetExhaustEmitsReasoningItem:
             f"reasoning_tokens={reasoning_tokens} but reasoning text was "
             f"accumulated — usage credit missing."
         )
+
+    def test_reasoning_tokens_not_credited_when_completion_tokens_zero(
+        self, monkeypatch
+    ):
+        """Codex r1 (R12-8) MED: when an engine streams reasoning text
+        but the token accountant reports ``completion_tokens=0`` (the
+        stubbed-short / spec-decode-empty edge case), the streaming
+        path MUST emit ``reasoning_tokens=0`` — NOT ``reasoning_tokens=1``
+        with ``output_tokens=0``. The invariant ``reasoning_tokens <=
+        output_tokens`` is what SDK consumers depend on for usage
+        arithmetic.
+
+        Pre-fix the clamp lived inside the ``if completion_tokens:``
+        branch, so the zero-completion case skipped clamping entirely
+        and emitted ``output_tokens: 0`` + ``reasoning_tokens: 1``.
+        """
+        previous_modules = {n: sys.modules.get(n, _MISSING) for n in _IMPORTED}
+        previous_attrs = {}
+        for module_name, attr in _PARENT_ATTRS:
+            module = sys.modules.get(module_name)
+            previous_attrs[(module_name, attr)] = (
+                getattr(module, attr, _MISSING) if module is not None else _MISSING
+            )
+        _install_lightweight_engine_modules(monkeypatch)
+        from vllm_mlx.config import reset_config
+        from vllm_mlx.middleware.auth import rate_limiter
+        from vllm_mlx.middleware.exception_handlers import install_exception_handlers
+        from vllm_mlx.routes.responses import router
+
+        cfg = reset_config()
+        cfg.api_key = "test-secret"
+        cfg.engine = _StubbedShortReasoningEngine()
+        cfg.model_name = "test-model"
+        cfg.model_registry = None
+        cfg.reasoning_parser_name = "qwen3"
+        cfg.reasoning_parser = "qwen3"
+        rate_limiter.enabled = False
+        rate_limiter.requests_per_minute = 60
+        rate_limiter._requests.clear()
+        app = FastAPI()
+        install_exception_handlers(app)
+        app.include_router(router)
+        client = TestClient(app)
+
+        try:
+            with client.stream(
+                "POST",
+                "/v1/responses",
+                json=_stream_payload(),
+                headers=HEADERS,
+            ) as resp:
+                body = "".join(resp.iter_text())
+            events = _parse_sse(body)
+            completed = next(d for n, d in events if n == "response.completed")
+            usage = completed["response"]["usage"]
+            output_tokens = usage["output_tokens"]
+            reasoning_tokens = usage["output_tokens_details"]["reasoning_tokens"]
+            assert output_tokens == 0, (
+                f"engine reported completion_tokens=0; expected "
+                f"output_tokens=0, got {output_tokens}"
+            )
+            assert reasoning_tokens <= output_tokens, (
+                f"invariant violated: reasoning_tokens={reasoning_tokens} > "
+                f"output_tokens={output_tokens}"
+            )
+            assert reasoning_tokens == 0, (
+                f"with completion_tokens=0 the reasoning credit must be 0; "
+                f"got {reasoning_tokens}"
+            )
+        finally:
+            reset_config()
+            rate_limiter.enabled = False
+            rate_limiter.requests_per_minute = 60
+            rate_limiter._requests.clear()
+            for name, previous in previous_modules.items():
+                if previous is _MISSING:
+                    sys.modules.pop(name, None)
+                else:
+                    sys.modules[name] = previous
+            for (module_name, attr), previous in previous_attrs.items():
+                module = sys.modules.get(module_name)
+                if module is None:
+                    continue
+                if previous is _MISSING:
+                    if hasattr(module, attr):
+                        delattr(module, attr)
+                else:
+                    setattr(module, attr, previous)
 
 
 # =============================================================================

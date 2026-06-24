@@ -491,25 +491,29 @@ def openai_to_responses(
             # text OR tool_calls) — this brings the non-stream
             # surface into parity.
             #
-            # Issue #858 → PR #860 followup: the chat-route helper
-            # ``_apply_reasoning_cutoff_notice`` is called BEFORE this
-            # adapter on the non-stream path; when the env default
-            # restored the sentinel, ``message.content`` carried the
-            # literal ``REASONING_CUTOFF_SENTINEL`` text on every
-            # mid-think length cutoff. That sentinel is a UX fallback
-            # for clients that only render output_text — it is NOT
+            # Issue #858 → PR #860 followup + R12-8 / H-01 parity:
+            # the chat-route helper ``_apply_reasoning_cutoff_notice``
+            # is called BEFORE this adapter on the non-stream path;
+            # when the env default restored the sentinel, ``message.content``
+            # carried the literal ``REASONING_CUTOFF_SENTINEL`` text on
+            # every mid-think length cutoff. R12-8 (issue #259) extends
+            # the rescue payload from a bare sentinel to ``sentinel +
+            # tail-of-reasoning`` so the user sees a glimpse of the
+            # partial conclusion — but it's still a UX rescue, NOT
             # "real downstream output" from the model, so it must not
             # flip ``reasoning_item_status`` from ``incomplete`` to
-            # ``completed``. Strip the sentinel before the empty check
-            # so the non-stream surface matches the streaming surface's
+            # ``completed``. Use ``startswith`` (not exact-match) so
+            # the gate catches both the pre-R12-8 bare-sentinel shape
+            # AND the R12-8 sentinel+tail shape. This brings the non-
+            # stream surface into parity with the streaming surface's
             # ``reasoning_block_closed`` predicate (which never sees
             # the sentinel because streaming injects it as a terminal
             # delta, never as the parser's content channel).
-            content_for_downstream_check = (choice.message.content or "").strip()
-            if content_for_downstream_check == REASONING_CUTOFF_SENTINEL:
+            content_for_downstream_check = (choice.message.content or "")
+            if content_for_downstream_check.startswith(REASONING_CUTOFF_SENTINEL):
                 content_for_downstream_check = ""
             downstream_output_seen = bool(
-                content_for_downstream_check or choice.message.tool_calls
+                content_for_downstream_check.strip() or choice.message.tool_calls
             )
             reasoning_item_status = (
                 "incomplete"

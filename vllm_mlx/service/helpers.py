@@ -41,6 +41,7 @@ from ..api.models import (
     Usage,
 )
 from ..api.tool_calling import parse_tool_calls
+from ..api.utils import sanitize_output
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
 from ..tool_parsers import ToolParserManager
@@ -1165,9 +1166,22 @@ def _build_reasoning_rescue_payload(reasoning_text: str) -> str:
     has already verified ``reasoning_text`` is non-empty + non-
     whitespace (see ``_apply_reasoning_cutoff_notice``), so an empty
     tail is impossible by construction.
+
+    The tail is run through :func:`sanitize_output` BEFORE injection
+    so any leaked special-token markers (``</think>``, ``<|...|>``,
+    harmony channel markers, ``</tool_call>``, etc.) that a reasoning
+    parser may have left in the trace are stripped on the way to
+    user-visible ``content``. ``reasoning_content`` keeps the full
+    original trace addressable for clients that walk both fields.
+    Codex r1 (R12-8): the rescue path previously bypassed the
+    sanitizer that ``content`` consumers rely on; reasoning markers
+    must not surface in the user-rendered field.
     """
     tail = reasoning_text.rstrip()[-RESCUE_TAIL_LENGTH:]
-    return f"{REASONING_CUTOFF_SENTINEL}\n\n{tail}"
+    sanitized = sanitize_output(tail)
+    if not sanitized:
+        return REASONING_CUTOFF_SENTINEL
+    return f"{REASONING_CUTOFF_SENTINEL}\n\n{sanitized}"
 
 
 def _apply_reasoning_cutoff_notice(

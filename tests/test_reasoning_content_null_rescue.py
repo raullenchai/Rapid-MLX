@@ -494,6 +494,73 @@ class TestR12_8RescuePayloadShape:
             f"helper must not mutate reasoning text; got {reasoning!r}"
         )
 
+    @pytest.mark.parametrize(
+        "marker",
+        [
+            "</think>",
+            "<|im_start|>",
+            "<|im_end|>",
+            "<|channel|>final<|message|>",
+            "</tool_call>",
+            "<|endoftext|>",
+        ],
+    )
+    def test_rescue_tail_is_sanitized_before_injection(self, monkeypatch, marker):
+        """Codex r1 (R12-8): the rescue tail MUST flow through
+        ``sanitize_output`` before being written into user-visible
+        ``content``. Without the sanitizer, leaked reasoning-parser
+        markers (``</think>``, harmony channel markers, etc.) would
+        surface to ``content`` consumers that rely on the canonical
+        sanitizer to strip them — bypassing the same defense every
+        other content-emit site uses.
+
+        Pin: any marker in ``reasoning_text`` MUST NOT appear in the
+        rescue payload, but the sentinel + a non-empty cleaned tail
+        MUST still be present (the rescue is not silently dropped
+        when the only special token is mid-tail).
+        """
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        reasoning = f"the answer is 42 {marker} and that wraps it"
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text=reasoning,
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result is not None, (
+            "rescue must still fire when reasoning has special tokens; "
+            "sanitization is not a kill-switch"
+        )
+        assert result.startswith(REASONING_CUTOFF_SENTINEL), (
+            f"sanitized rescue must keep the sentinel prefix; got {result!r}"
+        )
+        assert marker not in result, (
+            f"sanitizer must strip {marker!r} from the rescue payload; "
+            f"got {result!r}"
+        )
+
+    def test_rescue_falls_back_to_sentinel_when_tail_is_pure_markup(
+        self, monkeypatch
+    ):
+        """Edge case for the sanitizer: if the tail is ENTIRELY
+        special-token markup (``sanitize_output`` returns ``None``
+        because everything was stripped), the rescue degrades
+        gracefully to the bare sentinel — never an empty content,
+        never a half-stripped fragment. The user still sees the
+        retry signal; we just can't show a useful excerpt.
+        """
+        monkeypatch.delenv("RAPID_MLX_REASONING_RESCUE", raising=False)
+        reasoning = "<|im_start|></think><|im_end|></tool_call>"
+        result = _apply_reasoning_cutoff_notice(
+            final_content=None,
+            reasoning_text=reasoning,
+            tool_calls=None,
+            finish_reason="length",
+        )
+        assert result == REASONING_CUTOFF_SENTINEL, (
+            f"all-markup tail must degrade to bare sentinel; got {result!r}"
+        )
+
 
 class TestR12_8RescueEnvVar:
     """R12-8 / issue #259: the primary env var is
