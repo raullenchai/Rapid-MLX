@@ -1325,8 +1325,16 @@ class BaseThinkingReasoningParser(ReasoningParser):
         # streaming wire shape matches the non-streaming wire shape
         # exactly. This is upstream's ``_transition_to_content``
         # catch-all in spirit, recast in our wrapper.
+        #
+        # The shortcut is ONLY safe when no prior chunk left a partial
+        # ``<tool_call>`` opener carry — otherwise delegating to the
+        # non-streaming promoter would see only ``r_in`` and silently
+        # drop ``self._reasoning_carry``. When a carry exists, fall
+        # through to the per-channel state machine so
+        # ``_absorb_reasoning_chunk`` re-prepends the carry first.
         if (
             not self._in_tool_call
+            and not self._reasoning_carry
             and r_in
             and c_in is not None
             and _TOOL_CALL_START in r_in
