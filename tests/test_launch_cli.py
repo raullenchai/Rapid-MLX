@@ -501,6 +501,29 @@ class TestLaunchCommand:
         # PID file written.
         assert launch_cli.PID_FILE.read_text().strip() == "99999"
 
+    def test_start_server_skipped_when_no_clients_patched(
+        self, fake_home, capsys
+    ):
+        # cline is NOT detected on this fake_home. --start-server must
+        # NOT spawn a child server when zero clients were patched
+        # successfully — otherwise we leak a detached server + PID file
+        # for a setup the user can't actually use.
+        with patch.object(subprocess, "Popen") as popen:
+            with pytest.raises(SystemExit) as excinfo:
+                launch_cli.launch_command(
+                    _make_args(
+                        client="cline",
+                        model="qwen3.5-4b-4bit",
+                        start_server=True,
+                        port=8102,
+                    )
+                )
+        assert excinfo.value.code == 1
+        popen.assert_not_called()
+        assert not launch_cli.PID_FILE.exists()
+        err = capsys.readouterr().err
+        assert "Skipping --start-server" in err
+
     def test_uses_original_alias_when_resolved(self, fake_home, capsys):
         """When ``main()`` rewrites ``args.model`` from alias to HF id,
         the launch command should patch with the ORIGINAL alias so the
@@ -549,3 +572,28 @@ def test_launch_help_text_is_registered(tmp_path):
     # And accept `list` as a client name.
     args = parser.parse_args(["launch", "list"])
     assert args.client == "list"
+
+
+@pytest.mark.parametrize("bad_port", ["0", "-1", "65536", "99999", "abc"])
+def test_launch_port_rejects_out_of_range(bad_port):
+    """``--port`` must use the same ``[1, 65535]`` validator as
+    ``rapid-mlx serve``. Pre-fix, ``launch --port 99999`` parsed
+    successfully and only failed inside the detached child after the
+    parent had already printed "Started" and written a PID."""
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    from vllm_mlx.launch.cli import register
+
+    register(sub)
+    with pytest.raises(SystemExit):
+        parser.parse_args(["launch", "cline", "--port", bad_port])
+
+
+def test_launch_port_accepts_in_range():
+    parser = argparse.ArgumentParser()
+    sub = parser.add_subparsers(dest="command")
+    from vllm_mlx.launch.cli import register
+
+    register(sub)
+    args = parser.parse_args(["launch", "cline", "--port", "8000"])
+    assert args.port == 8000

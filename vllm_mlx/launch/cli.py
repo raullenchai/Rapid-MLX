@@ -213,14 +213,22 @@ def launch_command(args: argparse.Namespace) -> None:
             continue
         print(f"  Patched {name} config at {path}")
 
-    if args.start_server:
-        pid = _start_server_background(model, args.port)
-        print(
-            f"  Started: rapid-mlx serve {model} --port {args.port} (pid {pid})"
-        )
-        print(f"  PID file: {PID_FILE}")
-
     succeeded = [n for n in targets if n not in failures]
+
+    if args.start_server:
+        if not succeeded:
+            print(
+                "  Skipping --start-server: no clients were patched. "
+                "Install a supported client first, then re-run.",
+                file=sys.stderr,
+            )
+        else:
+            pid = _start_server_background(model, args.port)
+            print(
+                f"  Started: rapid-mlx serve {model} --port {args.port} (pid {pid})"
+            )
+            print(f"  PID file: {PID_FILE}")
+
     if succeeded:
         print(
             "\nNow ready: open "
@@ -239,6 +247,14 @@ def register(subparsers) -> None:
     in ``cli.py``) means a future client-list change touches only this
     module.
     """
+    # Deferred import: ``vllm_mlx.cli`` imports us at module load to
+    # register the subcommand, so we cannot import from it at file scope
+    # without forming an import cycle. Reuse ``serve``'s ``[1, 65535]``
+    # port validator so `launch --port 99999` argparse-rejects up front
+    # instead of failing inside the detached child after the parent has
+    # already written a PID and printed "Started".
+    from ..cli import _port_arg
+
     p = subparsers.add_parser(
         "launch",
         help="One-shot bootstrap: patch IDE/agent client config to use rapid-mlx",
@@ -280,11 +296,11 @@ def register(subparsers) -> None:
     )
     p.add_argument(
         "--port",
-        type=int,
+        type=_port_arg,
         default=8000,
         help=(
-            "Port for --start-server (default: 8000). Ignored when "
-            "--start-server is not set."
+            "Port for --start-server (default: 8000). Must be in "
+            "[1, 65535]. Ignored when --start-server is not set."
         ),
     )
     p.add_argument(
