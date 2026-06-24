@@ -67,7 +67,6 @@ pytest.importorskip(
 from fastapi import FastAPI  # noqa: E402
 from fastapi.testclient import TestClient  # noqa: E402
 
-
 # ---------------------------------------------------------------------------
 # Helpers — copied from test_audio_r8_a_bundle.py so this file stands alone
 # with the same harness pattern.
@@ -572,9 +571,7 @@ class TestAudioAliasesHaveAudioCapabilities:
     route on the wire. Pre-fix every audio alias came back as
     ``capabilities=["text"]`` / ``modality=null``."""
 
-    @pytest.mark.parametrize(
-        "alias,hf_id,expected_cap", _AUDIO_ALIASES_FOR_CAP_CHECK
-    )
+    @pytest.mark.parametrize("alias,hf_id,expected_cap", _AUDIO_ALIASES_FOR_CAP_CHECK)
     def test_audio_aliases_have_audio_capabilities(
         self, monkeypatch, alias, hf_id, expected_cap
     ):

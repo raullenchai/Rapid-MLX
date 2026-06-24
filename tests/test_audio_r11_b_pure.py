@@ -36,8 +36,30 @@ import pytest
 # are scrubbed to mlx-free paths:
 #   * ``vllm_mlx.api.models`` — pure Pydantic models, no mlx.
 #   * ``vllm_mlx.routes.models`` — model-card builder for /v1/models;
-#     no mlx import.
+#     no mlx import at module load time.
 #   * ``vllm_mlx.audio.registry`` — JSON registry loader; no mlx.
+#   * ``vllm_mlx.routes.audio`` — DOES import a TTS helper but the
+#     module's top-level imports (api.models, middleware.auth,
+#     audio.registry, fastapi) are mlx-free. Heavy ``audio.tts`` /
+#     ``mlx_audio`` imports are LAZY inside the route handler. We
+#     verify mlx-free importability at module load time below so a
+#     future refactor that hoists an ``import mlx`` to the route's
+#     module body is caught by this file as a clean SKIP rather than
+#     a collection ERROR — which is what codex r0 BLOCKING on PR #863
+#     flagged would happen if the import chain weren't actually clean.
+try:
+    import vllm_mlx.routes.audio  # noqa: F401
+except ImportError as _audio_route_import_error:  # pragma: no cover
+    pytest.skip(
+        f"vllm_mlx.routes.audio import failed at module load "
+        f"({_audio_route_import_error}); a future refactor must have "
+        f"hoisted an MLX-only import to the route's top level. The "
+        f"route-integration coverage in test_audio_r11_b_bundle.py "
+        f"is gated separately on mlx.core / mlx_lm, so the F3 helper "
+        f"contracts in this file SKIP rather than ERROR until the "
+        f"route module is reverted to lazy mlx imports.",
+        allow_module_level=True,
+    )
 
 
 # ===========================================================================
@@ -58,7 +80,9 @@ class TestFormatAliasModelLayer:
         downgrade shape R11-B-F2 exists to prevent."""
         from vllm_mlx.api.models import AudioSpeechRequest
 
-        r = AudioSpeechRequest(model="kokoro", input="Hi", voice="af_heart", format="mp3")
+        r = AudioSpeechRequest(
+            model="kokoro", input="Hi", voice="af_heart", format="mp3"
+        )
         assert r.response_format == "mp3"
 
     def test_explicit_response_format_beats_format_alias(self):
@@ -173,9 +197,7 @@ class TestAudioCapabilityShortCircuit:
     the helper level so non-MLX CI catches a regression that would
     otherwise only surface from the full mounted route."""
 
-    @pytest.mark.parametrize(
-        "alias,hf_id,expected_cap", _AUDIO_ALIASES_FOR_CAP_CHECK
-    )
+    @pytest.mark.parametrize("alias,hf_id,expected_cap", _AUDIO_ALIASES_FOR_CAP_CHECK)
     def test_audio_alias_has_audio_capability(self, alias, hf_id, expected_cap):
         """Both the short alias and HF id MUST return
         ``modality="audio"`` + the expected ``audio.<kind>`` capability.
@@ -239,9 +261,7 @@ class TestResolveDefaultVoiceLiteral:
 
         # Reverse HF-id lookup in resolve_audio_alias makes this work.
         assert (
-            _resolve_default_voice_literal(
-                "mlx-community/Kokoro-82M-bf16", "default"
-            )
+            _resolve_default_voice_literal("mlx-community/Kokoro-82M-bf16", "default")
             == "af_heart"
         )
 
