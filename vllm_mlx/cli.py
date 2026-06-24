@@ -1447,6 +1447,35 @@ def serve_command(args):
             "Reasoning parser auto-detection disabled via --no-reasoning-parser"
         )
 
+    # R12-S1: surface a startup warning when the user explicitly bound a
+    # ``deepseek_v3`` / ``deepseek_v31`` / ``deepseek_r1_0528`` parser to
+    # a model whose checkpoint cannot emit the V3 fenced-JSON wire shape
+    # (notably the R1-distill family, which is Qwen2-/Llama2-arch SFT).
+    # See Sven r12 dogfood HIGH-1: forcing ``--tool-call-parser
+    # deepseek_v3`` on ``DeepSeek-R1-Distill-Qwen-1.5B-4bit`` lands tool
+    # calls with ``arguments="{}"`` because the parser correctly refuses
+    # to parse the non-V3 prose the model emits. The auto-detect path
+    # (above) routes the distill family to the legacy ``deepseek`` parser
+    # by default, so this warning only fires when the user explicitly
+    # overrides — preserving the override as the user's declared intent
+    # while loudly surfacing the mismatch so agent SDK builders stop
+    # blaming the parser when the model is the wrong target.
+    try:
+        from .model_auto_config import warn_misbound_deepseek_v3_parser
+
+        misbind_warning = warn_misbound_deepseek_v3_parser(
+            args.model, args.tool_call_parser
+        )
+        if misbind_warning:
+            # ``logger.warning`` so the message lands in any structured
+            # log sink AND surfaces in the terminal at the default
+            # ``WARNING`` level (no stderr-print needed). ``stacklevel=2``
+            # so log frameworks attribute the call site to the CLI entry
+            # rather than the helper module.
+            logger.warning(misbind_warning, stacklevel=2)
+    except Exception as e:  # noqa: BLE001
+        logger.debug(f"deepseek_v3 misbind check failed (non-fatal): {e}")
+
     # Pass alias info to server (for /v1/models)
     server._model_alias = getattr(args, "_original_alias", None)
 

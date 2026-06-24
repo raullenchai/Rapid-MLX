@@ -625,6 +625,107 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     return None
 
 
+# DeepSeek-V3 wire-shape parsers — they expect the
+# ``<｜tool▁calls▁begin｜>…function<｜tool▁sep｜>NAME\n``\`json\n{…}\n``\`…``
+# envelope emitted by the V3 chat template (R1-0528-Qwen3-8B, vanilla
+# V3-0324, V3.1). Models that did NOT inherit the V3 chat template
+# cannot honour this wire shape — most importantly the original
+# R1-distill family (DeepSeek-R1-Distill-Qwen-*, -Llama-*) which are
+# Qwen2 / Llama2-arch SFTs whose tokenizers do not carry the V3
+# fullwidth-pipe special tokens. Binding any of these parsers to such
+# a model produces ``arguments="{}"`` because the model emits prose
+# (or hallucinated wire-token glyphs) that the parser correctly
+# refuses to parse — the parser is working as designed.
+#
+# This set is the ground truth for the misbind warning below. Keep in
+# sync with the @ToolParserManager.register_module(...) aliases on
+# DeepSeekV3ToolParser and DeepSeekV31ToolParser.
+_DEEPSEEK_V3_FAMILY_PARSERS = frozenset(
+    {"deepseek_v3", "deepseek_r1_0528", "deepseek_v31"}
+)
+
+
+def _model_emits_deepseek_v3_wire(model_path: str) -> bool:
+    """True iff ``model_path`` names a checkpoint that inherits the V3
+    chat template (and therefore can emit the V3 fenced-JSON wire shape
+    a ``deepseek_v3``-family parser expects).
+
+    Authoritative list (all matched case-insensitively as substrings of
+    the HF path / alias name):
+      * DeepSeek-V3 / V3.1 / V3.x       — vanilla V3-line checkpoints
+      * DeepSeek-R1-0528                — R1 retrained on the V3 template
+      * DeepSeek-V4 / V5 (forward-cover) — same V3 template lineage
+        per the upstream V4 model card
+
+    The original R1 distill family (``DeepSeek-R1-Distill-Qwen-*``,
+    ``-Llama-*``) is EXCLUDED — those are SFTs on Qwen2 / Llama2 base
+    tokenizers that do not carry the V3 special tokens. Same for the
+    legacy V2.x line (predates the V3 template).
+    """
+    s = model_path.lower()
+    # R1-Distill family is V2 / Qwen2-arch, NOT V3. Explicit reject.
+    if "distill" in s:
+        return False
+    # V3 / V3.1 / V3.x — vanilla
+    if re.search(r"deepseek[-_/]*v3(?:\.\d+)?", s):
+        return True
+    # R1-0528 — the R1 retrain on the V3 chat template.
+    if re.search(r"deepseek.*r1[-_]?0528", s):
+        return True
+    # Forward-cover V4 / V5 (per upstream V4 card both inherit the V3
+    # template; cheap to include and avoids a future regression when a
+    # user serves a V4 checkpoint with ``--tool-call-parser deepseek_v3``).
+    if re.search(r"deepseek[-_/]*v[45]", s):
+        return True
+    return False
+
+
+def warn_misbound_deepseek_v3_parser(
+    model_path: str, tool_call_parser: str | None
+) -> str | None:
+    """If the user explicitly bound a deepseek_v3-family parser to a
+    model that cannot emit the V3 wire shape, return a single-line
+    warning string. Return ``None`` for the in-spec cases (no warning).
+
+    Caller (cli.py / serve entrypoint) decides whether to logger.warning
+    or stderr.print; this helper is pure so the boundary is unit-
+    testable without an active logger and a clean stderr to assert
+    against.
+
+    Why warn instead of reject: the parser-flag override is the user's
+    declared intent. The historical D-DSV31 hotfix exists *because* a
+    user knew their checkpoint emitted the V3 shape under a non-obvious
+    HF path. Hard-rejecting would lock that door. The warning surfaces
+    the mismatch loudly (so agent SDKs / dogfood reports stop blaming
+    the parser when the model is the wrong target) without blocking
+    the explicit override.
+    """
+    if tool_call_parser not in _DEEPSEEK_V3_FAMILY_PARSERS:
+        return None
+    if _model_emits_deepseek_v3_wire(model_path):
+        return None
+    # Suggest the auto-detected parser if one would have applied — that's
+    # the most actionable nudge for the typical user who picked the V3
+    # parser by mistake.
+    auto = detect_model_config(model_path)
+    suggestion = (
+        f" Auto-detect would pick '{auto.tool_call_parser}' for this model."
+        if auto is not None and auto.tool_call_parser
+        else ""
+    )
+    return (
+        f"--tool-call-parser={tool_call_parser!r} is bound to "
+        f"{model_path!r}, which is NOT a DeepSeek-V3 chat-template "
+        "checkpoint. The V3-family parsers expect the "
+        "`<｜tool▁calls▁begin｜>function<｜tool▁sep｜>NAME\\n```json\\n{…}\\n```` "
+        "envelope; non-V3 checkpoints (R1-Distill-Qwen/-Llama, V2.x, "
+        "Qwen2/Llama-arch SFTs) cannot emit it and tool calls will "
+        f"have empty arguments.{suggestion} Drop the explicit "
+        "--tool-call-parser flag to let auto-detect choose, or use "
+        "--tool-call-parser hermes for Qwen/Llama-arch distills."
+    )
+
+
 def enrich_model_config(cfg: ModelConfig | None, model: Any) -> ModelConfig:
     """Runtime-enrich a ``ModelConfig`` from a loaded mlx-lm model.
 
