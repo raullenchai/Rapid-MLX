@@ -348,6 +348,52 @@ def snapshot() -> dict[str, int]:
         }
 
 
+# Help/TYPE/sample lines for the two counters, exposed as a pure helper
+# so unit tests can verify rendering WITHOUT importing
+# ``vllm_mlx.routes.metrics`` (which transitively imports the whole
+# engine stack via ``vllm_mlx.config`` → ``BaseEngine``).
+#
+# ``routes/metrics.py:_render_mxfp4_moe_guardrail_counters`` is a thin
+# wrapper that calls into this helper plus the shared formatting
+# primitives — so the rendered output stays bit-identical regardless of
+# which entry point the test uses.
+_MXFP4_MOE_HELP = (
+    "Load-time warnings fired for the MoE + MXFP4 + multi-device "
+    "throughput cliff (upstream mlx#3402). Any non-zero value means an "
+    "operator started a model matching the three-tuple; expect "
+    "~0.27 tok/s vs ~16 tok/s until upstream lands a fix."
+)
+_NVFP4_MOE_HELP = (
+    "Load-time warnings fired for the MoE + NVFP4 dynamic-range loss "
+    "(upstream mlx#2962, signed E4M3 scales instead of Blackwell "
+    "unsigned UE4M3 -> ~137x dynamic-range loss). Fires regardless of "
+    "device count because the dynamic-range loss bites even on "
+    "single-device serving."
+)
+
+
+def render_prometheus_lines() -> list[str]:
+    """Render the guardrail counters as Prometheus text-exposition lines.
+
+    Pure helper — does not touch the engine, does not import the route
+    module, does not depend on the global ``ServerConfig`` singleton.
+    Returns the standard HELP / TYPE / sample triplet for each counter
+    in stable order so dashboards / tests can pattern-match against the
+    output.
+    """
+    stats = snapshot()
+    mxfp4 = int(stats.get("mxfp4_moe_distributed_warnings_total", 0))
+    nvfp4 = int(stats.get("nvfp4_moe_warnings_total", 0))
+    return [
+        f"# HELP rapid_mlx_mxfp4_moe_distributed_warnings_total {_MXFP4_MOE_HELP}",
+        "# TYPE rapid_mlx_mxfp4_moe_distributed_warnings_total counter",
+        f"rapid_mlx_mxfp4_moe_distributed_warnings_total {mxfp4}",
+        f"# HELP rapid_mlx_nvfp4_moe_warnings_total {_NVFP4_MOE_HELP}",
+        "# TYPE rapid_mlx_nvfp4_moe_warnings_total counter",
+        f"rapid_mlx_nvfp4_moe_warnings_total {nvfp4}",
+    ]
+
+
 def reset_for_tests() -> None:
     """Test-only hook: zero the counters between cases.
 
