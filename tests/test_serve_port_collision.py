@@ -221,9 +221,7 @@ def test_run_uvicorn_systemexit_from_uvicorn_eaddrinuse_reemits_message(
         sock.close()
 
 
-def test_run_uvicorn_systemexit_passthrough_when_port_not_busy(
-    monkeypatch, capsys
-):
+def test_run_uvicorn_systemexit_passthrough_when_port_not_busy(monkeypatch, capsys):
     """If uvicorn ``SystemExit(1)``s for a reason OTHER than a bind
     collision (e.g. TLS misconfig, lifespan abort), the wrapper MUST
     NOT paper over it with a port-collision message. Pin this so the
@@ -259,9 +257,7 @@ def test_run_uvicorn_systemexit_passthrough_when_port_not_busy(
     )
 
 
-def test_run_uvicorn_listen_fd_eaddrinuse_uses_fd_specific_message(
-    monkeypatch, capsys
-):
+def test_run_uvicorn_listen_fd_eaddrinuse_uses_fd_specific_message(monkeypatch, capsys):
     """In ``--listen-fd`` mode, ``args.port`` is meaningless — the
     supervisor owns the bind, and the inherited fd may not correspond
     to the CLI port at all. The friendly message must therefore NOT

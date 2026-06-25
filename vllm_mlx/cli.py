@@ -276,7 +276,9 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
                 sys.exit(1)
 
 
-def _print_port_collision_and_exit(host: str, port: int, *, in_listen_fd_mode: bool) -> None:
+def _print_port_collision_and_exit(
+    host: str, port: int, *, in_listen_fd_mode: bool
+) -> None:
     """Print a Sven-style supervisor-friendly EADDRINUSE message to
     stderr and ``sys.exit(1)``. Single SSOT so both the host/port and
     ``--listen-fd`` failure paths emit a consistent operator-facing
