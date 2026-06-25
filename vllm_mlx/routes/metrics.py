@@ -238,9 +238,14 @@ def _render_kv_cache_dtype_gauge(cfg: Any) -> list[str]:
                 dtype = stashed
     except Exception:
         dtype = None
-    if dtype is None:
-        # Default to bf16 — the only value that is a no-op everywhere,
-        # so observability never lies about quantization status.
+    # codex r3 BLOCKING: a typo / future dtype string / stale field
+    # value not in {"bf16","int8","int4"} would render every series at
+    # 0, violating this gauge's "exactly one is 1" contract and making
+    # dashboards read "no active dtype" — which is worse than wrong, it
+    # looks like the metric is broken. Validate against the known set
+    # and fall back to ``"bf16"`` (the only no-op value) for unknowns,
+    # so the contract holds for every input.
+    if dtype not in ("bf16", "int8", "int4"):
         dtype = "bf16"
 
     out: list[str] = [

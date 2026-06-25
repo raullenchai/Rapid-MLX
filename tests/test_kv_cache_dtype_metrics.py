@@ -148,3 +148,29 @@ def test_gauge_legacy_fallback_leaves_bf16_when_bits_out_of_range():
     assert 'rapid_mlx_kv_cache_dtype{dtype="bf16"} 1' in text
     assert 'rapid_mlx_kv_cache_dtype{dtype="int4"} 0' in text
     assert 'rapid_mlx_kv_cache_dtype{dtype="int8"} 0' in text
+
+
+def test_gauge_unknown_dtype_falls_back_to_bf16():
+    """codex r3 BLOCKING: a typo / future dtype string / stale field
+    value not in {"bf16","int8","int4"} would render every series at
+    0 (none active), which violates the gauge's "exactly one is 1"
+    contract and looks like a broken metric on dashboards. Validate
+    against the known set and fall back to ``"bf16"`` for unknowns."""
+    sc = SimpleNamespace(kv_cache_dtype="fp8")  # not in known set
+    engine = SimpleNamespace(scheduler_config=sc)
+    cfg = SimpleNamespace(engine=engine, kv_cache_dtype=None)
+    text = "\n".join(_render_kv_cache_dtype_gauge(cfg))
+    assert 'rapid_mlx_kv_cache_dtype{dtype="bf16"} 1' in text
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int4"} 0' in text
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int8"} 0' in text
+
+
+def test_gauge_unknown_stash_dtype_falls_back_to_bf16():
+    """Same fix path as above, but via the pre-load stash code branch
+    (no engine yet). An unknown stash value must not silently emit
+    zero across all three series."""
+    cfg = SimpleNamespace(engine=None, kv_cache_dtype="int2")  # not in known set
+    text = "\n".join(_render_kv_cache_dtype_gauge(cfg))
+    assert 'rapid_mlx_kv_cache_dtype{dtype="bf16"} 1' in text
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int4"} 0' in text
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int8"} 0' in text
