@@ -276,6 +276,38 @@ def _port_preflight_or_die(host: str, port: int, *, model: str) -> None:
                 sys.exit(1)
 
 
+def _print_port_collision_and_exit(
+    host: str, port: int, *, in_listen_fd_mode: bool
+) -> None:
+    """Print a Sven-style supervisor-friendly EADDRINUSE message to
+    stderr and ``sys.exit(1)``. Single SSOT so both the host/port and
+    ``--listen-fd`` failure paths emit a consistent operator-facing
+    message and the exit code stays non-zero in both.
+
+    In ``--listen-fd`` mode the ``host``/``port`` args don't describe
+    the real bind (the supervisor owns it), so we omit the
+    port-specific ``lsof -i :N`` hint and reference the inherited fd
+    instead — otherwise the operator would chase a port the rapid-mlx
+    process never tried to bind (codex round-1 NIT #3).
+    """
+    if in_listen_fd_mode:
+        print(
+            "\n  Error: bind() failed on the supervisor-provided "
+            "--listen-fd. The inherited socket is unusable. Re-launch "
+            "with a fresh socket activation or fall back to --host/--port.",
+            file=sys.stderr,
+        )
+    else:
+        display_host = host or "0.0.0.0"
+        print(
+            f"\n  Error: Port {port} already in use on {display_host}. "
+            f"Choose a different --port or stop the existing server "
+            f"(lsof -i :{port}).",
+            file=sys.stderr,
+        )
+    sys.exit(1)
+
+
 def _run_uvicorn(app, args, log_level: str) -> None:
     """Dispatch into ``uvicorn.run`` with the kwargs that match the
     current ``--listen-fd`` / ``--host``/``--port`` mode.
@@ -287,31 +319,143 @@ def _run_uvicorn(app, args, log_level: str) -> None:
     actually references this helper so a future refactor that drops the
     dispatch silently is caught — that's the regression-detection codex
     round-1 PR #696 review was after.
+
+    R13 Sven B1: also the single CLI-side chokepoint that converts a
+    uvicorn-side bind failure into the friendly "Port N already in
+    use…" message + ``sys.exit(1)`` the operator's supervisor (systemd,
+    launchd, k8s) needs to detect failure. Three paths feed in:
+
+      * ``OSError(EADDRINUSE)`` raised through uvicorn (older uvicorns,
+        ``--listen-fd`` mode where ``socket.fromfd`` / ``create_server``
+        fail before uvicorn's own except arms) — caught directly.
+      * ``SystemExit(1)`` from uvicorn>=0.34: ``Server.startup`` catches
+        the bind ``OSError``, ``logger.error(exc)``s it (raw
+        ``ERROR: [Errno 48] …``), and ``sys.exit(1)``s before our
+        ``except OSError`` can fire. The exit code is already non-zero,
+        but the friendly hint is missing — so we re-detect by probing
+        the same ``(host, port)`` ourselves and, if it's busy, re-emit
+        the Sven-style message before propagating the same non-zero
+        exit (codex round-1 BLOCKING #2).
+      * Any other ``SystemExit`` from uvicorn (clean lifespan shutdown,
+        TLS misconfig, etc.) is left untouched.
+
+    ``_port_preflight_or_die`` (run earlier in ``serve_command``)
+    handles the common pre-load case at zero cost — this layer is the
+    TOCTOU-race / fd-mode safety net.
     """
+    import errno
+
     import uvicorn
 
     listen_fd = getattr(args, "listen_fd", None)
-    if listen_fd is not None:
-        # ``fd=`` overrides ``host``/``port``: uvicorn skips its own
-        # ``socket.bind()`` and adopts the inherited fd directly. This
-        # is the close of the bind→auth TOCTOU window — the supervisor
-        # bound + validated the auth secret BEFORE execve'ing, and the
-        # FastAPI ``app`` (with route auth dependencies) is fully
-        # constructed at module load before this call.
-        uvicorn.run(
-            app,
-            fd=listen_fd,
-            log_level=log_level,
-            timeout_keep_alive=30,
-        )
-    else:
-        uvicorn.run(
-            app,
-            host=args.host,
-            port=args.port,
-            log_level=log_level,
-            timeout_keep_alive=30,
-        )
+    try:
+        if listen_fd is not None:
+            # ``fd=`` overrides ``host``/``port``: uvicorn skips its own
+            # ``socket.bind()`` and adopts the inherited fd directly. This
+            # is the close of the bind→auth TOCTOU window — the supervisor
+            # bound + validated the auth secret BEFORE execve'ing, and the
+            # FastAPI ``app`` (with route auth dependencies) is fully
+            # constructed at module load before this call.
+            uvicorn.run(
+                app,
+                fd=listen_fd,
+                log_level=log_level,
+                timeout_keep_alive=30,
+            )
+        else:
+            uvicorn.run(
+                app,
+                host=args.host,
+                port=args.port,
+                log_level=log_level,
+                timeout_keep_alive=30,
+            )
+    except OSError as exc:
+        # Direct EADDRINUSE — older uvicorn, ``--listen-fd`` mode bind
+        # path. Translate to the friendly message; unrelated OSErrors
+        # (e.g. EACCES on a low port) keep their original trace and
+        # propagate so the failure is debuggable.
+        if exc.errno == errno.EADDRINUSE:
+            _print_port_collision_and_exit(
+                args.host, args.port, in_listen_fd_mode=listen_fd is not None
+            )
+        raise
+    except SystemExit as exc:
+        # uvicorn>=0.34 catches the bind ``OSError`` in ``Server.startup``,
+        # ``logger.error(exc)``s it (raw ``[Errno 48]`` line — not the
+        # friendly hint a supervisor operator needs), and ``sys.exit(1)``s
+        # before our ``except OSError`` can fire. The exit code is
+        # already non-zero so the supervisor-failure-detection contract
+        # holds, but we re-emit the Sven-style message on top so the
+        # operator's grep for "already in use" still hits. Only override
+        # the message when a probe confirms the port really IS in use —
+        # other ``SystemExit(1)`` paths (TLS, lifespan, etc.) must keep
+        # uvicorn's own diagnostic so we don't paper over them.
+        #
+        # Outer guard: codex round-2 BLOCKING — if the probe itself
+        # raises (TypeError from a non-string host, gaierror, etc.) the
+        # caller's ``SystemExit`` MUST still propagate. Wrap the
+        # discriminator call so any probe-side exception is silently
+        # absorbed and the original ``raise`` below re-delivers
+        # uvicorn's exit. ``_port_is_busy`` ALSO defends internally,
+        # but a future refactor that drops that guard (or a monkeypatch
+        # in a test harness) must not corrupt the failure signal.
+        if exc.code in (1, "1") and listen_fd is None:
+            try:
+                busy = _port_is_busy(args.host, args.port)
+            except BaseException:
+                busy = False
+            if busy:
+                _print_port_collision_and_exit(
+                    args.host, args.port, in_listen_fd_mode=False
+                )
+        raise
+
+
+def _port_is_busy(host: str, port: int) -> bool:
+    """Best-effort probe: is ``(host, port)`` already bound by another
+    process? Used by ``_run_uvicorn`` to disambiguate an uvicorn
+    ``SystemExit(1)`` triggered by a bind collision from one triggered
+    by an unrelated startup failure (TLS, lifespan, etc.).
+
+    Returns True iff a fresh ``socket.bind`` fails with EADDRINUSE.
+    Returns False on ANY other outcome (clean bind, ENETDOWN, EACCES,
+    ``gaierror``, ``TypeError`` from a ``None`` host, etc.) so the
+    caller's original ``SystemExit`` propagates untouched — codex
+    round-2 BLOCKING was that a probe-side ``TypeError`` could replace
+    uvicorn's ``SystemExit(1)`` with a misleading traceback. The probe
+    is a HEURISTIC: a false-negative is acceptable (operator still
+    gets uvicorn's diagnostic + non-zero exit, just no friendly hint),
+    a probe-side raise that masks uvicorn's failure is not.
+    """
+    import errno
+    import socket
+
+    if not isinstance(host, str) or not host:
+        # uvicorn accepts ``host=""`` as the wildcard alias, but
+        # ``socket.bind(("", port))`` works on AF_INET — pre-normalize
+        # to avoid a probe-side ``TypeError`` for non-string hosts
+        # (sentinel values, configured-via-env edge cases).
+        host = "0.0.0.0"
+
+    try:
+        family = socket.AF_INET6 if _is_ipv6_host(host) else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind((host, port))
+            except OSError as exc:
+                return exc.errno == errno.EADDRINUSE
+    except BaseException:
+        # Outer guard: ANY probe-side failure (socket constructor,
+        # gaierror, host normalization, etc.) MUST NOT mask the caller's
+        # ``SystemExit``. Swallow and report "not busy" so the original
+        # exception re-raises cleanly. ``BaseException`` is intentional
+        # — even a stray ``KeyboardInterrupt`` during the probe should
+        # not corrupt the supervisor-facing failure signal; the caller's
+        # ``raise`` will re-deliver any interrupt on the next event loop.
+        return False
+    return False
 
 
 def _chat_config_dir() -> str:
