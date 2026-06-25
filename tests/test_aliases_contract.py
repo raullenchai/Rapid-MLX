@@ -1171,3 +1171,253 @@ def test_default_max_tokens_is_positive_or_none() -> None:
                 f"{alias}: default_max_tokens={profile.default_max_tokens!r} "
                 f"must be a positive int or None"
             )
+
+
+# =============================================================================
+# Tier-4 alias wave (#299, #290, #304)
+# =============================================================================
+#
+# Five-pack of operator-requested additions landed in 0.9.x:
+#   - kimi-k2.6 (Kimi K2.6 Smart-Quant MoE — DeepseekV3-style architecture)
+#   - holo3.1-35b-a3b / -8bit (Hcompany Holo 3.1, Qwen3.5-MoE base — GUI-agent
+#     vision model, A3B sparse experts)
+#   - qwen3-0.6b / qwen3-1.7b / qwen3-1.7b-4bit (the bare ≤2B Qwen3 short
+#     aliases — triple-reported missing in #299/#290/#304)
+#   - mistral-small-4-119b / -4bit / -8bit (Apache-2 dense workhorse,
+#     mistral3 model_type — same arch family as the existing
+#     mistral-24b-4bit entry)
+#
+# Pinned here so a future bulk edit can't silently revert the parser
+# wiring or capability flags without an operator review at PR time.
+
+
+_TIER4_ALIASES_AND_MOE: tuple[tuple[str, bool], ...] = (
+    # alias, expected is_moe
+    ("kimi-k2.6", True),
+    ("holo3.1-35b-a3b", True),
+    ("holo3.1-35b-a3b-8bit", True),
+    ("qwen3-0.6b", False),
+    ("qwen3-1.7b", False),
+    ("qwen3-1.7b-4bit", False),
+    ("mistral-small-4-119b", False),
+    ("mistral-small-4-119b-4bit", False),
+    ("mistral-small-4-119b-8bit", False),
+)
+
+
+@pytest.mark.parametrize("alias,expected_is_moe", _TIER4_ALIASES_AND_MOE)
+def test_tier4_alias_resolves(alias: str, expected_is_moe: bool) -> None:
+    """Every Tier-4 wave alias must resolve through ``list_profiles`` —
+    catches a JSON-merge mistake where an entry is dropped before commit.
+
+    Also pins the architectural ``is_moe`` flag per family:
+    - Kimi K2.6 and Holo 3.1-A3B are sparse-expert models (MoE).
+      Mis-tagging them as dense would silently enable DFlash if the rest
+      of the gates aligned (DFlash drafter hidden-state fusion misfires
+      on expert-routing churn — see
+      ``test_dflash_excludes_moe_architectures`` for the regression
+      evidence on Qwen3.6-35B-A3B).
+    - Qwen3 0.6B/1.7B (dense Qwen3, not Qwen3.5-MoE) and Mistral-Small-4
+      are dense transformers; mis-tagging as MoE would gate them out of
+      DFlash unnecessarily.
+    """
+    profiles = list_profiles()
+    assert alias in profiles, (
+        f"{alias}: missing from aliases.json — Tier-4 wave (#299/#290/#304) "
+        f"requires this entry to resolve."
+    )
+    profile = profiles[alias]
+    assert profile.is_moe is expected_is_moe, (
+        f"{alias}: is_moe={profile.is_moe!r}, expected {expected_is_moe!r}. "
+        f"Kimi K2.6 (DeepseekV3 sparse-expert) and Holo3.1-A3B "
+        f"(Qwen3.5-MoE base) MUST be MoE; the Qwen3-0.6B/1.7B and "
+        f"Mistral-Small-4-119B aliases MUST be dense."
+    )
+
+
+def test_tier4_short_alias_keys_are_unique() -> None:
+    """The Tier-4 wave introduces several short aliases that resolve to
+    HF paths already referenced by existing entries (qwen3-0.6b →
+    Qwen3-0.6B-4bit, qwen3-1.7b → Qwen3-1.7B-4bit, mistral-small-4-119b →
+    -4bit). The JSON parser would reject duplicate keys, but
+    ``json.loads`` silently keeps the LAST occurrence — meaning a
+    copy-paste typo could shadow an earlier entry without any error.
+    Pin uniqueness explicitly by re-parsing the raw file and counting
+    occurrences of each alias key.
+    """
+    path = Path(__file__).resolve().parents[1] / "vllm_mlx" / "aliases.json"
+    raw_text = path.read_text()
+    # Lightweight key scan — count quoted alias names at the start of a
+    # JSON object property. Anchored on the leading whitespace pattern
+    # that the file uses (2-space indent for top-level entries) so
+    # nested keys aren't double-counted.
+    short_aliases = [a for a, _ in _TIER4_ALIASES_AND_MOE]
+    for alias in short_aliases:
+        pattern = re.compile(rf'^\s{{2}}"{re.escape(alias)}":\s*\{{', re.MULTILINE)
+        hits = pattern.findall(raw_text)
+        assert len(hits) == 1, (
+            f"{alias}: appears {len(hits)} times as a top-level alias key "
+            f"in aliases.json; must appear exactly once. Duplicate keys "
+            f"silently let the last one win, masking the first entry."
+        )
+
+
+def test_kimi_k26_wires_kimi_tool_parser_and_deepseek_r1_reasoning() -> None:
+    """Kimi K2.6 (model_type=kimi_k25, DeepseekV3 sparse-expert backbone)
+    uses the native ``<|tool_calls_section_begin|>...`` tool format
+    handled by the kimi/kimi_k2/moonshot parser. The chat template
+    autonomously emits ``<think>...</think>`` blocks (default
+    ``preserve_thinking=false`` strips them from history, but the live
+    response carries them) — same "model decides" contract used by
+    R1-distill / VibeThinker / Phi-4-mini-reasoning, so route through
+    ``deepseek_r1`` to land the trace in ``reasoning_content`` instead
+    of leaking into ``content``.
+
+    Pinned here so a future "Kimi family default" sweep can't silently
+    flip these to e.g. ``hermes`` (wrong tool envelope) or ``None``
+    reasoning (think blocks would leak into content).
+    """
+    profile = list_profiles()["kimi-k2.6"]
+    assert profile.tool_call_parser == "kimi", (
+        f"kimi-k2.6: tool_call_parser must be 'kimi' — the model emits the "
+        f"native <|tool_calls_section_begin|> envelope, not hermes/qwen3 XML. "
+        f"Got {profile.tool_call_parser!r}."
+    )
+    assert profile.reasoning_parser == "deepseek_r1", (
+        f"kimi-k2.6: reasoning_parser must be 'deepseek_r1' — the chat "
+        f"template autonomously emits `<think>...</think>` blocks. "
+        f"Got {profile.reasoning_parser!r}."
+    )
+    assert profile.is_moe is True, "Kimi K2.6 is sparse-expert MoE."
+    assert profile.is_hybrid is False, (
+        "Kimi K2.6 is pure-attention (DeepseekV3 backbone), not hybrid."
+    )
+    assert profile.supports_spec_decode is False, (
+        "Kimi K2.6 is too large + MoE for spec-decode to be net-positive."
+    )
+    # codex r2 BLOCKING #1: explicit-pin the DFlash gate even though the
+    # AliasProfile default already forbids it on MoE. Defense-in-depth —
+    # if a future PR ever flips the dataclass default-False to default-True
+    # for any reason, this assertion catches the regression here instead
+    # of waiting for the broader ``test_dflash_excludes_moe_architectures``
+    # guard to fire at a much later boundary.
+    assert profile.supports_dflash is False, (
+        "kimi-k2.6: supports_dflash must be False — sparse-expert MoE "
+        "kills DFlash drafter acceptance (see "
+        "test_dflash_excludes_moe_architectures)."
+    )
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["holo3.1-35b-a3b", "holo3.1-35b-a3b-8bit"],
+)
+def test_holo3_1_family_follows_qwen35_moe_precedent(alias: str) -> None:
+    """Holo 3.1-35B-A3B (Hcompany GUI-agent fine-tune of Qwen3.5-MoE)
+    MUST match the existing ``qwen3.5-35b-{4,8}bit`` entries on the
+    routing flags — same backbone, same hybrid GatedDeltaNet attention,
+    same sparse-expert routing. The chat template emits the Qwen XML
+    tool envelope (`<tool_call><function=...>...`) handled by the
+    hermes parser's bare-function branch, and injects ``<think>\\n``
+    on every assistant turn (qwen3 reasoning parser handles the
+    "template opens, model closes" contract).
+    """
+    profile = list_profiles()[alias]
+    assert profile.tool_call_parser == "hermes", (
+        f"{alias}: tool_call_parser must be 'hermes' — Holo 3.1 emits the "
+        f"`<tool_call><function=name><parameter=...>...</function></tool_call>` "
+        f"shape that the hermes parser's bare-function branch handles. "
+        f"Got {profile.tool_call_parser!r}."
+    )
+    assert profile.reasoning_parser == "qwen3", (
+        f"{alias}: reasoning_parser must be 'qwen3' — the Qwen3.5-MoE chat "
+        f"template injects `<think>\\n` on assistant turns. "
+        f"Got {profile.reasoning_parser!r}."
+    )
+    assert profile.is_hybrid is True, (
+        f"{alias}: Qwen3.5-MoE base uses hybrid GatedDeltaNet attention. "
+        f"Got is_hybrid={profile.is_hybrid!r}."
+    )
+    assert profile.is_moe is True, (
+        f"{alias}: Holo 3.1-A3B is sparse-expert (A3B = 3B active "
+        f"experts). Got is_moe={profile.is_moe!r}."
+    )
+    assert profile.supports_spec_decode is False, (
+        f"{alias}: hybrid arch forbids spec-decode (see "
+        f"test_hybrid_disables_spec_decode)."
+    )
+    # codex r2 BLOCKING #2: explicit-pin the DFlash gate alongside the
+    # spec-decode gate. Holo3.1-A3B is MoE + hybrid, both of which
+    # independently kill DFlash (MoE expert-routing churn breaks
+    # drafter acceptance per qwen3.6-35b-a3b PoC; hybrid Mamba/GDN
+    # state breaks drafter rollback). Defense-in-depth — same
+    # rationale as the kimi-k2.6 pin above.
+    assert profile.supports_dflash is False, (
+        f"{alias}: supports_dflash must be False — Holo3.1-A3B is "
+        f"both MoE and hybrid; either independently makes DFlash "
+        f"a regression (see test_dflash_excludes_moe_architectures)."
+    )
+
+
+def test_mistral_small_4_119b_family_follows_mistral_24b_precedent() -> None:
+    """Mistral-Small-4-119B-2603 (Apache-2, model_type=mistral3, dense
+    transformer) MUST match the existing ``mistral-24b-4bit`` entry on
+    the routing flags — same family, same chat template, just a bigger
+    parameter count. Wiring drift here would silently route 119B traffic
+    through a different parser than 24B (confusing for operators
+    debugging tool-call regressions).
+    """
+    twentyfour = list_profiles()["mistral-24b-4bit"]
+    family = [
+        "mistral-small-4-119b",
+        "mistral-small-4-119b-4bit",
+        "mistral-small-4-119b-8bit",
+    ]
+    for alias in family:
+        profile = list_profiles()[alias]
+        assert profile.tool_call_parser == twentyfour.tool_call_parser == "hermes", (
+            f"{alias}: tool_call_parser must match mistral-24b-4bit "
+            f"('hermes'). Got {profile.tool_call_parser!r}."
+        )
+        assert profile.reasoning_parser is None, (
+            f"{alias}: Mistral-Small-4 is a non-thinking variant; no "
+            f"`<think>` emission. reasoning_parser must be None. "
+            f"Got {profile.reasoning_parser!r}."
+        )
+        assert profile.is_hybrid is False, (
+            f"{alias}: mistral3 is dense + pure-attention, not hybrid."
+        )
+        assert profile.is_moe is False, (
+            f"{alias}: Mistral-Small-4-119B-2603 is dense (NOT MoE). "
+            f"Got is_moe={profile.is_moe!r}."
+        )
+
+
+@pytest.mark.parametrize(
+    "alias",
+    ["qwen3-0.6b", "qwen3-1.7b", "qwen3-1.7b-4bit"],
+)
+def test_bare_qwen3_short_aliases_follow_family_precedent(alias: str) -> None:
+    """The bare-size Qwen3 short aliases (no -4bit/-8bit suffix) MUST
+    match the existing sized siblings on routing flags — Qwen3 family
+    default is hermes + qwen3 (the model emits hermes-style `<tool_call>`
+    JSON and autonomous `<think>...</think>` reasoning blocks). Drift
+    here would let a user typing ``qwen3-0.6b`` get different behaviour
+    from ``qwen3-0.6b-4bit`` (which points at the same HF path).
+    """
+    profile = list_profiles()[alias]
+    assert profile.tool_call_parser == "hermes", (
+        f"{alias}: Qwen3 family default tool_call_parser is 'hermes'. "
+        f"Got {profile.tool_call_parser!r}."
+    )
+    assert profile.reasoning_parser == "qwen3", (
+        f"{alias}: Qwen3 family default reasoning_parser is 'qwen3'. "
+        f"Got {profile.reasoning_parser!r}."
+    )
+    assert profile.is_hybrid is False, (
+        f"{alias}: vanilla Qwen3 (non-3.5 / non-3.6) is pure-attention, not hybrid."
+    )
+    assert profile.is_moe is False, (
+        f"{alias}: vanilla Qwen3 0.6B/1.7B is dense (only A3B/A10B/A22B "
+        f"siblings are MoE)."
+    )

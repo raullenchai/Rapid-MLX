@@ -1170,5 +1170,80 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "suffix_decoding_tier": "unknown"
+  },
+  "kimi-k2.6": {
+    "hf_path": "mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8",
+    "tool_call_parser": "kimi",
+    "reasoning_parser": "deepseek_r1",
+    "is_hybrid": false,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "supports_dflash": false
+  },
+  "holo3.1-35b-a3b": {
+    "hf_path": "pipenetwork/Holo-3.1-35B-A3B-MLX-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "supports_dflash": false
+  },
+  "holo3.1-35b-a3b-8bit": {
+    "hf_path": "pipenetwork/Holo-3.1-35B-A3B-MLX-8bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "supports_dflash": false
+  },
+  "qwen3-0.6b": {
+    "hf_path": "mlx-community/Qwen3-0.6B-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "qwen3-1.7b": {
+    "hf_path": "mlx-community/Qwen3-1.7B-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "qwen3-1.7b-4bit": {
+    "hf_path": "mlx-community/Qwen3-1.7B-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "mistral-small-4-119b": {
+    "hf_path": "mlx-community/Mistral-Small-4-119B-2603-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "mistral-small-4-119b-4bit": {
+    "hf_path": "mlx-community/Mistral-Small-4-119B-2603-4bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
+  },
+  "mistral-small-4-119b-8bit": {
+    "hf_path": "mlx-community/Mistral-Small-4-119B-2603-8bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": false,
+    "supports_spec_decode": true
   }
 }
