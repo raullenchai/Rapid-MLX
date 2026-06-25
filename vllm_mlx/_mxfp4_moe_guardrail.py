@@ -36,14 +36,21 @@ What the guardrail does at load time:
    ``aliases.json`` already names these variants
    (``qwen3.5-122b-mxfp4``, ``minimax-m2.7-mxfp4``, etc.) and stays
    robust without parsing each ``config.json`` quant block at load time.
-3. Detect multi-device dispatch via the launcher env vars
-   (``MLX_WORLD_SIZE`` / ``OMPI_COMM_WORLD_SIZE`` / ``PMI_SIZE``).
-   The env vars are authoritative because the launcher sets them
-   before the worker spawns and later passes them into
-   ``mlx.distributed.init()``. We avoid calling ``init()`` ourselves
-   because it has side effects (creates the global communication
-   group, can block while a backend handshakes) and a warning-only
-   guardrail must never mutate engine state.
+3. Detect multi-device dispatch via launcher state set BEFORE the
+   worker spawns. We use a multi-signal probe because upstream
+   ``mlx.distributed_run`` uses different vars per backend:
+   * ``MLX_WORLD_SIZE`` — NCCL backend only (CUDA hosts).
+   * ``OMPI_COMM_WORLD_SIZE`` / ``PMI_SIZE`` — MPI launchers.
+   * ``MLX_HOSTFILE`` — ring backend (Apple Silicon default,
+     and the precise target of the mlx#3402 cliff). We open the
+     hostfile and count its JSON entries — read-only, no side
+     effects.
+
+   We deliberately do NOT call ``mlx.distributed.init()`` for the
+   probe because it creates the global communication group, can
+   block while a backend handshakes, and ``backend="any"`` would
+   make the first successful backend the *global* group. A
+   warning-only guardrail must never mutate engine state.
 4. On the full three-tuple match, log a loud WARNING with the issue
    link and bump ``rapid_mlx_mxfp4_moe_distributed_warnings_total``.
 5. On a MoE + NVFP4 match (any device count — mlx#2962 dynamic-range
@@ -135,27 +142,34 @@ def _detect_distributed_world_size() -> int:
     global communication group — calling it purely for a metric/warning
     probe would either (a) initialize an unwanted singleton group on
     single-host runs or (b) block during startup if the distributed
-    environment is present but not yet ready (codex review #297).
+    environment is present but not yet ready (codex review #297 round 1).
     Worse, ``backend="any"`` makes the first successful backend the
     *global* group, which is a real side-effect on the engine that
     follows.
 
-    Instead, we read the environment variables that ``mlx-launcher`` /
-    ``mlx.distributed_run`` and the common MPI launchers set before
-    they spawn the worker process:
+    Instead, we read launcher state via env vars set by ``mlx-launcher``
+    / ``mlx.distributed_run`` and common MPI launchers BEFORE they spawn
+    the worker. Multiple signals are checked because the upstream
+    launcher uses a *different* set of vars per backend (codex review
+    #297 round 2):
 
-    * ``MLX_WORLD_SIZE`` — set by ``mlx-launcher`` / ``distributed_run``.
-    * ``OMPI_COMM_WORLD_SIZE`` — set by OpenMPI's ``mpirun``.
-    * ``PMI_SIZE`` — set by MPICH/Intel MPI launchers.
+    * ``MLX_WORLD_SIZE`` — set ONLY for the NCCL backend (CUDA hosts).
+      The ring backend, which is the Apple Silicon default and the
+      precise target of the mlx#3402 cliff, does NOT set this.
+    * ``OMPI_COMM_WORLD_SIZE`` — OpenMPI's ``mpirun``.
+    * ``PMI_SIZE`` — MPICH / Intel MPI launchers.
+    * ``MLX_HOSTFILE`` — set by the ring backend (Apple Silicon
+      default). Points to a JSON array of host descriptors; its length
+      IS the world size. We open the file and count entries — read-only,
+      cannot mutate engine state.
 
-    These variables are authoritative because they are what the launcher
-    later passes into ``init()``; if any of them is set to a value > 1
-    we are running under a multi-device dispatch regardless of whether
-    ``init()`` has been called yet. On a vanilla single-host run none
-    are set and we report 1.
+    If any of these signals reports a multi-device run we return it;
+    otherwise we report 1 (single device).
     """
+    import json
     import os
 
+    # Direct integer env vars (NCCL + MPI launchers).
     for env_var in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
         raw = os.environ.get(env_var)
         if not raw:
@@ -166,6 +180,25 @@ def _detect_distributed_world_size() -> int:
             continue
         if size >= 1:
             return size
+
+    # Ring backend (Apple Silicon default) — count entries in the
+    # JSON hostfile. The file is a JSON array of ``{ssh, ips}`` host
+    # objects; ``len(hosts)`` is the world size as constructed by
+    # ``mlx/distributed_run.py``. Read-only — no side effects.
+    hostfile_path = os.environ.get("MLX_HOSTFILE")
+    if hostfile_path:
+        try:
+            with open(hostfile_path) as fp:
+                hosts = json.load(fp)
+            if isinstance(hosts, list) and len(hosts) >= 1:
+                return len(hosts)
+        except Exception:  # pragma: no cover — defensive
+            logger.debug(
+                "MLX_HOSTFILE=%s present but unreadable; treating as size 1",
+                hostfile_path,
+                exc_info=True,
+            )
+
     return 1
 
 

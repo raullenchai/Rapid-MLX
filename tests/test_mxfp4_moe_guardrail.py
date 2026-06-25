@@ -177,7 +177,12 @@ def test_world_size_reads_launcher_env_vars(monkeypatch, env_var):
     """Each launcher env var on its own should be enough to report > 1."""
     # Make sure none of the *other* launcher vars leak through from the
     # test runner's environment.
-    for v in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
+    for v in (
+        "MLX_WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "MLX_HOSTFILE",
+    ):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv(env_var, "8")
     assert g._detect_distributed_world_size() == 8
@@ -185,18 +190,137 @@ def test_world_size_reads_launcher_env_vars(monkeypatch, env_var):
 
 def test_world_size_defaults_to_one_when_no_env(monkeypatch):
     """No launcher vars set → assume single-device (size 1)."""
-    for v in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
+    for v in (
+        "MLX_WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "MLX_HOSTFILE",
+    ):
         monkeypatch.delenv(v, raising=False)
     assert g._detect_distributed_world_size() == 1
 
 
 def test_world_size_ignores_garbage(monkeypatch):
     """Non-integer values fall through to the next var / default."""
-    for v in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
+    for v in (
+        "MLX_WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "MLX_HOSTFILE",
+    ):
         monkeypatch.delenv(v, raising=False)
     monkeypatch.setenv("MLX_WORLD_SIZE", "not-an-int")
     monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
     assert g._detect_distributed_world_size() == 4
+
+
+def test_world_size_from_mlx_hostfile_ring_backend(monkeypatch, tmp_path):
+    """Ring backend (Apple Silicon default) — count entries in MLX_HOSTFILE.
+
+    The ring backend is the precise target of mlx#3402. Upstream
+    ``mlx/distributed_run.py`` sets ``MLX_HOSTFILE`` (path to a JSON
+    array of host descriptors) but NOT ``MLX_WORLD_SIZE`` on the ring
+    path. The guardrail must still report world_size > 1 here.
+    """
+    import json
+
+    for v in (
+        "MLX_WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "MLX_HOSTFILE",
+    ):
+        monkeypatch.delenv(v, raising=False)
+    # Match the upstream hostfile format from
+    # ``mlx.distributed_run.parse_hostfile``: a JSON array of
+    # ``{ssh, ips}`` host objects.
+    hostfile = tmp_path / "hosts.json"
+    hostfile.write_text(
+        json.dumps(
+            [
+                {"ssh": "node-0", "ips": ["10.0.0.1"]},
+                {"ssh": "node-1", "ips": ["10.0.0.2"]},
+                {"ssh": "node-2", "ips": ["10.0.0.3"]},
+            ]
+        )
+    )
+    monkeypatch.setenv("MLX_HOSTFILE", str(hostfile))
+    assert g._detect_distributed_world_size() == 3
+
+
+def test_world_size_from_mlx_hostfile_single_host(monkeypatch, tmp_path):
+    """A single-host hostfile reports 1 — not multi-device."""
+    import json
+
+    for v in (
+        "MLX_WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "MLX_HOSTFILE",
+    ):
+        monkeypatch.delenv(v, raising=False)
+    hostfile = tmp_path / "hosts.json"
+    hostfile.write_text(json.dumps([{"ssh": "node-0", "ips": ["10.0.0.1"]}]))
+    monkeypatch.setenv("MLX_HOSTFILE", str(hostfile))
+    assert g._detect_distributed_world_size() == 1
+
+
+def test_world_size_unreadable_hostfile_falls_through(monkeypatch):
+    """A garbage / missing hostfile path is silently treated as size 1."""
+    for v in (
+        "MLX_WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "MLX_HOSTFILE",
+    ):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("MLX_HOSTFILE", "/nonexistent/path/that/should/not/be/here")
+    assert g._detect_distributed_world_size() == 1
+
+
+def test_ring_backend_three_tuple_fires_e2e(monkeypatch, tmp_path, caplog):
+    """End-to-end: ring backend hostfile + MoE + MXFP4 → cliff warning.
+
+    This is the exact scenario mlx#3402 documents (M3 Ultra distributed
+    GLM-5.1 / DeepSeek-V3.2), so it's the most important guardrail case
+    to cover end-to-end through the adapter.
+    """
+    import json
+    import logging
+
+    caplog.set_level(logging.WARNING, logger=g.logger.name)
+    for v in (
+        "MLX_WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "MLX_HOSTFILE",
+    ):
+        monkeypatch.delenv(v, raising=False)
+    hostfile = tmp_path / "hosts.json"
+    hostfile.write_text(
+        json.dumps(
+            [
+                {"ssh": "node-0", "ips": ["10.0.0.1"]},
+                {"ssh": "node-1", "ips": ["10.0.0.2"]},
+            ]
+        )
+    )
+    monkeypatch.setenv("MLX_HOSTFILE", str(hostfile))
+
+    class _RingProfile:
+        # Inline stand-in for AliasProfile so this test stays
+        # self-contained (the broader _FakeProfile is defined below).
+        hf_path = "nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx"
+        is_moe = True
+
+    fired = g.check_from_profile(
+        model_name="qwen3.5-122b-mxfp4",
+        profile=_RingProfile(),
+        alias="qwen3.5-122b-mxfp4",
+    )
+    assert fired == ["mxfp4_moe_distributed"]
+    joined = " ".join(r.message for r in caplog.records)
+    assert "world_size=2" in joined
 
 
 def test_world_size_never_calls_mlx_distributed_init(monkeypatch):
@@ -221,7 +345,12 @@ def test_world_size_never_calls_mlx_distributed_init(monkeypatch):
 
     monkeypatch.setattr(mx.distributed, "init", _explode)
     # Probe with no env set — must return 1 without touching init.
-    for v in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
+    for v in (
+        "MLX_WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "MLX_HOSTFILE",
+    ):
         monkeypatch.delenv(v, raising=False)
     assert g._detect_distributed_world_size() == 1
     # And with an env set — same contract.
