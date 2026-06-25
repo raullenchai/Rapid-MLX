@@ -504,6 +504,138 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     return out
 
 
+def _render_spec_decode_dflash_counters(cfg: Any) -> list[str]:
+    """Render the R15-P1 #313 DFlash speculative-decode counter triplet.
+
+    Symmetric with :func:`_render_spec_decode_mtp_counters` so a single
+    dashboard panel can graph both backends side-by-side; only the
+    ``method=`` label distinguishes them.
+
+    Four counters + one gauge, all labeled ``family="qwen3.5|qwen3.6"``
+    (or the alias verbatim when present) and ``method="dflash"``:
+
+    * ``rapid_mlx_spec_decode_dflash_attempts_total`` — DFlash block
+      proposals (bumped once per outer-loop verify iteration).
+    * ``rapid_mlx_spec_decode_dflash_accepts_total`` — Blocks where at
+      least one position was accepted. Always ``<= attempts``.
+    * ``rapid_mlx_spec_decode_dflash_tokens_saved_total`` — Cumulative
+      bonus tokens emitted from accepted prefixes. For a fully-accepted
+      block of size B this bumps by ``B - 1``; a partial accept of
+      ``k`` positions bumps by ``max(0, k - 1)``.
+    * ``rapid_mlx_spec_decode_dflash_accept_ratio`` — ``accepts /
+      attempts`` gauge. 0.0 when attempts==0; the lossless contract
+      surface.
+    * ``rapid_mlx_spec_decode_dflash_block_size`` — Observable block
+      size (default 16). Surfaced as a gauge so a future "block size 4
+      prototype" run is distinguishable from the production "block
+      size 16" config without re-deploying.
+    """
+    try:
+        from ..spec_decode.dflash import DEFAULT_BLOCK_SIZE, get_global_counter
+    except ImportError:
+        # Defensive: same rationale as MTP — keep /metrics rendering
+        # robust during partial install / mid-upgrade.
+        return [
+            "# HELP rapid_mlx_spec_decode_dflash_attempts_total "
+            "DFlash block proposals (R15-P1 #313).",
+            "# TYPE rapid_mlx_spec_decode_dflash_attempts_total counter",
+            'rapid_mlx_spec_decode_dflash_attempts_total{family="qwen3.5",method="dflash"} 0',
+            "# HELP rapid_mlx_spec_decode_dflash_accepts_total "
+            "DFlash blocks where at least one position was accepted.",
+            "# TYPE rapid_mlx_spec_decode_dflash_accepts_total counter",
+            'rapid_mlx_spec_decode_dflash_accepts_total{family="qwen3.5",method="dflash"} 0',
+            "# HELP rapid_mlx_spec_decode_dflash_accept_ratio "
+            "DFlash accepts / attempts. 0.0 when attempts==0.",
+            "# TYPE rapid_mlx_spec_decode_dflash_accept_ratio gauge",
+            'rapid_mlx_spec_decode_dflash_accept_ratio{family="qwen3.5",method="dflash"} 0',
+            "# HELP rapid_mlx_spec_decode_dflash_tokens_saved_total "
+            "Cumulative bonus tokens from accepted DFlash prefixes.",
+            "# TYPE rapid_mlx_spec_decode_dflash_tokens_saved_total counter",
+            'rapid_mlx_spec_decode_dflash_tokens_saved_total{family="qwen3.5",method="dflash"} 0',
+            "# HELP rapid_mlx_spec_decode_dflash_block_size "
+            "Active DFlash drafter block size (paper default 16).",
+            "# TYPE rapid_mlx_spec_decode_dflash_block_size gauge",
+            'rapid_mlx_spec_decode_dflash_block_size{family="qwen3.5",method="dflash"} 16',
+        ]
+
+    snapshot = get_global_counter().snapshot()
+
+    family = getattr(cfg, "model_alias", None) or "qwen3.5"
+    common_labels = {"family": family, "method": "dflash"}
+    out: list[str] = []
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_dflash_attempts_total",
+            "counter",
+            (
+                "DFlash block proposals (R15-P1 #313, arxiv 2410.04097). "
+                "Bumped once per dflash_generate_step verify iteration. "
+                "Pair with rapid_mlx_spec_decode_dflash_accepts_total to "
+                "compute the accept ratio (also surfaced as "
+                "rapid_mlx_spec_decode_dflash_accept_ratio)."
+            ),
+            int(snapshot.attempts),
+            labels=common_labels,
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_dflash_accepts_total",
+            "counter",
+            (
+                "DFlash blocks where at least one position was accepted "
+                "by the verify forward. Always <= attempts. The lossless "
+                "contract surface — a low ratio is a speedup signal, not "
+                "a correctness one (tokens stay byte-identical to the "
+                "non-spec-decode path)."
+            ),
+            int(snapshot.accepts),
+            labels=common_labels,
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_dflash_accept_ratio",
+            "gauge",
+            (
+                "accepts / attempts. 0.0 when no attempts (Prometheus "
+                "convention: no-data → 0 rather than NaN so dashboards "
+                "don't flip to no-data during cold start)."
+            ),
+            round(snapshot.accept_ratio, 4),
+            labels=common_labels,
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_dflash_tokens_saved_total",
+            "counter",
+            (
+                "Cumulative bonus tokens emitted from accepted DFlash "
+                "prefixes. For a fully-accepted block of size B this "
+                "bumps by B - 1; a partial accept of k positions bumps "
+                "by max(0, k - 1)."
+            ),
+            int(snapshot.tokens_saved),
+            labels=common_labels,
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_dflash_block_size",
+            "gauge",
+            (
+                "Active DFlash drafter block size. Defaults to 16 (paper "
+                "bench value); a future smaller-block prototype run is "
+                "distinguishable from production without re-deploying."
+            ),
+            int(DEFAULT_BLOCK_SIZE),
+            labels=common_labels,
+        )
+    )
+    return out
+
+
 def _render_mxfp4_moe_guardrail_counters() -> list[str]:
     """Render the R15 #297 MoE+MXFP4 / MoE+NVFP4 load-time guardrail counters.
 
@@ -731,6 +863,10 @@ def _render_prometheus(cfg: Any) -> str:
     # BEFORE the engine-None / get_stats-failure early returns so
     # dashboards see the active mode + skip rate even between restarts.
     lines.extend(_render_turboquant_metrics(cfg))
+
+    # R15-P1 #313 DFlash spec-decode counters (mirror of MTP). Surfaced
+    # pre-engine for the same dashboard-cold-start reason.
+    lines.extend(_render_spec_decode_dflash_counters(cfg))
 
     if cfg.engine is None:
         # No engine yet — return build info + response_format counters
