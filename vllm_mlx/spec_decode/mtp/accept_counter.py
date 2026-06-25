@@ -153,9 +153,7 @@ class MTPAcceptCounter:
                 token).
         """
         if tokens_saved < 0:
-            raise ValueError(
-                f"tokens_saved must be non-negative; got {tokens_saved}"
-            )
+            raise ValueError(f"tokens_saved must be non-negative; got {tokens_saved}")
         with self._lock:
             self._accepts += 1
             self._tokens_saved += tokens_saved

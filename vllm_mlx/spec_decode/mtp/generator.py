@@ -39,8 +39,9 @@ from __future__ import annotations
 
 import logging
 import math
+from collections.abc import Callable, Generator
 from functools import partial
-from typing import Any, Callable, Generator, Optional, Tuple
+from typing import Any
 
 import mlx.core as mx
 
@@ -72,7 +73,7 @@ def _apply_xtc_with_shared_draw(
     xtc_probability: float,
     xtc_threshold: float,
     xtc_special_tokens: list[int],
-    p_draw: Optional[mx.array],
+    p_draw: mx.array | None,
 ) -> mx.array:
     """XTC sampler with optional shared draw (PR #990 surface).
 
@@ -92,18 +93,14 @@ def _apply_xtc_with_shared_draw(
     from mlx_lm.sample_utils import apply_xtc
 
     if p_draw is None:
-        return apply_xtc(
-            logits, xtc_probability, xtc_threshold, xtc_special_tokens
-        )
+        return apply_xtc(logits, xtc_probability, xtc_threshold, xtc_special_tokens)
 
     # Inline replication of PR #990's apply_xtc body with the supplied
     # draw — this fork only executes when XTC + shared draw are BOTH
     # active, which is rare (operators rarely combine XTC with MTP).
     # Matches PR #990 mlx_lm/sample_utils.py:300-306 verbatim.
     if not (0 <= xtc_threshold <= 0.5):
-        raise ValueError(
-            f"xtc_threshold must be in [0, 0.5]; got {xtc_threshold}"
-        )
+        raise ValueError(f"xtc_threshold must be in [0, 0.5]; got {xtc_threshold}")
     probs = mx.softmax(logits, axis=-1)
     mask = probs > xtc_threshold
     n_above = mask.sum(axis=-1, keepdims=True)
@@ -125,7 +122,7 @@ def _make_sampler_chain(
     xtc_probability: float = 0.0,
     xtc_threshold: float = 0.0,
     xtc_special_tokens: list[int] | None = None,
-) -> tuple[list[Callable[[mx.array], mx.array]], Optional[list]]:
+) -> tuple[list[Callable[[mx.array], mx.array]], list | None]:
     """Vendored ``make_sampler_chain`` (PR #990, sample_utils.py:1028).
 
     Returns ``(chain, xtc_cell)`` where ``xtc_cell`` is a single-slot
@@ -135,7 +132,7 @@ def _make_sampler_chain(
     from mlx_lm.sample_utils import apply_min_p, apply_top_k, apply_top_p
 
     xtc_special_tokens = xtc_special_tokens or []
-    xtc_cell: Optional[list] = [None] if xtc_probability > 0.0 else None
+    xtc_cell: list | None = [None] if xtc_probability > 0.0 else None
     chain: list[Callable[[mx.array], mx.array]] = []
     if 0 < top_p < 1.0:
         chain.append(lambda x: apply_top_p(x, top_p))
@@ -171,13 +168,13 @@ def mtp_generate_step(
     model: Any,
     *,
     max_tokens: int = 256,
-    logits_processors: Optional[list[Callable[[mx.array, mx.array], mx.array]]] = None,
-    prompt_cache: Optional[Any] = None,
+    logits_processors: list[Callable[[mx.array, mx.array], mx.array]] | None = None,
+    prompt_cache: Any | None = None,
     prefill_step_size: int = 2048,
-    kv_bits: Optional[int] = None,
+    kv_bits: int | None = None,
     kv_group_size: int = 64,
     quantized_kv_start: int = 0,
-    input_embeddings: Optional[mx.array] = None,
+    input_embeddings: mx.array | None = None,
     temp: float = 0.0,
     top_p: float = 0.0,
     top_k: int = 0,
@@ -185,9 +182,9 @@ def mtp_generate_step(
     min_tokens_to_keep: int = 1,
     xtc_probability: float = 0.0,
     xtc_threshold: float = 0.0,
-    xtc_special_tokens: Optional[list[int]] = None,
+    xtc_special_tokens: list[int] | None = None,
     accept_counter=None,
-) -> Generator[Tuple[int, mx.array, bool], None, None]:
+) -> Generator[tuple[int, mx.array, bool], None, None]:
     """Generator that uses the model's native MTP head for spec decode.
 
     Vendored verbatim from mlx-lm PR #990
@@ -235,7 +232,7 @@ def mtp_generate_step(
         accept_counter = get_global_counter()
 
     y = prompt.astype(mx.uint32)
-    prev_tokens: Optional[mx.array] = None
+    prev_tokens: mx.array | None = None
 
     if prompt_cache is None:
         model_cache = _cache_module.make_prompt_cache(model)
@@ -397,15 +394,11 @@ def mtp_generate_step(
                 )
                 embeddings = embeddings[n:]
             else:
-                _, hidden = model(
-                    yy[:n][None], cache=model_cache, return_hidden=True
-                )
+                _, hidden = model(yy[:n][None], cache=model_cache, return_hidden=True)
             model.mtp_forward(hidden, yy[1 : n + 1][None], mtp_cache)
             quantize_cache_fn(mtp_cache)
             quantize_cache_fn(model_cache)
-            mx.eval(
-                [c.state for c in model_cache + mtp_cache if hasattr(c, "state")]
-            )
+            mx.eval([c.state for c in model_cache + mtp_cache if hasattr(c, "state")])
             yy = yy[n:]
             total -= n
             mx.clear_cache()
@@ -440,9 +433,7 @@ def mtp_generate_step(
             # Verify draft: run backbone over [y, draft_tok].
             # n_confirmed=1 causes GatedDeltaNet to snapshot its SSM/conv
             # state at the confirmed boundary so rejection rolls back.
-            y_with_draft = mx.concatenate(
-                [y, mx.array([draft_tok.item()], mx.uint32)]
-            )
+            y_with_draft = mx.concatenate([y, mx.array([draft_tok.item()], mx.uint32)])
             toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
                 y_with_draft,
                 prev_tokens,

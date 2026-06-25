@@ -27,8 +27,6 @@ because Stage B Viterbi is currently holding the device).
 
 from __future__ import annotations
 
-import importlib
-
 import pytest
 
 mx = pytest.importorskip("mlx.core")
@@ -443,9 +441,18 @@ def test_metrics_renders_post_acceptance_counters():
         model_alias = "qwen3.5-9b-4bit"
 
     body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
-    assert 'rapid_mlx_spec_decode_attempts_total{family="qwen3.5-9b-4bit",method="mtp"} 4' in body
-    assert 'rapid_mlx_spec_decode_accepts_total{family="qwen3.5-9b-4bit",method="mtp"} 3' in body
-    assert 'rapid_mlx_spec_decode_tokens_saved_total{family="qwen3.5-9b-4bit",method="mtp"} 3' in body
+    assert (
+        'rapid_mlx_spec_decode_attempts_total{family="qwen3.5-9b-4bit",method="mtp"} 4'
+        in body
+    )
+    assert (
+        'rapid_mlx_spec_decode_accepts_total{family="qwen3.5-9b-4bit",method="mtp"} 3'
+        in body
+    )
+    assert (
+        'rapid_mlx_spec_decode_tokens_saved_total{family="qwen3.5-9b-4bit",method="mtp"} 3'
+        in body
+    )
     # accept_ratio = 0.75 → must appear rounded to 4 decimals.
     assert "0.75" in body
     reset_global_counter_for_tests()

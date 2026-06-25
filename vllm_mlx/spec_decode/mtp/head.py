@@ -84,9 +84,7 @@ def build_mtp_module(
     )
 
     if num_layers < 1:
-        raise ValueError(
-            f"build_mtp_module requires num_layers >= 1; got {num_layers}"
-        )
+        raise ValueError(f"build_mtp_module requires num_layers >= 1; got {num_layers}")
 
     class _MTPDecoderLayer(nn.Module):
         """Full-attention-only transformer layer for the MTP head.
@@ -141,9 +139,7 @@ def build_mtp_module(
                 bias=False,
             )
             self.layers = [_MTPDecoderLayer(mod_args) for _ in range(n_layers)]
-            self.norm = nn.RMSNorm(
-                mod_args.hidden_size, eps=mod_args.rms_norm_eps
-            )
+            self.norm = nn.RMSNorm(mod_args.hidden_size, eps=mod_args.rms_norm_eps)
 
         def __call__(
             self,

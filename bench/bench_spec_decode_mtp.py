@@ -427,15 +427,17 @@ def main() -> int:
     }
     if args.format == "markdown":
         print("# MTP spec-decode bench\n")
-        print(f"Model: `{args.model}`  max_tokens: {args.max_tokens}  temp: {args.temp}\n")
+        print(
+            f"Model: `{args.model}`  max_tokens: {args.max_tokens}  temp: {args.temp}\n"
+        )
         print("| Condition | Tok/s pooled | Speedup | Accept (A/V) |")
         print("|---|---|---|---|")
         for s in (baseline_summary, mtp_summary):
-            speedup = (
-                f"{s.speedup_vs_baseline:.2f}×" if s.speedup_vs_baseline else "—"
-            )
+            speedup = f"{s.speedup_vs_baseline:.2f}×" if s.speedup_vs_baseline else "—"
             accept = f"{s.accept_ratio:.1%}" if s.accept_ratio else "—"
-            print(f"| {s.condition} | {s.pooled_tok_per_sec:.1f} | {speedup} | {accept} |")
+            print(
+                f"| {s.condition} | {s.pooled_tok_per_sec:.1f} | {speedup} | {accept} |"
+            )
     else:
         print(json.dumps(out, indent=2))
     return 0

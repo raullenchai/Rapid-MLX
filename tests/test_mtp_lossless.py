@@ -179,17 +179,22 @@ def test_lossless_temp0_all_accept_matches_none_reference():
     # the verify preds, so every accept fires.
     backbone_mtp = [
         7,  # cold-start primary
-        11, 13,  # verify1
-        15, 17,  # verify2
-        19, 21,  # verify3
+        11,
+        13,  # verify1
+        15,
+        17,  # verify2
+        19,
+        21,  # verify3
     ]
     # MTP head proposes the same sequence the backbone would emit
     # next. Cache-commit MTP calls consume 2 slots (a sentinel + the
     # next draft); the cold-start MTP call consumes 1 slot.
     mtp_drafts = [
         11,  # cold-start draft1
-        0, 15,  # cache_commit after accept1: sentinel + draft2
-        0, 19,  # cache_commit after accept2: sentinel + draft3
+        0,
+        15,  # cache_commit after accept1: sentinel + draft2
+        0,
+        19,  # cache_commit after accept2: sentinel + draft3
     ]
     mtp_tokens = _spec_decode_mtp_path(
         backbone_mtp,
@@ -230,10 +235,13 @@ def test_lossless_temp0_all_reject_matches_none_reference():
     # for the next draft (without a cache_commit, so S=1).
     backbone_mtp = [
         7,  # cold-start primary
-        11, 99,  # verify1: pred=11 ≠ draft1, bonus=99 (unused on reject)
-        13, 99,  # verify2: pred=13 ≠ draft2, bonus=99
-        15, 99,  # verify3: pred=15 ≠ draft3, bonus=99
-        17,      # final cold-start backbone after the last reject
+        11,
+        99,  # verify1: pred=11 ≠ draft1, bonus=99 (unused on reject)
+        13,
+        99,  # verify2: pred=13 ≠ draft2, bonus=99
+        15,
+        99,  # verify3: pred=15 ≠ draft3, bonus=99
+        17,  # final cold-start backbone after the last reject
     ]
     # MTP proposes a sentinel that won't match any verify_pred.
     mtp_drafts = [

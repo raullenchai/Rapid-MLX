@@ -231,13 +231,9 @@ def validate_mtp_support(model: Any) -> bool:
         return False
     sig = inspect.signature(type(inner).__call__)
     if "return_hidden" not in sig.parameters:
-        logger.warning(
-            "[mtp.validate] model.__call__ does not accept return_hidden."
-        )
+        logger.warning("[mtp.validate] model.__call__ does not accept return_hidden.")
         return False
     if "n_confirmed" not in sig.parameters:
-        logger.warning(
-            "[mtp.validate] model.__call__ does not accept n_confirmed."
-        )
+        logger.warning("[mtp.validate] model.__call__ does not accept n_confirmed.")
         return False
     return True

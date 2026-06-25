@@ -127,9 +127,7 @@ def _detect_mtp_eligibility_verbose(
     short-strings stable across versions.
     """
     if not isinstance(config, dict):
-        return _DetectionResult(
-            MTPEligibility.NONE, None, 0, "config is not a dict"
-        )
+        return _DetectionResult(MTPEligibility.NONE, None, 0, "config is not a dict")
 
     model_type = config.get("model_type")
     if not isinstance(model_type, str):
