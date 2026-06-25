@@ -650,6 +650,7 @@
     "tool_call_parser": "harmony",
     "reasoning_parser": "harmony",
     "is_hybrid": false,
+    "is_moe": true,
     "supports_spec_decode": true
   },
   "minimax-m2.5-4bit": {
@@ -657,6 +658,7 @@
     "tool_call_parser": "minimax",
     "reasoning_parser": "minimax",
     "is_hybrid": false,
+    "is_moe": true,
     "supports_spec_decode": true
   },
   "minimax-m2.7-mxfp4": {
@@ -664,6 +666,7 @@
     "tool_call_parser": "minimax",
     "reasoning_parser": "minimax",
     "is_hybrid": false,
+    "is_moe": true,
     "supports_spec_decode": true
   },
   "deepseek-r1-8b-4bit": {

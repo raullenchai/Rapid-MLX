@@ -442,6 +442,82 @@ def test_check_from_profile_nvfp4_moe(monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# Real-aliases regression: every MXFP4/NVFP4 alias must carry is_moe so the
+# guardrail actually fires in production (codex round 6 BLOCKING).
+# ---------------------------------------------------------------------------
+
+
+def test_all_mxfp4_aliases_carry_is_moe_metadata():
+    """Every MXFP4 alias in ``aliases.json`` MUST have ``is_moe: true``.
+
+    Codex round 6 BLOCKING: ``gpt-oss-20b-mxfp4-q8`` and
+    ``minimax-m2.7-mxfp4`` were shipped with implicit ``is_moe=false``
+    (the field defaulted) even though both are MoE architectures
+    (gpt-oss is the OpenAI mixture-of-experts family; MiniMax-Text is
+    ~456B total / ~46B active). With ``is_moe=false`` the guardrail
+    returns BEFORE the warning, leaving production alerts inert on the
+    exact aliases the cliff most affects.
+
+    This test walks every alias whose HF path embeds the ``mxfp4``
+    token (case-insensitive) and asserts ``is_moe=True`` is wired
+    through ``resolve_profile`` — the same code path
+    ``server.load_model()`` uses at runtime. Any future MXFP4 alias
+    added without ``is_moe: true`` will trip this test, so the
+    guardrail can never silently regress to inert again.
+    """
+    from vllm_mlx.model_aliases import list_profiles, resolve_profile
+
+    mxfp4_aliases: list[str] = []
+    for alias, profile in list_profiles().items():
+        if "mxfp4" in profile.hf_path.lower():
+            mxfp4_aliases.append(alias)
+
+    # Defensive — if the alias registry no longer carries any MXFP4
+    # entries (all retired), the test would silently pass. Pin a floor
+    # so the test still catches the regression next time someone adds
+    # an MXFP4 alias.
+    assert mxfp4_aliases, (
+        "Expected at least one MXFP4 alias in the registry; if all are "
+        "retired, remove this test along with the rest of the guardrail."
+    )
+
+    for alias in mxfp4_aliases:
+        profile = resolve_profile(alias)
+        assert profile is not None
+        assert profile.is_moe, (
+            f"alias {alias!r} (hf_path={profile.hf_path!r}) is an MXFP4 "
+            f"variant but ``is_moe=False`` — the mlx#3402 guardrail will "
+            f"NEVER fire for this alias. Set ``is_moe: true`` in "
+            f"aliases.json."
+        )
+
+
+def test_all_nvfp4_aliases_carry_is_moe_metadata():
+    """Every NVFP4 alias must also carry ``is_moe: true`` for mlx#2962.
+
+    Symmetric counterpart to the MXFP4 test. There are currently no
+    NVFP4 aliases shipped, but a future one added without ``is_moe``
+    would silently bypass the dynamic-range-loss warning.
+    """
+    from vllm_mlx.model_aliases import list_profiles, resolve_profile
+
+    nvfp4_aliases = [
+        alias
+        for alias, profile in list_profiles().items()
+        if "nvfp4" in profile.hf_path.lower()
+    ]
+
+    for alias in nvfp4_aliases:
+        profile = resolve_profile(alias)
+        assert profile is not None
+        assert profile.is_moe, (
+            f"alias {alias!r} (hf_path={profile.hf_path!r}) is an NVFP4 "
+            f"variant but ``is_moe=False`` — the mlx#2962 guardrail will "
+            f"NEVER fire. Set ``is_moe: true`` in aliases.json."
+        )
+
+
 def test_render_prometheus_lines_exposes_both_counters():
     """The pure render helper emits HELP/TYPE/sample for both counters.
 
