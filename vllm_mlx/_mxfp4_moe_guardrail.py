@@ -72,7 +72,6 @@ from __future__ import annotations
 import logging
 import threading
 from dataclasses import dataclass
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -102,11 +101,11 @@ class GuardrailSignal:
     """
 
     is_moe: bool
-    quant_format: Optional[str]  # "mxfp4", "nvfp4", or None
+    quant_format: str | None  # "mxfp4", "nvfp4", or None
     distributed_world_size: int
 
 
-def _detect_quant_format(hf_path: str | None) -> Optional[str]:
+def _detect_quant_format(hf_path: str | None) -> str | None:
     """Best-effort quant-format detection from the HF path string.
 
     rapid-mlx's ``aliases.json`` names mxfp4 / nvfp4 variants with the
@@ -329,11 +328,7 @@ def check_from_profile(
     (e.g. ``_version_check``, ``_download_gate``).
     """
     is_moe = bool(getattr(profile, "is_moe", False))
-    hf_path = (
-        getattr(profile, "hf_path", None)
-        if profile is not None
-        else model_name
-    )
+    hf_path = getattr(profile, "hf_path", None) if profile is not None else model_name
     quant_format = _detect_quant_format(hf_path or model_name)
     world_size = _detect_distributed_world_size()
     signal = GuardrailSignal(
