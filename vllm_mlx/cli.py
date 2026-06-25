@@ -2280,6 +2280,11 @@ def serve_command(args):
         kv_cache_turboquant=args.kv_cache_turboquant,
         kv_cache_turboquant_bits=args.kv_cache_turboquant_bits,
         kv_cache_turboquant_group_size=args.kv_cache_turboquant_group_size,
+        # R15-P1 (task #296): disk-backed KV checkpointing at 256-tok
+        # boundaries. ``0`` disables; the runtime module guards every
+        # hot-path call with ``should_checkpoint`` so the cost when off
+        # is one int comparison.
+        kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 256),
         # PFlash long-prompt compression (#287)
         pflash_config=pflash_config,
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into
@@ -3134,6 +3139,12 @@ def bench_command(args):
             kv_cache_quantization_bits=args.kv_cache_quantization_bits,
             kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
             kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
+            # R15-P1 (task #296): disk-backed KV checkpointing. Bench
+            # path mirrors serve so a regression in the boundary trigger
+            # surfaces in `rapid-mlx bench` numbers too.
+            kv_disk_checkpoint_interval=getattr(
+                args, "kv_disk_checkpoint_interval", 256
+            ),
             # PFlash long-prompt compression (#287)
             pflash_config=bench_pflash_config,
         )
@@ -5675,6 +5686,23 @@ Examples:
         type=int,
         default=32,
         help="Group size for TurboQuant quantization (default: 32)",
+    )
+    # R15-P1 (task #296): disk-backed KV checkpointing at 256-tok boundaries.
+    # 0 disables the feature entirely (no scheduler-hot-path cost, no
+    # ~/.cache/rapid-mlx/kv_checkpoints/ directory creation); the default
+    # 256 matches MLX-LM's KVCache.step and LMCache's external-chunk size
+    # so the on-disk shape aligns with the in-memory shape on reload.
+    serve_parser.add_argument(
+        "--kv-disk-checkpoint-interval",
+        type=int,
+        default=256,
+        help=(
+            "Token interval at which the scheduler snapshots KV state to "
+            "~/.cache/rapid-mlx/kv_checkpoints/ for resume / shared-prefix "
+            "reload (R15 #296, default 256). 0 disables. Pairs with the "
+            "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES env var (default 20 GiB) "
+            "for the oldest-first disk-cap eviction policy."
+        ),
     )
     serve_parser.add_argument(
         "--stream-interval",

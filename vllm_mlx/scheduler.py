@@ -174,6 +174,16 @@ class SchedulerConfig:
     kv_cache_turboquant_bits: int | None = None  # None = auto-select by head_dim
     kv_cache_turboquant_group_size: int = 32
 
+    # R15-P1 (task #296): disk-backed KV checkpointing.
+    # ``0`` disables the feature so the scheduler hot-path never touches
+    # the disk module; the default 256 matches MLX-LM's ``KVCache.step``
+    # so the on-disk shape lines up with the in-memory shape on reload.
+    # The disk cap is resolved at runtime via
+    # ``RAPID_MLX_KV_CHECKPOINT_MAX_BYTES`` so a single field on the
+    # SchedulerConfig is enough — see
+    # :mod:`vllm_mlx.runtime.disk_kv_checkpoint`.
+    kv_disk_checkpoint_interval: int = 256
+
     # Paged cache settings (experimental - for memory efficiency)
     use_paged_cache: bool = (
         False  # Use BlockAwarePrefixCache instead of PrefixCacheManager
@@ -4354,6 +4364,23 @@ class Scheduler:
             # Append token to request
             request.append_output_token(response.token)
 
+            # R15-P1 (task #296): trigger disk-backed KV checkpoint at
+            # 256-tok boundaries. Cheap when disabled — the helper
+            # short-circuits on ``interval <= 0`` so the only cost on
+            # the hot path for operators who haven't opted in is one int
+            # comparison. The actual cache extraction + safetensors
+            # write happens off the response loop; failures are logged
+            # and never tear the response down (best-effort persistence,
+            # mirrors the in-process prefix-cache contract). Wrapped in
+            # try/except so a bug in the new module can never crash the
+            # decode path on a live server.
+            try:
+                self._maybe_disk_checkpoint(request, response)
+            except Exception as _ckpt_err:  # pragma: no cover — defensive
+                logger.debug(
+                    f"[kv_checkpoint] hook raised for {request.request_id}: {_ckpt_err}"
+                )
+
             # Record first token time for TTFT metric
             if request.first_token_time is None and request.num_output_tokens > 0:
                 import time as _time
@@ -4527,6 +4554,114 @@ class Scheduler:
             outputs.append(output)
 
         return outputs, finished_ids
+
+    def _maybe_disk_checkpoint(self, request: Request, response: Any) -> None:
+        """Trigger a disk-backed KV checkpoint at the next 256-tok boundary.
+
+        R15-P1 (task #296) hook. Called once per response from
+        ``_process_batch_responses`` after the token has been appended to
+        the request. Gated tightly so disabled servers pay nothing:
+
+        - ``scheduler_config.kv_disk_checkpoint_interval == 0`` →
+          immediate return. This is the dominant case for the first wave
+          of deploys (operators opt in deliberately).
+        - Lazy per-request bookkeeping: a ``_kv_checkpoint_state`` attr
+          is attached to ``request`` on first crossing so the watermark
+          survives across steps.
+        - Cache extraction is best-effort — the active batch is the
+          authoritative source via ``batch.extract_cache(e)``; when the
+          batch doesn't expose it (e.g. between steps, during
+          chunked-prefill finalization, or on a hybrid generator without
+          the upstream API), the watermark stays put and the next step
+          gets another shot.
+
+        Any failure is swallowed with a debug log; the caller wraps this
+        whole method in a broad try/except as belt-and-suspenders.
+        """
+        interval = getattr(self.scheduler_config, "kv_disk_checkpoint_interval", 0)
+        if interval is None or interval <= 0:
+            return
+
+        # Lazy import keeps the module-load cost of vllm_mlx.scheduler
+        # zero when the disk checkpoint feature is never used (the runtime
+        # subpackage imports mlx_lm symbols that aren't free).
+        from .runtime import disk_kv_checkpoint as _dkc
+
+        # Total tokens already in the cache — prompt + every output token
+        # we have already appended. ``num_tokens`` is the canonical sum
+        # on the Request dataclass and accounts for PFlash's bypass shape.
+        num_tokens = request.num_tokens
+
+        state = getattr(request, "_kv_checkpoint_state", None)
+        if state is None:
+            state = _dkc.RequestCheckpointState(
+                req_hash=_dkc.request_hash(
+                    request.request_id, model_name=getattr(self, "_model_name", None)
+                ),
+                interval=interval,
+                last_checkpoint_at=0,
+                requires_full_checkpoint=_dkc.model_requires_full_checkpoint(
+                    getattr(self, "_model_name", None)
+                ),
+                kv_dtype=getattr(self.scheduler_config, "kv_cache_dtype", "bf16")
+                or "bf16",
+                model_name=getattr(self, "_model_name", None),
+            )
+            request._kv_checkpoint_state = state
+
+        if not _dkc.should_checkpoint(num_tokens, state.last_checkpoint_at, interval):
+            return
+
+        # Try to pull the cache off the active batch. The mlx-lm 0.31+
+        # GenerationBatch lives on ``batch_gen._generation_batch`` and
+        # exposes ``extract_cache(e)``; older builds expose the same
+        # method directly on ``batch_gen.active_batch``. Walking both
+        # surfaces keeps this hook portable across the mlx-lm versions
+        # rapid-mlx supports.
+        batch = getattr(self, "batch_gen", None)
+        if batch is None:
+            return
+        gen_batch = getattr(batch, "_generation_batch", None) or getattr(
+            batch, "active_batch", None
+        )
+        if gen_batch is None:
+            return
+        try:
+            uids = list(gen_batch.uids)
+        except AttributeError:
+            return
+        try:
+            e = uids.index(request.batch_uid)
+        except (ValueError, AttributeError):
+            return
+
+        try:
+            cache = gen_batch.extract_cache(e)
+        except Exception:
+            return
+        if not cache:
+            return
+
+        new_offset, _path = _dkc.maybe_write_checkpoint(
+            cache,
+            root=_dkc.get_default_root(),
+            req_hash=state.req_hash,
+            num_tokens=num_tokens,
+            last_checkpoint_at=state.last_checkpoint_at,
+            interval=interval,
+            kv_dtype=state.kv_dtype,
+            requires_full_checkpoint=state.requires_full_checkpoint,
+            model_name=state.model_name,
+        )
+        state.last_checkpoint_at = new_offset
+
+        # Cheap disk-cap check: only fires when bytes actually moved.
+        # The enforce_disk_cap helper is itself lock-guarded so racing
+        # write/evict callers serialize correctly.
+        try:
+            _dkc.enforce_disk_cap(_dkc.get_default_root())
+        except Exception as _evict_err:  # pragma: no cover — defensive
+            logger.debug(f"[kv_checkpoint] enforce_disk_cap failed: {_evict_err}")
 
     def _cleanup_finished(self, finished_ids: set[str]) -> None:
         """Clean up finished requests and store caches for reuse."""
@@ -5109,6 +5244,20 @@ class Scheduler:
                 self.num_prefix_cache_pressure_evictions
             ),
         }
+        # R15-P1 (task #296): disk-backed KV checkpoint counters.
+        # Folded straight from the module-level ``disk_kv_checkpoint``
+        # stats so /metrics can render writes / loads / bytes / evictions
+        # without the scheduler having to track them per-instance.
+        # Guarded by an import-try so a fresh test harness that doesn't
+        # exercise the runtime module still gets a sane scheduler stats
+        # dict (gracefully degrades to an empty sub-dict, matching every
+        # other optional cache feature here).
+        try:
+            from .runtime import disk_kv_checkpoint as _dkc
+
+            stats["kv_checkpoint"] = _dkc.get_stats()
+        except Exception:  # pragma: no cover — defensive
+            pass
         # Include Metal memory stats
         try:
             if mx.metal.is_available():

@@ -910,6 +910,67 @@ def _render_prometheus(cfg: Any) -> str:
         )
     )
 
+    # ---- R15-P1 disk-backed KV checkpoints (task #296) -----------------
+    # Counters are process-monotonic by construction (the module-level
+    # stats dataclass is only reset via the test-only hook), so the
+    # sticky accumulator is unnecessary. ``bytes`` is a gauge because it
+    # decreases on eviction. All four series default to 0 on engines
+    # that never enabled the feature so dashboards stay flat-line rather
+    # than flipping to "no data".
+    kv_ckpt_stats = stats.get("kv_checkpoint")
+    if not isinstance(kv_ckpt_stats, dict):
+        kv_ckpt_stats = {}
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_kv_checkpoint_writes_total",
+            "counter",
+            (
+                "Cumulative disk-backed KV checkpoints written at 256-tok "
+                "boundaries (R15 #296). Counts the safetensors rename, "
+                "not the in-flight .tmp."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("writes"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_kv_checkpoint_loads_total",
+            "counter",
+            (
+                "Cumulative disk-backed KV checkpoint reloads through "
+                "mlx_lm.load_prompt_cache (R15 #296). Increments only on "
+                "a non-None return — partial / corrupt files are logged "
+                "but not counted."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("loads"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_kv_checkpoint_bytes",
+            "gauge",
+            (
+                "Live total bytes across every committed disk-backed KV "
+                "checkpoint under ~/.cache/rapid-mlx/kv_checkpoints/ "
+                "(R15 #296). Gauge, not counter, because the value "
+                "drops on oldest-first eviction."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("bytes"))),
+        )
+    )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_kv_checkpoint_evictions_total",
+            "counter",
+            (
+                "Cumulative oldest-first evictions performed against the "
+                "disk-backed KV checkpoint root because the byte total "
+                "crossed RAPID_MLX_KV_CHECKPOINT_MAX_BYTES (R15 #296)."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("evictions"))),
+        )
+    )
+
     # Prometheus requires a trailing newline.
     return "\n".join(lines) + "\n"
 
