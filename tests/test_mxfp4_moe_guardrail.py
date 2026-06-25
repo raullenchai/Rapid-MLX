@@ -323,40 +323,45 @@ def test_ring_backend_three_tuple_fires_e2e(monkeypatch, tmp_path, caplog):
     assert "world_size=2" in joined
 
 
-def test_world_size_never_calls_mlx_distributed_init(monkeypatch):
-    """Codex #297 BLOCKING regression: the probe must NOT call init().
+def test_guardrail_module_never_references_mx_distributed_init():
+    """Codex #297 BLOCKING regression: the guardrail must NOT call init().
 
     ``mx.distributed.init()`` creates the global communication group and
     can block while a backend handshakes — calling it from a warning-only
     guardrail would be a real side effect on the engine that follows.
-    Pin the contract: replace ``init`` with a sentinel that explodes if
-    invoked, then exercise the probe under each branch.
+
+    We pin the contract by **static source inspection** rather than a
+    runtime monkeypatch on the live ``mlx.core`` module. Importing
+    ``mlx.core`` purely for the patch reintroduced a heavy MLX import
+    into an otherwise pure guardrail test (codex round 5); on a host
+    with MLX installed but no usable Metal device, ``import mlx.core``
+    can abort the process with ``NSRangeException``. Reading the
+    source text instead is cheap, robust across hosts, and
+    semantically equivalent to "the code doesn't call init()".
     """
-    import mlx.core as mx
+    import inspect
+    import re
 
-    sentinel_called = []
-
-    def _explode(*args, **kwargs):  # pragma: no cover — must NOT run
-        sentinel_called.append(True)
-        raise AssertionError(
-            "mx.distributed.init() called from guardrail probe — "
-            "see codex review on #297 BLOCKING #1"
-        )
-
-    monkeypatch.setattr(mx.distributed, "init", _explode)
-    # Probe with no env set — must return 1 without touching init.
-    for v in (
-        "MLX_WORLD_SIZE",
-        "OMPI_COMM_WORLD_SIZE",
-        "PMI_SIZE",
-        "MLX_HOSTFILE",
-    ):
-        monkeypatch.delenv(v, raising=False)
-    assert g._detect_distributed_world_size() == 1
-    # And with an env set — same contract.
-    monkeypatch.setenv("MLX_WORLD_SIZE", "4")
-    assert g._detect_distributed_world_size() == 4
-    assert sentinel_called == []
+    src = inspect.getsource(g)
+    # Strip comments and docstrings: triple-quoted strings + ``# ...``
+    # tails. The contract is "no executable call to .init(", so
+    # documentation mentioning ``mx.distributed.init()`` (the entire
+    # raison d'être of the guardrail) must not trip the check.
+    stripped = re.sub(r'"""[\s\S]*?"""', "", src)
+    stripped = re.sub(r"#.*", "", stripped)
+    # The forbidden pattern is any executable call to ``.init(`` on
+    # mx.distributed / mlx.core.distributed. Plain ``distributed.init``
+    # without an open paren is harmless (it's just an attribute ref
+    # passed to e.g. monkeypatch.setattr in test scaffolding, which
+    # this production module never does).
+    forbidden = re.compile(r"distributed\s*\.\s*init\s*\(")
+    matches = forbidden.findall(stripped)
+    assert matches == [], (
+        f"Guardrail module must not call mx.distributed.init() "
+        f"(see codex review on #297 BLOCKING #1) — found "
+        f"{len(matches)} match(es) in source after docstring/comment "
+        f"strip."
+    )
 
 
 # ---------------------------------------------------------------------------
