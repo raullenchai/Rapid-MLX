@@ -537,6 +537,144 @@ def _render_mxfp4_moe_guardrail_counters() -> list[str]:
         ]
 
 
+def _render_turboquant_metrics(cfg: Any) -> list[str]:
+    """Render the R15 Phase 4 TurboQuant metrics block.
+
+    Three series:
+      * ``rapid_mlx_turboquant_mode{mode="k8v4|v4|disabled"}`` gauge —
+        set once at serve boot to the active TurboQuant mode.
+      * ``rapid_mlx_turboquant_skipped_total{reason="sliding-window|mla|other"}``
+        counter — incremented when a load lands on a model the skip
+        list flags as incompatible.
+      * ``rapid_mlx_turboquant_fused_kernel{status="available|fallback"}``
+        gauge — set once at serve boot to whether the vendored Metal
+        kernel compiled. ``fallback`` means callers run the pure-MLX
+        reference path; observed numerical output is identical (1e-4
+        RMSE in tests) but decode tput is upstream-V-only-grade.
+
+    Resolved from ``SchedulerConfig`` first, falling back to the
+    pre-load stash so dashboards see the active mode during the load
+    window. Counter state lives in the module-level
+    :data:`turboquant_skip_counters` dict, keyed by reason.
+    """
+    out: list[str] = []
+
+    # Resolve the active mode. Default to ``"disabled"`` when the
+    # operator has not flipped TurboQuant on; this keeps the gauge
+    # readable on dashboards (the legend filter ``mode="k8v4"`` works
+    # without parsing string samples). The pre-load stash on
+    # ``ServerConfig`` is the early-boot fallback so /metrics emits a
+    # truthful gauge before the engine is up.
+    mode: str = "disabled"
+    try:
+        engine = getattr(cfg, "engine", None)
+        if engine is not None:
+            sc = getattr(engine, "scheduler_config", None) or getattr(
+                engine, "_scheduler_config", None
+            )
+            if sc is not None:
+                if getattr(sc, "kv_cache_turboquant", False):
+                    mode = getattr(sc, "kv_cache_turboquant_mode", "v4") or "v4"
+        elif getattr(cfg, "turboquant_mode", None):
+            mode = cfg.turboquant_mode
+    except Exception:
+        mode = "disabled"
+    if mode not in ("v4", "k8v4", "disabled"):
+        mode = "disabled"
+
+    out.append(
+        "# HELP rapid_mlx_turboquant_mode Active TurboQuant compression "
+        "mode (R15 Phase 4). One series per mode label; value is 1 for "
+        "the active mode and 0 for the others."
+    )
+    out.append("# TYPE rapid_mlx_turboquant_mode gauge")
+    for candidate in ("disabled", "v4", "k8v4"):
+        active = 1 if mode == candidate else 0
+        out.append(f'rapid_mlx_turboquant_mode{{mode="{candidate}"}} {active}')
+
+    # Skip-list counter: emit one series per known reason even when the
+    # underlying counter is zero so dashboards don't flip to "no data"
+    # between restarts. The counter store lives in
+    # ``turboquant_skip_counters`` so the engine load path can bump it
+    # via ``record_turboquant_skip(reason)``.
+    out.append(
+        "# HELP rapid_mlx_turboquant_skipped_total Cumulative model "
+        "loads where TurboQuant was requested but the skip list "
+        "(sliding-window, MLA, other) forced a fall-back to FP16 KV."
+    )
+    out.append("# TYPE rapid_mlx_turboquant_skipped_total counter")
+    for reason in ("sliding-window", "mla", "other"):
+        count = int(turboquant_skip_counters.get(reason, 0))
+        out.append(f'rapid_mlx_turboquant_skipped_total{{reason="{reason}"}} {count}')
+
+    # Fused-kernel availability. Cached at module import-time on the
+    # first call so /metrics doesn't pay the import cost on every
+    # scrape.
+    status = _resolve_fused_kernel_status()
+    out.append(
+        "# HELP rapid_mlx_turboquant_fused_kernel Status of the vendored "
+        "TurboQuant fused Metal kernel — ``available`` means decode runs "
+        "on the fused path, ``fallback`` means the pure-MLX reference "
+        "path is in use (functional, slower)."
+    )
+    out.append("# TYPE rapid_mlx_turboquant_fused_kernel gauge")
+    for candidate in ("available", "fallback"):
+        active = 1 if status == candidate else 0
+        out.append(
+            f'rapid_mlx_turboquant_fused_kernel{{status="{candidate}"}} {active}'
+        )
+    return out
+
+
+# Module-level skip-list counter. Keys are the canonical reason
+# strings (``"sliding-window"``, ``"mla"``, ``"other"``); the engine
+# load path bumps these via :func:`record_turboquant_skip`. Persists
+# for the lifetime of the process — matches the convention used by the
+# other startup-time counters in this module (mxfp4 guardrail, etc.).
+turboquant_skip_counters: dict[str, int] = {
+    "sliding-window": 0,
+    "mla": 0,
+    "other": 0,
+}
+
+
+def record_turboquant_skip(reason: str) -> None:
+    """Increment the skip-list counter for ``reason``.
+
+    Called by the engine load path when ``--kv-cache-turboquant`` is on
+    but the target model trips the skip list. Unknown reasons are
+    folded into ``"other"`` so a typo in a future safelist entry does
+    not silently drop the metric.
+    """
+    key = reason if reason in turboquant_skip_counters else "other"
+    turboquant_skip_counters[key] = turboquant_skip_counters.get(key, 0) + 1
+
+
+_fused_kernel_status_cache: str | None = None
+
+
+def _resolve_fused_kernel_status() -> str:
+    """Memoize the fused-kernel availability check (single import, single Metal probe)."""
+    global _fused_kernel_status_cache
+    if _fused_kernel_status_cache is not None:
+        return _fused_kernel_status_cache
+    try:
+        from ..turboquant import fused_kernel_status
+
+        _fused_kernel_status_cache = fused_kernel_status()
+    except Exception:
+        _fused_kernel_status_cache = "fallback"
+    return _fused_kernel_status_cache
+
+
+def _reset_turboquant_state_for_tests() -> None:
+    """Test-only hook: clear skip counters and fused-kernel cache."""
+    global _fused_kernel_status_cache
+    for key in turboquant_skip_counters:
+        turboquant_skip_counters[key] = 0
+    _fused_kernel_status_cache = None
+
+
 def _render_prometheus(cfg: Any) -> str:
     """Render the full /metrics body for a snapshot of cfg.engine state."""
     lines: list[str] = []
@@ -587,6 +725,12 @@ def _render_prometheus(cfg: Any) -> str:
     # zero-valued series so dashboards see the metric names even at
     # cold start. Pre-engine the counter is naturally zero anyway.
     lines.extend(_render_spec_decode_mtp_counters(cfg))
+
+    # R15 Phase 4 TurboQuant series — mode gauge, skip-list counter
+    # (one per reason), and fused-kernel availability gauge. Surface
+    # BEFORE the engine-None / get_stats-failure early returns so
+    # dashboards see the active mode + skip rate even between restarts.
+    lines.extend(_render_turboquant_metrics(cfg))
 
     if cfg.engine is None:
         # No engine yet — return build info + response_format counters

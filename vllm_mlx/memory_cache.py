@@ -777,10 +777,13 @@ class MemoryCacheConfig:
     kv_bits: int = 8
     kv_group_size: int = 64
     kv_min_quantize_tokens: int = 256
-    # TurboQuant V-only compression (asymmetric: K=FP16, V=3-4bit)
+    # TurboQuant KV cache compression. ``kv_turboquant_mode`` selects
+    # between the legacy ``"v4"`` (V-only) and ``"k8v4"`` (K-8bit +
+    # V-4bit) schemes shipped in R15 Phase 4.
     kv_turboquant: bool = False
     kv_turboquant_bits: int | None = None  # None = auto-select by head_dim
     kv_turboquant_group_size: int = 32
+    kv_turboquant_mode: str = "v4"
 
     def __post_init__(self) -> None:
         if not 0.0 < self.max_memory_percent <= 1.0:
@@ -1096,9 +1099,23 @@ def _dequantize_cache(cache: list[Any]) -> list[Any]:
 
 
 def _turboquant_compress_cache(
-    cache: list[Any], bits: int | None, group_size: int
+    cache: list[Any],
+    bits: int | None,
+    group_size: int,
+    mode: str = "v4",
 ) -> list[Any]:
-    """Compress KVCache V tensors using TurboQuant (K stays FP16)."""
+    """Compress KVCache tensors using TurboQuant.
+
+    Args:
+        cache: Per-layer KV cache list.
+        bits: V-side bit width (3 or 4). ``None`` triggers auto-select
+            by ``head_dim`` — 3-bit for head_dim>=96, 4-bit for 64.
+        group_size: V-side group size.
+        mode: Compression mode — ``"v4"`` (V-only, legacy) or
+            ``"k8v4"`` (K-8bit + V-4bit). When set to ``"k8v4"`` the
+            V-side bit width is forced to 4 (the K8 path is only
+            validated against V4).
+    """
     from mlx_lm.models.cache import KVCache
 
     from .turboquant import TurboQuantConfig, TurboQuantKVCache, auto_select_bits
@@ -1111,8 +1128,16 @@ def _turboquant_compress_cache(
             continue
         if isinstance(layer, KVCache) and layer.keys is not None:
             head_dim = layer.values.shape[-1] if layer.values is not None else 128
-            actual_bits = bits if bits is not None else auto_select_bits(head_dim)
-            config = TurboQuantConfig(bits=actual_bits, group_size=group_size)
+            if mode == "k8v4":
+                # K8V4 is V4-pinned; ignore the V-side ``bits`` arg so
+                # operators who left the legacy default (``None``) on
+                # head_dim=96+ don't fall back to V=3-bit silently.
+                actual_bits = 4
+            else:
+                actual_bits = bits if bits is not None else auto_select_bits(head_dim)
+            config = TurboQuantConfig(
+                bits=actual_bits, group_size=group_size, mode=mode
+            )
             result.append(TurboQuantKVCache.from_kv_cache(layer, config))
             compressed_count += 1
         else:
@@ -1121,7 +1146,7 @@ def _turboquant_compress_cache(
     if compressed_count > 0:
         logger.debug(
             f"TurboQuant compressed {compressed_count}/{len(cache)} layers "
-            f"({bits or 'auto'}-bit, group_size={group_size})"
+            f"(mode={mode}, {bits or 'auto'}-bit V, group_size={group_size})"
         )
     return result
 
@@ -1527,6 +1552,7 @@ class MemoryAwarePrefixCache:
                 cache,
                 self._config.kv_turboquant_bits,
                 self._config.kv_turboquant_group_size,
+                self._config.kv_turboquant_mode,
             )
         elif (
             self._config.kv_quantize

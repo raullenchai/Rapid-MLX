@@ -169,10 +169,18 @@ class SchedulerConfig:
     kv_cache_quantization_group_size: int = 64
     kv_cache_min_quantize_tokens: int = 256
 
-    # TurboQuant V-only compression (asymmetric: K=FP16, V=3-4bit rotated Lloyd-Max)
+    # TurboQuant KV cache compression (R15 Phase 4).
+    #
+    # ``kv_cache_turboquant`` is the legacy boolean toggle (PR #157).
+    # ``kv_cache_turboquant_mode`` carries the V-only vs K8V4 selection:
+    #   * ``"v4"``  — K=FP16, V=3-4bit Lloyd-Max (PR #157).
+    #   * ``"k8v4"`` — K=8-bit Walsh-Hadamard, V=4-bit (this PR).
+    # The boolean is kept for downstream callers that pre-date the mode
+    # field; treat ``kv_cache_turboquant=True`` + mode unset as ``"v4"``.
     kv_cache_turboquant: bool = False
     kv_cache_turboquant_bits: int | None = None  # None = auto-select by head_dim
     kv_cache_turboquant_group_size: int = 32
+    kv_cache_turboquant_mode: str = "v4"
 
     # R15-P1 (task #296): disk-backed KV checkpointing.
     # ``0`` disables the feature so the scheduler hot-path never touches
@@ -1923,6 +1931,7 @@ class Scheduler:
                     kv_turboquant=self.config.kv_cache_turboquant,
                     kv_turboquant_bits=self.config.kv_cache_turboquant_bits,
                     kv_turboquant_group_size=self.config.kv_cache_turboquant_group_size,
+                    kv_turboquant_mode=self.config.kv_cache_turboquant_mode,
                 )
                 # R15-P1 (task #303): radix-tree prefix-cache index.
                 # Constructed when ``prefix_cache_index == "radix"`` and

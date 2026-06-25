@@ -2095,7 +2095,9 @@ def serve_command(args):
     if getattr(args, "specprefill", False):
         print("\n  ⚠ --specprefill is deprecated and has no effect.\n")
 
-    # Mutual exclusion: turboquant vs standard quantization
+    # Mutual exclusion: turboquant (any mode) vs standard quantization.
+    # The argparse layer normalizes the flag to either ``None`` (off),
+    # ``"v4"``, or ``"k8v4"``. Anything truthy means TurboQuant is on.
     if args.kv_cache_turboquant and args.kv_cache_quantization:
         print(
             "\n  Error: --kv-cache-turboquant and --kv-cache-quantization are "
@@ -2281,8 +2283,13 @@ def serve_command(args):
         kv_cache_quantization_bits=args.kv_cache_quantization_bits,
         kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
         kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
-        # TurboQuant V-only compression
-        kv_cache_turboquant=args.kv_cache_turboquant,
+        # TurboQuant compression (R15 Phase 4: mode-aware)
+        # ``--kv-cache-turboquant`` now carries a mode value: ``None``
+        # when off, ``"v4"`` for the legacy V-only path, ``"k8v4"`` for
+        # the K-8bit + V-4bit mix. SchedulerConfig keeps the boolean
+        # ``kv_cache_turboquant`` for downstream callers; the mode
+        # string rides on the dedicated field below.
+        kv_cache_turboquant=bool(args.kv_cache_turboquant),
         kv_cache_turboquant_bits=args.kv_cache_turboquant_bits,
         kv_cache_turboquant_group_size=args.kv_cache_turboquant_group_size,
         # R15-P1 (task #296): disk-backed KV checkpointing at 256-tok
@@ -2290,6 +2297,7 @@ def serve_command(args):
         # hot-path call with ``should_checkpoint`` so the cost when off
         # is one int comparison.
         kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 256),
+        kv_cache_turboquant_mode=(args.kv_cache_turboquant or "v4"),
         # PFlash long-prompt compression (#287)
         pflash_config=pflash_config,
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into
@@ -2359,15 +2367,22 @@ def serve_command(args):
         index_choice = getattr(args, "prefix_cache_index", "radix")
         print(f"Memory-aware cache: {cache_info} (index={index_choice})")
         if args.kv_cache_turboquant:
-            bits_str = (
-                str(args.kv_cache_turboquant_bits)
-                if args.kv_cache_turboquant_bits
-                else "auto"
-            )
-            print(
-                f"TurboQuant V-cache: {bits_str}-bit, "
-                f"group_size={args.kv_cache_turboquant_group_size} (K stays FP16)"
-            )
+            mode = args.kv_cache_turboquant
+            if mode == "k8v4":
+                print(
+                    f"TurboQuant K8V4: K=8-bit Walsh-Hadamard, V=4-bit Lloyd-Max, "
+                    f"group_size={args.kv_cache_turboquant_group_size}"
+                )
+            else:
+                bits_str = (
+                    str(args.kv_cache_turboquant_bits)
+                    if args.kv_cache_turboquant_bits
+                    else "auto"
+                )
+                print(
+                    f"TurboQuant V-cache ({mode}): {bits_str}-bit, "
+                    f"group_size={args.kv_cache_turboquant_group_size} (K stays FP16)"
+                )
         elif args.kv_cache_quantization:
             print(
                 f"KV cache quantization: {args.kv_cache_quantization_bits}-bit, "
@@ -5700,27 +5715,41 @@ Examples:
         default=256,
         help="Minimum tokens for quantization to apply (default: 256)",
     )
-    # TurboQuant KV cache compression (V-only, experimental)
+    # TurboQuant KV cache compression (experimental, R15 Phase 4).
+    #
+    # Accepts an optional mode value:
+    #   --kv-cache-turboquant              → V-only legacy (v4)
+    #   --kv-cache-turboquant v4           → V-only explicit
+    #   --kv-cache-turboquant k8v4         → K-8bit + V-4bit mix (R15 Phase 4)
+    #
+    # The bare-flag form preserves PR #157 backward compatibility. Mode
+    # is mutually exclusive with --kv-cache-quantization.
     serve_parser.add_argument(
         "--kv-cache-turboquant",
-        action="store_true",
-        help="Enable TurboQuant V-cache compression (3-4 bit, ~86%% prefix cache savings "
-        "on dense models). K stays FP16. Experimental — mutually exclusive with "
-        "--kv-cache-quantization.",
+        nargs="?",
+        const="v4",
+        default=None,
+        choices=["v4", "k8v4"],
+        help="Enable TurboQuant KV-cache compression. ``v4`` (default when "
+        "the flag is bare) is V-only 3-4 bit Lloyd-Max with K in FP16; "
+        "``k8v4`` is the R15 Phase 4 mix — K at 8-bit Walsh-Hadamard + V at "
+        "4-bit Lloyd-Max (~4.6x KV compression on dense models). "
+        "Experimental — mutually exclusive with --kv-cache-quantization.",
     )
     serve_parser.add_argument(
         "--kv-cache-turboquant-bits",
         type=int,
         default=None,
         choices=[3, 4],
-        help="Bit width for TurboQuant (default: auto-select by head_dim — "
-        "3-bit for head_dim>=96, 4-bit for head_dim=64)",
+        help="V-side bit width for TurboQuant (default: auto-select by head_dim — "
+        "3-bit for head_dim>=96, 4-bit for head_dim=64). Ignored when "
+        "--kv-cache-turboquant=k8v4 (V is pinned to 4-bit there).",
     )
     serve_parser.add_argument(
         "--kv-cache-turboquant-group-size",
         type=int,
         default=32,
-        help="Group size for TurboQuant quantization (default: 32)",
+        help="Group size for TurboQuant V-side quantization (default: 32)",
     )
     # R15-P1 (task #296): disk-backed KV checkpointing at 256-tok boundaries.
     # 0 disables the feature entirely (no scheduler-hot-path cost, no
