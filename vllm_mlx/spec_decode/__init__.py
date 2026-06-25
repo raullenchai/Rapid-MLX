@@ -19,13 +19,22 @@ Currently bundled:
   this namespace rather than waiting on mlx-lm merge so the rest of
   R15-P1 (DFlash-MLX, DDTree-MLX) can build on top of the same accept-
   rate counter / lossless-contract scaffolding.
+* :mod:`vllm_mlx.spec_decode.dflash` — Block-diffusion drafter
+  speculative decoding for Qwen3.5 / Qwen3.6 (R15-P1 task #313, arxiv
+  2410.04097). Builds on the same accept-counter / detect / metrics
+  scaffolding as MTP but with a SEPARATE small drafter that emits
+  16-token blocks per forward instead of the single-token chain MTP
+  proposes. The verifier owns the cache write via the
+  :func:`vllm_mlx.positioned_kv_cache.positioned_update_and_fetch`
+  HELPER (NOT the subclass — the subclass breaks
+  ``mlx_lm.save_prompt_cache``).
 
 Each backend exposes a thin public API the CLI / scheduler can call to
-choose between ``--spec-decode none|mtp`` at boot — the model-side
+choose between ``--spec-decode none|mtp|dflash`` at boot — the model-side
 patches that make a particular family eligible stay private to the
 sub-package.
 """
 
 from __future__ import annotations
 
-__all__ = ["mtp"]
+__all__ = ["dflash", "mtp"]

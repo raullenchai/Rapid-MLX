@@ -2262,11 +2262,13 @@ def serve_command(args):
         enable_mtp=args.enable_mtp,
         mtp_num_draft_tokens=args.mtp_num_draft_tokens,
         mtp_optimistic=args.mtp_optimistic,
-        # R15-P1 #302: --spec-decode mtp|none. Plumb the raw choice
-        # through; the boot-time eligibility check below validates
-        # that ``mtp`` was only passed for a config.json with
-        # ``mtp_num_hidden_layers >= 1``.
+        # R15-P1 #302/#313: --spec-decode {none,mtp,dflash}. Plumb the
+        # raw choice through; the boot-time eligibility check below
+        # validates that ``mtp`` was only passed for a config.json with
+        # ``mtp_num_hidden_layers >= 1`` and ``dflash`` requires a
+        # Qwen3.5/3.6 model + a bound DFlash drafter.
         spec_decode=getattr(args, "spec_decode", "none"),
+        dflash_drafter_path=getattr(args, "dflash_drafter_path", "") or "",
         # SuffixDecoding
         enable_suffix_decoding=args.suffix_decoding,
         suffix_max_draft=args.suffix_max_draft,
@@ -2347,6 +2349,54 @@ def serve_command(args):
             )
             sys.exit(2)
         print(f"Spec-decode: mtp ({eligibility.value})")
+
+    # R15-P1 #313: DFlash boot-time eligibility check. Same architecture
+    # gate as MTP (Qwen3.5 / 3.6) but a different drafter binding gate
+    # (side-registry or --dflash-drafter-path override). Rejects at boot
+    # so an operator on a non-Qwen model sees a clear error rather than
+    # discovering the mismatch at first decode.
+    if getattr(args, "spec_decode", "none") == "dflash":
+        from vllm_mlx.spec_decode.dflash import (
+            DFlashEligibility,
+            detect_dflash_eligibility,
+        )
+
+        try:
+            hf_cfg_eligibility, _ = _gather_kv_cache_dtype_inputs(args.model)
+        except Exception:  # pragma: no cover — best-effort
+            hf_cfg_eligibility = None
+        eligibility = detect_dflash_eligibility(
+            hf_cfg_eligibility,
+            alias=args.model,
+            drafter_override=getattr(args, "dflash_drafter_path", "") or None,
+        )
+        if eligibility is DFlashEligibility.NONE:
+            print(
+                "error: --spec-decode dflash requires a Qwen3.5 / Qwen3.6 "
+                "model AND a bound DFlash drafter. Register one via "
+                "vllm_mlx.spec_decode.dflash.register_dflash_drafter() "
+                "or pass --dflash-drafter-path <hf_id_or_local_path>.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        print(f"Spec-decode: dflash ({eligibility.value})")
+        # Warn (don't reject) on the K8V4 vs --kv-cache-dtype int4
+        # interaction. The lossless contract holds for both, but the
+        # accept rate drops empirically because the verifier and
+        # drafter see DIFFERENT KV quantization paths (drafter stays
+        # at bf16, verifier writes through TurboQuant K8V4 — this
+        # mismatches the paper bench setup). Operators who explicitly
+        # WANT the combo can ignore the warning; we just surface the
+        # caveat so a 20% accept-rate regression doesn't get blamed
+        # on rapid-mlx.
+        if getattr(args, "kv_cache_turboquant", False):
+            print(
+                "warning: --spec-decode dflash + --kv-cache-turboquant "
+                "(K8V4) is a non-paper config — accept rate may drop "
+                "vs --kv-cache-dtype bf16 / int4. The lossless "
+                "contract still holds.",
+                file=sys.stderr,
+            )
     if args.suffix_decoding:
         print(
             f"SuffixDecoding: enabled, max_draft={args.suffix_max_draft}, "
@@ -5953,16 +6003,34 @@ Examples:
     serve_parser.add_argument(
         "--spec-decode",
         dest="spec_decode",
-        choices=["none", "mtp"],
+        choices=["none", "mtp", "dflash"],
         default="none",
         help=(
-            "R15-P1 #302 native model-side speculative decode. "
+            "R15-P1 model-side speculative decode. "
             "``none`` (default) disables; ``mtp`` enables Qwen3.5/3.6 "
             "native MTP via vendored mlx-lm PR #990 — requires a "
             "checkpoint converted with the PR #990 sanitize() path "
-            "that preserves ``mtp.*`` weights. Rejects at boot if the "
-            "loaded model's config.json lacks "
-            "``mtp_num_hidden_layers >= 1`` so misuse fails loud."
+            "that preserves ``mtp.*`` weights; ``dflash`` enables the "
+            "block-diffusion drafter from arxiv 2410.04097 (R15-P1 "
+            "#313) for Qwen3.5/3.6 with a bound drafter (default "
+            "block size 16). Rejects at boot if the model doesn't "
+            "qualify so misuse fails loud."
+        ),
+    )
+    # R15-P1 #313: DFlash drafter HF path override. Empty by default
+    # so the side-registry's per-alias binding wins; an operator who
+    # wants to swap the default drafter for a fine-tuned variant can
+    # pass this without editing the registry.
+    serve_parser.add_argument(
+        "--dflash-drafter-path",
+        dest="dflash_drafter_path",
+        default="",
+        help=(
+            "Override the per-alias DFlash drafter HF path. "
+            "Defaults to the empty string, in which case "
+            "vllm_mlx.spec_decode.dflash.drafter_registry resolves "
+            "the drafter for the loaded alias. Only consulted when "
+            "--spec-decode dflash is set; ignored otherwise."
         ),
     )
     # SuffixDecoding — drafter-free spec-decode using a suffix tree over
