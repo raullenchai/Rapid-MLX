@@ -1421,3 +1421,59 @@ def test_bare_qwen3_short_aliases_follow_family_precedent(alias: str) -> None:
         f"{alias}: vanilla Qwen3 0.6B/1.7B is dense (only A3B/A10B/A22B "
         f"siblings are MoE)."
     )
+
+
+def test_glm_5_2_reap50_alias_resolves_to_pipenetwork_4bit() -> None:
+    """R15 Phase 6 #298 — GLM-5.2-REAP50 alias for the 256GB Mac Studio
+    MoE-fit story (体感 1).
+
+    The Cerebras REAP-pruned variant of GLM-5.2 drops the lowest-saliency
+    half of the 256 routed experts (down to ``n_routed_experts=128``).
+    Combined with mlx-community / pipenetwork 4-bit affine quantization
+    this lands at ~214 GB on disk and fits a 256GB Mac Studio with KV
+    headroom — the FIRST realistically-Mac-runnable GLM-5.2 variant.
+
+    Pinned here so a future bulk edit can't silently re-route the alias
+    to a different REAP pruning ratio (REAP25 / REAP75 land at different
+    disk sizes and DIFFERENT quality budgets — operators picked this
+    alias name expecting the 50% prune specifically) or flip routing
+    flags. The model_type at HF (``glm_moe_dsa``) shares the same chat
+    template + tool envelope family as GLM-4.5 / 4.7, so the existing
+    glm47 / glm4 parsers apply unchanged.
+
+    HF: https://huggingface.co/pipenetwork/GLM-5.2-REAP50-MLX-4bit
+    """
+    profile = list_profiles()["glm-5.2-reap50"]
+    assert profile.hf_path == "pipenetwork/GLM-5.2-REAP50-MLX-4bit", (
+        f"glm-5.2-reap50: hf_path drifted. The alias name carries the "
+        f"50% expert-prune semantics; pointing at REAP25 / REAP75 / "
+        f"non-REAP would silently change disk size + quality. "
+        f"Got {profile.hf_path!r}."
+    )
+    assert profile.is_moe is True, (
+        "glm-5.2-reap50: GLM-5.2 is sparse-expert (n_routed_experts=128 "
+        "after REAP-50% prune, num_experts_per_tok=8). Mis-tagging as "
+        "dense would mis-route DFlash / spec-decode gates."
+    )
+    assert profile.is_hybrid is False, (
+        "glm-5.2-reap50: pure-attention (glm_moe_dsa backbone), not hybrid."
+    )
+    assert profile.tool_call_parser == "glm47", (
+        f"glm-5.2-reap50: GLM-5.2 shares the GLM-4.7 ``<tool_call>...`` "
+        f"tool envelope. Got {profile.tool_call_parser!r}."
+    )
+    assert profile.reasoning_parser == "glm4", (
+        f"glm-5.2-reap50: GLM-5.2 chat template autonomously emits "
+        f"`<think>...</think>` blocks (same as GLM-4.5/4.7) — route "
+        f"through ``glm4`` so the trace lands in reasoning_content. "
+        f"Got {profile.reasoning_parser!r}."
+    )
+    assert profile.supports_spec_decode is False, (
+        "glm-5.2-reap50: 214 GB MoE — spec-decode drafter overhead "
+        "swamps the win at this size (same call as Kimi K2.6)."
+    )
+    assert profile.supports_dflash is False, (
+        "glm-5.2-reap50: sparse-expert MoE — DFlash drafter hidden-state "
+        "fusion misfires on expert-routing churn (see "
+        "test_dflash_excludes_moe_architectures)."
+    )

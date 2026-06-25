@@ -1245,5 +1245,14 @@
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": true
+  },
+  "glm-5.2-reap50": {
+    "hf_path": "pipenetwork/GLM-5.2-REAP50-MLX-4bit",
+    "tool_call_parser": "glm47",
+    "reasoning_parser": "glm4",
+    "is_hybrid": false,
+    "is_moe": true,
+    "supports_spec_decode": false,
+    "supports_dflash": false
   }
 }
