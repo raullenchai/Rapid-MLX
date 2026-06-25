@@ -883,10 +883,22 @@ class TestWarnMisboundDeepseekV3Parser:
             is None
         )
 
-    # In-spec: V3-line checkpoints (V3 / R1-0528 / V4 / V5) emit the V3
-    # fenced-JSON body, matched by deepseek_v3 / deepseek_r1_0528.
-    # V3.1-line checkpoints emit the V3.1 plain-JSON body, matched by
-    # deepseek_v31. Matching combos warn nothing.
+    # In-spec: V3-line checkpoints (V3 / R1-0528) emit the V3 fenced-JSON
+    # body, matched by deepseek_v3 / deepseek_r1_0528. V3.1-line
+    # checkpoints emit the V3.1 plain-JSON body, matched by deepseek_v31.
+    # Matching combos warn nothing.
+    #
+    # Note (#893 codex MED): V4 / V5 are intentionally NOT in this table.
+    # An earlier revision included them under a "forward-cover" reading
+    # of the upstream V4 model card, but the actual ``_MODEL_PATTERNS``
+    # entry routes V4 / V4-Flash to the LEGACY ``deepseek`` parser
+    # (V4 is chat-only with no tools today). So a user explicitly
+    # binding ``--tool-call-parser=deepseek_v3`` to a V4 / V5 path is
+    # making a real misbind — the helper should warn, not stay silent.
+    # When V4 / V5 ship a V3 fenced-JSON tool envelope upstream, update
+    # both layers together (the ``_MODEL_PATTERNS`` registry AND
+    # ``_classify_deepseek_template_name``) and add V4 / V5 entries
+    # here.
     @pytest.mark.parametrize(
         "model_path,parser",
         [
@@ -896,10 +908,6 @@ class TestWarnMisboundDeepseekV3Parser:
             ("mlx-community/DeepSeek-V3-0324-4bit", "deepseek_v3"),
             ("deepseek-ai/DeepSeek-V3.1-0324", "deepseek_v31"),
             ("mlx-community/DeepSeek-V3.1-MLX-4bit", "deepseek_v31"),
-            # Forward-cover V4 / V5 — V3 template lineage per upstream
-            # V4 card. The helper should accept these without warning.
-            ("deepseek-ai/DeepSeek-V4", "deepseek_v3"),
-            ("mlx-community/DeepSeek-V5-MLX-4bit", "deepseek_v3"),
         ],
     )
     def test_no_warn_for_matching_sub_family(self, model_path, parser):
@@ -910,6 +918,12 @@ class TestWarnMisboundDeepseekV3Parser:
     # lineage so the outer envelope matches, but the per-block body
     # shapes are incompatible — same empty-args failure as the
     # out-of-lineage case. The warning MUST fire here too.
+    #
+    # Note (#893 codex MED): V4 is no longer treated as V3-template
+    # lineage by the classifier — see ``test_no_warn_for_matching_sub_family``
+    # rationale above. V4 + ``deepseek_v31`` is covered by the
+    # out-of-lineage warning path
+    # (``test_warn_v4_v5_on_explicit_v3_family_override`` below).
     @pytest.mark.parametrize(
         "model_path,parser",
         [
@@ -920,7 +934,6 @@ class TestWarnMisboundDeepseekV3Parser:
             # V3-line model + V3.1 body parser → same.
             ("mlx-community/DeepSeek-R1-0528-Qwen3-8B-4bit", "deepseek_v31"),
             ("deepseek-ai/DeepSeek-V3-0324", "deepseek_v31"),
-            ("deepseek-ai/DeepSeek-V4", "deepseek_v31"),
         ],
     )
     def test_warn_on_cross_sub_family_misbind(self, model_path, parser):
@@ -1303,17 +1316,91 @@ class TestWarnMisboundDeepseekV3Parser:
             "``v5beta``, ``v3beta``, etc."
         )
 
-    # Counterpart: real V3 / V3.1 / V4 / V5 variants STILL match
-    # after the boundary tightening.
+    # Counterpart: real V3 / V3.1 variants STILL match after the
+    # boundary tightening. V4 / V5 are NOT in this table — see #893
+    # codex MED follow-up: V4 / V5 are out-of-lineage from the V3
+    # template family today (the classifier returns ``None`` for them,
+    # matching the legacy ``deepseek`` parser the registry pins), so a
+    # ``deepseek_v3`` binding on V4 / V5 is a real misbind that MUST
+    # warn (covered by ``test_warn_v4_v5_on_explicit_v3_family_override``
+    # below).
     @pytest.mark.parametrize(
         "model_path,parser",
         [
-            ("mlx-community/DeepSeek-V4-Flash-4bit", "deepseek_v3"),
-            ("deepseek-ai/DeepSeek-V4", "deepseek_v3"),
-            ("deepseek-ai/DeepSeek-V5", "deepseek_v3"),
             ("deepseek-ai/DeepSeek-V3-0324", "deepseek_v3"),
             ("deepseek-ai/DeepSeek-V3.1-0324", "deepseek_v31"),
         ],
     )
     def test_no_warn_on_real_versioned_variants(self, model_path, parser):
         assert warn_misbound_deepseek_v3_parser(model_path, parser) is None
+
+    # #893 codex MED — V4 / V5 classifier alignment with auto-detect.
+    # An earlier revision of ``_classify_deepseek_template_name`` returned
+    # ``"v3"`` for V4 / V5 paths (a "forward-cover" guess about future
+    # chat templates), but ``_MODEL_PATTERNS`` routed V4 / V4-Flash to
+    # the LEGACY ``deepseek`` parser AND the V4-Flash alias entries in
+    # ``aliases.json`` pin the same legacy parser. The two layers
+    # disagreed — and the disagreement was invisible to the misbind
+    # warning because the classifier "vouched" for the V3 family. This
+    # test pins the corrected contract: V4 / V5 are out-of-lineage
+    # today, so:
+    #
+    #   1. The classifier-vs-auto-detect parser must agree (no silent
+    #      forward-cover that the registry contradicts).
+    #   2. An explicit ``--tool-call-parser=deepseek_v3`` /
+    #      ``=deepseek_v31`` / ``=deepseek_r1_0528`` on a V4 / V5 path
+    #      MUST surface the out-of-lineage misbind warning.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "deepseek-ai/DeepSeek-V4",
+            "deepseek-ai/DeepSeek-V4-Flash",
+            "mlx-community/DeepSeek-V4-Flash-4bit",
+            "deepseek-ai/DeepSeek-V5",
+            "mlx-community/DeepSeek-V5-MLX-4bit",
+        ],
+    )
+    def test_v4_v5_classifier_matches_auto_detect_parser(self, model_path):
+        from vllm_mlx.model_auto_config import (
+            _DEEPSEEK_V3_FAMILY_PARSERS,
+            _classify_deepseek_template_name,
+        )
+
+        cfg = detect_model_config(model_path)
+        family = _classify_deepseek_template_name(model_path)
+        # The two layers must agree: if the classifier asserts a V3-template
+        # sub-family, auto-detect MUST pin a parser inside that family —
+        # otherwise ``rapid-mlx serve`` silently binds the wrong parser.
+        if family in {"v3", "v31"}:
+            assert cfg is not None
+            assert cfg.tool_call_parser in _DEEPSEEK_V3_FAMILY_PARSERS, (
+                f"classifier says {model_path} is V3-template family "
+                f"({family!r}) but auto-detect picks "
+                f"{cfg.tool_call_parser!r} — the two layers disagree."
+            )
+        else:
+            # Out-of-lineage today: auto-detect's parser (whatever it is)
+            # is the source of truth. The classifier MUST NOT promise
+            # something the registry will not deliver.
+            assert family is None
+
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "deepseek-ai/DeepSeek-V4",
+            "mlx-community/DeepSeek-V4-Flash-4bit",
+            "deepseek-ai/DeepSeek-V5",
+        ],
+    )
+    @pytest.mark.parametrize(
+        "parser",
+        ["deepseek_v3", "deepseek_v31", "deepseek_r1_0528"],
+    )
+    def test_warn_v4_v5_on_explicit_v3_family_override(self, model_path, parser):
+        msg = warn_misbound_deepseek_v3_parser(model_path, parser)
+        assert msg is not None, (
+            f"V4 / V5 are not V3-template lineage today — explicit "
+            f"--tool-call-parser={parser!r} on {model_path!r} must warn."
+        )
+        assert parser in msg
+        assert model_path in msg

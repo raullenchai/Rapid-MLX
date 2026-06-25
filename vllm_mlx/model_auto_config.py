@@ -761,18 +761,38 @@ def _classify_deepseek_template_name(s: str) -> str | None:
     # R1-0528 — the R1 retrain on the V3 chat template.
     if re.search(r"deepseek.*r1[-_]?0528", name):
         return "v3"
-    # Forward-cover V4 / V5 (per upstream V4 card both inherit the V3
-    # template). Require the ``v4`` / ``v5`` token to be terminated by
-    # end-of-string OR a separator character (``-``, ``_``, ``/``, ``.``,
-    # space) so future variants like ``DeepSeek-V40-*``,
-    # ``DeepSeek-V5Beta-*``, or ``DeepSeek-V42-MoE-*`` don't get
-    # silently classified as V3-template just because they share the
-    # ``v4`` / ``v5`` prefix (pr-validate codex r6 BLOCKING — the
-    # missing boundary was a real false-negative path). ``DeepSeek-V4``
-    # and ``DeepSeek-V4-Flash`` still match because the boundary is
-    # satisfied by end-of-string or ``-`` respectively.
-    if re.search(r"deepseek[-_]*v[45](?=[-_/.\s]|$)", name):
-        return "v3"
+    # NOTE on V4 / V5: an earlier revision of this classifier returned
+    # ``"v3"`` for ``DeepSeek-V[45]*`` as a "forward-cover" — the V4
+    # upstream model card mentioned the V3 chat template lineage, and
+    # the intent was to make the misbind warning suggest ``deepseek_v3``
+    # for users who pinned the wrong parser.
+    #
+    # That forward-cover was wrong in practice (#893 codex MED). The
+    # actual ``_MODEL_PATTERNS`` entry for V4 routes V4 / V4-Flash to
+    # the legacy ``deepseek`` parser (chat-only, no tools today — see
+    # the deepseek-ai discussion #16 referenced inline above), and the
+    # ``aliases.json`` entries for the MLX V4-Flash quants pin the same
+    # legacy parser. With the classifier returning ``"v3"`` but auto-
+    # detect picking ``"deepseek"``, the two layers contradicted:
+    #
+    #   * ``rapid-mlx serve deepseek-ai/DeepSeek-V4`` would silently bind
+    #     the legacy parser even though the classifier "knew" V4 should
+    #     be V3-family. The two answers disagreed and there was no
+    #     warning surface.
+    #   * ``--tool-call-parser=deepseek_v3`` on a V4 path returned no
+    #     misbind warning either — the in-spec gate at
+    #     ``warn_misbound_deepseek_v3_parser`` saw ``template == "v3"``
+    #     and the parser inside ``_DEEPSEEK_V3_BODY_PARSERS`` and
+    #     concluded "matching", even though the V4 wire shape is the
+    #     legacy V2.x envelope today.
+    #
+    # The honest minimal fix is to NOT speculate about V4 / V5 here at
+    # all. When V4 / V5 ship a tool-emitting chat template that does
+    # match the V3 fenced-JSON body shape, update BOTH layers
+    # simultaneously: the ``_MODEL_PATTERNS`` registry entry above, and
+    # this classifier. The misbind warning gate keys off the actual
+    # auto-detect parser, so the two stay aligned when they move
+    # together.
     return None
 
 
