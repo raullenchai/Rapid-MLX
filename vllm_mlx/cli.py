@@ -996,6 +996,72 @@ def _check_disk_space(model_name: str, force: bool = False) -> None:
         pass
 
 
+def _gather_kv_cache_dtype_inputs(model_name: str) -> tuple[dict | None, dict | None]:
+    """Best-effort collect the inputs ``resolve_kv_cache_dtype`` consumes.
+
+    R15 task #300: the safelist that downgrades int4 → bf16 for sliding-
+    window and MLA models needs the HF ``config.json`` (``sliding_window``,
+    ``q_lora_rank`` / ``kv_lora_rank``) plus any alias-level
+    ``sliding_window`` / ``is_mla`` hints. We intentionally avoid
+    network fetches here — both signals come from data that's already
+    on disk (aliases.json) or that will be downloaded for the model
+    load anyway (HF config). If neither is available (offline, gated
+    repo, brand-new release), the substring fallback in
+    :func:`vllm_mlx.kv_cache_dtype.resolve_kv_cache_dtype` still catches
+    the documented families by name.
+
+    Returns:
+        A ``(hf_config, alias_metadata)`` pair. Either or both may be
+        ``None`` when the inputs aren't reachable.
+    """
+    hf_cfg: dict | None = None
+    alias_meta: dict | None = None
+
+    # Alias metadata — pull straight from the loaded profile so a
+    # contributor-curated override (``"sliding_window": true``) wins
+    # over the substring heuristic.
+    try:
+        from .model_aliases import resolve_profile
+
+        profile = resolve_profile(model_name)
+        if profile is not None:
+            alias_meta = {
+                "hf_path": getattr(profile, "hf_path", None),
+                # AliasProfile doesn't have ``sliding_window`` / ``is_mla``
+                # fields today (R15 #300 intentionally avoids a frozen-
+                # dataclass schema bump). The substring fallback covers
+                # the in-tree aliases; we leave the hook here so a
+                # future closed-key extension picks them up automatically.
+                "sliding_window": getattr(profile, "sliding_window", False),
+                "is_mla": getattr(profile, "is_mla", False),
+            }
+    except Exception:
+        # Alias resolution must never block server start. The substring
+        # fallback covers the documented families even with no profile.
+        alias_meta = None
+
+    # HF config — read from the local HF cache only. We're inside the
+    # serve preflight path so a network round-trip would be cheap (the
+    # model load follows immediately anyway), but staying file-local
+    # keeps this helper safe to call in tests and air-gapped installs.
+    try:
+        import json as _json
+        import os as _os
+
+        from huggingface_hub import try_to_load_from_cache as _cache_lookup
+
+        hf_path = (alias_meta or {}).get("hf_path") or model_name
+        if hf_path:
+            cached = _cache_lookup(repo_id=hf_path, filename="config.json")
+            if cached and _os.path.exists(cached):
+                with open(cached) as fh:
+                    hf_cfg = _json.load(fh)
+    except Exception:
+        hf_cfg = None
+
+    return hf_cfg, alias_meta
+
+
 def _check_memory_capacity(model_name: str) -> None:
     """Pre-flight memory check — warn loudly if loading this model is
     likely to push unified memory past the danger threshold.
@@ -2037,6 +2103,70 @@ def serve_command(args):
         )
         sys.exit(1)
 
+    # R15 #300: resolve --kv-cache-dtype + --reasoning + safelist BEFORE
+    # the legacy --kv-cache-quantization flag wins. When --kv-cache-
+    # turboquant is on, leave the kv-cache-dtype path alone — TurboQuant
+    # owns the V cache and would conflict with QuantizedKVCache. When
+    # the legacy --kv-cache-quantization flag is passed, honor it
+    # verbatim for backwards compatibility; the new dtype flag only
+    # takes effect on operators who haven't pinned the legacy bool.
+    kv_cache_decision = None
+    if not args.kv_cache_turboquant and not args.kv_cache_quantization:
+        from .kv_cache_dtype import (
+            dtype_to_quantization_bits,
+            log_kv_cache_decision,
+            resolve_kv_cache_dtype,
+        )
+
+        hf_cfg, alias_meta = _gather_kv_cache_dtype_inputs(args.model)
+        kv_cache_decision = resolve_kv_cache_dtype(
+            args.kv_cache_dtype,
+            reasoning=args.reasoning,
+            model_name=args.model,
+            hf_path=(alias_meta or {}).get("hf_path"),
+            hf_config=hf_cfg,
+            alias_metadata=alias_meta,
+        )
+        log_kv_cache_decision(kv_cache_decision, model_name=args.model)
+        quant, bits = dtype_to_quantization_bits(kv_cache_decision.dtype)
+        # Mutate args so the existing SchedulerConfig wiring picks up
+        # the resolved values without a second code path.
+        args.kv_cache_quantization = quant
+        args.kv_cache_quantization_bits = bits
+        # Stash on the shared ServerConfig so /metrics surfaces the
+        # effective dtype during the pre-engine load window — operator
+        # uptime dashboards scrape within ms of process start.
+        try:
+            from vllm_mlx.config import get_config as _get_config
+
+            _get_config().kv_cache_dtype = kv_cache_decision.dtype
+        except Exception:
+            # ServerConfig is best-effort observability; never block
+            # serve start on a metrics-only side effect.
+            pass
+    elif args.kv_cache_quantization:
+        # Legacy flag took precedence — synthesize a decision so
+        # observability still has a single source of truth.
+        from .kv_cache_dtype import KVCacheDtypeDecision
+
+        legacy_dtype = "int4" if args.kv_cache_quantization_bits == 4 else "int8"
+        kv_cache_decision = KVCacheDtypeDecision(
+            dtype=legacy_dtype,
+            reason=(
+                f"legacy --kv-cache-quantization flag (bits="
+                f"{args.kv_cache_quantization_bits}) — equivalent to "
+                f"--kv-cache-dtype {legacy_dtype}"
+            ),
+            downgraded=False,
+            requested=legacy_dtype,
+        )
+        try:
+            from vllm_mlx.config import get_config as _get_config
+
+            _get_config().kv_cache_dtype = legacy_dtype
+        except Exception:
+            pass
+
     # Mutual exclusion: only one spec-decode method may wrap _step at a time.
     # (The DFlash-vs-{suffix,mtp} check is upstream, before the banner.)
     if args.suffix_decoding and args.enable_mtp:
@@ -2082,7 +2212,12 @@ def serve_command(args):
         suffix_max_suffix_len=args.suffix_max_suffix_len,
         suffix_min_confidence=args.suffix_min_confidence,
         suffix_min_draft_len=args.suffix_min_draft_len,
-        # KV cache quantization
+        # KV cache quantization (R15 #300: dtype string is the canonical
+        # observability surface; ``_quantization`` / ``_bits`` are the
+        # wire-level toggles that drive ``mlx_lm.QuantizedKVCache``).
+        kv_cache_dtype=(
+            kv_cache_decision.dtype if kv_cache_decision is not None else "bf16"
+        ),
         kv_cache_quantization=args.kv_cache_quantization,
         kv_cache_quantization_bits=args.kv_cache_quantization_bits,
         kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
@@ -5378,10 +5513,47 @@ Examples:
         help="Disable memory-aware cache, use legacy entry-count based cache",
     )
     # KV cache quantization options
+    # ``--kv-cache-dtype`` (R15 task #300) is the canonical knob: int4 is
+    # the new default because Apple Silicon decode is memory-bandwidth-
+    # bound and a 4×-smaller KV cache cuts bandwidth proportionally
+    # (mlx#3134 UMA discussion, Feb 2026 — Phi-3.5-mini +1.1%
+    # throughput, 3.2× more context room on Qwen2.5-14B). The
+    # safelist in :mod:`vllm_mlx.kv_cache_dtype` auto-downgrades
+    # sliding-window (Gemma 3, GPT-OSS) and MLA (DeepSeek V3+,
+    # Kimi-K2.5) families to bf16 where int4 breaks decode quality.
+    # ``--reasoning`` pins to int8 for AIME-class hard math where
+    # sub-4-bit drops -20pt on thinking variants.
+    serve_parser.add_argument(
+        "--kv-cache-dtype",
+        type=str,
+        default="int4",
+        choices=["bf16", "int8", "int4"],
+        help=(
+            "KV cache dtype (R15 #300, default: int4). Apple Silicon decode "
+            "is memory-bandwidth-bound; int4 yields ~4× less bandwidth per "
+            "decode step with 97-98%% quality retention. Sliding-window "
+            "(Gemma 3, GPT-OSS) and MLA (DeepSeek V3+, Kimi K2.5) models "
+            "auto-downgrade to bf16. Use --reasoning for AIME / hard math."
+        ),
+    )
+    serve_parser.add_argument(
+        "--reasoning",
+        action="store_true",
+        default=False,
+        help=(
+            "Reasoning profile: pins --kv-cache-dtype to int8 regardless of "
+            "the dtype flag (sub-4-bit drops -20pt on AIME-class math for "
+            "Qwen3 thinking variants)."
+        ),
+    )
     serve_parser.add_argument(
         "--kv-cache-quantization",
         action="store_true",
-        help="Quantize stored KV caches to reduce memory (8-bit by default)",
+        help=(
+            "[deprecated alias of --kv-cache-dtype int8] Quantize stored "
+            "KV caches to reduce memory (8-bit by default). When both "
+            "flags are passed, this one wins for backwards compatibility."
+        ),
     )
     serve_parser.add_argument(
         "--kv-cache-quantization-bits",

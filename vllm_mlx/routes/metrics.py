@@ -171,6 +171,52 @@ def _coerce_number(value: Any, default: float = 0.0) -> float:
         return default
 
 
+def _render_kv_cache_dtype_gauge(cfg: Any) -> list[str]:
+    """Emit the R15 #300 ``rapid_mlx_kv_cache_dtype`` gauge.
+
+    Three series — ``dtype="bf16"`` / ``"int8"`` / ``"int4"`` — exactly
+    one of which is 1, the others 0. Lets a dashboard wire a single
+    alert / panel against ``rapid_mlx_kv_cache_dtype{dtype="int4"} ==
+    1`` without parsing string-valued samples (which Prometheus does
+    not support natively).
+
+    The dtype is read from ``cfg.engine.scheduler_config.kv_cache_dtype``
+    when the engine is up, otherwise from ``cfg.kv_cache_dtype`` if the
+    server stashed it pre-load, otherwise defaults to ``"bf16"`` (the
+    only value that's a no-op everywhere — never silently report
+    int4 when we're not actually quantized).
+    """
+    dtype = "bf16"
+    try:
+        engine = getattr(cfg, "engine", None)
+        if engine is not None:
+            sc = getattr(engine, "scheduler_config", None) or getattr(
+                engine, "_scheduler_config", None
+            )
+            if sc is not None:
+                dtype = getattr(sc, "kv_cache_dtype", "bf16") or "bf16"
+        if dtype == "bf16":
+            # Fall back to the pre-load stash if the engine doesn't
+            # advertise its config yet — preserves observability during
+            # the load window between ``serve`` start and engine ready.
+            stashed = getattr(cfg, "kv_cache_dtype", None)
+            if stashed:
+                dtype = stashed
+    except Exception:
+        dtype = "bf16"
+
+    out: list[str] = [
+        "# HELP rapid_mlx_kv_cache_dtype Effective KV cache dtype "
+        "(R15 #300). One series per dtype label; the value is 1 for "
+        "the active dtype and 0 for the others.",
+        "# TYPE rapid_mlx_kv_cache_dtype gauge",
+    ]
+    for candidate in ("bf16", "int8", "int4"):
+        active = 1 if dtype == candidate else 0
+        out.append(f'rapid_mlx_kv_cache_dtype{{dtype="{candidate}"}} {active}')
+    return out
+
+
 def _render_response_format_counters() -> list[str]:
     """Render the H-06 strict-mode counters as Prometheus lines.
 
@@ -325,6 +371,16 @@ def _render_prometheus(cfg: Any) -> str:
             },
         )
     )
+
+    # R15 #300: KV cache dtype as a labeled gauge. Operators need to see
+    # the EFFECTIVE dtype the resolver picked (post-safelist + post-
+    # reasoning-pin), not just the requested flag value. Emitted as
+    # three series with value 0/1 so a Grafana panel can filter by
+    # ``dtype="int4"`` without parsing string-valued samples. Sourced
+    # straight off ``SchedulerConfig.kv_cache_dtype`` so this stays
+    # truthful even when the legacy ``--kv-cache-quantization`` flag
+    # was the actual driver.
+    lines.extend(_render_kv_cache_dtype_gauge(cfg))
 
     # H-06 response_format strict-mode counters — process-local state
     # that is independent of engine availability. Surface BEFORE the

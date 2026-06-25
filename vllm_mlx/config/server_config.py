@@ -186,6 +186,16 @@ class ServerConfig:
     # --- Multi-model ---
     model_registry: Any = None
 
+    # --- KV cache dtype (R15 #300) ---
+    # Stashed by the CLI right after :func:`resolve_kv_cache_dtype` so
+    # ``/metrics`` can surface the effective dtype as a labeled gauge
+    # even during the early window before the engine has finished
+    # loading. The engine's own ``SchedulerConfig.kv_cache_dtype`` is
+    # the canonical source post-load; this attribute is the fallback
+    # for the pre-load metrics scrape (operators' uptime tooling
+    # frequently scrapes within milliseconds of server start).
+    kv_cache_dtype: str | None = None
+
 
 # Singleton instance
 _config = ServerConfig()

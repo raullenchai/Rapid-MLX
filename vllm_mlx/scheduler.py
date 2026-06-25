@@ -144,7 +144,16 @@ class SchedulerConfig:
     cache_memory_mb: int | None = None  # None = auto-detect (20% of available RAM)
     cache_memory_percent: float = 0.20  # Fraction of available RAM if auto-detecting
 
-    # KV cache quantization (reduces prefix cache memory)
+    # KV cache quantization (reduces prefix cache memory). The
+    # ``kv_cache_dtype`` field is the canonical R15 #300 knob — it
+    # carries the operator-facing dtype string (``bf16`` / ``int8`` /
+    # ``int4``) for observability (Prometheus gauge, startup banner).
+    # ``kv_cache_quantization`` + ``_bits`` remain the wire-level
+    # toggles that drive ``mlx_lm.QuantizedKVCache``; setters in
+    # ``vllm_mlx.cli`` resolve dtype → (quantization, bits) via
+    # :func:`vllm_mlx.kv_cache_dtype.dtype_to_quantization_bits` so the
+    # two stay coherent.
+    kv_cache_dtype: str = "bf16"
     kv_cache_quantization: bool = False
     kv_cache_quantization_bits: int = 8
     kv_cache_quantization_group_size: int = 64
