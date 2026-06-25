@@ -186,7 +186,15 @@ def _render_kv_cache_dtype_gauge(cfg: Any) -> list[str]:
     only value that's a no-op everywhere — never silently report
     int4 when we're not actually quantized).
     """
-    dtype = "bf16"
+    # codex r1 BLOCKING #2: only fall back to the pre-load stash when
+    # the engine has NOT yet stamped its scheduler_config. The earlier
+    # ``dtype == "bf16"`` guard let a stale stash override a live
+    # engine after a bf16 load — e.g. operator loads with
+    # ``--kv-cache-dtype int4`` against a sliding-window model, the
+    # safelist resolves to bf16, but the stash still says int4 from
+    # before the safelist ran. Distinguishing "engine reports a value"
+    # from "no engine value available" prevents that ghost report.
+    dtype: str | None = None
     try:
         engine = getattr(cfg, "engine", None)
         if engine is not None:
@@ -194,15 +202,21 @@ def _render_kv_cache_dtype_gauge(cfg: Any) -> list[str]:
                 engine, "_scheduler_config", None
             )
             if sc is not None:
-                dtype = getattr(sc, "kv_cache_dtype", "bf16") or "bf16"
-        if dtype == "bf16":
-            # Fall back to the pre-load stash if the engine doesn't
-            # advertise its config yet — preserves observability during
-            # the load window between ``serve`` start and engine ready.
+                live = getattr(sc, "kv_cache_dtype", None)
+                if live:
+                    dtype = live
+        if dtype is None:
+            # Engine not loaded yet (or doesn't carry the field) — fall
+            # back to the pre-load stash so /metrics still reports the
+            # operator's resolved dtype during the load window.
             stashed = getattr(cfg, "kv_cache_dtype", None)
             if stashed:
                 dtype = stashed
     except Exception:
+        dtype = None
+    if dtype is None:
+        # Default to bf16 — the only value that is a no-op everywhere,
+        # so observability never lies about quantization status.
         dtype = "bf16"
 
     out: list[str] = [

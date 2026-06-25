@@ -154,24 +154,45 @@ def _is_mla(
     HF config — the K projection is already compressed, so stacking int4
     on top compounds quantization error. Alias-level metadata wins over
     config inference for the same reason as sliding-window.
+
+    codex r1 BLOCKING #3: the rank-pair alone is too loose. A model
+    can ship both fields for reasons unrelated to MLA (some
+    quantization toolkits stash LoRA adapter ranks under the same
+    field names, and a hand-authored config in a future architecture
+    might legitimately use both fields without implementing MLA). We
+    therefore require a *family signal* (alias metadata, known
+    ``model_type``, or a name-pattern hit) in ADDITION to the rank
+    pair before the int4-to-bf16 downgrade fires. The unambiguous
+    signals (explicit alias override + canonical ``model_type``)
+    still trigger standalone.
     """
     if alias_metadata is not None and alias_metadata.get("is_mla"):
         return True
 
+    needle = f"{model_name or ''} {hf_path or ''}".lower()
+    name_hit = any(pat in needle for pat in _MLA_PATTERNS)
+
     if hf_config is not None:
-        # MLA configs always declare BOTH ranks. A model with only
-        # ``q_lora_rank`` (e.g. some Qwen variants) is LoRA-adapted, not
-        # MLA — don't safelist it.
-        q_rank = hf_config.get("q_lora_rank")
-        kv_rank = hf_config.get("kv_lora_rank")
-        if isinstance(q_rank, int) and q_rank > 0 and isinstance(kv_rank, int) and kv_rank > 0:
-            return True
         model_type = hf_config.get("model_type")
         if isinstance(model_type, str) and model_type in _MLA_MODEL_TYPES:
             return True
 
-    needle = f"{model_name or ''} {hf_path or ''}".lower()
-    return any(pat in needle for pat in _MLA_PATTERNS)
+        # Rank-pair detection only fires when accompanied by a family
+        # signal (name match). Avoids the false-positive class where a
+        # non-DeepSeek/Kimi model ships both rank fields for unrelated
+        # reasons.
+        q_rank = hf_config.get("q_lora_rank")
+        kv_rank = hf_config.get("kv_lora_rank")
+        rank_pair = (
+            isinstance(q_rank, int)
+            and q_rank > 0
+            and isinstance(kv_rank, int)
+            and kv_rank > 0
+        )
+        if rank_pair and name_hit:
+            return True
+
+    return name_hit
 
 
 def resolve_kv_cache_dtype(
@@ -320,7 +341,9 @@ def dtype_to_quantization_bits(dtype: str) -> tuple[bool, int]:
         return True, 8
     if dtype == "int4":
         return True, 4
-    raise ValueError(f"unknown kv_cache_dtype {dtype!r}; expected one of {KV_CACHE_DTYPES}")
+    raise ValueError(
+        f"unknown kv_cache_dtype {dtype!r}; expected one of {KV_CACHE_DTYPES}"
+    )
 
 
 def log_kv_cache_decision(
@@ -337,6 +360,8 @@ def log_kv_cache_decision(
     """
     msg = f"KV cache dtype: {decision.dtype} — {decision.reason}"
     if model_name and model_name not in decision.reason:
-        msg = f"KV cache dtype: {decision.dtype} (model={model_name}) — {decision.reason}"
+        msg = (
+            f"KV cache dtype: {decision.dtype} (model={model_name}) — {decision.reason}"
+        )
     logger.info(msg)
     print(msg)

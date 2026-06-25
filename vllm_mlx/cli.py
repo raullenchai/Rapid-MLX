@@ -2147,16 +2147,53 @@ def serve_command(args):
     elif args.kv_cache_quantization:
         # Legacy flag took precedence — synthesize a decision so
         # observability still has a single source of truth.
-        from .kv_cache_dtype import KVCacheDtypeDecision
+        from .kv_cache_dtype import (
+            REASONING_KV_CACHE_DTYPE,
+            KVCacheDtypeDecision,
+        )
+
+        # codex r1 BLOCKING #1: ``--reasoning`` must override the
+        # legacy ``--kv-cache-quantization`` flag too — otherwise
+        # ``rapid-mlx serve --reasoning --kv-cache-quantization
+        # --kv-cache-quantization-bits 4`` silently resolves to int4
+        # and the operator who deliberately asked for the reasoning
+        # profile gets the AIME-class quality cliff. Reject the
+        # conflicting combo with an explicit error: silently flipping
+        # the legacy bits to 8 would hide the misconfiguration.
+        # bits=8 is equivalent to --reasoning's int8 pin and is
+        # harmless; only bits=4 conflicts.
+        if args.reasoning and args.kv_cache_quantization_bits == 4:
+            print(
+                "\n  Error: --reasoning is incompatible with "
+                "--kv-cache-quantization --kv-cache-quantization-bits 4. "
+                "The reasoning profile pins KV cache to int8 because "
+                "sub-4-bit drops -20pt on AIME-class math. Either drop "
+                "--reasoning or drop --kv-cache-quantization-bits 4 "
+                "(or both; use --kv-cache-dtype int8 instead).\n"
+            )
+            sys.exit(1)
 
         legacy_dtype = "int4" if args.kv_cache_quantization_bits == 4 else "int8"
-        kv_cache_decision = KVCacheDtypeDecision(
-            dtype=legacy_dtype,
-            reason=(
+        # When --reasoning is set alongside the (compatible) bits=8
+        # legacy flag, the operator-facing reason should still
+        # advertise the reasoning profile so the startup banner is
+        # consistent across the two CLI shapes.
+        if args.reasoning:
+            assert legacy_dtype == REASONING_KV_CACHE_DTYPE  # by the guard above
+            reason = (
+                f"legacy --kv-cache-quantization flag + --reasoning — "
+                f"resolved to {REASONING_KV_CACHE_DTYPE} (reasoning profile "
+                f"pin matches legacy bits=8)"
+            )
+        else:
+            reason = (
                 f"legacy --kv-cache-quantization flag (bits="
                 f"{args.kv_cache_quantization_bits}) — equivalent to "
                 f"--kv-cache-dtype {legacy_dtype}"
-            ),
+            )
+        kv_cache_decision = KVCacheDtypeDecision(
+            dtype=legacy_dtype,
+            reason=reason,
             downgraded=False,
             requested=legacy_dtype,
         )

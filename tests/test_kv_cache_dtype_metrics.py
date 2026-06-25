@@ -48,3 +48,33 @@ def test_gauge_defaults_to_bf16_when_unknown():
     text = "\n".join(_render_kv_cache_dtype_gauge(cfg))
     assert 'rapid_mlx_kv_cache_dtype{dtype="bf16"} 1' in text
     assert 'rapid_mlx_kv_cache_dtype{dtype="int4"} 0' in text
+
+
+def test_gauge_engine_bf16_wins_over_stale_stash():
+    """codex r1 NIT #2 (paired with BLOCKING #2): when the engine has
+    fully loaded and stamped its scheduler_config to ``"bf16"`` (e.g.
+    the safelist downgraded int4 → bf16 mid-load), a stale
+    ``cfg.kv_cache_dtype="int4"`` from the pre-load stash MUST NOT
+    override it. The live engine value is the source of truth once
+    it's available — anything else lies to the operator about the
+    running configuration.
+    """
+    sc = SimpleNamespace(kv_cache_dtype="bf16")
+    engine = SimpleNamespace(scheduler_config=sc)
+    cfg = SimpleNamespace(engine=engine, kv_cache_dtype="int4")  # stale stash
+    text = "\n".join(_render_kv_cache_dtype_gauge(cfg))
+    assert 'rapid_mlx_kv_cache_dtype{dtype="bf16"} 1' in text
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int4"} 0' in text
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int8"} 0' in text
+
+
+def test_gauge_uses_underscore_scheduler_config_when_public_missing():
+    """``BatchedEngine`` stores its config under ``_scheduler_config``
+    (private). The gauge must reach that fallback name so a real
+    deployment doesn't silently fall through to the stash.
+    """
+    sc = SimpleNamespace(kv_cache_dtype="int8")
+    engine = SimpleNamespace(_scheduler_config=sc)
+    cfg = SimpleNamespace(engine=engine, kv_cache_dtype=None)
+    text = "\n".join(_render_kv_cache_dtype_gauge(cfg))
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int8"} 1' in text

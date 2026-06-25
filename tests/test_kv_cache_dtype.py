@@ -18,7 +18,6 @@ from vllm_mlx.kv_cache_dtype import (
     resolve_kv_cache_dtype,
 )
 
-
 # ---------------------------------------------------------------------------
 # Basic invariants
 # ---------------------------------------------------------------------------
@@ -211,6 +210,54 @@ def test_alias_metadata_is_mla_wins():
     )
     assert decision.dtype == "bf16"
     assert decision.downgraded is True
+
+
+def test_mla_rank_pair_without_family_signal_does_not_trigger():
+    """codex r1 BLOCKING #3: a non-DeepSeek/Kimi model that happens to
+    ship both ``q_lora_rank`` and ``kv_lora_rank`` (e.g. a LoRA-quant
+    toolkit reusing the field names, or a future architecture) must
+    NOT be force-downgraded to bf16 — that would be a silent perf
+    regression on an architecture nobody benched as MLA.
+
+    The fix requires a family signal (alias metadata, canonical
+    ``model_type`` in ``_MLA_MODEL_TYPES``, or a name-pattern hit)
+    in ADDITION to the rank pair.
+    """
+    decision = resolve_kv_cache_dtype(
+        "int4",
+        model_name="some-novel-arch-9b",
+        hf_path="custom/some-novel-arch-9b",
+        hf_config={
+            "model_type": "novel_arch",
+            "q_lora_rank": 1536,
+            "kv_lora_rank": 512,
+        },
+    )
+    assert decision.dtype == "int4"
+    assert decision.downgraded is False
+
+
+def test_mla_rank_pair_with_name_hit_triggers():
+    """codex r1 BLOCKING #3 follow-up: the rank pair MUST still trigger
+    when paired with a name-pattern signal (defends against a future
+    DeepSeek release that ships an unknown ``model_type`` value).
+    """
+    decision = resolve_kv_cache_dtype(
+        "int4",
+        model_name="deepseek-v5-test",
+        hf_path="deepseek-ai/DeepSeek-V5",
+        hf_config={
+            "model_type": "deepseek_v5",  # not in our pinned set yet
+            "q_lora_rank": 1536,
+            "kv_lora_rank": 512,
+        },
+    )
+    # ``deepseek-v5-test`` is not a documented pattern but the existing
+    # ``deepseek-v3`` / ``deepseek-v4`` substrings won't match. So this
+    # test really verifies that BOTH the substring search and the
+    # model_type check fail closed — i.e., we should NOT downgrade.
+    assert decision.dtype == "int4"
+    assert decision.downgraded is False
 
 
 # ---------------------------------------------------------------------------
