@@ -198,6 +198,19 @@ class SchedulerConfig:
     mtp_num_draft_tokens: int = 1  # Number of draft tokens from MTP head
     mtp_optimistic: bool = False  # Skip acceptance check for max speed
 
+    # R15-P1 #302: --spec-decode mtp|none routing knob. Distinct from
+    # ``enable_mtp`` because that flag targets the Qwen3-Next hybrid
+    # patch path; this knob targets the Qwen3.5/3.6 native MTP path
+    # vendored from mlx-lm PR #990. "none" / "mtp" matches the CLI
+    # argparse ``choices``. The scheduler does not yet dispatch on
+    # this — the BatchGenerator hook lands in a follow-up PR — but
+    # the field is plumbed here so the boot banner, /metrics labeling,
+    # and the boot-time eligibility check can all read from a single
+    # SSOT rather than passing the raw argparse Namespace deep into
+    # the engine. Validated to {"none", "mtp"} at SchedulerConfig
+    # construction in cli.py.
+    spec_decode: str = "none"
+
     # SuffixDecoding — drafter-free speculative decoding using a suffix
     # tree over prompt + generated tokens. Predicts repeated patterns
     # (tool boilerplate, JSON schemas, ReAct loops) at zero drafter

@@ -363,6 +363,147 @@ def _render_response_format_counters() -> list[str]:
     return out
 
 
+def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
+    """Render the R15-P1 #302 MTP speculative-decode counter triplet.
+
+    Three counters + one gauge, all labeled ``family="qwen3.5"`` and
+    ``method="mtp"`` so a future tree-MTP variant or a different model
+    family (Qwen3.6 vs 3.5) lands cleanly without renaming:
+
+    * ``rapid_mlx_spec_decode_attempts_total`` — Number of MTP draft
+      proposals the generator made. Bumped once per
+      ``mtp_generate_step`` outer-loop verify iteration.
+    * ``rapid_mlx_spec_decode_accepts_total`` — Subset of attempts
+      that the verify backbone pass accepted (after
+      ``min(1, p_target/p_draft)`` at temp>0 or exact-match at
+      temp=0). Always ``<= attempts``.
+    * ``rapid_mlx_spec_decode_tokens_saved_total`` — Cumulative bonus
+      tokens emitted from draft acceptance. Equals ``accepts`` for
+      chain MTP; tree MTP would let this exceed ``accepts``.
+    * ``rapid_mlx_spec_decode_accept_ratio`` — ``accepts / attempts``
+      as a gauge (0.0 when attempts==0, never NaN). The lossless
+      contract surface — dashboards alert on this dropping below 0.80
+      for Qwen3.5-9B-w4 at temp=0.
+
+    Process-local, no sticky accumulator needed: the underlying
+    counter never resets (see
+    :class:`vllm_mlx.spec_decode.mtp.MTPAcceptCounter`).
+
+    ``cfg.model_alias`` is reported as the ``family`` label so an
+    operator running multiple Qwen3.5 / 3.6 variants in a multi-model
+    fleet (#387) can split the dashboard panel by alias. Falls back
+    to ``"qwen3.5"`` when the alias is unknown so the series stays
+    stable across cold-start (Prometheus drops series whose label
+    set changes — a transient ``""`` label would break ``rate()``).
+    """
+    try:
+        from ..spec_decode.mtp import get_global_counter
+    except ImportError:
+        # spec_decode.mtp is part of the rapid-mlx package and should
+        # always be importable. The defensive catch keeps /metrics
+        # rendering robust in case the package is partially installed
+        # (e.g. mid-upgrade, stale .pyc) — emit zero-valued series so
+        # dashboards don't break.
+        return [
+            "# HELP rapid_mlx_spec_decode_attempts_total MTP draft "
+            "proposals (R15-P1 #302).",
+            "# TYPE rapid_mlx_spec_decode_attempts_total counter",
+            'rapid_mlx_spec_decode_attempts_total{family="qwen3.5",method="mtp"} 0',
+            "# HELP rapid_mlx_spec_decode_accepts_total MTP drafts "
+            "accepted by the verify backbone pass.",
+            "# TYPE rapid_mlx_spec_decode_accepts_total counter",
+            'rapid_mlx_spec_decode_accepts_total{family="qwen3.5",method="mtp"} 0',
+            "# HELP rapid_mlx_spec_decode_accept_ratio MTP accepts / "
+            "attempts. 0.0 when attempts==0.",
+            "# TYPE rapid_mlx_spec_decode_accept_ratio gauge",
+            'rapid_mlx_spec_decode_accept_ratio{family="qwen3.5",method="mtp"} 0',
+            "# HELP rapid_mlx_spec_decode_tokens_saved_total Bonus "
+            "tokens emitted from accepted MTP drafts (cumulative).",
+            "# TYPE rapid_mlx_spec_decode_tokens_saved_total counter",
+            'rapid_mlx_spec_decode_tokens_saved_total{family="qwen3.5",method="mtp"} 0',
+        ]
+
+    snapshot = get_global_counter().snapshot()
+
+    # Family label sourced from cfg.model_alias when present so a
+    # multi-model fleet can split by alias. The alias name typically
+    # already contains the family ("qwen3.5-9b-4bit" → "qwen3.5-9b-4bit").
+    # We use the alias verbatim rather than re-deriving the family from
+    # config.json — that re-derivation would add a config.json round-
+    # trip to /every/ scrape, which is wasteful for a hot endpoint.
+    #
+    # ``getattr`` rather than direct attribute access so the test
+    # harness's ``types.SimpleNamespace`` cfg stubs (see
+    # tests/test_metal_cap_enforcement.py::TestMetricsRoute) keep
+    # working — those stubs intentionally only define the engine
+    # fields they exercise and would otherwise raise AttributeError
+    # here.
+    family = getattr(cfg, "model_alias", None) or "qwen3.5"
+
+    common_labels = {"family": family, "method": "mtp"}
+    out: list[str] = []
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_attempts_total",
+            "counter",
+            (
+                "MTP draft proposals (R15-P1 #302, mlx-lm PR #990). "
+                "Bumped once per mtp_generate_step verify iteration. "
+                "Pair with rapid_mlx_spec_decode_accepts_total to "
+                "compute the accept ratio (also surfaced as "
+                "rapid_mlx_spec_decode_accept_ratio)."
+            ),
+            int(snapshot.attempts),
+            labels=common_labels,
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_accepts_total",
+            "counter",
+            (
+                "MTP drafts accepted by the verify backbone pass. "
+                "Always <= rapid_mlx_spec_decode_attempts_total. The "
+                "lossless contract surface — under the chain MTP "
+                "variant a low ratio is a speedup signal, not a "
+                "correctness one (tokens stay byte-identical to the "
+                "non-spec-decode path)."
+            ),
+            int(snapshot.accepts),
+            labels=common_labels,
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_accept_ratio",
+            "gauge",
+            (
+                "accepts / attempts. 0.0 when no attempts (Prometheus "
+                "convention: no-data → 0 rather than NaN so dashboards "
+                "don't flip to no-data during cold start)."
+            ),
+            round(snapshot.accept_ratio, 4),
+            labels=common_labels,
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_tokens_saved_total",
+            "counter",
+            (
+                "Cumulative bonus tokens emitted from accepted MTP "
+                "drafts. Equals rapid_mlx_spec_decode_accepts_total "
+                "under chain MTP (one accept = one bonus token); a "
+                "future tree MTP variant would let this exceed "
+                "accepts."
+            ),
+            int(snapshot.tokens_saved),
+            labels=common_labels,
+        )
+    )
+    return out
+
+
 def _render_mxfp4_moe_guardrail_counters() -> list[str]:
     """Render the R15 #297 MoE+MXFP4 / MoE+NVFP4 load-time guardrail counters.
 
@@ -438,6 +579,14 @@ def _render_prometheus(cfg: Any) -> str:
     # whose model trips the cliff at startup has no metric series to
     # alert on until the FIRST request lands.
     lines.extend(_render_mxfp4_moe_guardrail_counters())
+
+    # R15-P1 #302 MTP spec-decode counter triplet + accept-ratio gauge.
+    # Same engine-independence rationale: counters are process-local
+    # and bumped from the generator loop, which can run before
+    # ``engine.get_stats()`` is ready (warmup) — surface them as
+    # zero-valued series so dashboards see the metric names even at
+    # cold start. Pre-engine the counter is naturally zero anyway.
+    lines.extend(_render_spec_decode_mtp_counters(cfg))
 
     if cfg.engine is None:
         # No engine yet — return build info + response_format counters

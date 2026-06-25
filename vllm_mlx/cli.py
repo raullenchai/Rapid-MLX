@@ -2260,6 +2260,11 @@ def serve_command(args):
         enable_mtp=args.enable_mtp,
         mtp_num_draft_tokens=args.mtp_num_draft_tokens,
         mtp_optimistic=args.mtp_optimistic,
+        # R15-P1 #302: --spec-decode mtp|none. Plumb the raw choice
+        # through; the boot-time eligibility check below validates
+        # that ``mtp`` was only passed for a config.json with
+        # ``mtp_num_hidden_layers >= 1``.
+        spec_decode=getattr(args, "spec_decode", "none"),
         # SuffixDecoding
         enable_suffix_decoding=args.suffix_decoding,
         suffix_max_draft=args.suffix_max_draft,
@@ -2299,6 +2304,36 @@ def serve_command(args):
         print(f"Chunked prefill: {args.chunked_prefill_tokens} tokens per step")
     if args.enable_mtp:
         print(f"MTP: enabled, draft_tokens={args.mtp_num_draft_tokens}")
+    # R15-P1 #302: native Qwen3.5/3.6 MTP via vendored mlx-lm PR #990.
+    # Banner line + boot-time eligibility check fires here so misuse
+    # (--spec-decode mtp on a non-Qwen3.5/3.6 model) bounces with a
+    # clear error rather than discovering the mismatch when the first
+    # backbone forward pass raises ``AttributeError`` mid-generation.
+    if getattr(args, "spec_decode", "none") == "mtp":
+        from vllm_mlx.spec_decode.mtp import (
+            MTPEligibility,
+            detect_mtp_eligibility,
+        )
+
+        # ``_gather_kv_cache_dtype_inputs`` already reads
+        # ``config.json`` for the same model the operator passed in;
+        # reuse it so a side-loaded HF path or alias path both work.
+        try:
+            hf_cfg_eligibility, _ = _gather_kv_cache_dtype_inputs(args.model)
+        except Exception:  # pragma: no cover — best-effort
+            hf_cfg_eligibility = None
+        eligibility = detect_mtp_eligibility(hf_cfg_eligibility)
+        if eligibility is MTPEligibility.NONE:
+            print(
+                "error: --spec-decode mtp requires a Qwen3.5 / Qwen3.6 "
+                "checkpoint with mtp_num_hidden_layers >= 1 in "
+                "config.json. The loaded model does not qualify "
+                "(re-convert from HF with mlx-lm PR #990's sanitize() "
+                "path to preserve mtp.* weights).",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        print(f"Spec-decode: mtp ({eligibility.value})")
     if args.suffix_decoding:
         print(
             f"SuffixDecoding: enabled, max_draft={args.suffix_max_draft}, "
@@ -5838,6 +5873,40 @@ Examples:
         default=False,
         help="Skip MTP acceptance check for maximum speed. "
         "~5-10%% wrong tokens. Best for chat, not for code.",
+    )
+    # R15-P1 #302: native Qwen3.5/3.6 MTP via vendored mlx-lm PR #990.
+    # Lives next to the existing ``--enable-mtp`` (Qwen3-Next runtime
+    # injection) rather than replacing it because the two paths target
+    # DIFFERENT architectures — Qwen3-Next uses a hybrid Gated-DeltaNet
+    # + attention layout that the existing ``_install_mtp`` patches
+    # at the BatchGenerator level, while Qwen3.5/3.6 uses a
+    # GatedDeltaNet + MTP-head split that needs the PR #990
+    # ``mtp_generate_step`` loop (cache rollback, n_confirmed split,
+    # probabilistic acceptance). Coexistence keeps existing dogfood
+    # users on ``--enable-mtp`` working while the new path is opt-in.
+    #
+    # Default ``none`` because the lossless contract has not yet been
+    # verified end-to-end against a converted Qwen3.5/3.6 checkpoint
+    # (R15-P1 follow-up bench is GPU-contended with Stage B Viterbi
+    # conversion). The CLI rejects ``--spec-decode mtp`` at boot if
+    # the loaded model's ``config.json`` lacks
+    # ``mtp_num_hidden_layers >= 1`` so an operator who passes the
+    # flag against a non-eligible model sees a clear error rather
+    # than silent fallback.
+    serve_parser.add_argument(
+        "--spec-decode",
+        dest="spec_decode",
+        choices=["none", "mtp"],
+        default="none",
+        help=(
+            "R15-P1 #302 native model-side speculative decode. "
+            "``none`` (default) disables; ``mtp`` enables Qwen3.5/3.6 "
+            "native MTP via vendored mlx-lm PR #990 — requires a "
+            "checkpoint converted with the PR #990 sanitize() path "
+            "that preserves ``mtp.*`` weights. Rejects at boot if the "
+            "loaded model's config.json lacks "
+            "``mtp_num_hidden_layers >= 1`` so misuse fails loud."
+        ),
     )
     # SuffixDecoding — drafter-free spec-decode using a suffix tree over
     # generated tokens. Big wins on agent/tool/JSON workloads (3-5x);
