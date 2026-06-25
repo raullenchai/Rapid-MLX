@@ -262,9 +262,7 @@ class TestResponsesInputItemTypeDefault:
 
 
 class TestResponsesRouteInputTypeDefault:
-    def test_canonical_openai_shape_without_type_returns_200(
-        self, responses_client
-    ):
+    def test_canonical_openai_shape_without_type_returns_200(self, responses_client):
         """The bug report payload: copy-pasted-from-OpenAI-docs curl
         with ``{role, content}`` and no ``type``. Pre-fix → 400, post-fix
         → 200."""
@@ -294,9 +292,7 @@ class TestResponsesRouteInputTypeDefault:
             "/v1/responses",
             json={
                 "model": "test-model",
-                "input": [
-                    {"type": "message", "role": "user", "content": "hi"}
-                ],
+                "input": [{"type": "message", "role": "user", "content": "hi"}],
             },
             headers=HEADERS,
         )
@@ -344,9 +340,9 @@ class TestResponsesRouteInputTypeDefault:
         # parsed through the function_call branch — not silently coerced
         # into the message branch by our type-defaulting validator.
         user_msgs = [m for m in messages if m.get("role") == "user"]
-        assert any("use the tool please" in (m.get("content") or "") for m in user_msgs), (
-            f"leading user message lost during conversion: {messages}"
-        )
+        assert any(
+            "use the tool please" in (m.get("content") or "") for m in user_msgs
+        ), f"leading user message lost during conversion: {messages}"
         # And the function_call_output payload must have shown up
         # somewhere in the message stream — that proves the
         # function_call_output branch ran (it would NOT run if our
