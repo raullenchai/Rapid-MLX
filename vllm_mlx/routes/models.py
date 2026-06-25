@@ -364,7 +364,7 @@ def _resolve_audio_entry(model_id: str):
 
 
 def _audio_routes_mounted() -> bool:
-    """Task #292: True iff the ``/v1/audio/*`` router is attached.
+    """Task #292: True iff the canonical ``/v1/audio/*`` router is attached.
 
     On text-only servers (Bo R13/R14 fuzz wave) the audio router is
     NOT registered, so ``/v1/audio/transcriptions`` etc. return a stock
@@ -373,31 +373,33 @@ def _audio_routes_mounted() -> bool:
     answer ``/v1/audio/transcriptions`` at all.
 
     Codex r0 BLOCKING #1: the predicate ONLY inspects the live ASGI
-    app's route table — never the ``ServerConfig.enable_audio_lane``
-    flag. The flag is the upstream INPUT to the gate
-    (``audio_routes_should_register``); the route table is the
-    downstream OUTPUT. A boot path that sets the flag but hasn't yet
-    called the registration hook (e.g. an earlier ``/v1/models`` hit
-    during text-mode boot before ``load_model`` returns) would
-    otherwise advertise ``audio_lanes`` while ``/v1/audio/*`` still
-    404s — the exact contradictory state this PR was opened to
-    eliminate.
+    app — never the ``ServerConfig.enable_audio_lane`` flag. The flag
+    is the upstream INPUT to the gate; the route table is the downstream
+    OUTPUT. A boot path that sets the flag but hasn't yet called the
+    registration hook would otherwise advertise ``audio_lanes`` while
+    ``/v1/audio/*`` still 404s.
+
+    Codex r2 BLOCKING: the previous prefix-scan implementation
+    false-positived on operator-added subpaths (e.g.
+    ``/v1/audio/health`` probes) — same shape as the
+    ``register_audio_routes`` NIT that codex r0 caught. Now we check
+    the app-local sentinel attribute that
+    :func:`vllm_mlx.routes.audio.register_audio_routes` stamps on the
+    app on a successful registration. The sentinel is the single source
+    of truth for "the canonical audio router is mounted on this app".
 
     Falls through to False on any inspection failure (defensive — the
     listing must stay 200 even if the app/router shape changes).
     """
     try:
+        from ..routes.audio import _AUDIO_REGISTRATION_SENTINEL
         from ..server import app as _server_app
     except Exception:  # noqa: BLE001
         return False
     try:
-        for route in getattr(_server_app, "routes", ()):
-            path = getattr(route, "path", "")
-            if isinstance(path, str) and path.startswith("/v1/audio/"):
-                return True
+        return bool(getattr(_server_app, _AUDIO_REGISTRATION_SENTINEL, False))
     except Exception:  # noqa: BLE001
         return False
-    return False
 
 
 def _audio_lane_snapshot() -> dict[str, str] | None:
