@@ -274,6 +274,58 @@ def _render_response_format_counters() -> list[str]:
     return out
 
 
+def _render_mxfp4_moe_guardrail_counters() -> list[str]:
+    """Render the R15 #297 MoE+MXFP4 / MoE+NVFP4 load-time guardrail counters.
+
+    Process-local state in ``vllm_mlx/_mxfp4_moe_guardrail.py`` —
+    independent of engine availability for the same reason the
+    response_format counters live above the engine-None early return:
+    the guardrail fires at ``load_model()`` time, BEFORE the engine
+    object reaches its ready state, so we must surface the counters
+    even when ``cfg.engine`` is None.
+    """
+    try:
+        from .._mxfp4_moe_guardrail import snapshot as _guardrail_snapshot
+
+        gr_stats = _guardrail_snapshot()
+    except Exception:
+        gr_stats = {
+            "mxfp4_moe_distributed_warnings_total": 0,
+            "nvfp4_moe_warnings_total": 0,
+        }
+    out: list[str] = []
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_mxfp4_moe_distributed_warnings_total",
+            "counter",
+            (
+                "Load-time warnings fired for the MoE + MXFP4 + "
+                "multi-device throughput cliff (upstream mlx#3402). "
+                "Any non-zero value means an operator started a model "
+                "matching the three-tuple; expect ~0.27 tok/s vs ~16 "
+                "tok/s until upstream lands a fix."
+            ),
+            int(gr_stats.get("mxfp4_moe_distributed_warnings_total", 0)),
+        )
+    )
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_nvfp4_moe_warnings_total",
+            "counter",
+            (
+                "Load-time warnings fired for the MoE + NVFP4 "
+                "dynamic-range loss (upstream mlx#2962, signed E4M3 "
+                "scales instead of Blackwell unsigned UE4M3 → ~137x "
+                "dynamic-range loss). Fires regardless of device count "
+                "because the dynamic-range loss bites even on "
+                "single-device serving."
+            ),
+            int(gr_stats.get("nvfp4_moe_warnings_total", 0)),
+        )
+    )
+    return out
+
+
 def _render_prometheus(cfg: Any) -> str:
     """Render the full /metrics body for a snapshot of cfg.engine state."""
     lines: list[str] = []
@@ -298,6 +350,14 @@ def _render_prometheus(cfg: Any) -> str:
     # engine-None / get_stats-failure early returns so dashboards see
     # the series even between restarts.
     lines.extend(_render_response_format_counters())
+
+    # R15 #297 MoE+MXFP4 / MoE+NVFP4 load-time guardrail counters —
+    # same engine-independence rationale: the guardrail fires at
+    # ``load_model()``, so the counter MUST be visible to scrapers
+    # before the engine reaches its ready state. Otherwise an operator
+    # whose model trips the cliff at startup has no metric series to
+    # alert on until the FIRST request lands.
+    lines.extend(_render_mxfp4_moe_guardrail_counters())
 
     if cfg.engine is None:
         # No engine yet — return build info + response_format counters

@@ -1248,6 +1248,21 @@ def load_model(
         gen_cfg = {}
     _generation_config_sampling = gen_cfg or None
 
+    # R15 task #297: warn loudly when the operator's three-tuple matches
+    # the MoE + MXFP4 + multi-device throughput cliff (mlx#3402) or the
+    # MoE + NVFP4 dynamic-range loss (mlx#2962). Best-effort — wrapped
+    # in a try so a guardrail bug can NEVER prevent model load.
+    try:
+        from ._mxfp4_moe_guardrail import check_from_profile
+
+        check_from_profile(
+            model_name=model_name,
+            profile=_profile,
+            alias=_model_alias,
+        )
+    except Exception as _e:  # pragma: no cover — defensive belt-and-suspenders
+        logger.debug(f"mxfp4/moe guardrail probe failed (non-fatal): {_e}")
+
     # Initialize cloud router if --cloud-model is set
     if cloud_model:
         from .cloud_router import CloudRouter
