@@ -5560,6 +5560,11 @@ Examples:
     # Kimi-K2.5) families to bf16 where int4 breaks decode quality.
     # ``--reasoning`` pins to int8 for AIME-class hard math where
     # sub-4-bit drops -20pt on thinking variants.
+    #
+    # Qwen3.5-9B-4bit bench (M3, 292-tok prompt, 5×400-tok decode median):
+    # int4 113.6 tok/s / 119 ms TTFT / 5388 MB RSS vs bf16 113.7 tok/s /
+    # 120 ms TTFT / 5392 MB RSS — int4 is a free swap at this size; the
+    # +1.1 % / 3.2× headroom land at multi-k contexts (PR #910 comment).
     serve_parser.add_argument(
         "--kv-cache-dtype",
         type=str,
