@@ -376,3 +376,54 @@ class TestModelsListingReflectsAudioGate:
         # Either None (no probe yet) or a dict — anything else is wrong
         # shape.
         assert snapshot is None or isinstance(snapshot, dict)
+
+    def test_routes_mounted_predicate_ignores_config_flag(self, monkeypatch, fresh_app):
+        """Codex r0 BLOCKING #1 regression: ``_audio_routes_mounted``
+        must NOT return True merely because ``ServerConfig.enable_audio_lane``
+        is set. The flag is the gate INPUT; the route table is the gate
+        OUTPUT. A boot path that sets the flag but hasn't yet called
+        the registration hook (e.g. an earlier ``/v1/models`` hit during
+        text-mode boot before ``load_model`` returns) would otherwise
+        advertise ``audio_lanes`` while ``/v1/audio/*`` still 404s —
+        the exact contradictory state this PR was opened to eliminate.
+        """
+        from vllm_mlx.config import get_config
+        from vllm_mlx.routes.models import _audio_routes_mounted
+
+        cfg = get_config()
+        old_flag = cfg.enable_audio_lane
+        cfg.enable_audio_lane = True
+        try:
+            # No call to register_audio_routes — the route table is empty.
+            assert _audio_routes_mounted() is False
+        finally:
+            cfg.enable_audio_lane = old_flag
+
+    def test_register_audio_routes_not_blocked_by_custom_subpath(self):
+        """Codex r0 NIT regression: a custom operator-added
+        ``/v1/audio/health`` route mounted BEFORE
+        :func:`register_audio_routes` must not block the helper from
+        attaching the canonical handlers. Pre-fix the idempotency
+        check did a prefix scan on ``/v1/audio/`` which collided with
+        any operator subroute under that prefix; the fix uses an
+        app-local sentinel attribute instead."""
+        from vllm_mlx.routes.audio import register_audio_routes
+
+        app = FastAPI()
+
+        @app.get("/v1/audio/health")
+        def _audio_health():
+            return {"ok": True}
+
+        attached = register_audio_routes(app)
+        assert attached is True
+        # Canonical handler is present.
+        paths = {
+            getattr(r, "path", "")
+            for r in app.routes
+            if getattr(r, "path", "").startswith("/v1/audio/")
+        }
+        assert "/v1/audio/transcriptions" in paths
+        assert "/v1/audio/speech" in paths
+        # Custom probe survived.
+        assert "/v1/audio/health" in paths

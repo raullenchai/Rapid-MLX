@@ -372,26 +372,24 @@ def _audio_routes_mounted() -> bool:
     see ``audio_lanes={"stt":"degraded"}`` on a server that wouldn't
     answer ``/v1/audio/transcriptions`` at all.
 
-    The check inspects the live ASGI app's routes (the same place
-    ``register_audio_routes_if_enabled`` writes to) so the answer
-    tracks the post-load state without re-running the gate logic.
+    Codex r0 BLOCKING #1: the predicate ONLY inspects the live ASGI
+    app's route table — never the ``ServerConfig.enable_audio_lane``
+    flag. The flag is the upstream INPUT to the gate
+    (``audio_routes_should_register``); the route table is the
+    downstream OUTPUT. A boot path that sets the flag but hasn't yet
+    called the registration hook (e.g. an earlier ``/v1/models`` hit
+    during text-mode boot before ``load_model`` returns) would
+    otherwise advertise ``audio_lanes`` while ``/v1/audio/*`` still
+    404s — the exact contradictory state this PR was opened to
+    eliminate.
+
     Falls through to False on any inspection failure (defensive — the
     listing must stay 200 even if the app/router shape changes).
     """
     try:
-        from ..config import get_config
         from ..server import app as _server_app
     except Exception:  # noqa: BLE001
         return False
-    # If the config dataclass says the lane is operator-enabled, trust
-    # that (the post-load hook attaches the router from the same
-    # signal). Doubles as a cheap early-exit on the common audio-mode
-    # path.
-    try:
-        if getattr(get_config(), "enable_audio_lane", False):
-            return True
-    except Exception:  # noqa: BLE001
-        pass
     try:
         for route in getattr(_server_app, "routes", ()):
             path = getattr(route, "path", "")

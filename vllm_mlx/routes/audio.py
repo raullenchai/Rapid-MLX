@@ -95,14 +95,29 @@ def audio_routes_should_register(
     return False
 
 
+# App-local sentinel attribute marking that
+# :func:`register_audio_routes` has already attached its router. Codex
+# r0 NIT: a route-table substring check (``"/v1/audio/"`` prefix) would
+# false-positive on apps that mounted a CUSTOM ``/v1/audio/*`` route
+# alongside our router — e.g. an operator-owned ``/v1/audio/health``
+# probe added before the gate fires would silently block the helper from
+# registering the canonical handlers. Stamping a dedicated attribute on
+# the FastAPI app instead lets the helper key off its OWN prior call
+# rather than any string-shaped collision.
+_AUDIO_REGISTRATION_SENTINEL = "_rapid_mlx_audio_routes_registered"
+
+
 def register_audio_routes(app) -> bool:
     """Idempotently attach the audio router to ``app``.
 
     Returns True if the router was attached on this call, False if it
-    was already attached. The idempotency check inspects ``app.routes``
-    for any ``/v1/audio/*`` path so a second call (e.g. from a test
-    that builds the FastAPI app twice) is a no-op rather than a
-    405-inducing duplicate-route registration.
+    was already attached. The idempotency check looks at the app-local
+    sentinel :data:`_AUDIO_REGISTRATION_SENTINEL` that this function
+    stamps after a successful registration. We don't scan the route
+    table for a ``/v1/audio/`` prefix because a custom operator-added
+    audio sub-route (e.g. a private ``/v1/audio/health`` probe added
+    before this helper runs) would false-positive and silently block
+    the canonical handlers from mounting — codex r0 NIT.
 
     The 25 MB multipart cap (:func:`install_audio_body_limit_middleware`)
     is installed unconditionally at ``vllm_mlx.server`` import time —
@@ -113,11 +128,10 @@ def register_audio_routes(app) -> bool:
     has been built raises a Starlette warning, and on the text path
     the stack is built before ``load_model`` returns.
     """
-    for route in getattr(app, "routes", ()):
-        path = getattr(route, "path", "")
-        if isinstance(path, str) and path.startswith("/v1/audio/"):
-            return False
+    if getattr(app, _AUDIO_REGISTRATION_SENTINEL, False):
+        return False
     app.include_router(router)
+    setattr(app, _AUDIO_REGISTRATION_SENTINEL, True)
     return True
 
 
