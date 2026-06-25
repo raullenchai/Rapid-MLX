@@ -85,7 +85,7 @@
   "tmax-9b": {
     "hf_path": "mlx-community/Tmax-9B-MLX-4bit",
     "tool_call_parser": "qwen3_xml",
-    "is_hybrid": false,
+    "is_hybrid": true,
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -94,7 +94,7 @@
   "tmax-9b-6bit": {
     "hf_path": "mlx-community/Tmax-9B-MLX-6bit",
     "tool_call_parser": "qwen3_xml",
-    "is_hybrid": false,
+    "is_hybrid": true,
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -103,7 +103,7 @@
   "tmax-9b-8bit": {
     "hf_path": "mlx-community/Tmax-9B-MLX-8bit",
     "tool_call_parser": "qwen3_xml",
-    "is_hybrid": false,
+    "is_hybrid": true,
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
@@ -112,7 +112,7 @@
   "tmax-9b-bf16": {
     "hf_path": "mlx-community/Tmax-9B-MLX-bf16",
     "tool_call_parser": "qwen3_xml",
-    "is_hybrid": false,
+    "is_hybrid": true,
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
