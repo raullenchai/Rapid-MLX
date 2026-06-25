@@ -67,7 +67,6 @@ from collections.abc import Iterable
 import vllm_mlx.engine_core as engine_core
 import vllm_mlx.mllm_batch_generator as mllm_batch_generator
 
-
 # Symbols that resolve to the forbidden upstream stream-allocation APIs
 # under any common spelling. ``mlx.core`` is the canonical import root;
 # ``mx`` and ``mlx_core`` are the conventional aliases used across this
@@ -189,9 +188,8 @@ def _assert_default_stream_with_default_device(
         # is the *shape* of the call.
         head, _, tail = outer_name.partition(".")
         is_default_stream = (
-            (head in _MX_ALIASES and tail == "default_stream")
-            or outer_name == "default_stream"
-        )
+            head in _MX_ALIASES and tail == "default_stream"
+        ) or outer_name == "default_stream"
         if not is_default_stream:
             continue
         if not call.args:
@@ -204,9 +202,8 @@ def _assert_default_stream_with_default_device(
             continue
         ihead, _, itail = inner_name.partition(".")
         is_default_device = (
-            (ihead in _MX_ALIASES and itail == "default_device")
-            or inner_name == "default_device"
-        )
+            ihead in _MX_ALIASES and itail == "default_device"
+        ) or inner_name == "default_device"
         if is_default_device:
             return  # contract satisfied
 
