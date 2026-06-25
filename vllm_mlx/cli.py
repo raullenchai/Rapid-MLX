@@ -287,31 +287,76 @@ def _run_uvicorn(app, args, log_level: str) -> None:
     actually references this helper so a future refactor that drops the
     dispatch silently is caught — that's the regression-detection codex
     round-1 PR #696 review was after.
+
+    R13 Sven B1: also the single chokepoint that catches an
+    ``OSError(EADDRINUSE)`` raised from uvicorn's bind() and turns it
+    into a friendly "Port N already in use…" message + ``sys.exit(1)``.
+    The ``_port_preflight_or_die`` probe (run earlier in ``serve_command``)
+    handles the common case, but two TOCTOU paths still reach this layer:
+
+      1. Another process claims the port in the window between the
+         preflight close() and uvicorn's bind() (e.g. a launchd job
+         racing with us).
+      2. ``--listen-fd`` mode skips the preflight by design — if the
+         supervisor handed us a stale/bad fd, the kernel-side bind
+         failure was previously surfaced only via uvicorn's raw
+         ``ERROR: [Errno 48]`` line.
+
+    Without this wrapper the operator's supervisor (systemd, k8s,
+    launchd) sees uvicorn's ``logger.error(exc)`` line, but the friendly
+    "Choose a different --port" hint was missing and any future uvicorn
+    that swallowed the OSError instead of ``sys.exit(1)``-ing would
+    silently regress the supervisor failure-detection contract.
     """
+    import errno
+
     import uvicorn
 
     listen_fd = getattr(args, "listen_fd", None)
-    if listen_fd is not None:
-        # ``fd=`` overrides ``host``/``port``: uvicorn skips its own
-        # ``socket.bind()`` and adopts the inherited fd directly. This
-        # is the close of the bind→auth TOCTOU window — the supervisor
-        # bound + validated the auth secret BEFORE execve'ing, and the
-        # FastAPI ``app`` (with route auth dependencies) is fully
-        # constructed at module load before this call.
-        uvicorn.run(
-            app,
-            fd=listen_fd,
-            log_level=log_level,
-            timeout_keep_alive=30,
-        )
-    else:
-        uvicorn.run(
-            app,
-            host=args.host,
-            port=args.port,
-            log_level=log_level,
-            timeout_keep_alive=30,
-        )
+    try:
+        if listen_fd is not None:
+            # ``fd=`` overrides ``host``/``port``: uvicorn skips its own
+            # ``socket.bind()`` and adopts the inherited fd directly. This
+            # is the close of the bind→auth TOCTOU window — the supervisor
+            # bound + validated the auth secret BEFORE execve'ing, and the
+            # FastAPI ``app`` (with route auth dependencies) is fully
+            # constructed at module load before this call.
+            uvicorn.run(
+                app,
+                fd=listen_fd,
+                log_level=log_level,
+                timeout_keep_alive=30,
+            )
+        else:
+            uvicorn.run(
+                app,
+                host=args.host,
+                port=args.port,
+                log_level=log_level,
+                timeout_keep_alive=30,
+            )
+    except OSError as exc:
+        # uvicorn>=0.34 catches the bind() OSError internally and
+        # ``sys.exit(1)``s before this except can fire (uvicorn's
+        # ``Server.startup``). We still wrap defensively for: (a) older
+        # uvicorns that re-raised the OSError directly, (b) ``--listen-fd``
+        # mode where the failure originates from ``socket.fromfd`` /
+        # ``loop.create_server(sock=…)`` before uvicorn's own except
+        # arms, (c) any future uvicorn that loosens its except — the
+        # supervisor-failure-detection contract for ``rapid-mlx serve``
+        # MUST stay non-zero on bind failure regardless of upstream
+        # behavior. Match EADDRINUSE precisely so unrelated OSErrors
+        # (disk, etc.) fall through with their original trace.
+        if exc.errno == errno.EADDRINUSE:
+            host_display = args.host or "0.0.0.0"
+            print(
+                f"\n  Error: Port {args.port} already in use on "
+                f"{host_display}. Choose a different --port or stop the "
+                f"existing server (lsof -i :{args.port}).",
+                file=sys.stderr,
+            )
+            sys.exit(1)
+        raise
 
 
 def _chat_config_dir() -> str:
