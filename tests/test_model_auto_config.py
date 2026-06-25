@@ -1379,10 +1379,32 @@ class TestWarnMisboundDeepseekV3Parser:
                 f"{cfg.tool_call_parser!r} — the two layers disagree."
             )
         else:
-            # Out-of-lineage today: auto-detect's parser (whatever it is)
-            # is the source of truth. The classifier MUST NOT promise
-            # something the registry will not deliver.
-            assert family is None
+            # Out-of-lineage today (codex r1 BLOCKING): the classifier
+            # MUST NOT promise V3-template lineage AND auto-detect MUST
+            # pin the legacy ``deepseek`` parser the registry currently
+            # ships for V4 / V5 — otherwise the test would still pass
+            # if a future regression flipped EITHER the registry back
+            # to a V3-family parser (the original #893 bug) OR the
+            # classifier back to ``"v3"``. Both halves of the alignment
+            # need an explicit assertion.
+            assert family is None, (
+                f"V4 / V5 classifier must return None today (no upstream "
+                f"V3-template tool envelope) — got {family!r} for "
+                f"{model_path!r}."
+            )
+            assert cfg is not None, (
+                f"auto-detect must still resolve {model_path!r} via the "
+                "DeepSeek regex chain — got None."
+            )
+            assert cfg.tool_call_parser == "deepseek", (
+                f"V4 / V5 must route to the legacy 'deepseek' parser "
+                f"today (V4 chat template is tool-less per deepseek-ai "
+                f"discussion #16) — got {cfg.tool_call_parser!r} for "
+                f"{model_path!r}. If this is intentional, BOTH the "
+                f"registry AND the classifier need to be updated "
+                f"together (see #893 codex MED rationale)."
+            )
+            assert cfg.tool_call_parser not in _DEEPSEEK_V3_FAMILY_PARSERS
 
     @pytest.mark.parametrize(
         "model_path",
