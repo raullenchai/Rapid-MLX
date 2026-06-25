@@ -1172,7 +1172,7 @@
     "suffix_decoding_tier": "unknown"
   },
   "kimi-k2.6": {
-    "hf_path": "mlx-community/Kimi-K2.6-MoE-Smart-Quant",
+    "hf_path": "mlx-community/Kimi-K2.6-mlx-DQ3_K_M-q8",
     "tool_call_parser": "kimi",
     "reasoning_parser": "deepseek_r1",
     "is_hybrid": false,
