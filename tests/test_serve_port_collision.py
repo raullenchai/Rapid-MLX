@@ -40,9 +40,7 @@ from __future__ import annotations
 
 import errno
 import socket
-import sys
 import types
-from unittest.mock import patch
 
 import pytest
 
