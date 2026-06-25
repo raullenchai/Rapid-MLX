@@ -169,6 +169,17 @@ def _detect_distributed_world_size() -> int:
     import json
     import os
 
+    # Compute the **max** across all available signals rather than
+    # returning the first non-empty one. Codex round 7 BLOCKING: the
+    # upstream ring launcher preserves the parent env and then ADDS
+    # ``MLX_HOSTFILE``; a stale / inherited ``MLX_WORLD_SIZE=1`` (or
+    # ``OMPI_COMM_WORLD_SIZE=1`` / ``PMI_SIZE=1``) from a developer's
+    # shell would otherwise short-circuit at 1 and mask a true
+    # multi-host hostfile that says 8. The max is the only reading
+    # that is robust against that env contamination AND gives the
+    # right answer when only one signal is present.
+    candidates: list[int] = [1]  # always include the single-device baseline
+
     # Direct integer env vars (NCCL + MPI launchers).
     for env_var in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
         raw = os.environ.get(env_var)
@@ -179,7 +190,7 @@ def _detect_distributed_world_size() -> int:
         except ValueError:
             continue
         if size >= 1:
-            return size
+            candidates.append(size)
 
     # Ring backend (Apple Silicon default) — count entries in the
     # JSON hostfile. The file is a JSON array of ``{ssh, ips}`` host
@@ -191,7 +202,7 @@ def _detect_distributed_world_size() -> int:
             with open(hostfile_path) as fp:
                 hosts = json.load(fp)
             if isinstance(hosts, list) and len(hosts) >= 1:
-                return len(hosts)
+                candidates.append(len(hosts))
         except Exception:  # pragma: no cover — defensive
             logger.debug(
                 "MLX_HOSTFILE=%s present but unreadable; treating as size 1",
@@ -199,7 +210,7 @@ def _detect_distributed_world_size() -> int:
                 exc_info=True,
             )
 
-    return 1
+    return max(candidates)
 
 
 def _emit_mxfp4_moe_distributed_warning(

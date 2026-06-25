@@ -323,6 +323,69 @@ def test_ring_backend_three_tuple_fires_e2e(monkeypatch, tmp_path, caplog):
     assert "world_size=2" in joined
 
 
+def test_world_size_uses_max_across_signals_not_first_match(
+    monkeypatch, tmp_path
+):
+    """Codex round 7 BLOCKING: a stale env var must not mask a larger signal.
+
+    Upstream ``mlx/distributed_run.py`` preserves the parent env when
+    spawning ring workers and then adds ``MLX_HOSTFILE``. A developer
+    who exports ``MLX_WORLD_SIZE=1`` in their shell (or who inherited
+    it from a previous single-host run) would, under a "first match
+    wins" probe, see the hostfile silently masked at 1 — exactly the
+    case the guardrail is supposed to catch.
+
+    Fix: probe returns ``max(candidates)``. Set up a stale env var of
+    1 alongside a real 4-host hostfile, and assert the probe returns
+    4, not 1.
+    """
+    import json
+
+    for v in (
+        "MLX_WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "MLX_HOSTFILE",
+    ):
+        monkeypatch.delenv(v, raising=False)
+    # Stale single-device env var leaked in from a parent shell.
+    monkeypatch.setenv("MLX_WORLD_SIZE", "1")
+    # Real ring hostfile says 4 nodes.
+    hostfile = tmp_path / "hosts.json"
+    hostfile.write_text(
+        json.dumps(
+            [
+                {"ssh": "node-0", "ips": ["10.0.0.1"]},
+                {"ssh": "node-1", "ips": ["10.0.0.2"]},
+                {"ssh": "node-2", "ips": ["10.0.0.3"]},
+                {"ssh": "node-3", "ips": ["10.0.0.4"]},
+            ]
+        )
+    )
+    monkeypatch.setenv("MLX_HOSTFILE", str(hostfile))
+    # Max-of-signals semantics: 1 (env) max 4 (hostfile) == 4.
+    assert g._detect_distributed_world_size() == 4
+
+
+def test_world_size_max_picks_largest_env_var(monkeypatch):
+    """Multiple env vars with different values → take the max.
+
+    Defends against scenarios where an MPI shim leaves ``PMI_SIZE=1``
+    while the NCCL launcher set ``MLX_WORLD_SIZE=8``.
+    """
+    for v in (
+        "MLX_WORLD_SIZE",
+        "OMPI_COMM_WORLD_SIZE",
+        "PMI_SIZE",
+        "MLX_HOSTFILE",
+    ):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("PMI_SIZE", "1")
+    monkeypatch.setenv("MLX_WORLD_SIZE", "8")
+    monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
+    assert g._detect_distributed_world_size() == 8
+
+
 def test_guardrail_module_never_references_mx_distributed_init():
     """Codex #297 BLOCKING regression: the guardrail must NOT call init().
 
