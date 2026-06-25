@@ -21,10 +21,12 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 from .models import (
     _TOP_K_SENTINEL_CAP,
     _VALID_REASONING_EFFORTS,
+    ResponseFormat,
     StreamOptions,
     _validate_nonnegative_int,
     _validate_positive_int,
     _validate_reasoning_effort,
+    _validate_response_format_raw,
     _validate_seed,
 )
 
@@ -165,6 +167,35 @@ class ResponsesRequest(BaseModel):
     service_tier: str | None = None
     prompt_cache_key: str | None = None
     text: dict | None = None  # {"format": {...}, "verbosity": ...}
+    # R14 task #293 (Talia fuzz wave) — chat-style ``response_format``
+    # accepted on /v1/responses as a migration shim.
+    #
+    # The canonical Responses-spec shape for structured-output sampling
+    # is ``text.format = {"type":"json_schema", "strict":true,
+    # "schema":{...}, "name":"..."}``. The chat surface uses a
+    # differently-nested ``response_format = {"type":"json_schema",
+    # "json_schema":{"strict":true, "schema":{...}, "name":"..."}}``.
+    # Codex CLI uses the canonical Responses shape; the
+    # openai-python SDK + many community clients (langchain, ell,
+    # instructor, llama-index) reuse the SAME chat-style payload across
+    # both surfaces because they share one ``response_format`` argument
+    # in their high-level API. Pre-fix, those clients sent
+    # ``response_format`` on /v1/responses and Pydantic silently dropped
+    # it (the field was undeclared); the engine then generated
+    # unconstrained text and clients saw schema violations they could
+    # not explain — the exact silent-correctness hazard the r5-E sweep
+    # exists to close.
+    #
+    # Declaring the field here makes the chat-style payload first-class
+    # on this surface. ``responses_to_openai`` merges it with
+    # ``text.format`` in the adapter, with ``text.format`` winning when
+    # both are set (canonical Responses-spec field has precedence, same
+    # rule OpenAI cloud applies). Validation reuses the shared
+    # ``_validate_response_format_raw`` helper so the strict-bool,
+    # schema-shape, and json_schema.name gates already enforced on
+    # /v1/chat/completions and /v1/completions fire identically here —
+    # one contract across all four OpenAI-compat surfaces.
+    response_format: ResponseFormat | dict | None = None
     metadata: dict | None = None
     previous_response_id: str | None = None  # 400 if set; this shim is stateless
     max_output_tokens: int | None = None
@@ -271,6 +302,18 @@ class ResponsesRequest(BaseModel):
     @classmethod
     def _validate_seed_field(cls, v) -> int | None:
         return _validate_seed(v)
+
+    # R14 task #293: share the same response_format dict-arm validator
+    # the chat / completions surfaces use so the shape gates (strict
+    # must be bool, json_schema.schema must be a non-empty dict,
+    # json_schema.name must be a string) fire identically across all
+    # four OpenAI-compat lanes (chat / completions / messages /
+    # responses). See ``_validate_response_format_raw`` in models.py
+    # for the rationale block.
+    @field_validator("response_format", mode="before")
+    @classmethod
+    def _validate_response_format_field(cls, v):
+        return _validate_response_format_raw(v)
 
     # R10-H5 (R9-H3 carry) — mirror of
     # ``ChatCompletionRequest._validate_reasoning_effort_field``. Closed

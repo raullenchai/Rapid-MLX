@@ -735,6 +735,152 @@ class TestResponsesToOpenai:
         assert chat.response_format is not None
         assert chat.response_format.type == "json_schema"
 
+    # ------------------------------------------------------------------
+    # R14 task #293 — chat-style response_format migration shim
+    # ------------------------------------------------------------------
+
+    def test_chat_style_response_format_json_schema_strict_plumbed(self):
+        """Chat-style ``response_format`` with strict json_schema is
+        forwarded onto the materialized ``ChatCompletionRequest`` so the
+        engine's guided-decoding gate fires identically to
+        /v1/chat/completions. Pre-fix, ResponsesRequest silently dropped
+        the field and the engine ran unconstrained.
+        """
+        req = ResponsesRequest(
+            model="gpt-5",
+            input="give me a movie",
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "Movie",
+                    "strict": True,
+                    "schema": {
+                        "type": "object",
+                        "properties": {"title": {"type": "string"}},
+                        "required": ["title"],
+                    },
+                },
+            },
+        )
+        chat = responses_to_openai(req)
+        assert chat.response_format is not None
+        assert chat.response_format.type == "json_schema"
+        assert chat.response_format.json_schema is not None
+        assert chat.response_format.json_schema.name == "Movie"
+        assert chat.response_format.json_schema.strict is True
+        assert chat.response_format.json_schema.schema_ == {
+            "type": "object",
+            "properties": {"title": {"type": "string"}},
+            "required": ["title"],
+        }
+
+    def test_chat_style_response_format_json_object_plumbed(self):
+        """``response_format={"type":"json_object"}`` (JSON mode, no
+        schema) is also forwarded — same migration shim coverage."""
+        req = ResponsesRequest(
+            model="gpt-5",
+            input="x",
+            response_format={"type": "json_object"},
+        )
+        chat = responses_to_openai(req)
+        assert chat.response_format is not None
+        assert chat.response_format.type == "json_object"
+
+    def test_chat_style_response_format_text_type_is_inert(self):
+        """``type=text`` is the no-structure default and should not
+        block the engine from sampling normally — it forwards as-is
+        and the route's strict gate (is_strict_json_schema) returns
+        False, so the unconstrained path runs."""
+        req = ResponsesRequest(
+            model="gpt-5",
+            input="x",
+            response_format={"type": "text"},
+        )
+        chat = responses_to_openai(req)
+        # The field is forwarded but ``type=text`` is functionally a
+        # no-op — is_strict_json_schema returns False, the route's
+        # strict gate skips, and the engine runs unconstrained.
+        assert chat.response_format is not None
+        assert chat.response_format.type == "text"
+
+    def test_text_format_wins_over_response_format(self):
+        """When BOTH ``text.format`` and chat-style ``response_format``
+        are set, the canonical Responses-spec ``text.format`` wins.
+        This mirrors OpenAI cloud behaviour — clients that mix both
+        shapes get the spec-canonical answer."""
+        req = ResponsesRequest(
+            model="gpt-5",
+            input="x",
+            text={
+                "format": {
+                    "type": "json_schema",
+                    "name": "FromText",
+                    "schema": {"type": "object"},
+                }
+            },
+            response_format={
+                "type": "json_schema",
+                "json_schema": {
+                    "name": "FromResponseFormat",
+                    "strict": True,
+                    "schema": {"type": "object"},
+                },
+            },
+        )
+        chat = responses_to_openai(req)
+        assert chat.response_format is not None
+        assert chat.response_format.json_schema is not None
+        assert chat.response_format.json_schema.name == "FromText"
+
+    def test_response_format_absent_keeps_engine_unconstrained(self):
+        """Sanity: no response_format and no text.format → the
+        materialized ChatCompletionRequest carries None and the engine
+        samples freely. Pinning this in case the shim's None-fallback
+        ever flips."""
+        req = ResponsesRequest(model="gpt-5", input="x")
+        chat = responses_to_openai(req)
+        assert chat.response_format is None
+
+    def test_chat_style_response_format_strict_must_be_bool(self):
+        """The shared ``_validate_response_format_raw`` rejects
+        ``strict:"true"`` (string) on this surface too — parity with
+        chat / completions / messages. Pre-fix the field was undeclared
+        so the validator never ran and the string truthy-but-not-bool
+        silently passed."""
+        with pytest.raises(Exception) as exc_info:
+            ResponsesRequest(
+                model="gpt-5",
+                input="x",
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "X",
+                        "strict": "true",  # string, not bool
+                        "schema": {"type": "object"},
+                    },
+                },
+            )
+        assert "strict" in str(exc_info.value).lower()
+
+    def test_chat_style_response_format_empty_schema_rejected(self):
+        """Empty ``json_schema.schema={}`` is rejected at parse time
+        on this surface (same gate as chat / completions / messages).
+        Closes the F-103 silent-200 hazard for the Responses surface."""
+        with pytest.raises(Exception) as exc_info:
+            ResponsesRequest(
+                model="gpt-5",
+                input="x",
+                response_format={
+                    "type": "json_schema",
+                    "json_schema": {
+                        "name": "X",
+                        "strict": True,
+                        "schema": {},
+                    },
+                },
+            )
+        assert "schema" in str(exc_info.value).lower()
+
 
 # ---------------------------------------------------------------------------
 # openai_to_responses — full response shape

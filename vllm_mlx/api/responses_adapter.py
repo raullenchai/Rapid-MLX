@@ -349,7 +349,17 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
 
     tools = _convert_tools(request.tools)
     tool_choice = _convert_tool_choice(request.tool_choice)
+    # R14 task #293: ``text.format`` is the canonical Responses-spec
+    # shape for structured output and wins when both are set; the
+    # chat-style ``response_format`` field is the migration shim for
+    # SDK clients that re-use the same payload across chat / responses
+    # (openai-python, langchain, instructor, ell, llama-index).
+    # Pre-fix, ``response_format`` was undeclared on ResponsesRequest
+    # so Pydantic silently dropped it and the engine ran unconstrained
+    # — the silent-correctness hazard the r5-E sweep exists to close.
     response_format = _convert_text_format(request.text)
+    if response_format is None and request.response_format is not None:
+        response_format = request.response_format
 
     return ChatCompletionRequest(
         model=request.model,
