@@ -3558,6 +3558,41 @@ async def _disconnect_guard(
                     f"[disconnect_guard] first chunk arrived, elapsed={_elapsed()}"
                 )
             yield chunk
+            # R15 #291 / #308 (Vlad 8k-prompt boundary): the very first
+            # upstream chunk on chat-completions SSE is the synthetic
+            # ``role`` delta, which fires almost instantly (~30 ms).
+            # The next chunk is the FIRST CONTENT TOKEN — gated on
+            # prefill completion. For prompts near the ``keepalive_seconds``
+            # boundary (~8 k tokens at ~20 s default keepalive), prefill
+            # lands at or just before the keepalive timer's first tick:
+            # ``asyncio.wait`` sees ``anext_task`` complete in the
+            # ``done`` set and skips the keepalive branch entirely. The
+            # client gets the role chunk at t=30 ms, then 20 s of silence,
+            # then the first content delta. Any HTTP client with an
+            # idle timeout < ``keepalive_seconds`` (browser EventSource
+            # ~45 s, but proxies + custom SDK pools as low as 10 s)
+            # tears the connection down mid-prefill.
+            #
+            # Fix: emit a one-time SSE comment line IMMEDIATELY after
+            # the first real chunk. Comments are spec-defined no-ops
+            # (WHATWG SSE §9.2.6 / RFC: every client strips them), so
+            # downstream parsers are unaffected. The cost is a single
+            # 14-byte frame per stream. We do NOT change the steady-
+            # state cadence — subsequent stalls still wait the full
+            # ``keepalive_seconds`` window, preserving the F-070
+            # bandwidth contract.
+            #
+            # Gated on ``keepalive_enabled`` so the
+            # ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0`` escape hatch keeps
+            # the post-role-chunk frame off the wire too — an operator
+            # that opted out of heartbeats opted ALL THE WAY out.
+            if chunk_count == 1 and keepalive_enabled:
+                keepalive_count += 1
+                logger.info(
+                    f"[disconnect_guard] post-first-chunk keepalive "
+                    f"(R15 #291), elapsed={_elapsed()}"
+                )
+                yield ": keepalive\n\n"
             # Loop top will re-create the anext_task now that the
             # consumer has pulled this chunk. Do NOT eagerly schedule
             # the next ``__anext__`` here — see the docstring at loop

@@ -583,6 +583,13 @@ def test_stream_route_wire_format_event_prefix_and_terminator():
         # multi-line ``data:`` framing remain valid SSE shapes that a
         # future legitimate change might introduce.
         assert lines, f"empty SSE chunk: {raw!r}"
+        # R15 #291: the SSE disconnect-guard injects a single
+        # ``: keepalive`` comment line right after the first real
+        # chunk (Vlad 8k-prompt boundary fix). Comments are no-ops
+        # per WHATWG SSE §9.2.6 — skip them for the event-framing
+        # check (they have neither ``event:`` nor ``data:`` lines).
+        if all(line.startswith(":") for line in lines):
+            continue
         assert lines[0].startswith("event: "), (
             f"first SSE line must start with 'event: ': {lines[0]!r}"
         )

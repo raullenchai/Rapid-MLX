@@ -160,6 +160,87 @@ class TestMessage:
         msg = Message(role="assistant", content=None)
         assert msg.content is None
 
+    @pytest.mark.parametrize("role", ["user", "system", "developer"])
+    def test_null_content_rejected_for_input_roles(self, role):
+        """R15 #175 item 3 (adversarial fuzz a9c828): a request body
+        carrying ``{"role":"user","content":null}`` (or "system" /
+        "developer") used to return HTTP 200 with garbled output (the
+        chat-template flattened ``None`` to the literal string
+        ``"None"`` on some templates, dropped the turn on others).
+        Post-fix the schema layer rejects with a clear error pointing
+        at the content field, so the route surfaces 400 via the
+        ``RequestValidationError`` envelope handler."""
+        with pytest.raises(ValidationError) as excinfo:
+            Message(role=role, content=None)
+        # Field path is surfaced so the OpenAI-shaped envelope can
+        # populate ``error.param`` with ``content``.
+        assert "content" in str(excinfo.value)
+        # Error mentions the role so a single-message-array client
+        # knows which turn to fix.
+        assert role in str(excinfo.value)
+
+    def test_null_content_allowed_for_assistant(self):
+        """OpenAI spec allows assistant ``content=null`` when
+        ``tool_calls`` is present (the response IS the call). We also
+        preserve the pre-fix behaviour for plain assistant turns —
+        the #175 fuzz only exposed the user-role case, and tightening
+        the assistant path would break the response→follow-up
+        roundtrip where THIS server's AssistantMessage shape (which
+        emits ``content=null`` for reasoning-only turns) gets re-sent
+        as a Message."""
+        msg = Message(role="assistant", content=None)
+        assert msg.content is None
+        msg_tc = Message(
+            role="assistant",
+            content=None,
+            tool_calls=[
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "function": {"name": "noop"},
+                }
+            ],
+        )
+        assert msg_tc.content is None
+        assert msg_tc.tool_calls is not None
+
+    def test_null_content_allowed_for_tool(self):
+        """The route-layer F-111 validator already normalises tool
+        ``content=null`` to an empty string. Keep the schema-layer
+        gate loose so the existing normalization path keeps working."""
+        msg = Message(role="tool", content=None, tool_call_id="call_1")
+        assert msg.content is None
+
+    def test_empty_string_content_allowed(self):
+        """An empty string is a legitimate empty turn — OpenAI accepts
+        it and downstream chat templates handle it gracefully."""
+        msg = Message(role="user", content="")
+        assert msg.content == ""
+
+    def test_empty_list_content_allowed(self):
+        """An empty multimodal array is legitimate: the engine decides
+        whether to skip the turn or surface a validation error. The
+        schema layer must NOT reject ``[]`` — only the explicit null
+        shape that the fuzz exposed."""
+        msg = Message(role="user", content=[])
+        assert msg.content == []
+
+    def test_multimodal_content_allowed_with_image_only(self):
+        """A multimodal user turn with only an image_url part — no
+        text — must pass. R15 #175 fix gates on ``content is None``
+        not on list contents."""
+        msg = Message(
+            role="user",
+            content=[
+                ContentPart(
+                    type="image_url",
+                    image_url=ImageUrl(url="https://example.com/x.png"),
+                )
+            ],
+        )
+        assert isinstance(msg.content, list)
+        assert len(msg.content) == 1
+
 
 class TestToolCalling:
     """Tests for tool calling models."""

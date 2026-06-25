@@ -851,6 +851,58 @@ class Message(BaseModel):
     tool_call_id: str | None = None
 
     @model_validator(mode="after")
+    def _validate_content_not_null(self) -> "Message":
+        """Reject ``content: null`` on roles where the OpenAI spec
+        requires content (R15 #175 item 3 / fuzz a9c828).
+
+        OpenAI chat-completions spec: ``content`` is REQUIRED for
+        ``role:"user" | "system" | "developer"``. Only ``role:"assistant"``
+        may carry ``content=null`` — and only when ``tool_calls`` is
+        present (the model's response is the call, not text).
+        ``role:"tool"`` is policed by the route-level F-111 validator
+        which already accepts ``None`` and normalises to ``""``
+        downstream; we preserve that contract here.
+
+        Pre-fix the schema accepted any of {None, str, list[ContentPart],
+        list[dict]} for every role. A user message with ``content=null``
+        returned HTTP 200 with garbled output (the chat-template
+        renderer flattened ``None`` to the literal string ``"None"`` or
+        skipped the turn outright, depending on the model). Adversarial
+        fuzz a9c828 reproduced it on Qwen3-0.6B; same shape silently
+        passed on every other model.
+
+        Empty list ``[]`` and empty string ``""`` are both accepted —
+        multimodal user turns can legitimately send ``content=[]`` (e.g.
+        the only relevant part is sourced via a tool the model called
+        on the previous turn). The engine decides how to render an
+        empty-list turn; the schema layer only rejects the ``null``
+        shape that the fuzz exposed.
+        """
+        if self.content is not None:
+            return self
+        # ``content is None`` past this point.
+        #
+        # Allow assistant ``content=null`` regardless of ``tool_calls``:
+        # the OpenAI spec technically requires ``tool_calls`` to license
+        # the null, but many existing clients (and the response shape
+        # of THIS server when it emits AssistantMessage back into a
+        # follow-up request) send assistant turns with null content
+        # without tool_calls. Tightening that path is out of scope for
+        # the #175 fix — the fuzz only exposed the user-role case.
+        if self.role == "assistant":
+            return self
+        # ``role:"tool"`` content = None is normalised by the route's
+        # F-111 validator to an empty string. Preserve that path so we
+        # don't double-reject what an existing layer already cleans up.
+        if self.role == "tool":
+            return self
+        raise ValueError(
+            "content must be a string or a content-parts array, not null "
+            f"(role={self.role!r}); send '' for an empty turn or [] "
+            "for an empty multimodal turn"
+        )
+
+    @model_validator(mode="after")
     def _validate_media_url_types(self) -> "Message":
         """Reject non-string ``url`` inside multimodal-content payloads
         (F-066).
