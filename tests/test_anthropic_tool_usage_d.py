@@ -53,11 +53,15 @@ class _BaseEngine:
     is_mllm = False
     tokenizer = _Tokenizer()
 
-    def build_prompt(self, messages, tools=None):
+    def build_prompt(self, messages, tools=None, enable_thinking=None):  # noqa: ARG002
         # Concatenate role+content into a single string the tokenizer
         # can count. Tools are not rendered into the prompt body in this
         # double, only their NAMES contribute to the count — same shape
         # the production tokenizer would see after chat-template render.
+        # ``enable_thinking`` is accepted for signature parity with the
+        # real engine's ``build_prompt`` (rapid-mlx#280) but does not
+        # alter the rendered output in this test double — the anthropic
+        # route does not run the R12-T1F / R12-T2F auto-disable.
         parts = []
         for m in messages:
             role = m.get("role") if isinstance(m, dict) else getattr(m, "role", "")

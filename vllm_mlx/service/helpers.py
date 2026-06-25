@@ -3911,6 +3911,7 @@ def enforce_context_length_for_messages(
     *,
     tools: list | None = None,
     max_tokens: int | None = None,
+    enable_thinking: bool | None = None,
 ) -> int | None:
     """Run the context-length gate for a chat-style request and return
     the rendered prompt's token count (``None`` on permissive-skip paths).
@@ -3939,6 +3940,31 @@ def enforce_context_length_for_messages(
     body-size middleware still bounds the wire-level payload for
     those routes.
 
+    ``enable_thinking`` is forwarded to the engine's ``build_prompt``
+    so the rendered template matches what the engine will actually
+    generate against. Required for correct accounting on the
+    R12-T1F / R12-T2F / R12-M2 auto-disable paths (PR #891 / #877 /
+    #895): the chat / responses routes inject
+    ``chat_template_kwargs.enable_thinking=False`` BEFORE this gate
+    runs, but pre-fix the gate rendered with the template default
+    (typically ``True`` on Qwen3 / DeepSeek-R1) — inflating the
+    prompt-token estimate vs the prompt the engine actually emits.
+    Two visible symptoms before the fix:
+
+      * Requests that DO fit the model's context window were rejected
+        with ``context_length_exceeded`` because the inflated estimate
+        crossed the cap.
+      * The H-06 #267b strict-json-schema repair gate
+        (:func:`repair_messages_fit_context`) skipped retries that
+        WOULD have fit if rendered with the resolved
+        ``enable_thinking`` value.
+
+    Default ``None`` preserves the legacy "let the template choose"
+    behaviour for call sites that haven't been audited yet (e.g.
+    ``routes/anthropic.py``, which does not run the auto-disable
+    injection and so never had the divergence). Always thread the
+    resolved value from sites that compute it.
+
     Used by chat, anthropic, and responses routes so the same DoS gate
     applies regardless of which compatibility surface the client uses.
     """
@@ -3948,7 +3974,7 @@ def enforce_context_length_for_messages(
     if build_prompt is None:
         return None
     try:
-        prompt = build_prompt(messages, tools=tools)
+        prompt = build_prompt(messages, tools=tools, enable_thinking=enable_thinking)
     except HTTPException:
         raise
     except Exception as exc:
@@ -3987,6 +4013,7 @@ def repair_messages_fit_context(
     *,
     tools: list | None = None,
     max_tokens: int | None = None,
+    enable_thinking: bool | None = None,
 ) -> bool:
     """Re-check the context-length gate for the R12-4 strict-mode
     repair-retry prompt (H-06 #267b).
@@ -4017,6 +4044,17 @@ def repair_messages_fit_context(
     effectively always ``None``; we still thread it through for
     contract symmetry with the initial gate.
 
+    ``enable_thinking`` mirrors the same parameter on
+    :func:`enforce_context_length_for_messages` — forward the
+    resolved value so the repair-fit check renders the prompt the
+    way the engine actually will. Pre-fix the helper rendered with
+    ``enable_thinking=None`` (template default = ``True`` on
+    thinking-capable models) while the repair turn ran with the
+    resolved value (typically ``False`` under R12-T1F / R12-T2F /
+    R12-M2 auto-disable), so the gate could SKIP a repair retry
+    that would actually have fit. Default ``None`` preserves the
+    legacy behaviour for unaudited call sites.
+
     Used by ``routes/chat.py`` and ``routes/responses.py`` so the
     same gate logic is applied at both call sites and cannot drift.
     """
@@ -4026,7 +4064,9 @@ def repair_messages_fit_context(
     if build_prompt is None:
         return True
     try:
-        prompt = build_prompt(repair_messages, tools=tools)
+        prompt = build_prompt(
+            repair_messages, tools=tools, enable_thinking=enable_thinking
+        )
     except Exception:
         # If the repair prompt can't even be rendered, we can't make
         # a useful "fits" judgement — defer to the engine error path
