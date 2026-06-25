@@ -29,8 +29,20 @@ classifiers = [
 
 dependencies = [
     # Core — these are all you need for `rapid-mlx serve <text-model>`
-    "mlx>=0.29.0",
-    "mlx-lm>=0.31.1",  # 0.31.1+ required for presence_penalty/frequency_penalty kwargs on make_logits_processors (#512); 0.31.0 only had repetition_penalty
+    # Floor bump to 0.31.2 (mlx) + 0.31.3 (mlx-lm) for #720 take-2 — see
+    # tests/test_mllm_cross_thread_stream_contract.py for the empirical
+    # status of the cross-thread `Stream(gpu, N)` crash on this floor.
+    # The 0.7.41 ``mx.default_stream`` shim in engine_core.py and
+    # mllm_batch_generator.py is DELIBERATELY retained: 0.31.2 added
+    # ``mx.new_thread_local_stream`` / ``ThreadLocalStream`` / ``clear_streams``
+    # and mlx-lm 0.31.3 switched its module-level ``generation_stream`` to
+    # ``mx.new_thread_local_stream`` (mlx_lm/generate.py:226 in 0.31.3), but
+    # repro on 0.31.2 still crashes when arrays produced on thread T1 (with
+    # default_stream / new_stream / new_thread_local_stream) are materialised
+    # on T2 via np.array(arr). The shim adopts the worker's process-wide
+    # default — the only path that round-trips cleanly across threads.
+    "mlx>=0.31.2",
+    "mlx-lm>=0.31.3",  # 0.31.1+ required for presence_penalty/frequency_penalty kwargs on make_logits_processors (#512); 0.31.3 added thread-local generation_stream but cross-thread eval is still broken (see shim sites).
     # mlx-vlm is opt-in via [vision] extras (saves ~322 MB for text-only users)
     "transformers>=5.0.0",  # mlx-lm 0.30.5+ requires transformers 5.0 (rc3 bug fixed in stable)
     "tokenizers>=0.19.0",
