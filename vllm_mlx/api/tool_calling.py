@@ -161,6 +161,98 @@ def _serialize_tool_arguments(
     return json.dumps(arguments, ensure_ascii=False)
 
 
+def _find_balanced_json_object(text: str, start: int = 0) -> tuple[int, int] | None:
+    """Find the first balanced ``{...}`` block starting at or after ``start``.
+
+    Returns ``(begin, end_exclusive)`` of the JSON span, or ``None`` if
+    no balanced object is found. Brace-counting is string-literal aware
+    so a ``"}"`` inside a JSON string doesn't terminate the object
+    early — same contract as ``vllm_mlx.tool_parsers.llama_tool_parser
+    ._find_top_level_json_object``. Inlined here (not imported) to avoid
+    a circular import: ``tool_parsers/__init__.py`` eagerly loads
+    ``qwen3coder_tool_parser`` which in turn imports back from this
+    module.
+    """
+    n = len(text)
+    i = start
+    while i < n and text[i] != "{":
+        i += 1
+    if i >= n:
+        return None
+
+    depth = 0
+    in_str = False
+    escape = False
+    begin = i
+    while i < n:
+        ch = text[i]
+        if in_str:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_str = False
+        else:
+            if ch == '"':
+                in_str = True
+            elif ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return begin, i + 1
+        i += 1
+    return None
+
+
+def _iter_python_tag_tool_calls(text: str):
+    """Yield ``<|python_tag|>{...}`` tool-call spans with balanced JSON.
+
+    Yields ``(span_start, span_end_exclusive, payload_dict)`` for each
+    ``<|python_tag|>`` prefix followed by a balanced top-level JSON
+    object that decodes successfully. Earlier code used a non-greedy
+    regex ``\\{.*?\\}`` here — that terminated at the first nested
+    ``}`` and corrupted both the parsed arguments and the residual
+    ``cleaned_text``. Common nested schemas (``filters``, ``options``,
+    ``config`` sub-objects) hit this on every call. R15 #312.
+    """
+    marker = "<|python_tag|>"
+    search_from = 0
+    while True:
+        marker_idx = text.find(marker, search_from)
+        if marker_idx == -1:
+            return
+        json_start = marker_idx + len(marker)
+        # Allow whitespace between the marker and the opening brace.
+        j = json_start
+        while j < len(text) and text[j].isspace():
+            j += 1
+        if j >= len(text) or text[j] != "{":
+            # Marker without a following object — skip past and keep
+            # scanning so a later valid marker can still match.
+            search_from = json_start
+            continue
+        span = _find_balanced_json_object(text, j)
+        if span is None:
+            # Unbalanced — bail out for this marker, advance past it so
+            # we don't loop forever, and let the caller leave the bytes
+            # as residual content (graceful malformed-JSON handling).
+            search_from = json_start
+            continue
+        begin, end = span
+        try:
+            payload = json.loads(text[begin:end])
+        except (json.JSONDecodeError, ValueError):
+            search_from = end
+            continue
+        if not isinstance(payload, dict):
+            search_from = end
+            continue
+        yield marker_idx, end, payload
+        search_from = end
+
+
 def _iter_calling_tool_calls(text: str):
     """Yield Qwen-style `Calling tool: name({...})` spans with balanced JSON args."""
     marker = "Calling tool:"
@@ -484,9 +576,6 @@ def parse_tool_calls(
     # Format 2: <|python_tag|>{"name": "func", "parameters": {...}}
     llama_pattern = r"<function=(\w+)>\s*(\{.*?\})\s*</function>"
     llama_matches = re.findall(llama_pattern, cleaned_text, re.DOTALL)
-    if not llama_matches:
-        llama_pattern = r'<\|python_tag\|>\s*\{\s*"name"\s*:\s*"([^"]+)"\s*,\s*"parameters"\s*:\s*(\{.*?\})\s*\}'
-        llama_matches = re.findall(llama_pattern, cleaned_text, re.DOTALL)
 
     for name, args_str in llama_matches:
         try:
@@ -513,12 +602,48 @@ def parse_tool_calls(
             cleaned_text,
             flags=re.DOTALL,
         )
-        cleaned_text = re.sub(
-            r'<\|python_tag\|>\s*\{\s*"name"\s*:\s*"[^"]+"\s*,\s*"parameters"\s*:\s*\{.*?\}\s*\}',
-            "",
-            cleaned_text,
-            flags=re.DOTALL,
+        cleaned_text = cleaned_text.strip()
+
+    # Format 2: <|python_tag|>{"name": "func", "parameters": {...}}
+    # Use a balanced-brace scanner instead of a non-greedy regex so
+    # nested ``parameters`` dicts (``filters``, ``options``, ``config``
+    # sub-objects) don't terminate the scan at the FIRST nested ``}``.
+    # The regex variant silently leaked ``}`` as residual content and
+    # dropped the tool call — see R15 #312.
+    python_tag_matches = list(_iter_python_tag_tool_calls(cleaned_text))
+    valid_python_tag_spans: list[tuple[int, int]] = []
+    for start, end, payload in python_tag_matches:
+        name = payload.get("name")
+        if not isinstance(name, str) or not name.strip():
+            continue
+        # Llama 3.1 chat template emits ``parameters``; some
+        # quantizations drift to OpenAI's ``arguments`` alias. Accept
+        # either so tool routing doesn't silently fail.
+        if "parameters" in payload:
+            arguments = payload["parameters"]
+        elif "arguments" in payload:
+            arguments = payload["arguments"]
+        else:
+            continue
+        tool_calls.append(
+            ToolCall(
+                id=f"call_{uuid.uuid4().hex[:8]}",
+                type="function",
+                function=FunctionCall(
+                    name=name.strip(),
+                    arguments=_serialize_tool_arguments(
+                        arguments, name.strip(), request
+                    ),
+                ),
+            )
         )
+        valid_python_tag_spans.append((start, end))
+
+    # Splice out matched ``<|python_tag|>{...}`` spans (in reverse so
+    # earlier offsets stay valid).
+    if valid_python_tag_spans:
+        for start, end in reversed(valid_python_tag_spans):
+            cleaned_text = cleaned_text[:start] + cleaned_text[end:]
         cleaned_text = cleaned_text.strip()
 
     # Note: We keep  tags for reasoning models

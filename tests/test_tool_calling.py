@@ -522,3 +522,115 @@ class TestValidateJsonSchema:
 
         assert is_valid is False
         assert error is not None
+
+
+class TestLlamaPythonTagNestedArguments:
+    """R15 #312 — Llama ``<|python_tag|>`` parser must balanced-brace scan.
+
+    The pre-fix parser used a non-greedy ``\\{.*?\\}`` regex which
+    terminated at the FIRST nested ``}`` and dropped the call entirely,
+    leaking ``}`` (or worse) into ``cleaned_text``. Every Llama 3.x
+    model with tools enabled hit this on common nested schemas
+    (``filters``, ``options``, ``config`` sub-objects).
+    """
+
+    def test_dogfood_repro_two_level_nesting(self):
+        """The exact repro from the dogfood triage."""
+        text = (
+            '<|python_tag|>{"name":"search","parameters":'
+            '{"query":"x","filters":{"lang":"en"}}}'
+        )
+        cleaned, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None, (
+            "regex parser silently failed on nested args — R15 #312 regression"
+        )
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "search"
+        assert json.loads(tool_calls[0].function.arguments) == {
+            "query": "x",
+            "filters": {"lang": "en"},
+        }
+        assert cleaned == "", (
+            f"residual leak after fixing nested-brace scan: {cleaned!r}"
+        )
+
+    def test_three_level_nesting(self):
+        """Deeper nesting (3 levels) must still close at the right brace."""
+        text = '<|python_tag|>{"name":"f","parameters":{"a":{"b":{"c":1}}}}'
+        cleaned, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert json.loads(tool_calls[0].function.arguments) == {"a": {"b": {"c": 1}}}
+        assert cleaned == ""
+
+    def test_braces_inside_string_literal(self):
+        """``{`` / ``}`` inside a JSON string must not affect depth."""
+        text = '<|python_tag|>{"name":"f","parameters":{"q":"what\'s {this} for?"}}'
+        cleaned, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert json.loads(tool_calls[0].function.arguments) == {
+            "q": "what's {this} for?"
+        }
+        assert cleaned == ""
+
+    def test_two_consecutive_python_tag_calls(self):
+        """Back-to-back ``<|python_tag|>{...}`` blocks must both emit."""
+        text = (
+            '<|python_tag|>{"name":"a","parameters":{"x":1}}'
+            '<|python_tag|>{"name":"b","parameters":{"y":{"z":2}}}'
+        )
+        cleaned, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert len(tool_calls) == 2
+        assert [tc.function.name for tc in tool_calls] == ["a", "b"]
+        assert json.loads(tool_calls[1].function.arguments) == {"y": {"z": 2}}
+        assert cleaned == ""
+
+    def test_flat_arguments_regression(self):
+        """Simple flat ``parameters`` dict must still parse (regression)."""
+        text = '<|python_tag|>{"name":"f","parameters":{"q":"x"}}'
+        cleaned, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert tool_calls[0].function.name == "f"
+        assert json.loads(tool_calls[0].function.arguments) == {"q": "x"}
+        assert cleaned == ""
+
+    def test_malformed_json_is_graceful(self):
+        """Unbalanced JSON after ``<|python_tag|>`` must not crash.
+
+        Expect ``tool_calls is None`` and the original text returned as
+        residual content so the client at least sees what the model
+        produced rather than a 500 / a half-stripped span.
+        """
+        text = "<|python_tag|>{not json"
+        cleaned, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is None
+        # Either the raw text or a stripped equivalent — both acceptable
+        # as long as nothing was silently dropped.
+        assert text.split("<|python_tag|>")[1].strip("{ ") in cleaned or (
+            cleaned == text
+        )
+
+    def test_prefix_prose_is_preserved(self):
+        """A prose preface before ``<|python_tag|>`` must stay in cleaned."""
+        text = (
+            'Let me search.<|python_tag|>{"name":"f","parameters":'
+            '{"q":"x","f":{"k":"v"}}}'
+        )
+        cleaned, tool_calls = parse_tool_calls(text)
+
+        assert tool_calls is not None
+        assert len(tool_calls) == 1
+        assert json.loads(tool_calls[0].function.arguments) == {
+            "q": "x",
+            "f": {"k": "v"},
+        }
+        assert cleaned == "Let me search."
