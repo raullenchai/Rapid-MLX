@@ -323,9 +323,7 @@ def test_ring_backend_three_tuple_fires_e2e(monkeypatch, tmp_path, caplog):
     assert "world_size=2" in joined
 
 
-def test_world_size_uses_max_across_signals_not_first_match(
-    monkeypatch, tmp_path
-):
+def test_world_size_uses_max_across_signals_not_first_match(monkeypatch, tmp_path):
     """Codex round 7 BLOCKING: a stale env var must not mask a larger signal.
 
     Upstream ``mlx/distributed_run.py`` preserves the parent env when
@@ -611,9 +609,7 @@ def test_render_prometheus_lines_exposes_both_counters():
     assert "rapid_mlx_nvfp4_moe_warnings_total" in body
     # Counter type discoverable via TYPE line — required by Prometheus
     # exposition format spec.
-    assert (
-        "# TYPE rapid_mlx_mxfp4_moe_distributed_warnings_total counter" in body
-    )
+    assert "# TYPE rapid_mlx_mxfp4_moe_distributed_warnings_total counter" in body
     assert "# TYPE rapid_mlx_nvfp4_moe_warnings_total counter" in body
     # Values were both bumped to 1.
     assert "rapid_mlx_mxfp4_moe_distributed_warnings_total 1" in body
