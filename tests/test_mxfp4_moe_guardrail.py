@@ -437,9 +437,34 @@ def test_check_from_profile_nvfp4_moe(monkeypatch, caplog):
 # ---------------------------------------------------------------------------
 
 
+class _StubCfg:
+    """Tiny duck-typed stand-in for ServerConfig used by /metrics tests.
+
+    Built locally to keep this test file independent of the global
+    ServerConfig singleton — codex round 3 flagged that pulling
+    ``vllm_mlx.config.get_config()`` widens the import surface beyond
+    the guardrail module itself (the route module pulls in BaseEngine,
+    which is harmless on a dev box but unwelcome for a focused unit
+    test). The renderer only ever reads ``cfg.engine`` and
+    ``cfg.model_name`` from the cfg parameter, so a struct with those
+    two attributes is enough to drive it.
+    """
+
+    engine = None
+    model_name = "stub-model"
+
+
 def test_metrics_endpoint_exposes_guardrail_counters():
-    """The Prometheus exposition format must carry both new counters."""
-    from vllm_mlx.config import get_config
+    """The Prometheus exposition format must carry both new counters.
+
+    Drives the renderer with a stub cfg so the test is independent of
+    the global ServerConfig singleton (codex round 3). The
+    ``cfg.engine is None`` branch of ``_render_prometheus`` still emits
+    the build_info + response_format + guardrail counters because each
+    of those blocks lives BEFORE the engine-None early return in
+    ``routes/metrics.py`` — which is exactly the contract we're
+    asserting.
+    """
     from vllm_mlx.routes import metrics as metrics_module
 
     # Trip both counters once each so the rendered body shows non-zero
@@ -455,8 +480,7 @@ def test_metrics_endpoint_exposes_guardrail_counters():
         alias="b",
     )
 
-    cfg = get_config()
-    body = metrics_module._render_prometheus(cfg)
+    body = metrics_module._render_prometheus(_StubCfg())
 
     assert "rapid_mlx_mxfp4_moe_distributed_warnings_total" in body
     assert "rapid_mlx_nvfp4_moe_warnings_total" in body
@@ -469,3 +493,23 @@ def test_metrics_endpoint_exposes_guardrail_counters():
     # Values were both bumped to 1.
     assert "rapid_mlx_mxfp4_moe_distributed_warnings_total 1" in body
     assert "rapid_mlx_nvfp4_moe_warnings_total 1" in body
+
+
+def test_metrics_guardrail_counters_visible_before_engine_ready():
+    """Counters MUST surface before the engine-None early return.
+
+    Operators alerting on the cliff need the metric series visible
+    from process startup, BEFORE the first model load completes — the
+    guardrail fires AT load time, so by the time the engine is
+    ``ready=True`` the warning event has already passed. The renderer
+    early-returns when ``cfg.engine is None``, so the guardrail
+    counters must be emitted above that return.
+    """
+    from vllm_mlx.routes import metrics as metrics_module
+
+    # engine=None branch — the renderer's "no engine yet" path.
+    body = metrics_module._render_prometheus(_StubCfg())
+    # Both counters are visible (HELP + TYPE lines emitted), even
+    # though the counter VALUES are 0 in this freshly-reset state.
+    assert "# TYPE rapid_mlx_mxfp4_moe_distributed_warnings_total counter" in body
+    assert "# TYPE rapid_mlx_nvfp4_moe_warnings_total counter" in body
