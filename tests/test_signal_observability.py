@@ -54,7 +54,25 @@ def _read_ready_with_timeout(proc: subprocess.Popen, *, timeout: float = 10.0) -
             f"subprocess did not emit READY within {timeout:.1f}s;"
             f" stdout-tail={out_tail!r}, stderr-tail={err_tail!r}"
         )
-    return proc.stdout.readline()
+    line = proc.stdout.readline()
+    if line == "":
+        # EOF on stdout — the subprocess died before printing READY.
+        # ``select`` returns ready on EOF too, so we hit this branch
+        # without a timeout. Surface stderr so the operator sees the
+        # actual crash reason instead of a cryptic ``assert '' ==
+        # 'READY'`` with no diagnostic context. This is the only
+        # signal-test mode where we get an empty readline; under
+        # normal operation the child writes ``READY\n`` exactly once
+        # before any signal can land.
+        try:
+            err_tail = proc.stderr.read() or ""
+        except (OSError, ValueError):
+            err_tail = "<stderr read failed>"
+        raise AssertionError(
+            "subprocess died before emitting READY;"
+            f" returncode={proc.returncode!r}, stderr={err_tail!r}"
+        )
+    return line
 
 
 def test_install_is_idempotent_and_saves_prior_handlers():

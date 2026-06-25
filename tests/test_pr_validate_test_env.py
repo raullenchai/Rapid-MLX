@@ -156,9 +156,17 @@ class TestCheckTestEnv:
         venv_dir = tmp_path / "broken"
         import venv as _venv
 
-        # `with_pip=True` so we can install pytest into it; turn off
-        # symlinks to avoid permission surprises on weird filesystems.
-        _venv.create(venv_dir, with_pip=True, symlinks=False)
+        # ``with_pip=True`` so we can install pytest into it. Use
+        # ``symlinks=True`` (the POSIX default) — on macOS with a
+        # uv-managed CPython the python binary is dynamically linked
+        # against ``@rpath/libpython3.12.dylib``; with ``symlinks=False``
+        # the copied bin/python3.12 can't resolve the dylib and
+        # ensurepip's ``_call_new_python`` aborts with SIGABRT during
+        # venv bootstrap. The original comment about "permission
+        # surprises on weird filesystems" doesn't apply on tmp_path
+        # (always a real fs the test runner created itself), so the
+        # default-symlinks shape is both safer and correct here.
+        _venv.create(venv_dir, with_pip=True, symlinks=True)
         python = venv_dir / "bin" / "python"
         assert python.exists(), "venv builder didn't produce a python"
 
