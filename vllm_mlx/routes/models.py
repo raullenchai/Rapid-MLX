@@ -363,6 +363,45 @@ def _resolve_audio_entry(model_id: str):
         return None
 
 
+def _audio_routes_mounted() -> bool:
+    """Task #292: True iff the ``/v1/audio/*`` router is attached.
+
+    On text-only servers (Bo R13/R14 fuzz wave) the audio router is
+    NOT registered, so ``/v1/audio/transcriptions`` etc. return a stock
+    FastAPI 404. ``/v1/models`` should reflect that — clients shouldn't
+    see ``audio_lanes={"stt":"degraded"}`` on a server that wouldn't
+    answer ``/v1/audio/transcriptions`` at all.
+
+    The check inspects the live ASGI app's routes (the same place
+    ``register_audio_routes_if_enabled`` writes to) so the answer
+    tracks the post-load state without re-running the gate logic.
+    Falls through to False on any inspection failure (defensive — the
+    listing must stay 200 even if the app/router shape changes).
+    """
+    try:
+        from ..config import get_config
+        from ..server import app as _server_app
+    except Exception:  # noqa: BLE001
+        return False
+    # If the config dataclass says the lane is operator-enabled, trust
+    # that (the post-load hook attaches the router from the same
+    # signal). Doubles as a cheap early-exit on the common audio-mode
+    # path.
+    try:
+        if getattr(get_config(), "enable_audio_lane", False):
+            return True
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        for route in getattr(_server_app, "routes", ()):
+            path = getattr(route, "path", "")
+            if isinstance(path, str) and path.startswith("/v1/audio/"):
+                return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
 def _audio_lane_snapshot() -> dict[str, str] | None:
     """Return the current per-lane audio status, or ``None`` when no
     deep probe has run.
@@ -376,12 +415,22 @@ def _audio_lane_snapshot() -> dict[str, str] | None:
     ``audio_lanes: {"stt": "degraded", ...}`` so dashboards / the
     desktop can warn before sending real traffic.
 
+    Task #292 (Bo R13/R14): if the audio router is NOT mounted on the
+    live ASGI app (text-only server boot, no ``--enable-audio``), this
+    returns ``None`` so ``/v1/models`` doesn't advertise lane health
+    for routes that would answer 404. The pre-fix shape was
+    misleading: a text-only Qwen3-7B-4bit server reported
+    ``audio_lanes={"stt":"missing","tts":"missing"}`` even though
+    ``/v1/audio/transcriptions`` was about to 500.
+
     The function is intentionally tolerant: any failure resolving
     the probe module (e.g. ``[audio]`` extra not installed, so the
     probe module isn't even reachable) returns ``None`` rather than
     raising. ``/v1/models`` MUST stay 200 even when the audio probe
     is broken.
     """
+    if not _audio_routes_mounted():
+        return None
     try:
         from ..audio import probe as _audio_probe
     except Exception:  # noqa: BLE001

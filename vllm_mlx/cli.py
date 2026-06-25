@@ -731,6 +731,18 @@ def _serve_audio_mode(args, entry) -> None:
     # accept unauthenticated /v1/audio/* requests. Codex r1 HIGH #1.
     server._sync_config()
 
+    # Task #292: register ``/v1/audio/*`` routes. ``server._model_alias``
+    # / ``server._model_name`` were just stamped with the registry-known
+    # audio alias above, so the registry-driven branch of
+    # :func:`register_audio_routes_if_enabled` is what fires here — the
+    # ``--enable-audio`` flag is for the text-mode-with-audio escape
+    # hatch, not the audio-mode boot path. Skipping the call would leave
+    # text-only behaviour on an audio server, with /v1/audio/* returning
+    # 404 (the exact symmetric mistake the unconditional pre-fix made on
+    # text-only servers). Idempotent — safe even if a future refactor
+    # adds a second call site.
+    server.register_audio_routes_if_enabled()
+
     # Print the resolution banner so the operator sees what loaded.
     family_tag = f"[audio:{entry.type}]"
     shown_alias = getattr(args, "_original_alias", args.model)
@@ -1681,6 +1693,16 @@ def serve_command(args):
 
     # Pass alias info to server (for /v1/models)
     server._model_alias = getattr(args, "_original_alias", None)
+
+    # Task #292: forward the ``--enable-audio`` opt-in to the server
+    # module BEFORE ``load_model`` runs — the post-load hook in
+    # ``load_model`` calls ``register_audio_routes_if_enabled``, which
+    # reads ``server._enable_audio_lane`` to decide whether to mount
+    # the audio router on a text-only server. Setting it after
+    # ``load_model`` would leave the router unmounted on the very boot
+    # that asked for it.
+    if getattr(args, "enable_audio", False):
+        server._enable_audio_lane = True
 
     # Configure server security settings. ``RAPID_MLX_API_KEY`` env var
     # is the secret-friendly form ``rapid-mlx share`` uses to avoid
@@ -5511,6 +5533,23 @@ Examples:
         "Breaks large prompts into chunks to prevent concurrent requests from starving. "
         "Recommended for Claude Code and agentic workloads with large tool schemas: "
         "--chunked-prefill-tokens 2048",
+    )
+    # Task #292: opt-in for ``/v1/audio/*`` routes on a text-only server.
+    # The audio-mode boot path (``rapid-mlx serve kokoro`` etc.) auto-
+    # enables the routes via the registry hit — this flag is the
+    # escape hatch for operators who want the audio router mounted
+    # alongside a text engine (e.g. side-car deployments that proxy the
+    # audio paths to a separate process). Mirrors the ``--enable-mtp``
+    # / ``--enable-dflash`` pattern so the surface stays consistent.
+    serve_parser.add_argument(
+        "--enable-audio",
+        action="store_true",
+        default=False,
+        help="Mount the ``/v1/audio/*`` routes even when the loaded model "
+        "is text-only. Useful for side-car deployments that proxy audio "
+        "requests to a separate process. Audio-capable models "
+        "(kokoro / whisper / parakeet / chatterbox / vibevoice / voxcpm) "
+        "auto-mount the routes — this flag is only needed on text-mode boots.",
     )
     # MTP (Multi-Token Prediction)
     serve_parser.add_argument(

@@ -166,6 +166,11 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # decode (registered pair); these just enable the implementation.
         "--enable-mtp",
         "--enable-dflash",
+        # Task #292: ``--enable-audio`` is a route-mounting UX knob, not a
+        # binary auto-detection. The audio-mode boot path auto-mounts
+        # ``/v1/audio/*`` from the registry hit; this flag is the
+        # text-mode-with-audio escape hatch (side-car deployments).
+        "--enable-audio",
         "--enable-suffix-decoding",
         "--enable-kv-cache-quantization",
         "--enable-kv-cache-turboquant",

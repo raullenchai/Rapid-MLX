@@ -167,6 +167,22 @@ class ServerConfig:
     pin_system_prompt: bool = False
     pinned_system_prompt_hash: str | None = None
 
+    # --- Audio lane (task #292) ---
+    # Operator opt-in for ``/v1/audio/*`` routes on a TEXT-only server.
+    # Pre-fix the audio router was unconditionally attached even when
+    # the loaded model couldn't service the routes — Bo R13/R14 fuzz
+    # wave caught the 500 / misleading-404 leak. The audio-mode boot
+    # path (:func:`vllm_mlx.cli._serve_audio_mode`) sets this to True
+    # automatically; the text-mode boot path leaves it False unless the
+    # operator explicitly passes ``--enable-audio`` (mirrors the
+    # ``--enable-mtp`` / ``--enable-dflash`` precedent).
+    #
+    # The routes/audio module also flips True implicitly when the
+    # loaded model alias / HF id resolves through the audio registry,
+    # so audio-mode servers don't need the flag — the gate is
+    # `enable_audio_lane OR is_audio_name(model_name/alias)`.
+    enable_audio_lane: bool = False
+
     # --- Multi-model ---
     model_registry: Any = None
 

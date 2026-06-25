@@ -16,6 +16,111 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
+
+# ---------------------------------------------------------------------------
+# Task #292: conditional audio-route registration.
+#
+# Pre-fix the router was unconditionally ``include_router``'d on every
+# ``rapid-mlx serve <text-only-model>`` install (Bo R13/R14 fuzz wave).
+# Hitting ``/v1/audio/transcriptions`` on a text-only server then either
+# 500'd (no audio engine loaded → engine.load() crashes inside the
+# handler) or returned a misleading ``model_not_found`` envelope — the
+# server appeared to advertise capabilities it didn't have.
+#
+# The fix splits route registration into a deferred ``register_audio_routes``
+# helper. ``vllm_mlx.server`` calls it only when the loaded model is
+# audio-capable (resolved through :mod:`vllm_mlx.audio.registry`) OR the
+# operator passed ``--enable-audio``. On text-only servers the router is
+# never attached, so FastAPI's stock 404 fires for the audio paths — the
+# customer-visible outcome the dogfood report asked for.
+#
+# Two flags drive the gate:
+#
+# * ``ServerConfig.enable_audio_lane`` — operator opt-in via the
+#   ``--enable-audio`` CLI flag. Mirrors the ``--enable-mtp`` /
+#   ``--enable-dflash`` pattern in ``vllm_mlx.cli``.
+# * The loaded model alias / HF id matches an entry in
+#   :mod:`vllm_mlx.audio.registry` — every audio-mode boot path (Bo
+#   R10-C1 ``_serve_audio_mode``) already resolves through the registry,
+#   so the same predicate fires here without a separate config knob.
+#
+# ``AudioBodyLimitMiddleware`` (25 MB multipart cap) stays installed
+# unconditionally on the app — it early-returns for paths outside
+# ``_GUARDED_PATHS`` so the per-request cost on text routes is a single
+# tuple membership test. Keeping it install-time avoids the Starlette
+# warning that fires on ``add_middleware`` after the middleware stack
+# has been built.
+# ---------------------------------------------------------------------------
+
+
+def audio_routes_should_register(
+    model_name: str | None,
+    model_alias: str | None,
+    enable_audio_lane: bool,
+) -> bool:
+    """Return True iff the audio router should be attached to the app.
+
+    Truthy when any of:
+
+    * ``enable_audio_lane`` is set (operator opt-in via ``--enable-audio``).
+    * The loaded ``model_name`` resolves to a registered audio alias
+      (per :func:`vllm_mlx.audio.registry.is_audio_name`).
+    * The loaded ``model_alias`` resolves to a registered audio alias —
+      covers ``rapid-mlx serve kokoro --served-model-name foo`` where
+      ``model_name`` is the served alias and ``model_alias`` is the
+      short-form audio alias.
+
+    All other cases → False. Used by ``vllm_mlx.server.register_audio_routes``
+    to decide whether to call ``app.include_router`` at app boot time.
+
+    The registry lookup is intentionally tolerant: any failure
+    (``[audio]`` extra not installed, malformed JSON) falls through to
+    False so a torn registry can't accidentally re-enable the routes on
+    a text-only server. A torn registry on an actual audio-server boot
+    is already caught earlier by the registry's own loaders.
+    """
+    if enable_audio_lane:
+        return True
+    try:
+        from ..audio.registry import is_audio_name
+    except Exception:  # noqa: BLE001
+        return False
+    try:
+        if model_name and is_audio_name(model_name):
+            return True
+        if model_alias and is_audio_name(model_alias):
+            return True
+    except Exception:  # noqa: BLE001
+        return False
+    return False
+
+
+def register_audio_routes(app) -> bool:
+    """Idempotently attach the audio router to ``app``.
+
+    Returns True if the router was attached on this call, False if it
+    was already attached. The idempotency check inspects ``app.routes``
+    for any ``/v1/audio/*`` path so a second call (e.g. from a test
+    that builds the FastAPI app twice) is a no-op rather than a
+    405-inducing duplicate-route registration.
+
+    The 25 MB multipart cap (:func:`install_audio_body_limit_middleware`)
+    is installed unconditionally at ``vllm_mlx.server`` import time —
+    its inner dispatch early-returns for paths outside
+    ``AudioBodyLimitMiddleware._GUARDED_PATHS`` so a text-only server
+    pays one tuple-membership check per request. We don't toggle it
+    here because ``add_middleware`` after the FastAPI middleware stack
+    has been built raises a Starlette warning, and on the text path
+    the stack is built before ``load_model`` returns.
+    """
+    for route in getattr(app, "routes", ()):
+        path = getattr(route, "path", "")
+        if isinstance(path, str) and path.startswith("/v1/audio/"):
+            return False
+    app.include_router(router)
+    return True
+
+
 # Security: cap audio upload size to prevent memory-/disk-exhaustion DoS.
 # 25 MB matches OpenAI's Whisper API limit and is far above any reasonable
 # transcription payload (~25 min of 16 kHz mono WAV). Multipart overhead
