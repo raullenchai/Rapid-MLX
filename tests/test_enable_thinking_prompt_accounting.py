@@ -433,9 +433,7 @@ class TestChatRoutePromptAccountingThreading:
         # And the engine's chat lane saw the same resolved value.
         assert engine.chat_calls[0]["kwargs"].get("enable_thinking") is False
 
-    def test_no_tools_request_does_not_force_thinking_kwarg(
-        self, _rate_limiter_state
-    ):
+    def test_no_tools_request_does_not_force_thinking_kwarg(self, _rate_limiter_state):
         """No-regression for the no-tools path: when the auto-disable
         does NOT fire, the gate forwards ``enable_thinking=None`` (the
         ``_resolve_enable_thinking`` result for a vanilla request).
