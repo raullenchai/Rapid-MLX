@@ -114,9 +114,7 @@ def _coerce_position_ids(
         raise ValueError("position_ids must not be empty")
     for p in raw:
         if p < 0:
-            raise ValueError(
-                f"position_ids must be non-negative (got {p})"
-            )
+            raise ValueError(f"position_ids must be non-negative (got {p})")
 
     # Dedup: keep the LAST source index for each unique position. ``dict``
     # preserves insertion order on Python 3.7+, so iterating ``last.items()``
@@ -130,9 +128,7 @@ def _coerce_position_ids(
     return unique_positions, source_indices, max(unique_positions)
 
 
-def _validate_seq_dim(
-    keys: mx.array, values: mx.array, raw_pos_len: int
-) -> None:
+def _validate_seq_dim(keys: mx.array, values: mx.array, raw_pos_len: int) -> None:
     """Ensure ``position_ids`` length matches the seq dim of keys/values.
 
     ``raw_pos_len`` is the length of the original (pre-dedup)
@@ -157,7 +153,9 @@ def _validate_seq_dim(
         )
 
 
-def _grow_kv_cache(cache: KVCache, keys: mx.array, values: mx.array, required: int) -> None:
+def _grow_kv_cache(
+    cache: KVCache, keys: mx.array, values: mx.array, required: int
+) -> None:
     """Grow a plain ``KVCache`` so its buffer covers at least ``required`` slots.
 
     Mirrors the upstream allocation logic in
@@ -223,8 +221,12 @@ def _grow_quant_cache(
         def init(dim: int):
             return (
                 mx.zeros((B, n_kv_heads, capacity, dim // el_per_int), dtype=mx.uint32),
-                mx.zeros((B, n_kv_heads, capacity, dim // group_size), dtype=keys.dtype),
-                mx.zeros((B, n_kv_heads, capacity, dim // group_size), dtype=keys.dtype),
+                mx.zeros(
+                    (B, n_kv_heads, capacity, dim // group_size), dtype=keys.dtype
+                ),
+                mx.zeros(
+                    (B, n_kv_heads, capacity, dim // group_size), dtype=keys.dtype
+                ),
             )
 
         cache.keys = init(k_head_dim)
@@ -239,8 +241,10 @@ def _grow_quant_cache(
     # ``QuantizedKVCache.update_and_fetch``.
     prev = cache.offset
     if prev % step != 0 and prev < current:
+
         def _trim(x):
             return x[..., :prev, :]
+
         cache.keys = tuple(_trim(x) for x in cache.keys)
         cache.values = tuple(_trim(x) for x in cache.values)
 

@@ -40,7 +40,6 @@ from vllm_mlx.positioned_kv_cache import (  # noqa: E402
     positioned_update_and_fetch,
 )
 
-
 # ---------------------------------------------------------------------------
 # Test fixtures
 # ---------------------------------------------------------------------------
@@ -96,9 +95,7 @@ def test_unquantized_monotonic_position_ids_match_default_append():
     positioned.update_and_fetch(k0, v0)
     k1, v1 = _make_keys_values(3, seed=4)
     out_u_k, out_u_v = upstream.update_and_fetch(k1, v1)
-    out_p_k, out_p_v = positioned.update_and_fetch(
-        k1, v1, position_ids=[5, 6, 7]
-    )
+    out_p_k, out_p_v = positioned.update_and_fetch(k1, v1, position_ids=[5, 6, 7])
     assert upstream.offset == positioned.offset == 8
     assert mx.array_equal(out_u_k, out_p_k).item()
     assert mx.array_equal(out_u_v, out_p_v).item()
@@ -249,9 +246,7 @@ def test_quantized_monotonic_position_ids_match_default_append(bits):
     positioned.update_and_fetch(k0, v0)
     k1, v1 = _make_keys_values(3, head_dim=64, seed=33)
     out_u_k, out_u_v = upstream.update_and_fetch(k1, v1)
-    out_p_k, out_p_v = positioned.update_and_fetch(
-        k1, v1, position_ids=[5, 6, 7]
-    )
+    out_p_k, out_p_v = positioned.update_and_fetch(k1, v1, position_ids=[5, 6, 7])
     assert upstream.offset == positioned.offset == 8
     for i in range(3):
         assert mx.array_equal(out_u_k[i], out_p_k[i]).item()
@@ -269,18 +264,14 @@ def test_quantized_tree_duplicate_positions_last_writer_wins():
     cache.update_and_fetch(prefill_k, prefill_v)
     assert cache.offset == 5
 
-    k_tree, v_tree = _make_marked_keys_values(
-        [1.0, 2.0, 3.0], head_dim=64
-    )
+    k_tree, v_tree = _make_marked_keys_values([1.0, 2.0, 3.0], head_dim=64)
     cache.update_and_fetch(k_tree, v_tree, position_ids=[6, 6, 7])
     assert cache.offset == 8
 
     # Dequantize and inspect the slots. Each row was filled with a
     # constant value, so a single column ``[0]`` is enough to identify.
     packed_k, scales_k, biases_k = cache.keys
-    deq_k = mx.dequantize(
-        packed_k, scales_k, biases_k, group_size=64, bits=4
-    )
+    deq_k = mx.dequantize(packed_k, scales_k, biases_k, group_size=64, bits=4)
     # int4 dequantization introduces small rounding, so use approx with
     # a generous tolerance — we only care that the correct source row
     # landed in the slot.
@@ -294,16 +285,12 @@ def test_quantized_dsa_sparse_positions_preserves_gaps():
     written slots dequantize to the marker value within int4 tolerance.
     """
     cache = PositionedQuantizedKVCache(group_size=64, bits=4)
-    k_sparse, v_sparse = _make_marked_keys_values(
-        [100.0, 200.0, 300.0], head_dim=64
-    )
+    k_sparse, v_sparse = _make_marked_keys_values([100.0, 200.0, 300.0], head_dim=64)
     cache.update_and_fetch(k_sparse, v_sparse, position_ids=[3, 5, 7])
     assert cache.offset == 8
 
     packed_k, scales_k, biases_k = cache.keys
-    deq_k = mx.dequantize(
-        packed_k, scales_k, biases_k, group_size=64, bits=4
-    )
+    deq_k = mx.dequantize(packed_k, scales_k, biases_k, group_size=64, bits=4)
     # Written slots — int4 has limited dynamic range; the marker values
     # 100/200/300 are well outside [-1, 1] but still distinguishable
     # within rough tolerance after dequant.
