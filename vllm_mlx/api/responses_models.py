@@ -113,6 +113,34 @@ class ResponsesInputItem(BaseModel):
             return new
         return data
 
+    # R15 task #309: validate ``role`` is one of the OpenAI-compat enum
+    # values (``user``/``assistant``/``system``/``tool``/``developer``)
+    # at the Pydantic layer so the unknown-role payload surfaces a
+    # clean 400 with ``input[i].role`` field path instead of falling
+    # through ``_message_item_to_chat`` and 500'ing inside the
+    # Jinja chat template ("Unexpected message role" — visible to the
+    # client as a broken stream). ``developer`` is the Codex CLI
+    # system-prompt shape; ``responses_adapter._RESPONSES_TO_CHAT_ROLE``
+    # remaps it to ``system`` before the template renders. ``None``
+    # is accepted (the adapter defaults to ``user`` at line 783) so
+    # function_call / function_call_output / reasoning items (which
+    # have no ``role``) still flow through.
+    @field_validator("role", mode="before")
+    @classmethod
+    def _validate_role(cls, v):
+        if v is None:
+            return v
+        if not isinstance(v, str):
+            raise ValueError(
+                f"input[].role must be a string when set (got {type(v).__name__})."
+            )
+        allowed = {"user", "assistant", "system", "tool", "developer"}
+        if v not in allowed:
+            raise ValueError(
+                f"input[].role must be one of {sorted(allowed)} (got {v!r})."
+            )
+        return v
+
 
 class ResponsesRequest(BaseModel):
     """Request body for ``POST /v1/responses``.

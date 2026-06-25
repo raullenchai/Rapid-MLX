@@ -274,6 +274,32 @@ async def create_completion(request: CompletionRequest, raw_request: Request):
                     }
                 },
             )
+    # R15 task #310: streaming + list-prompt is silently broken —
+    # the streaming branch below only ever calls the engine with
+    # ``prompts[0]`` (line 357-ish), so a client sending
+    # ``{"prompt":["a","b","c"], "stream": true}`` would only see
+    # SSE chunks for the FIRST prompt while the non-streaming path
+    # returns N completions. Reject with a clear 400 so callers
+    # send one request per prompt rather than silently dropping
+    # data. Single-prompt streaming (``prompt:"a"``) keeps working;
+    # list-prompt non-streaming (``stream:false``) keeps working.
+    if request.stream and isinstance(request.prompt, list) and len(request.prompt) > 1:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        "stream=true with a prompt array is not "
+                        "supported on /v1/completions: send one request "
+                        "per prompt. Set stream=false to receive all "
+                        "completions in a single non-streamed response."
+                    ),
+                    "type": "invalid_request_error",
+                    "code": "unsupported_combination",
+                    "param": "stream",
+                }
+            },
+        )
     engine = get_engine(request.model)
 
     # Pre-flight admission gate (C4). Reservation is released by the

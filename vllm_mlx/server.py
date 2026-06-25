@@ -541,7 +541,16 @@ async def lifespan(app: FastAPI):
     yield
 
     # Shutdown: stop accepting "ready" before tearing things down.
-    get_config().ready = False
+    # R15 Sven B2 (task #306): also flip ``draining`` so /healthz
+    # surfaces 503 to the load balancer / k8s readiness probe. Without
+    # this flip the orchestrator keeps routing new traffic into a
+    # tearing-down instance until the TCP listener is fully closed,
+    # producing tail-end request loss the operator can't distinguish
+    # from a crash. In-flight requests continue to completion; only
+    # the readiness signal flips here.
+    _shutdown_cfg = get_config()
+    _shutdown_cfg.ready = False
+    _shutdown_cfg.draining = True
 
     # Shutdown: Save cache to disk BEFORE stopping engine.
     #

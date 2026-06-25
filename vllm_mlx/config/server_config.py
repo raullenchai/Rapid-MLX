@@ -37,6 +37,17 @@ class ServerConfig:
     # in-progress warmup. Reset to False during lifespan shutdown.
     ready: bool = False
 
+    # R15 Sven B2 (task #306): True once the server has received a
+    # graceful drain signal (SIGTERM in the lifespan shutdown window,
+    # or test/operator-driven flip via ``mark_draining()``). In-flight
+    # requests continue to completion, but ``/healthz`` flips to 503
+    # so a load balancer / k8s readiness probe stops sending new
+    # traffic to the draining instance. Pre-fix the route returned
+    # 200 OK right up until the process exited, so any new request
+    # admitted in the drain window was dropped at TCP close — an
+    # operator-visible request-loss class the R15 dogfood pass caught.
+    draining: bool = False
+
     # Bind address and port stashed by the CLI before uvicorn.run() so the
     # lifespan hook can print the "Ready:" banner with the real URL only
     # AFTER warmup completes (and the port is actually bound). Without this

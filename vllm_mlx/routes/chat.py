@@ -2604,9 +2604,28 @@ async def _create_chat_completion_impl(
     if cfg.gc_control and gc_was_enabled:
         gc.disable()
 
-    # Determine if we need per-token logprobs
-    want_logprobs = request.logprobs and request.top_logprobs
+    # Determine if we need per-token logprobs.
+    #
+    # R15 task #311: OpenAI semantics — ``logprobs=true`` alone returns
+    # the sampled-token logprob (``content[].logprob``); ``top_logprobs``
+    # only adds the K alternatives field. Pre-fix the gate was
+    # ``request.logprobs and request.top_logprobs``, which fell through
+    # to the non-logprobs branch when the client sent
+    # ``logprobs=true, top_logprobs=None`` and silently dropped the
+    # sampled-token logprob the caller asked for. The fix gates on
+    # ``logprobs`` alone; ``top_logprobs`` controls the alternatives
+    # ceiling and is allowed to be ``None`` / ``0``.
+    #
+    # ``effective_top_k`` defends ``_extract_token_logprob`` from the
+    # ``argpartition(-0)[-0:]``-returns-full-vocab footgun when
+    # ``top_logprobs=0`` (or None) — mirrors the /v1/completions
+    # ``logprobs=0`` rationale at routes/completions.py L387-399. We
+    # extract with ``effective_top_k=1`` to surface the sampled-token
+    # logprob, then strip the synthetic single-element alternatives
+    # list to ``[]`` below when the caller asked for none.
+    want_logprobs = bool(request.logprobs)
     top_k_logprobs = request.top_logprobs or 0
+    effective_top_k = max(1, top_k_logprobs)
     token_logprobs_list: list[TokenLogProb] = []
 
     try:
@@ -2633,7 +2652,7 @@ async def _create_chat_completion_impl(
                 output = chunk
                 token_logprobs_list.extend(
                     _extract_streaming_token_logprobs(
-                        chunk, engine.tokenizer, top_k_logprobs
+                        chunk, engine.tokenizer, effective_top_k
                     )
                 )
                 ch = getattr(chunk, "channel", None)
@@ -3474,9 +3493,19 @@ async def _create_chat_completion_impl(
             finish_reason,
         )
 
-    # Build logprobs for response if requested
+    # Build logprobs for response if requested.
+    #
+    # R15 task #311: when the caller asked for ``logprobs=true`` but
+    # didn't set ``top_logprobs`` (or set it to 0), strip the synthetic
+    # single-element ``top_logprobs`` we extracted above so the wire
+    # shape matches OpenAI semantics (sampled-token logprob only, no
+    # alternatives field populated). The default ``TokenLogProb.
+    # top_logprobs=[]`` is the right empty shape.
     choice_logprobs = None
     if want_logprobs and token_logprobs_list:
+        if top_k_logprobs == 0:
+            for entry in token_logprobs_list:
+                entry.top_logprobs = []
         choice_logprobs = ChoiceLogProbs(content=token_logprobs_list)
 
     chat_response = ChatCompletionResponse(
@@ -3545,18 +3574,38 @@ async def stream_chat_completion(
         # Check if we should include usage in the final chunk
         include_usage = request.stream_options and request.stream_options.include_usage
 
-        # Logprobs configuration
-        want_logprobs = request.logprobs and request.top_logprobs
+        # Logprobs configuration.
+        #
+        # R15 task #311: ``logprobs=true`` alone returns the sampled-
+        # token logprob. ``top_logprobs`` only adds the K alternatives
+        # field. Pre-fix the gate AND'd both, silently dropping the
+        # sampled-token logprob the caller asked for when
+        # ``top_logprobs`` was None/0. Mirror the non-streaming branch
+        # above: gate on ``logprobs`` alone, extract with
+        # ``effective_top_k=max(1, top_logprobs)`` to defend the
+        # extractor's ``argpartition`` from a top_k=0 footgun, then
+        # strip the synthetic alternatives below.
+        want_logprobs = bool(request.logprobs)
         top_k_logprobs = request.top_logprobs or 0
+        effective_top_k = max(1, top_k_logprobs)
 
         def _build_chunk_logprobs(output: GenerationOutput) -> ChoiceLogProbs | None:
             """Build ChoiceLogProbs for a streaming chunk if logprobs requested."""
             if not want_logprobs:
                 return None
             entries = _extract_streaming_token_logprobs(
-                output, engine.tokenizer, top_k_logprobs
+                output, engine.tokenizer, effective_top_k
             )
-            return ChoiceLogProbs(content=entries) if entries else None
+            if not entries:
+                return None
+            if top_k_logprobs == 0:
+                # OpenAI semantics: ``logprobs=true`` without
+                # ``top_logprobs`` returns sampled-token logprob only,
+                # no alternatives. Strip the single-element synthetic
+                # list we used to drive the extractor.
+                for entry in entries:
+                    entry.top_logprobs = []
+            return ChoiceLogProbs(content=entries)
 
         # Pre-compute SSE template parts that don't change per-token.
         _sse_created = created if created is not None else int(time.time())

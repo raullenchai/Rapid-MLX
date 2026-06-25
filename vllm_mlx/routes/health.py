@@ -5,6 +5,7 @@ import gc
 import logging
 
 from fastapi import APIRouter, Depends, HTTPException
+from fastapi.responses import JSONResponse
 
 from ..config import get_config
 from ..middleware.auth import verify_api_key, verify_api_key_or_x_api_key
@@ -133,8 +134,30 @@ async def healthz():
     no MCP iteration, no scheduler lock. ``cfg.ready`` is a bool
     flipped once at lifespan boot; ``cfg.model_name`` is a string
     set once; ``cfg.engine`` is either None or a stable reference.
+
+    R15 Sven B2 (task #306): when ``cfg.draining`` is True (graceful
+    SIGTERM observed by the lifespan), return 503 so the load balancer
+    /  k8s readiness probe stops sending new traffic to this instance.
+    In-flight requests continue to completion; only the readiness
+    signal flips. Pre-fix the route 200'd right up until process exit,
+    so any request admitted in the drain window was dropped at TCP
+    close.
     """
     cfg = get_config()
+    if cfg.draining:
+        # Mirror the JSON shape the healthy path emits so operators /
+        # dashboards parsing the body get a structured ``status`` field
+        # ("draining") rather than the bare FastAPI HTTPException
+        # envelope. ``status_code=503`` is the load-balancer signal.
+        return JSONResponse(
+            status_code=503,
+            content={
+                "status": "draining",
+                "ready": False,
+                "model_loaded": cfg.engine is not None,
+                "model_name": cfg.model_name,
+            },
+        )
     return {
         "status": "healthy",
         "ready": cfg.ready,

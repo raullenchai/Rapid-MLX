@@ -92,16 +92,32 @@ _BASE_HEADERS: list[tuple[bytes, bytes]] = [
 ]
 
 
-def _build_healthz_payload() -> bytes:
-    """Build the ``/healthz`` JSON response body.
+def _build_healthz_payload() -> tuple[int, bytes]:
+    """Build the ``/healthz`` ``(status_code, body)`` tuple.
 
     Reads three constant-time fields off the ``ServerConfig`` singleton.
     No engine call, no MCP iteration, no scheduler lock. Identical
     semantics to ``routes/health.py::healthz`` — that handler is kept
     as the fall-through path for HEAD requests, requests with
     ``Origin`` headers (CORS), and as the reference shape for tests.
+
+    R15 Sven B2 (task #306): when ``cfg.draining`` is True, return
+    ``(503, {"status":"draining", ...})`` so the load balancer / k8s
+    readiness probe stops sending new traffic to a draining instance.
+    The fall-through route handler enforces the same contract; the
+    fast-path must too so the perf-critical probe surface doesn't
+    diverge from the audited route.
     """
     cfg = get_config()
+    if cfg.draining:
+        payload = {
+            "status": "draining",
+            "ready": False,
+            "model_loaded": cfg.engine is not None,
+            "model_name": cfg.model_name,
+        }
+        body = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return 503, body
     payload = {
         "status": "healthy",
         "ready": bool(cfg.ready),
@@ -112,7 +128,7 @@ def _build_healthz_payload() -> bytes:
     # microseconds off the json.dumps call. The output is still valid
     # JSON; the trailing newline is intentionally omitted (responders
     # like nginx-ingress don't expect one).
-    return json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    return 200, json.dumps(payload, separators=(",", ":")).encode("utf-8")
 
 
 # Pre-encoded ``/livez`` payload — completely static, never touches the
@@ -202,10 +218,11 @@ class ProbeFastPathMiddleware:
         # ``/healthz`` reads three constant-time fields off the config
         # singleton.
         if raw_path == b"/livez":
+            status_code = 200
             body = _LIVEZ_BODY
         else:
             try:
-                body = _build_healthz_payload()
+                status_code, body = _build_healthz_payload()
             except Exception:
                 # Defensive: if the config singleton is in a half-init
                 # state (lifespan crash, embedded harness mid-tear-
@@ -222,7 +239,7 @@ class ProbeFastPathMiddleware:
         await send(
             {
                 "type": "http.response.start",
-                "status": 200,
+                "status": status_code,
                 "headers": headers,
             }
         )
