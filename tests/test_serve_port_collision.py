@@ -175,6 +175,127 @@ def test_run_uvicorn_eaddrinuse_with_real_blocked_port(monkeypatch, capsys):
         sock.close()
 
 
+def test_run_uvicorn_systemexit_from_uvicorn_eaddrinuse_reemits_message(
+    monkeypatch, capsys
+):
+    """uvicorn>=0.34 catches the bind ``OSError`` inside
+    ``Server.startup`` and ``sys.exit(1)``s before our ``except OSError``
+    can fire — so the simple ``except OSError`` wrap is dead for the
+    normal CLI port-collision case (codex round-1 BLOCKING #2).
+
+    The wrapper must also catch ``SystemExit(1)`` from uvicorn and, if
+    a fresh probe confirms ``(host, port)`` is genuinely busy, re-emit
+    the friendly Sven-style message so an operator's log grep for
+    ``"already in use"`` still hits even when uvicorn was the one who
+    logged the raw ``[Errno 48]``.
+
+    Holds the port for real so the post-SystemExit probe (the actual
+    discriminator inside the wrapper) sees a true EADDRINUSE rather
+    than a mocked one — this is the test that pins the contract codex
+    flagged as missing.
+    """
+    sock, port = _claim_loopback_port()
+    try:
+
+        def _raise_sysexit(*_args, **_kwargs):
+            # Exactly what uvicorn's ``Server.startup`` does on
+            # ``OSError`` from ``loop.create_server``: log, then
+            # ``sys.exit(1)``.
+            raise SystemExit(1)
+
+        import uvicorn
+
+        monkeypatch.setattr(uvicorn, "run", _raise_sysexit)
+
+        ns = _serve_ns(port)
+        with pytest.raises(SystemExit) as excinfo:
+            cli._run_uvicorn(object(), ns, "error")
+
+        assert excinfo.value.code == 1, (
+            f"expected SystemExit(1) to propagate, got code={excinfo.value.code!r}"
+        )
+        captured = capsys.readouterr()
+        assert str(port) in captured.err
+        assert "already in use" in captured.err.lower()
+    finally:
+        sock.close()
+
+
+def test_run_uvicorn_systemexit_passthrough_when_port_not_busy(
+    monkeypatch, capsys
+):
+    """If uvicorn ``SystemExit(1)``s for a reason OTHER than a bind
+    collision (e.g. TLS misconfig, lifespan abort), the wrapper MUST
+    NOT paper over it with a port-collision message. Pin this so the
+    discriminator probe stays narrow: only re-emit when the port is
+    actually busy.
+    """
+
+    def _raise_sysexit(*_args, **_kwargs):
+        raise SystemExit(1)
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", _raise_sysexit)
+
+    # OS-chosen port that we DON'T hold — the probe will succeed,
+    # confirming the SystemExit wasn't a port collision.
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    # probe closed → port is free → discriminator returns False
+
+    ns = _serve_ns(port)
+    with pytest.raises(SystemExit) as excinfo:
+        cli._run_uvicorn(object(), ns, "error")
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    # The wrapper must NOT have printed its port-collision message —
+    # the SystemExit came from uvicorn for an unrelated reason.
+    assert "already in use" not in captured.err.lower(), (
+        f"wrapper papered over a non-collision SystemExit with a "
+        f"port-collision message: {captured.err!r}"
+    )
+
+
+def test_run_uvicorn_listen_fd_eaddrinuse_uses_fd_specific_message(
+    monkeypatch, capsys
+):
+    """In ``--listen-fd`` mode, ``args.port`` is meaningless — the
+    supervisor owns the bind, and the inherited fd may not correspond
+    to the CLI port at all. The friendly message must therefore NOT
+    print ``lsof -i :<args.port>`` (operator would chase the wrong
+    socket); it must reference the fd-mode failure instead.
+
+    Codex round-1 NIT #3.
+    """
+
+    def _raise_eaddrinuse(*_args, **_kwargs):
+        raise OSError(errno.EADDRINUSE, "Address already in use")
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", _raise_eaddrinuse)
+
+    ns = types.SimpleNamespace(host="127.0.0.1", port=8000, listen_fd=11)
+    with pytest.raises(SystemExit) as excinfo:
+        cli._run_uvicorn(object(), ns, "error")
+
+    assert excinfo.value.code == 1
+    captured = capsys.readouterr()
+    # The fd-mode message must NOT include a port-specific lsof hint
+    # since args.port has no relationship to the inherited socket.
+    assert "lsof -i :8000" not in captured.err, (
+        f"--listen-fd mode must not reference args.port; got: {captured.err!r}"
+    )
+    assert (
+        "listen-fd" in captured.err.lower()
+        or "supervisor" in captured.err.lower()
+        or "inherited" in captured.err.lower()
+    ), f"--listen-fd error must mention the fd / supervisor: {captured.err!r}"
+
+
 def test_claim_loopback_port_releases_fd():
     """Self-check on the helper: confirm the holder socket actually
     closes after ``sock.close()`` so the broader suite doesn't pay an
