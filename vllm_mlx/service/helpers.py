@@ -3905,6 +3905,65 @@ def enforce_context_length(
     )
 
 
+def _build_prompt_with_thinking_compat(
+    build_prompt,
+    messages: list,
+    *,
+    tools: list | None,
+    enable_thinking: bool | None,
+):
+    """Call ``engine.build_prompt`` with ``enable_thinking=...``,
+    falling back to the pre-#280 two-argument shape when the callable
+    doesn't accept the new kwarg.
+
+    Rationale (codex r1 BLOCKING on PR #906): adding the
+    ``enable_thinking`` parameter to the helper's forwarded call
+    breaks backward compatibility for any third-party engine or test
+    double still on the documented pre-#280 shape
+    ``build_prompt(messages, tools=None)``. Without this compat
+    shim two failure modes leak in:
+
+      * In :func:`enforce_context_length_for_messages` the resulting
+        ``TypeError`` is caught by the broad fallthrough at the
+        bottom of the try-except and silently returns ``None`` —
+        disabling the DoS gate for that engine.
+      * In :func:`repair_messages_fit_context` the broad
+        ``except Exception`` turns the same ``TypeError`` into
+        ``return True``, skipping the actual fit check.
+
+    Both shapes are silent regressions, so we prefer the call shape
+    that matches the new contract but transparently fall back to
+    the legacy shape if the callable raises ``TypeError`` on the
+    unexpected kwarg. The fallback drops ``enable_thinking`` (the
+    legacy engine never honoured it anyway, so the rendered prompt
+    matches the legacy behaviour exactly — same prompt the engine
+    would have produced pre-fix). Other ``TypeError``s propagate so
+    they continue to surface as user-facing errors via the helper's
+    existing exception sniff.
+
+    The probe uses ``inspect.signature`` lazily (only on TypeError)
+    so the hot path stays a single direct call; the fallback path
+    only fires on the first call for an engine with the legacy
+    signature.
+    """
+    try:
+        return build_prompt(messages, tools=tools, enable_thinking=enable_thinking)
+    except TypeError as exc:
+        # ``TypeError`` from kwargs mismatch carries the offending
+        # kwarg name in its message under CPython. Be conservative:
+        # only fall back when the message clearly says the kwarg is
+        # the problem, otherwise re-raise so a real bug surfaces.
+        msg = str(exc)
+        if "enable_thinking" not in msg or "unexpected keyword" not in msg.lower():
+            raise
+        # Drop the new kwarg and call the legacy shape. The legacy
+        # engine renders with its template default (typically ``True``
+        # on Qwen3 / DeepSeek-R1), which matches the pre-fix gate
+        # behaviour exactly — so callers that hit this fallback see
+        # no regression vs the world before PR #906.
+        return build_prompt(messages, tools=tools)
+
+
 def enforce_context_length_for_messages(
     engine,
     messages: list,
@@ -3974,7 +4033,12 @@ def enforce_context_length_for_messages(
     if build_prompt is None:
         return None
     try:
-        prompt = build_prompt(messages, tools=tools, enable_thinking=enable_thinking)
+        prompt = _build_prompt_with_thinking_compat(
+            build_prompt,
+            messages,
+            tools=tools,
+            enable_thinking=enable_thinking,
+        )
     except HTTPException:
         raise
     except Exception as exc:
@@ -4064,8 +4128,11 @@ def repair_messages_fit_context(
     if build_prompt is None:
         return True
     try:
-        prompt = build_prompt(
-            repair_messages, tools=tools, enable_thinking=enable_thinking
+        prompt = _build_prompt_with_thinking_compat(
+            build_prompt,
+            repair_messages,
+            tools=tools,
+            enable_thinking=enable_thinking,
         )
     except Exception:
         # If the repair prompt can't even be rendered, we can't make

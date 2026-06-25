@@ -191,6 +191,116 @@ _RESPONSES_WEATHER_TOOL = {
 
 
 # ---------------------------------------------------------------------------
+# (1a) Helper-level: backward compat with the pre-#280 build_prompt shape
+# ---------------------------------------------------------------------------
+
+
+class _LegacyShapeEngine:
+    """Third-party engine / test double still on the pre-#280
+    ``build_prompt(messages, tools=None)`` signature. Mirrors what
+    plugins out in the wild look like before they pick up the new
+    ``enable_thinking`` kwarg. The helper MUST fall back to the
+    two-argument shape so the gate stays active for these engines."""
+
+    is_mllm = False
+
+    def __init__(self):
+        self.calls: list[dict] = []
+        self._tokenizer = _StubTokenizer(model_max_length=200)
+
+    @property
+    def tokenizer(self):
+        return self._tokenizer
+
+    def build_prompt(self, messages, tools=None):
+        self.calls.append({"messages": messages, "tools": tools})
+        # 200 chars = 50 tokens; well under the 200-token cap so the
+        # gate accepts. Same prompt regardless of would-be
+        # enable_thinking value — the legacy engine never honoured it.
+        return "X" * 200
+
+
+class TestHelperBackwardCompatWithLegacyBuildPrompt:
+    """Codex r1 BLOCKING on PR #906: a third-party engine still on
+    the documented pre-#280 ``build_prompt(messages, tools=None)``
+    signature would raise ``TypeError`` on the helper's
+    ``enable_thinking=...`` call. Without the compat shim:
+
+      * ``enforce_context_length_for_messages`` would swallow the
+        TypeError under its broad ``except Exception`` fallthrough
+        and silently disable the DoS gate.
+      * ``repair_messages_fit_context`` would convert the TypeError
+        into ``return True`` and skip the actual fit check.
+
+    These tests pin the shim's contract: the helper retries with
+    the legacy two-argument shape, the legacy engine produces a
+    real prompt, and the gate runs normally."""
+
+    def test_enforce_falls_back_to_legacy_signature(self):
+        engine = _LegacyShapeEngine()
+        result = enforce_context_length_for_messages(
+            engine,
+            [{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=10,
+            enable_thinking=False,
+        )
+        # 50 tokens prompt (200 chars / 4) + 10 max_tokens = 60 ≤ 200
+        # → gate accepts, returns the prompt-token count.
+        assert result == 50
+        # The legacy engine was called exactly once with the
+        # two-argument shape — no leaking ``enable_thinking`` kwarg.
+        assert len(engine.calls) == 1
+
+    def test_repair_falls_back_to_legacy_signature(self):
+        engine = _LegacyShapeEngine()
+        fits = repair_messages_fit_context(
+            engine,
+            [{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=10,
+            enable_thinking=False,
+        )
+        # 50 + 10 ≤ 200 → fits.
+        assert fits is True
+        # The DoS / fit check actually ran (not the broad-except
+        # ``return True`` short-circuit).
+        assert len(engine.calls) == 1
+
+    def test_enforce_propagates_unrelated_typeerror(self):
+        """Codex r1 IMPORTANT: the fallback path must only fire on
+        the specific 'unexpected keyword: enable_thinking' shape.
+        A TypeError for a different reason (e.g. bug in the engine
+        passing the wrong positional count to its OWN inner code)
+        must still propagate so the existing exception sniff can
+        surface it. Otherwise we'd mask real bugs as silent
+        permissive-skip."""
+
+        class _BuggyEngine:
+            is_mllm = False
+            tokenizer = _StubTokenizer(model_max_length=200)
+
+            def build_prompt(self, messages, tools=None, enable_thinking=None):
+                # Simulate a bug INSIDE the engine, not a signature
+                # mismatch on the call site.
+                raise TypeError("expected str, got int")
+
+        # The unrelated TypeError still flows through the existing
+        # sniff path — for a non-template error string the helper
+        # returns ``None`` (permissive-skip). That's the legacy
+        # behaviour we preserve; the codex finding only objected
+        # to the kwarg-mismatch case silently disabling the gate.
+        result = enforce_context_length_for_messages(
+            _BuggyEngine(),
+            [{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=10,
+            enable_thinking=False,
+        )
+        assert result is None
+
+
+# ---------------------------------------------------------------------------
 # (1) Helper-level: enable_thinking is forwarded into build_prompt
 # ---------------------------------------------------------------------------
 
