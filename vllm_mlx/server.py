@@ -1977,8 +1977,12 @@ Examples:
     global _enable_audio_lane
     # Task #292: forward ``--enable-audio`` to the gate that decides
     # whether ``load_model``'s post-load hook attaches the audio router.
-    if getattr(args, "enable_audio", False):
-        _enable_audio_lane = True
+    # Codex r2 NIT #2: assign from the parsed value directly so a second
+    # in-process ``main()`` call (test harness, embedded usage) without
+    # ``--enable-audio`` clears any stale ``True`` from a prior run —
+    # without this the gate would silently advertise audio on the next
+    # text-only boot.
+    _enable_audio_lane = bool(getattr(args, "enable_audio", False))
     # Env-fallback for the bearer key: keep it out of argv where
     # ``ps -ef`` would leak it. ``_resolve_api_key`` is the single
     # SSOT for the policy (inline-wins, env-fallback) — see its

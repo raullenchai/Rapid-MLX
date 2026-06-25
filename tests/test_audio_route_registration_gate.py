@@ -527,138 +527,224 @@ class TestCliServeCommandWiresEnableAudioFlag:
 
     def test_cli_serve_command_wires_enable_audio_to_server_global(self, monkeypatch):
         """``rapid-mlx serve <model> --enable-audio`` writes
-        ``server._enable_audio_lane = True`` BEFORE ``load_model``
-        runs. The CLI ``serve_command`` does this via the inline
-        ``if getattr(args, "enable_audio", False): server._enable_audio_lane = True``
-        block (placed right after ``server._model_alias = ...``).
+        ``server._enable_audio_lane`` from the parsed value BEFORE
+        ``load_model`` runs. Codex r3 BLOCKING #1: drive the REAL
+        ``cli.main()`` with the same sys.argv ``rapid-mlx serve``
+        builds, stub the heavy downstream calls, observe the actual
+        write.
 
-        Drive the assignment by calling ``serve_command`` with a
-        controlled args namespace and ``load_model`` stubbed to
-        capture the global at the moment ``serve_command`` would
-        invoke the loader. Wire-up only — no full boot."""
+        ``cli.main()`` runs the same argparse parser the production
+        binary uses, dispatches to ``serve_command``, and exits via
+        ``_run_uvicorn``. We stub:
+
+        * ``load_model`` → records the value of ``server._enable_audio_lane``
+          at the moment ``serve_command`` would call the loader.
+        * ``_run_uvicorn`` → no-op so we don't bind a port.
+        * ``_ensure_model_downloaded`` → no-op so CI doesn't hit HF.
+        * ``_port_preflight_or_die`` → no-op (no real socket).
+        * ``_resolve_audio_model_for_serve`` → returns ``None`` so we
+          take the text-mode branch (the audio branch has its own
+          test).
+        * ``prompt_upgrade_if_available`` → returns ``False``.
+        """
         from vllm_mlx import cli, server
+        from vllm_mlx.config import get_config
 
-        seen_global: dict[str, bool] = {}
+        # Snapshot the globals ``main()`` / ``serve_command`` will
+        # mutate so subsequent tests don't see the writes.
+        cfg = get_config()
+        cfg_snapshot = {
+            "tool_call_parser": cfg.tool_call_parser,
+            "reasoning_parser": cfg.reasoning_parser,
+            "reasoning_parser_name": cfg.reasoning_parser_name,
+            "enable_auto_tool_choice": cfg.enable_auto_tool_choice,
+            "model_name": cfg.model_name,
+            "model_alias": cfg.model_alias,
+        }
+        server_snapshot = {
+            "_tool_call_parser": getattr(server, "_tool_call_parser", None),
+            "_reasoning_parser": getattr(server, "_reasoning_parser", None),
+            "_reasoning_parser_name": getattr(server, "_reasoning_parser_name", None),
+            "_enable_auto_tool_choice": getattr(
+                server, "_enable_auto_tool_choice", False
+            ),
+            "_model_name": getattr(server, "_model_name", None),
+            "_model_alias": getattr(server, "_model_alias", None),
+            "_api_key": getattr(server, "_api_key", None),
+        }
 
-        # Mirror exactly the inline block ``serve_command`` runs. The
-        # alternative — invoking ``serve_command`` end-to-end through
-        # the real argparse parser — fights with the multi-thousand-
-        # line text-mode boot which probes the engine, alias registry,
-        # generation_config, etc. This direct exercise targets the
-        # SINGLE block under test (codex r2 BLOCKING #3: "verify the
-        # assignment runs before load_model, not anywhere in the
-        # function body").
-        # We inline-execute the same Python the CLI does — there is no
-        # alternative seam without monkeypatching argparse — and we
-        # KEEP the source-level check below as a defensive backstop so
-        # a refactor that deletes the inline block (the actual
-        # regression we're guarding against) trips at least one of the
-        # two assertions.
-        import inspect
+        seen_global: dict[str, object] = {}
 
-        src = inspect.getsource(cli.serve_command)
-        assert "server._enable_audio_lane = True" in src, (
-            "serve_command must set server._enable_audio_lane = True "
-            "when args.enable_audio is set; the inline block is the "
-            "single point of failure for the CLI's --enable-audio flag"
+        def _stub_load_model(*_a, **_kw):
+            seen_global["enable_audio_lane_at_load"] = server._enable_audio_lane
+
+        # Patch every external side-effect serve_command does before
+        # reaching the ``server._enable_audio_lane = ...`` block plus
+        # the ``load_model`` boundary where we observe the value.
+        monkeypatch.setattr(server, "load_model", _stub_load_model)
+        monkeypatch.setattr(cli, "_run_uvicorn", lambda *_a, **_kw: None)
+        monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+        monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
+        monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _n: None)
+        # The audio extra-required guard short-circuits to no-op for
+        # text models; belt-and-braces stub it.
+        from vllm_mlx.audio import probe as _audio_probe
+
+        monkeypatch.setattr(_audio_probe, "is_audio_model_alias", lambda _n: False)
+        # The MLLM extra-required guard short-circuits for text models;
+        # belt-and-braces stub it.
+        monkeypatch.setattr("vllm_mlx.api.utils.is_mllm_model", lambda _n: False)
+        # Disable interactive upgrade prompt.
+        monkeypatch.setattr(
+            "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
         )
-
-        # Execute the assignment block in isolation against the
-        # captured server module so we observe the actual write —
-        # NOT just the textual presence of the line. The block reads
-        # ``args.enable_audio`` and writes ``server._enable_audio_lane``,
-        # both of which we can stub.
-        class _Args:
-            enable_audio = True
-
-        monkeypatch.setattr(server, "_enable_audio_lane", False)
-        # Run the EXACT condition serve_command runs:
-        if getattr(_Args, "enable_audio", False):
-            server._enable_audio_lane = True
-        assert server._enable_audio_lane is True
-
-        # And False on the negative path.
+        # Stub staleness banner so it doesn't print to stderr.
+        monkeypatch.setattr(
+            "vllm_mlx._version_check.print_staleness_warning_if_any", lambda: None
+        )
+        # The ``main()`` alias resolver writes ``args._original_alias``;
+        # we want to avoid hitting the real alias registry just to keep
+        # the test hermetic. The serve subcommand still works on a raw
+        # HF id, so passing one bypasses the resolver.
+        # Pre-zero the flag so we observe the write.
         monkeypatch.setattr(server, "_enable_audio_lane", False)
 
-        class _ArgsNoFlag:
-            enable_audio = False
+        # Drive the real binary entrypoint.
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "rapid-mlx",
+                "serve",
+                "mlx-community/Qwen3-7B-4bit",
+                "--enable-audio",
+                "--port",
+                "0",
+            ],
+        )
+        try:
+            cli.main()
+        except SystemExit:
+            # ``main()`` may bail at various points downstream of the
+            # ``_enable_audio_lane`` assignment — we only care that the
+            # write happened and the stubbed ``load_model`` observed it.
+            pass
+        finally:
+            for attr, value in server_snapshot.items():
+                setattr(server, attr, value)
+            for attr, value in cfg_snapshot.items():
+                setattr(cfg, attr, value)
 
-        if getattr(_ArgsNoFlag, "enable_audio", False):
-            server._enable_audio_lane = True
-        assert server._enable_audio_lane is False
+        assert seen_global.get("enable_audio_lane_at_load") is True, (
+            f"serve_command did not set server._enable_audio_lane "
+            f"before load_model; observed: {seen_global}"
+        )
 
     def test_cli_serve_command_calls_register_hook_after_load_model(self, monkeypatch):
-        """Codex r1/r2 BLOCKING defense-in-depth: the CLI text-mode
-        boot path explicitly calls
-        ``server.register_audio_routes_if_enabled`` AFTER ``load_model``
-        and BEFORE ``_run_uvicorn``. Exercise this by AST-walking the
-        ``serve_command`` body and asserting the call appears after
-        the ``load_model(...)`` call site and before ``_run_uvicorn(...)``."""
-        import ast
-        import inspect
+        """Codex r1/r2/r3 BLOCKING: drive the REAL ``cli.main()`` and
+        record the order of calls to ``load_model``,
+        ``register_audio_routes_if_enabled``, and ``_run_uvicorn``.
 
-        from vllm_mlx import cli
+        The hook MUST run AFTER ``load_model`` so it sees the
+        populated ``_model_name`` / ``_model_alias`` server globals,
+        and BEFORE ``_run_uvicorn`` so the route table is final by
+        the time uvicorn binds the port. The combined ordering
+        catches both deletions (codex r1 BLOCKING) and wrong-order
+        regressions."""
+        from vllm_mlx import cli, server
+        from vllm_mlx.config import get_config
 
-        src = inspect.getsource(cli.serve_command)
-        tree = ast.parse(src)
-        # ``ast.parse(src)`` wraps the function def in a Module; pull
-        # it back out for traversal.
-        func_def = tree.body[0]
-        assert isinstance(func_def, ast.FunctionDef)
+        cfg = get_config()
+        cfg_snapshot = {
+            "tool_call_parser": cfg.tool_call_parser,
+            "reasoning_parser": cfg.reasoning_parser,
+            "reasoning_parser_name": cfg.reasoning_parser_name,
+            "enable_auto_tool_choice": cfg.enable_auto_tool_choice,
+            "model_name": cfg.model_name,
+            "model_alias": cfg.model_alias,
+        }
+        server_snapshot = {
+            "_tool_call_parser": getattr(server, "_tool_call_parser", None),
+            "_reasoning_parser": getattr(server, "_reasoning_parser", None),
+            "_reasoning_parser_name": getattr(server, "_reasoning_parser_name", None),
+            "_enable_auto_tool_choice": getattr(
+                server, "_enable_auto_tool_choice", False
+            ),
+            "_model_name": getattr(server, "_model_name", None),
+            "_model_alias": getattr(server, "_model_alias", None),
+            "_api_key": getattr(server, "_api_key", None),
+        }
 
-        # Walk the body and record the line numbers of the three
-        # significant call sites.
-        load_model_lines: list[int] = []
-        register_hook_lines: list[int] = []
-        run_uvicorn_lines: list[int] = []
-        for node in ast.walk(func_def):
-            if not isinstance(node, ast.Call):
-                continue
-            func = node.func
-            if isinstance(func, ast.Name) and func.id == "load_model":
-                load_model_lines.append(node.lineno)
-            elif isinstance(func, ast.Attribute):
-                if func.attr == "register_audio_routes_if_enabled":
-                    register_hook_lines.append(node.lineno)
-                elif func.attr == "_run_uvicorn":
-                    # Imported attribute call sites land here.
-                    run_uvicorn_lines.append(node.lineno)
-            elif isinstance(func, ast.Name) and func.id == "_run_uvicorn":
-                run_uvicorn_lines.append(node.lineno)
+        call_order: list[str] = []
 
-        assert load_model_lines, (
-            "serve_command does not call load_model(...) — the entire "
-            "text-mode boot path is broken"
+        def _stub_load_model(*_a, **_kw):
+            call_order.append("load_model")
+
+        def _stub_register_hook():
+            call_order.append("register_hook")
+            return True
+
+        def _stub_uvicorn(*_a, **_kw):
+            call_order.append("uvicorn")
+
+        monkeypatch.setattr(server, "load_model", _stub_load_model)
+        monkeypatch.setattr(
+            server, "register_audio_routes_if_enabled", _stub_register_hook
         )
-        assert register_hook_lines, (
-            "serve_command does not call "
-            "server.register_audio_routes_if_enabled() — the defense-in-"
-            "depth call site introduced by codex r1 BLOCKING was deleted"
+        monkeypatch.setattr(cli, "_run_uvicorn", _stub_uvicorn)
+        monkeypatch.setattr(cli, "_ensure_model_downloaded", lambda *_a, **_kw: None)
+        monkeypatch.setattr(cli, "_port_preflight_or_die", lambda *_a, **_kw: None)
+        monkeypatch.setattr(cli, "_resolve_audio_model_for_serve", lambda _n: None)
+        from vllm_mlx.audio import probe as _audio_probe
+
+        monkeypatch.setattr(_audio_probe, "is_audio_model_alias", lambda _n: False)
+        monkeypatch.setattr("vllm_mlx.api.utils.is_mllm_model", lambda _n: False)
+        monkeypatch.setattr(
+            "vllm_mlx._version_check.prompt_upgrade_if_available", lambda: False
         )
-        assert run_uvicorn_lines, (
-            "serve_command does not call _run_uvicorn — the entire boot path is broken"
+        monkeypatch.setattr(
+            "vllm_mlx._version_check.print_staleness_warning_if_any", lambda: None
         )
 
-        # Ordering: load_model BEFORE register_hook BEFORE _run_uvicorn.
-        # We take the LAST load_model call (there may be repeated calls
-        # under different branches) and the FIRST register_hook call
-        # (the defensive call site that needs to win).
-        last_load_model = max(load_model_lines)
-        first_register_hook = min(register_hook_lines)
-        first_run_uvicorn = min(run_uvicorn_lines)
+        monkeypatch.setattr(
+            "sys.argv",
+            [
+                "rapid-mlx",
+                "serve",
+                "mlx-community/Qwen3-7B-4bit",
+                "--enable-audio",
+                "--port",
+                "0",
+            ],
+        )
+        try:
+            cli.main()
+        except SystemExit:
+            pass
+        finally:
+            for attr, value in server_snapshot.items():
+                setattr(server, attr, value)
+            for attr, value in cfg_snapshot.items():
+                setattr(cfg, attr, value)
 
-        assert last_load_model < first_register_hook, (
-            f"register_audio_routes_if_enabled() must come AFTER "
-            f"load_model() in serve_command; "
-            f"load_model line {last_load_model}, "
-            f"register_hook line {first_register_hook}"
+        assert "load_model" in call_order, (
+            f"load_model was not invoked by serve_command; call order: {call_order}"
         )
-        assert first_register_hook < first_run_uvicorn, (
-            f"register_audio_routes_if_enabled() must come BEFORE "
-            f"_run_uvicorn() in serve_command; "
-            f"register_hook line {first_register_hook}, "
-            f"_run_uvicorn line {first_run_uvicorn}"
+        assert "register_hook" in call_order, (
+            f"register_audio_routes_if_enabled was not invoked by "
+            f"serve_command; call order: {call_order}"
         )
+        # Ordering: load_model BEFORE register_hook (so the hook sees
+        # ``_model_name`` populated). When ``load_model`` is stubbed
+        # the inline call inside it doesn't run, so the explicit
+        # serve_command call site is the ONE that fires — and it must
+        # come AFTER load_model.
+        assert call_order.index("load_model") < call_order.index("register_hook"), (
+            f"register_hook ran BEFORE load_model — wrong order: {call_order}"
+        )
+        if "uvicorn" in call_order:
+            assert call_order.index("register_hook") < call_order.index("uvicorn"), (
+                f"register_hook must run BEFORE uvicorn; call order: {call_order}"
+            )
 
     def test_load_model_invokes_register_hook(self, monkeypatch):
         """``load_model`` is the SHARED loader between

@@ -1701,8 +1701,13 @@ def serve_command(args):
     # the audio router on a text-only server. Setting it after
     # ``load_model`` would leave the router unmounted on the very boot
     # that asked for it.
-    if getattr(args, "enable_audio", False):
-        server._enable_audio_lane = True
+    #
+    # Codex r2 NIT #2: assign from the parsed value directly so a second
+    # in-process ``serve_command`` call (test harness, embedded usage)
+    # without ``--enable-audio`` clears any stale ``True`` from a prior
+    # run — the singleton ``server`` module persists across calls in
+    # the same process.
+    server._enable_audio_lane = bool(getattr(args, "enable_audio", False))
 
     # Configure server security settings. ``RAPID_MLX_API_KEY`` env var
     # is the secret-friendly form ``rapid-mlx share`` uses to avoid
