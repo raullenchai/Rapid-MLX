@@ -73,6 +73,44 @@ class ResponsesInputItem(BaseModel):
     summary: list[dict] | None = None
     encrypted_content: str | None = None
 
+    # rapid-mlx#254 — OpenAI's Responses spec lets clients omit ``type``
+    # on plain message items: ``{"role":"user","content":"hi"}`` is the
+    # canonical shape SDK docs / curl examples show. The official
+    # openai-python SDK always normalizes to ``type="message"`` before
+    # putting the item on the wire so it never bit SDK users — but raw
+    # REST consumers (and copy-paste-from-OpenAI-docs curl users) hit a
+    # Pydantic ``input.0.type: Field required`` 400 here. Inject the
+    # default at ``mode="before"`` so the downstream
+    # ``responses_adapter._convert_input_item`` discriminator
+    # (``item.type == "message"`` / ``"function_call"`` / ...) keeps its
+    # strict closed-set contract: we only default when ``type`` is
+    # absent AND ``role`` is present (the message-shape marker). Other
+    # variants (function_call / function_call_output / reasoning) still
+    # require an explicit ``type`` — the discriminator stays load-
+    # bearing for everything but the message shape.
+    @model_validator(mode="before")
+    @classmethod
+    def _default_type_for_message_shape(cls, data):
+        if not isinstance(data, dict):
+            return data
+        if "type" in data and data["type"] is not None:
+            return data
+        # ``role`` is the unambiguous message-shape marker — function_call /
+        # function_call_output / reasoning all lack ``role`` on the wire,
+        # so role-presence is the cleanest discriminator for "this is a
+        # message item that's missing its type tag". We don't gate on
+        # ``content`` here because the existing missing-content rejection
+        # already runs downstream in
+        # ``responses_adapter._message_item_to_chat`` ("Responses message
+        # content is required") — defaulting on role alone keeps that
+        # error surfacing at the adapter layer rather than masking it as
+        # an unhelpful "Field required: type" parse error.
+        if data.get("role") is not None:
+            new = dict(data)
+            new["type"] = "message"
+            return new
+        return data
+
 
 class ResponsesRequest(BaseModel):
     """Request body for ``POST /v1/responses``.
