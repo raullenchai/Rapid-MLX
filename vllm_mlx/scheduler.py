@@ -139,6 +139,16 @@ class SchedulerConfig:
     enable_prefix_cache: bool = True
     prefix_cache_size: int = 100  # Max cached entries (legacy, ignored if memory-aware)
 
+    # R15-P1 (task #303): radix-tree prefix-cache index. ``"radix"`` (the
+    # default) wraps the memory-aware cache in a token trie that gives
+    # O(prefix_len) lookups and accounts for cross-request prefix dedup
+    # (the headline win on shared-system-prompt multi-tenant workloads:
+    # Cursor / Claude-Code-style backends). ``"hash"`` falls back to the
+    # legacy bisect-over-sorted-keys path — kept as an escape hatch in
+    # case a regression is found in production. Has no effect unless
+    # ``use_memory_aware_cache`` is True.
+    prefix_cache_index: str = "radix"
+
     # Memory-aware cache settings (recommended for large models)
     use_memory_aware_cache: bool = True  # Use memory-based eviction
     cache_memory_mb: int | None = None  # None = auto-detect (20% of available RAM)
@@ -1882,13 +1892,31 @@ class Scheduler:
                     kv_turboquant_bits=self.config.kv_cache_turboquant_bits,
                     kv_turboquant_group_size=self.config.kv_cache_turboquant_group_size,
                 )
+                # R15-P1 (task #303): radix-tree prefix-cache index.
+                # Constructed when ``prefix_cache_index == "radix"`` and
+                # threaded into the memory-aware cache so store/fetch
+                # stay coherent. ``"hash"`` skips construction entirely.
+                radix_idx = None
+                if self.config.prefix_cache_index == "radix":
+                    try:
+                        from .runtime.radix_index import RadixPrefixIndex
+
+                        radix_idx = RadixPrefixIndex()
+                    except Exception as exc:  # pragma: no cover — defensive
+                        logger.warning(
+                            f"[radix] failed to construct RadixPrefixIndex: {exc}; "
+                            "falling back to hash index"
+                        )
+                        radix_idx = None
                 self.memory_aware_cache = MemoryAwarePrefixCache(
                     model=model,
                     config=cache_config,
+                    radix_index=radix_idx,
                 )
                 logger.info(
                     f"Memory-aware cache enabled: "
-                    f"limit={self.memory_aware_cache.memory_limit_mb:.1f}MB"
+                    f"limit={self.memory_aware_cache.memory_limit_mb:.1f}MB, "
+                    f"index={'radix' if radix_idx is not None else 'hash'}"
                 )
             else:
                 # Use legacy entry-count based prefix cache

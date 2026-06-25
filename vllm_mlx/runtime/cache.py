@@ -52,7 +52,15 @@ def _shutdown_budget_sec() -> float:
 
 
 def load_prefix_cache_from_disk() -> None:
-    """Load prefix cache from disk during startup."""
+    """Load prefix cache from disk during startup.
+
+    R15-P1 (task #303): when the engine exposes a ``memory_aware_cache``
+    with a radix index attached, we also try to load
+    ``<cache_dir>/radix.index``. A missing or corrupt radix.index is
+    NOT fatal — the index is silently rebuilt from the cache's loaded
+    entries (the entries are the source of truth; the radix is a lookup
+    accelerator).
+    """
     cfg = get_config()
     if cfg.engine is None:
         return
@@ -64,8 +72,60 @@ def load_prefix_cache_from_disk() -> None:
             logger.info(f"[lifespan] Loaded {loaded} prefix cache entries")
         else:
             logger.info("[lifespan] No prefix cache entries found on disk")
+        _load_radix_index_after_cache(cfg.engine, d)
     except Exception as e:
         logger.warning(f"[lifespan] Failed to load cache from disk: {e}", exc_info=True)
+
+
+def _load_radix_index_after_cache(engine, cache_dir: str) -> None:
+    """Best-effort radix-index restore + rebuild fallback.
+
+    Order of operations:
+
+    1. If the engine's scheduler doesn't have a memory-aware cache with
+       a radix attached, no-op (we're on the hash path).
+    2. If ``<cache_dir>/radix.index`` exists and parses cleanly, the
+       radix populates from it. Cheap — just a JSON read + insert loop.
+    3. If load fails (missing file on first boot after upgrade, version
+       mismatch, JSON corruption), rebuild the radix from the keys
+       already loaded into ``_entries``. This costs O(sum(len(tokens)))
+       which is tiny relative to the model load that just ran.
+    """
+    cache = _resolve_memory_aware_cache(engine)
+    if cache is None:
+        return
+    radix = getattr(cache, "_radix_index", None)
+    if radix is None:
+        return
+    radix_path = os.path.join(cache_dir, "radix.index")
+    if radix.load(radix_path):
+        return
+    # Fallback: reconstruct from currently loaded entries. Reads
+    # ``_entries.keys()`` under the cache's lock to stay coherent with
+    # any concurrent store/evict — though boot is single-threaded so
+    # this is belt-and-suspenders.
+    try:
+        with cache._lock:  # noqa: SLF001 — coordinated rebuild
+            keys = list(cache._entries.keys())  # noqa: SLF001
+        if keys:
+            radix.rebuild_from_keys(keys)
+            logger.info(f"[radix] rebuilt index from {len(keys)} loaded cache entries")
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(f"[radix] rebuild_from_keys failed: {e}", exc_info=True)
+
+
+def _resolve_memory_aware_cache(engine):
+    """Return the engine's ``MemoryAwarePrefixCache`` if present.
+
+    Walks the engine.scheduler.memory_aware_cache chain defensively —
+    external engines (third-party, ``BatchedEngine`` wrappers, etc.)
+    may not expose either attribute. Returning ``None`` means "no radix
+    surface available", which is the same as the hash-index path.
+    """
+    scheduler = getattr(engine, "scheduler", None)
+    if scheduler is None:
+        return None
+    return getattr(scheduler, "memory_aware_cache", None)
 
 
 def save_prefix_cache_to_disk(budget_sec: float | None = None) -> None:
@@ -102,8 +162,28 @@ def save_prefix_cache_to_disk(budget_sec: float | None = None) -> None:
             logger.info(f"[lifespan] Saved prefix cache to {d}")
         else:
             logger.info("[lifespan] No cache to save")
+        # R15-P1 (task #303): radix-index persistence runs AFTER the
+        # entry-cache commit so a torn shutdown can never leave a
+        # ``radix.index`` referencing entries that didn't make it to
+        # disk. The radix is a best-effort accelerator — if this fails,
+        # the next boot just rebuilds from ``_entries``.
+        _save_radix_index_after_cache(cfg.engine, d)
     except Exception as e:
         logger.warning(f"[lifespan] Failed to save cache to disk: {e}", exc_info=True)
+
+
+def _save_radix_index_after_cache(engine, cache_dir: str) -> None:
+    """Best-effort radix-index persistence."""
+    cache = _resolve_memory_aware_cache(engine)
+    if cache is None:
+        return
+    radix = getattr(cache, "_radix_index", None)
+    if radix is None:
+        return
+    try:
+        radix.save(os.path.join(cache_dir, "radix.index"))
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning(f"[radix] save failed: {e}", exc_info=True)
 
 
 def _make_should_abort(budget_sec: float):

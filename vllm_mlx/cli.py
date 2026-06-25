@@ -2057,6 +2057,8 @@ def serve_command(args):
         completion_batch_size=args.completion_batch_size,
         enable_prefix_cache=enable_prefix_cache,
         prefix_cache_size=args.prefix_cache_size,
+        # R15-P1 (task #303): radix-tree prefix-cache index.
+        prefix_cache_index=getattr(args, "prefix_cache_index", "radix"),
         # Memory-aware cache options
         use_memory_aware_cache=not args.no_memory_aware_cache,
         cache_memory_mb=args.cache_memory_mb,
@@ -2127,7 +2129,8 @@ def serve_command(args):
             if args.cache_memory_mb
             else f"{args.cache_memory_percent * 100:.0f}% of RAM"
         )
-        print(f"Memory-aware cache: {cache_info}")
+        index_choice = getattr(args, "prefix_cache_index", "radix")
+        print(f"Memory-aware cache: {cache_info} (index={index_choice})")
         if args.kv_cache_turboquant:
             bits_str = (
                 str(args.kv_cache_turboquant_bits)
@@ -2927,6 +2930,10 @@ def bench_command(args):
             completion_batch_size=args.completion_batch_size,
             enable_prefix_cache=enable_prefix_cache,
             prefix_cache_size=args.prefix_cache_size,
+            # R15-P1 (task #303): radix-tree prefix-cache index. Same
+            # default as the main serve path so benches reflect the
+            # production index choice.
+            prefix_cache_index=getattr(args, "prefix_cache_index", "radix"),
             # Memory-aware cache options
             use_memory_aware_cache=not args.no_memory_aware_cache,
             cache_memory_mb=args.cache_memory_mb,
@@ -5376,6 +5383,22 @@ Examples:
         "--no-memory-aware-cache",
         action="store_true",
         help="Disable memory-aware cache, use legacy entry-count based cache",
+    )
+    # R15-P1 (task #303): radix-tree prefix-cache index. Default ``radix``
+    # accelerates lookup and accounts for cross-request prefix dedup on
+    # shared-system-prompt workloads. ``hash`` is the legacy bisect path,
+    # kept as an escape hatch if a regression is found in production.
+    serve_parser.add_argument(
+        "--prefix-cache-index",
+        type=str,
+        default="radix",
+        choices=("radix", "hash"),
+        help=(
+            "Prefix-cache lookup index: 'radix' (default, R15-P1) uses a "
+            "token trie for O(prefix_len) lookups and surfaces dedup-bytes-"
+            "saved on /metrics; 'hash' falls back to the legacy bisect-over-"
+            "sorted-keys path."
+        ),
     )
     # KV cache quantization options
     serve_parser.add_argument(
