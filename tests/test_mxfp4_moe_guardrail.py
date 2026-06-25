@@ -165,6 +165,72 @@ def test_counters_monotonic_across_repeated_fires():
 
 
 # ---------------------------------------------------------------------------
+# _detect_distributed_world_size — env-var-based, non-mutating
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "env_var",
+    ["MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"],
+)
+def test_world_size_reads_launcher_env_vars(monkeypatch, env_var):
+    """Each launcher env var on its own should be enough to report > 1."""
+    # Make sure none of the *other* launcher vars leak through from the
+    # test runner's environment.
+    for v in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv(env_var, "8")
+    assert g._detect_distributed_world_size() == 8
+
+
+def test_world_size_defaults_to_one_when_no_env(monkeypatch):
+    """No launcher vars set → assume single-device (size 1)."""
+    for v in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
+        monkeypatch.delenv(v, raising=False)
+    assert g._detect_distributed_world_size() == 1
+
+
+def test_world_size_ignores_garbage(monkeypatch):
+    """Non-integer values fall through to the next var / default."""
+    for v in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
+        monkeypatch.delenv(v, raising=False)
+    monkeypatch.setenv("MLX_WORLD_SIZE", "not-an-int")
+    monkeypatch.setenv("OMPI_COMM_WORLD_SIZE", "4")
+    assert g._detect_distributed_world_size() == 4
+
+
+def test_world_size_never_calls_mlx_distributed_init(monkeypatch):
+    """Codex #297 BLOCKING regression: the probe must NOT call init().
+
+    ``mx.distributed.init()`` creates the global communication group and
+    can block while a backend handshakes — calling it from a warning-only
+    guardrail would be a real side effect on the engine that follows.
+    Pin the contract: replace ``init`` with a sentinel that explodes if
+    invoked, then exercise the probe under each branch.
+    """
+    import mlx.core as mx
+
+    sentinel_called = []
+
+    def _explode(*args, **kwargs):  # pragma: no cover — must NOT run
+        sentinel_called.append(True)
+        raise AssertionError(
+            "mx.distributed.init() called from guardrail probe — "
+            "see codex review on #297 BLOCKING #1"
+        )
+
+    monkeypatch.setattr(mx.distributed, "init", _explode)
+    # Probe with no env set — must return 1 without touching init.
+    for v in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
+        monkeypatch.delenv(v, raising=False)
+    assert g._detect_distributed_world_size() == 1
+    # And with an env set — same contract.
+    monkeypatch.setenv("MLX_WORLD_SIZE", "4")
+    assert g._detect_distributed_world_size() == 4
+    assert sentinel_called == []
+
+
+# ---------------------------------------------------------------------------
 # check_from_profile — adapter from server.load_model() call site
 # ---------------------------------------------------------------------------
 

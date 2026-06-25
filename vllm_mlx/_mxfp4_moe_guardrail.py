@@ -36,9 +36,14 @@ What the guardrail does at load time:
    ``aliases.json`` already names these variants
    (``qwen3.5-122b-mxfp4``, ``minimax-m2.7-mxfp4``, etc.) and stays
    robust without parsing each ``config.json`` quant block at load time.
-3. Detect multi-device dispatch via ``mlx.core.distributed.init().size()``
-   — the default group is size 1 on a single-host run, > 1 when
-   ``mpirun`` / ``mlx-launcher`` has wired up multiple devices.
+3. Detect multi-device dispatch via the launcher env vars
+   (``MLX_WORLD_SIZE`` / ``OMPI_COMM_WORLD_SIZE`` / ``PMI_SIZE``).
+   The env vars are authoritative because the launcher sets them
+   before the worker spawns and later passes them into
+   ``mlx.distributed.init()``. We avoid calling ``init()`` ourselves
+   because it has side effects (creates the global communication
+   group, can block while a backend handshakes) and a warning-only
+   guardrail must never mutate engine state.
 4. On the full three-tuple match, log a loud WARNING with the issue
    link and bump ``rapid_mlx_mxfp4_moe_distributed_warnings_total``.
 5. On a MoE + NVFP4 match (any device count — mlx#2962 dynamic-range
@@ -124,26 +129,44 @@ def _detect_quant_format(hf_path: str | None) -> Optional[str]:
 def _detect_distributed_world_size() -> int:
     """Return the active MLX distributed world size, or 1 as a safe default.
 
-    ``mlx.core.distributed.init()`` is idempotent — it returns the
-    current (or default) Group. On a vanilla single-host run the size
-    is 1; under ``mpirun`` / ``mlx-launcher`` it reflects the wired-up
-    device count.
+    **Non-mutating probe.** We deliberately do NOT call
+    ``mlx.core.distributed.init()`` here even though it would give the
+    exact group size, because ``init()`` is documented as creating the
+    global communication group — calling it purely for a metric/warning
+    probe would either (a) initialize an unwanted singleton group on
+    single-host runs or (b) block during startup if the distributed
+    environment is present but not yet ready (codex review #297).
+    Worse, ``backend="any"`` makes the first successful backend the
+    *global* group, which is a real side-effect on the engine that
+    follows.
 
-    Any import / probe failure returns 1 so the guardrail never blocks
-    load on a build that lacks the distributed module. Guardrails are
-    advisory, not enforcing.
+    Instead, we read the environment variables that ``mlx-launcher`` /
+    ``mlx.distributed_run`` and the common MPI launchers set before
+    they spawn the worker process:
+
+    * ``MLX_WORLD_SIZE`` — set by ``mlx-launcher`` / ``distributed_run``.
+    * ``OMPI_COMM_WORLD_SIZE`` — set by OpenMPI's ``mpirun``.
+    * ``PMI_SIZE`` — set by MPICH/Intel MPI launchers.
+
+    These variables are authoritative because they are what the launcher
+    later passes into ``init()``; if any of them is set to a value > 1
+    we are running under a multi-device dispatch regardless of whether
+    ``init()`` has been called yet. On a vanilla single-host run none
+    are set and we report 1.
     """
-    try:
-        import mlx.core as mx
+    import os
 
-        group = mx.distributed.init()
-        return int(group.size())
-    except Exception:  # pragma: no cover — defensive
-        logger.debug(
-            "mlx.distributed.init() probe failed; assuming size=1",
-            exc_info=True,
-        )
-        return 1
+    for env_var in ("MLX_WORLD_SIZE", "OMPI_COMM_WORLD_SIZE", "PMI_SIZE"):
+        raw = os.environ.get(env_var)
+        if not raw:
+            continue
+        try:
+            size = int(raw)
+        except ValueError:
+            continue
+        if size >= 1:
+            return size
+    return 1
 
 
 def _emit_mxfp4_moe_distributed_warning(
