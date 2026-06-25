@@ -2063,11 +2063,22 @@ async def _create_chat_completion_impl(
     # the rationale (8 MiB body still holds ~2M tokens → context window
     # blown → ~60–90 s of wasted prefill before client gives up). Same
     # gate runs in routes/completions, routes/anthropic, routes/responses.
+    #
+    # rapid-mlx#280 (codex MED on PR #893 review): thread the resolved
+    # ``enable_thinking`` so the prompt-token estimate matches what the
+    # engine actually generates. The R12-T1F / R12-T2F auto-disable
+    # above mutates ``request.chat_template_kwargs`` BEFORE this gate
+    # runs, so the gate must consult the resolved value — otherwise it
+    # renders with the template default (typically ``True`` on Qwen3 /
+    # DeepSeek-R1), over-estimates the prompt by the
+    # ``<|im_start|>think...`` scaffolding, and can reject requests
+    # that actually fit.
     enforce_context_length_for_messages(
         engine,
         messages,
         tools=request.tools,
         max_tokens=chat_kwargs.get("max_tokens"),
+        enable_thinking=resolved_thinking,
     )
 
     # Cloud routing: offload large-context requests to cloud LLM.
@@ -2892,11 +2903,21 @@ async def _create_chat_completion_impl(
             # deterministic ``422 json_schema_violation``. The helper
             # mirrors ``enforce_context_length_for_messages`` and is
             # centralized so chat + responses share one gate.
+            # rapid-mlx#280: thread the resolved ``enable_thinking`` so
+            # the repair-prompt fit check renders the way the engine
+            # actually will. Pre-fix the gate rendered with the
+            # template default, so on auto-disabled (R12-M2 strict-
+            # mode) runs it could SKIP a retry that would actually
+            # fit. ``repair_kwargs`` carries the same value because
+            # it's a copy of ``chat_kwargs`` (see line above), but we
+            # resolve from ``chat_kwargs`` for symmetry with the
+            # initial gate at line ~2066.
             _repair_fits = repair_messages_fit_context(
                 engine,
                 repair_messages,
                 tools=None,
                 max_tokens=repair_kwargs.get("max_tokens"),
+                enable_thinking=chat_kwargs.get("enable_thinking"),
             )
             repair_output = None
             if not _repair_fits:

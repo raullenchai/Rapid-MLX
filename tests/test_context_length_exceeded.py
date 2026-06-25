@@ -305,7 +305,7 @@ def test_enforce_for_messages_template_error_raises_400():
     class _TemplateErrorEngine:
         is_mllm = False
 
-        def build_prompt(self, messages, tools=None):  # noqa: ARG002
+        def build_prompt(self, messages, tools=None, enable_thinking=None):  # noqa: ARG002
             # Mirrors the error shape Jinja raises when a chat template
             # references an undefined variable like ``user``.
             raise ValueError("TemplateError: 'user' is undefined in chat template")
@@ -335,7 +335,7 @@ def test_enforce_for_messages_template_error_lowercase_match():
     class _LowercaseTemplateEngine:
         is_mllm = False
 
-        def build_prompt(self, messages, tools=None):  # noqa: ARG002
+        def build_prompt(self, messages, tools=None, enable_thinking=None):  # noqa: ARG002
             raise RuntimeError("Unknown template tag at line 42")
 
     with pytest.raises(HTTPException) as excinfo:
@@ -363,7 +363,7 @@ def test_enforce_for_messages_non_template_exception_silent_fallthrough():
     class _GenericFailureEngine:
         is_mllm = False
 
-        def build_prompt(self, messages, tools=None):  # noqa: ARG002
+        def build_prompt(self, messages, tools=None, enable_thinking=None):  # noqa: ARG002
             raise AttributeError("'BatchedEngine' object has no attribute '_model'")
 
     # No exception — fall through silently. Caller (route) goes on to
@@ -387,7 +387,7 @@ def test_enforce_for_messages_http_exception_passes_through():
     class _HttpEngine:
         is_mllm = False
 
-        def build_prompt(self, messages, tools=None):  # noqa: ARG002
+        def build_prompt(self, messages, tools=None, enable_thinking=None):  # noqa: ARG002
             raise HTTPException(status_code=503, detail="model not loaded")
 
     with pytest.raises(HTTPException) as excinfo:

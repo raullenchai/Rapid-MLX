@@ -637,14 +637,27 @@ async def create_response(request: Request):
             _ctx_messages = _prepare_messages_for_context_check(engine, openai_request)
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
+        # rapid-mlx#280 (codex MED on PR #893 review): thread the
+        # resolved ``enable_thinking`` so the prompt-token estimate
+        # matches what the engine actually generates. The R12-T1F /
+        # R12-T2F auto-disable above mutates
+        # ``openai_request.chat_template_kwargs`` BEFORE this gate
+        # runs, so the gate must consult the resolved value via
+        # ``_resolve_enable_thinking`` — otherwise it renders with
+        # the template default and over-estimates the prompt by the
+        # thinking scaffolding. Single source of truth across the two
+        # surfaces; the chat lane has the equivalent threading at
+        # routes/chat.py:2066.
+        _resp_resolved_thinking = _resolve_enable_thinking(openai_request)
         enforce_context_length_for_messages(
             engine,
             _ctx_messages,
             tools=openai_request.tools,
             max_tokens=_resolve_max_tokens(
                 openai_request.max_tokens,
-                _resolve_enable_thinking(openai_request),
+                _resp_resolved_thinking,
             ),
+            enable_thinking=_resp_resolved_thinking,
         )
 
         if responses_request.stream:
@@ -1030,11 +1043,20 @@ async def _non_stream(
             # instead of a deterministic ``422 json_schema_violation``.
             # Centralized helper shared with chat.py keeps the gate
             # logic from drifting between the two surfaces.
+            # rapid-mlx#280: thread the resolved ``enable_thinking`` so
+            # the repair-prompt fit check renders the way the engine
+            # will. ``repair_kwargs`` carries the same value because it
+            # is a copy of ``chat_kwargs`` (see line above); resolving
+            # from ``chat_kwargs`` keeps the single-source-of-truth
+            # invariant with the initial gate at responses.py:640. The
+            # chat lane has the equivalent threading at
+            # routes/chat.py:2895.
             _repair_fits = repair_messages_fit_context(
                 engine,
                 repair_messages,
                 tools=None,
                 max_tokens=repair_kwargs.get("max_tokens"),
+                enable_thinking=chat_kwargs.get("enable_thinking"),
             )
             repair_output = None
             if not _repair_fits:
