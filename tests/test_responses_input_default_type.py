@@ -375,25 +375,34 @@ class TestResponsesRouteInputTypeDefault:
         engine = responses_client.engine
         messages = engine.calls[0].messages
         # The discriminator must still treat the function_call /
-        # function_call_output items distinctly from the message item —
-        # we don't pin the exact downstream wire shape (which may be
-        # either a raw ``tool_calls`` array or a synthesised text
-        # transcript depending on the chat_template), only that the
-        # request reached the engine at all (i.e. no Pydantic 400) and
-        # the leading user turn round-tripped its content. That is the
-        # load-bearing parity guarantee: function_call items are still
-        # parsed through the function_call branch — not silently coerced
-        # into the message branch by our type-defaulting validator.
-        user_msgs = [m for m in messages if m.get("role") == "user"]
+        # function_call_output items distinctly from the message item.
+        # We don't pin the exact downstream wire shape (the chat-template
+        # path may emit a raw ``tool_calls`` array OR a synthesised text
+        # transcript depending on the engine's
+        # ``preserve_native_tool_format`` flag), so we assert by
+        # *content* survival rather than schema:
+        #   1. the leading user turn ("use the tool please") survives,
+        #   2. the function_call ITSELF survives (codex r2 BLOCKING):
+        #      both ``call_abc`` (call_id) and ``get_weather`` (name)
+        #      must appear somewhere in the message stream — without
+        #      this, the test would still pass if production silently
+        #      dropped the function_call item and only kept the
+        #      function_call_output,
+        #   3. the function_call_output payload ("sunny") also survives.
+        # Together those three pin the per-variant routing: a regression
+        # that folds the explicit-type function_call into the message
+        # branch would lose ``get_weather`` and ``call_abc``.
         assert any(
-            "use the tool please" in (m.get("content") or "") for m in user_msgs
+            "use the tool please" in (m.get("content") or "") for m in messages
         ), f"leading user message lost during conversion: {messages}"
-        # And the function_call_output payload must have shown up
-        # somewhere in the message stream — that proves the
-        # function_call_output branch ran (it would NOT run if our
-        # validator had folded the explicit-type item into the message
-        # branch).
-        assert any("sunny" in (m.get("content") or "") for m in messages), (
+        joined = " ".join((m.get("content") or "") for m in messages)
+        assert "get_weather" in joined, (
+            f"function_call name was not propagated to the engine: {messages}"
+        )
+        assert "call_abc" in joined, (
+            f"function_call call_id was not propagated to the engine: {messages}"
+        )
+        assert "sunny" in joined, (
             f"function_call_output payload not propagated: {messages}"
         )
 
