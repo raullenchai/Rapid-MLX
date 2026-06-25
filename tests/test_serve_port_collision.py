@@ -142,14 +142,22 @@ def test_run_uvicorn_reraises_unrelated_oserror(monkeypatch):
     )
 
 
-def test_run_uvicorn_eaddrinuse_with_real_blocked_port(monkeypatch, capsys):
-    """End-to-end variant: hold the port for real (not mocked) so the
-    test exercises the wrap against a true OS-level ``EADDRINUSE``
-    raised from uvicorn's bind. We monkeypatch ``uvicorn.run`` to
-    actually attempt a ``socket.bind`` (the real failure mode) rather
-    than just the exception shape — this catches "the wrapper depends
-    on errno being set by the OS" regressions that a hand-rolled
-    ``OSError(errno.EADDRINUSE, ...)`` would mask.
+def test_run_uvicorn_eaddrinuse_socket_level_discriminator(monkeypatch, capsys):
+    """Socket-level discriminator: hold the port for real, then stub
+    ``uvicorn.run`` with a hand-written ``socket.bind`` — NOT real
+    uvicorn — so the wrap's EADDRINUSE detection is exercised against
+    a true OS-set ``errno`` rather than a hand-rolled
+    ``OSError(errno.EADDRINUSE, ...)`` (codex round-2 NIT: prior test
+    name implied uvicorn coverage that doesn't exist here — the real
+    uvicorn-SystemExit-after-bind path is pinned by
+    ``test_run_uvicorn_systemexit_from_uvicorn_eaddrinuse_reemits_message``
+    below, which is the actual contract for current uvicorn).
+
+    What this test pins: the wrap's ``except OSError`` arm correctly
+    reads ``exc.errno`` from a kernel-set error rather than only from
+    a synthetic exception — so a future regression that drops the
+    ``errno`` comparison still surfaces. Complements (does not
+    duplicate) the SystemExit-from-uvicorn test below.
     """
     sock, port = _claim_loopback_port()
     try:
@@ -219,6 +227,60 @@ def test_run_uvicorn_systemexit_from_uvicorn_eaddrinuse_reemits_message(
         assert "already in use" in captured.err.lower()
     finally:
         sock.close()
+
+
+def test_run_uvicorn_probe_failure_does_not_mask_systemexit(monkeypatch):
+    """Codex round-2 BLOCKING: if the ``_port_is_busy`` probe raises
+    something other than ``OSError`` (e.g. ``TypeError`` from a
+    non-string host, ``gaierror`` from a hostname the OS can't resolve
+    at probe time), the wrapper MUST NOT replace uvicorn's original
+    ``SystemExit(1)`` with the probe's traceback. The supervisor's
+    failure-detection contract reads the original exit, not whatever
+    the discriminator coincidentally bubbled.
+
+    Force the probe to raise by stubbing it directly — exercises the
+    outer ``except BaseException`` in ``_port_is_busy`` that returns
+    ``False`` so the caller's ``raise`` re-delivers uvicorn's exit.
+    """
+
+    def _raise_sysexit(*_args, **_kwargs):
+        raise SystemExit(1)
+
+    def _probe_explodes(*_args, **_kwargs):
+        raise TypeError("simulated probe-side failure (bad host type)")
+
+    import uvicorn
+
+    monkeypatch.setattr(uvicorn, "run", _raise_sysexit)
+    monkeypatch.setattr(cli, "_port_is_busy", _probe_explodes)
+
+    ns = _serve_ns(port=8000)
+    with pytest.raises(SystemExit) as excinfo:
+        cli._run_uvicorn(object(), ns, "error")
+
+    # The original SystemExit from uvicorn must propagate untouched —
+    # NOT the TypeError the probe raised.
+    assert excinfo.value.code == 1, (
+        f"expected uvicorn SystemExit(1) to propagate, got code={excinfo.value.code!r}"
+    )
+
+
+def test_port_is_busy_returns_false_on_probe_side_exception():
+    """Direct unit test on ``_port_is_busy``: when the probe machinery
+    fails for ANY reason (host normalization, socket constructor,
+    etc.) the helper must return ``False`` so the caller's ``raise``
+    re-delivers the original ``SystemExit``. Covers the codex round-2
+    BLOCKING contract at the helper boundary, complementing the
+    integration test above.
+
+    We pass ``host=None`` which would historically have raised a
+    ``TypeError`` from ``probe.bind((None, port))``; the outer
+    ``except BaseException`` (or the explicit ``isinstance`` guard)
+    must convert that into ``False`` rather than re-raising.
+    """
+    # Should return False, NOT raise.
+    assert cli._port_is_busy(None, 8000) is False  # type: ignore[arg-type]
+    assert cli._port_is_busy(12345, 8000) is False  # type: ignore[arg-type]
 
 
 def test_run_uvicorn_systemexit_passthrough_when_port_not_busy(monkeypatch, capsys):

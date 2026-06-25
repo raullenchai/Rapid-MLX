@@ -391,8 +391,21 @@ def _run_uvicorn(app, args, log_level: str) -> None:
         # the message when a probe confirms the port really IS in use —
         # other ``SystemExit(1)`` paths (TLS, lifespan, etc.) must keep
         # uvicorn's own diagnostic so we don't paper over them.
+        #
+        # Outer guard: codex round-2 BLOCKING — if the probe itself
+        # raises (TypeError from a non-string host, gaierror, etc.) the
+        # caller's ``SystemExit`` MUST still propagate. Wrap the
+        # discriminator call so any probe-side exception is silently
+        # absorbed and the original ``raise`` below re-delivers
+        # uvicorn's exit. ``_port_is_busy`` ALSO defends internally,
+        # but a future refactor that drops that guard (or a monkeypatch
+        # in a test harness) must not corrupt the failure signal.
         if exc.code in (1, "1") and listen_fd is None:
-            if _port_is_busy(args.host, args.port):
+            try:
+                busy = _port_is_busy(args.host, args.port)
+            except BaseException:
+                busy = False
+            if busy:
                 _print_port_collision_and_exit(
                     args.host, args.port, in_listen_fd_mode=False
                 )
@@ -406,20 +419,42 @@ def _port_is_busy(host: str, port: int) -> bool:
     by an unrelated startup failure (TLS, lifespan, etc.).
 
     Returns True iff a fresh ``socket.bind`` fails with EADDRINUSE.
-    Any other error (ENETDOWN, EACCES, etc.) returns False — the
-    ``SystemExit`` was NOT a port collision and the caller must let
-    uvicorn's own diagnostic stand.
+    Returns False on ANY other outcome (clean bind, ENETDOWN, EACCES,
+    ``gaierror``, ``TypeError`` from a ``None`` host, etc.) so the
+    caller's original ``SystemExit`` propagates untouched — codex
+    round-2 BLOCKING was that a probe-side ``TypeError`` could replace
+    uvicorn's ``SystemExit(1)`` with a misleading traceback. The probe
+    is a HEURISTIC: a false-negative is acceptable (operator still
+    gets uvicorn's diagnostic + non-zero exit, just no friendly hint),
+    a probe-side raise that masks uvicorn's failure is not.
     """
     import errno
     import socket
 
-    family = socket.AF_INET6 if _is_ipv6_host(host) else socket.AF_INET
-    with socket.socket(family, socket.SOCK_STREAM) as probe:
-        probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        try:
-            probe.bind((host, port))
-        except OSError as exc:
-            return exc.errno == errno.EADDRINUSE
+    if not isinstance(host, str) or not host:
+        # uvicorn accepts ``host=""`` as the wildcard alias, but
+        # ``socket.bind(("", port))`` works on AF_INET — pre-normalize
+        # to avoid a probe-side ``TypeError`` for non-string hosts
+        # (sentinel values, configured-via-env edge cases).
+        host = "0.0.0.0"
+
+    try:
+        family = socket.AF_INET6 if _is_ipv6_host(host) else socket.AF_INET
+        with socket.socket(family, socket.SOCK_STREAM) as probe:
+            probe.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                probe.bind((host, port))
+            except OSError as exc:
+                return exc.errno == errno.EADDRINUSE
+    except BaseException:
+        # Outer guard: ANY probe-side failure (socket constructor,
+        # gaierror, host normalization, etc.) MUST NOT mask the caller's
+        # ``SystemExit``. Swallow and report "not busy" so the original
+        # exception re-raises cleanly. ``BaseException`` is intentional
+        # — even a stray ``KeyboardInterrupt`` during the probe should
+        # not corrupt the supervisor-facing failure signal; the caller's
+        # ``raise`` will re-deliver any interrupt on the next event loop.
+        return False
     return False
 
 
