@@ -78,3 +78,73 @@ def test_gauge_uses_underscore_scheduler_config_when_public_missing():
     cfg = SimpleNamespace(engine=engine, kv_cache_dtype=None)
     text = "\n".join(_render_kv_cache_dtype_gauge(cfg))
     assert 'rapid_mlx_kv_cache_dtype{dtype="int8"} 1' in text
+
+
+def test_gauge_derives_dtype_from_legacy_quantization_fields_int4():
+    """codex r2 BLOCKING #2: a programmatic caller that only set the
+    pre-existing legacy fields (``kv_cache_quantization=True`` +
+    ``kv_cache_quantization_bits=4``) without touching the new
+    ``kv_cache_dtype`` field would have the gauge mis-report ``bf16``
+    because ``SchedulerConfig.kv_cache_dtype`` now defaults to
+    ``"bf16"``. The gauge must derive the effective dtype from the
+    legacy bits in that case.
+    """
+    sc = SimpleNamespace(
+        kv_cache_dtype="bf16",  # unmodified default
+        kv_cache_quantization=True,
+        kv_cache_quantization_bits=4,
+    )
+    engine = SimpleNamespace(scheduler_config=sc)
+    cfg = SimpleNamespace(engine=engine, kv_cache_dtype=None)
+    text = "\n".join(_render_kv_cache_dtype_gauge(cfg))
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int4"} 1' in text
+    assert 'rapid_mlx_kv_cache_dtype{dtype="bf16"} 0' in text
+
+
+def test_gauge_derives_dtype_from_legacy_quantization_fields_int8():
+    """Same fix as int4 above but for bits=8."""
+    sc = SimpleNamespace(
+        kv_cache_dtype="bf16",
+        kv_cache_quantization=True,
+        kv_cache_quantization_bits=8,
+    )
+    engine = SimpleNamespace(scheduler_config=sc)
+    cfg = SimpleNamespace(engine=engine, kv_cache_dtype=None)
+    text = "\n".join(_render_kv_cache_dtype_gauge(cfg))
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int8"} 1' in text
+    assert 'rapid_mlx_kv_cache_dtype{dtype="bf16"} 0' in text
+
+
+def test_gauge_legacy_fallback_does_not_override_explicit_int8_dtype():
+    """The legacy fallback only fires when ``kv_cache_dtype`` is at
+    the unmodified ``"bf16"`` default. An explicit ``"int8"`` from the
+    canonical knob must win, even if legacy fields are also set (bits=4
+    is illegal here per codex r2 BLOCKING #1, but the gauge defends).
+    """
+    sc = SimpleNamespace(
+        kv_cache_dtype="int8",  # canonical knob wins
+        kv_cache_quantization=True,
+        kv_cache_quantization_bits=8,
+    )
+    engine = SimpleNamespace(scheduler_config=sc)
+    cfg = SimpleNamespace(engine=engine, kv_cache_dtype=None)
+    text = "\n".join(_render_kv_cache_dtype_gauge(cfg))
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int8"} 1' in text
+
+
+def test_gauge_legacy_fallback_leaves_bf16_when_bits_out_of_range():
+    """If a programmatic caller landed legacy fields with an out-of-range
+    bits value, the gauge must not guess a label — the CLI rejects this
+    case (codex r2 BLOCKING #1) but the metrics endpoint stays honest
+    and reports bf16 (the default) rather than fabricate a series."""
+    sc = SimpleNamespace(
+        kv_cache_dtype="bf16",
+        kv_cache_quantization=True,
+        kv_cache_quantization_bits=3,  # illegal
+    )
+    engine = SimpleNamespace(scheduler_config=sc)
+    cfg = SimpleNamespace(engine=engine, kv_cache_dtype=None)
+    text = "\n".join(_render_kv_cache_dtype_gauge(cfg))
+    assert 'rapid_mlx_kv_cache_dtype{dtype="bf16"} 1' in text
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int4"} 0' in text
+    assert 'rapid_mlx_kv_cache_dtype{dtype="int8"} 0' in text

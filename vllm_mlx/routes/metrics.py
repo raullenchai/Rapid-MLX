@@ -194,6 +194,16 @@ def _render_kv_cache_dtype_gauge(cfg: Any) -> list[str]:
     # safelist resolves to bf16, but the stash still says int4 from
     # before the safelist ran. Distinguishing "engine reports a value"
     # from "no engine value available" prevents that ghost report.
+    #
+    # codex r2 BLOCKING #2: ``SchedulerConfig.kv_cache_dtype`` now
+    # carries a default of ``"bf16"``, so a programmatic caller that
+    # only set the pre-existing legacy fields
+    # (``kv_cache_quantization=True`` + ``kv_cache_quantization_bits``)
+    # without touching ``kv_cache_dtype`` would have us report ``bf16``
+    # while int4 / int8 KV cache is actually live. When the dtype field
+    # is unmodified-default but legacy quantization is on, derive the
+    # effective dtype from the legacy bits — that's the only path that
+    # keeps the gauge honest for callers that pre-date the dtype field.
     dtype: str | None = None
     try:
         engine = getattr(cfg, "engine", None)
@@ -205,6 +215,20 @@ def _render_kv_cache_dtype_gauge(cfg: Any) -> list[str]:
                 live = getattr(sc, "kv_cache_dtype", None)
                 if live:
                     dtype = live
+                # Legacy-caller cross-check: if the dtype field is at
+                # its default but the legacy quantization toggle is on,
+                # the legacy fields tell the truth.
+                if dtype in (None, "bf16") and getattr(
+                    sc, "kv_cache_quantization", False
+                ):
+                    bits = getattr(sc, "kv_cache_quantization_bits", None)
+                    if bits == 4:
+                        dtype = "int4"
+                    elif bits == 8:
+                        dtype = "int8"
+                    # Any other bits value is a misconfiguration the CLI
+                    # rejects (codex r2 BLOCKING #1) — leave dtype as the
+                    # honest bf16 default rather than guessing a label.
         if dtype is None:
             # Engine not loaded yet (or doesn't carry the field) — fall
             # back to the pre-load stash so /metrics still reports the

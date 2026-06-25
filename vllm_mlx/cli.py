@@ -2173,6 +2173,21 @@ def serve_command(args):
             )
             sys.exit(1)
 
+        # codex r2 BLOCKING #1: argparse pins ``--kv-cache-quantization-bits``
+        # to ``choices={4,8}``, but programmatic callers (tests, library
+        # users that bypass argparse) can land an out-of-range bits value
+        # here. The old ``"int4" if bits == 4 else "int8"`` silently
+        # labeled every non-4 value as ``int8`` even when KV would actually
+        # be quantized at the requested bit width. Fail fast instead so
+        # the gauge / banner / SchedulerConfig never lie about the
+        # active dtype.
+        if args.kv_cache_quantization_bits not in (4, 8):
+            print(
+                f"\n  Error: --kv-cache-quantization-bits must be 4 or 8 "
+                f"(got {args.kv_cache_quantization_bits}). Use "
+                f"--kv-cache-dtype for the canonical knob.\n"
+            )
+            sys.exit(1)
         legacy_dtype = "int4" if args.kv_cache_quantization_bits == 4 else "int8"
         # When --reasoning is set alongside the (compatible) bits=8
         # legacy flag, the operator-facing reason should still

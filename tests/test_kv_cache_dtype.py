@@ -237,10 +237,14 @@ def test_mla_rank_pair_without_family_signal_does_not_trigger():
     assert decision.downgraded is False
 
 
-def test_mla_rank_pair_with_name_hit_triggers():
-    """codex r1 BLOCKING #3 follow-up: the rank pair MUST still trigger
-    when paired with a name-pattern signal (defends against a future
-    DeepSeek release that ships an unknown ``model_type`` value).
+def test_mla_unknown_deepseek_v5_name_fails_closed():
+    """codex r2 NIT (was BLOCKING #3 follow-up): when a future
+    DeepSeek release ships a name/``model_type`` we don't recognise
+    yet (e.g. ``deepseek_v5``), the safelist must fail CLOSED —
+    leave ``int4`` in place rather than guess at MLA based on rank
+    pairs alone. The previous test name suggested the rank pair
+    *triggered* the downgrade, which is the opposite of what the
+    body asserts; renamed to make a future failure self-explain.
     """
     decision = resolve_kv_cache_dtype(
         "int4",
