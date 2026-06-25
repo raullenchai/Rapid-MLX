@@ -226,9 +226,10 @@ class TestResponsesInputItemTypeDefault:
         )
         assert req.input[0].type == "message"
 
-    def test_function_call_variant_still_requires_explicit_type(self):
-        """Other discriminator branches must keep their explicit-tag
-        contract — only the message shape is loosened."""
+    def test_function_call_variant_with_explicit_type_parses(self):
+        """Sanity: a well-formed ``function_call`` item (explicit
+        ``type``) still parses through its own branch — proves the
+        loosening did not steal the function_call shape."""
         from vllm_mlx.api.responses_models import ResponsesRequest
 
         req = ResponsesRequest(
@@ -245,6 +246,29 @@ class TestResponsesInputItemTypeDefault:
         assert req.input[0].type == "function_call"
         assert req.input[0].call_id == "call_abc"
 
+    def test_function_call_shape_without_type_still_rejected(self):
+        """Codex r1 NIT — pin the "other variants still require explicit
+        type" half of the contract. A function_call-shaped payload
+        (``call_id`` + ``name`` + ``arguments``) with no ``type`` and no
+        ``role`` MUST 400; we do NOT silently fold it into the message
+        branch. Only the message-shape branch (``role`` present) gets a
+        type default."""
+        from pydantic import ValidationError
+
+        from vllm_mlx.api.responses_models import ResponsesRequest
+
+        with pytest.raises(ValidationError):
+            ResponsesRequest(
+                model="test-model",
+                input=[
+                    {
+                        "call_id": "call_abc",
+                        "name": "get_weather",
+                        "arguments": "{}",
+                    }
+                ],
+            )
+
     def test_item_with_no_type_and_no_role_still_rejected(self):
         """An empty ``{}`` item has no role marker — we do NOT silently
         treat it as a message; the discriminator gate still fires."""
@@ -260,7 +284,28 @@ class TestResponsesInputItemTypeDefault:
 # Route-level integration — proves the wire contract end-to-end
 # =============================================================================
 
+# The route module transitively imports ``mlx`` (via the engine layer
+# the route ultimately calls into). The Pydantic-layer tests above don't
+# need it, but importing ``vllm_mlx.routes.responses`` does — and the
+# Linux test-matrix CI runners don't ship ``mlx``. Skip the route-level
+# class cleanly on those hosts so pr_validate's targeted-tests step (and
+# any other env without mlx) doesn't see a spurious ImportError. The
+# Pydantic-layer tests above already pin the load-bearing contract; the
+# route-level class is end-to-end belt-and-suspenders that runs on
+# Apple Silicon CI + dev machines where mlx is present.
+_HAS_MLX = True
+try:
+    import mlx  # noqa: F401
+except ImportError:
+    _HAS_MLX = False
 
+
+@pytest.mark.skipif(
+    not _HAS_MLX,
+    reason="vllm_mlx.routes.responses transitively imports mlx; route-level "
+    "test coverage runs on Apple Silicon CI + dev machines (Pydantic-layer "
+    "unit tests above already pin the schema contract everywhere).",
+)
 class TestResponsesRouteInputTypeDefault:
     def test_canonical_openai_shape_without_type_returns_200(self, responses_client):
         """The bug report payload: copy-pasted-from-OpenAI-docs curl
