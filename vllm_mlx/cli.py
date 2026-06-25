@@ -2286,6 +2286,16 @@ def serve_command(args):
             print(f"\n  Error loading model: {e}")
         sys.exit(1)
 
+    # Task #292 / codex r1 BLOCKING defense-in-depth: ``load_model``
+    # already invokes ``register_audio_routes_if_enabled`` at its tail.
+    # Calling it AGAIN here makes the wire-up explicit at the CLI
+    # surface — a future refactor that moves the hook out of
+    # ``load_model`` (e.g. into a lifespan event) won't silently drop
+    # ``--enable-audio`` for the ``rapid-mlx serve`` path. The helper
+    # is idempotent (app-local sentinel) so the second call is a
+    # cheap attribute read.
+    server.register_audio_routes_if_enabled()
+
     # Start server
     # Note: Metal shader warmup runs in the FastAPI lifespan hook (server.py).
     # The "Ready:" banner is printed FROM that hook once warmup completes and
