@@ -1177,7 +1177,8 @@
     "reasoning_parser": "deepseek_r1",
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "supports_dflash": false
   },
   "holo3.1-35b-a3b": {
     "hf_path": "pipenetwork/Holo-3.1-35B-A3B-MLX-4bit",
@@ -1185,7 +1186,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "is_moe": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "supports_dflash": false
   },
   "holo3.1-35b-a3b-8bit": {
     "hf_path": "pipenetwork/Holo-3.1-35B-A3B-MLX-8bit",
@@ -1193,7 +1195,8 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "is_moe": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "supports_dflash": false
   },
   "qwen3-0.6b": {
     "hf_path": "mlx-community/Qwen3-0.6B-4bit",

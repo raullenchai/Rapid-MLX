@@ -1295,6 +1295,17 @@ def test_kimi_k26_wires_kimi_tool_parser_and_deepseek_r1_reasoning() -> None:
     assert profile.supports_spec_decode is False, (
         "Kimi K2.6 is too large + MoE for spec-decode to be net-positive."
     )
+    # codex r2 BLOCKING #1: explicit-pin the DFlash gate even though the
+    # AliasProfile default already forbids it on MoE. Defense-in-depth —
+    # if a future PR ever flips the dataclass default-False to default-True
+    # for any reason, this assertion catches the regression here instead
+    # of waiting for the broader ``test_dflash_excludes_moe_architectures``
+    # guard to fire at a much later boundary.
+    assert profile.supports_dflash is False, (
+        "kimi-k2.6: supports_dflash must be False — sparse-expert MoE "
+        "kills DFlash drafter acceptance (see "
+        "test_dflash_excludes_moe_architectures)."
+    )
 
 
 @pytest.mark.parametrize(
@@ -1334,6 +1345,17 @@ def test_holo3_1_family_follows_qwen35_moe_precedent(alias: str) -> None:
     assert profile.supports_spec_decode is False, (
         f"{alias}: hybrid arch forbids spec-decode (see "
         f"test_hybrid_disables_spec_decode)."
+    )
+    # codex r2 BLOCKING #2: explicit-pin the DFlash gate alongside the
+    # spec-decode gate. Holo3.1-A3B is MoE + hybrid, both of which
+    # independently kill DFlash (MoE expert-routing churn breaks
+    # drafter acceptance per qwen3.6-35b-a3b PoC; hybrid Mamba/GDN
+    # state breaks drafter rollback). Defense-in-depth — same
+    # rationale as the kimi-k2.6 pin above.
+    assert profile.supports_dflash is False, (
+        f"{alias}: supports_dflash must be False — Holo3.1-A3B is "
+        f"both MoE and hybrid; either independently makes DFlash "
+        f"a regression (see test_dflash_excludes_moe_architectures)."
     )
 
 
