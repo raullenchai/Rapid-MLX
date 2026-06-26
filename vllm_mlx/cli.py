@@ -2475,9 +2475,17 @@ def serve_command(args):
         assert _profile is not None and _profile.supports_dflash, (
             f"DFlash profile invariant violated for {_alias_name!r}"
         )
+        # ``--dflash-drafter-path`` override stays valid through both
+        # ``--enable-dflash`` and the ``--spec-decode dflash`` redirect
+        # path (#318): an operator-supplied path wins over the profile
+        # default. Empty string / missing attr falls back to the alias
+        # registry entry (validated non-None by _coerce_alias_dflash).
+        _dflash_drafter_override = (
+            getattr(args, "dflash_drafter_path", "") or ""
+        ).strip()
         run_dflash_server(
             main_model_repo=_profile.hf_path,
-            drafter_repo=_profile.dflash_draft_model,  # validated non-None by _coerce
+            drafter_repo=_dflash_drafter_override or _profile.dflash_draft_model,
             host=args.host,
             port=args.port,
             served_model_name=args.served_model_name or _alias_name,
