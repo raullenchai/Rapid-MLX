@@ -34,9 +34,7 @@ def test_every_row_aligns_with_the_header_separator(capsys):
     header_idx = next(
         i
         for i, ln in enumerate(lines)
-        if ln.lstrip().startswith("Alias")
-        and "DFlash" in ln
-        and "HF id" not in ln
+        if ln.lstrip().startswith("Alias") and "DFlash" in ln and "HF id" not in ln
     )
     header = lines[header_idx]
     # The data rows start two lines after the header (separator, then rows)
@@ -62,8 +60,10 @@ def test_every_row_aligns_with_the_header_separator(capsys):
         stripped = row[2:]  # drop the leading "  " indent
         first_gap = stripped.find(" ")
         # Index of the second column (Tools) in absolute terms:
-        second_col_abs = 2 + len(stripped[:first_gap]) + (
-            len(stripped[first_gap:]) - len(stripped[first_gap:].lstrip())
+        second_col_abs = (
+            2
+            + len(stripped[:first_gap])
+            + (len(stripped[first_gap:]) - len(stripped[first_gap:].lstrip()))
         )
         assert second_col_abs == tools_col, (
             f"Row mis-aligned: tools col at {second_col_abs}, header at "
