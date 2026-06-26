@@ -3543,12 +3543,16 @@ def models_command(args):
     print()
     print(f"  Available models ({len(profiles)} aliases)")
 
-    # Widths sized to fit the longest values currently in aliases.json:
-    # alias 24 (deepseek-v4-flash-8bit is 22 chars; +2 pad after explicit
-    # quant rename), tool 16 (qwen3_coder_xml + 1 pad), reasoning 12
-    # (deepseek_r1 + 1 pad), spec 10 ("✗ hybrid"), tier 11, dflash 7.
+    # Alias width is computed from the actual registry so new long names
+    # (e.g. ``deepseek-coder-v2-lite-16b-4bit``, 31 chars) don't push the
+    # rest of their row out of column alignment. 24 is the historical
+    # floor — never shrink below it so short rows still feel padded.
+    # Other widths sized to fit values currently in aliases.json:
+    # tool 16 (qwen3_coder_xml + 1 pad), reasoning 12 (deepseek_r1 + 1),
+    # spec 10 ("✗ hybrid"), tier 11, dflash 7.
+    alias_width = max(24, max((len(a) for a in profiles), default=0) + 2)
     cols = (
-        ("Alias", 24),
+        ("Alias", alias_width),
         ("Tools", 16),
         ("Reasoning", 12),
         ("Spec-Decode", 10),
@@ -3581,7 +3585,7 @@ def models_command(args):
         # registry column is pure declarative state.
         dflash = "✓" if p.supports_dflash else "—"
         row = (
-            f"  {alias:<24} {tools:<16} {reasoning:<12} "
+            f"  {alias:<{alias_width}} {tools:<16} {reasoning:<12} "
             f"{spec:<10} {tier:<11} {dflash:<7}"
         )
         print(row)
@@ -3606,17 +3610,23 @@ def models_command(args):
         audio_entries = []
 
     if audio_entries:
+        audio_alias_width = max(
+            24, max((len(e.alias) for e in audio_entries), default=0) + 2
+        )
         print()
         print(f"  Audio models ({len(audio_entries)} aliases)")
         audio_sep = "  " + "─" * width
         print(audio_sep)
-        audio_header = f"  {'Alias':<24} {'Kind':<10} {'Family':<12} {'HF id':<40}"
+        audio_header = (
+            f"  {'Alias':<{audio_alias_width}} {'Kind':<10} "
+            f"{'Family':<12} {'HF id':<40}"
+        )
         print(audio_header)
         print(audio_sep)
         for entry in audio_entries:
             kind_tag = f"[audio:{entry.type}]"
             print(
-                f"  {entry.alias:<24} {kind_tag:<10} "
+                f"  {entry.alias:<{audio_alias_width}} {kind_tag:<10} "
                 f"{entry.family:<12} {entry.hf_id:<40}"
             )
         print(audio_sep)
