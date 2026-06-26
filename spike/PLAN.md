@@ -30,9 +30,13 @@ The task description for #314 promised "no new runtime kernel" and "1-2 weeks LO
 2. `mlx_lm.convert` re-quantize rotated weights to 4-bit
 3. Upload rotated 4-bit weights to mlx-community (HF write token `tmax` available)
 
-**PPL eval harness**: ABSENT in rapid-mlx today. Need ~500 LOC for Wikitext-2 PPL. Reusable for any future quant experiment, so worth building regardless of QuaRot outcome.
+**PPL eval harness**: Phase 2 audit said ABSENT — **wrong, only checked the rapid-mlx repo**. Upstream `mlx-lm` 0.31.3 ships `mlx_lm.perplexity` as a CLI (`python -m mlx_lm.perplexity --model X --data-path wikitext`). 192-LOC module, takes any HF model path or local mlx model, returns PPL + standard error. **No custom harness needed.** mlx-lm also ships `mlx_lm.evaluate` for lm-evaluation-harness task evals (HumanEval/MMLU/GSM8K) — requires installing `lm_eval` pkg.
 
 **Bench harness**: EXISTS and is reliable. `vllm_mlx/community_bench/runner.py` gives apples-to-apples decode tok/s, locked schema (5 measured rounds, greedy decode, 2 buckets). Just swap model path baseline vs rotated.
+
+**Re-quantize**: upstream `mlx_lm.convert --hf-path <rotated-fp16> --mlx-path <out> -q --q-bits 4`. Standard tool.
+
+**Net custom code for Phase 3**: `scripts/quarot_rotate.py` ONLY. Everything else is shell orchestration around upstream tools.
 
 ## Pareto question — the real test
 
@@ -104,8 +108,19 @@ Honest 1-page recommendation: **integrate / kill / redesign**, with:
 
 ## What's next (ack-positive)
 
-- Build minimal Wikitext-2 PPL harness in `evals/wikitext_ppl.py` (~500 LOC, ~1 day, reusable)
-- Clone QuaRot reference impl (https://github.com/spcl/QuaRot or similar)
-- Write `scripts/quarot_rotate.py` adapting random Hadamard precompute for Qwen3 architecture
-- Baseline-PPL all 4B/6B/8B existing aliases for Pareto comparison
-- Generate rotated 4-bit aliases, PPL + bench, fill the table
+- ~~Build minimal Wikitext-2 PPL harness~~ — **upstream `mlx_lm.perplexity` already provides this**, no custom code
+- Clone QuaRot reference impl (github.com/spcl/QuaRot) and adapt R1+R2 rotation precompute to Qwen3 architecture as `scripts/quarot_rotate.py` (~100-300 LOC, the only real custom code in this spike)
+- Phase 3 commands (ack required for compute use, ~2-3h on M-series):
+  ```bash
+  # baseline PPL on existing 4-bit + 6-bit + 8-bit aliases
+  mlx_lm.perplexity --model mlx-community/Qwen3.5-4B-MLX-4bit --data-path wikitext --num-samples 200
+  mlx_lm.perplexity --model mlx-community/Qwen3.5-4B-MLX-6bit --data-path wikitext --num-samples 200  # if exists
+  mlx_lm.perplexity --model mlx-community/Qwen3.5-4B-MLX-8bit --data-path wikitext --num-samples 200
+  # QuaRot rotation + re-quant + rotated PPL
+  python scripts/quarot_rotate.py --input Qwen/Qwen3.5-4B --output /tmp/qwen3.5-4b-rotated
+  mlx_lm.convert --hf-path /tmp/qwen3.5-4b-rotated --mlx-path /tmp/qwen3.5-4b-rotated-4bit -q --q-bits 4
+  mlx_lm.perplexity --model /tmp/qwen3.5-4b-rotated-4bit --data-path wikitext --num-samples 200
+  # bench
+  rapid-mlx bench /tmp/qwen3.5-4b-rotated-4bit --tier speed
+  ```
+- Fill the Pareto table; decide go/no-go for Phase 4 27B
