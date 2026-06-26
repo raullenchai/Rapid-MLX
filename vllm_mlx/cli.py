@@ -7352,7 +7352,14 @@ Examples:
         elif target in subparsers.choices:
             subparsers.choices[target].print_help()
         else:
+            import difflib
+
             print(f"Unknown subcommand: {target}")
+            matches = difflib.get_close_matches(
+                target, list(subparsers.choices.keys()), n=3, cutoff=0.6
+            )
+            if matches:
+                print(f"  Did you mean: {', '.join(matches)}?")
             print("Run `rapid-mlx help` for the list of subcommands.")
             sys.exit(1)
     elif args.command == "pull":
