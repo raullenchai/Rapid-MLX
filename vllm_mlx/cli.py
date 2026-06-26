@@ -3722,7 +3722,14 @@ def pull_command(args):
 
 
 def rm_command(args):
-    """Remove a model from the HuggingFace cache."""
+    """Remove a model from the HuggingFace cache.
+
+    Default flow prompts for confirmation, defaulting to N — a real user
+    typo (``rapid-mlx rm qwn3.5-9b-4bit`` → matches a 6 GB model) could
+    silently nuke gigabytes of weights pre-0.9.7. EOF (non-TTY pipe,
+    ctrl-D) also cancels rather than being treated as accept-by-default.
+    ``-y/--yes`` skips the prompt for scripts.
+    """
     from huggingface_hub import scan_cache_dir
 
     repo_id = args.model
@@ -3738,11 +3745,24 @@ def rm_command(args):
         sys.exit(1)
 
     repo = matching[0]
+    size_str = _format_bytes(repo.size_on_disk)
+
+    if not getattr(args, "yes", False):
+        try:
+            response = input(f"Remove {repo_id} ({size_str})? [y/N] ").strip().lower()
+        except EOFError:
+            # Non-TTY (piped stdin, ctrl-D) — treat as cancel, never as
+            # silent-yes. Matches ``apt`` / ``brew`` muscle memory.
+            print("Aborted.")
+            sys.exit(0)
+        if response not in ("y", "yes"):
+            print("Aborted.")
+            sys.exit(0)
+
     revisions = [rev.commit_hash for rev in repo.revisions]
     strategy = cache.delete_revisions(*revisions)
-    print(f"\n  Removing {repo_id} ({strategy.expected_freed_size_str}) ...")
     strategy.execute()
-    print("  Done.")
+    print(f"Freed {size_str}")
 
 
 def ps_command(_args):
@@ -6763,6 +6783,12 @@ Examples:
     rm_parser.add_argument(
         "model", help="Model alias (e.g. qwen3.5-4b-4bit) or HF repo (org/name)"
     ).completer = alias_completer
+    rm_parser.add_argument(
+        "-y",
+        "--yes",
+        action="store_true",
+        help="Skip the confirmation prompt and remove the model immediately.",
+    )
     subparsers.add_parser("ps", help="List running rapid-mlx servers")
 
     # Upgrade — detect install method and run the right upgrade command
