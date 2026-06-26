@@ -1504,6 +1504,35 @@ def serve_command(args):
     if is_audio_model_alias(getattr(args, "model", None)):
         require_audio_or_exit(args.model)
 
+    # 0.9.2 dogfood (parallels the [embeddings]/[vision]/[audio] guards
+    # immediately above): ``--enable-dflash`` and the equivalent
+    # ``--spec-decode dflash`` both depend on the optional ``mlx-vlm``
+    # bridge that ships in the ``[dflash]`` extra. Pre-0.9.3 the missing-
+    # runtime error only surfaced ~50 lines into serve_command, AFTER:
+    #   - alias profile resolved (logged twice via pflash)
+    #   - tool/reasoning parsers auto-configured
+    #   - CORS allow-origin warning printed
+    # so the operator saw five INFO lines and a banner before the
+    # actionable ``Install with: pip install 'rapid-mlx[dflash]'`` line,
+    # matching Diego's earlier ``[embeddings]`` regression shape exactly.
+    # Hoist the cheap ``have_runtime()`` probe to the same boot-guard tier
+    # as the other extras so the error lands FIRST. ``importlib.util.
+    # find_spec("mlx_vlm")`` doesn't trigger a load — safe to run on the
+    # hot CLI path.
+    _wants_dflash = getattr(args, "enable_dflash", False) or (
+        getattr(args, "spec_decode", "none") == "dflash"
+    )
+    if _wants_dflash:
+        from .speculative.dflash.eligibility import have_runtime
+
+        if not have_runtime():
+            print(
+                "\n  Error: --enable-dflash (and --spec-decode dflash) "
+                "requires mlx-vlm 0.5.0+ for the DFlash drafter hooks. "
+                "Install with: ``pip install 'rapid-mlx[dflash]'``.\n"
+            )
+            sys.exit(1)
+
     # R10-C1: AUDIO-SERVE-MODE FORK. The boot guard above only checks
     # that the ``[audio]`` extra is installed — it doesn't route the
     # alias anywhere. Pre-R10 every short alias (``kokoro``, ``whisper``,
@@ -1976,8 +2005,9 @@ def serve_command(args):
     if args.enable_dflash:
         from .model_aliases import resolve_profile
         from .speculative.dflash import DFlashUnavailable, check
-        from .speculative.dflash.eligibility import have_runtime
 
+        # ``have_runtime()`` validated at the top-of-function boot-guard
+        # tier — see the 0.9.2 dogfood comment near the audio probe.
         _alias_name = getattr(args, "_original_alias", None) or args.model
         _profile = resolve_profile(_alias_name)
         if _profile is None:
@@ -1993,13 +2023,12 @@ def serve_command(args):
         except DFlashUnavailable as e:
             print(f"\n  Error: {e}\n")
             sys.exit(1)
-        if not have_runtime():
-            print(
-                "\n  Error: --enable-dflash requires mlx-vlm 0.5.0+ for the "
-                "DFlash drafter hooks. Install with: "
-                "``pip install 'rapid-mlx[dflash]'``.\n"
-            )
-            sys.exit(1)
+        # ``have_runtime()`` is already validated by the boot-guard tier
+        # at the top of ``serve_command`` — see the 0.9.2 dogfood comment
+        # there. We keep the import + the deeper DFlashUnavailable / alias
+        # check here because they need the resolved profile, but the
+        # extras-not-installed branch is unreachable by the time control
+        # reaches this point.
 
         # Warn about flags that BatchedEngine honours but the DFlash
         # server doesn't — better to surface this once at startup than
