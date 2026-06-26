@@ -1,0 +1,29 @@
+=== A: original Qwen3-0.6B-bf16 PPL (baseline FP) ===
+Model: mlx-community/Qwen3-0.6B-bf16
+Perplexity: 6.104 ± 0.031
+Peak memory: 16.79 GB
+Tokens per second: 11425
+
+=== B: rotated Qwen3-0.6B-bf16 PPL (should ≈ baseline = lossless rotation) ===
+Model: /tmp/qwen3-0.6b-rotated
+Perplexity: 6.103 ± 0.031
+Peak memory: 17.11 GB
+Tokens per second: 11406
+
+=== C: original Qwen3-0.6B-4bit PPL (baseline quant) ===
+Model: mlx-community/Qwen3-0.6B-4bit
+Perplexity: 6.683 ± 0.033
+Peak memory: 15.94 GB
+Tokens per second: 10879
+
+=== D: quantize rotated FP -> 4bit ===
+[INFO] Loading
+[INFO] Using dtype: bfloat16
+[INFO] Quantizing
+[INFO] Quantized model with 4.501 bits per weight.
+
+=== E: rotated-quantized Qwen3-0.6B-quarot-4bit PPL (THE QUAROT SIGNAL) ===
+Model: /tmp/qwen3-0.6b-quarot-4bit
+Perplexity: 8.067 ± 0.042
+Peak memory: 16.03 GB
+Tokens per second: 10856
