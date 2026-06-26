@@ -102,11 +102,15 @@ def _reset_mtp_module_state():
 
     _unpatch_for_tests()
     reset_global_counter_for_tests()
-    mx.set_default_stream(mx.default_stream(mx.default_device()))
+    # See the matching fixture in ``test_mtp_spec_decode.py`` for the
+    # cross-thread stream reasoning. A FRESH stream allocated from the
+    # current (main pytest) thread is the only reliable way to dislodge
+    # a leaked active default that lives in a worker thread.
+    mx.set_default_stream(mx.new_stream(mx.default_device()))
     yield
     _unpatch_for_tests()
     reset_global_counter_for_tests()
-    mx.set_default_stream(mx.default_stream(mx.default_device()))
+    mx.set_default_stream(mx.new_stream(mx.default_device()))
 
 
 def _generate_step_none_path(

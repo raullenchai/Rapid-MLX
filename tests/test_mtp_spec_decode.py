@@ -66,11 +66,22 @@ def _reset_mtp_module_state():
 
     _unpatch_for_tests()
     reset_global_counter_for_tests()
-    mx.set_default_stream(mx.default_stream(mx.default_device()))
+    # Allocate a FRESH stream in the *current* (pytest main) thread and
+    # pin it as the active default. Some preceding sweep test
+    # (mllm-batch-generator etc.) creates an ``mx.new_stream`` in a
+    # worker thread and leaves the active default pointing at it.
+    # That stream exists in the worker thread, NOT the main thread, so
+    # MTP's ``mx.eval(toks)`` at generator.py:420 crashes with
+    # ``RuntimeError: There is no Stream(gpu, N) in current thread``.
+    # Allocating from this thread guarantees the active default is
+    # bound to a stream that THIS thread can see. (Memory:
+    # ``mx.new_stream`` is thread-bound — that's the bug we're routing
+    # around at the test layer.)
+    mx.set_default_stream(mx.new_stream(mx.default_device()))
     yield
     _unpatch_for_tests()
     reset_global_counter_for_tests()
-    mx.set_default_stream(mx.default_stream(mx.default_device()))
+    mx.set_default_stream(mx.new_stream(mx.default_device()))
 
 
 # ---------------------------------------------------------------------------
