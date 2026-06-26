@@ -1,0 +1,43 @@
+Fri Jun 26 12:48:38 PDT 2026 RETRY 4B QuaRot pipeline (snapshot_download fix)
+===== Step 1: download Qwen3.5-4B FP16 (Fri Jun 26 12:48:38 PDT 2026) =====
+Fetching 10 files:   0%|          | 0/10 [00:00<?, ?it/s]Fetching 10 files:  10%|█         | 1/10 [00:00<00:02,  3.56it/s]Fetching 10 files:  20%|██        | 2/10 [00:00<00:02,  3.52it/s]Fetching 10 files:  30%|███       | 3/10 [01:10<03:45, 32.26s/it]Fetching 10 files: 100%|██████████| 10/10 [01:10<00:00,  7.09s/it]
+downloaded to: /private/tmp/qwen3.5-4b-fp16
+-rw-r--r--@ 1 raullenstudio  wheel   5.0G Jun 26 12:49 /tmp/qwen3.5-4b-fp16/model.safetensors-00001-of-00002.safetensors
+-rw-r--r--@ 1 raullenstudio  wheel   3.7G Jun 26 12:49 /tmp/qwen3.5-4b-fp16/model.safetensors-00002-of-00002.safetensors
+  disk free after DL: 14Gi
+===== Step 2: quarot R1+R2 rotation (Fri Jun 26 12:49:50 PDT 2026) =====
+=== QuaRot rotate: /private/tmp/qwen3.5-4b-fp16 -> /private/tmp/qwen3.5-4b-rotated ===
+loading 2 safetensors file(s) from /private/tmp/qwen3.5-4b-fp16
+WARNING: model_type='qwen3_5', this script is designed for 'qwen3'
+Traceback (most recent call last):
+  File "/Users/raullenstudio/work/rapid-mlx/spike/scripts/quarot_rotate.py", line 374, in <module>
+    main()
+  File "/Users/raullenstudio/work/rapid-mlx/spike/scripts/quarot_rotate.py", line 368, in main
+    rotated = rotate_state(state, config, args.seed)
+              ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/raullenstudio/work/rapid-mlx/spike/scripts/quarot_rotate.py", line 164, in rotate_state
+    hidden = config["hidden_size"]
+             ~~~~~~^^^^^^^^^^^^^^^
+KeyError: 'hidden_size'
+  disk free after rotate: 14Gi
+===== Step 3: quantize rotated to 4-bit (Fri Jun 26 12:49:50 PDT 2026) =====
+    validate_repo_id(arg_value)
+  File "/Users/raullenstudio/.rapid-mlx/lib/python3.12/site-packages/huggingface_hub/utils/_validators.py", line 132, in validate_repo_id
+    raise HFValidationError(
+huggingface_hub.errors.HFValidationError: Repo id must be in the form 'repo_name' or 'namespace/repo_name': '/tmp/qwen3.5-4b-rotated'. Use `repo_type` argument if needed.
+[INFO] Loading
+===== Step 4: delete rotated FP16 to free disk (Fri Jun 26 12:49:51 PDT 2026) =====
+  disk free after cleanup: 14Gi
+===== Step 5: quantize non-rotated FP16 to RTN 4-bit (Fri Jun 26 12:49:51 PDT 2026) =====
+[INFO] Loading
+[INFO] Using dtype: bfloat16
+[INFO] Quantizing
+[INFO] Quantized model with 4.503 bits per weight.
+  disk free after FP16 cleanup: 20Gi
+===== Step 6: PPL on QuaRot 4-bit (Fri Jun 26 12:49:55 PDT 2026) =====
+===== Step 7: PPL on RTN 4-bit baseline (Fri Jun 26 12:49:56 PDT 2026) =====
+Model: /tmp/qwen3.5-4b-rtn-4bit
+Perplexity: 3.783 ± 0.014
+Peak memory: 15.38 GB
+Tokens per second: 1613
+===== DONE (Fri Jun 26 12:54:15 PDT 2026) =====
