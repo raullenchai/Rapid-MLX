@@ -339,12 +339,14 @@ def _drive_stream(engine, request) -> tuple[list[dict], str | None]:
     chunks: list[dict] = []
 
     async def _run():
-        gen = stream_chat_completion(engine, [{"role": "user", "content": "hi"}], request)
+        gen = stream_chat_completion(
+            engine, [{"role": "user", "content": "hi"}], request
+        )
         async for sse in gen:
             line = sse.strip()
             if not line.startswith("data: "):
                 continue
-            body = line[len("data: "):]
+            body = line[len("data: ") :]
             if body == "[DONE]":
                 break
             try:
@@ -414,7 +416,16 @@ class TestStreamSynthForcedToolChoice:
         # The model emits a hybrid wire shape (Nemotron closers after a
         # JSON prefix injection) that neither shape regex matches; the
         # parser never sets ``tool_calls_detected``.
-        deltas = ["0", "}", "\n", "</parameter>", "\n", "</function>", "\n", "</tool_call>"]
+        deltas = [
+            "0",
+            "}",
+            "\n",
+            "</parameter>",
+            "\n",
+            "</function>",
+            "\n",
+            "</tool_call>",
+        ]
         chunks, finish = _drive_stream(_FakeEngine(deltas), self._request("required"))
         # Look for a tool_calls delta in any chunk.
         emitted_tcs = []
@@ -455,7 +466,9 @@ class TestStreamSynthForcedToolChoice:
             deltas = ["plain ", "answer", "."]
             chunks, finish = _drive_stream(
                 _FakeEngine(deltas),
-                self._request({"type": "function", "function": {"name": "get_weather"}}),
+                self._request(
+                    {"type": "function", "function": {"name": "get_weather"}}
+                ),
             )
         finally:
             pp_mod.StreamingPostProcessor.reset = original_reset

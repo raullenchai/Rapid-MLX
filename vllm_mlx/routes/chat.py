@@ -3963,15 +3963,11 @@ async def stream_chat_completion(
                 }
                 if _pinned and _pinned in _submitted:
                     _synth_target = _pinned
-            elif (
-                request.tool_choice == "required" and len(request.tools) == 1
-            ):
+            elif request.tool_choice == "required" and len(request.tools) == 1:
                 _synth_target = request.tools[0].function.get("name")
             if _synth_target:
                 _raw_text = (
-                    processor.tool_accumulated_text
-                    or processor.accumulated_text
-                    or ""
+                    processor.tool_accumulated_text or processor.accumulated_text or ""
                 )
                 _synth_call = _synthesize_forced_tool_call(
                     _synth_target, raw_text=_raw_text
