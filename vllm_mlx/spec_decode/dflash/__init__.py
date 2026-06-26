@@ -46,14 +46,21 @@ runtimes:
 * :mod:`vllm_mlx.speculative.dflash` — the original PoC bridge that
   calls into ``mlx-vlm 0.5.0+``'s built-in drafter loader. Lives next to
   the SuffixDecoding / prompt-lookup speculative paths. Driven by the
-  ``--enable-dflash`` flag.
+  ``--enable-dflash`` flag. **This is the only production-working DFlash
+  path in 0.9.x** (paper-bench-verified ≥3.5× on 27B int4+bf16-KV).
 * :mod:`vllm_mlx.spec_decode.dflash` (THIS module) — the R15-P1 #313
-  vendored backend that integrates with the standardized
-  ``--spec-decode {none,mtp,dflash}`` interface so a future ablation /
-  benchmark layer can swap between MTP and DFlash without touching the
-  call site. Under the hood the drafter forward delegates to the same
-  mlx-vlm bridge when available, but the verifier and accept-counter
-  scaffolding lives here.
+  vendored scaffolding for the standardized
+  ``--spec-decode {none,mtp,dflash}`` interface. The accept counter, the
+  drafter registry, and the eligibility detector are stable and used by
+  metrics + the CLI banner. The drafter/verifier/generator integration
+  with BatchedEngine is **DEFERRED to 0.10** — the original adapter
+  (``drafter.py:275``) called ``DFlashDraftModel.draft_block(prefix,
+  position)`` against an mlx-vlm 0.5.0 signature that requires
+  ``(last_bonus, hidden, cache, block_size, sampler, token_dtype)``.
+
+For 0.9, ``--spec-decode dflash`` on the CLI redirects to
+``--enable-dflash`` (see :mod:`vllm_mlx.cli`) so operators still get a
+working DFlash path through the unified flag surface.
 
 Both paths share the lossless contract: byte-identical output to the
 no-spec-decode path (rejection always emits the verify model's pred at

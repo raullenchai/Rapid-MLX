@@ -1931,6 +1931,31 @@ def serve_command(args):
     else:
         server._reasoning_parser = None
 
+    # R15-P1 #313 follow-up (#318): ``--spec-decode dflash`` routes to
+    # the prod path. The originally vendored BatchedEngine adapter at
+    # ``vllm_mlx/spec_decode/dflash/drafter.py:275`` called
+    # ``drafter.draft_block(prefix_tokens, current_position)`` with 2 args,
+    # but mlx-vlm 0.5.0's ``DFlashDraftModel.draft_block`` requires 6 args:
+    # ``(last_bonus, hidden, cache, block_size, sampler, token_dtype)``.
+    # The BatchedEngine adapter never wired the verifier→drafter hidden-
+    # state + cache + sampler thread, so the new --spec-decode dflash
+    # flag was 100% broken at first request — never validated end-to-end.
+    # The OLD ``--enable-dflash`` flag (``vllm_mlx/speculative/dflash/`` +
+    # mlx-vlm's ``_dflash_rounds``) IS the prod-tested path. We unify the
+    # CLI surface by routing ``--spec-decode dflash`` to
+    # ``--enable-dflash`` so users hit the working bridge. The
+    # ``spec_decode/dflash/{generator,drafter,verifier}.py`` modules
+    # remain importable but inert; the ``accept_counter`` /
+    # ``drafter_registry`` siblings stay active for metric scaffolding.
+    if getattr(args, "spec_decode", "none") == "dflash":
+        args.enable_dflash = True
+        args.spec_decode = "none"
+        print(
+            "Spec-decode: --spec-decode dflash routed to --enable-dflash "
+            "(mlx-vlm bridge; BatchedEngine integration deferred to 0.10).",
+            file=sys.stderr,
+        )
+
     # DFlash mutual-exclusion gate fires BEFORE the startup banner so
     # the user sees a clean error instead of an optimistic "Features:
     # dflash" line immediately followed by an exit. The deeper SchedulerConfig
@@ -2350,53 +2375,11 @@ def serve_command(args):
             sys.exit(2)
         print(f"Spec-decode: mtp ({eligibility.value})")
 
-    # R15-P1 #313: DFlash boot-time eligibility check. Same architecture
-    # gate as MTP (Qwen3.5 / 3.6) but a different drafter binding gate
-    # (side-registry or --dflash-drafter-path override). Rejects at boot
-    # so an operator on a non-Qwen model sees a clear error rather than
-    # discovering the mismatch at first decode.
-    if getattr(args, "spec_decode", "none") == "dflash":
-        from vllm_mlx.spec_decode.dflash import (
-            DFlashEligibility,
-            detect_dflash_eligibility,
-        )
-
-        try:
-            hf_cfg_eligibility, _ = _gather_kv_cache_dtype_inputs(args.model)
-        except Exception:  # pragma: no cover — best-effort
-            hf_cfg_eligibility = None
-        eligibility = detect_dflash_eligibility(
-            hf_cfg_eligibility,
-            alias=args.model,
-            drafter_override=getattr(args, "dflash_drafter_path", "") or None,
-        )
-        if eligibility is DFlashEligibility.NONE:
-            print(
-                "error: --spec-decode dflash requires a Qwen3.5 / Qwen3.6 "
-                "model AND a bound DFlash drafter. Register one via "
-                "vllm_mlx.spec_decode.dflash.register_dflash_drafter() "
-                "or pass --dflash-drafter-path <hf_id_or_local_path>.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        print(f"Spec-decode: dflash ({eligibility.value})")
-        # Warn (don't reject) on the K8V4 vs --kv-cache-dtype int4
-        # interaction. The lossless contract holds for both, but the
-        # accept rate drops empirically because the verifier and
-        # drafter see DIFFERENT KV quantization paths (drafter stays
-        # at bf16, verifier writes through TurboQuant K8V4 — this
-        # mismatches the paper bench setup). Operators who explicitly
-        # WANT the combo can ignore the warning; we just surface the
-        # caveat so a 20% accept-rate regression doesn't get blamed
-        # on rapid-mlx.
-        if getattr(args, "kv_cache_turboquant", False):
-            print(
-                "warning: --spec-decode dflash + --kv-cache-turboquant "
-                "(K8V4) is a non-paper config — accept rate may drop "
-                "vs --kv-cache-dtype bf16 / int4. The lossless "
-                "contract still holds.",
-                file=sys.stderr,
-            )
+    # ``--spec-decode dflash`` is normalized to ``--enable-dflash`` near
+    # the top of serve_command (#318 redirect); by the time we reach
+    # here, args.spec_decode is "none" for dflash callers. The
+    # speculative.dflash gate at the start of serve_command runs the
+    # actual eligibility + drafter-binding checks via the prod bridge.
     if args.suffix_decoding:
         print(
             f"SuffixDecoding: enabled, max_draft={args.suffix_max_draft}, "

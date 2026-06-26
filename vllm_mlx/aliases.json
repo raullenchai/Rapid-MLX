@@ -35,6 +35,8 @@
     "is_hybrid_explicit": true,
     "is_moe": false,
     "supports_spec_decode": false,
+    "supports_dflash": true,
+    "dflash_draft_model": "z-lab/Qwen3.5-9B-DFlash",
     "pflash_tier": "verified"
   },
   "qwen3.5-27b-4bit": {
