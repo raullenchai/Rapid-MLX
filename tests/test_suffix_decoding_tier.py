@@ -214,6 +214,23 @@ class TestProfileTableCell:
         assert cell == "n/a (hybrid arch — spec decode off)"
         assert "…" not in cell
 
+    def test_dense_no_drafter_tier_cell_does_not_lie_about_hybrid(self):
+        """0.9.0 dogfood regression guard.
+
+        Pure-attention aliases with no MTP/drafter (e.g. qwen3.5-4b-4bit)
+        had ``supports_spec_decode=False`` rendered with the hybrid-arch
+        reason, contradicting the ``Architecture: pure attention`` row.
+        Surface the actual reason instead.
+        """
+        cfg = ModelConfig(supports_spec_decode=False, is_hybrid=False)
+        cell = _suffix_tier_cell(cfg, max_width=41)
+        # Width-fit to the 41-char ``info`` value column without
+        # triggering the truncator (no trailing ``…)``).
+        assert cell == "n/a (no MTP/drafter — spec decode off)"
+        assert "hybrid arch" not in cell
+        assert "…" not in cell
+        assert len(cell) <= 41
+
     def test_table_rows_all_same_width_for_long_avoid(self):
         """Box-frame alignment invariant: every bordered row must end at
         the same column. Pre-fix the ``Suffix tier`` row for an alias

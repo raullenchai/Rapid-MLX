@@ -1189,7 +1189,20 @@ def _suffix_tier_cell(cfg: "ModelConfig", max_width: int | None = None) -> str:
     with ``…)`` instead of ``)``.
     """
     if not cfg.supports_spec_decode:
-        text = "n/a (hybrid arch — spec decode off)"
+        # ``supports_spec_decode=False`` covers two cases: hybrid arches
+        # (Mamba / linear-attention — the runtime gates spec decode off)
+        # and dense models where no MTP/drafter checkpoint is registered.
+        # Surfacing the right reason is load-bearing for ``rapid-mlx info``
+        # — 0.9.0 dogfood found we were reporting ``hybrid arch`` for
+        # pure-attention Qwen3.5/3.6 dense aliases, which contradicts the
+        # ``Architecture: pure attention`` row two lines above.
+        if cfg.is_hybrid:
+            text = "n/a (hybrid arch — spec decode off)"
+        else:
+            # Tight enough to fit the 41-char ``info`` value column
+            # (``inner=60 − 17-char key − 2-char ": "``) so the row
+            # renders without ``_truncate_tier_note`` clipping.
+            text = "n/a (no MTP/drafter — spec decode off)"
     else:
         tier = cfg.suffix_decoding_tier
         speedup = cfg.suffix_bench_speedup or {}
@@ -1313,7 +1326,14 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ),
         ]
     else:
-        spec = "✓ supported" if cfg.supports_spec_decode else "✗ disabled (hybrid arch)"
+        if cfg.supports_spec_decode:
+            spec = "✓ supported"
+        elif cfg.is_hybrid:
+            spec = "✗ disabled (hybrid arch)"
+        else:
+            # 0.9.0 dogfood: non-hybrid + spec-off was rendering
+            # ``hybrid arch`` next to ``Architecture: pure attention``.
+            spec = "✗ disabled (no MTP/drafter trained)"
         throttle = "✓ 200ms gap" if cfg.is_hybrid else "✗ not needed"
         rows = [
             ("Tool format", cfg.tool_call_parser or "(none)"),

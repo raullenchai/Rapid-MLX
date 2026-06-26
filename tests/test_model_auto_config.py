@@ -780,6 +780,24 @@ class TestVisibility:
         assert "✓ supported" in table
         assert "✗ not needed" in table
 
+    def test_table_for_dense_no_drafter_shows_honest_reason(self):
+        # 0.9.0 dogfood regression guard. ``qwen3.5-4b-4bit`` has
+        # ``supports_spec_decode=False`` (no MTP head trained) but is
+        # NOT hybrid. Before 0.9.1 the Spec-decode row claimed
+        # ``(hybrid arch)`` as the reason, contradicting the
+        # ``Architecture: pure attention`` row two lines above. Now we
+        # surface the actual reason — no MTP/drafter trained for this
+        # alias — so the user can act on it (or stop expecting a flag
+        # to flip).
+        cfg = detect_model_config("mlx-community/Qwen3.5-4B-MLX-4bit")
+        assert cfg is not None
+        assert cfg.is_hybrid is False
+        assert cfg.supports_spec_decode is False
+        table = format_profile_table("mlx-community/Qwen3.5-4B-MLX-4bit", cfg)
+        assert "✗ disabled (no MTP/drafter trained)" in table
+        assert "✗ disabled (hybrid arch)" not in table
+        assert "pure attention" in table
+
     def test_table_for_unknown_shows_defaults(self):
         table = format_profile_table("some-new-model", None)
         assert "no pattern matched" in table

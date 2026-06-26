@@ -3707,6 +3707,17 @@ def ps_command(_args):
         ):
             continue
 
+        # 0.9.0 dogfood: ``rapid-mlx serve`` runs under a ``caffeinate
+        # -is rapid-mlx serve ...`` wrapper on macOS to prevent sleep.
+        # The wrapper's argv carries the same ``rapid-mlx`` / ``serve``
+        # tokens as the real server, so the substring match above
+        # double-counts it as a second row (same port, different PID).
+        # The wrapper is never the actual server — its argv[0] basename
+        # is the only reliable way to filter it out without missing the
+        # case where caffeinate is launched via an absolute path.
+        if cmd and os.path.basename(cmd[0]) == "caffeinate":
+            continue
+
         # Extract model arg and --port flag. argparse accepts options
         # before positionals, so the model is the first non-flag token
         # after `serve` whose prior token isn't a value-taking flag.
