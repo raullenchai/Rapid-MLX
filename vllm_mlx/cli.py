@@ -5408,6 +5408,10 @@ def upgrade_command(args):
         )
         return
 
+    if getattr(args, "dry_run", False):
+        print("  (dry-run — not executed; rerun without --dry-run to apply.)\n")
+        return
+
     if args.yes:
         confirmed = True
     else:
@@ -6707,6 +6711,14 @@ Examples:
         "--yes",
         action="store_true",
         help="Skip the confirmation prompt and run the upgrade immediately.",
+    )
+    upgrade_parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help=(
+            "Print the detected install method and the upgrade command, "
+            "then exit without running it."
+        ),
     )
 
     # Chat — interactive REPL backed by a (spawned or existing) server.
