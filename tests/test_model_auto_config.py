@@ -798,6 +798,25 @@ class TestVisibility:
         assert "✗ disabled (hybrid arch)" not in table
         assert "pure attention" in table
 
+    def test_table_for_dflash_alias_surfaces_opt_in_flag(self):
+        # 0.9.1 dogfood follow-up. ``qwen3.5-27b-8bit`` is the operator-
+        # shipped DFlash flagship (1.85× code median, 0.9.0 release
+        # notes). Its alias has ``supports_spec_decode=False`` (no MTP
+        # head) BUT ``supports_dflash=True`` with the drafter registered.
+        # Before 0.9.2 the Spec-decode row claimed
+        # ``(no MTP/drafter trained)`` — actively misleading because the
+        # DFlash drafter IS registered and the user can opt in. Surface
+        # the actionable flag instead.
+        cfg = detect_model_config("mlx-community/Qwen3.5-27B-8bit")
+        assert cfg is not None
+        assert cfg.is_hybrid is False
+        assert cfg.supports_spec_decode is False
+        assert cfg.supports_dflash is True
+        table = format_profile_table("mlx-community/Qwen3.5-27B-8bit", cfg)
+        assert "✗ MTP off — try --enable-dflash" in table
+        assert "no MTP/drafter trained" not in table
+        assert "hybrid arch" not in table
+
     def test_table_for_unknown_shows_defaults(self):
         table = format_profile_table("some-new-model", None)
         assert "no pattern matched" in table
