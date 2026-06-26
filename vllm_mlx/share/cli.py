@@ -394,10 +394,15 @@ def _spawn_serve(
     # ``serve`` to launchd / init; without this stamp the child would
     # outlive the frp tunnel teardown and keep the bearer-gated port
     # bound. The watchdog inside the child checks ``os.getppid()`` and
-    # exits the moment it stops matching this PID. No-op if the operator
-    # already exported the env var to a different value — that's an
-    # explicit override.
-    env.setdefault("RAPID_MLX_WATCHDOG_PPID", str(os.getpid()))
+    # exits the moment it stops matching this PID.
+    #
+    # Direct assignment (NOT setdefault). Codex r2 MAJOR: a stale
+    # ``RAPID_MLX_WATCHDOG_PPID`` inherited from a grandparent
+    # supervisor would otherwise be forwarded into the child, and the
+    # child would compare against the WRONG PID (the grandparent's,
+    # not ``rapid-mlx share``'s) and self-terminate immediately. The
+    # spawner owns the watchdog relationship — overwrite is correct.
+    env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
     log_fp = log_path.open("ab", buffering=0)
     # Tighten permissions: log files default to umask-derived modes
     # (often 644 = world-readable). If serve ever logs the key as part

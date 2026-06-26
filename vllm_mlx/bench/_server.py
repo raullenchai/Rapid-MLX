@@ -125,13 +125,23 @@ def serve(
         log_fh = open(tmp_log, "w")
     try:
         t_spawn = time.perf_counter()
+        # Parent-PID watchdog (rapid-desktop #449 sibling fix). A
+        # SIGKILL of the bench process before ``_terminate(proc)`` runs
+        # would otherwise leave the spawned serve as an orphan holding
+        # the model in RAM. The watchdog inside the child polls
+        # ``os.getppid()`` and exits when it stops matching this PID.
+        # Direct assignment (NOT setdefault) so an inherited / stale
+        # env value from a grandparent supervisor cannot mis-target
+        # the watchdog at the wrong PID.
+        spawn_env = os.environ.copy()
+        spawn_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
         proc = subprocess.Popen(  # noqa: S603 — args constructed by us
             cmd,
             cwd=REPO_ROOT,
             stdin=subprocess.DEVNULL,
             stdout=log_fh,
             stderr=subprocess.STDOUT,
-            env=os.environ.copy(),
+            env=spawn_env,
             # New process group so we can signal the whole tree on
             # teardown (uvicorn + worker children). POSIX-only; we
             # don't run on win.

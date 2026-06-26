@@ -3916,9 +3916,18 @@ def _spawn_chat_server(
     # outlive ``rapid-mlx chat`` and keep the model + port locked. The
     # watchdog inside the child polls ``os.getppid()`` every 2 s and
     # self-terminates the moment the live PPID stops matching this
-    # stamp. ``setdefault`` so an explicit operator export (e.g. tests
-    # that want to disable the watchdog) wins.
-    child_env.setdefault("RAPID_MLX_WATCHDOG_PPID", str(os.getpid()))
+    # stamp.
+    #
+    # Direct assignment (NOT setdefault). Codex r2 MAJOR: if the chat
+    # REPL itself was launched under a supervisor that already exported
+    # ``RAPID_MLX_WATCHDOG_PPID=<grandparent_pid>``, ``setdefault``
+    # would carry the grandparent's PID into the child env. The
+    # watchdog would then compare ``os.getppid()`` (= chat REPL's PID,
+    # the IMMEDIATE parent) against the grandparent PID, mismatch on
+    # first poll, and self-terminate the freshly-booted server. The
+    # spawner owns the watchdog relationship for the spawn it just
+    # created — overwrite is correct.
+    child_env["RAPID_MLX_WATCHDOG_PPID"] = str(os.getpid())
     # Atomic critical section: block SIGTERM/SIGINT delivery around
     # the whole ``Popen()`` + register + attribute-set + ``release()``
     # sequence. We use ``pthread_sigmask(SIG_BLOCK, ...)`` so the

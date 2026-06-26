@@ -315,6 +315,64 @@ class TestInternalSpawnersStampWatchdog:
             "env stamp."
         )
 
+    def test_bench_serve_spawn_stamps_watchdog_ppid(self):
+        """Codex r2 MAJOR: ``rapid-mlx bench --tier ...`` boots a
+        serve child via ``vllm_mlx/bench/_server.py``. Same SIGKILL-of-
+        supervisor orphan story applies; pin the env stamp here too."""
+        from pathlib import Path
+
+        bench_file = (
+            Path(__file__).resolve().parents[1] / "vllm_mlx" / "bench" / "_server.py"
+        )
+        source = bench_file.read_text()
+        assert "RAPID_MLX_WATCHDOG_PPID" in source, (
+            "rapid-desktop #449 sibling regression: bench/_server.py "
+            "no longer stamps RAPID_MLX_WATCHDOG_PPID on the spawned "
+            "serve child. SIGKILL of `rapid-mlx bench` would orphan "
+            "the model server. Restore the env stamp."
+        )
+
+    def test_all_internal_spawners_use_direct_assignment_not_setdefault(self):
+        """Codex r2 MAJOR: ``setdefault`` is the wrong primitive for
+        the watchdog stamp.
+
+        If the parent CLI invocation was itself launched under a
+        supervisor that exported ``RAPID_MLX_WATCHDOG_PPID=<gp_pid>``,
+        ``setdefault`` would preserve the grandparent's PID. The serve
+        child would then compare ``os.getppid()`` (= our immediate
+        PID) against the grandparent's PID, mismatch on the FIRST
+        poll, and self-terminate the freshly-booted server. The
+        spawner owns the watchdog relationship for the child it just
+        spawned — overwrite (direct ``env[KEY] = ...``) is the only
+        correct shape."""
+        from pathlib import Path
+
+        repo_root = Path(__file__).resolve().parents[1]
+        offenders: list[str] = []
+        for spawner in (
+            repo_root / "vllm_mlx" / "cli.py",
+            repo_root / "vllm_mlx" / "share" / "cli.py",
+            repo_root / "vllm_mlx" / "bench" / "_server.py",
+        ):
+            source = spawner.read_text()
+            # We only care about the watchdog stamp itself, not any
+            # other ``setdefault`` calls in the file. Grep for both
+            # forms on the same key, skipping comment lines (which
+            # legitimately mention ``setdefault`` in the rationale).
+            for line in source.splitlines():
+                stripped = line.strip()
+                if stripped.startswith("#"):
+                    continue
+                if "setdefault" in stripped and "RAPID_MLX_WATCHDOG_PPID" in stripped:
+                    offenders.append(f"{spawner.name}: {stripped}")
+        assert not offenders, (
+            "rapid-desktop #449 sibling regression: a spawner used "
+            "setdefault for the watchdog stamp. A grandparent's stale "
+            "RAPID_MLX_WATCHDOG_PPID would be inherited and the serve "
+            "child would self-terminate immediately. Use direct "
+            "assignment instead. Offending lines:\n  " + "\n  ".join(offenders)
+        )
+
 
 class TestDefaultOnOrphan:
     def test_writes_canonical_marker_to_stderr(self, capsys):
