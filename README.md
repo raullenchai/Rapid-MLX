@@ -569,7 +569,7 @@ Decoded examples:
 | Family | Aliases | Notable |
 |---|---|---|
 | **Qwen3.5** | `qwen3.5-4b-4bit`, `-4b-8bit`, `-9b-4bit`, `-9b-8bit`, `-27b-4bit`, `-27b-8bit` ✨, `-35b-4bit`, `-35b-8bit`, `-122b-mxfp4`, `-122b-8bit` | DeltaNet hybrid; **27b-8bit DFlash-eligible** |
-| **Qwen3.6** | `qwen3.6-27b-4bit`, `-27b-8bit` ✨, `-27b-ud`, `-35b-4bit`, `-35b-6bit`, `-35b-8bit`, `-35b-dwq`, `-35b-ud` | 262K ctx, 256 MoE experts; **27b-8bit DFlash-eligible** |
+| **Qwen3.6** | `qwen3.6-27b-4bit`, `-27b-8bit`, `-27b-ud`, `-35b-4bit`, `-35b-6bit`, `-35b-8bit`, `-35b-dwq`, `-35b-ud` | 262K ctx, 256 MoE experts |
 | **Qwen3** | `qwen3-0.6b-4bit`, `-0.6b-8bit`, `-4b-8bit`, `-8b-4bit`, `-8b-8bit`, `qwen3-coder-4bit`, `qwen3-coder-30b-4bit`, `qwen3-vl-4b-4bit`, `-8b-4bit`, `-30b-4bit` | Coding + vision |
 | **Qwen2.5** | `qwen2.5-14b-4bit` | Legacy 14B base for back-compat agents |
 | **Qwopus** | `qwopus-9b-4bit`, `qwopus-27b-4bit`, `qwopus-27b-8bit` | 92 MHI on tool calling |
@@ -836,7 +836,7 @@ Qwen3.5 uses Gated DeltaNet (75% RNN) + full attention (25% KV). Other engines r
 | **Auto tool recovery** | Detect broken text-format tool calls, convert to structured | All 17 parser formats (incl. Gemma 4) |
 | **TurboQuant V-cache** | Rotate + Lloyd-Max compress V cache (86% savings on dense models) | All models with `--kv-cache-turboquant` |
 | **KV cache quantization** | Quantize prefix cache entries to reduce memory | All models with `--kv-cache-quantization` |
-| **DFlash speculative decoding** | Block-diffusion drafter, parallel draft + verify | `qwen3.5-27b-8bit`, `qwen3.6-27b-8bit` (single-user) |
+| **DFlash speculative decoding** | Block-diffusion drafter, parallel draft + verify | `qwen3.5-27b-8bit` (single-user, opt-in) |
 | **SuffixDecoding** | Drafter-free, statistical n-gram lookup speculative decoding | All BatchedEngine models with `--suffix-decoding` |
 | **Prefill chunking** | Configurable step size for large-prompt throughput | All models |
 | **Cloud routing** | Offload high-token requests to cloud LLM when local is slow | All models with `--cloud-model` |
@@ -899,12 +899,13 @@ PFlash speeds up the prompt going *in*; **DFlash** speeds up the tokens coming *
 
 ### DFlash Speculative Decoding (single-user)
 
-z-lab's block-diffusion drafter (via mlx-vlm) accelerates single-stream generation on validated Qwen3.5/3.6 27B aliases. Opt in with `--enable-dflash`:
+z-lab's block-diffusion drafter (via mlx-vlm) accelerates single-stream generation on the one validated Qwen3.5 alias for 0.9.0. Opt in with `--enable-dflash`:
 
-| Alias | Drafter | Avg speedup | Min / Max |
-|---|---|---|---|
-| `qwen3.6-27b-8bit` | `z-lab/Qwen3.6-27B-DFlash` | **1.49×** | 1.06× / 2.07× |
-| `qwen3.5-27b-8bit` | `z-lab/Qwen3.5-27B-DFlash` | **1.31×** | 0.59× / 2.15× |
+| Alias | Drafter | Code median | Chat (non-code) | Best / Worst code |
+|---|---|---|---|---|
+| `qwen3.5-27b-8bit` | `z-lab/Qwen3.5-27B-DFlash` | **1.85×** | 0.74× ↓ | 3.17× sortedlist / 1.40× hashtable |
+
+Measured: `scripts/bench_dflash.py --model qwen3.5-27b-8bit --runs 3 --max-tokens 256`, Apple Silicon M-series, 4 code workloads + 1 chat workload.
 
 ```bash
 pip install 'rapid-mlx[dflash]'
@@ -912,7 +913,9 @@ rapid-mlx info qwen3.5-27b-8bit       # check per-gate eligibility
 rapid-mlx serve qwen3.5-27b-8bit --enable-dflash
 ```
 
-**Best on coding, math, and summarization** (typically **1.5–2.7×**); open-ended creative writing can dip below 1×, so DFlash is gated to the aliases where it reliably wins.
+**Best on code generation** (fibonacci, quicksort, hashtable, sortedlist: 1.40–3.17× decode tok/s). **Regresses on open-ended chat** (0.74× decode tok/s) — the drafter's accept rate collapses outside the code distribution it was distilled for. Use the flag for code workloads only.
+
+**Why only 27B-8bit?** z-lab's drafters were distilled against `bfloat16` targets on NVIDIA B200 + SGLang (paper headlines 5–6×); on Apple Silicon + MLX 8bit target + int4 KV cache (TurboQuant K8V4 default), only `qwen3.5-27b-8bit` clears our SOP §6 ship gate. The same bench on `qwen3.5-9b-8bit` (chat 0.57×) and `qwen3.6-27b-8bit` (chat 0.41×) failed the non-code-floor rule. We'll re-check on 0.9.x with bf16 targets where disk + RAM allow.
 
 **v1 limitations**: DFlash mode runs a dedicated single-user server (mlx-vlm doesn't expose a batched DFlash kernel yet). Tool calling, MCP, and embeddings aren't available in DFlash mode — restart without `--enable-dflash` for those.
 
@@ -950,7 +953,7 @@ Also: a fused single-kernel sampler (faster than mlx-vlm's, identical sampling m
 | `--kv-cache-turboquant` | TurboQuant V-cache compression (3-4 bit, 86% savings on dense models) | off |
 | `--kv-cache-quantization` | Quantize prefix cache entries for memory savings | off |
 | `--enable-prefix-cache` / `--disable-prefix-cache` | Cache common prefixes across requests | on |
-| `--enable-dflash` | DFlash speculative decoding (single-user; `qwen3.5-27b-8bit` / `qwen3.6-27b-8bit`) | off |
+| `--enable-dflash` | DFlash speculative decoding (single-user; `qwen3.5-27b-8bit` only) | off |
 | `--suffix-decoding` | Drafter-free n-gram speculative decoding (BatchedEngine path) | off |
 | `--enable-mtp` | MTP head speculative decoding (requires MTP-trained model) | off |
 | `--gpu-memory-utilization` | Fraction of device memory to use (0.0-1.0) | `0.90` |

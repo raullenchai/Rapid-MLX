@@ -53,20 +53,18 @@ logger = logging.getLogger(__name__)
 # + ``dflash_draft_model`` on the matching alias entry in
 # ``aliases.json``.
 _DEFAULT_REGISTRY: dict[str, str] = {
+    # 0.9.0: only `qwen3.5-27b-8bit` survived the chat non-code-floor
+    # gate (`scripts/bench_dflash.py --runs 3`, M-series, code median
+    # 1.85×, chat 0.74×). The 9B-8bit and 3.6-27B-8bit aliases were
+    # benched + flipped to `supports_dflash=false` in the same
+    # release (chat regression 0.41-0.57×). The 9B-4bit entry was
+    # never validated and the 4-bit cliff documented in
+    # `eligibility.py` gates it anyway. Drafter scaffolding survives
+    # in this module so `register_dflash_drafter()` keeps working at
+    # runtime; we just don't pre-populate aliases the registry can't
+    # honestly ship today. Add an entry back after a future bench
+    # verifies the alias passes SOP §6 with the non-code-floor rule.
     "qwen3.5-27b-8bit": "z-lab/Qwen3.5-27B-DFlash",
-    "qwen3.6-27b-8bit": "z-lab/Qwen3.6-27B-DFlash",
-    # 9B-w4 is the headline R15-P1 #313 target. The drafter checkpoint
-    # IS published (z-lab/Qwen3.5-9B-DFlash, paper bench head) and the
-    # 4-bit cliff that gates the mlx-vlm bridge does NOT apply here —
-    # the spec_decode/dflash verifier owns its own KV-cache write path
-    # via positioned_update_and_fetch and runs the target model at its
-    # native quant. The mlx-vlm bridge gates 4-bit on a stricter
-    # acceptance-rate threshold; ours uses the lossless-contract
-    # guarantee (rejection emits the verify pred at the divergence
-    # position) so a low-accept-rate run still produces correct
-    # output, just with smaller speedup.
-    "qwen3.5-9b-4bit": "z-lab/Qwen3.5-9B-DFlash",
-    "qwen3.5-9b-8bit": "z-lab/Qwen3.5-9B-DFlash",
 }
 
 # Working copy populated from ``_DEFAULT_REGISTRY`` at module import.
