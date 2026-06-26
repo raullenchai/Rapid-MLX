@@ -208,6 +208,40 @@ class TestNemotronShapeEnvelopeReachesParser:
                 f"reasoning channel: {result['reasoning']!r}"
             )
 
+    def test_held_ambiguous_prefix_flushed_on_empty_finish_only_chunk(self):
+        """Codex r4 NIT (PR #948): if the stream emits an ambiguous
+        head (``<`` / ``<t``) on a non-finished chunk and then an
+        EMPTY finish-only chunk, the held byte was previously dropped
+        because the ``not delta_text`` early-return ran before the
+        hold-buffer replay. After the round-4 finish-flush, the held
+        prefix is replayed through the normal routing path so it
+        reaches the wire as content (the only correct outcome for a
+        terminal sequence with no disambiguating second chunk)."""
+        pp = _pp(enable_thinking=False)
+        # Drive deltas manually so we can emit an empty-text finish
+        # chunk; the ``_drive`` helper marks the last delta as
+        # ``finished=True`` instead, which is a different shape.
+        events = list(pp.process_chunk(_make_output("<", finished=False)))
+        # Held — no events.
+        assert events == [], (
+            f"expected ambiguous head to be held, got {events!r}"
+        )
+        # Now an empty finish-only chunk — the held ``<`` must flush.
+        events += list(pp.process_chunk(_make_output("", finished=True)))
+        # Find any content that reached the wire.
+        wire_content = "".join(
+            (getattr(e, "content", "") or "")
+            for e in events
+            if e.type in ("content", "finish")
+        )
+        # The held ``<`` must have surfaced — either as a content event
+        # or merged into the finish event — and NOT been silently
+        # dropped.
+        assert "<" in wire_content, (
+            f"held ambiguous prefix was dropped on empty finish-only "
+            f"chunk; wire_content={wire_content!r} events={events!r}"
+        )
+
     def test_split_outer_opener_two_byte_prefix(self):
         """Same race, but the tokenizer chunks as ``<t`` + ``ool_call>``.
         ``<t`` is a strict prefix of BOTH ``<think>`` AND ``<tool_call>``

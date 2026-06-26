@@ -2363,6 +2363,36 @@ class StreamingPostProcessor:
         if not delta_text:
             # Handle finish-only chunks
             if output.finished:
+                # #447 round-4 NIT (PR #948): if a stream emitted an
+                # ambiguous head (``<`` / ``<t``) on a non-finished
+                # chunk and then an EMPTY finish-only chunk, the held
+                # byte was previously dropped because this early
+                # ``not delta_text`` branch ran before the hold-replay
+                # logic in the main path. Without a disambiguating
+                # second chunk we can't resolve to reasoning or tool
+                # routing — flush the held bytes as plain content on
+                # the FINISH event itself so the wire still receives
+                # the model's literal tail. ``_make_finish_event``
+                # supports an optional ``content`` payload; merging
+                # here keeps the terminal chunk count unchanged.
+                if self._ambiguous_prefix_held:
+                    flush = self._ambiguous_prefix_held
+                    self._ambiguous_prefix_held = ""
+                    finish_event = self._make_finish_event(output)
+                    # Prepend the held bytes to whatever content the
+                    # finish event already carries (usually empty) so
+                    # downstream finalize() merges keep working.
+                    existing = finish_event.content or ""
+                    finish_event = StreamEvent(
+                        type=finish_event.type,
+                        content=flush + existing,
+                        reasoning=finish_event.reasoning,
+                        tool_calls=finish_event.tool_calls,
+                        finish_reason=finish_event.finish_reason,
+                        tool_calls_detected=finish_event.tool_calls_detected,
+                        metadata=finish_event.metadata,
+                    )
+                    return [finish_event]
                 return [self._make_finish_event(output)]
             return []
 
