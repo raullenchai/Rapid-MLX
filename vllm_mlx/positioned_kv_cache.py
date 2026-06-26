@@ -55,6 +55,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from . import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
 import mlx.core as mx
 from mlx_lm.models.cache import KVCache, QuantizedKVCache
 

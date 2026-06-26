@@ -36,6 +36,24 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+
+def _walk_routes(app):
+    """Yield all routes attached to ``app``, recursing into the
+    ``_IncludedRouter`` wrapper FastAPI 0.137+ introduced. Pre-0.137,
+    ``include_router`` flattened child routes directly into
+    ``app.routes``; from 0.137 onward an opaque wrapper exposes the
+    child router via ``.original_router``. Iterating ``app.routes``
+    alone misses every route attached via ``include_router`` on a
+    fresh-install fastapi, which is why the audio-gate test suite
+    needs this helper to stay version-agnostic.
+    """
+    for r in app.routes:
+        if hasattr(r, "original_router"):
+            yield from r.original_router.routes
+        else:
+            yield r
+
+
 # ---------------------------------------------------------------------------
 # Level 1: pure predicate
 # ---------------------------------------------------------------------------
@@ -150,7 +168,7 @@ class TestRegisterAudioRoutes:
         assert attached is True
         paths = {
             getattr(r, "path", "")
-            for r in app.routes
+            for r in _walk_routes(app)
             if getattr(r, "path", "").startswith("/v1/audio/")
         }
         assert "/v1/audio/transcriptions" in paths
@@ -166,7 +184,8 @@ class TestRegisterAudioRoutes:
         assert second is False
         # Route table didn't grow on the second call.
         audio_routes = [
-            r for r in app.routes if getattr(r, "path", "").startswith("/v1/audio/")
+            r for r in _walk_routes(app)
+            if getattr(r, "path", "").startswith("/v1/audio/")
         ]
         # transcriptions + translations + speech + voices = 4 unique paths.
         unique_paths = {r.path for r in audio_routes}
@@ -247,7 +266,10 @@ class TestServerRegisterAudioRoutesIfEnabled:
         return new_app
 
     def _has_audio_routes(self, app: FastAPI) -> bool:
-        return any(getattr(r, "path", "").startswith("/v1/audio/") for r in app.routes)
+        return any(
+            getattr(r, "path", "").startswith("/v1/audio/")
+            for r in _walk_routes(app)
+        )
 
     def test_text_only_no_flag_does_not_register(self, monkeypatch, fresh_app):
         from vllm_mlx import server
@@ -312,7 +334,7 @@ class TestServerRegisterAudioRoutesIfEnabled:
         # Route table didn't double up.
         audio_paths = [
             r.path
-            for r in fresh_app.routes
+            for r in _walk_routes(fresh_app)
             if getattr(r, "path", "").startswith("/v1/audio/")
         ]
         assert len(audio_paths) == len(set(audio_paths))
@@ -420,7 +442,7 @@ class TestModelsListingReflectsAudioGate:
         # Canonical handler is present.
         paths = {
             getattr(r, "path", "")
-            for r in app.routes
+            for r in _walk_routes(app)
             if getattr(r, "path", "").startswith("/v1/audio/")
         }
         assert "/v1/audio/transcriptions" in paths
@@ -493,6 +515,15 @@ class TestCliServeCommandWiresEnableAudioFlag:
         def _stub_uvicorn(*_args, **_kwargs):
             pass
 
+        # Stub the port preflight before ``server.main`` lazy-imports it
+        # from ``cli`` (``server.py`` line ~1971). Otherwise a port-8000
+        # collision on the developer's host fails this test for reasons
+        # unrelated to the parser wiring it exercises.
+        from vllm_mlx import cli as _cli_for_preflight
+
+        monkeypatch.setattr(
+            _cli_for_preflight, "_port_preflight_or_die", lambda *_a, **_kw: None
+        )
         monkeypatch.setattr(server, "load_model", _stub_load_model)
         # ``uvicorn.run`` is imported as a top-level name in server.main;
         # patch through the module attr to dodge the real network bind.

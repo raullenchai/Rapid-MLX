@@ -32,6 +32,37 @@ import pytest
 mx = pytest.importorskip("mlx.core")
 
 
+@pytest.fixture(autouse=True)
+def _reset_mtp_module_state():
+    """Reset the MTP module-level singletons between tests.
+
+    Two module-globals leak across tests when this file is run as part
+    of the full pytest sweep rather than in isolation:
+
+    * ``vllm_mlx.spec_decode.mtp.cache_patch._patched`` — sticky install
+      gate; without ``_unpatch_for_tests()``, an earlier ``test_mlx_compat``
+      monkeypatch of ``sys.modules["mlx_lm.models.cache"]`` leaves a
+      stale stub bound and the install gate at line 89 no-ops.
+    * ``vllm_mlx.spec_decode.mtp.accept_counter._global_counter`` —
+      monotonic counter singleton intentionally never resets on its own
+      (counter monotonicity is a public contract). Tests need the
+      explicit ``reset_global_counter_for_tests()`` hatch.
+
+    Both files (this one + ``test_mtp_lossless.py``) install the same
+    autouse fixture so they're robust regardless of sweep ordering.
+    """
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+    from vllm_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
+
+    _unpatch_for_tests()
+    reset_global_counter_for_tests()
+    yield
+    _unpatch_for_tests()
+    reset_global_counter_for_tests()
+
+
 # ---------------------------------------------------------------------------
 # 1. Architecture detection
 # ---------------------------------------------------------------------------

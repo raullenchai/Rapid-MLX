@@ -1545,6 +1545,11 @@ def test_strict_true_with_outlines_module_faked_absent(monkeypatch):
     triggers the post-generate validation + repair retry path.
     Pin the composition contract here so refactors that decouple
     HAS_OUTLINES → guided-availability are caught."""
+    # The pre-monkeypatch assertion below requires the ``[guided]``
+    # extra (``outlines``) to be installed; skip cleanly in no-extras
+    # environments rather than failing on the setup pre-condition.
+    pytest.importorskip("outlines")
+
     from vllm_mlx.api import guided as guided_mod
 
     # Before the monkeypatch, the guided extra IS installed.

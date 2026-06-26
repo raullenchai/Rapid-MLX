@@ -86,6 +86,25 @@ mx = pytest.importorskip("mlx.core")
 from tests.test_mtp_spec_decode import _MockedQwen35Model  # noqa: E402
 
 
+@pytest.fixture(autouse=True)
+def _reset_mtp_module_state():
+    """Mirror the autouse teardown installed in ``test_mtp_spec_decode.py``
+    so this file's tests are also robust to sweep-ordering state leak from
+    the MTP module-level singletons (``cache_patch._patched`` install gate
+    + ``accept_counter._global_counter`` monotonic singleton). See the
+    fixture in ``test_mtp_spec_decode.py`` for the full rationale."""
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+    from vllm_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
+
+    _unpatch_for_tests()
+    reset_global_counter_for_tests()
+    yield
+    _unpatch_for_tests()
+    reset_global_counter_for_tests()
+
+
 def _generate_step_none_path(
     model: _MockedQwen35Model,
     prompt: mx.array,

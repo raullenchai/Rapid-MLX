@@ -323,6 +323,21 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # consumed only by ``stream_chat_completion_strict_postgen``
         # to size the violation-detection buffer. Default 2 MiB.
         "RAPID_MLX_STRICT_BUFFER_BYTES",
+        # PID of the supervising parent process for the parent-watchdog
+        # graceful-exit path (``vllm_mlx/_parent_watchdog.py``). The
+        # supervising process injects its own PID before spawning the
+        # serve subprocess; the child polls and self-terminates when
+        # the parent disappears. Pure liveness signal — never selects a
+        # model, parser, or routing tier; read only by the watchdog
+        # loop in ``_parent_watchdog.py`` and the wire-up at
+        # ``cli.py``, ``bench/_server.py``, ``share/cli.py``.
+        "RAPID_MLX_WATCHDOG_PPID",
+        # Disk KV cache checkpoint size ceiling (bytes). Bounds the
+        # serialized snapshot ``runtime/disk_kv_checkpoint.py`` writes
+        # to disk on graceful shutdown so an oversize cache can't
+        # blow up the FS. Pure wire-level capacity gate — never
+        # selects a model, parser, or routing tier.
+        "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES",
     }
 )
 
