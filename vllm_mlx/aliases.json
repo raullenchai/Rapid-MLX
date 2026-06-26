@@ -18,6 +18,15 @@
     "supports_spec_decode": false,
     "pflash_tier": "verified"
   },
+  "qwen3.5-4b-6bit": {
+    "hf_path": "mlx-community/Qwen3.5-4B-6bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false
+  },
   "qwen3.5-9b-4bit": {
     "hf_path": "mlx-community/Qwen3.5-9B-4bit",
     "tool_call_parser": "hermes",
@@ -37,6 +46,15 @@
     "supports_spec_decode": false,
     "supports_dflash": false,
     "pflash_tier": "verified"
+  },
+  "qwen3.5-9b-6bit": {
+    "hf_path": "mlx-community/Qwen3.5-9B-6bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false
   },
   "qwen3.5-27b-4bit": {
     "hf_path": "mlx-community/Qwen3.5-27B-4bit",
@@ -65,6 +83,14 @@
     "is_moe": true,
     "pflash_tier": "verified"
   },
+  "qwen3.5-35b-6bit": {
+    "hf_path": "mlx-community/Qwen3.5-35B-A3B-6bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false,
+    "is_moe": true
+  },
   "qwen3.5-122b-mxfp4": {
     "hf_path": "nightmedia/Qwen3.5-122B-A10B-Text-mxfp4-mlx",
     "tool_call_parser": "hermes",
@@ -82,6 +108,14 @@
     "supports_spec_decode": false,
     "is_moe": true,
     "pflash_tier": "verified"
+  },
+  "qwen3.5-122b-6bit": {
+    "hf_path": "mlx-community/Qwen3.5-122B-A10B-6bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false,
+    "is_moe": true
   },
   "tmax-9b": {
     "hf_path": "mlx-community/Tmax-9B-MLX-4bit",
@@ -158,6 +192,15 @@
     "dflash_draft_model": "z-lab/Qwen3.5-27B-DFlash",
     "pflash_tier": "verified"
   },
+  "qwen3.5-27b-6bit": {
+    "hf_path": "mlx-community/Qwen3.5-27B-6bit",
+    "tool_call_parser": "hermes",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "is_moe": false,
+    "supports_spec_decode": false
+  },
   "qwen3.6-27b-4bit": {
     "hf_path": "mlx-community/Qwen3.6-27B-4bit",
     "tool_call_parser": "qwen3_coder_xml",
@@ -177,6 +220,14 @@
     "supports_dflash": false,
     "pflash_tier": "verified"
   },
+  "qwen3.6-27b-6bit": {
+    "hf_path": "lmstudio-community/Qwen3.6-27B-MLX-6bit",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "supports_spec_decode": false
+  },
   "qwen3.6-27b-ud": {
     "hf_path": "unsloth/Qwen3.6-27B-UD-MLX-4bit",
     "tool_call_parser": "qwen3_coder_xml",
@@ -185,6 +236,14 @@
     "is_hybrid_explicit": true,
     "supports_spec_decode": false,
     "pflash_tier": "verified"
+  },
+  "qwen3.6-27b-mxfp4-ud": {
+    "hf_path": "unsloth/Qwen3.6-27B-UD-MLX-MXFP4",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": false,
+    "is_hybrid_explicit": true,
+    "supports_spec_decode": false
   },
   "qwen3.6-35b-4bit": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit",
@@ -230,6 +289,22 @@
     "supports_spec_decode": false,
     "is_moe": true,
     "pflash_tier": "verified"
+  },
+  "qwen3.6-35b-mxfp4": {
+    "hf_path": "mlx-community/Qwen3.6-35B-A3B-mxfp4",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false,
+    "is_moe": true
+  },
+  "qwen3.6-35b-nvfp4": {
+    "hf_path": "mlx-community/Qwen3.6-35B-A3B-nvfp4",
+    "tool_call_parser": "qwen3_coder_xml",
+    "reasoning_parser": "qwen3",
+    "is_hybrid": true,
+    "supports_spec_decode": false,
+    "is_moe": true
   },
   "deepseek-v4-flash-2bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-2bit-DQ",
