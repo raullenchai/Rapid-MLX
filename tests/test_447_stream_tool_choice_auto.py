@@ -262,3 +262,213 @@ class TestToolEnvelopeInFlightHelper:
         pp = _pp(enable_thinking=False)
         pp.tool_accumulated_text = '<minimax:tool_call><invoke name="x">'
         assert pp._tool_envelope_in_flight() is True
+
+
+# =====================================================================
+# Streaming synth fallback — chat.py route-level branch (codex r1 NIT #2)
+# =====================================================================
+#
+# Direct unit-level coverage for the new ``stream_chat_completion``
+# synthesis gate: forced ``tool_choice`` finishes with zero wire
+# tool_calls AND the parser saw nothing → synthesise; forced
+# ``tool_choice`` finishes with zero wire tool_calls but the parser DID
+# see a different tool (dropped by the forced-name filter) → do NOT
+# synthesise (mirrors non-stream ``_mismatched`` 422 case rather than
+# silently replacing the model's intent — codex r1 MAJOR #1).
+#
+# Drives ``stream_chat_completion`` end-to-end against a fake engine so
+# the SSE-level shape is asserted (not just the postprocessor state).
+
+
+import asyncio
+import json
+
+import pytest
+
+from vllm_mlx.api.models import ChatCompletionRequest
+
+
+class _FakeStreamingOutput:
+    """Minimal ``GenerationOutput`` shim for the streaming loop."""
+
+    def __init__(self, new_text: str, finished: bool):
+        self.new_text = new_text
+        self.text = new_text
+        self.finished = finished
+        self.finish_reason = "stop" if finished else None
+        self.channel = None
+        self.prompt_tokens = 10
+        self.completion_tokens = 5
+        self.cached_tokens = 0
+        self.tokens = []
+        self.logprobs = None
+        self.tool_calls = None
+        self.matched_stop = None
+        self.raw_text = new_text
+
+
+class _FakeEngine:
+    """Minimal engine shim — yields a fixed delta sequence."""
+
+    def __init__(self, deltas: list[str]):
+        self._deltas = deltas
+        self.tokenizer = None
+        self.is_mllm = False
+        self.supports_tool_calls = True
+        self.supports_guided_generation = False
+
+    async def stream_chat(self, **kwargs):
+        for i, d in enumerate(self._deltas):
+            yield _FakeStreamingOutput(d, finished=(i == len(self._deltas) - 1))
+
+    def build_prompt(self, *args, **kwargs):
+        return "prompt"
+
+    def estimate_new_tokens(self, *args, **kwargs):
+        return (10, 5)
+
+
+def _drive_stream(engine, request) -> tuple[list[dict], str | None]:
+    """Run ``stream_chat_completion`` against the fake engine, collect
+    parsed SSE chunks (skipping ``[DONE]`` and keepalives).
+
+    Returns ``(chunks, final_finish_reason)``.
+    """
+    from vllm_mlx.routes.chat import stream_chat_completion
+
+    chunks: list[dict] = []
+
+    async def _run():
+        gen = stream_chat_completion(engine, [{"role": "user", "content": "hi"}], request)
+        async for sse in gen:
+            line = sse.strip()
+            if not line.startswith("data: "):
+                continue
+            body = line[len("data: "):]
+            if body == "[DONE]":
+                break
+            try:
+                chunks.append(json.loads(body))
+            except json.JSONDecodeError:
+                continue
+
+    asyncio.run(_run())
+    finish = None
+    for c in reversed(chunks):
+        choices = c.get("choices") or []
+        if choices and choices[0].get("finish_reason"):
+            finish = choices[0]["finish_reason"]
+            break
+    return chunks, finish
+
+
+class TestStreamSynthForcedToolChoice:
+    """Route-level: forced tool_choice produced no parser-detected call
+    → synth fires; forced tool_choice produced a DIFFERENT call (filter
+    dropped it) → synth must NOT fire (non-stream parity)."""
+
+    def _request(self, tool_choice):
+        return ChatCompletionRequest(
+            model="test",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "get_weather",
+                        "description": "x",
+                        "parameters": {
+                            "type": "object",
+                            "properties": {"location": {"type": "string"}},
+                            "required": ["location"],
+                        },
+                    },
+                }
+            ],
+            tool_choice=tool_choice,
+            stream=True,
+            max_tokens=50,
+            chat_template_kwargs={"enable_thinking": False},
+        )
+
+    @pytest.fixture(autouse=True)
+    def _patch_cfg(self, monkeypatch):
+        """Wire a minimal ServerConfig + StreamingPostProcessor that
+        matches the qwen3 + hermes production shape."""
+        from vllm_mlx.config import server_config
+
+        cfg = server_config.get_config()
+        # The cfg singleton is mutated to reflect the qwen3 + hermes
+        # path; restore the pre-test value at teardown via monkeypatch.
+        monkeypatch.setattr(cfg, "tool_call_parser", "hermes", raising=False)
+        monkeypatch.setattr(cfg, "reasoning_parser_name", "qwen3", raising=False)
+        monkeypatch.setattr(cfg, "enable_auto_tool_choice", True, raising=False)
+        monkeypatch.setattr(cfg, "cloud_router", None, raising=False)
+        monkeypatch.setattr(cfg, "gc_control", False, raising=False)
+        yield
+
+    def test_synth_fires_when_parser_saw_nothing(self):
+        """``required`` + 1 tool + zero parser-detected call shapes →
+        terminal chunk carries a synthesised ``delta.tool_calls`` with
+        ``finish_reason="tool_calls"``."""
+        # The model emits a hybrid wire shape (Nemotron closers after a
+        # JSON prefix injection) that neither shape regex matches; the
+        # parser never sets ``tool_calls_detected``.
+        deltas = ["0", "}", "\n", "</parameter>", "\n", "</function>", "\n", "</tool_call>"]
+        chunks, finish = _drive_stream(_FakeEngine(deltas), self._request("required"))
+        # Look for a tool_calls delta in any chunk.
+        emitted_tcs = []
+        for c in chunks:
+            for ch in c.get("choices") or []:
+                tcs = (ch.get("delta") or {}).get("tool_calls")
+                if tcs:
+                    emitted_tcs.extend(tcs)
+        assert emitted_tcs, "synth must emit a delta.tool_calls"
+        assert emitted_tcs[0]["function"]["name"] == "get_weather"
+        assert finish == "tool_calls"
+
+    def test_synth_does_not_fire_when_parser_saw_a_call(self):
+        """Codex r1 MAJOR #1: a parser that detected a tool call
+        (``tool_calls_detected=True``) but had every entry dropped by
+        the forced-name filter / parallel cap (``_tool_calls_emitted_to
+        _wire == 0``) must NOT trigger the synth — that case mirrors
+        the non-stream ``_mismatched`` 422 path, not the
+        ``not _names`` synth path. Synth here would silently replace
+        the model's wrong-tool call with the pinned target."""
+        from vllm_mlx.service import postprocessor as pp_mod
+
+        # Simulate the filter-dropped state by wrapping ``reset()`` (the
+        # route calls ``processor.reset()`` before the stream loop, so an
+        # ``__init__`` patch would be wiped). After ``reset`` only
+        # ``process_chunk`` runs on plain text (which won't touch the
+        # flag here because no tool envelope appears in the wire).
+        original_reset = pp_mod.StreamingPostProcessor.reset
+
+        def _patched_reset(self):
+            original_reset(self)
+            # Pre-set the filter-dropped state: parser detected a call
+            # but every entry was filtered out before reaching the wire.
+            self.tool_calls_detected = True
+
+        pp_mod.StreamingPostProcessor.reset = _patched_reset
+        try:
+            deltas = ["plain ", "answer", "."]
+            chunks, finish = _drive_stream(
+                _FakeEngine(deltas),
+                self._request({"type": "function", "function": {"name": "get_weather"}}),
+            )
+        finally:
+            pp_mod.StreamingPostProcessor.reset = original_reset
+        emitted_tcs = []
+        for c in chunks:
+            for ch in c.get("choices") or []:
+                tcs = (ch.get("delta") or {}).get("tool_calls")
+                if tcs:
+                    emitted_tcs.extend(tcs)
+        # Synth MUST NOT fire when the parser already saw a (different) call.
+        assert not emitted_tcs, (
+            "synth must not fire when tool_calls_detected=True; would "
+            "silently replace the model's intended call"
+        )
+        # And the wire envelope must still close cleanly.
+        assert finish in ("stop", "tool_calls", None) or finish is None

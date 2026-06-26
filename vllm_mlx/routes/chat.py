@@ -3918,18 +3918,35 @@ async def stream_chat_completion(
         # recovers; the stream branch left clients with an empty turn
         # (rapid-desktop#447).
         #
-        # Gating identical to the non-stream synthesis: forced choice +
-        # the target function is the sole submitted tool (required +
-        # 1-tool collapses unambiguously) OR a named function is
-        # explicitly pinned AND the pinned name is in
-        # ``request.tools`` (defense-in-depth from PR #675 codex r1).
-        # The synth is only applied when NOTHING ELSE recovered a
-        # call — fallback_tool_calls empty AND the streaming path
-        # itself did not emit a tool_call (``_tool_calls_emitted_to
-        # _wire`` is the wire-truth counter).
+        # Gating identical to the non-stream synthesis at chat.py:~3197 /
+        # ~3207: forced choice + the target function is the sole
+        # submitted tool (``required`` + 1-tool collapses unambiguously)
+        # OR a named function is explicitly pinned AND the pinned name
+        # is in ``request.tools`` (defense-in-depth from PR #675 codex
+        # r1). The synth fires ONLY when:
+        #
+        # (a) No ``delta.tool_calls`` chunk reached the wire AND
+        #     ``finalize()`` recovered nothing — the wire-truth
+        #     ``_tool_calls_emitted_to_wire`` counter + the empty
+        #     ``fallback_tool_calls`` together pin the
+        #     "zero-tool-calls-shipped" state.
+        #
+        # (b) The PARSER also did not detect any tool-call shape at all
+        #     (``processor.tool_calls_detected is False``). Mirrors the
+        #     non-stream ``not _names`` predicate. Codex r1 MAJOR #1
+        #     (PR #948 review): without this guard, the synth would
+        #     silently REPLACE the model's intended call when the parser
+        #     saw a different tool that the forced-``tool_choice`` /
+        #     parallel-cap filter dropped (``tool_calls_detected=True``,
+        #     ``_tool_calls_emitted_to_wire=0``). The non-stream path
+        #     treats "model called a different tool than the pinned
+        #     target" as the ``_mismatched`` 422 case, NOT as a synth
+        #     trigger — it surfaces the conflict instead of fabricating
+        #     a call the model didn't make. Keep streaming aligned.
         if (
             not fallback_tool_calls
             and processor._tool_calls_emitted_to_wire == 0
+            and not processor.tool_calls_detected
             and request.tools
             and request.tool_choice is not None
         ):
@@ -3976,6 +3993,13 @@ async def stream_chat_completion(
                         },
                     }
                 )
+                # Codex r1 NIT #1 (PR #948): bump the wire-truth counter
+                # so the PR #859 "finish_reason=tool_calls ⇒ ≥1 tool_call
+                # delta on the wire" invariant holds — the terminal merge
+                # at chat.py:~4280 IS about to emit a ``delta.tool_calls``
+                # chunk for this synth, so the counter must reflect that
+                # for any downstream gate / log that reads it.
+                processor._tool_calls_emitted_to_wire += 1
                 logger.info(
                     "[SSE-FORCED-SYNTH-#447] forced tool_choice produced no "
                     "tool_call deltas; synthesizing terminal call to %r "
