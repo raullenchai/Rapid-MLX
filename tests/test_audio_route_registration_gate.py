@@ -184,7 +184,8 @@ class TestRegisterAudioRoutes:
         assert second is False
         # Route table didn't grow on the second call.
         audio_routes = [
-            r for r in _walk_routes(app)
+            r
+            for r in _walk_routes(app)
             if getattr(r, "path", "").startswith("/v1/audio/")
         ]
         # transcriptions + translations + speech + voices = 4 unique paths.
@@ -267,8 +268,7 @@ class TestServerRegisterAudioRoutesIfEnabled:
 
     def _has_audio_routes(self, app: FastAPI) -> bool:
         return any(
-            getattr(r, "path", "").startswith("/v1/audio/")
-            for r in _walk_routes(app)
+            getattr(r, "path", "").startswith("/v1/audio/") for r in _walk_routes(app)
         )
 
     def test_text_only_no_flag_does_not_register(self, monkeypatch, fresh_app):

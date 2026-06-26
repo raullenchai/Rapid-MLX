@@ -34,23 +34,31 @@ mx = pytest.importorskip("mlx.core")
 
 @pytest.fixture(autouse=True)
 def _reset_mtp_module_state():
-    """Reset the MTP module-level singletons between tests.
+    """Reset the MTP module-level singletons AND the MLX default stream
+    between tests.
 
-    Two module-globals leak across tests when this file is run as part
-    of the full pytest sweep rather than in isolation:
+    Three pieces of cross-test state leak in the full pytest sweep and
+    surface as the 7-failure transient cluster (PASS in isolation):
 
     * ``vllm_mlx.spec_decode.mtp.cache_patch._patched`` — sticky install
-      gate; without ``_unpatch_for_tests()``, an earlier ``test_mlx_compat``
-      monkeypatch of ``sys.modules["mlx_lm.models.cache"]`` leaves a
-      stale stub bound and the install gate at line 89 no-ops.
+      gate; ``_unpatch_for_tests()`` clears it.
     * ``vllm_mlx.spec_decode.mtp.accept_counter._global_counter`` —
-      monotonic counter singleton intentionally never resets on its own
-      (counter monotonicity is a public contract). Tests need the
-      explicit ``reset_global_counter_for_tests()`` hatch.
-
-    Both files (this one + ``test_mtp_lossless.py``) install the same
-    autouse fixture so they're robust regardless of sweep ordering.
+      monotonic counter singleton (monotonicity is a public contract);
+      ``reset_global_counter_for_tests()`` is the explicit hatch.
+    * **MLX active default stream** — an earlier test in the sweep that
+      calls ``mx.new_stream(...)`` (or its ``__enter__``-based context)
+      can leave the active default stream pointing at a now-dead stream
+      ID. The MTP generator does ``mx.eval(toks)`` at line 420 of
+      ``generator.py``, which evaluates against the active stream; if
+      that stream is gone, ``RuntimeError: There is no Stream(gpu, N)
+      in current thread`` fires. Resetting via
+      ``mx.set_default_stream(mx.default_stream(mx.default_device()))``
+      pins the active stream to the canonical default and unblocks
+      ``mx.eval``. (Memory: ``new_stream`` is thread-bound; the safe
+      executor pattern is ``default_stream``.)
     """
+    import mlx.core as mx
+
     from vllm_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
@@ -58,9 +66,11 @@ def _reset_mtp_module_state():
 
     _unpatch_for_tests()
     reset_global_counter_for_tests()
+    mx.set_default_stream(mx.default_stream(mx.default_device()))
     yield
     _unpatch_for_tests()
     reset_global_counter_for_tests()
+    mx.set_default_stream(mx.default_stream(mx.default_device()))
 
 
 # ---------------------------------------------------------------------------

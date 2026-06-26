@@ -90,9 +90,11 @@ from tests.test_mtp_spec_decode import _MockedQwen35Model  # noqa: E402
 def _reset_mtp_module_state():
     """Mirror the autouse teardown installed in ``test_mtp_spec_decode.py``
     so this file's tests are also robust to sweep-ordering state leak from
-    the MTP module-level singletons (``cache_patch._patched`` install gate
-    + ``accept_counter._global_counter`` monotonic singleton). See the
-    fixture in ``test_mtp_spec_decode.py`` for the full rationale."""
+    the MTP module-level singletons AND the MLX default stream. See the
+    fixture in ``test_mtp_spec_decode.py`` for the full rationale on each
+    of the three pieces of cross-test state being reset."""
+    import mlx.core as mx
+
     from vllm_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
     )
@@ -100,9 +102,11 @@ def _reset_mtp_module_state():
 
     _unpatch_for_tests()
     reset_global_counter_for_tests()
+    mx.set_default_stream(mx.default_stream(mx.default_device()))
     yield
     _unpatch_for_tests()
     reset_global_counter_for_tests()
+    mx.set_default_stream(mx.default_stream(mx.default_device()))
 
 
 def _generate_step_none_path(
