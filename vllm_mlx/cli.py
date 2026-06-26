@@ -3641,13 +3641,69 @@ def models_command(args):
     print()
 
 
+def _format_pull_duration(seconds: float) -> str:
+    """Render a duration as ``Xs`` (< 60s) or ``Xm Ys`` (>= 60s).
+
+    Sub-minute keeps one decimal so a 4.2s pull doesn't read as ``4s``;
+    once we cross a minute the decimals are noise. ``round`` (not
+    ``int``) on the whole-second branch means ``119.9s`` reads as
+    ``2m 0s`` instead of ``1m 59s``.
+    """
+    if seconds < 0:
+        seconds = 0.0
+    if seconds < 60:
+        return f"{seconds:.1f}s"
+    total = int(round(seconds))
+    minutes, secs = divmod(total, 60)
+    return f"{minutes}m {secs}s"
+
+
+def _snapshot_size_bytes(path) -> int:
+    """Sum file sizes under ``path`` (recursively, following symlinks).
+
+    The HF cache stores ``snapshots/<rev>/<file>`` as symlinks into
+    ``blobs/<sha>``; ``stat()`` follows the link so the byte count is
+    the real on-disk weight, matching what the user just downloaded.
+    Quietly tolerates partial / missing trees so the summary line is
+    a print, not a crash, in degenerate cache states.
+    """
+    from pathlib import Path
+
+    root = Path(path)
+    if not root.exists():
+        return 0
+    total = 0
+    try:
+        for entry in root.rglob("*"):
+            try:
+                if entry.is_file():
+                    total += entry.stat().st_size
+            except OSError:
+                continue
+    except OSError:
+        pass
+    return total
+
+
+def _print_pull_summary(repo_id: str, snapshot_dir, elapsed: float) -> None:
+    """Emit the one-line ``Downloaded ... — <size> in <duration>`` summary."""
+    size = _snapshot_size_bytes(snapshot_dir)
+    print(
+        f"  Downloaded {repo_id} — {_format_bytes(size)} in "
+        f"{_format_pull_duration(elapsed)}"
+    )
+
+
 def pull_command(args):
     """Download a model to the HuggingFace cache without serving."""
+    import time
+
     from huggingface_hub import snapshot_download
     from huggingface_hub.errors import HFValidationError
     from huggingface_hub.utils import RepositoryNotFoundError
 
     repo_id = args.model  # already alias-resolved by main()
+    t0 = time.monotonic()
 
     # R2-first / HuggingFace-fallback per file. Default mirror is
     # ``https://models.rapidmlx.com``; set ``RAPID_MLX_MODEL_MIRROR=""``
@@ -3665,9 +3721,12 @@ def pull_command(args):
         repo_root = cache_root / f"models--{owner}--{repo}"
         try:
             rev = (repo_root / "refs" / "main").read_text().strip()
-            print(f"  Cached at: {repo_root / 'snapshots' / rev}")
+            snapshot_dir = repo_root / "snapshots" / rev
+            print(f"  Cached at: {snapshot_dir}")
         except OSError:
+            snapshot_dir = repo_root
             print(f"  Cached at: {repo_root}")
+        _print_pull_summary(repo_id, snapshot_dir, time.monotonic() - t0)
         return
     # Mirror returned False — fall through to plain snapshot_download.
     # Either the catalog was unreachable, the alias isn't catalog-listed,
@@ -3703,6 +3762,7 @@ def pull_command(args):
             sys.exit(1)
         raise
     print(f"  Cached at: {path}")
+    _print_pull_summary(repo_id, path, time.monotonic() - t0)
 
 
 def rm_command(args):
