@@ -389,6 +389,15 @@ def _spawn_serve(
     ]
     env = dict(os.environ)
     env["RAPID_MLX_API_KEY"] = api_key
+    # Parent-PID watchdog (rapid-desktop #449 sibling fix). A SIGKILL
+    # of ``rapid-mlx share`` (the supervisor) re-parents the spawned
+    # ``serve`` to launchd / init; without this stamp the child would
+    # outlive the frp tunnel teardown and keep the bearer-gated port
+    # bound. The watchdog inside the child checks ``os.getppid()`` and
+    # exits the moment it stops matching this PID. No-op if the operator
+    # already exported the env var to a different value — that's an
+    # explicit override.
+    env.setdefault("RAPID_MLX_WATCHDOG_PPID", str(os.getpid()))
     log_fp = log_path.open("ab", buffering=0)
     # Tighten permissions: log files default to umask-derived modes
     # (often 644 = world-readable). If serve ever logs the key as part
