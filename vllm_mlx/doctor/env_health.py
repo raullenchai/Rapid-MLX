@@ -425,6 +425,36 @@ def _safe_version(dist: str) -> str | None:
         return None
 
 
+def _version_at_least(ver: str, minimum: tuple[int, ...]) -> bool:
+    """Compare a PEP 440 version string against a ``(major, minor, patch)``
+    floor using leading-numeric tuple semantics.
+
+    Pre-release/local-version suffixes are stripped — ``"0.5.0rc1"`` and
+    ``"0.5.0+local"`` both compare equal to ``(0, 5, 0)``. We don't need
+    full PEP 440 ordering here; the only floor we care about is the DFlash
+    bump (``mlx-vlm >= 0.5.0``). A malformed version returns ``False`` —
+    safer to nudge the user to upgrade than to silently pass.
+    """
+    parts: list[int] = []
+    for raw in ver.split("."):
+        # Stop at the first non-numeric chunk (e.g. "0rc1", "5+local").
+        digits = ""
+        for ch in raw:
+            if ch.isdigit():
+                digits += ch
+            else:
+                break
+        if not digits:
+            break
+        parts.append(int(digits))
+    if not parts:
+        return False
+    # Pad to the shape of ``minimum`` so the tuple comparison is well-defined.
+    while len(parts) < len(minimum):
+        parts.append(0)
+    return tuple(parts[: len(minimum)]) >= minimum
+
+
 def section_required_packages() -> Section:
     s = Section("Required Packages")
     for dist, label in REQUIRED_PACKAGES:
@@ -460,6 +490,29 @@ def section_optional_packages() -> Section:
                 CheckStatus.WARN,
                 detail=f"distribution={dist} hint={hint}",
             )
+
+    # DFlash is the headline 0.9.x feature and is gated on mlx-vlm >= 0.5.0.
+    # The plain optional-package row above only reports presence/version —
+    # it cannot say "you have mlx-vlm but it's too old for [dflash]". This
+    # extra row makes the gate explicit so a fresh-install user knows whether
+    # `pip install 'rapid-mlx[dflash]'` will actually work.
+    dflash_min = (0, 5, 0)
+    vlm_ver = _safe_version("mlx-vlm")
+    if vlm_ver and _version_at_least(vlm_ver, dflash_min):
+        s.add(
+            "mlx-vlm 0.5.0+ (dflash extras)",
+            CheckStatus.OK,
+            detail=f"distribution=mlx-vlm version={vlm_ver}",
+        )
+    else:
+        current = vlm_ver or "not installed"
+        s.add(
+            f"mlx-vlm 0.5.0+ (dflash extras) not installed or too old "
+            f"(current: {current}, need: 0.5.0+)",
+            CheckStatus.WARN,
+            detail="pip install 'rapid-mlx[dflash]'",
+        )
+
     return s
 
 
@@ -610,35 +663,6 @@ def section_network(
             detail=detail,
         )
 
-    # Cookie hint — not a probe, just an informational warning aligned with
-    # the project's documented mitigation for HF/YouTube rate limits.
-    # Env-var names are spelled out as literals so the routing-shape audit
-    # (tests/test_no_out_of_band_routing.py) can statically prove no
-    # routing decision is composed at the call site.
-    has_cookies = any(
-        os.environ.get(name)
-        for name in (
-            "YOUTUBE_COOKIES",
-            "YOUTUBE_COOKIES_1",
-            "YOUTUBE_COOKIES_2",
-            "YOUTUBE_COOKIES_3",
-            "YOUTUBE_COOKIES_4",
-            "YOUTUBE_COOKIES_5",
-        )
-    )
-    if has_cookies:
-        s.add(
-            "YouTube/HF cookies configured",
-            CheckStatus.OK,
-            detail="YOUTUBE_COOKIES* env var set",
-        )
-    else:
-        s.add(
-            "No YouTube/HF cookies configured (rate-limit risk on heavy downloads)",
-            CheckStatus.WARN,
-            detail="set YOUTUBE_COOKIES_1..5 to enable cookie rotation",
-        )
-
     return s
 
 
@@ -772,20 +796,6 @@ def section_optional_tools(
             "codex CLI not installed (relevant if using codex agent harness)",
             CheckStatus.WARN,
             detail="npm install -g @openai/codex",
-        )
-
-    anth_ver = _safe_version("anthropic")
-    if anth_ver:
-        s.add(
-            f"anthropic SDK {anth_ver}",
-            CheckStatus.OK,
-            detail=f"version={anth_ver}",
-        )
-    else:
-        s.add(
-            "anthropic SDK not installed (relevant if using anthropic agent harness)",
-            CheckStatus.WARN,
-            detail="pip install anthropic",
         )
 
     return s
