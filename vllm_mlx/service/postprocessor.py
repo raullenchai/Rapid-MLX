@@ -1499,6 +1499,34 @@ class StreamingPostProcessor:
         if head and self._THINK_OPEN_TOKEN.startswith(head):
             if self._tool_envelope_in_flight():
                 return False
+            # #447 round-2 MAJOR (PR #948): when ``head`` is ALSO a strict
+            # prefix of one of the tool envelope openers, routing it to
+            # reasoning leaks the outer opener. Concrete failure on Qwen3
+            # + hermes when the tokenizer chunks the opener as ``<`` then
+            # ``tool_call>``: the bare ``<`` matches ``<think>`` prefix,
+            # gets held by the reasoning parser, and is released as plain
+            # ``delta.content`` once the next chunk (``tool_call>``) fails
+            # to complete the ``<think>`` tag. By that point the standard
+            # path no longer sees a leading ``<`` so the tool parser
+            # never accumulates the envelope, the assistant message ships
+            # ``tool_call>\n<function=...`` to the client, and downstream
+            # tool execution breaks.
+            #
+            # Fix: defer ambiguous prefixes (``<`` or ``<t`` — strict
+            # prefixes of BOTH ``<think>`` AND ``<tool_call>``/``<minimax:
+            # tool_call>``) to the standard path. The hermes tool parser's
+            # ``_safe_content_prefix`` (and equivalents on other tool
+            # parsers) hold back partial sentinels just like the
+            # reasoning parser does, so deferring is safe: the byte
+            # accumulates into ``tool_accumulated_text``, gets bound to
+            # the envelope on the next chunk, and the full ``<tool_call>``
+            # body reaches the parser intact. Unambiguous prefixes (``<th``
+            # / ``<thi`` / ``<thin`` / ``<think`` / ``<think>``) still
+            # route through reasoning as before — they share no prefix
+            # with any tool envelope opener.
+            for opener, _closer in self._TOOL_ENVELOPE_OPENERS:
+                if opener.startswith(head):
+                    return False
             return True
         return False
 

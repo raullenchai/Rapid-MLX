@@ -133,6 +133,68 @@ class TestNemotronShapeEnvelopeReachesParser:
     envelope reaches the tool parser intact and the structured call
     surfaces on ``delta.tool_calls``."""
 
+    def test_split_outer_opener_does_not_leak(self):
+        """Codex r2 MAJOR (PR #948): when the tokenizer chunks the
+        outer ``<tool_call>`` opener into ``<`` then ``tool_call>``,
+        the bare ``<`` used to be eaten by the reasoning-lane
+        split-prefix rescue (``<`` is a strict prefix of ``<think>``).
+        The next chunk (``tool_call>``) would then arrive without a
+        leading ``<``, miss the standard-path tool detection, and the
+        reasoning parser would release the buffered ``<tool_call>``
+        as plain ``delta.content`` once the tag failed to complete.
+
+        After the round-2 fix, ambiguous prefixes (``<``, ``<t``) that
+        also start a tool envelope opener are deferred to the standard
+        path so the tool parser's held-back machinery can buffer the
+        partial sentinel safely. The full envelope reaches the parser
+        intact and the call surfaces on ``delta.tool_calls`` — no
+        ``tool_call>`` leak in either content or reasoning channel."""
+        pp = _pp(enable_thinking=False)
+        result = _drive(
+            pp,
+            [
+                "<",
+                "tool_call>",
+                "\n",
+                '{"name":"get_weather","arguments":{"location":"SF"}}',
+                "\n",
+                "</tool_call>",
+            ],
+        )
+        # The outer opener must not have leaked.
+        assert "tool_call>" not in result["content"], (
+            "split outer opener leaked into content channel: "
+            f"{result['content']!r}"
+        )
+        assert "tool_call>" not in result["reasoning"], (
+            "split outer opener leaked into reasoning channel: "
+            f"{result['reasoning']!r}"
+        )
+        # And the structured call must surface.
+        assert len(result["tool_calls"]) == 1
+        assert result["tool_calls"][0]["function"]["name"] == "get_weather"
+
+    def test_split_outer_opener_two_byte_prefix(self):
+        """Same race, but the tokenizer chunks as ``<t`` + ``ool_call>``.
+        ``<t`` is a strict prefix of BOTH ``<think>`` AND ``<tool_call>``
+        so it must also be deferred to the standard path."""
+        pp = _pp(enable_thinking=False)
+        result = _drive(
+            pp,
+            [
+                "<t",
+                "ool_call>",
+                "\n",
+                '{"name":"foo","arguments":{}}',
+                "\n",
+                "</tool_call>",
+            ],
+        )
+        assert "ool_call>" not in result["content"]
+        assert "ool_call>" not in result["reasoning"]
+        assert len(result["tool_calls"]) == 1
+        assert result["tool_calls"][0]["function"]["name"] == "foo"
+
     def test_full_nemotron_envelope_emits_tool_call(self):
         """Exact chunk sequence from the live qwen3.5-4b-4bit repro
         (BatchedEngine emits one tokenizer-token per delta)."""
