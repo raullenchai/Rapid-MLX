@@ -223,9 +223,7 @@ class TestNemotronShapeEnvelopeReachesParser:
         # ``finished=True`` instead, which is a different shape.
         events = list(pp.process_chunk(_make_output("<", finished=False)))
         # Held — no events.
-        assert events == [], (
-            f"expected ambiguous head to be held, got {events!r}"
-        )
+        assert events == [], f"expected ambiguous head to be held, got {events!r}"
         # Now an empty finish-only chunk — the held ``<`` must flush.
         events += list(pp.process_chunk(_make_output("", finished=True)))
         # Find any content that reached the wire.
