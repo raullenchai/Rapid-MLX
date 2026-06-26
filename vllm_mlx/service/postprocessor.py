@@ -373,6 +373,15 @@ class StreamingPostProcessor:
         # Both fields are no-ops when ``tools_requested`` is False.
         self._tool_prose_buffer: str = ""
         self._tool_prose_active: bool = False
+        # #447 round-3 (PR #948): 1-chunk hold-forward buffer for
+        # ambiguous routing heads (``<`` or ``<t`` — strict prefix of
+        # BOTH ``<think>`` AND ``<tool_call>``). Populated by
+        # ``process_chunk`` when ``enable_thinking is False`` and the
+        # head can't yet be disambiguated; prepended to the next chunk
+        # so the merged head routes unambiguously. Cleared by every
+        # successful flush + by ``reset()``. No-op when reasoning is
+        # disabled or thinking is on by default.
+        self._ambiguous_prefix_held: str = ""
         # Monotonic counter for structured tool-call indices across the
         # whole response. Each TOOL_CALL channel ``GenerationOutput`` may
         # carry a single structured call; if multiple chunks fire
@@ -1499,34 +1508,6 @@ class StreamingPostProcessor:
         if head and self._THINK_OPEN_TOKEN.startswith(head):
             if self._tool_envelope_in_flight():
                 return False
-            # #447 round-2 MAJOR (PR #948): when ``head`` is ALSO a strict
-            # prefix of one of the tool envelope openers, routing it to
-            # reasoning leaks the outer opener. Concrete failure on Qwen3
-            # + hermes when the tokenizer chunks the opener as ``<`` then
-            # ``tool_call>``: the bare ``<`` matches ``<think>`` prefix,
-            # gets held by the reasoning parser, and is released as plain
-            # ``delta.content`` once the next chunk (``tool_call>``) fails
-            # to complete the ``<think>`` tag. By that point the standard
-            # path no longer sees a leading ``<`` so the tool parser
-            # never accumulates the envelope, the assistant message ships
-            # ``tool_call>\n<function=...`` to the client, and downstream
-            # tool execution breaks.
-            #
-            # Fix: defer ambiguous prefixes (``<`` or ``<t`` — strict
-            # prefixes of BOTH ``<think>`` AND ``<tool_call>``/``<minimax:
-            # tool_call>``) to the standard path. The hermes tool parser's
-            # ``_safe_content_prefix`` (and equivalents on other tool
-            # parsers) hold back partial sentinels just like the
-            # reasoning parser does, so deferring is safe: the byte
-            # accumulates into ``tool_accumulated_text``, gets bound to
-            # the envelope on the next chunk, and the full ``<tool_call>``
-            # body reaches the parser intact. Unambiguous prefixes (``<th``
-            # / ``<thi`` / ``<thin`` / ``<think`` / ``<think>``) still
-            # route through reasoning as before — they share no prefix
-            # with any tool envelope opener.
-            for opener, _closer in self._TOOL_ENVELOPE_OPENERS:
-                if opener.startswith(head):
-                    return False
             return True
         return False
 
@@ -2305,6 +2286,10 @@ class StreamingPostProcessor:
         # doesn't ship the prior turn's buffered preamble bytes.
         self._tool_prose_buffer = ""
         self._tool_prose_active = False
+        # #447 round-3 (PR #948): clear the ambiguous-prefix hold-buffer
+        # so a re-used processor doesn't prepend the prior turn's held
+        # ``<`` / ``<t`` into the new stream's first delta.
+        self._ambiguous_prefix_held = ""
         self._think_prefix_sent = False
         self._json_preamble_stripped = False
         self._json_preamble_buffer = ""
@@ -2421,6 +2406,48 @@ class StreamingPostProcessor:
             if hasattr(output, "text"):
                 output.text = tail
             delta_text = tail
+
+        # #447 round-3 MAJOR (PR #948): ambiguous-prefix hold-forward.
+        # When ``enable_thinking is False`` AND a delta head reduces to
+        # ``<`` or ``<t`` (strict prefix of BOTH ``<think>`` AND
+        # ``<tool_call>``/``<minimax:tool_call>``), neither routing
+        # choice is safe — eager routing to reasoning leaks the outer
+        # opener when the next chunk completes ``<tool_call>`` (codex
+        # r2 reproducer), and eager routing to the standard path leaks
+        # ``<think>`` into ``delta.content`` when the next chunk
+        # completes ``<think>`` (codex r3 reproducer).
+        #
+        # Hold the ambiguous prefix for exactly one chunk, prepend it
+        # to the next delta, and re-evaluate. When the next chunk
+        # arrives, the merged head is unambiguous in one direction:
+        # ``<th...`` only matches ``<think>`` (reasoning lane);
+        # ``<to...`` / ``<m...`` only matches a tool envelope (standard
+        # lane). On the rare terminal-only chunk that carries the
+        # ambiguous head (``output.finished`` True), flush the buffer
+        # through the standard path so the wire envelope still closes.
+        # Skipped entirely when ``enable_thinking is not False`` —
+        # the default-route policy at the top of
+        # ``_should_route_through_reasoning`` already locks reasoning.
+        if self._ambiguous_prefix_held:
+            delta_text = self._ambiguous_prefix_held + delta_text
+            self._ambiguous_prefix_held = ""
+            output.new_text = delta_text
+            if hasattr(output, "text"):
+                output.text = delta_text
+        if (
+            self.enable_thinking is False
+            and self.reasoning_parser is not None
+            and not output.finished
+        ):
+            _probe_head = (self.accumulated_text + delta_text).lstrip()
+            if _probe_head and self._THINK_OPEN_TOKEN.startswith(_probe_head):
+                # Head is a strict prefix of ``<think>``. If it is
+                # ALSO a strict prefix of any tool envelope opener,
+                # the routing choice is ambiguous — hold and wait.
+                for _opener, _ in self._TOOL_ENVELOPE_OPENERS:
+                    if _opener.startswith(_probe_head):
+                        self._ambiguous_prefix_held = delta_text
+                        return []
 
         # Step 1: Separate content from reasoning
         if output.channel is not None:

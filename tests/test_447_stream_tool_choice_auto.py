@@ -172,6 +172,42 @@ class TestNemotronShapeEnvelopeReachesParser:
         assert len(result["tool_calls"]) == 1
         assert result["tool_calls"][0]["function"]["name"] == "get_weather"
 
+    def test_split_think_opener_still_routes_to_reasoning_with_tools(self):
+        """Codex r3 MAJOR (PR #948): the round-2 unconditional defer
+        of ``<`` / ``<t`` to the standard path regressed the R8-M2
+        split-``<think>`` rescue. After the round-3 hold-forward fix,
+        a stream that splits the ``<think>`` opener as ``<`` +
+        ``think>`` (or ``<t`` + ``hink>``) under
+        ``enable_thinking=False`` + tools enabled must STILL route
+        the wrapper to the reasoning lane and not leak into
+        ``delta.content``."""
+        for first, second in (("<", "think>"), ("<t", "hink>")):
+            pp = _pp(enable_thinking=False)
+            result = _drive(
+                pp,
+                [
+                    first,
+                    second,
+                    "abc",
+                    "</think>",
+                    "answer",
+                ],
+            )
+            # The opener and the reasoning body must not have leaked.
+            assert "<think>" not in result["content"], (
+                f"split={first!r}+{second!r}: <think> leaked into content: "
+                f"{result['content']!r}"
+            )
+            assert "abc" not in result["content"], (
+                f"split={first!r}+{second!r}: reasoning body 'abc' leaked: "
+                f"{result['content']!r}"
+            )
+            # And the reasoning lane must carry the body.
+            assert "abc" in result["reasoning"], (
+                f"split={first!r}+{second!r}: reasoning body missing from "
+                f"reasoning channel: {result['reasoning']!r}"
+            )
+
     def test_split_outer_opener_two_byte_prefix(self):
         """Same race, but the tokenizer chunks as ``<t`` + ``ool_call>``.
         ``<t`` is a strict prefix of BOTH ``<think>`` AND ``<tool_call>``
