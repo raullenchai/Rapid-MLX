@@ -1472,8 +1472,71 @@ class StreamingPostProcessor:
         # arrived yet. Route this chunk through the reasoning parser
         # so a split-SSE tag doesn't pre-leak as content. Don't latch
         # — we'll re-evaluate next chunk once more bytes arrive.
+        #
+        # #447 (2026-06-26): suppress the tentative re-route when a
+        # tool-call envelope is already in flight (the tool parser is
+        # mid-block accumulating an unclosed ``<tool_call>`` body).
+        # Reproduction: ``enable_thinking=False`` + ``tool_choice="auto"``
+        # on hermes + Qwen3 streams the Nemotron-shape envelope
+        # ``<tool_call>\n<function=NAME>\n<parameter=K>V</parameter>\n
+        # </function>\n</tool_call>``. After the opening ``<tool_call>``
+        # chunk lands in the tool parser, the standalone ``<`` of the
+        # inner ``<function=`` tag matches the split-prefix branch (``<``
+        # is a strict prefix of ``<think>``), gets re-routed to the
+        # reasoning lane, and is held back by the reasoning parser's
+        # partial-tag withhold. The byte is then NEVER fed to the tool
+        # parser's ``tool_accumulated_text``, so the assembled body
+        # reads ``<tool_call>\nfunction=...\n<parameter=...`` — the
+        # outer ``<function=`` opener is corrupted, the Nemotron regex
+        # fails to match, and the whole envelope is suppressed as an
+        # in-flight tool block until end-of-stream finishes with a
+        # bare ``finish_reason="stop"`` and zero tool_calls. The
+        # tool-parser path has its own held-back machinery for partial
+        # sentinels (``hermes._safe_content_prefix``) so deferring
+        # routing here is safe — the ``<`` lands in the tool parser,
+        # is held until enough bytes arrive to commit, and the
+        # downstream tool-envelope detection completes normally.
         if head and self._THINK_OPEN_TOKEN.startswith(head):
+            if self._tool_envelope_in_flight():
+                return False
             return True
+        return False
+
+    # Common ``<tool_call>``-style envelope openers shared across the
+    # text-parser families (hermes / qwen3_xml / glm47 / minimax / nemotron).
+    # Used by ``_tool_envelope_in_flight`` to detect that the tool parser
+    # is mid-accumulation so the split-prefix ``<think>`` rescue
+    # (``_should_route_through_reasoning``) does not eat the next ``<``
+    # byte into the reasoning lane (#447).
+    _TOOL_ENVELOPE_OPENERS: tuple[tuple[str, str], ...] = (
+        ("<tool_call>", "</tool_call>"),
+        ("<minimax:tool_call>", "</minimax:tool_call>"),
+    )
+
+    def _tool_envelope_in_flight(self) -> bool:
+        """Return True iff the tool parser is mid-block on an unclosed
+        ``<tool_call>``-style envelope.
+
+        Consulted by the ``_should_route_through_reasoning`` split-prefix
+        branch to decide whether a bare ``<`` (ambiguous between the
+        start of ``<think>`` and the start of an inner Nemotron-shape
+        ``<function=...>`` / ``<parameter=...>`` tag) should be allowed
+        to re-route into the reasoning lane. The default-true behaviour
+        is correct for plain prose; the false override here only fires
+        once the tool parser has already accepted an unclosed envelope
+        opener and the next ``<`` is overwhelmingly an inner tag (see
+        comment at the call site for the failure mode).
+
+        Cheap O(envelope_count) scan over ``tool_accumulated_text``;
+        ``_TOOL_ENVELOPE_OPENERS`` keeps the openers/closers paired so
+        a future wire format can be added in one place.
+        """
+        buf = self.tool_accumulated_text
+        if not buf:
+            return False
+        for opener, closer in self._TOOL_ENVELOPE_OPENERS:
+            if buf.count(opener) > buf.count(closer):
+                return True
         return False
 
     def _consume_reasoning_budget(self, reasoning_text: str) -> tuple[str, str]:

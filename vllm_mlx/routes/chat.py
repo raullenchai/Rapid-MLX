@@ -3899,6 +3899,92 @@ async def stream_chat_completion(
                 finalize_content_parts.append(event.content)
         finalize_content = "".join(finalize_content_parts)
 
+        # #447 streaming-parity synthesis (2026-06-26). The non-stream
+        # chat path at chat.py:~3147 / ~3215 falls back to
+        # ``_synthesize_forced_tool_call`` when a forced ``tool_choice``
+        # (``"required"`` with a single tool, or
+        # ``{"type":"function","function":{"name":...}}``) finishes
+        # without the parser surfacing any tool_call — restoring the
+        # OpenAI "tool_call guaranteed" contract symmetry with
+        # channel-routed paths (harmony / gemma4). The streaming path
+        # previously had no equivalent: a qwen3-family model emitting
+        # the Nemotron-shape ``<tool_call><function=NAME>...</function>
+        # </tool_call>`` body under a hermes JSON-shape
+        # ``forced_assistant_prefix`` (``<tool_call>\n{"name":...,
+        # "arguments": ``) produces a hybrid wire shape that neither
+        # the streaming nor the cross-format extract path can parse,
+        # and ``stream=true`` finishes with zero ``tool_call`` deltas
+        # plus ``finish_reason="stop"``. The non-stream branch synth-
+        # recovers; the stream branch left clients with an empty turn
+        # (rapid-desktop#447).
+        #
+        # Gating identical to the non-stream synthesis: forced choice +
+        # the target function is the sole submitted tool (required +
+        # 1-tool collapses unambiguously) OR a named function is
+        # explicitly pinned AND the pinned name is in
+        # ``request.tools`` (defense-in-depth from PR #675 codex r1).
+        # The synth is only applied when NOTHING ELSE recovered a
+        # call — fallback_tool_calls empty AND the streaming path
+        # itself did not emit a tool_call (``_tool_calls_emitted_to
+        # _wire`` is the wire-truth counter).
+        if (
+            not fallback_tool_calls
+            and processor._tool_calls_emitted_to_wire == 0
+            and request.tools
+            and request.tool_choice is not None
+        ):
+            _synth_target: str | None = None
+            if (
+                isinstance(request.tool_choice, dict)
+                and request.tool_choice.get("type") == "function"
+            ):
+                _pinned = (request.tool_choice.get("function") or {}).get("name")
+                _submitted = {
+                    t.function.get("name")
+                    for t in request.tools
+                    if getattr(t, "type", None) == "function"
+                }
+                if _pinned and _pinned in _submitted:
+                    _synth_target = _pinned
+            elif (
+                request.tool_choice == "required" and len(request.tools) == 1
+            ):
+                _synth_target = request.tools[0].function.get("name")
+            if _synth_target:
+                _raw_text = (
+                    processor.tool_accumulated_text
+                    or processor.accumulated_text
+                    or ""
+                )
+                _synth_call = _synthesize_forced_tool_call(
+                    _synth_target, raw_text=_raw_text
+                )
+                # Convert the ``ToolCall`` pydantic object into the
+                # streaming-shape dict the terminal-merge path expects
+                # (``{"index","id","type","function":{"name","arguments"}}``)
+                # so it serializes identically to the parser-emitted
+                # deltas. ``index=0`` is the canonical singleton-call
+                # index used elsewhere in the streaming postprocessor.
+                fallback_tool_calls.append(
+                    {
+                        "index": 0,
+                        "id": _synth_call.id,
+                        "type": "function",
+                        "function": {
+                            "name": _synth_call.function.name,
+                            "arguments": _synth_call.function.arguments,
+                        },
+                    }
+                )
+                logger.info(
+                    "[SSE-FORCED-SYNTH-#447] forced tool_choice produced no "
+                    "tool_call deltas; synthesizing terminal call to %r "
+                    "(args recovered from raw text where possible) to honor "
+                    "the OpenAI tool_call-guaranteed contract — mirrors the "
+                    "non-stream synthesis path.",
+                    _synth_target,
+                )
+
         # Emit the terminal chunk. Three cases:
         #   (a) Streaming parser already emitted tool_calls during the
         #       loop → buffered_finish has finish_reason="tool_calls"
