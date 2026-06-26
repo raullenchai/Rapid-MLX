@@ -293,7 +293,7 @@ class TestInternalSpawnersStampWatchdog:
         start = source.index("def _spawn_chat_server(")
         end = source.find("\ndef ", start + 1)
         body = source[start : end if end != -1 else len(source)]
-        assert 'RAPID_MLX_WATCHDOG_PPID' in body, (
+        assert "RAPID_MLX_WATCHDOG_PPID" in body, (
             "rapid-desktop #449 sibling regression: _spawn_chat_server "
             "no longer stamps RAPID_MLX_WATCHDOG_PPID on the child env. "
             "Without it, SIGKILL of `rapid-mlx chat` orphans the serve "
@@ -304,13 +304,10 @@ class TestInternalSpawnersStampWatchdog:
         from pathlib import Path
 
         share_file = (
-            Path(__file__).resolve().parents[1]
-            / "vllm_mlx"
-            / "share"
-            / "cli.py"
+            Path(__file__).resolve().parents[1] / "vllm_mlx" / "share" / "cli.py"
         )
         source = share_file.read_text()
-        assert 'RAPID_MLX_WATCHDOG_PPID' in source, (
+        assert "RAPID_MLX_WATCHDOG_PPID" in source, (
             "rapid-desktop #449 sibling regression: rapid-mlx share's "
             "serve-spawn no longer stamps RAPID_MLX_WATCHDOG_PPID on the "
             "child env. Without it, SIGKILL of `rapid-mlx share` leaves "
@@ -324,9 +321,11 @@ class TestDefaultOnOrphan:
         """Dogfood postmortems grep for the single marker line. Pin the
         string so a future refactor that changes the wording also
         updates whatever log scraper depends on it."""
-        with patch.object(pwd.os, "kill") as mock_kill, patch.object(
-            pwd.time, "sleep"
-        ), patch.object(pwd.os, "_exit") as mock_exit:
+        with (
+            patch.object(pwd.os, "kill") as mock_kill,
+            patch.object(pwd.time, "sleep"),
+            patch.object(pwd.os, "_exit") as mock_exit,
+        ):
             # ``_exit`` is what terminates the call; we patch it so the
             # test runner survives. The function would normally never
             # return.
@@ -352,11 +351,13 @@ class TestDefaultOnOrphan:
         def fake_kill(pid, sig):
             kills.append(sig)
 
-        with patch.object(pwd.os, "kill", side_effect=fake_kill), patch.object(
-            pwd.time, "sleep"
-        ) as mock_sleep, patch.object(pwd.os, "_exit", side_effect=SystemExit(0)):
-            with pytest.raises(SystemExit):
-                pwd._default_on_orphan(expected_ppid=9999, observed_ppid=1)
+        with (
+            patch.object(pwd.os, "kill", side_effect=fake_kill),
+            patch.object(pwd.time, "sleep") as mock_sleep,
+            patch.object(pwd.os, "_exit", side_effect=SystemExit(0)),
+            pytest.raises(SystemExit),
+        ):
+            pwd._default_on_orphan(expected_ppid=9999, observed_ppid=1)
         assert kills == [_signal.SIGTERM, _signal.SIGKILL]
         # Exactly 5 s of sleep between SIGTERM and SIGKILL.
         assert any(args[0] == 5.0 for args, _ in mock_sleep.call_args_list)

@@ -1453,9 +1453,7 @@ def serve_command(args):
     # was passed (default).
     from ._parent_watchdog import install_parent_watchdog, resolve_expected_ppid
 
-    install_parent_watchdog(
-        resolve_expected_ppid(getattr(args, "watchdog_ppid", None))
-    )
+    install_parent_watchdog(resolve_expected_ppid(getattr(args, "watchdog_ppid", None)))
 
     _arg_max_tokens = getattr(args, "max_tokens", None)
     _max_tokens_is_explicit = _arg_max_tokens is not None
