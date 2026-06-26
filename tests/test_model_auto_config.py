@@ -1,9 +1,12 @@
 """Tests for model auto-config detection."""
 
+import logging
+
 import pytest
 
 from vllm_mlx.model_auto_config import (
     ModelConfig,
+    _reset_resolution_log_cache,
     detect_model_config,
     enrich_model_config,
     format_profile_summary,
@@ -1463,3 +1466,55 @@ class TestWarnMisboundDeepseekV3Parser:
         )
         assert parser in msg
         assert model_path in msg
+
+
+class TestResolutionLogOnce:
+    """0.9.5 dogfood: detect_model_config() is called 2-4 times per
+    `rapid-mlx serve` boot (cli, server, engine_core, pflash). Without
+    de-dup, the user sees the same multi-line INFO 2-4 times. Log-once
+    contract — one emit per unique model_path per process.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_cache(self):
+        _reset_resolution_log_cache()
+        yield
+        _reset_resolution_log_cache()
+
+    def _resolution_records(self, records):
+        return [
+            r
+            for r in records
+            if "Resolved alias profile" in r.message
+            or "Auto-detected model family" in r.message
+        ]
+
+    def test_alias_path_logs_exactly_once_across_repeats(self, caplog):
+        caplog.set_level(logging.INFO)
+        for _ in range(4):
+            cfg = detect_model_config("qwen3.5-9b-4bit")
+            assert cfg is not None
+        emits = self._resolution_records(caplog.records)
+        assert len(emits) == 1
+        assert "qwen3.5-9b-4bit" in emits[0].message
+
+    def test_regex_fallback_path_logs_exactly_once_across_repeats(self, caplog):
+        caplog.set_level(logging.INFO)
+        path = "lmstudio-community/Qwen3-Random-Forest-MLX-4bit"
+        for _ in range(3):
+            detect_model_config(path)
+        emits = self._resolution_records(caplog.records)
+        assert len(emits) == 1
+        assert "Auto-detected model family" in emits[0].message
+
+    def test_distinct_models_each_log_once(self, caplog):
+        caplog.set_level(logging.INFO)
+        detect_model_config("qwen3.5-9b-4bit")
+        detect_model_config("qwen3.5-9b-4bit")
+        detect_model_config("qwen3.5-4b-4bit")
+        detect_model_config("qwen3.5-4b-4bit")
+        emits = self._resolution_records(caplog.records)
+        assert len(emits) == 2
+        messages = " | ".join(r.message for r in emits)
+        assert "qwen3.5-9b-4bit" in messages
+        assert "qwen3.5-4b-4bit" in messages

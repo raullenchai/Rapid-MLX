@@ -567,6 +567,27 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
 ]
 
 
+# Resolution log de-dup. detect_model_config() is called from cli.py,
+# server.py, engine_core.py, and pflash.py during a single ``serve`` boot;
+# without this gate the user sees the same multi-line INFO 2-4 times
+# back-to-back. Keyed on model_path so distinct models still each log
+# once. Process-local — a fresh worker process logs anew, which is what
+# we want.
+_logged_resolutions: set[str] = set()
+
+
+def _reset_resolution_log_cache() -> None:
+    """Test hook: clear the de-dup set between cases."""
+    _logged_resolutions.clear()
+
+
+def _log_resolution_once(model_path: str, message: str) -> None:
+    if model_path in _logged_resolutions:
+        return
+    _logged_resolutions.add(model_path)
+    logger.info(message)
+
+
 def detect_model_config(model_path: str) -> ModelConfig | None:
     """Detect optimal parser config from model name/path.
 
@@ -589,14 +610,15 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
     """
     profile = resolve_profile(model_path)
     if profile is not None:
-        logger.info(
+        _log_resolution_once(
+            model_path,
             f"Resolved alias profile for '{model_path}' → "
             f"tool_call_parser={profile.tool_call_parser}, "
             f"reasoning_parser={profile.reasoning_parser}, "
             f"is_hybrid={profile.is_hybrid}, "
             f"supports_spec_decode={profile.supports_spec_decode}, "
             f"suffix_tier={profile.suffix_decoding_tier}, "
-            f"pflash_tier={profile.pflash_tier}"
+            f"pflash_tier={profile.pflash_tier}",
         )
         # AliasProfile stores the bench dict as a sorted tuple (frozen
         # dataclasses must avoid mutable shared state). Materialize a
@@ -624,12 +646,13 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
 
     for pattern, config in _MODEL_PATTERNS:
         if pattern.search(model_path):
-            logger.info(
+            _log_resolution_once(
+                model_path,
                 f"Auto-detected model family '{pattern.pattern}' → "
                 f"tool_call_parser={config.tool_call_parser}, "
                 f"reasoning_parser={config.reasoning_parser}, "
                 f"is_hybrid={config.is_hybrid}, "
-                f"supports_spec_decode={config.supports_spec_decode}"
+                f"supports_spec_decode={config.supports_spec_decode}",
             )
             return config
     return None
