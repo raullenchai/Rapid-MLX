@@ -335,7 +335,7 @@ def test_qwen35_family_split_dense_vs_moe_hybrid_flag() -> None:
     """
     profiles = list_profiles()
     family = {a: p for a, p in profiles.items() if a.startswith("qwen3.5-")}
-    assert len(family) == 10
+    assert len(family) == 15
     # supports_spec_decode is uniformly False across the entire
     # qwen3.5-* family — that contract is unchanged.
     assert {p.supports_spec_decode for p in family.values()} == {False}, (
