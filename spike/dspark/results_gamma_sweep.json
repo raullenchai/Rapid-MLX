@@ -1,0 +1,137 @@
+{
+  "sps_profile_source": "spike/dspark/results.json",
+  "sps_profile": {
+    "1": 100.23241427424765,
+    "2": 82.21881294761288,
+    "4": 51.47530419020316,
+    "8": 31.5935178089207,
+    "16": 22.93036728260033,
+    "24": 23.12133168245768,
+    "32": 23.240725296558445
+  },
+  "comparisons": {
+    "chat": {
+      "gamma=4": {
+        "static_ell": 4,
+        "static_theta_tok_per_s": 128.90755233429638,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 148.42720884640332,
+        "delta_pct": 15.142368432756015
+      },
+      "gamma=8": {
+        "static_ell": 8,
+        "static_theta_tok_per_s": 93.24096110464069,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 148.42720884640332,
+        "delta_pct": 59.18669980227816
+      },
+      "gamma=12": {
+        "static_ell": 12,
+        "static_theta_tok_per_s": 80.62135709947962,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 148.42720884640332,
+        "delta_pct": 84.1040813332592
+      },
+      "gamma=16": {
+        "static_ell": 16,
+        "static_theta_tok_per_s": 70.71107326235938,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 148.42720884640332,
+        "delta_pct": 109.90659878077889
+      },
+      "gamma=24": {
+        "static_ell": 24,
+        "static_theta_tok_per_s": 71.27233695130515,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 148.42720884640332,
+        "delta_pct": 108.25360188176809
+      },
+      "best_static_gamma_tune": {
+        "ell": 2,
+        "theta_tok_per_s": 148.42720884640332
+      }
+    },
+    "code": {
+      "gamma=4": {
+        "static_ell": 4,
+        "static_theta_tok_per_s": 175.22090686735493,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 174.8444979222501,
+        "delta_pct": -0.2148196535643863
+      },
+      "gamma=8": {
+        "static_ell": 8,
+        "static_theta_tok_per_s": 153.31798312103982,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 174.8444979222501,
+        "delta_pct": 14.040436981365561
+      },
+      "gamma=12": {
+        "static_ell": 12,
+        "static_theta_tok_per_s": 143.11953477445283,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 174.8444979222501,
+        "delta_pct": 22.166759553679217
+      },
+      "gamma=16": {
+        "static_ell": 16,
+        "static_theta_tok_per_s": 128.20033509643133,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 174.8444979222501,
+        "delta_pct": 36.383807258173995
+      },
+      "gamma=24": {
+        "static_ell": 24,
+        "static_theta_tok_per_s": 129.84011034028129,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 174.8444979222501,
+        "delta_pct": 34.66139043167985
+      },
+      "best_static_gamma_tune": {
+        "ell": 4,
+        "theta_tok_per_s": 175.22090686735493
+      }
+    },
+    "math": {
+      "gamma=4": {
+        "static_ell": 4,
+        "static_theta_tok_per_s": 179.6794045416768,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 176.85057814990304,
+        "delta_pct": -1.5743743135110462
+      },
+      "gamma=8": {
+        "static_ell": 8,
+        "static_theta_tok_per_s": 161.80058008132897,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 176.85057814990304,
+        "delta_pct": 9.30157238064857
+      },
+      "gamma=12": {
+        "static_ell": 12,
+        "static_theta_tok_per_s": 154.46540991949914,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 176.85057814990304,
+        "delta_pct": 14.492026559260168
+      },
+      "gamma=16": {
+        "static_ell": 16,
+        "static_theta_tok_per_s": 140.08892938368973,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 176.85057814990304,
+        "delta_pct": 26.241651590845404
+      },
+      "gamma=24": {
+        "static_ell": 24,
+        "static_theta_tok_per_s": 142.76878421667124,
+        "dynamic_ell": 2,
+        "dynamic_theta_tok_per_s": 176.85057814990304,
+        "delta_pct": 23.872020848414596
+      },
+      "best_static_gamma_tune": {
+        "ell": 5,
+        "theta_tok_per_s": 180.00094255033196
+      }
+    }
+  }
+}

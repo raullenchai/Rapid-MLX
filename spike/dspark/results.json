@@ -1,0 +1,63 @@
+{
+  "model": "mlx-community/Qwen3.5-9B-4bit",
+  "host": "M3 Ultra (per task constraint)",
+  "sps_profile_synthetic": false,
+  "sps_profile": {
+    "1": 100.23241427424765,
+    "2": 82.21881294761288,
+    "4": 51.47530419020316,
+    "8": 31.5935178089207,
+    "16": 22.93036728260033,
+    "24": 23.12133168245768,
+    "32": 23.240725296558445
+  },
+  "r1_sweep": {
+    "chat_high_confidence": {
+      "gamma": 8,
+      "ell_1_star": 2,
+      "is_no_op_vs_dflash": false,
+      "theta": 175.08581580368386,
+      "admitted_count": 2
+    },
+    "chat_decaying": {
+      "gamma": 8,
+      "ell_1_star": 2,
+      "is_no_op_vs_dflash": false,
+      "theta": 147.70526061385914,
+      "admitted_count": 2
+    },
+    "code_high_confidence": {
+      "gamma": 8,
+      "ell_1_star": 2,
+      "is_no_op_vs_dflash": false,
+      "theta": 173.85582992601596,
+      "admitted_count": 2
+    },
+    "math_structured": {
+      "gamma": 8,
+      "ell_1_star": 2,
+      "is_no_op_vs_dflash": false,
+      "theta": 175.67406991909027,
+      "admitted_count": 2
+    },
+    "summary": {
+      "profiles_tested": 4,
+      "profiles_yielding_full_block_admit": 0,
+      "every_profile_is_no_op": false
+    }
+  },
+  "scheduler_overhead_us_per_call": {
+    "R=1": 2.505292068235576,
+    "R=4": 8.414999931119382,
+    "R=10": 22.18404202722013
+  },
+  "multi_tenant_C10": {
+    "skipped": "MLX engine is single-request sequential; speculative/dflash/server.py wraps DFlash in asyncio.Lock(). No batched verification kernel in mlx-vlm 0.5.0. Cannot exercise Algorithm 1's R>=2 premise on this engine."
+  },
+  "multi_tenant_C50": {
+    "skipped": "MLX engine is single-request sequential; speculative/dflash/server.py wraps DFlash in asyncio.Lock(). No batched verification kernel in mlx-vlm 0.5.0. Cannot exercise Algorithm 1's R>=2 premise on this engine."
+  },
+  "multi_tenant_C100": {
+    "skipped": "MLX engine is single-request sequential; speculative/dflash/server.py wraps DFlash in asyncio.Lock(). No batched verification kernel in mlx-vlm 0.5.0. Cannot exercise Algorithm 1's R>=2 premise on this engine."
+  }
+}
