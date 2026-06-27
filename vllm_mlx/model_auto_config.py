@@ -98,12 +98,7 @@ class ModelConfig:
     # CLI ``--pflash`` still wins. See VALID_PFLASH_TIERS for the enum.
     pflash_tier: str = "unknown"
 
-    # TurboQuant K8V4 eligibility (R15 Phase 4 / task #332). Mirrors
-    # ``AliasProfile.turboquant_tier``. Values: ``"unknown"`` (default —
-    # operator must pass ``--kv-cache-turboquant`` to opt in) or
-    # ``"k8v4_verified"`` (engine defaults the flag to ``k8v4``).
-    # Resolution happens in ``turboquant.resolve_turboquant_mode_default``
-    # and explicit CLI ``--kv-cache-turboquant`` still wins.
+    # Mirrors ``AliasProfile.turboquant_tier``; see VALID_TURBOQUANT_TIERS.
     turboquant_tier: str = "unknown"
 
     # DFlash block-diffusion speculative decoding eligibility (#264, 0.9.0

@@ -65,26 +65,9 @@ VALID_SUFFIX_TIERS: frozenset[str] = frozenset({"unknown", "neutral", "good", "a
 #                 defaults PFlash to ``always`` unless the user overrides
 VALID_PFLASH_TIERS: frozenset[str] = frozenset({"unknown", "verified"})
 
-# Canonical enum for ``turboquant_tier``. TurboQuant K8V4 mix (R15 Phase
-# 4) is opt-in via ``--kv-cache-turboquant=k8v4`` today; this tier flips
-# the no-flag default for aliases where we've measured that the K8 path
-# is quality-safe at the operational context window. Mirrors
-# ``pflash_tier`` in shape (closed enum, default ``"unknown"``, only
-# verified-class values change the engine default). The K8V4-vs-int4-K
-# error in GQA architectures only shows past ~32k tokens; the MoE hero
-# aliases below routinely run at >8k but rarely past 32k, so K8V4 is
-# memory-safe-by-default for them.
-#
-# - ``unknown``:        not benched / no decision (default — engine keeps
-#                       TurboQuant off unless the operator passes
-#                       ``--kv-cache-turboquant``).
-# - ``k8v4_verified``:  bench-validated for the K8V4 mix on this alias;
-#                       engine defaults ``--kv-cache-turboquant`` to
-#                       ``k8v4`` when no flag is passed. Explicit CLI
-#                       still wins (``--kv-cache-turboquant v4`` /
-#                       ``--no-kv-cache-turboquant`` / passing
-#                       ``--kv-cache-quantization`` for the legacy
-#                       mutual-exclusion path).
+# Canonical enum for ``turboquant_tier``. ``"k8v4_verified"`` flips the
+# no-flag default to ``--kv-cache-turboquant k8v4`` on that alias only;
+# explicit CLI still wins. Mirrors ``pflash_tier`` in shape.
 VALID_TURBOQUANT_TIERS: frozenset[str] = frozenset({"unknown", "k8v4_verified"})
 
 
@@ -225,22 +208,7 @@ class AliasProfile:
     # ``modality`` — inserting a field higher silently routes existing
     # positional kwargs into the wrong slot.
     pflash_tier: str = "unknown"
-    # TurboQuant K8V4 mix eligibility (R15 Phase 4 / task #332). Default
-    # ``"unknown"`` keeps the engine's TurboQuant mode off (operator
-    # opts in via ``--kv-cache-turboquant``). ``"k8v4_verified"`` flips
-    # the no-flag default to ``--kv-cache-turboquant k8v4`` for that
-    # alias only — used today on the MoE hero families
-    # (Qwen3.5-35B-A3B, Qwen3.5-122B-A10B, Qwen3.6-35B-A3B) where the
-    # operational context window stays inside the safe envelope
-    # documented on ``VALID_TURBOQUANT_TIERS``. Same precedence rules as
-    # ``pflash_tier``: explicit CLI wins, and the ``--kv-cache-
-    # quantization`` legacy flag still takes precedence (the two are
-    # mutually exclusive at the wiring layer).
-    #
-    # NOTE on positional ABI: appended at the end for the same reason
-    # ``pflash_tier`` is — inserting fields higher in a frozen
-    # dataclass that callers also build positionally would silently
-    # re-bind their args.
+    # TurboQuant K8V4 default-on tier. See ``VALID_TURBOQUANT_TIERS``.
     turboquant_tier: str = "unknown"
 
 
@@ -292,11 +260,6 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "dflash_draft_model",
             "recommended_sampling",
             "pflash_tier",
-            # R15 Phase 4 / task #332: per-alias TurboQuant default.
-            # ``"k8v4_verified"`` flips the no-flag default to
-            # ``--kv-cache-turboquant k8v4`` for the MoE hero families;
-            # ``"unknown"`` (default) preserves today's opt-in
-            # behaviour. See ``AliasProfile.turboquant_tier``.
             "turboquant_tier",
             # Deprecated v0.7.2 PR #555 diffusion knobs — kept in the
             # allowed set so they construct an ``AliasProfile`` with
@@ -385,12 +348,6 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"{sorted(VALID_PFLASH_TIERS)}"
         )
 
-    # TurboQuant tier — validated against the closed enum here so a typo
-    # in aliases.json fails loud at load time. Mirrors ``pflash_tier``
-    # exactly; the only routing distinction is that a verified tier
-    # flips the engine's TurboQuant-mode default (consulted by
-    # ``turboquant.resolve_turboquant_mode_default`` in cli.py) rather
-    # than the PFlash mode.
     turboquant_tier = value.get("turboquant_tier", "unknown")
     if not isinstance(turboquant_tier, str):
         raise ValueError(f"alias {alias!r}: turboquant_tier must be a string")

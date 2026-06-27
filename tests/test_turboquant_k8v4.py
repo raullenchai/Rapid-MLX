@@ -570,24 +570,10 @@ class TestMetrics:
         assert 'rapid_mlx_turboquant_skipped_total{reason="other"} 1' in body
 
 
-# ---------------------------------------------------------------------------
-# Per-alias K8V4 default-on resolver (task #332)
-# ---------------------------------------------------------------------------
+# Per-alias K8V4 default-on resolver + codec dtype preservation (task #332).
 
 
 class TestResolveTurboquantModeDefault:
-    """Unit tests for :func:`resolve_turboquant_mode_default`.
-
-    The resolver is the single decision surface that flips
-    ``args.kv_cache_turboquant`` from ``None`` → ``"k8v4"`` on the MoE
-    hero aliases. The CLI path (``vllm_mlx/cli.py``) is just a wrapper
-    around this helper. Operator-explicit values must win and the
-    legacy ``--kv-cache-quantization`` flag must NOT trigger the auto-
-    default (or the mutual-exclusion check below it would reject the
-    combination and the operator who only asked for the legacy bool
-    would see a confusing error).
-    """
-
     @staticmethod
     def _args(turboquant=None, quantization=False):
         from types import SimpleNamespace
@@ -598,13 +584,6 @@ class TestResolveTurboquantModeDefault:
         )
 
     def test_verified_alias_flips_to_k8v4(self, monkeypatch):
-        """The resolver MUST flip to ``"k8v4"`` for any alias that has
-        ``turboquant_tier == "k8v4_verified"`` set. No real alias has the
-        tier in this PR (all 13 originally-flipped aliases were reverted
-        pending the K8V4 codec dtype-preservation fix — see PR #952
-        verification campaign + smoking-gun A/B in the PR body) so we
-        synthesise a config via ``monkeypatch`` to keep the resolver
-        wiring under test."""
         from types import SimpleNamespace
 
         from vllm_mlx import turboquant as tq_mod
@@ -626,9 +605,6 @@ class TestResolveTurboquantModeDefault:
     def test_explicit_v4_overrides_default(self):
         from vllm_mlx.turboquant import resolve_turboquant_mode_default
 
-        # Operator explicitly asked for V-only; resolver must not
-        # silently upgrade them to K8V4. Test on a real alias; ``turboquant``
-        # is set so the resolver short-circuits before alias lookup.
         assert (
             resolve_turboquant_mode_default(
                 self._args(turboquant="v4"), model_name="qwen3.5-35b-8bit"
@@ -639,11 +615,6 @@ class TestResolveTurboquantModeDefault:
     def test_legacy_quantization_suppresses_autoflip(self):
         from vllm_mlx.turboquant import resolve_turboquant_mode_default
 
-        # Operator pinned ``--kv-cache-quantization``. The mutual-
-        # exclusion check that comes next in cli.py would reject the
-        # combination if we auto-flipped to K8V4 here. Tested on a real
-        # alias; ``quantization=True`` short-circuits before alias lookup
-        # so the test is independent of the alias's tier state.
         assert (
             resolve_turboquant_mode_default(
                 self._args(quantization=True),
@@ -655,49 +626,24 @@ class TestResolveTurboquantModeDefault:
     def test_unknown_tier_preserves_today_behaviour(self):
         from vllm_mlx.turboquant import resolve_turboquant_mode_default
 
-        # Today's behaviour: no flag, no auto-flip — returns None so
-        # the CLI keeps TurboQuant off.
         assert (
             resolve_turboquant_mode_default(self._args(), model_name="qwen3.5-4b-4bit")
             is None
         )
 
-    @pytest.mark.parametrize(
-        "alias",
-        [
-            # All 13 originally-flipped MoE hero aliases. After the empirical
-            # verification campaign documented in PR #952 body, *every one
-            # of them* has its ``turboquant_tier`` removed pending a fix
-            # to the K8V4 codec's dtype-preservation behaviour
-            # (``turboquant_decode`` / ``turboquant_k8_decode`` currently
-            # return ``mx.float16`` regardless of the model's native KV
-            # cache dtype, which costs ~46% decode throughput on a bf16
-            # model — A/B numbers in the PR body).
-            #
-            # This lock-in test asserts the resolver returns ``None`` for
-            # every alias in the originally-flipped set, so any future PR
-            # that re-adds the flip without first landing the dtype fix
-            # will break the test and force a conversation.
-            "qwen3.5-35b-8bit",
-            "qwen3.5-35b-4bit",
-            "qwen3.5-35b-6bit",
-            "qwen3.5-122b-mxfp4",
-            "qwen3.5-122b-8bit",
-            "qwen3.5-122b-6bit",
-            "qwen3.6-35b-4bit",
-            "qwen3.6-35b-6bit",
-            "qwen3.6-35b-8bit",
-            "qwen3.6-35b-ud",
-            "qwen3.6-35b-dwq",
-            "qwen3.6-35b-mxfp4",
-            "qwen3.6-35b-nvfp4",
-        ],
-    )
-    def test_all_moe_hero_aliases_dropped_pending_dtype_fix(self, alias):
-        """All 13 originally-flipped MoE hero aliases are reverted to the
-        default-off (``turboquant_tier`` absent) state pending the K8V4
-        codec dtype-preservation fix — see PR #952 verification campaign
-        + smoking-gun A/B in the PR body."""
-        from vllm_mlx.turboquant import resolve_turboquant_mode_default
 
-        assert resolve_turboquant_mode_default(self._args(), model_name=alias) is None
+def test_codec_preserves_input_dtype():
+    """Round-trip bf16 K + V through TurboQuantKVCache must return bf16."""
+    from types import SimpleNamespace
+
+    from vllm_mlx.turboquant import TurboQuantConfig, TurboQuantKVCache
+
+    seq, head_dim = 64, 128
+    keys = mx.random.normal(shape=(1, 4, seq, head_dim)).astype(mx.bfloat16)
+    values = mx.random.normal(shape=(1, 4, seq, head_dim)).astype(mx.bfloat16)
+    src = SimpleNamespace(keys=keys, values=values, offset=seq)
+
+    cfg = TurboQuantConfig(mode="k8v4", bits=4)
+    out = TurboQuantKVCache.from_kv_cache(src, cfg).to_kv_cache()
+    assert out.keys.dtype == mx.bfloat16
+    assert out.values.dtype == mx.bfloat16
