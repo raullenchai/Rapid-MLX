@@ -203,21 +203,13 @@ def patch_gated_delta_net_for_mtp() -> bool:
                 # So clearing ``cache.rollback_state`` here ONLY
                 # touches the current layer's slot. The N-1 other
                 # linear layers' snapshots are untouched — they live
-                # on their own cache instances. Codex round-3
-                # flagged that without this reset a sequence of
-                # (chunk-split-accepted → single-token-call →
-                # chunk-split-rejected) could restore an OBSOLETE
-                # boundary state on this layer (the next two patched
-                # calls hit the fast path and never wrote a new
-                # snapshot). This clear at entry fixes that path
-                # without affecting any sibling layer.
-                cache.rollback_state = None
+                # on their own cache instances.
 
             # Fast path — no MTP boundary signaled, or chunk has 1
             # token, or boundary is outside the range, or NO cache at
             # all. Defer to the original implementation (byte-equal
-            # behavior). The rollback_state cleared above stays None
-            # on this path — there is no boundary to snapshot.
+            # behavior). rollback_state is NOT touched on this path
+            # (see round-7 ordering fix below).
             #
             # Codex round-5 BLOCKING defensive fix: ``cache is None``
             # is explicitly in the guard. Today it's logically
@@ -234,8 +226,26 @@ def patch_gated_delta_net_for_mtp() -> bool:
                 # The verify cycle only runs single-device; bail back
                 # to the unsplit path under tensor parallel (which the
                 # MTP generator doesn't drive anyway). rollback_state
-                # stays None here too — TP shards don't snapshot.
+                # is NOT cleared on this path — see round-7 ordering
+                # fix: clearing only happens immediately before the
+                # chunk-split path writes a fresh snapshot.
                 return _orig_gated_delta_call(self, inputs, mask=mask, cache=cache)
+
+            # ROUND-7 ordering fix: codex flagged that an earlier
+            # unconditional clear at function entry would wipe a
+            # previous chunk-split's snapshot if the next call
+            # bailed to fast-path or TP fallback (no replacement
+            # written). The clean fix is to clear ONLY immediately
+            # before the chunk-split path writes a new snapshot —
+            # making the lifecycle a single atomic write per
+            # chunk-split call. Round-3's stale-snapshot concern is
+            # still addressed because: (a) chunk-split always
+            # overwrites with a fresh snapshot, and (b) fast/TP
+            # paths leaving rollback_state intact is benign — the
+            # consumer (``_rollback_draft``) is only called after a
+            # chunk-split verify that produced drafts to reject,
+            # never after a fast-path call.
+            cache.rollback_state = None
 
             # Steps 1-3: projections + conv prefix — identical to the
             # original call. Build all derived tensors once.

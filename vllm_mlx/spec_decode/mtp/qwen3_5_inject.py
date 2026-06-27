@@ -248,12 +248,21 @@ def inject_mtp_support(
         ``allow_random_init`` is ``False``.
 
     Notes:
-        ``n_confirmed`` is accepted on the patched ``__call__`` for
-        ABI parity with PR #990 but does NOT thread through to the
-        ``GatedDeltaNet`` SSM rollback path (that requires patching
-        the layer's forward; tracked separately). This affects
-        lossless on draft rejection through linear-attention layers
-        only.
+        This function is NEW in this PR (Qwen3.5 native MTP). It is
+        NOT the legacy ``vllm_mlx.patches.qwen3_next_mtp.inject_mtp_support``
+        used by the scheduler (different signature, different model
+        family, different load path). The only production caller of
+        this function is ``bench/bench_spec_decode_mtp.py`` (which
+        already passes ``mtp_sidecar``). There are no pre-existing
+        bare ``inject_mtp_support(model)`` call-sites to break with
+        the new ``allow_random_init=False`` default.
+
+        ``n_confirmed`` rollback is implemented as of this PR: it
+        threads through to each ``ArraysCache`` via
+        ``n_confirmed_for_mtp`` before forward, so the patched
+        ``GatedDeltaNet.__call__`` (installed by
+        ``patch_gated_delta_net_for_mtp``) can snapshot
+        ``(conv_state, ssm_state)`` AT the confirmed-token boundary.
     """
     import mlx.core as mx
     import mlx.nn as nn
