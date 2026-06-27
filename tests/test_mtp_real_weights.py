@@ -56,9 +56,61 @@ _BASE_MODEL = "mlx-community/Qwen3.5-9B-4bit"
 _MTP_SIDECAR = "mlx-community/Qwen3.5-9B-MTP-4bit"
 
 
+_BASELINE_PROMPTS = (
+    "Write a short Python Fibonacci function with type hints.",
+    "Explain how a Bloom filter works.",
+    "Two trains travel toward each other at 60 and 80 km/h, 350 km "
+    "apart. When do they meet?",
+)
+_BASELINE_N_TOKENS = 20
+
+
 @pytest.fixture(scope="module")
-def loaded_model():
-    """Load the base + inject MTP exactly once for all tests in the file."""
+def baseline_tokens():
+    """Capture baseline (no MTP) tokens BEFORE any inject runs.
+
+    Codex flagged on PR #954 that running ``stream_generate`` after
+    ``inject_mtp_support`` compares MTP against the *patched* model,
+    not the original Qwen3.5 forward — which silently weakens the
+    lossless guard. Fix: load a separate, un-injected model in this
+    fixture and tear it down before the MTP fixture loads. This
+    guarantees the baseline tokens were produced by the pristine
+    upstream code path.
+    """
+    import gc
+
+    from mlx_lm import load
+    from mlx_lm.generate import stream_generate
+
+    model, tokenizer = load(_BASE_MODEL)
+    baselines: dict[str, list[int]] = {}
+    for prompt in _BASELINE_PROMPTS:
+        toks: list[int] = []
+        for resp in stream_generate(
+            model, tokenizer, prompt, max_tokens=_BASELINE_N_TOKENS
+        ):
+            toks.append(int(resp.token))
+            if len(toks) >= _BASELINE_N_TOKENS:
+                break
+        baselines[prompt] = toks
+
+    # Release the un-injected model before the patched fixture loads
+    # the second copy. Two 9B-4bit copies briefly coexist; cleanup is
+    # explicit to keep peak GPU mem bounded.
+    del model
+    del tokenizer
+    gc.collect()
+    return baselines
+
+
+@pytest.fixture(scope="module")
+def loaded_model(baseline_tokens):
+    """Load the base + inject MTP exactly once for all tests in the file.
+
+    Depends on ``baseline_tokens`` so the un-injected baseline pass
+    completes (and releases its model) before this fixture mutates a
+    fresh copy via ``inject_mtp_support``.
+    """
     from mlx_lm import load
 
     from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
@@ -139,13 +191,17 @@ def test_inject_loads_real_sidecar_weights(loaded_model):
     )
 
 
-def test_mtp_lossless_byte_equal_against_baseline(loaded_model):
+def test_mtp_lossless_byte_equal_against_baseline(loaded_model, baseline_tokens):
     """At temp=0, MTP spec decode must be byte-equal to non-spec decode.
 
-    Tokenize a prompt, run 20 tokens through ``stream_generate``
-    (baseline) and 20 tokens through ``mtp_generate_step`` (MTP). The
-    decoded token sequences MUST match exactly. Any divergence
-    indicates either:
+    The ``baseline_tokens`` fixture captured ground-truth tokens
+    against a *fresh, un-injected* Qwen3.5-9B-4bit model BEFORE the
+    ``loaded_model`` fixture mutated a separate copy with
+    ``inject_mtp_support``. This test then runs the MTP generator on
+    the patched copy and asserts the decoded token sequences match
+    byte-equally.
+
+    Any divergence indicates either:
 
     * The MTP head is producing wrong drafts AND the verify accepts
       them anyway (probabilistic-accept arithmetic broken at temp=0).
@@ -157,7 +213,6 @@ def test_mtp_lossless_byte_equal_against_baseline(loaded_model):
     test is the canonical guard for it on a real checkpoint.
     """
     import mlx.core as _mx
-    from mlx_lm.generate import stream_generate
 
     from vllm_mlx.spec_decode.mtp import MTPAcceptCounter
     from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
@@ -165,34 +220,26 @@ def test_mtp_lossless_byte_equal_against_baseline(loaded_model):
     model, tokenizer = loaded_model
     inner = model.language_model
 
-    # Three prompts (chat / code / math) — matches the bench's
-    # coverage but with a 20-token budget so the test stays under
-    # ~3 s on warm GPU.
-    prompts = (
-        "Write a short Python Fibonacci function with type hints.",
-        "Explain how a Bloom filter works.",
-        "Two trains travel toward each other at 60 and 80 km/h, 350 km "
-        "apart. When do they meet?",
-    )
-    N = 20
+    for prompt in _BASELINE_PROMPTS:
+        base_tokens = baseline_tokens[prompt]
+        assert len(base_tokens) == _BASELINE_N_TOKENS, (
+            f"baseline_tokens fixture returned {len(base_tokens)} tokens for "
+            f"prompt {prompt[:40]!r}; expected {_BASELINE_N_TOKENS}."
+        )
 
-    for prompt in prompts:
-        # Baseline
-        base_tokens: list[int] = []
-        for resp in stream_generate(model, tokenizer, prompt, max_tokens=N):
-            base_tokens.append(int(resp.token))
-            if len(base_tokens) >= N:
-                break
-
-        # MTP
+        # MTP on the patched model.
         counter = MTPAcceptCounter()
         prompt_ids = _mx.array(tokenizer.encode(prompt), _mx.uint32)
         mtp_tokens: list[int] = []
         for tok, _, _ in mtp_generate_step(
-            prompt_ids, inner, max_tokens=N, temp=0.0, accept_counter=counter
+            prompt_ids,
+            inner,
+            max_tokens=_BASELINE_N_TOKENS,
+            temp=0.0,
+            accept_counter=counter,
         ):
             mtp_tokens.append(int(tok))
-            if len(mtp_tokens) >= N:
+            if len(mtp_tokens) >= _BASELINE_N_TOKENS:
                 break
 
         # Lossless contract: byte-equal at temp=0.

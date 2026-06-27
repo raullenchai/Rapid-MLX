@@ -134,15 +134,21 @@ def _detect_base_quantization(inner: Any) -> dict | None:
     return None
 
 
-def _resolve_sidecar_dir(mtp_sidecar: str | Path) -> Path | None:
-    """Resolve a sidecar reference to a local directory.
+def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
+    """Resolve a sidecar reference to a concrete safetensors file path.
 
-    Accepts either:
+    Accepts:
 
-    * An absolute / relative path to a directory or safetensors file
-      (used by tests and operators with pre-downloaded weights).
+    * An absolute / relative path to a directory containing a
+      ``model.safetensors`` or ``model-mtp.safetensors`` file
+      (operators with a pre-downloaded HF snapshot).
+    * An absolute / relative path to a ``*.safetensors`` file
+      directly (operators with a hand-assembled sidecar; the
+      filename does NOT have to be one of the two well-known
+      names).
     * An HF Hub repo name like ``mlx-community/Qwen3.5-9B-MTP-4bit``
-      (downloaded via ``snapshot_download`` to the HF cache).
+      (downloaded via ``snapshot_download`` to the HF cache, then
+      probed for ``model.safetensors`` / ``model-mtp.safetensors``).
 
     Returns ``None`` if the reference cannot be resolved — caller
     treats this as a soft failure and logs.
@@ -151,15 +157,23 @@ def _resolve_sidecar_dir(mtp_sidecar: str | Path) -> Path | None:
         return None
 
     path = Path(mtp_sidecar)
-    if path.exists():
-        return path if path.is_dir() else path.parent
+    if path.is_file():
+        # Explicit file path — use it verbatim. Supports operator
+        # workflows where the sidecar lives at a custom filename
+        # (``mtp-q4-g64.safetensors``, ``qwen3_5_mtp_head.safetensors``,
+        # …). Skipping the well-known-name probe avoids the silent
+        # "file is at a non-default name → fall back to None" trap
+        # codex flagged on PR #954 review.
+        return path
+    if path.is_dir():
+        return _find_mtp_weights_file(path)
 
     # Treat as HF repo id.
     try:
         from huggingface_hub import snapshot_download
 
         local = snapshot_download(repo_id=str(mtp_sidecar))
-        return Path(local)
+        return _find_mtp_weights_file(Path(local))
     except Exception as exc:  # pragma: no cover — network failure path
         logger.warning(
             "[mtp.inject] could not resolve sidecar %r: %s",
@@ -302,20 +316,15 @@ def inject_mtp_support(model: Any, mtp_sidecar: str | Path | None = None) -> boo
 
     # --- Step 3: Load MTP weights from sidecar safetensors ---
     if mtp_sidecar is not None:
-        sidecar_dir = _resolve_sidecar_dir(mtp_sidecar)
-        if sidecar_dir is None:
-            logger.warning(
-                "[mtp.inject] sidecar %r could not be resolved; "
-                "skipping MTP injection.",
-                mtp_sidecar,
-            )
-            return False
-        weights_file = _find_mtp_weights_file(sidecar_dir)
+        weights_file = _resolve_sidecar_file(mtp_sidecar)
         if weights_file is None:
             logger.warning(
-                "[mtp.inject] no model.safetensors / model-mtp.safetensors "
-                "found in %s; skipping MTP injection.",
-                sidecar_dir,
+                "[mtp.inject] sidecar %r could not be resolved to a "
+                "safetensors file; skipping MTP injection. "
+                "Pass either a repo id (mlx-community/Qwen3.5-9B-MTP-4bit), "
+                "a directory containing model.safetensors / "
+                "model-mtp.safetensors, or the file path directly.",
+                mtp_sidecar,
             )
             return False
         raw = mx.load(str(weights_file))
