@@ -336,14 +336,44 @@ def inject_mtp_support(model: Any, mtp_sidecar: str | Path | None = None) -> boo
             (k.removeprefix("mtp.") if k.startswith("mtp.") else k): v
             for k, v in raw.items()
         }
-        # ``strict=False`` so the load tolerates unrelated keys (rare,
-        # but defensive — converters occasionally bundle metadata).
+        # Pre-load coverage check: codex flagged on PR #954 that
+        # ``strict=False`` lets the load silently succeed even when
+        # sidecar tensors are missing or misspelled — leaving part of
+        # the MTP head random-init while inject_mtp_support still
+        # returns True. Compute the expected parameter key set off
+        # ``mtp.parameters()`` (post-quantize, so ``weight`` /
+        # ``scales`` / ``biases`` for QuantizedLinear layers) and
+        # refuse the inject if any required tensor is missing.
+        from mlx.utils import tree_flatten
+
+        expected_keys = {k for k, _ in tree_flatten(mtp.parameters())}
+        loaded_keys = set(mtp_weights.keys())
+        missing = expected_keys - loaded_keys
+        if missing:
+            logger.warning(
+                "[mtp.inject] sidecar %s is missing %d required MTP "
+                "tensor(s); refusing to ship a partially-random-init head. "
+                "Missing keys (first 8): %s. "
+                "Either grab a correctly-converted sidecar (e.g. "
+                "mlx-community/Qwen3.5-9B-MTP-4bit) or regenerate via "
+                "the add_mtp_weights.py converter.",
+                weights_file.name,
+                len(missing),
+                sorted(missing)[:8],
+            )
+            return False
+        # ``strict=False`` still — we deliberately tolerate EXTRA
+        # keys (metadata blobs some converters bundle), but the
+        # coverage check above proves no required key is missing.
         mtp.load_weights(list(mtp_weights.items()), strict=False)
         mx.eval(mtp.parameters())
+        extra = loaded_keys - expected_keys
         logger.info(
-            "[mtp.inject] Loaded %d MTP weight tensors from %s",
-            len(mtp_weights),
+            "[mtp.inject] Loaded %d/%d expected MTP weight tensors from %s%s",
+            len(expected_keys),
+            len(expected_keys),
             weights_file.name,
+            f" (+{len(extra)} extra sidecar key(s) ignored)" if extra else "",
         )
     else:
         # No sidecar: leave the MTP module at random init. This is the

@@ -184,10 +184,22 @@ def patch_gated_delta_net_for_mtp() -> bool:
             n_conf = 0
             if cache is not None:
                 n_conf = int(getattr(cache, "n_confirmed_for_mtp", 0) or 0)
+                # Clear stale snapshot from a previous patched call
+                # BEFORE deciding which path runs. Codex flagged on
+                # PR #954 that without this reset a sequence of
+                # (chunk-split-accepted → single-token-call →
+                # chunk-split-rejected) could restore an obsolete
+                # boundary state. The contract is: rollback_state is
+                # ONLY valid for the most-recent patched call; any
+                # consumer that wants to use it must do so before the
+                # next call into this GatedDeltaNet layer.
+                cache.rollback_state = None
 
             # Fast path — no MTP boundary signaled, or chunk has 1
             # token, or boundary is outside the range. Defer to the
-            # original implementation (byte-equal behavior).
+            # original implementation (byte-equal behavior). The
+            # rollback_state cleared above stays None on this path —
+            # there is no boundary to snapshot.
             if n_conf <= 0 or n_conf >= S or S < 2:
                 return _orig_gated_delta_call(self, inputs, mask=mask, cache=cache)
 
@@ -195,7 +207,8 @@ def patch_gated_delta_net_for_mtp() -> bool:
             if self.sharding_group is not None:
                 # The verify cycle only runs single-device; bail back
                 # to the unsplit path under tensor parallel (which the
-                # MTP generator doesn't drive anyway).
+                # MTP generator doesn't drive anyway). rollback_state
+                # stays None here too — TP shards don't snapshot.
                 return _orig_gated_delta_call(self, inputs, mask=mask, cache=cache)
 
             # Steps 1-3: projections + conv prefix — identical to the

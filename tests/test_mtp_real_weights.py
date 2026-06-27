@@ -173,22 +173,77 @@ def test_inject_loads_real_sidecar_weights(loaded_model):
     )
 
     raw = _mx.load(weights_file)
-    # Spot-check a few weight tensors actually moved from sidecar into
-    # the MTP module — using values, not just shapes, so a random-init
-    # would fail.
-    fc_weight_from_disk = raw["fc.weight"]
-    fc_weight_in_module = mtp.fc.weight
-    assert fc_weight_from_disk.shape == fc_weight_in_module.shape, (
-        "fc.weight shape mismatch between sidecar and MTP module"
+
+    # ------------------------------------------------------------------
+    # Coverage-check: codex flagged on PR #954 that only checking
+    # ``fc.weight`` would let the test pass even if every other MTP
+    # tensor stayed random-init. Walk the MTP module's full parameter
+    # tree and assert every expected key is present in the sidecar AND
+    # byte-equal to the loaded module. This catches both partial-load
+    # (some key map drift on one layer) and key-name drift (e.g. norm
+    # vs norm_pre vs pre_norm).
+    # ------------------------------------------------------------------
+    from mlx.utils import tree_flatten
+
+    flat_module = dict(tree_flatten(mtp.parameters()))
+    expected_keys = set(flat_module.keys())
+    # ``mtp.``-prefix tolerance — same rewrite the inject does.
+    sidecar_norm = {
+        (k.removeprefix("mtp.") if k.startswith("mtp.") else k): v
+        for k, v in raw.items()
+    }
+    sidecar_norm_keys = set(sidecar_norm.keys())
+
+    missing_in_sidecar = expected_keys - sidecar_norm_keys
+    assert not missing_in_sidecar, (
+        f"Sidecar {weights_file} is missing {len(missing_in_sidecar)} required "
+        f"MTP parameter(s): {sorted(missing_in_sidecar)[:8]}. "
+        f"inject_mtp_support should have already refused this load."
     )
-    # Equality check requires evaluating. Compare uint32 quantized
-    # weights byte-equally — random init would not match.
-    diff = _mx.sum(fc_weight_from_disk != fc_weight_in_module).item()
-    assert diff == 0, (
-        f"fc.weight in MTP module differs from sidecar by {diff} entries — "
-        f"weights were NOT loaded from disk (likely random init still). "
-        f"This is the defect-class that PR #918 originally shipped."
+
+    # Byte-equal every shared key. uint32 packed quant weights compare
+    # exactly; bf16/fp16 norms compare exactly; bias tensors compare
+    # exactly. Random init on ANY tensor would surface here.
+    mismatched: list[tuple[str, int]] = []
+    for k in sorted(expected_keys):
+        on_disk = sidecar_norm[k]
+        in_module = flat_module[k]
+        assert on_disk.shape == in_module.shape, (
+            f"{k}: shape mismatch (disk {on_disk.shape} vs module {in_module.shape})"
+        )
+        diff = _mx.sum(on_disk != in_module).item()
+        if diff != 0:
+            mismatched.append((k, int(diff)))
+    assert not mismatched, (
+        f"{len(mismatched)} MTP tensor(s) differ between sidecar and module "
+        f"(first 5): {mismatched[:5]}. Weights were NOT loaded from disk — "
+        f"this is the defect-class PR #918 originally shipped. Sidecar key "
+        f"presence: {len(sidecar_norm_keys)} total in file, {len(expected_keys)} "
+        f"expected by module, {len(sidecar_norm_keys & expected_keys)} matched."
     )
+
+    # Explicit representative-key smoke check — codex suggested
+    # asserting coverage across ``fc.*``, ``layers.*``, ``norm`` (and
+    # the linear-attention pre-norms inside layer 0). Re-state the
+    # successful matches by category so a future regression that
+    # silently shrinks the parameter tree (e.g. a refactor that
+    # removes the pre-norms) shows up loud here, not just as a
+    # mysteriously-smaller expected_keys count.
+    categories = {
+        "fc.*": [k for k in expected_keys if k.startswith("fc.")],
+        "layers.0.*": [k for k in expected_keys if k.startswith("layers.0.")],
+        "norm": [k for k in expected_keys if k == "norm.weight" or k == "norm"],
+        "pre_norms (layers.0.*norm*)": [
+            k for k in expected_keys if k.startswith("layers.0.") and "norm" in k
+        ],
+    }
+    for label, keys in categories.items():
+        assert keys, (
+            f"Coverage gap: no parameters under category {label!r} in the "
+            f"MTP module's parameter tree. Either the upstream layout drifted "
+            f"or the inject failed to wire the sub-module. expected_keys "
+            f"sample: {sorted(expected_keys)[:8]}"
+        )
 
 
 def test_mtp_lossless_byte_equal_against_baseline(loaded_model, baseline_tokens):
