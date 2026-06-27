@@ -644,12 +644,14 @@ class TestResolveTurboquantModeDefault:
     @pytest.mark.parametrize(
         "alias",
         [
+            # qwen3.5-122b-A10B family was dropped from PR #952 scope
+            # (operator decision: too large to fit empirical verification
+            # campaign on a 1TB host). The 122b entries remain in
+            # aliases.json without ``turboquant_tier`` set, so the
+            # resolver returns ``None`` for them, which is correct.
             "qwen3.5-35b-8bit",
             "qwen3.5-35b-4bit",
             "qwen3.5-35b-6bit",
-            "qwen3.5-122b-mxfp4",
-            "qwen3.5-122b-8bit",
-            "qwen3.5-122b-6bit",
             "qwen3.6-35b-4bit",
             "qwen3.6-35b-6bit",
             "qwen3.6-35b-8bit",
@@ -664,3 +666,21 @@ class TestResolveTurboquantModeDefault:
         from vllm_mlx.turboquant import resolve_turboquant_mode_default
 
         assert resolve_turboquant_mode_default(self._args(), model_name=alias) == "k8v4"
+
+    @pytest.mark.parametrize(
+        "alias",
+        [
+            "qwen3.5-122b-mxfp4",
+            "qwen3.5-122b-8bit",
+            "qwen3.5-122b-6bit",
+        ],
+    )
+    def test_122b_family_dropped_from_k8v4_default(self, alias):
+        """qwen3.5-122b-A10B aliases were dropped from PR #952 scope and
+        MUST NOT auto-flip to K8V4 default. They keep ``pflash_tier``
+        but lose ``turboquant_tier`` — see PR #952 verification notes."""
+        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+
+        assert (
+            resolve_turboquant_mode_default(self._args(), model_name=alias) is None
+        )

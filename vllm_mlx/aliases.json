@@ -101,8 +101,7 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "pflash_tier": "verified"
   },
   "qwen3.5-122b-8bit": {
     "hf_path": "mlx-community/Qwen3.5-122B-A10B-8bit",
@@ -111,8 +110,7 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "pflash_tier": "verified"
   },
   "qwen3.5-122b-6bit": {
     "hf_path": "mlx-community/Qwen3.5-122B-A10B-6bit",
@@ -120,8 +118,7 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true,
-    "turboquant_tier": "k8v4_verified"
+    "is_moe": true
   },
   "tmax-9b": {
     "hf_path": "mlx-community/Tmax-9B-MLX-4bit",
