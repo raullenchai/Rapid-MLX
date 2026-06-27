@@ -601,9 +601,7 @@ class TestResolveTurboquantModeDefault:
         from vllm_mlx.turboquant import resolve_turboquant_mode_default
 
         assert (
-            resolve_turboquant_mode_default(
-                self._args(), model_name="qwen3.5-35b-8bit"
-            )
+            resolve_turboquant_mode_default(self._args(), model_name="qwen3.5-35b-8bit")
             == "k8v4"
         )
 
@@ -639,9 +637,7 @@ class TestResolveTurboquantModeDefault:
         # Today's behaviour: no flag, no auto-flip — returns None so
         # the CLI keeps TurboQuant off.
         assert (
-            resolve_turboquant_mode_default(
-                self._args(), model_name="qwen3.5-4b-4bit"
-            )
+            resolve_turboquant_mode_default(self._args(), model_name="qwen3.5-4b-4bit")
             is None
         )
 
@@ -667,7 +663,4 @@ class TestResolveTurboquantModeDefault:
         """Every alias listed in task #332's hero set must resolve to K8V4."""
         from vllm_mlx.turboquant import resolve_turboquant_mode_default
 
-        assert (
-            resolve_turboquant_mode_default(self._args(), model_name=alias)
-            == "k8v4"
-        )
+        assert resolve_turboquant_mode_default(self._args(), model_name=alias) == "k8v4"

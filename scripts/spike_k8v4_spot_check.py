@@ -37,7 +37,6 @@ import json
 import statistics
 import sys
 import time
-from pathlib import Path
 
 import mlx.core as mx
 import numpy as np
@@ -48,21 +47,12 @@ def _cosine(a: np.ndarray, b: np.ndarray) -> float:
     flat_a = a.reshape(-1, a.shape[-1]).astype(np.float32)
     flat_b = b.reshape(-1, b.shape[-1]).astype(np.float32)
     num = np.sum(flat_a * flat_b, axis=-1)
-    den = (
-        np.linalg.norm(flat_a, axis=-1) * np.linalg.norm(flat_b, axis=-1)
-        + 1e-8
-    )
+    den = np.linalg.norm(flat_a, axis=-1) * np.linalg.norm(flat_b, axis=-1) + 1e-8
     return float(np.mean(num / den))
 
 
 def _rmse(a: np.ndarray, b: np.ndarray) -> float:
-    return float(
-        np.sqrt(
-            np.mean(
-                (a.astype(np.float32) - b.astype(np.float32)) ** 2
-            )
-        )
-    )
+    return float(np.sqrt(np.mean((a.astype(np.float32) - b.astype(np.float32)) ** 2)))
 
 
 def main() -> int:
@@ -96,6 +86,7 @@ def main() -> int:
     args = parser.parse_args()
 
     from mlx_lm import load
+
     from vllm_mlx.model_aliases import resolve_model
     from vllm_mlx.turboquant import TurboQuantConfig, TurboQuantKVCache
 
@@ -131,8 +122,7 @@ def main() -> int:
     _ = model(x, cache=cache)
     mx.eval(_)  # force materialization so timing is honest
     print(
-        f"      prefill done in {time.time() - t0:.1f}s, "
-        f"cache layers: {len(cache)}",
+        f"      prefill done in {time.time() - t0:.1f}s, cache layers: {len(cache)}",
         flush=True,
     )
 
@@ -164,7 +154,9 @@ def main() -> int:
         layer_idxs = []
     else:
         picks = (
-            np.linspace(0, len(kv_layer_idxs) - 1, num=min(args.layers, len(kv_layer_idxs)))
+            np.linspace(
+                0, len(kv_layer_idxs) - 1, num=min(args.layers, len(kv_layer_idxs))
+            )
             .round()
             .astype(int)
             .tolist()
@@ -235,8 +227,7 @@ def main() -> int:
             t0 = time.time()
             ppl, se = eval_ppl(model, data, batch_size=1)
             print(
-                f"      ppl={ppl:.4f} (se={se:.4f}) "
-                f"in {time.time() - t0:.1f}s",
+                f"      ppl={ppl:.4f} (se={se:.4f}) in {time.time() - t0:.1f}s",
                 flush=True,
             )
             ppl_baseline = {"ppl": float(ppl), "se": float(se)}
@@ -267,22 +258,10 @@ def main() -> int:
         kr = [s["k_rmse"] for s in per_layer_stats]
         vr = [s["v_rmse"] for s in per_layer_stats]
         print("\n========== Summary ==========")
-        print(
-            f"K8V4 K cosine: mean={statistics.mean(kc):.4f} "
-            f"min={min(kc):.4f}"
-        )
-        print(
-            f"K8V4 V cosine: mean={statistics.mean(vc):.4f} "
-            f"min={min(vc):.4f}"
-        )
-        print(
-            f"K8V4 K RMSE:   mean={statistics.mean(kr):.4f} "
-            f"max={max(kr):.4f}"
-        )
-        print(
-            f"K8V4 V RMSE:   mean={statistics.mean(vr):.4f} "
-            f"max={max(vr):.4f}"
-        )
+        print(f"K8V4 K cosine: mean={statistics.mean(kc):.4f} min={min(kc):.4f}")
+        print(f"K8V4 V cosine: mean={statistics.mean(vc):.4f} min={min(vc):.4f}")
+        print(f"K8V4 K RMSE:   mean={statistics.mean(kr):.4f} max={max(kr):.4f}")
+        print(f"K8V4 V RMSE:   mean={statistics.mean(vr):.4f} max={max(vr):.4f}")
 
     return 0
 

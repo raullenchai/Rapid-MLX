@@ -127,6 +127,7 @@ def resolve_turboquant_mode_default(args: Any, *, model_name: str) -> str | None
         return "k8v4"
     return None
 
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------

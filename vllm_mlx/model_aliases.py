@@ -85,9 +85,7 @@ VALID_PFLASH_TIERS: frozenset[str] = frozenset({"unknown", "verified"})
 #                       ``--no-kv-cache-turboquant`` / passing
 #                       ``--kv-cache-quantization`` for the legacy
 #                       mutual-exclusion path).
-VALID_TURBOQUANT_TIERS: frozenset[str] = frozenset(
-    {"unknown", "k8v4_verified"}
-)
+VALID_TURBOQUANT_TIERS: frozenset[str] = frozenset({"unknown", "k8v4_verified"})
 
 
 # Canonical name for the DFlash speculative-decoding drafter kind. Kept
@@ -395,9 +393,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     # than the PFlash mode.
     turboquant_tier = value.get("turboquant_tier", "unknown")
     if not isinstance(turboquant_tier, str):
-        raise ValueError(
-            f"alias {alias!r}: turboquant_tier must be a string"
-        )
+        raise ValueError(f"alias {alias!r}: turboquant_tier must be a string")
     if turboquant_tier not in VALID_TURBOQUANT_TIERS:
         raise ValueError(
             f"alias {alias!r}: turboquant_tier={turboquant_tier!r} not in "
