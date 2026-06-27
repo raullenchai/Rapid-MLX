@@ -207,7 +207,12 @@ def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
     return None
 
 
-def inject_mtp_support(model: Any, mtp_sidecar: str | Path | None = None) -> bool:
+def inject_mtp_support(
+    model: Any,
+    mtp_sidecar: str | Path | None = None,
+    *,
+    allow_random_init: bool = False,
+) -> bool:
     """Inject MTP support into a loaded Qwen3.5 / Qwen3.6 model.
 
     Args:
@@ -216,14 +221,19 @@ def inject_mtp_support(model: Any, mtp_sidecar: str | Path | None = None) -> boo
             inner ``TextModel`` directly (tests pass this shape).
         mtp_sidecar: Optional reference to a separate checkpoint
             holding the MTP head's safetensors. Accepts an HF Hub
-            repo id (``mlx-community/Qwen3.5-9B-MTP-4bit``) or a local
-            directory path. When ``None``, the MTP module is built
-            and quantized but RETAINS RANDOM INIT weights — the
-            patched ``mtp_forward`` will produce useless drafts
-            (accept rate ~0%). Used only by unit tests that pin
-            wiring + surfaces without paying the 131 MB download
-            cost. **Production callers (bench, server boot) MUST
-            pass a sidecar** to get real speedup.
+            repo id (``mlx-community/Qwen3.5-9B-MTP-4bit``), a local
+            directory path, or a direct path to a ``.safetensors``
+            file.
+        allow_random_init: When ``True``, permit ``mtp_sidecar=None``
+            and ship the MTP head with its RANDOM INIT weights (the
+            patched ``mtp_forward`` produces useless drafts, accept
+            rate ~0%). Test-only. Codex flagged on PR #954 that
+            allowing this by default lets production callers silently
+            enable a useless/slow draft model, so the default is
+            ``False`` — a missing sidecar in production now returns
+            ``False`` from this function and the model is left
+            unmodified. The bench, server boot, and the rapid-mlx
+            spec_decode pipeline MUST pass a sidecar.
 
     Returns:
         ``True`` when the patch landed and the model now exposes
@@ -231,8 +241,9 @@ def inject_mtp_support(model: Any, mtp_sidecar: str | Path | None = None) -> boo
         ``n_confirmed`` — the four contract surfaces
         :func:`vllm_mlx.spec_decode.mtp.generator.mtp_generate_step`
         depends on. ``False`` when the model is not Qwen3.5 / 3.6,
-        the config lacks ``mtp_num_hidden_layers``, or the sidecar
-        cannot be resolved.
+        the config lacks ``mtp_num_hidden_layers``, the sidecar
+        cannot be resolved, or ``mtp_sidecar`` is ``None`` and
+        ``allow_random_init`` is ``False``.
 
     Notes:
         ``n_confirmed`` is accepted on the patched ``__call__`` for
@@ -376,14 +387,31 @@ def inject_mtp_support(model: Any, mtp_sidecar: str | Path | None = None) -> boo
             f" (+{len(extra)} extra sidecar key(s) ignored)" if extra else "",
         )
     else:
-        # No sidecar: leave the MTP module at random init. This is the
-        # test-only path — production callers MUST pass a sidecar.
+        # No sidecar.
+        if not allow_random_init:
+            # Codex round-5 BLOCKING fix: default is fail-closed. A
+            # missing sidecar in production silently enabled a draft
+            # model with random init weights (~0% accept rate) —
+            # invisible regression that LOOKS like spec-decode is
+            # running but emits zero speedup. Refuse the inject.
+            logger.warning(
+                "[mtp.inject] inject_mtp_support called without "
+                "mtp_sidecar and allow_random_init=False; refusing to "
+                "ship a random-init MTP head. Pass "
+                "mtp_sidecar='mlx-community/Qwen3.5-9B-MTP-4bit' (or "
+                "equivalent) for production use, or set "
+                "allow_random_init=True for unit-test wiring probes."
+            )
+            return False
+        # Test-only path — explicit opt-in to random-init weights for
+        # wiring tests that pin the surfaces without paying the
+        # 131 MB sidecar download cost.
         mx.eval(mtp.parameters())
         logger.warning(
-            "[mtp.inject] inject_mtp_support called without mtp_sidecar — "
-            "MTP head retains RANDOM init weights (accept rate ~0%%). "
-            "Pass mtp_sidecar='mlx-community/Qwen3.5-9B-MTP-4bit' (or "
-            "equivalent) to load real weights."
+            "[mtp.inject] inject_mtp_support called with "
+            "allow_random_init=True — MTP head retains RANDOM init "
+            "weights (accept rate ~0%%). This is the test-only path; "
+            "do not use in production."
         )
 
     # --- Step 4: Install global ArraysCache + GatedDeltaNet patches ---

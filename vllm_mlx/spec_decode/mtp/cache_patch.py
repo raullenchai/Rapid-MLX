@@ -214,11 +214,19 @@ def patch_gated_delta_net_for_mtp() -> bool:
                 cache.rollback_state = None
 
             # Fast path — no MTP boundary signaled, or chunk has 1
-            # token, or boundary is outside the range. Defer to the
-            # original implementation (byte-equal behavior). The
-            # rollback_state cleared above stays None on this path —
-            # there is no boundary to snapshot.
-            if n_conf <= 0 or n_conf >= S or S < 2:
+            # token, or boundary is outside the range, or NO cache at
+            # all. Defer to the original implementation (byte-equal
+            # behavior). The rollback_state cleared above stays None
+            # on this path — there is no boundary to snapshot.
+            #
+            # Codex round-5 BLOCKING defensive fix: ``cache is None``
+            # is explicitly in the guard. Today it's logically
+            # unreachable (we only set n_conf > 0 when cache is not
+            # None) — but if a future refactor changes that
+            # invariant, the chunk-split below would crash on
+            # ``cache[0]``. Guarding here makes the contract
+            # self-documenting.
+            if cache is None or n_conf <= 0 or n_conf >= S or S < 2:
                 return _orig_gated_delta_call(self, inputs, mask=mask, cache=cache)
 
             # --- Chunk-split path (n_confirmed in (0, S)) ---
