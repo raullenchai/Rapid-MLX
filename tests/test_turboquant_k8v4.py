@@ -568,3 +568,106 @@ class TestMetrics:
         record_turboquant_skip("typo-reason")
         body = "\n".join(_render_turboquant_metrics(SimpleNamespace(engine=None)))
         assert 'rapid_mlx_turboquant_skipped_total{reason="other"} 1' in body
+
+
+# ---------------------------------------------------------------------------
+# Per-alias K8V4 default-on resolver (task #332)
+# ---------------------------------------------------------------------------
+
+
+class TestResolveTurboquantModeDefault:
+    """Unit tests for :func:`resolve_turboquant_mode_default`.
+
+    The resolver is the single decision surface that flips
+    ``args.kv_cache_turboquant`` from ``None`` → ``"k8v4"`` on the MoE
+    hero aliases. The CLI path (``vllm_mlx/cli.py``) is just a wrapper
+    around this helper. Operator-explicit values must win and the
+    legacy ``--kv-cache-quantization`` flag must NOT trigger the auto-
+    default (or the mutual-exclusion check below it would reject the
+    combination and the operator who only asked for the legacy bool
+    would see a confusing error).
+    """
+
+    @staticmethod
+    def _args(turboquant=None, quantization=False):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            kv_cache_turboquant=turboquant,
+            kv_cache_quantization=quantization,
+        )
+
+    def test_verified_alias_flips_to_k8v4(self):
+        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+
+        assert (
+            resolve_turboquant_mode_default(
+                self._args(), model_name="qwen3.5-35b-8bit"
+            )
+            == "k8v4"
+        )
+
+    def test_explicit_v4_overrides_default(self):
+        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+
+        # Operator explicitly asked for V-only; resolver must not
+        # silently upgrade them to K8V4.
+        assert (
+            resolve_turboquant_mode_default(
+                self._args(turboquant="v4"), model_name="qwen3.5-35b-8bit"
+            )
+            == "v4"
+        )
+
+    def test_legacy_quantization_suppresses_autoflip(self):
+        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+
+        # Operator pinned ``--kv-cache-quantization``. The mutual-
+        # exclusion check that comes next in cli.py would reject the
+        # combination if we auto-flipped to K8V4 here.
+        assert (
+            resolve_turboquant_mode_default(
+                self._args(quantization=True),
+                model_name="qwen3.5-35b-8bit",
+            )
+            is None
+        )
+
+    def test_unknown_tier_preserves_today_behaviour(self):
+        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+
+        # Today's behaviour: no flag, no auto-flip — returns None so
+        # the CLI keeps TurboQuant off.
+        assert (
+            resolve_turboquant_mode_default(
+                self._args(), model_name="qwen3.5-4b-4bit"
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        "alias",
+        [
+            "qwen3.5-35b-8bit",
+            "qwen3.5-35b-4bit",
+            "qwen3.5-35b-6bit",
+            "qwen3.5-122b-mxfp4",
+            "qwen3.5-122b-8bit",
+            "qwen3.5-122b-6bit",
+            "qwen3.6-35b-4bit",
+            "qwen3.6-35b-6bit",
+            "qwen3.6-35b-8bit",
+            "qwen3.6-35b-ud",
+            "qwen3.6-35b-dwq",
+            "qwen3.6-35b-mxfp4",
+            "qwen3.6-35b-nvfp4",
+        ],
+    )
+    def test_all_moe_hero_aliases_flip_to_k8v4(self, alias):
+        """Every alias listed in task #332's hero set must resolve to K8V4."""
+        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+
+        assert (
+            resolve_turboquant_mode_default(self._args(), model_name=alias)
+            == "k8v4"
+        )

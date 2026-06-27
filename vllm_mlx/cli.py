@@ -2165,6 +2165,22 @@ def serve_command(args):
     if getattr(args, "specprefill", False):
         print("\n  ⚠ --specprefill is deprecated and has no effect.\n")
 
+    # Task #332: resolve the per-alias TurboQuant default BEFORE the
+    # mutual-exclusion check below. ``resolve_turboquant_mode_default``
+    # returns the operator's explicit value when set; otherwise it
+    # consults the alias profile and flips to ``"k8v4"`` for verified
+    # MoE hero families (Qwen3.5-35B-A3B, Qwen3.5-122B-A10B, and
+    # Qwen3.6-35B-A3B per the K8V4 spot-check in PR #332). The legacy
+    # ``--kv-cache-quantization`` flag short-circuits the lookup so the
+    # mutual-exclusion guard below never trips on the auto-default
+    # path (operators who explicitly pinned the legacy flag have an
+    # opt-out without needing ``--no-kv-cache-turboquant``).
+    from .turboquant import resolve_turboquant_mode_default
+
+    args.kv_cache_turboquant = resolve_turboquant_mode_default(
+        args, model_name=args.model
+    )
+
     # Mutual exclusion: turboquant (any mode) vs standard quantization.
     # The argparse layer normalizes the flag to either ``None`` (off),
     # ``"v4"``, or ``"k8v4"``. Anything truthy means TurboQuant is on.

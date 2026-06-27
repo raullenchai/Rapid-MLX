@@ -61,6 +61,9 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "dflash_draft_model",
         "recommended_sampling",
         "pflash_tier",
+        # Task #332: per-alias TurboQuant K8V4 default-on flip. See
+        # ``AliasProfile.turboquant_tier`` / ``VALID_TURBOQUANT_TIERS``.
+        "turboquant_tier",
     }
 )
 
