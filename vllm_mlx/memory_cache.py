@@ -1160,7 +1160,11 @@ def _turboquant_decompress_cache(cache: list[Any]) -> list[Any]:
         if layer is None:
             result.append(layer)
             continue
-        if isinstance(layer, TurboQuantKVCache) and layer.keys is not None:
+        # K8V4 stores K in ``keys_compressed`` (``.keys`` is None); V4
+        # stores K as fp16 in ``.keys``. Trigger decode for either path.
+        if isinstance(layer, TurboQuantKVCache) and (
+            layer.keys is not None or layer.keys_compressed is not None
+        ):
             result.append(layer.to_kv_cache())
         else:
             result.append(layer)
