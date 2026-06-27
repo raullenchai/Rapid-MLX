@@ -1,0 +1,32 @@
+=== Host ===
+  chip:     Apple M3 Ultra
+  platform: macOS-26.5.1-arm64-arm-64bit
+  mlx:      installed version sourced from `pip show mlx`
+
+=== Setup ===
+  x_f16:   shape=(32, 4096) dtype=mlx.core.float16
+  x_bf16:  shape=(32, 4096) dtype=mlx.core.bfloat16
+  x_i8:    shape=(32, 4096) dtype=mlx.core.int8
+  w_full:  shape=(4096, 4096) dtype=mlx.core.float16
+  w_q8:    shape=(4096, 1024) dtype=mlx.core.uint32  (packed in uint32)
+  w_q4:    shape=(4096, 512) dtype=mlx.core.uint32  (packed in uint32)
+
+=== Bench ===
+  matmul bf16 dense         median=   0.645 ms  min=   0.575 ms  shape=(32x4096)@(4096x4096)
+  matmul f16 dense          median=   0.616 ms  min=   0.573 ms  shape=(32x4096)@(4096x4096)
+  quantized_matmul W8 f16   median=   0.439 ms  min=   0.433 ms  shape=(32x4096)@(4096x4096)
+  quantized_matmul W4 f16   median=   0.425 ms  min=   0.383 ms  shape=(32x4096)@(4096x4096)
+
+=== int8 activation probe (does MLX have a real i8 path?) ===
+  quantized_matmul W8 i8    median=   0.450 ms  min=   0.439 ms  shape=(32x4096)@(4096x4096)
+  observation: W8+i8 path took 0.450 ms (vs W8+f16 0.439 ms)
+  >>> int8 activation NOT faster — almost certainly software upcast
+
+=== mx.matmul integer support (the deciding test) ===
+  int8 @ int8: REJECTED — [matmul] Only inexact types are supported but int8 and int8 were provided which results in int8, which is not a floating point type.
+  int32 @ int32: REJECTED — [matmul] Only inexact types are supported but int32 and int32 were provided which results in int32, which is not a floating point type.
+
+=== Speedup summary (vs f16 dense matmul) ===
+  bf16          :  0.96x
+  W8 (f16 act)  :  1.40x
+  W4 (f16 act)  :  1.45x
