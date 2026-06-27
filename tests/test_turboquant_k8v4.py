@@ -597,11 +597,29 @@ class TestResolveTurboquantModeDefault:
             kv_cache_quantization=quantization,
         )
 
-    def test_verified_alias_flips_to_k8v4(self):
-        from vllm_mlx.turboquant import resolve_turboquant_mode_default
+    def test_verified_alias_flips_to_k8v4(self, monkeypatch):
+        """The resolver MUST flip to ``"k8v4"`` for any alias that has
+        ``turboquant_tier == "k8v4_verified"`` set. No real alias has the
+        tier in this PR (all 13 originally-flipped aliases were reverted
+        pending the K8V4 codec dtype-preservation fix — see PR #952
+        verification campaign + smoking-gun A/B in the PR body) so we
+        synthesise a config via ``monkeypatch`` to keep the resolver
+        wiring under test."""
+        from types import SimpleNamespace
+
+        from vllm_mlx import turboquant as tq_mod
+
+        def _stub_detect(_name: str):
+            return SimpleNamespace(turboquant_tier="k8v4_verified")
+
+        monkeypatch.setattr(
+            "vllm_mlx.model_auto_config.detect_model_config", _stub_detect
+        )
 
         assert (
-            resolve_turboquant_mode_default(self._args(), model_name="qwen3.5-35b-8bit")
+            tq_mod.resolve_turboquant_mode_default(
+                self._args(), model_name="qwen3.5-35b-8bit"
+            )
             == "k8v4"
         )
 
@@ -609,7 +627,8 @@ class TestResolveTurboquantModeDefault:
         from vllm_mlx.turboquant import resolve_turboquant_mode_default
 
         # Operator explicitly asked for V-only; resolver must not
-        # silently upgrade them to K8V4.
+        # silently upgrade them to K8V4. Test on a real alias; ``turboquant``
+        # is set so the resolver short-circuits before alias lookup.
         assert (
             resolve_turboquant_mode_default(
                 self._args(turboquant="v4"), model_name="qwen3.5-35b-8bit"
@@ -622,7 +641,9 @@ class TestResolveTurboquantModeDefault:
 
         # Operator pinned ``--kv-cache-quantization``. The mutual-
         # exclusion check that comes next in cli.py would reject the
-        # combination if we auto-flipped to K8V4 here.
+        # combination if we auto-flipped to K8V4 here. Tested on a real
+        # alias; ``quantization=True`` short-circuits before alias lookup
+        # so the test is independent of the alias's tier state.
         assert (
             resolve_turboquant_mode_default(
                 self._args(quantization=True),
@@ -644,14 +665,25 @@ class TestResolveTurboquantModeDefault:
     @pytest.mark.parametrize(
         "alias",
         [
-            # qwen3.5-122b-A10B family was dropped from PR #952 scope
-            # (operator decision: too large to fit empirical verification
-            # campaign on a 1TB host). The 122b entries remain in
-            # aliases.json without ``turboquant_tier`` set, so the
-            # resolver returns ``None`` for them, which is correct.
+            # All 13 originally-flipped MoE hero aliases. After the empirical
+            # verification campaign documented in PR #952 body, *every one
+            # of them* has its ``turboquant_tier`` removed pending a fix
+            # to the K8V4 codec's dtype-preservation behaviour
+            # (``turboquant_decode`` / ``turboquant_k8_decode`` currently
+            # return ``mx.float16`` regardless of the model's native KV
+            # cache dtype, which costs ~46% decode throughput on a bf16
+            # model — A/B numbers in the PR body).
+            #
+            # This lock-in test asserts the resolver returns ``None`` for
+            # every alias in the originally-flipped set, so any future PR
+            # that re-adds the flip without first landing the dtype fix
+            # will break the test and force a conversation.
             "qwen3.5-35b-8bit",
             "qwen3.5-35b-4bit",
             "qwen3.5-35b-6bit",
+            "qwen3.5-122b-mxfp4",
+            "qwen3.5-122b-8bit",
+            "qwen3.5-122b-6bit",
             "qwen3.6-35b-4bit",
             "qwen3.6-35b-6bit",
             "qwen3.6-35b-8bit",
@@ -661,24 +693,11 @@ class TestResolveTurboquantModeDefault:
             "qwen3.6-35b-nvfp4",
         ],
     )
-    def test_all_moe_hero_aliases_flip_to_k8v4(self, alias):
-        """Every alias listed in task #332's hero set must resolve to K8V4."""
-        from vllm_mlx.turboquant import resolve_turboquant_mode_default
-
-        assert resolve_turboquant_mode_default(self._args(), model_name=alias) == "k8v4"
-
-    @pytest.mark.parametrize(
-        "alias",
-        [
-            "qwen3.5-122b-mxfp4",
-            "qwen3.5-122b-8bit",
-            "qwen3.5-122b-6bit",
-        ],
-    )
-    def test_122b_family_dropped_from_k8v4_default(self, alias):
-        """qwen3.5-122b-A10B aliases were dropped from PR #952 scope and
-        MUST NOT auto-flip to K8V4 default. They keep ``pflash_tier``
-        but lose ``turboquant_tier`` — see PR #952 verification notes."""
+    def test_all_moe_hero_aliases_dropped_pending_dtype_fix(self, alias):
+        """All 13 originally-flipped MoE hero aliases are reverted to the
+        default-off (``turboquant_tier`` absent) state pending the K8V4
+        codec dtype-preservation fix — see PR #952 verification campaign
+        + smoking-gun A/B in the PR body."""
         from vllm_mlx.turboquant import resolve_turboquant_mode_default
 
         assert (
