@@ -700,6 +700,4 @@ class TestResolveTurboquantModeDefault:
         + smoking-gun A/B in the PR body."""
         from vllm_mlx.turboquant import resolve_turboquant_mode_default
 
-        assert (
-            resolve_turboquant_mode_default(self._args(), model_name=alias) is None
-        )
+        assert resolve_turboquant_mode_default(self._args(), model_name=alias) is None

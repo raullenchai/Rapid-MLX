@@ -55,7 +55,9 @@ import time
 import mlx.core as mx
 
 
-def _generate_step_loop(model, cache, x_seed, num_tokens: int) -> tuple[list[int], float]:
+def _generate_step_loop(
+    model, cache, x_seed, num_tokens: int
+) -> tuple[list[int], float]:
     """Greedy decode ``num_tokens`` from the current cache state."""
     out_tokens: list[int] = []
     t0 = time.time()
@@ -211,7 +213,9 @@ def main() -> int:
 
     # Pick the next seed token from the prefill final logits — same seed
     # for both runs so the comparison is honest.
-    last_logits = logits[..., -1, :] if not isinstance(logits, tuple) else logits[0][..., -1, :]
+    last_logits = (
+        logits[..., -1, :] if not isinstance(logits, tuple) else logits[0][..., -1, :]
+    )
     seed_id = int(mx.argmax(last_logits, axis=-1).item())
     seed_x = mx.array([[seed_id]], dtype=mx.int32)
 
