@@ -1,0 +1,12 @@
+[trace] loading target: mlx-community/Qwen3.5-9B-4bit
+Fetching 11 files:   0%|          | 0/11 [00:00<?, ?it/s]Fetching 11 files: 100%|██████████| 11/11 [00:00<00:00, 11955.78it/s]
+[trace] loading drafter: z-lab/Qwen3.5-9B-DFlash
+Fetching 2 files:   0%|          | 0/2 [00:00<?, ?it/s]Fetching 2 files: 100%|██████████| 2/2 [00:00<00:00, 4670.72it/s]
+[trace] drafter kind=dflash block_size=16
+[trace] running prompt (len=18): Write a 5-line Python function that returns the n-th Fibonac...
+[trace]   rounds=18  mean_accept=4.44/16  mean_round_ms=60.4
+[trace] running prompt (len=15): What is 17 * 23? Show your reasoning briefly....
+[trace]   rounds=18  mean_accept=4.50/16  mean_round_ms=59.6
+[trace] running prompt (len=20): Translate to French: 'The quick brown fox jumps over the laz...
+[trace]   rounds=17  mean_accept=4.59/16  mean_round_ms=59.7
+[trace] wrote spike/dspark-mvp/bench/trace_qwen3.5-9b-4bit.json

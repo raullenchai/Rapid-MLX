@@ -1,0 +1,6 @@
+[lossless] loading mlx-community/Qwen3.5-9B-4bit
+Fetching 11 files:   0%|          | 0/11 [00:00<?, ?it/s]Fetching 11 files: 100%|██████████| 11/11 [00:00<00:00, 9682.55it/s]
+[lossless] prompt='Write a 5-line Python function that retu...'  len(ref)=64  fixed=OK  algo1=DIV@11
+[lossless] prompt='What is 17 * 23? Show your reasoning bri...'  len(ref)=64  fixed=DIV@35  algo1=DIV@16
+[lossless] prompt='Translate to French: 'The quick brown fo...'  len(ref)=60  fixed=OK  algo1=DIV@13
+[lossless] OVERALL: fixed=FAIL  algo1=FAIL

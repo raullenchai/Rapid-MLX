@@ -1,0 +1,44 @@
+[sps] loading mlx-community/Qwen3.5-9B-4bit
+Fetching 11 files:   0%|          | 0/11 [00:00<?, ?it/s]Fetching 11 files: 100%|██████████| 11/11 [00:00<00:00, 7160.85it/s]
+[sps] cache warmed at depth=256
+[sps] B=   1  sps= 537.14  tok/s=  537.1
+[sps] B=   2  sps= 569.17  tok/s= 1138.3
+[sps] B=   4  sps= 551.67  tok/s= 2206.7
+[sps] B=   6  sps= 526.08  tok/s= 3156.5
+[sps] B=   8  sps= 533.48  tok/s= 4267.9
+[sps] B=  12  sps= 470.59  tok/s= 5647.0
+[sps] B=  16  sps= 471.38  tok/s= 7542.1
+[sps] B=  24  sps= 479.27  tok/s=11502.4
+[sps] B=  32  sps= 470.62  tok/s=15059.9
+[sps] B=  48  sps= 471.13  tok/s=22614.1
+[sps] B=  64  sps= 467.39  tok/s=29912.8
+[sps] B=  96  sps= 454.65  tok/s=43646.4
+[sps] B= 128  sps= 447.19  tok/s=57239.7
+[sps] B= 192  sps= 435.80  tok/s=83673.3
+[sps] B= 256  sps= 423.10  tok/s=108313.4
+[sps] B= 384  sps= 424.01  tok/s=162819.8
+[sps] B= 512  sps= 400.09  tok/s=204846.0
+[sps] B= 768  sps= 421.57  tok/s=323767.4
+[sps] B=1024  sps= 430.35  tok/s=440682.3
+
+[sps] smoothed (monotone non-increasing envelope):
+[sps]   B=   1  sps= 537.14  tok/s=  537.1
+[sps]   B=   2  sps= 537.14  tok/s= 1074.3
+[sps]   B=   4  sps= 537.14  tok/s= 2148.5
+[sps]   B=   6  sps= 526.08  tok/s= 3156.5
+[sps]   B=   8  sps= 526.08  tok/s= 4208.7
+[sps]   B=  12  sps= 470.59  tok/s= 5647.0
+[sps]   B=  16  sps= 470.59  tok/s= 7529.4
+[sps]   B=  24  sps= 470.59  tok/s=11294.1
+[sps]   B=  32  sps= 470.59  tok/s=15058.8
+[sps]   B=  48  sps= 470.59  tok/s=22588.2
+[sps]   B=  64  sps= 467.39  tok/s=29912.8
+[sps]   B=  96  sps= 454.65  tok/s=43646.4
+[sps]   B= 128  sps= 447.19  tok/s=57239.7
+[sps]   B= 192  sps= 435.80  tok/s=83673.3
+[sps]   B= 256  sps= 423.10  tok/s=108313.4
+[sps]   B= 384  sps= 423.10  tok/s=162470.1
+[sps]   B= 512  sps= 400.09  tok/s=204846.0
+[sps]   B= 768  sps= 400.09  tok/s=307269.0
+[sps]   B=1024  sps= 400.09  tok/s=409692.0
+[sps] wrote spike/dspark-mvp/sps_table.json

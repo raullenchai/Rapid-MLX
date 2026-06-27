@@ -1,0 +1,33 @@
+[bench] rounds_pool size: 53
+
+=== Single-stream (R=1) summary ===
+[bench] gamma_cap=5  prompt='Write a 5-line Python function...'  fixed: 70 tok (2045.9/s)  algo1: 70 tok (2062.4/s)  Δagg=+0.8%  ell_mean=4.6
+[bench] gamma_cap=5  prompt='What is 17 * 23? Show your rea...'  fixed: 67 tok (1958.2/s)  algo1: 67 tok (1974.0/s)  Δagg=+0.8%  ell_mean=4.6
+[bench] gamma_cap=5  prompt='Translate to French: 'The quic...'  fixed: 59 tok (1825.8/s)  algo1: 58 tok (1816.9/s)  Δagg=-0.5%  ell_mean=4.4
+[bench] gamma_cap=8  prompt='Write a 5-line Python function...'  fixed: 86 tok (2513.5/s)  algo1: 86 tok (2533.8/s)  Δagg=+0.8%  ell_mean=6.4
+[bench] gamma_cap=8  prompt='What is 17 * 23? Show your rea...'  fixed: 82 tok (2396.6/s)  algo1: 82 tok (2415.9/s)  Δagg=+0.8%  ell_mean=6.4
+[bench] gamma_cap=8  prompt='Translate to French: 'The quic...'  fixed: 76 tok (2351.9/s)  algo1: 72 tok (2255.4/s)  Δagg=-4.1%  ell_mean=5.6
+[bench] gamma_cap=15  prompt='Write a 5-line Python function...'  fixed: 98 tok (2562.1/s)  algo1: 91 tok (2681.1/s)  Δagg=+4.6%  ell_mean=7.7
+[bench] gamma_cap=15  prompt='What is 17 * 23? Show your rea...'  fixed: 99 tok (2588.2/s)  algo1: 89 tok (2622.2/s)  Δagg=+1.3%  ell_mean=7.7
+[bench] gamma_cap=15  prompt='Translate to French: 'The quic...'  fixed: 95 tok (2629.8/s)  algo1: 79 tok (2474.7/s)  Δagg=-5.9%  ell_mean=6.5
+
+=== Batched frontier (simulated) ===
+[bench] R=  1  gamma_cap=5  fixed_agg_tps=1971.1  algo1_agg_tps=1977.7  Δagg=+0.34%  Δper_user=+0.34%  ell_med=5.0
+[bench] R=  1  gamma_cap=8  fixed_agg_tps=2486.6  algo1_agg_tps=2482.8  Δagg=-0.16%  Δper_user=-0.16%  ell_med=8.0
+[bench] R=  1  gamma_cap=15  fixed_agg_tps=2699.6  algo1_agg_tps=2694.9  Δagg=-0.17%  Δper_user=-0.17%  ell_med=10.0
+[bench] R= 10  gamma_cap=5  fixed_agg_tps=17405.4  algo1_agg_tps=5786.9  Δagg=-66.75%  Δper_user=-66.75%  ell_med=0.0
+[bench] R= 10  gamma_cap=8  fixed_agg_tps=21538.8  algo1_agg_tps=5786.9  Δagg=-73.13%  Δper_user=-73.13%  ell_med=0.0
+[bench] R= 10  gamma_cap=15  fixed_agg_tps=24815.8  algo1_agg_tps=5786.9  Δagg=-76.68%  Δper_user=-76.68%  ell_med=0.0
+[bench] R= 50  gamma_cap=5  fixed_agg_tps=78266.3  algo1_agg_tps=44401.8  Δagg=-43.27%  Δper_user=-43.27%  ell_med=0.0
+[bench] R= 50  gamma_cap=8  fixed_agg_tps=97460.9  algo1_agg_tps=44401.8  Δagg=-54.44%  Δper_user=-54.44%  ell_med=0.0
+[bench] R= 50  gamma_cap=15  fixed_agg_tps=110755.5  algo1_agg_tps=44401.8  Δagg=-59.91%  Δper_user=-59.91%  ell_med=0.0
+[bench] R=100  gamma_cap=5  fixed_agg_tps=147733.2  algo1_agg_tps=57740.6  Δagg=-60.92%  Δper_user=-60.92%  ell_med=0.0
+[bench] R=100  gamma_cap=8  fixed_agg_tps=183754.6  algo1_agg_tps=57740.6  Δagg=-68.58%  Δper_user=-68.58%  ell_med=0.0
+[bench] R=100  gamma_cap=15  fixed_agg_tps=220274.8  algo1_agg_tps=57740.6  Δagg=-73.79%  Δper_user=-73.79%  ell_med=0.0
+[bench] R=200  gamma_cap=5  fixed_agg_tps=295421.0  algo1_agg_tps=111128.7  Δagg=-62.38%  Δper_user=-62.38%  ell_med=0.0
+[bench] R=200  gamma_cap=8  fixed_agg_tps=367230.4  algo1_agg_tps=111128.7  Δagg=-69.74%  Δper_user=-69.74%  ell_med=0.0
+[bench] R=200  gamma_cap=15  fixed_agg_tps=439269.3  algo1_agg_tps=111128.7  Δagg=-74.70%  Δper_user=-74.70%  ell_med=0.0
+[bench] R=500  gamma_cap=5  fixed_agg_tps=740514.2  algo1_agg_tps=216203.6  Δagg=-70.80%  Δper_user=-70.80%  ell_med=0.0
+[bench] R=500  gamma_cap=8  fixed_agg_tps=922030.9  algo1_agg_tps=216203.6  Δagg=-76.55%  Δper_user=-76.55%  ell_med=0.0
+[bench] R=500  gamma_cap=15  fixed_agg_tps=1103995.8  algo1_agg_tps=216203.6  Δagg=-80.42%  Δper_user=-80.42%  ell_med=0.0
+[bench] wrote spike/dspark-mvp/bench/frontier.json

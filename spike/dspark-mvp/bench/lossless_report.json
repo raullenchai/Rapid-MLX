@@ -1,0 +1,30 @@
+{
+  "all_fixed_ok": false,
+  "all_algo1_ok": false,
+  "per_prompt": [
+    {
+      "prompt": "Write a 5-line Python function that returns the n-th Fibonacci number using memo",
+      "n_compared": 64,
+      "fixed_gamma_ok": true,
+      "fixed_gamma_div_at": null,
+      "algo1_ok": false,
+      "algo1_div_at": 11
+    },
+    {
+      "prompt": "What is 17 * 23? Show your reasoning briefly.",
+      "n_compared": 64,
+      "fixed_gamma_ok": false,
+      "fixed_gamma_div_at": 35,
+      "algo1_ok": false,
+      "algo1_div_at": 16
+    },
+    {
+      "prompt": "Translate to French: 'The quick brown fox jumps over the lazy dog.' Provide only",
+      "n_compared": 60,
+      "fixed_gamma_ok": true,
+      "fixed_gamma_div_at": null,
+      "algo1_ok": false,
+      "algo1_div_at": 13
+    }
+  ]
+}
