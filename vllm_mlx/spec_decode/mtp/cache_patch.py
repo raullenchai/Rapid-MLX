@@ -327,6 +327,16 @@ def patch_gated_delta_net_for_mtp() -> bool:
 
             out = mx.concatenate([out1, out2], axis=1)
             cache[1] = state_final
+            # Advance the cache position by the FULL chunk length S —
+            # this exactly mirrors the upstream
+            # ``GatedDeltaNet.__call__`` (mlx_lm/models/qwen3_5.py
+            # line 196-198 in 0.31.3), which always calls
+            # ``cache.advance(S)`` when cache is non-None at end of
+            # forward. Our chunk-split path consumes the same S
+            # tokens, just in two sub-calls to gated_delta_update;
+            # the net advance is identical to the upstream single-
+            # call path. No double-advance: there is no other
+            # ``advance`` along this code path.
             cache.advance(S)
 
             out = self.norm(out, z)

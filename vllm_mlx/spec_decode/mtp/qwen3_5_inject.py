@@ -35,14 +35,16 @@ nested under ``model.language_model``. The patch always targets the
 inner ``TextModel`` — never the outer VLM wrapper (whose ``__call__``
 just delegates).
 
-Out-of-scope: ``n_confirmed`` is accepted on ``__call__`` for ABI
-parity with PR #990 but is currently a no-op below the wrapper —
-proper rollback of ``GatedDeltaNet`` SSM/conv state at the confirmed
-boundary requires patching the layer's forward (tracked separately).
-Linear-attention cache state may drift on draft rejection; this is a
-known limitation that affects only the LOSSLESS contract on the
-hybrid (GatedDeltaNet) attention layers, not the full-attention
-layers or the throughput measurement.
+``n_confirmed`` rollback: implemented as of this PR. ``__call__``
+accepts ``n_confirmed`` and threads it through to each
+``ArraysCache`` via ``n_confirmed_for_mtp`` before the forward, so
+the patched ``GatedDeltaNet.__call__`` (installed by
+``patch_gated_delta_net_for_mtp``) can snapshot ``(conv_state,
+ssm_state)`` AT the confirmed-token boundary. On draft rejection the
+generator's ``_rollback_draft`` restores the snapshot per cache
+instance. Lossless contract confirmed byte-equal × 3 profiles on
+mlx-community/Qwen3.5-9B-4bit + mlx-community/Qwen3.5-9B-MTP-4bit
+(see ``tests/test_mtp_real_weights.py``).
 """
 
 from __future__ import annotations
@@ -522,7 +524,21 @@ def inject_mtp_support(
             return self.lm_head(mtp_out)
 
         def make_mtp_cache(self):
-            """Return fresh ``KVCache`` entries — one per MTP layer."""
+            """Return fresh ``KVCache`` entries — one per MTP layer.
+
+            All MTP layers are full-attention by design (PR #990's
+            ``MTPDecoderLayer`` is hard-coded to ``self_attn =
+            Attention(...)`` — see ``vllm_mlx/spec_decode/mtp/head.py``
+            line 89-115). The MTP head deliberately does NOT include
+            ``GatedDeltaNet`` linear-attention layers (the backbone's
+            hybrid layout via ``args.full_attention_interval`` does not
+            apply here). So ``KVCache`` is correct for every MTP layer
+            — there are no ``ArraysCache`` slots to maintain on this
+            side of the rollback. The ``ArraysCache.rollback_state``
+            machinery installed by this PR exists to handle the
+            BACKBONE's linear-attention layers (where the GatedDeltaNet
+            patch lives), not the MTP head.
+            """
             from mlx_lm.models.cache import KVCache
 
             return [KVCache() for _ in self.mtp.layers]
