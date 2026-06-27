@@ -184,26 +184,16 @@ def patch_gated_delta_net_for_mtp() -> bool:
             n_conf = 0
             if cache is not None:
                 n_conf = int(getattr(cache, "n_confirmed_for_mtp", 0) or 0)
-                # IMPORTANT: ``cache`` here is the PER-LAYER
-                # ArraysCache for THIS GatedDeltaNet instance only —
-                # mlx-lm's prompt-cache machinery makes one cache
-                # entry per layer in the linear-attention stack. Each
-                # ArraysCache has its OWN ``rollback_state`` slot
-                # (instance attribute that shadows the class default
-                # installed by patch_arrays_cache_rollback_state).
-                # The generator's ``_rollback_draft`` iterates ALL
-                # caches in ``model_cache`` and restores each
-                # instance's own snapshot:
-                #
-                #     for c in model_cache:
-                #         if isinstance(c, ArraysCache) and c.rollback_state is not None:
-                #             c[0], c[1] = c.rollback_state
-                #             c.rollback_state = None
-                #
-                # So clearing ``cache.rollback_state`` here ONLY
-                # touches the current layer's slot. The N-1 other
-                # linear layers' snapshots are untouched — they live
-                # on their own cache instances.
+                # NOTE on per-layer scope: ``cache`` here is the
+                # PER-LAYER ArraysCache for this single GatedDeltaNet
+                # instance only. mlx-lm's prompt-cache machinery
+                # builds one cache entry per backbone layer; each
+                # ArraysCache instance has its own ``rollback_state``
+                # slot. Any write below (clear or set) affects ONLY
+                # this layer's cache. The consumer side
+                # (generator.py::_rollback_draft) walks every cache
+                # and restores each instance's own snapshot
+                # independently.
 
             # Fast path — no MTP boundary signaled, or chunk has 1
             # token, or boundary is outside the range, or NO cache at
