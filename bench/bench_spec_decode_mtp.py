@@ -210,10 +210,14 @@ def _parse_args() -> argparse.Namespace:
 # Map from common base aliases / HF paths to their matching MTP sidecar.
 # The sidecar repo holds the MTP head only (no embed_tokens, no
 # backbone layers) — see ``mlx-community/Qwen3.5-9B-MTP-4bit`` README.
+# Keys are normalized to lowercase; ``_resolve_mtp_sidecar`` lowers
+# the incoming alias before lookup so case variants
+# (``Qwen3.5-9B-4bit`` vs ``qwen3.5-9b-4bit`` vs full
+# ``mlx-community/Qwen3.5-9B-4bit``) all hit the same default.
 _DEFAULT_MTP_SIDECAR: dict[str, str] = {
     "qwen3.5-9b-4bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
-    "mlx-community/Qwen3.5-9B-4bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
-    "mlx-community/Qwen3.5-9B-MLX-4bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
+    "mlx-community/qwen3.5-9b-4bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
+    "mlx-community/qwen3.5-9b-mlx-4bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
 }
 
 
@@ -221,13 +225,15 @@ def _resolve_mtp_sidecar(model_alias: str, explicit: str | None) -> str | None:
     """Pick the MTP sidecar for ``model_alias``.
 
     Explicit ``--mtp-sidecar`` always wins. Otherwise look up the
-    alias in ``_DEFAULT_MTP_SIDECAR``. Return ``None`` if no default
-    is known — the inject will then fall back to a no-op load and
-    log a warning.
+    alias in ``_DEFAULT_MTP_SIDECAR`` after lowercasing — codex
+    flagged on PR #954 that without normalization,
+    ``Qwen3.5-9B-4bit`` (case variant of the dict key) missed the
+    documented default. Return ``None`` if no default is known —
+    the inject will then fall back to a no-op load and log a warning.
     """
     if explicit is not None:
         return explicit
-    return _DEFAULT_MTP_SIDECAR.get(model_alias)
+    return _DEFAULT_MTP_SIDECAR.get(model_alias.lower())
 
 
 def _planned_matrix(args: argparse.Namespace) -> dict[str, Any]:

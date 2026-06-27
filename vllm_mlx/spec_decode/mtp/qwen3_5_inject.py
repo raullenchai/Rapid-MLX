@@ -94,13 +94,21 @@ def _detect_base_quantization(inner: Any) -> dict | None:
     """Detect the quantization params used by the base model.
 
     Walks the inner ``TextModel`` looking for a ``QuantizedLinear``
-    instance and reads its ``bits`` / ``group_size`` / ``mode``. The
-    MTP module must be quantized with the same params so its weight
-    shapes match the sidecar's safetensors layout (4-bit / group_size
-    64 / affine for ``mlx-community/Qwen3.5-9B-MTP-4bit``).
+    instance and reads its ``bits`` / ``group_size``. The MTP module
+    must be quantized with the same params so its weight shapes match
+    the sidecar's safetensors layout (4-bit / group_size 64 / affine
+    for ``mlx-community/Qwen3.5-9B-MTP-4bit``).
 
     Returns ``None`` for FP base models — the caller skips quantize
     in that case.
+
+    NOTE: only ``bits`` + ``group_size`` are returned. ``nn.quantize``
+    in the mlx-lm versions we target does not accept a ``mode`` arg —
+    it always applies the affine mode. The mlx-community sidecars
+    similarly assume affine. Returning ``mode`` would be dead data
+    that callers cannot pass through, so it's dropped. If/when
+    ``nn.quantize`` grows mode support, extend the dict here and
+    pipe it through at the inject call-site.
     """
     try:
         from mlx.nn import QuantizedEmbedding, QuantizedLinear
@@ -119,7 +127,6 @@ def _detect_base_quantization(inner: Any) -> dict | None:
                 return {
                     "bits": int(qp.bits),
                     "group_size": int(qp.group_size),
-                    "mode": getattr(qp, "mode", "affine"),
                 }
 
     # Fall back: embed_tokens (QuantizedEmbedding has bits/group_size too).
@@ -128,7 +135,6 @@ def _detect_base_quantization(inner: Any) -> dict | None:
         return {
             "bits": int(embed.bits),
             "group_size": int(embed.group_size),
-            "mode": getattr(embed, "mode", "affine"),
         }
 
     return None
@@ -239,19 +245,13 @@ def inject_mtp_support(model: Any, mtp_sidecar: str | Path | None = None) -> boo
     import mlx.core as mx
     import mlx.nn as nn
 
-    # Install the GatedDeltaNet chunk-split patch so the verify forward
-    # snapshots ``(conv_state, ssm_state)`` at ``n_confirmed`` and the
-    # generator's ``_rollback_draft`` can restore them on draft
-    # rejection. Without this the linear-attention layers' SSM state
-    # drifts on every reject and the LOSSLESS contract fails within
-    # ~10 tokens at temp=0. Idempotent — safe to call multiple times.
-    from .cache_patch import (
-        patch_arrays_cache_rollback_state,
-        patch_gated_delta_net_for_mtp,
-    )
-
-    patch_arrays_cache_rollback_state()
-    patch_gated_delta_net_for_mtp()
+    # NOTE: the global ``ArraysCache`` rollback_state class-default and
+    # the ``GatedDeltaNet.__call__`` chunk-split patches are deferred
+    # until AFTER every can-fail validation completes (see ``# --- Step
+    # 4`` below). Codex flagged on PR #954 that installing these
+    # monkey-patches up-front meant a failed sidecar load left
+    # process-global behavior mutated even though inject_mtp_support
+    # returned False. The patches are now strictly post-validation.
 
     inner = _resolve_inner_text_model(model)
     if inner is None:
@@ -386,7 +386,21 @@ def inject_mtp_support(model: Any, mtp_sidecar: str | Path | None = None) -> boo
             "equivalent) to load real weights."
         )
 
-    # --- Step 4: Attach + monkey-patch ``TextModel`` class ---
+    # --- Step 4: Install global ArraysCache + GatedDeltaNet patches ---
+    # Deferred from the top of this function so a failed validation /
+    # sidecar load (above) leaves the process global state untouched.
+    # Both patches are idempotent + transparent at n_confirmed=0, so
+    # a successful inject_mtp_support that runs after a failed one
+    # still lands cleanly.
+    from .cache_patch import (
+        patch_arrays_cache_rollback_state,
+        patch_gated_delta_net_for_mtp,
+    )
+
+    patch_arrays_cache_rollback_state()
+    patch_gated_delta_net_for_mtp()
+
+    # --- Step 5: Attach + monkey-patch ``TextModel`` class ---
     inner.mtp = mtp
     original_class = type(inner)
 

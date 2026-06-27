@@ -184,15 +184,33 @@ def patch_gated_delta_net_for_mtp() -> bool:
             n_conf = 0
             if cache is not None:
                 n_conf = int(getattr(cache, "n_confirmed_for_mtp", 0) or 0)
-                # Clear stale snapshot from a previous patched call
-                # BEFORE deciding which path runs. Codex flagged on
-                # PR #954 that without this reset a sequence of
+                # IMPORTANT: ``cache`` here is the PER-LAYER
+                # ArraysCache for THIS GatedDeltaNet instance only —
+                # mlx-lm's prompt-cache machinery makes one cache
+                # entry per layer in the linear-attention stack. Each
+                # ArraysCache has its OWN ``rollback_state`` slot
+                # (instance attribute that shadows the class default
+                # installed by patch_arrays_cache_rollback_state).
+                # The generator's ``_rollback_draft`` iterates ALL
+                # caches in ``model_cache`` and restores each
+                # instance's own snapshot:
+                #
+                #     for c in model_cache:
+                #         if isinstance(c, ArraysCache) and c.rollback_state is not None:
+                #             c[0], c[1] = c.rollback_state
+                #             c.rollback_state = None
+                #
+                # So clearing ``cache.rollback_state`` here ONLY
+                # touches the current layer's slot. The N-1 other
+                # linear layers' snapshots are untouched — they live
+                # on their own cache instances. Codex round-3
+                # flagged that without this reset a sequence of
                 # (chunk-split-accepted → single-token-call →
-                # chunk-split-rejected) could restore an obsolete
-                # boundary state. The contract is: rollback_state is
-                # ONLY valid for the most-recent patched call; any
-                # consumer that wants to use it must do so before the
-                # next call into this GatedDeltaNet layer.
+                # chunk-split-rejected) could restore an OBSOLETE
+                # boundary state on this layer (the next two patched
+                # calls hit the fast path and never wrote a new
+                # snapshot). This clear at entry fixes that path
+                # without affecting any sibling layer.
                 cache.rollback_state = None
 
             # Fast path — no MTP boundary signaled, or chunk has 1
