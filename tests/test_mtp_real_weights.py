@@ -126,9 +126,9 @@ def test_inject_loads_real_sidecar_weights(loaded_model):
     # would fail.
     fc_weight_from_disk = raw["fc.weight"]
     fc_weight_in_module = mtp.fc.weight
-    assert (
-        fc_weight_from_disk.shape == fc_weight_in_module.shape
-    ), "fc.weight shape mismatch between sidecar and MTP module"
+    assert fc_weight_from_disk.shape == fc_weight_in_module.shape, (
+        "fc.weight shape mismatch between sidecar and MTP module"
+    )
     # Equality check requires evaluating. Compare uint32 quantized
     # weights byte-equally — random init would not match.
     diff = _mx.sum(fc_weight_from_disk != fc_weight_in_module).item()
@@ -157,7 +157,6 @@ def test_mtp_lossless_byte_equal_against_baseline(loaded_model):
     test is the canonical guard for it on a real checkpoint.
     """
     import mlx.core as _mx
-
     from mlx_lm.generate import stream_generate
 
     from vllm_mlx.spec_decode.mtp import MTPAcceptCounter

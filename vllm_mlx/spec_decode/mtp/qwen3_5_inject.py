@@ -272,8 +272,7 @@ def inject_mtp_support(model: Any, mtp_sidecar: str | Path | None = None) -> boo
 
     if num_mtp_layers < 1:
         logger.info(
-            "[mtp.inject] config has no mtp_num_hidden_layers; "
-            "skipping MTP injection."
+            "[mtp.inject] config has no mtp_num_hidden_layers; skipping MTP injection."
         )
         return False
 
@@ -400,12 +399,8 @@ def inject_mtp_support(model: Any, mtp_sidecar: str | Path | None = None) -> boo
                         c.n_confirmed_for_mtp = n_confirmed
 
             try:
-                fa_mask = create_attention_mask(
-                    hidden_states, cache[inner_m.fa_idx]
-                )
-                ssm_mask = create_ssm_mask(
-                    hidden_states, cache[inner_m.ssm_idx]
-                )
+                fa_mask = create_attention_mask(hidden_states, cache[inner_m.fa_idx])
+                ssm_mask = create_ssm_mask(hidden_states, cache[inner_m.ssm_idx])
                 for layer, c in zip(inner_m.layers, cache):
                     mask = ssm_mask if layer.is_linear else fa_mask
                     hidden_states = layer(hidden_states, mask=mask, cache=c)

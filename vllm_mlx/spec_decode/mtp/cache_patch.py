@@ -201,9 +201,7 @@ def patch_gated_delta_net_for_mtp() -> bool:
             # Steps 1-3: projections + conv prefix — identical to the
             # original call. Build all derived tensors once.
             qkv = self.in_proj_qkv(inputs)
-            z = self.in_proj_z(inputs).reshape(
-                B, S, self.num_v_heads, self.head_v_dim
-            )
+            z = self.in_proj_z(inputs).reshape(B, S, self.num_v_heads, self.head_v_dim)
             b = self.in_proj_b(inputs)
             a = self.in_proj_a(inputs)
 
@@ -222,9 +220,7 @@ def patch_gated_delta_net_for_mtp() -> bool:
             # Conv state AT BOUNDARY (after processing n_conf tokens):
             # the last n_keep entries of conv_input[:, : n_conf + n_keep].
             # Equivalently conv_input[:, n_conf : n_conf + n_keep].
-            conv_snap = mx.contiguous(
-                conv_input[:, n_conf : n_conf + n_keep, :]
-            )
+            conv_snap = mx.contiguous(conv_input[:, n_conf : n_conf + n_keep, :])
             # Conv state AT END (after processing all S tokens):
             # last n_keep entries of conv_input.
             conv_post = mx.contiguous(conv_input[:, -n_keep:, :])
@@ -254,8 +250,15 @@ def patch_gated_delta_net_for_mtp() -> bool:
             b1 = b[:, :n_conf]
             mask1 = mask[:, :n_conf] if mask is not None else None
             out1, state_at_boundary = gated_delta_update(
-                q1, k1, v1, a1, b1,
-                self.A_log, self.dt_bias, state, mask1,
+                q1,
+                k1,
+                v1,
+                a1,
+                b1,
+                self.A_log,
+                self.dt_bias,
+                state,
+                mask1,
                 use_kernel=not self.training,
             )
 
@@ -271,8 +274,15 @@ def patch_gated_delta_net_for_mtp() -> bool:
             b2 = b[:, n_conf:]
             mask2 = mask[:, n_conf:] if mask is not None else None
             out2, state_final = gated_delta_update(
-                q2, k2, v2, a2, b2,
-                self.A_log, self.dt_bias, state_at_boundary, mask2,
+                q2,
+                k2,
+                v2,
+                a2,
+                b2,
+                self.A_log,
+                self.dt_bias,
+                state_at_boundary,
+                mask2,
                 use_kernel=not self.training,
             )
 
