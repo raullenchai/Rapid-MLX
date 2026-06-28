@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: Apache-2.0
-"""DFlash speculative-decode decode-tok/s bench (R15-P1 #313).
+"""DFlash speculative-decode decode-tok/s bench (R15-P1 #313, #343 fix).
 
 Compares ``--spec-decode dflash`` against ``--spec-decode none`` on a
 Qwen3.5 / Qwen3.6 checkpoint with the matching block-diffusion drafter
@@ -9,23 +9,33 @@ bound in :mod:`vllm_mlx.spec_decode.dflash.drafter_registry` (or via
 8-prompt × 3-run protocol so the two backends are directly comparable
 on the same workload.
 
-DEFERRED: at landing time the GPU is contended with the Stage B
-PonyExl3 Viterbi conversion (PID 56486). The script is committed but
-NOT executed in the same agent run that opens the PR. Operators run::
+Architecture note (#343 fix)
+----------------------------
+
+The bench drives the WORKING DFlash path: both target and drafter load
+through ``mlx_vlm`` (0.6.3) and generation flows through
+``mlx_vlm.stream_generate`` with the drafter bound. Previously this
+script tried to call rapid-mlx's own
+:func:`vllm_mlx.spec_decode.dflash.generator.dflash_generate_step`
+loop, which in turn called a ``draft_block(prefix_tokens,
+current_position)`` adapter signature that mlx-vlm 0.6.3's
+``DFlashDraftModel`` does NOT implement (the actual signature is
+``draft_block(last_bonus, hidden, cache, block_size, sampler,
+token_dtype)``). As a result the bench could not run end-to-end — the
+2.34× math / 2.22× adaptive numbers in the 0.9 release dashboard came
+from a different harness, not this script. With #343 this script now
+runs cleanly and re-benches are trustworthy.
+
+Usage::
 
     python bench/bench_spec_decode_dflash.py \\
         --model qwen3.5-9b-4bit \\
         --runs 3 \\
         --max-tokens 256
 
-Outputs JSON (default) or a markdown table for the follow-up PR
-comment::
+Outputs JSON (default) or a markdown table::
 
     python bench/bench_spec_decode_dflash.py --format markdown
-
-Expected numbers (paper 2410.04097, M5 Max projection): baseline
-30.95 tok/s, DFlash temp=0 135.34 tok/s (4.37×, accept ratio depends
-on workload). The bench script reports the same triplet.
 
 Dry-run mode
 ------------
@@ -81,9 +91,14 @@ _BENCH_PROMPTS: tuple[str, ...] = (
 class RunResult:
     """One ``(condition, run_idx, prompt_idx)`` measurement.
 
-    The extra ``tokens_saved`` field (vs the MTP RunResult) captures
-    DFlash's block-bonus: a fully accepted block of size B saves up to
-    ``B - 1`` extra tokens per attempt, not just 1.
+    Per-run accept stats reflect DFlash's block-bonus contract: each
+    attempt drafts ``draft_block_size - 1`` candidate positions and
+    accepts some prefix [0..draft_block_size-1] of them, plus the
+    always-emitted verify bonus. We track both ``accept_count``
+    (positions accepted by the verifier) and ``drafted_tokens``
+    (positions drafted total) so the summary can report a true
+    per-position ``accept_ratio = accept_count / drafted_tokens`` and
+    a per-attempt mean ``accept_count / attempts``.
     """
 
     condition: str
@@ -93,7 +108,7 @@ class RunResult:
     n_tokens: int
     accept_attempts: int
     accept_count: int
-    tokens_saved: int
+    drafted_tokens: int
     elapsed_seconds: float
 
 
@@ -119,10 +134,11 @@ def _parse_args() -> argparse.Namespace:
     )
     parser.add_argument(
         "--model",
-        default="qwen3.5-9b-4bit",
+        default="mlx-community/Qwen3.5-9B-4bit",
         help=(
-            "Model alias or HF path (default: qwen3.5-9b-4bit). The "
-            "matching DFlash drafter must be bound in the side-registry "
+            "Target model HF path (default: mlx-community/Qwen3.5-9B-4bit). "
+            "Both the baseline and DFlash conditions load this via mlx-vlm. "
+            "The matching DFlash drafter must be bound in the side-registry "
             "or passed via --dflash-drafter-path."
         ),
     )
@@ -137,8 +153,13 @@ def _parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--block-size",
         type=int,
-        default=16,
-        help="DFlash block size (default: 16, paper bench value).",
+        default=0,
+        help=(
+            "DFlash block size override (default: 0 = use drafter's "
+            "trained value, typically 16). When set, mlx-vlm treats this "
+            "as the ceiling; the adaptive scaler still backs off on poor "
+            "acceptance."
+        ),
     )
     parser.add_argument(
         "--runs",
@@ -157,9 +178,9 @@ def _parse_args() -> argparse.Namespace:
         type=float,
         default=0.0,
         help=(
-            "Sampling temperature (default: 0.0 = greedy = lossless "
-            "contract enforced). DFlash temp>0 is not yet supported; "
-            "the script raises if a non-zero value is passed."
+            "Sampling temperature (default: 0.0 = greedy). DFlash temp>0 "
+            "is supported by mlx-vlm 0.6.3 but the lossless contract is "
+            "only validated at temp=0."
         ),
     )
     parser.add_argument(
@@ -183,27 +204,52 @@ def _parse_args() -> argparse.Namespace:
         default=len(_BENCH_PROMPTS),
         help=(
             f"Number of prompts to run (default: {len(_BENCH_PROMPTS)} "
-            "= full PR #990 mix)."
+            "= full PR #990 mix). Pass a small N for a fast smoke run."
+        ),
+    )
+    parser.add_argument(
+        "--prompt-indices",
+        default="",
+        help=(
+            "Comma-separated list of prompt indices into the canonical "
+            "8-prompt set (e.g. '0,4,6' for code/dialogue/math). When "
+            "set, overrides --prompts and runs only the selected prompts."
         ),
     )
     return parser.parse_args()
 
 
+def _resolve_prompt_indices(args: argparse.Namespace) -> list[int]:
+    if args.prompt_indices.strip():
+        ix = [int(x) for x in args.prompt_indices.split(",") if x.strip()]
+        for i in ix:
+            if i < 0 or i >= len(_BENCH_PROMPTS):
+                raise ValueError(
+                    f"--prompt-indices entry {i} out of range "
+                    f"[0, {len(_BENCH_PROMPTS) - 1}]"
+                )
+        return ix
+    n = min(args.prompts, len(_BENCH_PROMPTS))
+    return list(range(n))
+
+
 def _planned_matrix(args: argparse.Namespace) -> dict[str, Any]:
     """Return the bench plan as a JSON-serializable dict (dry-run mode)."""
-    n_prompts = min(args.prompts, len(_BENCH_PROMPTS))
+    indices = _resolve_prompt_indices(args)
+    prompts = [_BENCH_PROMPTS[i] for i in indices]
     return {
         "model": args.model,
         "drafter_override": args.dflash_drafter_path or None,
-        "block_size": args.block_size,
+        "block_size_override": args.block_size or None,
         "runs_per_condition": args.runs,
         "max_tokens": args.max_tokens,
         "temp": args.temp,
         "conditions": ["none", "dflash"],
-        "prompts": list(_BENCH_PROMPTS[:n_prompts]),
-        "total_generations": 2 * args.runs * n_prompts,
+        "prompt_indices": indices,
+        "prompts": prompts,
+        "total_generations": 2 * args.runs * len(prompts),
         "estimated_wall_time_seconds_at_30_tok_per_sec": (
-            2 * args.runs * n_prompts * args.max_tokens / 30.0
+            2 * args.runs * len(prompts) * args.max_tokens / 30.0
         ),
         "expected_speedup_paper": 4.37,
         "expected_baseline_tok_per_sec_m5_max": 30.95,
@@ -211,104 +257,97 @@ def _planned_matrix(args: argparse.Namespace) -> dict[str, Any]:
     }
 
 
-def _run_once(
-    *,
+def _load_baseline_target(model_alias: str) -> tuple[Any, Any]:
+    """Load the target + processor via mlx-vlm (for the baseline run).
+
+    Imported here so ``--dry-run`` doesn't pay the mlx-vlm import +
+    weight-load cost.
+    """
+    from mlx_vlm import load as _mlx_vlm_load
+
+    return _mlx_vlm_load(model_alias)
+
+
+def _resolve_drafter_path(
+    args: argparse.Namespace,
     model_alias: str,
-    drafter_override: str,
-    condition: str,
+) -> str:
+    """Resolve the drafter HF path from the explicit flag or the registry."""
+    if args.dflash_drafter_path:
+        return args.dflash_drafter_path
+    from vllm_mlx.spec_decode.dflash import get_dflash_drafter_path
+
+    return get_dflash_drafter_path(model_alias) or ""
+
+
+def _run_baseline_once(
+    *,
+    target: Any,
+    processor: Any,
     prompt: str,
-    block_size: int,
     max_tokens: int,
     temp: float,
 ) -> RunResult:
-    """Run one generation under the requested condition.
-
-    Imports ``mlx_lm`` and the rapid-mlx DFlash modules lazily so
-    ``--dry-run`` doesn't pay the import cost.
-    """
-    import mlx.core as mx
-    from mlx_lm import load
-
-    from vllm_mlx.spec_decode.dflash import (
-        DFlashAcceptCounter,
-        get_dflash_drafter_path,
-        get_global_counter,
-    )
-
-    model, tokenizer = load(model_alias)
-
-    if condition == "dflash":
-        from vllm_mlx.spec_decode.dflash.drafter import (
-            MlxVlmBlockDiffusionDrafter,
-        )
-        from vllm_mlx.spec_decode.dflash.generator import dflash_generate_step
-
-        drafter_path = drafter_override or get_dflash_drafter_path(model_alias)
-        if not drafter_path:
-            raise RuntimeError(
-                f"No DFlash drafter bound for {model_alias!r}. Pass "
-                "--dflash-drafter-path or register via "
-                "vllm_mlx.spec_decode.dflash.register_dflash_drafter()."
-            )
-        drafter = MlxVlmBlockDiffusionDrafter(drafter_path, block_size=block_size)
-
-    prompt_ids = mx.array(tokenizer.encode(prompt), mx.uint32)
-    counter = DFlashAcceptCounter()
-    prior_attempts = get_global_counter().snapshot().attempts
-    prior_accepts = get_global_counter().snapshot().accepts
+    """Run one baseline (no spec-decode) generation via mlx-vlm."""
+    from mlx_vlm import stream_generate
 
     t0 = time.perf_counter()
     n = 0
-    if condition == "dflash":
-        gen = dflash_generate_step(
-            prompt_ids,
-            model,
-            drafter,
-            block_size=block_size,
-            max_tokens=max_tokens,
-            temperature=temp,
-            accept_counter=counter,
-        )
-        for _ in gen:
-            n += 1
-    else:
-        from mlx_lm.generate import stream_generate
-
-        for _resp in stream_generate(
-            model,
-            tokenizer,
-            prompt,
-            max_tokens=max_tokens,
-        ):
-            n += 1
-            if n >= max_tokens:
-                break
-
+    for chunk in stream_generate(
+        target,
+        processor,
+        prompt,
+        max_tokens=max_tokens,
+        temperature=temp,
+    ):
+        n = chunk.generation_tokens
+        if n >= max_tokens:
+            break
     elapsed = time.perf_counter() - t0
-
-    if condition == "dflash":
-        snap = counter.snapshot()
-        snap_attempts, snap_accepts, tokens_saved = (
-            snap.attempts,
-            snap.accepts,
-            snap.tokens_saved,
-        )
-    else:
-        snap_attempts, snap_accepts, tokens_saved = 0, 0, 0
-    # Sanity-check: global counter shouldn't have moved.
-    assert get_global_counter().snapshot().attempts == prior_attempts
-    assert get_global_counter().snapshot().accepts == prior_accepts
-
     tok_per_sec = n / elapsed if elapsed > 0 else 0.0
     return RunResult(
-        condition=condition,
+        condition="none",
         run_idx=-1,
         prompt_idx=-1,
         decode_tok_per_sec=tok_per_sec,
         n_tokens=n,
-        accept_attempts=snap_attempts,
-        accept_count=snap_accepts,
-        tokens_saved=tokens_saved,
+        accept_attempts=0,
+        accept_count=0,
+        drafted_tokens=0,
+        elapsed_seconds=elapsed,
+    )
+
+
+def _run_dflash_once(
+    *,
+    driver: Any,
+    prompt: str,
+    max_tokens: int,
+    temp: float,
+) -> RunResult:
+    """Run one DFlash generation via the rapid-mlx driver wrapper."""
+    t0 = time.perf_counter()
+    n = 0
+    for chunk in driver.generate(
+        prompt,
+        max_tokens=max_tokens,
+        temperature=temp,
+    ):
+        n = chunk.generation_tokens
+        if n >= max_tokens:
+            break
+    elapsed = time.perf_counter() - t0
+    stats = driver.accept_stats()
+    tok_per_sec = n / elapsed if elapsed > 0 else 0.0
+    return RunResult(
+        condition="dflash",
+        run_idx=-1,
+        prompt_idx=-1,
+        decode_tok_per_sec=tok_per_sec,
+        n_tokens=n,
+        accept_attempts=int(stats["attempts"]),
+        accept_count=int(stats["accepted_tokens"]),
+        drafted_tokens=int(stats["drafted_tokens"]),
         elapsed_seconds=elapsed,
     )
 
@@ -339,9 +378,12 @@ def _summarize(
     p90 = per_run[int(0.9 * (len(per_run) - 1))] if per_run else 0.0
     attempts = sum(r.accept_attempts for r in results)
     accepts = sum(r.accept_count for r in results)
-    tokens_saved = sum(r.tokens_saved for r in results)
-    accept_ratio = accepts / attempts if attempts > 0 else 0.0
-    mean_tps = tokens_saved / attempts if attempts > 0 else 0.0
+    drafted = sum(r.drafted_tokens for r in results)
+    # accept_ratio = fraction of DRAFTED positions accepted by the
+    # verifier (paper's standard metric). mean_tps = accepted positions
+    # per attempt, which can be > 1 (per the block-bonus contract).
+    accept_ratio = accepts / drafted if drafted > 0 else 0.0
+    mean_tps = accepts / attempts if attempts > 0 else 0.0
     speedup = (
         pooled / baseline_tok_per_sec
         if baseline_tok_per_sec and baseline_tok_per_sec > 0
@@ -363,15 +405,6 @@ def _summarize(
 def main() -> int:
     args = _parse_args()
 
-    if args.temp != 0.0 and not args.dry_run:
-        print(
-            "error: DFlash bench currently only supports temp=0.0 "
-            "(greedy / lossless). See verifier docstring for the "
-            "speculative-sampling extension plan.",
-            file=sys.stderr,
-        )
-        return 2
-
     if args.dry_run:
         plan = _planned_matrix(args)
         if args.format == "markdown":
@@ -387,32 +420,83 @@ def main() -> int:
             print(json.dumps(plan, indent=2))
         return 0
 
-    n_prompts = min(args.prompts, len(_BENCH_PROMPTS))
-    prompts = list(_BENCH_PROMPTS[:n_prompts])
+    indices = _resolve_prompt_indices(args)
+    prompts = [_BENCH_PROMPTS[i] for i in indices]
+
+    drafter_path = _resolve_drafter_path(args, args.model)
+    if not drafter_path:
+        print(
+            f"error: no DFlash drafter bound for model={args.model!r}. "
+            f"Pass --dflash-drafter-path or register via "
+            f"vllm_mlx.spec_decode.dflash.register_dflash_drafter().",
+            file=sys.stderr,
+        )
+        return 2
 
     print(
         f"[bench_spec_decode_dflash] model={args.model} "
-        f"drafter={args.dflash_drafter_path or '<registry>'} "
-        f"block_size={args.block_size} runs={args.runs} "
-        f"prompts={n_prompts} max_tokens={args.max_tokens} temp={args.temp}",
+        f"drafter={drafter_path} "
+        f"block_size={args.block_size or '<drafter-default>'} "
+        f"runs={args.runs} prompts={len(prompts)} "
+        f"prompt_indices={indices} "
+        f"max_tokens={args.max_tokens} temp={args.temp}",
+        file=sys.stderr,
+    )
+
+    # Load target + drafter ONCE, reuse across runs. mlx-vlm 0.6.3's
+    # ``stream_generate`` is safe to call repeatedly against the same
+    # model + drafter pair.
+    from vllm_mlx.spec_decode.dflash.drafter import MlxVlmDFlashDriver
+
+    t_load = time.perf_counter()
+    print("[bench_spec_decode_dflash] loading target via mlx-vlm…", file=sys.stderr)
+    target, processor = _load_baseline_target(args.model)
+    print(
+        f"[bench_spec_decode_dflash] target loaded in {time.perf_counter() - t_load:.1f}s; "
+        "loading drafter…",
+        file=sys.stderr,
+    )
+    block_size_arg: int | None = args.block_size or None
+    driver = MlxVlmDFlashDriver(
+        target_repo=args.model,
+        drafter_repo=drafter_path,
+        block_size=block_size_arg,
+    )
+    # Share the already-loaded target rather than letting the driver
+    # re-load it: ``MlxVlmDFlashDriver.load()`` re-calls
+    # ``mlx_vlm.load`` and we'd pay double the weight-load latency.
+    from vllm_mlx.speculative.dflash import load_runtime
+
+    driver._target = target  # noqa: SLF001 — bench-time shared-load shortcut
+    driver._processor = processor  # noqa: SLF001
+    driver._runtime = load_runtime(drafter_path)  # noqa: SLF001
+    print(
+        f"[bench_spec_decode_dflash] all loaded in {time.perf_counter() - t_load:.1f}s",
         file=sys.stderr,
     )
 
     all_results: dict[str, list[RunResult]] = {"none": [], "dflash": []}
     # Interleave conditions per run to avoid thermal drift.
     for run_idx in range(args.runs):
-        for prompt_idx, prompt in enumerate(prompts):
+        for prompt_local_idx, prompt in enumerate(prompts):
+            prompt_idx = indices[prompt_local_idx]
             for condition in ("none", "dflash"):
                 try:
-                    res = _run_once(
-                        model_alias=args.model,
-                        drafter_override=args.dflash_drafter_path,
-                        condition=condition,
-                        prompt=prompt,
-                        block_size=args.block_size,
-                        max_tokens=args.max_tokens,
-                        temp=args.temp,
-                    )
+                    if condition == "none":
+                        res = _run_baseline_once(
+                            target=target,
+                            processor=processor,
+                            prompt=prompt,
+                            max_tokens=args.max_tokens,
+                            temp=args.temp,
+                        )
+                    else:
+                        res = _run_dflash_once(
+                            driver=driver,
+                            prompt=prompt,
+                            max_tokens=args.max_tokens,
+                            temp=args.temp,
+                        )
                 except Exception as exc:  # pragma: no cover — bench
                     print(
                         f"[bench_spec_decode_dflash] {condition} "
@@ -428,15 +512,34 @@ def main() -> int:
                     n_tokens=res.n_tokens,
                     accept_attempts=res.accept_attempts,
                     accept_count=res.accept_count,
-                    tokens_saved=res.tokens_saved,
+                    drafted_tokens=res.drafted_tokens,
                     elapsed_seconds=res.elapsed_seconds,
                 )
                 all_results[condition].append(res)
+                if condition == "dflash":
+                    rate = (
+                        100.0 * res.accept_count / res.drafted_tokens
+                        if res.drafted_tokens > 0
+                        else 0.0
+                    )
+                    mean_per_attempt = (
+                        res.accept_count / res.accept_attempts
+                        if res.accept_attempts > 0
+                        else 0.0
+                    )
+                    accept_suffix = (
+                        f" accept={res.accept_count}/{res.drafted_tokens} "
+                        f"({rate:.1f}% per slot, {mean_per_attempt:.2f}/attempt, "
+                        f"{res.accept_attempts} attempts)"
+                    )
+                else:
+                    accept_suffix = ""
                 print(
                     f"[bench_spec_decode_dflash] {condition} "
                     f"run={run_idx} prompt={prompt_idx} "
                     f"{res.decode_tok_per_sec:.1f} tok/s "
-                    f"({res.n_tokens} tokens in {res.elapsed_seconds:.1f}s)",
+                    f"({res.n_tokens} tokens in {res.elapsed_seconds:.1f}s)"
+                    + accept_suffix,
                     file=sys.stderr,
                 )
 
@@ -447,17 +550,18 @@ def main() -> int:
 
     out = {
         "model": args.model,
-        "drafter_override": args.dflash_drafter_path or None,
-        "block_size": args.block_size,
+        "drafter": drafter_path,
+        "block_size_override": args.block_size or None,
         "max_tokens": args.max_tokens,
         "temp": args.temp,
+        "prompt_indices": indices,
         "summaries": [asdict(baseline_summary), asdict(dflash_summary)],
         "raw_runs": [asdict(r) for c in all_results.values() for r in c],
     }
     if args.format == "markdown":
         print("# DFlash spec-decode bench\n")
         print(
-            f"Model: `{args.model}`  block_size: {args.block_size}  "
+            f"Model: `{args.model}`  drafter: `{drafter_path}`  "
             f"max_tokens: {args.max_tokens}  temp: {args.temp}\n"
         )
         print(

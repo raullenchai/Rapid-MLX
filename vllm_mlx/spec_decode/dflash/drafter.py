@@ -6,27 +6,56 @@ from a "block diffusion drafter": a small auxiliary model that emits
 ``block_size`` candidate tokens per forward pass given a prefix and
 the current position.
 
-Two concrete implementations live in this module:
+Three concrete pieces live in this module:
 
-1. :class:`MlxVlmBlockDiffusionDrafter` — a thin adapter around the
-   mlx-vlm 0.5.0+ DFlash drafter loader (the same backend
-   :mod:`vllm_mlx.speculative.dflash` uses). When the operator passes
-   ``--spec-decode dflash`` against a real Qwen3.5/3.6 deployment and
-   the matching drafter checkpoint is bound in the side-registry, this
-   adapter is what loads and runs the forward.
-2. :class:`StubBlockDiffusionDrafter` — a deterministic, MLX-allocation-
-   free stub used by the generator unit tests and by the bench script
-   dry-run. The stub takes a Python list of "scripted blocks" and
-   emits them one at a time on each :meth:`draft_block` call. This is
-   not the real drafter (no diffusion math, no weights) — it exists so
-   the verifier / generator wiring can be exercised without holding
-   the GPU.
+1. :class:`BlockDiffusionDrafter` — the per-block ``Protocol`` consumed
+   by :mod:`vllm_mlx.spec_decode.dflash.generator` and ...verifier.
+   This per-block contract is the **0.10 interface** — the standardized
+   ``--spec-decode dflash`` integration that pairs with rapid-mlx's own
+   generator/verifier. It is NOT what mlx-vlm 0.6.3's DFlash drafter
+   actually exposes (see #3 below); the rapid-mlx generator/verifier
+   pair around this Protocol remains scaffolding until the BatchedEngine
+   integration lands.
+2. :class:`StubBlockDiffusionDrafter` — deterministic, MLX-allocation-
+   free stub that satisfies the Protocol. Used by the generator /
+   verifier unit tests and by ``--dry-run`` smoke runs. Not a model —
+   no diffusion math, no weights, no GPU.
+3. :class:`MlxVlmDFlashDriver` — production driver. Wraps mlx-vlm
+   0.6.3's full DFlash round loop (target prefill → hidden capture →
+   :func:`mlx_vlm.speculative.dflash._dflash_rounds`) behind a single
+   :meth:`generate` method. Unlike #1 it is **not** a per-block adapter:
+   mlx-vlm 0.6.3's ``DFlashDraftModel.draft_block`` requires the target
+   model's captured hidden states as input (it is a hidden-state
+   conditioned diffusion model), so a per-block adapter cannot satisfy
+   it without owning the verify forward too. Rather than re-implement
+   the full DFlash control flow in rapid-mlx (the previous adapter at
+   this site tried and silently broke on any real call — the bench
+   could never produce a number), this class delegates the whole loop
+   to mlx-vlm's reference implementation and surfaces accept-rate /
+   tok-saved stats through the underlying drafter's ``accept_lens`` /
+   ``draft_lens`` lists.
 
-The interface is intentionally narrow: one ``draft_block(prefix_tokens,
-current_position)`` method returning a length-``block_size`` ``mx.array``
-of candidate token IDs. The verifier owns the position math, the cache
-write, and the longest-accepted-prefix decision — see
-:mod:`vllm_mlx.spec_decode.dflash.verifier`.
+Why the architecture split
+--------------------------
+
+The :class:`BlockDiffusionDrafter` Protocol describes "what an ideal
+per-block drafter looks like" from rapid-mlx's BatchedEngine point of
+view — one ``draft_block`` call returns the next block's candidate
+tokens, the verifier owns the rest. Today that contract is satisfied
+ONLY by the stub: the production mlx-vlm drafter cannot fit it because
+it needs target hidden states as input. When the BatchedEngine
+integration lands (0.10), we'll either:
+
+* extend the Protocol to thread hidden states through ``draft_block``
+  AND teach the verifier to capture + pass them, OR
+* re-architect around a "drive the whole loop" driver model that
+  matches mlx-vlm's contract more directly (which is what
+  :class:`MlxVlmDFlashDriver` already does).
+
+Until then, the bench script and the dflash-server-mode use
+:class:`MlxVlmDFlashDriver`; unit tests of the
+:mod:`...spec_decode.dflash.generator` / .verifier code path use
+:class:`StubBlockDiffusionDrafter`.
 
 Why not a duck-typed callable
 -----------------------------
@@ -47,6 +76,7 @@ The interface is a Protocol rather than a free function so:
 from __future__ import annotations
 
 import logging
+from collections.abc import Generator
 from typing import Any, Protocol
 
 import mlx.core as mx
@@ -188,116 +218,257 @@ class StubBlockDiffusionDrafter:
 
 
 # ---------------------------------------------------------------------------
-# MlxVlmBlockDiffusionDrafter — production adapter
+# MlxVlmDFlashDriver — production driver around mlx-vlm 0.6.3
 # ---------------------------------------------------------------------------
 
 
-class MlxVlmBlockDiffusionDrafter:
-    """Production adapter wrapping mlx-vlm 0.5.0+'s DFlash drafter.
+class MlxVlmDFlashDriver:
+    """Production DFlash driver — wraps mlx-vlm 0.6.3's ``stream_generate``.
 
-    The adapter loads the drafter through the SAME
-    :mod:`vllm_mlx.speculative.dflash.runtime` module the existing
-    mlx-vlm bridge uses, so a deployment that has the drafter cached
-    for the mlx-vlm bridge doesn't re-download for spec_decode.
+    Background — why this is NOT a per-block adapter
+    ------------------------------------------------
 
-    Construction is deferred until first :meth:`draft_block` so the
-    CLI boot path doesn't pay the drafter-load cost if the operator
-    asks for ``--spec-decode none``. The first call pays the load;
-    subsequent calls hit the warm drafter.
+    mlx-vlm 0.6.3 ships ``DFlashDraftModel.draft_block`` with the
+    signature::
+
+        draft_block(self, last_bonus, hidden, cache, block_size,
+                    sampler, token_dtype=mx.int32) -> mx.array
+
+    The ``hidden`` arg is the TARGET model's captured hidden states for
+    the previously-emitted positions — DFlash is a hidden-state-
+    conditioned diffusion drafter, not a token-only one. A per-block
+    adapter that knows only ``(prefix_tokens, current_position)`` (the
+    previous adapter contract here, and the
+    :class:`BlockDiffusionDrafter` Protocol above) cannot synthesize
+    those hidden states; the verifier forward owns them, and the
+    drafter's first call needs the prefill hidden state. Wiring this
+    into rapid-mlx's own verifier/generator pair would require
+    re-implementing mlx-vlm's :func:`_dflash_rounds` control flow —
+    explicitly out of scope for 0.9.
+
+    Instead, this driver wraps the WHOLE round loop. It loads target
+    + drafter via mlx-vlm's loaders, then exposes
+    :meth:`generate` which delegates to ``mlx_vlm.stream_generate``
+    with ``draft_model`` and ``draft_kind`` set. The same code path the
+    DFlash server mode uses (see :mod:`vllm_mlx.speculative.dflash.server`).
+    The bench script consumes the wrapper's generator and reads accept-
+    rate / draft-len telemetry from the underlying drafter's
+    ``accept_lens`` and ``draft_lens`` lists, which mlx-vlm populates as
+    a side effect of the loop.
+
+    Concurrency
+    -----------
+
+    mlx-vlm's DFlash path is single-stream (mlx-vlm 0.6.3 has no batched
+    DFlash kernel). Callers that need concurrency should serialize
+    through an external lock — see
+    :mod:`vllm_mlx.speculative.dflash.server` for the pattern.
 
     Args:
-        drafter_hf_path: HF path / local path passed to mlx-vlm's
-            :func:`load_drafter`. Examples: ``"z-lab/Qwen3.5-9B-DFlash"``
-            (HF), ``"/path/to/drafter"`` (local).
-        block_size: Number of tokens the drafter is configured to emit
-            per forward. Defaults to 16 (the paper bench value).
+        target_repo: HF path / local path of the target model. Loaded
+            via :func:`mlx_vlm.utils.load`.
+        drafter_repo: HF path / local path of the DFlash drafter.
+            Loaded via :func:`vllm_mlx.speculative.dflash.load_runtime`.
+        block_size: Default block size override passed to mlx-vlm's
+            ``draft_block_size`` kwarg. Defaults to ``None`` so mlx-vlm
+            uses the drafter checkpoint's trained value (typically 16).
+            When set, mlx-vlm uses it as the CEILING; the adaptive
+            ``_dflash_next_block_size`` heuristic still scales down on
+            poor acceptance unless the drafter sets
+            ``prefer_requested_block_size=True``.
     """
 
     def __init__(
         self,
-        drafter_hf_path: str,
-        block_size: int = 16,
+        target_repo: str,
+        drafter_repo: str,
+        *,
+        block_size: int | None = None,
     ) -> None:
-        if not drafter_hf_path:
-            raise ValueError("drafter_hf_path must be a non-empty string")
-        if block_size <= 0:
-            raise ValueError(f"block_size must be >= 1; got {block_size}")
-        self.drafter_hf_path = drafter_hf_path
+        if not target_repo:
+            raise ValueError("target_repo must be a non-empty string")
+        if not drafter_repo:
+            raise ValueError("drafter_repo must be a non-empty string")
+        if block_size is not None and block_size <= 0:
+            raise ValueError(f"block_size must be >= 1 or None; got {block_size}")
+        self.target_repo = target_repo
+        self.drafter_repo = drafter_repo
         self.block_size = block_size
+        self._target: Any | None = None
+        self._processor: Any | None = None
         self._runtime: Any | None = None
 
-    def _ensure_loaded(self) -> Any:
-        """Lazy-load the underlying mlx-vlm drafter runtime.
+    @property
+    def loaded(self) -> bool:
+        """True once :meth:`load` has materialized target + drafter."""
+        return self._target is not None and self._runtime is not None
 
-        Defers the import + load until the first ``draft_block`` so
-        a CLI that doesn't actually use DFlash never touches mlx-vlm.
-        """
+    @property
+    def target(self) -> Any:
+        """The loaded mlx-vlm target model. Raises if :meth:`load` hasn't run."""
+        if self._target is None:
+            raise RuntimeError("MlxVlmDFlashDriver.load() must be called first")
+        return self._target
+
+    @property
+    def processor(self) -> Any:
+        """The loaded mlx-vlm processor / tokenizer. Raises if not loaded."""
+        if self._processor is None:
+            raise RuntimeError("MlxVlmDFlashDriver.load() must be called first")
+        return self._processor
+
+    @property
+    def runtime(self) -> Any:
+        """The :class:`vllm_mlx.speculative.dflash.DFlashRuntime` handle."""
         if self._runtime is None:
-            # Reuse the existing speculative bridge so a deployment
-            # that has the drafter cached for mlx-vlm doesn't re-download.
-            from vllm_mlx.speculative.dflash import load_runtime
-
-            logger.info(
-                "[dflash.drafter] Loading mlx-vlm DFlash drafter: %s (block_size=%d)",
-                self.drafter_hf_path,
-                self.block_size,
-            )
-            self._runtime = load_runtime(self.drafter_hf_path)
+            raise RuntimeError("MlxVlmDFlashDriver.load() must be called first")
         return self._runtime
 
-    def draft_block(
-        self,
-        prefix_tokens: mx.array,
-        current_position: int,
-    ) -> mx.array:
-        """Run one drafter forward pass and return the block.
+    def load(self) -> None:
+        """Materialize the target + drafter via mlx-vlm loaders.
 
-        Delegates to the mlx-vlm drafter's ``_dflash_rounds`` call
-        adapter (the same surface the bridge uses). The mlx-vlm
-        drafter returns a ``(block_size,)`` array of token IDs at
-        every successful round; we forward that unchanged.
+        Idempotent — a second call is a no-op. Defers all heavy I/O
+        until first use so test harnesses can construct the driver
+        without paying the GB-scale weight load just to verify wiring.
 
-        On a drafter failure (mlx-vlm not installed, drafter
-        download blocked, GPU OOM) we propagate the exception — the
-        generator's outer loop catches it and falls back to the
-        no-spec-decode path for that step. We don't catch + suppress
-        here because the upper-layer fallback is the right place to
-        decide between "skip this attempt and continue" vs "disable
-        spec-decode for the rest of the session".
+        Caller is responsible for thread affinity: mlx-lm 0.31.3+ keeps
+        GPU streams in thread-local storage. Loading on thread A and
+        generating on thread B will crash. The DFlash server pins both
+        to a single-worker executor (see
+        :mod:`vllm_mlx.speculative.dflash.server` for the pattern).
         """
-        runtime = self._ensure_loaded()
-        drafter = runtime.drafter
-        # The mlx-vlm drafter exposes ``draft_block(prefix, position)``
-        # in v0.5.0+ per the bridge's surface contract. Older versions
-        # use a different name; an AttributeError here would surface as
-        # a clear "drafter doesn't implement DFlash block interface"
-        # message to the operator.
-        block = drafter.draft_block(prefix_tokens, current_position)
-        # Defensive shape check: the verifier downstream relies on the
-        # block having the right size; a drafter that silently returns
-        # a shorter block would corrupt the position-id contract.
-        if block.shape[0] != self.block_size:
+        if self.loaded:
+            return
+        # Lazy imports — leave mlx-vlm optional at module import time so
+        # an installation without ``[dflash]`` extras keeps unit tests
+        # of the Stub working.
+        from mlx_vlm import load as _mlx_vlm_load
+
+        from vllm_mlx.speculative.dflash import load_runtime
+
+        logger.info(
+            "[dflash.driver] Loading target via mlx-vlm: %s", self.target_repo
+        )
+        self._target, self._processor = _mlx_vlm_load(self.target_repo)
+        logger.info(
+            "[dflash.driver] Loading DFlash drafter: %s (block_size=%r)",
+            self.drafter_repo,
+            self.block_size,
+        )
+        self._runtime = load_runtime(self.drafter_repo)
+
+    def generate(
+        self,
+        prompt: str,
+        *,
+        max_tokens: int,
+        temperature: float = 0.0,
+        top_p: float = 1.0,
+    ) -> Generator[Any, None, None]:
+        """Drive the full DFlash round loop and yield mlx-vlm chunks.
+
+        Args:
+            prompt: The full prompt string. mlx-vlm's
+                ``stream_generate`` handles tokenization via the
+                processor.
+            max_tokens: Generation budget. Forwarded to
+                ``stream_generate``.
+            temperature: Sampling temperature. ``0.0`` selects greedy.
+            top_p: Nucleus sampling threshold. ``1.0`` disables it.
+
+        Yields:
+            ``mlx_vlm`` ``GenerationResult`` chunks, one per emitted
+            token. Each carries ``.text`` (incremental decode),
+            ``.token`` (the int id), ``.generation_tokens`` (cumulative
+            counter), and ``.prompt_tokens``. The bench script reads
+            ``.generation_tokens`` for tok/s; the accept-rate is
+            sourced from :meth:`accept_stats` after the generator is
+            exhausted.
+
+        Raises:
+            RuntimeError: If :meth:`load` hasn't been called.
+
+        Notes:
+            Resets the drafter's per-request ``accept_lens`` and
+            ``draft_lens`` so accept-rate isn't pooled across calls.
+        """
+        if not self.loaded:
             raise RuntimeError(
-                f"mlx-vlm drafter returned block of size "
-                f"{int(block.shape[0])}, expected {self.block_size}. "
-                "Check drafter checkpoint's block_size config matches "
-                "the rapid-mlx spec_decode/dflash default."
+                "MlxVlmDFlashDriver.generate() requires load() to be called first"
             )
-        return block.astype(mx.uint32)
+        # Clear per-request state so the accept-rate snapshot below
+        # only reflects this prompt's rounds. (mlx-vlm's
+        # ``DFlashDraftModel.reset`` is called by ``_dflash_rounds`` at
+        # the start of every loop, but a small belt-and-suspenders.)
+        self.runtime.reset_accept_lens()
+        drafter = self.runtime.drafter
+        if hasattr(drafter, "draft_lens") and isinstance(drafter.draft_lens, list):
+            drafter.draft_lens.clear()
 
-    def reset(self) -> None:
-        """Reset per-request drafter state.
+        # Lazy import — same rationale as in load().
+        from mlx_vlm import stream_generate
 
-        Delegates to the mlx-vlm bridge's ``reset_accept_lens`` so the
-        accept-len list doesn't pool across requests; it also clears
-        the drafter's internal KV cache via the mlx-vlm
-        ``DFlashRuntime`` adapter when the cache attribute is present.
+        gen_kwargs: dict[str, Any] = dict(
+            max_tokens=max_tokens,
+            temperature=temperature,
+            top_p=top_p,
+            draft_model=drafter,
+            draft_kind=self.runtime.kind,
+        )
+        if self.block_size is not None:
+            gen_kwargs["draft_block_size"] = self.block_size
+        yield from stream_generate(self.target, self.processor, prompt, **gen_kwargs)
+
+    def accept_stats(self) -> dict[str, Any]:
+        """Return per-request DFlash accept stats from the underlying drafter.
+
+        ``mlx_vlm`` stores per-round acceptance as two lists on the
+        drafter: ``accept_lens[i]`` = positions accepted in round ``i``,
+        ``draft_lens[i]`` = positions drafted in that round (always
+        equal to ``block_size - 1`` since the first slot is the
+        always-accepted bonus). Both are reset by :meth:`generate`.
+
+        Returns:
+            Dict with:
+              - ``attempts`` — number of verify rounds (``len(accept_lens)``).
+              - ``accepted_tokens`` — sum over accepted positions.
+              - ``drafted_tokens`` — sum of drafted positions.
+              - ``accept_rate`` — ``accepted / drafted`` (0.0 when no rounds).
+              - ``mean_accepted_per_attempt`` — ``accepted / attempts``.
+              - ``accept_lens`` — a copy of the per-round list.
+              - ``draft_lens`` — a copy of the per-round list.
         """
         if self._runtime is None:
-            return
-        self._runtime.reset_accept_lens()
-        # Clear the drafter's KV cache if the mlx-vlm drafter exposes
-        # one. Tolerant of versions that don't.
+            return {
+                "attempts": 0,
+                "accepted_tokens": 0,
+                "drafted_tokens": 0,
+                "accept_rate": 0.0,
+                "mean_accepted_per_attempt": 0.0,
+                "accept_lens": [],
+                "draft_lens": [],
+            }
         drafter = self._runtime.drafter
-        if hasattr(drafter, "reset_cache"):
-            drafter.reset_cache()
+        accept_lens = list(getattr(drafter, "accept_lens", []) or [])
+        draft_lens = list(getattr(drafter, "draft_lens", []) or [])
+        attempts = len(accept_lens)
+        accepted = int(sum(accept_lens))
+        drafted = int(sum(draft_lens))
+        accept_rate = accepted / drafted if drafted > 0 else 0.0
+        mean_accept = accepted / attempts if attempts > 0 else 0.0
+        return {
+            "attempts": attempts,
+            "accepted_tokens": accepted,
+            "drafted_tokens": drafted,
+            "accept_rate": accept_rate,
+            "mean_accepted_per_attempt": mean_accept,
+            "accept_lens": accept_lens,
+            "draft_lens": draft_lens,
+        }
+
+
+__all__ = [
+    "BlockDiffusionDrafter",
+    "StubBlockDiffusionDrafter",
+    "MlxVlmDFlashDriver",
+]
