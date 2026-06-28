@@ -253,8 +253,17 @@ def test_driver_forwards_block_size_override(stub_mlx_vlm) -> None:
     assert stub_mlx_vlm["calls"][0]["kwargs"]["draft_block_size"] == 8
 
 
-def test_driver_accept_stats_reads_drafter_lists(stub_mlx_vlm) -> None:
-    """Pin the ``accept_lens`` / ``draft_lens`` attribute names + the math."""
+def test_driver_accept_stats_reads_drafter_lists(monkeypatch, stub_mlx_vlm) -> None:
+    """Pin the ``accept_lens`` / ``draft_lens`` attribute names + the math.
+
+    Simulates ``_dflash_rounds``'s real behavior: the round loop
+    appends to the drafter's lists DURING iteration. Reading
+    ``accept_stats()`` after the generator drains then reflects what
+    a production bench would see — and proves the driver doesn't
+    accidentally clear the lists post-iteration.
+    """
+    import mlx_vlm
+
     from vllm_mlx.spec_decode.dflash.drafter import MlxVlmDFlashDriver
 
     driver = MlxVlmDFlashDriver(
@@ -263,14 +272,31 @@ def test_driver_accept_stats_reads_drafter_lists(stub_mlx_vlm) -> None:
     )
     driver.load()
 
-    # Pre-populate so the bench sees a real number — generate() will
-    # call reset_accept_lens() which clears accept_lens; we re-populate
-    # AFTER iteration to simulate what _dflash_rounds does.
-    list(driver.generate("Hi.", max_tokens=4, temperature=0.0))
-    stub_mlx_vlm["drafter"].populate(
-        accept_lens=[3, 2, 4, 0],
-        draft_lens=[7, 7, 7, 7],
+    # Patch stream_generate to mutate the drafter's accept_lens /
+    # draft_lens between chunks — exactly the way mlx-vlm's
+    # _dflash_rounds populates them as it walks the prompt.
+    drafter = stub_mlx_vlm["drafter"]
+
+    def populating_stream_generate(model, processor, prompt, **kwargs):
+        from tests.test_dflash_adapter_signature import _FakeChunk
+
+        drafter.accept_lens.append(3)
+        drafter.draft_lens.append(7)
+        yield _FakeChunk("a", token=1, generation_tokens=1)
+        drafter.accept_lens.append(2)
+        drafter.draft_lens.append(7)
+        yield _FakeChunk("b", token=2, generation_tokens=2)
+        drafter.accept_lens.append(4)
+        drafter.draft_lens.append(7)
+        drafter.accept_lens.append(0)
+        drafter.draft_lens.append(7)
+        yield _FakeChunk("c", token=3, generation_tokens=3)
+
+    monkeypatch.setattr(
+        mlx_vlm, "stream_generate", populating_stream_generate, raising=True
     )
+
+    list(driver.generate("Hi.", max_tokens=4, temperature=0.0))
 
     stats = driver.accept_stats()
     assert stats["attempts"] == 4

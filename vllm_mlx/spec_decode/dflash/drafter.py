@@ -459,6 +459,10 @@ class MlxVlmDFlashDriver:
 
         Raises:
             RuntimeError: If :meth:`load` hasn't been called.
+            ValueError: If ``max_tokens < 1`` or ``top_p`` is outside
+                ``(0, 1]`` — surfaces the typo at the driver boundary
+                rather than delegating an invalid budget into
+                ``mlx_vlm.stream_generate``.
 
         Notes:
             Resets the drafter's per-request ``accept_lens`` and
@@ -468,6 +472,12 @@ class MlxVlmDFlashDriver:
             raise RuntimeError(
                 "MlxVlmDFlashDriver.generate() requires load() to be called first"
             )
+        if max_tokens < 1:
+            raise ValueError(f"max_tokens must be >= 1; got {max_tokens}")
+        if not (0.0 < top_p <= 1.0):
+            raise ValueError(f"top_p must be in (0.0, 1.0]; got {top_p}")
+        if temperature < 0.0:
+            raise ValueError(f"temperature must be >= 0.0; got {temperature}")
         # Clear per-request state so the accept-rate snapshot below
         # only reflects this prompt's rounds. (mlx-vlm's
         # ``DFlashDraftModel.reset`` is called by ``_dflash_rounds`` at

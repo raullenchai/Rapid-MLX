@@ -221,8 +221,18 @@ def _parse_args() -> argparse.Namespace:
 
 def _resolve_prompt_indices(args: argparse.Namespace) -> list[int]:
     if args.prompt_indices.strip():
+        # Reject malformed lists like "0,,1" or "0, ,1" — an empty
+        # segment is a typo, not a "skip this index" idiom. Silently
+        # dropping it would hide the operator's slip.
+        raw_segments = args.prompt_indices.split(",")
+        empties = [seg for seg in raw_segments if not seg.strip()]
+        if empties:
+            raise ValueError(
+                f"--prompt-indices contains empty segment(s) in "
+                f"{args.prompt_indices!r}; remove the stray comma(s)."
+            )
         try:
-            ix = [int(x) for x in args.prompt_indices.split(",") if x.strip()]
+            ix = [int(x) for x in raw_segments]
         except ValueError as exc:
             # Surface a clean argparse-style error rather than a raw
             # traceback for "--prompt-indices 0,foo,1" — the operator
