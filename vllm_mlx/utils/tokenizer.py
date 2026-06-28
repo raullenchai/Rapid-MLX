@@ -232,9 +232,7 @@ def repair_byte_level_decoder(tokenizer) -> bool:
             spaced_tokens = inner.convert_ids_to_tokens(spaced_ids)
         except Exception:
             spaced_tokens = []
-        if any(
-            isinstance(t, str) and _METASPACE_MARKER in t for t in spaced_tokens
-        ):
+        if any(isinstance(t, str) and _METASPACE_MARKER in t for t in spaced_tokens):
             # Hybrid tokenizer: vocab uses ``▁`` for spaces AND the
             # decoder has the matching ``Replace`` step. Bail without
             # mutation — the cosmetic byte-token quirk PR #793 was

@@ -47,8 +47,8 @@ from tokenizers import Tokenizer, decoders, models, pre_tokenizers
 from transformers import AutoTokenizer, PreTrainedTokenizerFast
 
 from vllm_mlx.utils.tokenizer import (
-    _decoder_has_metaspace_replace,
     _METASPACE_MARKER,
+    _decoder_has_metaspace_replace,
     repair_byte_level_decoder,
 )
 
@@ -322,9 +322,7 @@ class TestPR793PathStillRepairs:
         # Post-repair: swap fires, mojibake is gone.
         assert repair_byte_level_decoder(tok) is True
         repaired = tok.decode(ids)
-        assert repaired == "hello world", (
-            f"PR #793 repair path broken: {repaired!r}"
-        )
+        assert repaired == "hello world", f"PR #793 repair path broken: {repaired!r}"
 
     def test_pure_byte_level_vocab_with_sp_decoder_falls_to_gate_2_safely(
         self,
@@ -381,9 +379,7 @@ class TestPR793PathStillRepairs:
 class TestGate3SpacedSampleVerification:
     """Lock the gate-3 fail-closed contract."""
 
-    def test_gate_3_reverts_when_metaspace_leaks_post_swap(
-        self, monkeypatch
-    ) -> None:
+    def test_gate_3_reverts_when_metaspace_leaks_post_swap(self, monkeypatch) -> None:
         """Simulate a "future hybrid we haven't seen": force gate 2 to
         clear (by neutering ``_decoder_has_metaspace_replace``), so the
         swap runs. The swap is now a regression because the vocab uses
