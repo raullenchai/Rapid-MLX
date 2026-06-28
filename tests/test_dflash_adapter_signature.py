@@ -338,6 +338,67 @@ def test_driver_rejects_empty_repos() -> None:
         MlxVlmDFlashDriver(target_repo="mlx-community/Qwen3.5-9B-4bit", drafter_repo="")
 
 
+def test_driver_adopt_accepts_preloaded_objects(stub_mlx_vlm) -> None:
+    """``adopt()`` lets a caller inject already-loaded objects.
+
+    Bench scripts pay one mlx-vlm.load() for both baseline and DFlash
+    conditions and re-use the resulting model. Without ``adopt()`` they
+    would either have to load twice (28+ GB for Qwen3.5-27B-8bit) or
+    poke at the driver's private attrs.
+    """
+    from vllm_mlx.spec_decode.dflash.drafter import MlxVlmDFlashDriver
+
+    runtime = stub_mlx_vlm["runtime"]
+    driver = MlxVlmDFlashDriver(
+        target_repo="mlx-community/Qwen3.5-9B-4bit",
+        drafter_repo="z-lab/Qwen3.5-9B-DFlash",
+    )
+    assert not driver.loaded
+    driver.adopt(
+        target="<pre-loaded-target>", processor="<pre-loaded-proc>", runtime=runtime
+    )
+    assert driver.loaded
+    assert driver.target == "<pre-loaded-target>"
+    assert driver.processor == "<pre-loaded-proc>"
+    assert driver.runtime is runtime
+
+    # generate() works as it does after load().
+    list(driver.generate("Hi.", max_tokens=4, temperature=0.0))
+    assert stub_mlx_vlm["calls"][0]["model"] == "<pre-loaded-target>"
+    assert stub_mlx_vlm["calls"][0]["processor"] == "<pre-loaded-proc>"
+
+
+def test_driver_adopt_rejects_double_call(stub_mlx_vlm) -> None:
+    """Calling ``adopt()`` after ``load()`` (or twice) raises."""
+    from vllm_mlx.spec_decode.dflash.drafter import MlxVlmDFlashDriver
+
+    runtime = stub_mlx_vlm["runtime"]
+    driver = MlxVlmDFlashDriver(
+        target_repo="mlx-community/Qwen3.5-9B-4bit",
+        drafter_repo="z-lab/Qwen3.5-9B-DFlash",
+    )
+    driver.load()
+    with pytest.raises(ValueError, match="already loaded"):
+        driver.adopt(target="x", processor="y", runtime=runtime)
+
+
+def test_driver_adopt_rejects_none(stub_mlx_vlm) -> None:
+    """``adopt(target=None)`` etc. fail fast — easier than debugging a NoneType error mid-decode."""
+    from vllm_mlx.spec_decode.dflash.drafter import MlxVlmDFlashDriver
+
+    driver = MlxVlmDFlashDriver(
+        target_repo="mlx-community/Qwen3.5-9B-4bit",
+        drafter_repo="z-lab/Qwen3.5-9B-DFlash",
+    )
+    runtime = stub_mlx_vlm["runtime"]
+    with pytest.raises(ValueError, match="non-None"):
+        driver.adopt(target=None, processor="p", runtime=runtime)
+    with pytest.raises(ValueError, match="non-None"):
+        driver.adopt(target="t", processor=None, runtime=runtime)
+    with pytest.raises(ValueError, match="non-None"):
+        driver.adopt(target="t", processor="p", runtime=None)
+
+
 def test_driver_rejects_nonpositive_block_size() -> None:
     """``block_size <= 0`` is a programming error; surface it early."""
     from vllm_mlx.spec_decode.dflash.drafter import MlxVlmDFlashDriver

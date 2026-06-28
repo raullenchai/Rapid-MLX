@@ -355,6 +355,47 @@ class MlxVlmDFlashDriver:
         )
         self._runtime = load_runtime(self.drafter_repo)
 
+    def adopt(
+        self,
+        *,
+        target: Any,
+        processor: Any,
+        runtime: Any,
+    ) -> None:
+        """Inject already-loaded target + processor + runtime objects.
+
+        For callers that have already paid the mlx-vlm load cost
+        elsewhere (e.g. a bench script that wants ONE shared target
+        instance across baseline and DFlash conditions, instead of
+        loading 28+ GB of weights twice). After :meth:`adopt`,
+        :meth:`generate` and :meth:`accept_stats` work the same way
+        they would after :meth:`load`.
+
+        Args:
+            target: An ``mlx_vlm.load``-style model object — must
+                expose ``language_model`` and the DFlash hooks
+                (``capture_layer_ids``, ``rollback_speculative_cache``).
+                The bench script gets one of these via ``mlx_vlm.load``.
+            processor: The matching mlx-vlm processor / tokenizer.
+            runtime: A
+                :class:`vllm_mlx.speculative.dflash.DFlashRuntime` — the
+                loaded drafter + kind. Get one from
+                :func:`vllm_mlx.speculative.dflash.load_runtime`.
+
+        Raises:
+            ValueError: If the driver was already loaded or adopted.
+        """
+        if self.loaded:
+            raise ValueError(
+                "MlxVlmDFlashDriver is already loaded; adopt() is for "
+                "fresh instances. Construct a new driver."
+            )
+        if target is None or processor is None or runtime is None:
+            raise ValueError("adopt() requires non-None target, processor, runtime")
+        self._target = target
+        self._processor = processor
+        self._runtime = runtime
+
     def generate(
         self,
         prompt: str,

@@ -221,7 +221,16 @@ def _parse_args() -> argparse.Namespace:
 
 def _resolve_prompt_indices(args: argparse.Namespace) -> list[int]:
     if args.prompt_indices.strip():
-        ix = [int(x) for x in args.prompt_indices.split(",") if x.strip()]
+        try:
+            ix = [int(x) for x in args.prompt_indices.split(",") if x.strip()]
+        except ValueError as exc:
+            # Surface a clean argparse-style error rather than a raw
+            # traceback for "--prompt-indices 0,foo,1" — the operator
+            # likely typo'd.
+            raise ValueError(
+                f"--prompt-indices entries must be integers; "
+                f"got {args.prompt_indices!r} ({exc})"
+            ) from None
         # Reject duplicates — pooling the same prompt twice silently
         # weights it 2x in the summary and reports misleading
         # speedup. The operator likely meant to type two different
@@ -481,12 +490,17 @@ def main() -> int:
     )
     # Share the already-loaded target rather than letting the driver
     # re-load it: ``MlxVlmDFlashDriver.load()`` re-calls
-    # ``mlx_vlm.load`` and we'd pay double the weight-load latency.
+    # ``mlx_vlm.load`` and we'd pay double the weight-load latency
+    # (the 27B-8bit target is 28+ GB). Adopt the already-loaded
+    # objects via the public injection API; the bench then exercises
+    # the same generate() code path production does.
     from vllm_mlx.speculative.dflash import load_runtime
 
-    driver._target = target  # noqa: SLF001 — bench-time shared-load shortcut
-    driver._processor = processor  # noqa: SLF001
-    driver._runtime = load_runtime(drafter_path)  # noqa: SLF001
+    driver.adopt(
+        target=target,
+        processor=processor,
+        runtime=load_runtime(drafter_path),
+    )
     print(
         f"[bench_spec_decode_dflash] all loaded in {time.perf_counter() - t_load:.1f}s",
         file=sys.stderr,
