@@ -950,34 +950,69 @@ class TurboQuantKVCache:
 
     @state.setter
     def state(self, v):
-        # Empty marker → empty cache. ``from_state`` runs the setter
-        # before ``__init__`` so we must initialize every attribute the
-        # codec touches. Match the "empty cache" shape produced by
-        # :meth:`from_kv_cache` when ``kv_cache.keys`` is ``None``.
-        if not v:
+        # ``from_state`` runs the setter before ``__init__`` so we must
+        # initialize every attribute the codec touches. Empty marker →
+        # empty cache. ``tree_unflatten([])`` returns ``[]`` (NOT ``{}``)
+        # for a state that was saved as ``{}``, so both empty dict and
+        # empty list are legitimate empty markers — but any OTHER
+        # non-dict value is a malformed snapshot. Codex PR #955 round 1
+        # BLOCKING #2 caught that ``not v`` alone would accept e.g.
+        # ``None`` / ``0`` / ``""`` and silently round-trip as empty.
+        if isinstance(v, (dict, list)) and len(v) == 0:
             self.keys = None
             self.values_compressed = (None, None, None)
             self.keys_compressed = None
             return
-        # ``tree_unflatten`` returns dicts for string-keyed leaves; lists
-        # for integer-keyed leaves. We always emit strings, so a list
-        # here is a sign the snapshot was written by a future codec we
-        # don't understand — fail loudly rather than silently.
         if not isinstance(v, dict):
             raise TypeError(
                 f"TurboQuantKVCache.state must be a dict (got {type(v).__name__}); "
                 "snapshot may have been written by a future codec"
             )
+        # V side: TurboQuant ALWAYS compresses V (no V-bypass mode), so
+        # a non-empty state must carry all three v_* fields together.
+        # Round 1 BLOCKING #1: silently setting ``values_compressed`` to
+        # ``(None, None, None)`` when one or two v_* fields are missing
+        # would defer the failure to the next ``to_kv_cache()`` decode
+        # (raises deep inside the codec). Failing at the setter routes
+        # it through MemoryAwarePrefixCache's ``corrupt_skipped`` path
+        # so the drop is visible at /metrics.
+        v_present = {k for k in ("v_indices", "v_scales", "v_zeros") if k in v}
+        if v_present and v_present != {"v_indices", "v_scales", "v_zeros"}:
+            raise ValueError(
+                "TurboQuantKVCache.state has partial v_* fields "
+                f"({sorted(v_present)}); all three of v_indices/v_scales/"
+                "v_zeros must be present together — snapshot is corrupt"
+            )
+        # K8 side: same all-or-nothing rule. K8 mode encodes all three
+        # k_* together; partial presence means the snapshot was either
+        # truncated or written by a codec we don't recognize.
+        k_present = {k for k in ("k_packed", "k_norms", "k_scales") if k in v}
+        if k_present and k_present != {"k_packed", "k_norms", "k_scales"}:
+            raise ValueError(
+                "TurboQuantKVCache.state has partial k_* fields "
+                f"({sorted(k_present)}); all three of k_packed/k_norms/"
+                "k_scales must be present together — snapshot is corrupt"
+            )
         self.keys = v.get("keys")
-        if "v_indices" in v:
+        if v_present:
             self.values_compressed = (
                 v["v_indices"],
                 v["v_scales"],
                 v["v_zeros"],
             )
         else:
+            # No V at all is only legal when the cache is also
+            # K-side-empty AND keys-empty — i.e. degenerate but
+            # well-formed. If we got here with no v_* but a populated K
+            # or fp16 keys, that's still corrupt: V is the one thing
+            # TurboQuant always emits.
+            if self.keys is not None or k_present:
+                raise ValueError(
+                    "TurboQuantKVCache.state has K or fp16 keys but no V "
+                    "compression — TurboQuant always emits V; snapshot is corrupt"
+                )
             self.values_compressed = (None, None, None)
-        if "k_packed" in v:
+        if k_present:
             self.keys_compressed = (
                 v["k_packed"],
                 v["k_norms"],
@@ -1014,14 +1049,22 @@ class TurboQuantKVCache:
 
     @meta_state.setter
     def meta_state(self, v):
-        # Empty / falsy → empty-cache shape. Matches the empty branch in
-        # :meth:`state.setter` so an empty snapshot fully round-trips.
-        if not v:
+        # Empty marker → empty-cache shape, matching the empty branch
+        # in :meth:`state.setter`. Codex PR #955 round 1 BLOCKING #3:
+        # only ``()`` / ``[]`` count as the empty marker — any other
+        # falsy value (``None`` / ``""`` / ``0``) is a malformed
+        # snapshot that must not silently load with default config.
+        if isinstance(v, (tuple, list)) and len(v) == 0:
             self.offset = 0
             self.head_dim = 0
             self.config = TurboQuantConfig()
             self.original_dtype = None
             return
+        if not isinstance(v, (tuple, list)):
+            raise TypeError(
+                f"TurboQuantKVCache.meta_state must be a tuple/list "
+                f"(got {type(v).__name__}); snapshot is corrupt"
+            )
         # ``v`` is whatever ``tree_unflatten`` produced — a list for our
         # tuple-of-strings save shape. A 7-element shape is the only
         # one this codec writes; any other length is from a future
