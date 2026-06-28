@@ -231,6 +231,16 @@ def _resolve_prompt_indices(args: argparse.Namespace) -> list[int]:
                 f"--prompt-indices entries must be integers; "
                 f"got {args.prompt_indices!r} ({exc})"
             ) from None
+        if not ix:
+            # ``--prompt-indices ","`` or ``--prompt-indices " "`` parses
+            # to empty after strip-filtering. Without this guard the
+            # bench would run zero generations and emit an empty
+            # summary, which looks identical to a success and silently
+            # invalidates any pooled-speedup interpretation.
+            raise ValueError(
+                f"--prompt-indices is empty after parsing {args.prompt_indices!r}; "
+                "pass at least one valid index."
+            )
         # Reject duplicates — pooling the same prompt twice silently
         # weights it 2x in the summary and reports misleading
         # speedup. The operator likely meant to type two different
@@ -440,11 +450,18 @@ def _summarize(
 def main() -> int:
     args = _parse_args()
 
-    # Resolve indices up front so both --dry-run and the real run
-    # share the same operator-facing error path. ValueError raised by
-    # _resolve_prompt_indices (bad int, out-of-range, duplicate) is
-    # caught here and surfaced as "error: ..." + exit 2, the same
-    # convention argparse uses.
+    # Validate CLI inputs up front so both --dry-run and the real run
+    # share the same operator-facing error path. Any ValueError raised
+    # by _resolve_prompt_indices (bad int, out-of-range, duplicate,
+    # empty) is caught here and surfaced as "error: ..." + exit 2,
+    # the same convention argparse uses.
+    if args.block_size < 0:
+        print(
+            f"error: --block-size must be >= 0; got {args.block_size}. "
+            "Use 0 (the default) to defer to the drafter's trained value.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         indices = _resolve_prompt_indices(args)
     except ValueError as exc:
