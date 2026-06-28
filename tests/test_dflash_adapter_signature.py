@@ -143,7 +143,14 @@ class _FakeRuntime:
 
 @pytest.fixture
 def stub_mlx_vlm(monkeypatch: pytest.MonkeyPatch):
-    """Install a fake mlx-vlm + load_runtime so we can exercise the driver.
+    """Stub ``mlx_vlm.load`` + ``stream_generate`` + ``load_runtime``.
+
+    NOTE: this fixture uses ``importorskip("mlx_vlm")`` to skip the
+    driver wiring tests cleanly when ``rapid-mlx`` is installed
+    WITHOUT the ``[dflash]`` extra (mlx-vlm is an optional dep). The
+    ``test_mlx_vlm_draft_block_signature_matches_0_6_3`` test above
+    already gates on ``importorskip`` for the same reason; mirroring
+    here keeps the surface consistent.
 
     Patches:
       * ``mlx_vlm.load`` — returns (model, processor) tuples
@@ -154,6 +161,8 @@ def stub_mlx_vlm(monkeypatch: pytest.MonkeyPatch):
     invocation) and ``runtime`` (the fake DFlashRuntime instance), so
     individual tests can swap in different drafter state.
     """
+    mlx_vlm = pytest.importorskip("mlx_vlm")
+
     calls: list[dict[str, Any]] = []
     drafter = _FakeDrafter()
     runtime = _FakeRuntime(drafter)
@@ -175,10 +184,6 @@ def stub_mlx_vlm(monkeypatch: pytest.MonkeyPatch):
         yield _FakeChunk("hello", token=1, generation_tokens=1)
         yield _FakeChunk(" world", token=2, generation_tokens=2)
         yield _FakeChunk("", token=3, generation_tokens=3)
-
-    # Install a fake mlx_vlm module — preserves existing attributes
-    # so other imports (speculative.drafters.* etc) still resolve.
-    import mlx_vlm
 
     monkeypatch.setattr(mlx_vlm, "load", fake_load, raising=True)
     monkeypatch.setattr(mlx_vlm, "stream_generate", fake_stream_generate, raising=True)

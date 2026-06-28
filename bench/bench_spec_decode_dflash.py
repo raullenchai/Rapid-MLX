@@ -259,9 +259,18 @@ def _resolve_prompt_indices(args: argparse.Namespace) -> list[int]:
     return list(range(n))
 
 
-def _planned_matrix(args: argparse.Namespace) -> dict[str, Any]:
-    """Return the bench plan as a JSON-serializable dict (dry-run mode)."""
-    indices = _resolve_prompt_indices(args)
+def _planned_matrix(
+    args: argparse.Namespace, indices: list[int] | None = None
+) -> dict[str, Any]:
+    """Return the bench plan as a JSON-serializable dict (dry-run mode).
+
+    ``indices`` is optional so callers that already validated the
+    prompt-indices CLI can pass them through (avoids double validation
+    and ensures the dry-run plan reflects the same resolved set the
+    real run would).
+    """
+    if indices is None:
+        indices = _resolve_prompt_indices(args)
     prompts = [_BENCH_PROMPTS[i] for i in indices]
     return {
         "model": args.model,
@@ -431,8 +440,19 @@ def _summarize(
 def main() -> int:
     args = _parse_args()
 
+    # Resolve indices up front so both --dry-run and the real run
+    # share the same operator-facing error path. ValueError raised by
+    # _resolve_prompt_indices (bad int, out-of-range, duplicate) is
+    # caught here and surfaced as "error: ..." + exit 2, the same
+    # convention argparse uses.
+    try:
+        indices = _resolve_prompt_indices(args)
+    except ValueError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        return 2
+
     if args.dry_run:
-        plan = _planned_matrix(args)
+        plan = _planned_matrix(args, indices=indices)
         if args.format == "markdown":
             print("# DFlash bench plan (dry-run)\n")
             for k, v in plan.items():
@@ -446,7 +466,6 @@ def main() -> int:
             print(json.dumps(plan, indent=2))
         return 0
 
-    indices = _resolve_prompt_indices(args)
     prompts = [_BENCH_PROMPTS[i] for i in indices]
 
     drafter_path = _resolve_drafter_path(args, args.model)

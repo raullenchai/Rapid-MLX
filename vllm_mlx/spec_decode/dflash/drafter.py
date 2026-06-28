@@ -222,6 +222,36 @@ class StubBlockDiffusionDrafter:
 # ---------------------------------------------------------------------------
 
 
+# Methods + attributes the driver invokes on the runtime handle. Pin
+# them in one place so a fresh contributor can read the contract
+# without digging through the loop body.
+_RUNTIME_REQUIRED_ATTRS: tuple[str, ...] = (
+    "drafter",  # the mlx-vlm DFlashDraftModel (read by generate())
+    "kind",  # draft_kind for stream_generate (read by generate())
+    "reset_accept_lens",  # called per-request to clear accept_lens
+)
+
+
+def _validate_runtime_contract(runtime: Any) -> None:
+    """Verify ``runtime`` exposes the surface the driver needs.
+
+    Pulled out as a helper so :meth:`MlxVlmDFlashDriver.adopt` and
+    :meth:`MlxVlmDFlashDriver.load` both validate against the same
+    list. A malformed runtime (typo, drift, mock missing a method)
+    surfaces a ``TypeError`` with the missing attribute name AT
+    ADOPTION TIME rather than as an ``AttributeError`` deep inside
+    a generator several hundred tokens in.
+    """
+    missing = [attr for attr in _RUNTIME_REQUIRED_ATTRS if not hasattr(runtime, attr)]
+    if missing:
+        raise TypeError(
+            f"runtime is missing required attribute(s) {missing}. "
+            "Expected a vllm_mlx.speculative.dflash.DFlashRuntime instance "
+            "or a compatible shim. See "
+            "vllm_mlx/speculative/dflash/runtime.py for the contract."
+        )
+
+
 class MlxVlmDFlashDriver:
     """Production DFlash driver — wraps mlx-vlm 0.6.3's ``stream_generate``.
 
@@ -353,7 +383,9 @@ class MlxVlmDFlashDriver:
             self.drafter_repo,
             self.block_size,
         )
-        self._runtime = load_runtime(self.drafter_repo)
+        runtime = load_runtime(self.drafter_repo)
+        _validate_runtime_contract(runtime)
+        self._runtime = runtime
 
     def adopt(
         self,
@@ -392,6 +424,7 @@ class MlxVlmDFlashDriver:
             )
         if target is None or processor is None or runtime is None:
             raise ValueError("adopt() requires non-None target, processor, runtime")
+        _validate_runtime_contract(runtime)
         self._target = target
         self._processor = processor
         self._runtime = runtime
