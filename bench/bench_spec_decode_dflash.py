@@ -462,6 +462,29 @@ def main() -> int:
             file=sys.stderr,
         )
         return 2
+    if args.prompts < 1 and not args.prompt_indices.strip():
+        # ``--prompts 0`` would resolve to an empty index list and the
+        # bench would emit a zero-run summary that looks identical to
+        # success. Reject so the operator notices the typo. (Skipped
+        # when --prompt-indices is set — that path supplies its own
+        # validation via _resolve_prompt_indices.)
+        print(
+            f"error: --prompts must be >= 1; got {args.prompts}.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.runs < 1:
+        print(
+            f"error: --runs must be >= 1; got {args.runs}.",
+            file=sys.stderr,
+        )
+        return 2
+    if args.max_tokens < 1:
+        print(
+            f"error: --max-tokens must be >= 1; got {args.max_tokens}.",
+            file=sys.stderr,
+        )
+        return 2
     try:
         indices = _resolve_prompt_indices(args)
     except ValueError as exc:
