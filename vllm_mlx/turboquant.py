@@ -901,3 +901,193 @@ class TurboQuantKVCache:
             if arr is not None:
                 total += arr.nbytes
         return total
+
+    # -----------------------------------------------------------------
+    # Disk persistence — mlx_lm.save_prompt_cache contract (#198 BUG B)
+    # -----------------------------------------------------------------
+    # Upstream ``save_prompt_cache`` walks ``[c.state for c in cache]``
+    # and ``[c.meta_state for c in cache]``; ``load_prompt_cache`` calls
+    # ``globals()[c].from_state(state, meta_state)`` against the upstream
+    # module. Without these properties the radix shutdown flush aborts
+    # mid-walk with ``'TurboQuantKVCache' object has no attribute 'state'``
+    # and ZERO entries land on disk — every K8V4 server restart pays a
+    # full re-prefill cost on shared system prompts (see
+    # ``cfg3-radix-k8v4-server.log`` reproducer, surfaced 2026-06-27).
+    #
+    # State shape: dict of mx.arrays — ``tree_flatten`` over a list of
+    # these produces flat ``i.<name>`` keys for safetensors. Empty
+    # caches (``keys is None`` AND ``keys_compressed is None``) emit an
+    # empty dict, matching ``_BaseCache.state``'s "no state" sentinel.
+    #
+    # Meta_state shape: tuple of strings — same convention as
+    # ``QuantizedKVCache.meta_state``. The tuple captures the scalars
+    # that ``state`` can't (``offset``, ``head_dim``, codec config,
+    # ``original_dtype``). Codec config is rebuilt by re-validating
+    # through ``TurboQuantConfig.__post_init__`` so a malformed snapshot
+    # (mismatched bits / mode combo) is rejected at load rather than
+    # silently producing garbled keys at decode.
+
+    @property
+    def state(self):
+        """Serializable arrays — see class-level "Disk persistence" note."""
+        if self.keys is None and self.keys_compressed is None:
+            return {}
+        out: dict[str, mx.array] = {}
+        if self.keys is not None:
+            out["keys"] = self.keys
+        indices, scales, zeros = self.values_compressed
+        if indices is not None:
+            out["v_indices"] = indices
+            out["v_scales"] = scales
+            out["v_zeros"] = zeros
+        if self.keys_compressed is not None:
+            k_packed, k_norms, k_scales = self.keys_compressed
+            if k_packed is not None:
+                out["k_packed"] = k_packed
+                out["k_norms"] = k_norms
+                out["k_scales"] = k_scales
+        return out
+
+    @state.setter
+    def state(self, v):
+        # Empty marker → empty cache. ``from_state`` runs the setter
+        # before ``__init__`` so we must initialize every attribute the
+        # codec touches. Match the "empty cache" shape produced by
+        # :meth:`from_kv_cache` when ``kv_cache.keys`` is ``None``.
+        if not v:
+            self.keys = None
+            self.values_compressed = (None, None, None)
+            self.keys_compressed = None
+            return
+        # ``tree_unflatten`` returns dicts for string-keyed leaves; lists
+        # for integer-keyed leaves. We always emit strings, so a list
+        # here is a sign the snapshot was written by a future codec we
+        # don't understand — fail loudly rather than silently.
+        if not isinstance(v, dict):
+            raise TypeError(
+                f"TurboQuantKVCache.state must be a dict (got {type(v).__name__}); "
+                "snapshot may have been written by a future codec"
+            )
+        self.keys = v.get("keys")
+        if "v_indices" in v:
+            self.values_compressed = (
+                v["v_indices"],
+                v["v_scales"],
+                v["v_zeros"],
+            )
+        else:
+            self.values_compressed = (None, None, None)
+        if "k_packed" in v:
+            self.keys_compressed = (
+                v["k_packed"],
+                v["k_norms"],
+                v["k_scales"],
+            )
+        else:
+            self.keys_compressed = None
+
+    @property
+    def meta_state(self):
+        """Scalar codec config — see class-level "Disk persistence" note."""
+        # Empty marker for never-populated caches. Mirrors the empty
+        # ``state`` so an empty snapshot is symmetric on both axes.
+        if self.keys is None and self.keys_compressed is None and self.offset == 0:
+            return ()
+        # Empty string sentinel for ``original_dtype is None`` so the
+        # round-trip is unambiguous — ``"float16"`` etc. round-trip via
+        # ``getattr(mx, name)``.
+        if self.original_dtype is None:
+            dtype_name = ""
+        else:
+            # ``str(mx.float16)`` is ``"mlx.core.float16"``; the last
+            # dotted component is the attribute name on ``mx``.
+            dtype_name = str(self.original_dtype).rsplit(".", 1)[-1]
+        return (
+            str(self.offset),
+            str(self.head_dim),
+            str(self.config.bits),
+            str(self.config.group_size),
+            str(self.config.rotation_seed),
+            self.config.mode,
+            dtype_name,
+        )
+
+    @meta_state.setter
+    def meta_state(self, v):
+        # Empty / falsy → empty-cache shape. Matches the empty branch in
+        # :meth:`state.setter` so an empty snapshot fully round-trips.
+        if not v:
+            self.offset = 0
+            self.head_dim = 0
+            self.config = TurboQuantConfig()
+            self.original_dtype = None
+            return
+        # ``v`` is whatever ``tree_unflatten`` produced — a list for our
+        # tuple-of-strings save shape. A 7-element shape is the only
+        # one this codec writes; any other length is from a future
+        # writer we don't speak.
+        if len(v) != 7:
+            raise ValueError(
+                f"TurboQuantKVCache.meta_state expects 7 elements, got {len(v)}; "
+                "snapshot may have been written by a future codec"
+            )
+        self.offset = int(v[0])
+        self.head_dim = int(v[1])
+        # ``TurboQuantConfig.__post_init__`` re-runs here, rejecting
+        # invalid combos (e.g. ``mode='k8v4'`` with ``bits != 4``). A
+        # snapshot whose meta has been tampered with surfaces as a
+        # ``ValueError`` at load — exactly the same signal a CLI
+        # validation error would raise. The persistence layer wraps
+        # the load in try/except and bumps ``corrupt_skipped``, so a
+        # single tampered entry is dropped without taking the whole
+        # boot down.
+        self.config = TurboQuantConfig(
+            bits=int(v[2]),
+            group_size=int(v[3]),
+            rotation_seed=int(v[4]),
+            mode=v[5],
+        )
+        dtype_name = v[6]
+        if dtype_name:
+            try:
+                self.original_dtype = getattr(mx, dtype_name)
+            except AttributeError as e:
+                raise ValueError(
+                    f"TurboQuantKVCache.meta_state references unknown dtype "
+                    f"{dtype_name!r}"
+                ) from e
+        else:
+            self.original_dtype = None
+
+    @classmethod
+    def from_state(cls, state, meta_state):
+        """Mirror :meth:`mlx_lm.models.cache._BaseCache.from_state`.
+
+        Used by ``mlx_lm.models.cache.load_prompt_cache`` after
+        :func:`_register_in_mlx_lm_cache_globals` makes this class
+        discoverable in the upstream module's ``globals()``.
+        """
+        obj = cls.__new__(cls)
+        obj.state = state
+        obj.meta_state = meta_state
+        return obj
+
+
+# Make TurboQuantKVCache discoverable by ``mlx_lm.models.cache.load_prompt_cache``.
+# Upstream resolves cache classes via ``globals()[name].from_state(...)`` in its
+# own module — third-party cache types are invisible by default, so an entry
+# persisted under K8V4 (or V4) would otherwise raise ``KeyError`` at the next
+# boot. We inject the class once at import time (idempotent via
+# ``__dict__.setdefault``) so the radix-cache shutdown-flush → restart-restore
+# round-trip works without monkey-patching at every call site. The injection
+# is conditional on the import succeeding because ``mlx_lm`` is optional in
+# slim builds; absent it, persistence is already a no-op upstream.
+def _register_in_mlx_lm_cache_globals() -> None:
+    try:
+        from mlx_lm.models import cache as _upstream
+    except ImportError:
+        return
+    _upstream.__dict__.setdefault("TurboQuantKVCache", TurboQuantKVCache)
+
+
+_register_in_mlx_lm_cache_globals()
