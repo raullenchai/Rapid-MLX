@@ -181,7 +181,59 @@ def _parse_args() -> argparse.Namespace:
             "cost of reduced workload coverage."
         ),
     )
+    parser.add_argument(
+        "--mtp-sidecar",
+        default=None,
+        help=(
+            "MTP head sidecar (HF repo id or local path). The mlx-lm "
+            "0.31.3 ``qwen3_5.py::sanitize`` unconditionally strips "
+            "``mtp.*`` weights during the main load, so MTP weights "
+            "must be loaded from a separate sidecar safetensors blob "
+            "after ``mlx_lm.load(...)`` completes. Default: auto-pick "
+            "based on the base model alias (Qwen3.5-9B-4bit → "
+            "mlx-community/Qwen3.5-9B-MTP-4bit). Pass an explicit "
+            "value to override."
+        ),
+    )
+    parser.add_argument(
+        "--mtp-only",
+        action="store_true",
+        help=(
+            "Skip the baseline (--spec-decode none) condition and run "
+            "only the MTP condition. Useful when comparing against a "
+            "previously-captured baseline number."
+        ),
+    )
     return parser.parse_args()
+
+
+# Map from common base aliases / HF paths to their matching MTP sidecar.
+# The sidecar repo holds the MTP head only (no embed_tokens, no
+# backbone layers) — see ``mlx-community/Qwen3.5-9B-MTP-4bit`` README.
+# Keys are normalized to lowercase; ``_resolve_mtp_sidecar`` lowers
+# the incoming alias before lookup so case variants
+# (``Qwen3.5-9B-4bit`` vs ``qwen3.5-9b-4bit`` vs full
+# ``mlx-community/Qwen3.5-9B-4bit``) all hit the same default.
+_DEFAULT_MTP_SIDECAR: dict[str, str] = {
+    "qwen3.5-9b-4bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
+    "mlx-community/qwen3.5-9b-4bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
+    "mlx-community/qwen3.5-9b-mlx-4bit": "mlx-community/Qwen3.5-9B-MTP-4bit",
+}
+
+
+def _resolve_mtp_sidecar(model_alias: str, explicit: str | None) -> str | None:
+    """Pick the MTP sidecar for ``model_alias``.
+
+    Explicit ``--mtp-sidecar`` always wins. Otherwise look up the
+    alias in ``_DEFAULT_MTP_SIDECAR`` after lowercasing — codex
+    flagged on PR #954 that without normalization,
+    ``Qwen3.5-9B-4bit`` (case variant of the dict key) missed the
+    documented default. Return ``None`` if no default is known —
+    the inject will then fall back to a no-op load and log a warning.
+    """
+    if explicit is not None:
+        return explicit
+    return _DEFAULT_MTP_SIDECAR.get(model_alias.lower())
 
 
 def _planned_matrix(args: argparse.Namespace) -> dict[str, Any]:
@@ -208,6 +260,7 @@ def _run_once(
     prompt: str,
     max_tokens: int,
     temp: float,
+    mtp_sidecar: str | None = None,
 ) -> RunResult:
     """Run one generation under the requested condition.
 
@@ -235,13 +288,24 @@ def _run_once(
             validate_mtp_support,
         )
 
-        if not inject_mtp_support(model):
+        if not inject_mtp_support(model, mtp_sidecar=mtp_sidecar):
             raise RuntimeError(
                 f"MTP injection failed on model {model_alias!r} — "
-                "checkpoint likely lacks mtp.* weights. Re-convert from "
-                "HF with mlx-lm PR #990's sanitize() path."
+                f"sidecar {mtp_sidecar!r}. Confirm the sidecar repo or "
+                "local path exists, holds model.safetensors with the "
+                "expected MTP head schema, and the base model's "
+                "config carries mtp_num_hidden_layers >= 1."
             )
         assert validate_mtp_support(model)
+        # The patch lands on the inner TextModel (the VLM wrapper's
+        # ``language_model`` field). The generator drives the model
+        # directly, so re-bind ``model`` to the patched inner for the
+        # ``mtp_generate_step`` call. The mlx-lm 0.31.3 Qwen3.5
+        # arch ships only the VLM wrapper; the inner TextModel
+        # carries embed_tokens, lm_head, layers — everything the
+        # generator and ``mtp_forward`` reference.
+        if hasattr(model, "language_model"):
+            model = model.language_model
 
     prompt_ids = mx.array(tokenizer.encode(prompt), mx.uint32)
     counter = MTPAcceptCounter()
@@ -367,9 +431,13 @@ def main() -> int:
     n_prompts = min(args.prompts, len(_BENCH_PROMPTS))
     prompts = list(_BENCH_PROMPTS[:n_prompts])
 
+    mtp_sidecar = _resolve_mtp_sidecar(args.model, args.mtp_sidecar)
+    conditions: tuple[str, ...] = ("mtp",) if args.mtp_only else ("none", "mtp")
+
     print(
         f"[bench_spec_decode_mtp] model={args.model} runs={args.runs} "
-        f"prompts={n_prompts} max_tokens={args.max_tokens} temp={args.temp}",
+        f"prompts={n_prompts} max_tokens={args.max_tokens} temp={args.temp} "
+        f"mtp_sidecar={mtp_sidecar!r} conditions={conditions}",
         file=sys.stderr,
     )
 
@@ -378,7 +446,7 @@ def main() -> int:
     # #990 follows the same protocol).
     for run_idx in range(args.runs):
         for prompt_idx, prompt in enumerate(prompts):
-            for condition in ("none", "mtp"):
+            for condition in conditions:
                 try:
                     res = _run_once(
                         model_alias=args.model,
@@ -386,6 +454,7 @@ def main() -> int:
                         prompt=prompt,
                         max_tokens=args.max_tokens,
                         temp=args.temp,
+                        mtp_sidecar=mtp_sidecar,
                     )
                 except Exception as exc:  # pragma: no cover — bench
                     print(

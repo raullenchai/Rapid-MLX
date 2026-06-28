@@ -665,7 +665,9 @@ def test_inject_mtp_support_attaches_four_surfaces():
     except (TypeError, AttributeError) as exc:
         pytest.skip(f"Qwen3.5 TextModelArgs schema mismatch in this mlx-lm: {exc}")
 
-    injected = inject_mtp_support(model)
+    # allow_random_init=True: this is the test-only wiring probe
+    # (no sidecar download); production callers pass mtp_sidecar.
+    injected = inject_mtp_support(model, allow_random_init=True)
     assert injected is True
     assert validate_mtp_support(model) is True
 
@@ -707,6 +709,166 @@ def test_inject_mtp_support_rejects_stripped_checkpoint():
     # resolver picks up ``model.args`` and decides on
     # ``mtp_num_hidden_layers``.
     assert inject_mtp_support(_FakeInner()) is False
+
+
+def test_inject_mtp_support_refuses_no_sidecar_by_default():
+    """Default ``allow_random_init=False`` must refuse a sidecar-less inject.
+
+    Codex round-5 BLOCKING fix: silently shipping a random-init MTP
+    head (~0% accept rate) under the production-default code path
+    looked like spec-decode was enabled but yielded zero speedup.
+    With this fix, ``inject_mtp_support(model)`` (no sidecar, no
+    opt-in) must return False and leave the model unmodified.
+    """
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        inject_mtp_support,
+        validate_mtp_support,
+    )
+
+    try:
+        model = _build_tiny_qwen3_5_text_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Qwen3.5 TextModelArgs schema mismatch: {exc}")
+
+    # No sidecar, no allow_random_init → must fail closed.
+    assert inject_mtp_support(model) is False, (
+        "Default inject_mtp_support without sidecar should return False"
+    )
+    # And the model must NOT have been patched — validate_mtp_support
+    # checks the four surfaces, none should land on a failed inject.
+    assert validate_mtp_support(model) is False
+
+
+def test_inject_mtp_support_loads_synthetic_sidecar():
+    """Lightweight quantize → load → coverage-check probe (no 5 GB download).
+
+    Codex round-5 NIT: the heavy real-weights test is gated on
+    RAPID_MLX_RUN_HEAVY_TESTS=1 and doesn't run in normal CI, so the
+    quantize/load/key-coverage path it covers has no default
+    safety net. This test fills the gap with a synthetic sidecar:
+
+    1. Build a tiny Qwen3.5 TextModel (existing helper).
+    2. Build the MTP head module via build_mtp_module.
+    3. Persist its (random-init) parameters to a temp safetensors
+       file — this becomes the "sidecar" the inject will load.
+    4. Re-build a fresh model + inject with mtp_sidecar=<temp file>.
+       Inject must succeed AND the loaded MTP weights must match
+       what we persisted.
+
+    Failure modes this guards against:
+
+    * mtp.load_weights silently no-ops because key names drift
+      between build and load.
+    * The coverage check (expected_keys vs loaded_keys) misses
+      missing tensors.
+    * The custom-file-path branch of _resolve_sidecar_file
+      regresses.
+
+    Runs in <2 s on the CI machine — no network, no GPU required
+    beyond what every other unit test uses.
+    """
+    import tempfile
+    from pathlib import Path
+
+    import mlx.core as _mx
+    from mlx.utils import tree_flatten
+
+    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
+        inject_mtp_support,
+        validate_mtp_support,
+    )
+
+    try:
+        model_a = _build_tiny_qwen3_5_text_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Qwen3.5 TextModelArgs schema mismatch: {exc}")
+
+    # Build the MTP head separately so we can capture its random-init
+    # weights, write them to disk, and verify the inject loads them
+    # byte-equally. (Note: this tiny model is FP, so no quantize step
+    # — the inject's _detect_base_quantization returns None and the
+    # MTP module stays FP, matching the sidecar layout.)
+    args = model_a.args
+    mtp_template = build_mtp_module(args, int(args.mtp_num_hidden_layers))
+    _mx.eval(mtp_template.parameters())
+    flat = dict(tree_flatten(mtp_template.parameters()))
+    assert flat, "build_mtp_module produced an empty parameter tree"
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sidecar_path = Path(tmp) / "synthetic-mtp-head.safetensors"
+        _mx.save_safetensors(str(sidecar_path), flat)
+
+        # Build a fresh model (so MTP head random init differs from
+        # the persisted template), then inject with the synthetic
+        # sidecar file path. Tests the custom-filename branch of
+        # _resolve_sidecar_file.
+        model_b = _build_tiny_qwen3_5_text_model()
+        result = inject_mtp_support(model_b, mtp_sidecar=str(sidecar_path))
+        assert result is True, (
+            "inject_mtp_support failed on a synthetic sidecar that exactly "
+            "matches the MTP module's parameter tree — likely a coverage-check "
+            "false positive (expected_keys drift) or a _resolve_sidecar_file regression."
+        )
+        assert validate_mtp_support(model_b) is True
+
+        # The inject MUST have loaded the persisted weights byte-equally.
+        loaded = dict(tree_flatten(model_b.mtp.parameters()))
+        assert set(loaded.keys()) == set(flat.keys()), (
+            f"Parameter trees diverged. "
+            f"In template only: {set(flat) - set(loaded)}. "
+            f"In loaded only: {set(loaded) - set(flat)}."
+        )
+        for k in flat:
+            diff = _mx.sum(loaded[k] != flat[k]).item()
+            assert diff == 0, (
+                f"{k}: loaded MTP weight differs from sidecar by {diff} entries. "
+                f"This is the random-init defect class PR #918 shipped."
+            )
+
+
+def test_inject_mtp_support_refuses_synthetic_sidecar_missing_tensor():
+    """Coverage check: dropping one required tensor must fail the inject.
+
+    Codex round-3 BLOCKING fix added a pre-load coverage check that
+    walks mtp.parameters() and refuses inject when any required key
+    is missing from the sidecar. This test exercises that path with
+    a tiny synthetic sidecar — no network, no GPU contention.
+    """
+    import tempfile
+    from pathlib import Path
+
+    import mlx.core as _mx
+    from mlx.utils import tree_flatten
+
+    from vllm_mlx.spec_decode.mtp.head import build_mtp_module
+    from vllm_mlx.spec_decode.mtp.qwen3_5_inject import inject_mtp_support
+
+    try:
+        model = _build_tiny_qwen3_5_text_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Qwen3.5 TextModelArgs schema mismatch: {exc}")
+
+    args = model.args
+    mtp_template = build_mtp_module(args, int(args.mtp_num_hidden_layers))
+    _mx.eval(mtp_template.parameters())
+    flat = dict(tree_flatten(mtp_template.parameters()))
+    # Drop the FC weight — the inject's coverage check must catch this.
+    fc_keys = [k for k in flat if k.startswith("fc.")]
+    assert fc_keys, "tiny MTP template missing fc.* keys — test premise broken"
+    drop_key = fc_keys[0]
+    crippled = {k: v for k, v in flat.items() if k != drop_key}
+
+    with tempfile.TemporaryDirectory() as tmp:
+        sidecar_path = Path(tmp) / "crippled-sidecar.safetensors"
+        _mx.save_safetensors(str(sidecar_path), crippled)
+
+        fresh_model = _build_tiny_qwen3_5_text_model()
+        result = inject_mtp_support(fresh_model, mtp_sidecar=str(sidecar_path))
+        assert result is False, (
+            f"inject_mtp_support should have refused a sidecar missing {drop_key!r}, "
+            f"but returned True — the coverage check has regressed."
+        )
 
 
 # ---------------------------------------------------------------------------

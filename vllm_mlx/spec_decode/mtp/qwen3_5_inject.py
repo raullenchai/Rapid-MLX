@@ -16,29 +16,41 @@ runtime injection used by ``--enable-mtp``):
    delegated to :func:`vllm_mlx.spec_decode.mtp.head.build_mtp_module`.
 2. Quantize the MTP module to match the base model's quantization (so
    the weight tensors land in the right shape for ``load_weights``).
-3. Load the ``mtp.*`` weights from ``model.safetensors`` (or
-   ``model-mtp.safetensors`` when the converter split them out).
+3. Load the MTP weights from a separate ``mtp_sidecar`` checkpoint —
+   ``mlx-community/Qwen3.5-9B-MTP-4bit`` ships the head as a 131 MB
+   standalone safetensors file with top-level keys (``fc.*``,
+   ``layers.0.*``, ``norm.weight``, ``pre_fc_norm_{hidden,embedding}.weight``).
 4. Monkey-patch the ``TextModel`` instance's ``__class__`` to a
-   subclass that adds the four MTP surfaces.
+   subclass that adds the four MTP surfaces (``__call__`` with
+   ``return_hidden``/``n_confirmed``, ``mtp_forward``,
+   ``make_mtp_cache``).
 
 Coverage scope
 --------------
 
-In-scope: the dense ``TextModel`` (``mlx_lm.models.qwen3_5.TextModel``)
-and its MoE subclass (``mlx_lm.models.qwen3_5_moe.Model``). Both
-expose ``self.model`` (the underlying ``Qwen3_5TextModel``),
-``self.args``, ``self.lm_head`` (or tied embeddings), and ``self.layers``
-— enough for the patch to wire up identically.
+In-scope: the dense ``TextModel`` (``mlx_lm.models.qwen3_5.TextModel``),
+its MoE subclass (``mlx_lm.models.qwen3_5_moe.Model``), and the VLM
+wrapper (``mlx_lm.models.qwen3_5.Model``) where the text model is
+nested under ``model.language_model``. The patch always targets the
+inner ``TextModel`` — never the outer VLM wrapper (whose ``__call__``
+just delegates).
 
-Out-of-scope: VLM wrappers (no Qwen3.5/3.6 VLM has shipped MTP weights
-yet), pipeline-parallel splits (PR #990 supports them upstream but
-adapting the patch is a follow-up — the operator can boot single-
-device for MTP in the meantime).
+``n_confirmed`` rollback: implemented as of this PR. ``__call__``
+accepts ``n_confirmed`` and threads it through to each
+``ArraysCache`` via ``n_confirmed_for_mtp`` before the forward, so
+the patched ``GatedDeltaNet.__call__`` (installed by
+``patch_gated_delta_net_for_mtp``) can snapshot ``(conv_state,
+ssm_state)`` AT the confirmed-token boundary. On draft rejection the
+generator's ``_rollback_draft`` restores the snapshot per cache
+instance. Lossless contract confirmed byte-equal × 3 profiles on
+mlx-community/Qwen3.5-9B-4bit + mlx-community/Qwen3.5-9B-MTP-4bit
+(see ``tests/test_mtp_real_weights.py``).
 """
 
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -47,75 +59,260 @@ logger = logging.getLogger(__name__)
 def _resolve_inner_text_model(model: Any) -> Any:
     """Return the ``TextModel`` instance the patch must monkey-patch.
 
-    The dense Qwen3.5 / 3.6 model is itself the ``TextModel``. The MoE
-    model subclasses ``Qwen3_5Model`` (which IS the dense TextModel)
-    so this is just ``model``. A VLM wrapper would expose
-    ``model.language_model`` — we don't support that path yet but the
-    shape check is here so the failure mode is a clear log line
-    rather than an AttributeError mid-forward.
+    For mlx-lm 0.31.3's Qwen3.5 architecture, ``mlx_lm.load(...)``
+    returns the VLM-style ``Model`` wrapper whose ``language_model``
+    field is the actual ``TextModel`` (carrying ``embed_tokens``,
+    ``lm_head``, the ``model.layers`` backbone, and ``args``). The
+    wrapper itself only has ``args = ModelArgs(model_type,
+    text_config)`` and a delegating ``__call__`` — patching it would
+    leave ``self.model.embed_tokens`` undefined for the injected
+    ``mtp_forward``.
+
+    Three shapes are accepted:
+
+    * The outer VLM-style ``Model`` with ``model.language_model`` (real
+      runtime path).
+    * The inner ``TextModel`` itself (the test path constructs this
+      directly to avoid the heavy VLM init).
+    * A custom shell that exposes ``args`` + ``model`` and where
+      ``args`` has either ``hidden_size`` (the inner-TextModel-like
+      shape) or ``mtp_num_hidden_layers`` (the explicit-test shape).
+      Used by ``test_inject_mtp_support_rejects_*`` paths.
     """
+    # Case 1: VLM wrapper — text model lives under ``language_model``.
+    lm = getattr(model, "language_model", None)
+    if lm is not None and hasattr(lm, "args") and hasattr(lm, "model"):
+        return lm
+
+    # Case 2: Already the inner TextModel (or a test shell). The inner
+    # TextModel exposes both ``model`` (the backbone) and ``args``.
     if hasattr(model, "model") and hasattr(model, "args"):
         return model
-
-    inner = getattr(model, "language_model", None)
-    if inner is not None and hasattr(inner, "args"):
-        logger.warning(
-            "[mtp.inject] Qwen3.5/3.6 + VLM wrapper not yet supported. "
-            "MTP is only wired for the text-only model class."
-        )
-        return None
 
     return None
 
 
-def inject_mtp_support(model: Any) -> bool:
+def _detect_base_quantization(inner: Any) -> dict | None:
+    """Detect the quantization params used by the base model.
+
+    Walks the inner ``TextModel`` looking for a ``QuantizedLinear``
+    instance and reads its ``bits`` / ``group_size``. The MTP module
+    must be quantized with the same params so its weight shapes match
+    the sidecar's safetensors layout (4-bit / group_size 64 / affine
+    for ``mlx-community/Qwen3.5-9B-MTP-4bit``).
+
+    Returns ``None`` for FP base models — the caller skips quantize
+    in that case.
+
+    NOTE: only ``bits`` + ``group_size`` are returned. ``nn.quantize``
+    in the mlx-lm versions we target does not accept a ``mode`` arg —
+    it always applies the affine mode. The mlx-community sidecars
+    similarly assume affine. Returning ``mode`` would be dead data
+    that callers cannot pass through, so it's dropped. If/when
+    ``nn.quantize`` grows mode support, extend the dict here and
+    pipe it through at the inject call-site.
+    """
+    try:
+        from mlx.nn import QuantizedEmbedding, QuantizedLinear
+    except ImportError:  # pragma: no cover — mlx.nn always available
+        return None
+
+    backbone = getattr(inner, "model", None)
+    if backbone is None:
+        return None
+
+    # Try a full-attention layer's q_proj first (always present + quantized).
+    for layer in getattr(backbone, "layers", []):
+        if hasattr(layer, "self_attn") and hasattr(layer.self_attn, "q_proj"):
+            qp = layer.self_attn.q_proj
+            if isinstance(qp, QuantizedLinear):
+                return {
+                    "bits": int(qp.bits),
+                    "group_size": int(qp.group_size),
+                }
+
+    # Fall back: embed_tokens (QuantizedEmbedding has bits/group_size too).
+    embed = getattr(backbone, "embed_tokens", None)
+    if isinstance(embed, QuantizedEmbedding):
+        return {
+            "bits": int(embed.bits),
+            "group_size": int(embed.group_size),
+        }
+
+    return None
+
+
+def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
+    """Resolve a sidecar reference to a concrete safetensors file path.
+
+    Accepts:
+
+    * An absolute / relative path to a directory containing a
+      ``model.safetensors`` or ``model-mtp.safetensors`` file
+      (operators with a pre-downloaded HF snapshot).
+    * An absolute / relative path to a ``*.safetensors`` file
+      directly (operators with a hand-assembled sidecar; the
+      filename does NOT have to be one of the two well-known
+      names).
+    * An HF Hub repo name like ``mlx-community/Qwen3.5-9B-MTP-4bit``
+      (downloaded via ``snapshot_download`` to the HF cache, then
+      probed for ``model.safetensors`` / ``model-mtp.safetensors``).
+
+    Returns ``None`` if the reference cannot be resolved — caller
+    treats this as a soft failure and logs.
+    """
+    if mtp_sidecar is None:
+        return None
+
+    path = Path(mtp_sidecar)
+    if path.is_file():
+        # Explicit file path — use it verbatim. Supports operator
+        # workflows where the sidecar lives at a custom filename
+        # (``mtp-q4-g64.safetensors``, ``qwen3_5_mtp_head.safetensors``,
+        # …). Skipping the well-known-name probe avoids the silent
+        # "file is at a non-default name → fall back to None" trap
+        # codex flagged on PR #954 review.
+        return path
+    if path.is_dir():
+        return _find_mtp_weights_file(path)
+
+    # Treat as HF repo id.
+    try:
+        from huggingface_hub import snapshot_download
+
+        local = snapshot_download(repo_id=str(mtp_sidecar))
+        return _find_mtp_weights_file(Path(local))
+    except Exception as exc:  # pragma: no cover — network failure path
+        logger.warning(
+            "[mtp.inject] could not resolve sidecar %r: %s",
+            mtp_sidecar,
+            exc,
+        )
+        return None
+
+
+def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
+    """Pick the safetensors file inside ``sidecar_dir`` that holds the MTP head.
+
+    The mlx-community ``Qwen3.5-9B-MTP-4bit`` repo ships
+    ``model.safetensors`` (single shard, 131 MB, 31 keys, no ``mtp.``
+    prefix). Other vendors may ship ``model-mtp.safetensors`` (the
+    Qwen3-Next convention used by ``add_mtp_weights.py``). Try both.
+    """
+    candidates = (
+        sidecar_dir / "model-mtp.safetensors",
+        sidecar_dir / "model.safetensors",
+    )
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def inject_mtp_support(
+    model: Any,
+    mtp_sidecar: str | Path | None = None,
+    *,
+    allow_random_init: bool = False,
+) -> bool:
     """Inject MTP support into a loaded Qwen3.5 / Qwen3.6 model.
 
     Args:
-        model: A model loaded via ``mlx_lm.load()``. Must be a
-            ``mlx_lm.models.qwen3_5.TextModel`` or its MoE subclass
-            from ``qwen3_5_moe.Model``. Other architectures raise
-            no-op early (returns ``False``).
+        model: A model loaded via ``mlx_lm.load()``. Either the VLM
+            wrapper ``Model`` (with ``model.language_model``) or the
+            inner ``TextModel`` directly (tests pass this shape).
+        mtp_sidecar: Optional reference to a separate checkpoint
+            holding the MTP head's safetensors. Accepts an HF Hub
+            repo id (``mlx-community/Qwen3.5-9B-MTP-4bit``), a local
+            directory path, or a direct path to a ``.safetensors``
+            file.
+        allow_random_init: When ``True``, permit ``mtp_sidecar=None``
+            and ship the MTP head with its RANDOM INIT weights (the
+            patched ``mtp_forward`` produces useless drafts, accept
+            rate ~0%). Test-only. Codex flagged on PR #954 that
+            allowing this by default lets production callers silently
+            enable a useless/slow draft model, so the default is
+            ``False`` — a missing sidecar in production now returns
+            ``False`` from this function and the model is left
+            unmodified. The bench, server boot, and the rapid-mlx
+            spec_decode pipeline MUST pass a sidecar.
 
     Returns:
         ``True`` when the patch landed and the model now exposes
         ``mtp_forward``, ``make_mtp_cache``, ``return_hidden``, and
         ``n_confirmed`` — the four contract surfaces
         :func:`vllm_mlx.spec_decode.mtp.generator.mtp_generate_step`
-        depends on. ``False`` when the model is not Qwen3.5 / 3.6 or
-        the MTP weights are not present in the checkpoint (operator
-        must re-convert from HF with PR #990's ``sanitize()`` path
-        that preserves ``mtp.*`` keys).
+        depends on. ``False`` when the model is not Qwen3.5 / 3.6,
+        the config lacks ``mtp_num_hidden_layers``, the sidecar
+        cannot be resolved, or ``mtp_sidecar`` is ``None`` and
+        ``allow_random_init`` is ``False``.
 
     Notes:
-        The function does NOT touch the ``ArraysCache.rollback_state``
-        slot — that patch is installed once at module import time by
-        :func:`vllm_mlx.spec_decode.mtp.cache_patch.patch_arrays_cache_rollback_state`,
-        and is independent of which model instance is patched here.
+        This function is NEW in this PR (Qwen3.5 native MTP). It is
+        NOT the legacy ``vllm_mlx.patches.qwen3_next_mtp.inject_mtp_support``
+        used by the scheduler (different signature, different model
+        family, different load path). The only production caller of
+        this function is ``bench/bench_spec_decode_mtp.py`` (which
+        already passes ``mtp_sidecar``). There are no pre-existing
+        bare ``inject_mtp_support(model)`` call-sites to break with
+        the new ``allow_random_init=False`` default.
+
+        ``n_confirmed`` rollback is implemented as of this PR: it
+        threads through to each ``ArraysCache`` via
+        ``n_confirmed_for_mtp`` before forward, so the patched
+        ``GatedDeltaNet.__call__`` (installed by
+        ``patch_gated_delta_net_for_mtp``) can snapshot
+        ``(conv_state, ssm_state)`` AT the confirmed-token boundary.
     """
     import mlx.core as mx
+    import mlx.nn as nn
+
+    # NOTE: the global ``ArraysCache`` rollback_state class-default and
+    # the ``GatedDeltaNet.__call__`` chunk-split patches are deferred
+    # until AFTER every can-fail validation completes (see ``# --- Step
+    # 4`` below). Codex flagged on PR #954 that installing these
+    # monkey-patches up-front meant a failed sidecar load left
+    # process-global behavior mutated even though inject_mtp_support
+    # returned False. The patches are now strictly post-validation.
 
     inner = _resolve_inner_text_model(model)
     if inner is None:
         logger.warning(
-            "[mtp.inject] model %s is not a Qwen3.5/3.6 TextModel; "
-            "skipping MTP injection.",
+            "[mtp.inject] model %s has neither model.language_model nor "
+            "(model + args); skipping MTP injection.",
             type(model).__name__,
         )
         return False
 
     args = inner.args
-    num_mtp_layers = getattr(args, "mtp_num_hidden_layers", 0) or 0
+
+    # 1. Resolve num_mtp_layers. Prefer the dataclass attr (which
+    # tests set via object.__setattr__); fall back to the outer
+    # wrapper's text_config dict (the real runtime path — mlx-lm
+    # 0.31.3's TextModelArgs lacks ``mtp_num_hidden_layers`` so the
+    # field gets dropped during ``BaseModelArgs.from_dict``).
+    num_mtp_layers = int(getattr(args, "mtp_num_hidden_layers", 0) or 0)
+    if num_mtp_layers < 1:
+        outer_args = getattr(model, "args", None)
+        text_config = getattr(outer_args, "text_config", None) or {}
+        if isinstance(text_config, dict):
+            num_mtp_layers = int(text_config.get("mtp_num_hidden_layers", 0) or 0)
+        if num_mtp_layers >= 1:
+            # Surface it on the dataclass so downstream code (incl.
+            # validate_mtp_support, accept_counter labels) can read it
+            # off ``args.mtp_num_hidden_layers`` uniformly.
+            try:
+                object.__setattr__(args, "mtp_num_hidden_layers", num_mtp_layers)
+            except (TypeError, AttributeError):  # pragma: no cover — frozen
+                pass
+
     if num_mtp_layers < 1:
         logger.info(
-            "[mtp.inject] config has mtp_num_hidden_layers=%d; "
-            "skipping MTP injection (re-convert from HF with PR #990 "
-            "sanitize() path to preserve mtp.* weights).",
-            num_mtp_layers,
+            "[mtp.inject] config has no mtp_num_hidden_layers; skipping MTP injection."
         )
         return False
 
-    # --- Step 1: Build the MTP module from the head vendored module ---
+    # --- Step 1: Build the MTP module from the vendored head ---
     from .head import build_mtp_module
 
     mtp = build_mtp_module(args, num_mtp_layers)
@@ -125,18 +322,141 @@ def inject_mtp_support(model: Any) -> bool:
         getattr(args, "hidden_size", -1),
     )
 
-    # --- Step 2: Attach to the inner model so weight load can resolve
-    # ``mtp.*`` keys against ``model.model.mtp.*`` paths the converter
-    # writes out. ``model.load_weights`` then routes them naturally.
-    inner.mtp = mtp
+    # --- Step 2: Quantize MTP to match the base model's quantization ---
+    quant_info = _detect_base_quantization(inner)
+    if quant_info is not None:
+        nn.quantize(
+            mtp,
+            group_size=quant_info["group_size"],
+            bits=quant_info["bits"],
+        )
+        logger.info(
+            "[mtp.inject] Quantized MTP: %d-bit, group_size=%d",
+            quant_info["bits"],
+            quant_info["group_size"],
+        )
 
-    # --- Step 3: Monkey-patch the model class to add the four MTP
-    # surfaces. We subclass ``type(model)`` so the patch composes with
-    # any other runtime patches (e.g. quantization wrappers).
+    # --- Step 3: Load MTP weights from sidecar safetensors ---
+    if mtp_sidecar is not None:
+        weights_file = _resolve_sidecar_file(mtp_sidecar)
+        if weights_file is None:
+            logger.warning(
+                "[mtp.inject] sidecar %r could not be resolved to a "
+                "safetensors file; skipping MTP injection. "
+                "Pass either a repo id (mlx-community/Qwen3.5-9B-MTP-4bit), "
+                "a directory containing model.safetensors / "
+                "model-mtp.safetensors, or the file path directly.",
+                mtp_sidecar,
+            )
+            return False
+        raw = mx.load(str(weights_file))
+        # Some sidecars (Qwen3-Next ``add_mtp_weights.py`` output) prefix
+        # every key with ``mtp.``; others (mlx-community/Qwen3.5-9B-MTP-4bit)
+        # store at top-level. Strip the prefix if present so both shapes
+        # land on the MTP module's parameter tree.
+        mtp_weights = {
+            (k.removeprefix("mtp.") if k.startswith("mtp.") else k): v
+            for k, v in raw.items()
+        }
+        # Pre-load coverage check: codex flagged on PR #954 that
+        # ``strict=False`` lets the load silently succeed even when
+        # sidecar tensors are missing or misspelled — leaving part of
+        # the MTP head random-init while inject_mtp_support still
+        # returns True. Compute the expected parameter key set off
+        # ``mtp.parameters()`` (post-quantize, so ``weight`` /
+        # ``scales`` / ``biases`` for QuantizedLinear layers) and
+        # refuse the inject if any required tensor is missing.
+        from mlx.utils import tree_flatten
+
+        expected_keys = {k for k, _ in tree_flatten(mtp.parameters())}
+        loaded_keys = set(mtp_weights.keys())
+        missing = expected_keys - loaded_keys
+        if missing:
+            logger.warning(
+                "[mtp.inject] sidecar %s is missing %d required MTP "
+                "tensor(s); refusing to ship a partially-random-init head. "
+                "Missing keys (first 8): %s. "
+                "Either grab a correctly-converted sidecar (e.g. "
+                "mlx-community/Qwen3.5-9B-MTP-4bit) or regenerate via "
+                "the add_mtp_weights.py converter.",
+                weights_file.name,
+                len(missing),
+                sorted(missing)[:8],
+            )
+            return False
+        # ``strict=False`` still — we deliberately tolerate EXTRA
+        # keys (metadata blobs some converters bundle), but the
+        # coverage check above proves no required key is missing.
+        mtp.load_weights(list(mtp_weights.items()), strict=False)
+        mx.eval(mtp.parameters())
+        extra = loaded_keys - expected_keys
+        logger.info(
+            "[mtp.inject] Loaded %d/%d expected MTP weight tensors from %s%s",
+            len(expected_keys),
+            len(expected_keys),
+            weights_file.name,
+            f" (+{len(extra)} extra sidecar key(s) ignored)" if extra else "",
+        )
+    else:
+        # No sidecar.
+        if not allow_random_init:
+            # Codex round-5 BLOCKING fix: default is fail-closed. A
+            # missing sidecar in production silently enabled a draft
+            # model with random init weights (~0% accept rate) —
+            # invisible regression that LOOKS like spec-decode is
+            # running but emits zero speedup. Refuse the inject.
+            logger.warning(
+                "[mtp.inject] inject_mtp_support called without "
+                "mtp_sidecar and allow_random_init=False; refusing to "
+                "ship a random-init MTP head. Pass "
+                "mtp_sidecar='mlx-community/Qwen3.5-9B-MTP-4bit' (or "
+                "equivalent) for production use, or set "
+                "allow_random_init=True for unit-test wiring probes."
+            )
+            return False
+        # Test-only path — explicit opt-in to random-init weights for
+        # wiring tests that pin the surfaces without paying the
+        # 131 MB sidecar download cost.
+        mx.eval(mtp.parameters())
+        logger.warning(
+            "[mtp.inject] inject_mtp_support called with "
+            "allow_random_init=True — MTP head retains RANDOM init "
+            "weights (accept rate ~0%%). This is the test-only path; "
+            "do not use in production."
+        )
+
+    # --- Step 4: Install global ArraysCache + GatedDeltaNet patches ---
+    # Deferred from the top of this function so a failed validation /
+    # sidecar load (above) leaves the process global state untouched.
+    # Both patches are idempotent + transparent at n_confirmed=0, so
+    # a successful inject_mtp_support that runs after a failed one
+    # still lands cleanly.
+    from .cache_patch import (
+        patch_arrays_cache_rollback_state,
+        patch_gated_delta_net_for_mtp,
+    )
+
+    patch_arrays_cache_rollback_state()
+    patch_gated_delta_net_for_mtp()
+
+    # --- Step 5: Attach + monkey-patch ``TextModel`` class ---
+    inner.mtp = mtp
     original_class = type(inner)
 
     class _Qwen3_5WithMTP(original_class):  # type: ignore[valid-type, misc]
-        """``TextModel`` + MTP surfaces injected by R15 #302 (vendor PR #990)."""
+        """``TextModel`` + MTP surfaces injected by R15 #302 (vendor PR #990).
+
+        The forward is inlined from
+        ``mlx_lm.models.qwen3_5.Qwen3_5TextModel.__call__`` so that:
+
+        * ``return_hidden=True`` can return the pre-norm hidden state
+          the MTP head consumes (the upstream forward returns only the
+          post-norm output).
+        * ``n_confirmed`` is accepted on the signature for ABI parity
+          with PR #990 (the generator passes ``n_confirmed=1`` during
+          verify forwards). It is currently a no-op below this layer
+          — the GatedDeltaNet rollback patch is tracked separately.
+        """
 
         def __call__(  # type: ignore[override]
             self,
@@ -146,23 +466,53 @@ def inject_mtp_support(model: Any) -> bool:
             return_hidden: bool = False,
             n_confirmed: int = 0,
         ):
-            # Delegate to the inner ``Qwen3_5TextModel`` so the
-            # backbone runs unchanged, but route ``n_confirmed``
-            # through every layer (so GatedDeltaNet's
-            # ``_process_chunk`` split fires at the right boundary).
-            hidden = self.model(
-                inputs,
-                cache=cache,
-                input_embeddings=input_embeddings,
-                n_confirmed=n_confirmed,
-            )
-            normed = self.model.norm(hidden)
+            from mlx_lm.models.base import create_attention_mask, create_ssm_mask
+
+            inner_m = self.model
+            if input_embeddings is not None:
+                hidden_states = input_embeddings
+            else:
+                hidden_states = inner_m.embed_tokens(inputs)
+            if cache is None:
+                cache = [None] * len(inner_m.layers)
+
+            # Tag each ArraysCache (linear-attention) with the
+            # confirmed boundary so the patched GatedDeltaNet splits
+            # ``gated_delta_update`` into two chunks and writes
+            # ``(conv_snap, ssm_snap)`` to ``cache.rollback_state``.
+            # KVCache slots ignore the tag — their rollback is the
+            # existing ``c.trim(1)`` path. Tagged values are cleared
+            # in the ``finally`` block so a later non-MTP forward
+            # (mtp_forward, prefill, etc.) on the same cache list
+            # doesn't accidentally re-trigger a split.
+            if n_confirmed > 0:
+                for c in cache:
+                    if c is not None and hasattr(c, "rollback_state"):
+                        c.n_confirmed_for_mtp = n_confirmed
+
+            try:
+                fa_mask = create_attention_mask(hidden_states, cache[inner_m.fa_idx])
+                ssm_mask = create_ssm_mask(hidden_states, cache[inner_m.ssm_idx])
+                for layer, c in zip(inner_m.layers, cache):
+                    mask = ssm_mask if layer.is_linear else fa_mask
+                    hidden_states = layer(hidden_states, mask=mask, cache=c)
+            finally:
+                if n_confirmed > 0:
+                    for c in cache:
+                        if c is not None and hasattr(c, "n_confirmed_for_mtp"):
+                            c.n_confirmed_for_mtp = 0
+
+            # Return PRE-norm hidden so MTP can apply its own
+            # ``pre_fc_norm_hidden`` — matches PR #990's contract that
+            # ``mtp_forward(hidden, ...)`` consumes pre-norm hidden.
+            normed = inner_m.norm(hidden_states)
             if self.args.tie_word_embeddings:
-                out = self.model.embed_tokens.as_linear(normed)
+                out = inner_m.embed_tokens.as_linear(normed)
             else:
                 out = self.lm_head(normed)
+
             if return_hidden:
-                return out, hidden
+                return out, hidden_states
             return out
 
         def mtp_forward(
@@ -183,13 +533,26 @@ def inject_mtp_support(model: Any) -> bool:
             return self.lm_head(mtp_out)
 
         def make_mtp_cache(self):
-            """Return fresh ``KVCache`` entries — one per MTP layer."""
+            """Return fresh ``KVCache`` entries — one per MTP layer.
+
+            All MTP layers are full-attention by design (PR #990's
+            ``MTPDecoderLayer`` is hard-coded to ``self_attn =
+            Attention(...)`` — see ``vllm_mlx/spec_decode/mtp/head.py``
+            line 89-115). The MTP head deliberately does NOT include
+            ``GatedDeltaNet`` linear-attention layers (the backbone's
+            hybrid layout via ``args.full_attention_interval`` does not
+            apply here). So ``KVCache`` is correct for every MTP layer
+            — there are no ``ArraysCache`` slots to maintain on this
+            side of the rollback. The ``ArraysCache.rollback_state``
+            machinery installed by this PR exists to handle the
+            BACKBONE's linear-attention layers (where the GatedDeltaNet
+            patch lives), not the MTP head.
+            """
             from mlx_lm.models.cache import KVCache
 
             return [KVCache() for _ in self.mtp.layers]
 
     inner.__class__ = _Qwen3_5WithMTP
-    mx.eval(mtp.parameters())
     logger.info(
         "[mtp.inject] Patched %s with MTP surfaces "
         "(return_hidden, n_confirmed, mtp_forward, make_mtp_cache).",
