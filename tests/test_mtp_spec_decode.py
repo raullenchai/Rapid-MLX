@@ -34,8 +34,8 @@ mx = pytest.importorskip("mlx.core")
 
 @pytest.fixture(autouse=True)
 def _reset_mtp_module_state():
-    """Reset the MTP module-level singletons AND the MLX default stream
-    between tests.
+    """Reset the MTP module-level singletons AND ``mlx_lm.generate``'s
+    captured ``generation_stream`` between tests.
 
     Three pieces of cross-test state leak in the full pytest sweep and
     surface as the 7-failure transient cluster (PASS in isolation):
@@ -45,18 +45,39 @@ def _reset_mtp_module_state():
     * ``vllm_mlx.spec_decode.mtp.accept_counter._global_counter`` —
       monotonic counter singleton (monotonicity is a public contract);
       ``reset_global_counter_for_tests()`` is the explicit hatch.
-    * **MLX active default stream** — an earlier test in the sweep that
-      calls ``mx.new_stream(...)`` (or its ``__enter__``-based context)
-      can leave the active default stream pointing at a now-dead stream
-      ID. The MTP generator does ``mx.eval(toks)`` at line 420 of
-      ``generator.py``, which evaluates against the active stream; if
-      that stream is gone, ``RuntimeError: There is no Stream(gpu, N)
-      in current thread`` fires. Resetting via
-      ``mx.set_default_stream(mx.default_stream(mx.default_device()))``
-      pins the active stream to the canonical default and unblocks
-      ``mx.eval``. (Memory: ``new_stream`` is thread-bound; the safe
-      executor pattern is ``default_stream``.)
+    * **``mlx_lm.generate.generation_stream``** — the module-level
+      ``generation_stream`` is created at import time via
+      ``mx.new_thread_local_stream(...)`` (bound to the importer
+      thread) and is then re-assigned by every call to
+      ``engine_core._init_mlx_step_thread`` to ``mx.default_stream(
+      mx.default_device())``. Crucially — and contrary to the name —
+      ``mx.default_stream(device)`` returns the **current thread's**
+      default stream, NOT a process-wide stream. So when a preceding
+      sweep test (``test_batching_deterministic``, ``test_batching``,
+      ``test_mllm_*``) spins up a ``mlx-step`` worker executor with
+      ``initializer=_init_mlx_step_thread``, the worker's default
+      stream gets stamped onto ``mlx_lm.generate.generation_stream``.
+      When the worker shuts down and the pytest main thread later
+      runs ``mtp_generate_step``, its ``with mx.stream(
+      generation_stream): mx.eval(toks)`` block at
+      ``generator.py:420`` crashes with ``RuntimeError: There is no
+      Stream(gpu, N) in current thread.``
+
+      The canonical fix is to re-bind ``generation_stream`` to **this
+      thread's** default stream at fixture setup. This mirrors what
+      ``_init_mlx_step_thread`` does for the executor worker, just
+      pinned to the pytest main thread.
+
+    (Prior fix attempted ``mx.set_default_stream(mx.new_stream(
+    mx.default_device()))`` — that only resets the active default for
+    the current thread, NOT ``mlx_lm.generate.generation_stream`` which
+    is what ``mtp_generate_step`` actually uses. It also reintroduced
+    ``mx.new_stream`` — a thread-bound allocator the production code
+    deliberately avoids per
+    ``tests/test_mllm_cross_thread_stream_contract.py``.)
     """
+    import sys
+
     import mlx.core as mx
 
     from vllm_mlx.spec_decode.mtp.accept_counter import (
@@ -66,22 +87,23 @@ def _reset_mtp_module_state():
 
     _unpatch_for_tests()
     reset_global_counter_for_tests()
-    # Allocate a FRESH stream in the *current* (pytest main) thread and
-    # pin it as the active default. Some preceding sweep test
-    # (mllm-batch-generator etc.) creates an ``mx.new_stream`` in a
-    # worker thread and leaves the active default pointing at it.
-    # That stream exists in the worker thread, NOT the main thread, so
-    # MTP's ``mx.eval(toks)`` at generator.py:420 crashes with
-    # ``RuntimeError: There is no Stream(gpu, N) in current thread``.
-    # Allocating from this thread guarantees the active default is
-    # bound to a stream that THIS thread can see. (Memory:
-    # ``mx.new_stream`` is thread-bound — that's the bug we're routing
-    # around at the test layer.)
-    mx.set_default_stream(mx.new_stream(mx.default_device()))
+    # Re-bind ``mlx_lm.generate.generation_stream`` to the pytest main
+    # thread's default stream. Some preceding sweep test may have left
+    # it pointing at a worker thread's stream (see fixture docstring
+    # for the full chain). Importing ``mlx_lm.generate`` here is a
+    # no-op if a prior test already imported it; we look it up via
+    # ``sys.modules`` so we never import-trigger inside the fixture
+    # for tests that don't end up calling ``mtp_generate_step``.
+    import mlx_lm.generate  # noqa: F401 — ensure module exists in sys.modules
+    sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
+        mx.default_device()
+    )
     yield
     _unpatch_for_tests()
     reset_global_counter_for_tests()
-    mx.set_default_stream(mx.new_stream(mx.default_device()))
+    sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
+        mx.default_device()
+    )
 
 
 # ---------------------------------------------------------------------------
