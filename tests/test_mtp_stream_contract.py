@@ -297,7 +297,27 @@ def test_mtp_generate_step_survives_worker_pollution_via_fixture(
     on the pytest main thread, after a worker re-bound
     ``generation_stream``) and routes recovery through the fixture
     function under test. No inline reset.
+
+    Codex r2 BLOCKING defense — codex worried that importing
+    ``mtp_generate_step`` BEFORE pollution would let ``generator.py``
+    capture a pre-pollution stream and mask a broken fixture. The
+    concern is empirically false on the current production code path
+    because ``generator.py:226`` does
+    ``from mlx_lm.generate import generation_stream`` INSIDE
+    ``mtp_generate_step``'s body (function-scope, re-read on every
+    call) — verified by
+    ``test_mtp_generator_reads_generation_stream_at_call_time``
+    below. But we still order the imports defensively (pollute FIRST,
+    then import) so a future move of the import to module scope is
+    caught by THIS test rather than silently masking the regression.
     """
+    # Pollute BEFORE importing ``mtp_generate_step`` — defends against
+    # any future regression that moves the ``from mlx_lm.generate
+    # import generation_stream`` line out of the function body and
+    # into module scope (see paired
+    # ``test_mtp_generator_reads_generation_stream_at_call_time``).
+    _pollute_generation_stream_from_worker()
+
     from tests.test_mtp_spec_decode import _MockedQwen35Model
     from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
     from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
@@ -305,8 +325,6 @@ def test_mtp_generate_step_survives_worker_pollution_via_fixture(
     mod = __import__(test_module_name, fromlist=["_reset_mtp_module_state"])
     fixture_func = _unwrap_fixture_func(mod._reset_mtp_module_state)
 
-    # Pollute, then drive the fixture's setup.
-    _pollute_generation_stream_from_worker()
     gen = fixture_func()
     next(gen)
     try:
@@ -336,3 +354,60 @@ def test_mtp_generate_step_survives_worker_pollution_via_fixture(
             next(gen)
         except StopIteration:
             pass
+
+
+# ---------------------------------------------------------------------------
+# 3. Production-code contract — the function-scope import is load-bearing
+# ---------------------------------------------------------------------------
+
+
+def test_mtp_generator_reads_generation_stream_at_call_time():
+    """``mtp_generate_step`` MUST import ``generation_stream`` at
+    function-call time (function-scope import), not at module-import
+    time (module-scope ``from mlx_lm.generate import generation_stream``).
+
+    The fixture's restoration works by rebinding
+    ``sys.modules['mlx_lm.generate'].generation_stream``. That rebind
+    only flows through to ``mtp_generate_step`` if the function looks
+    up the attribute at every call. If a future refactor moves the
+    import to module scope, the rebind no longer affects already-
+    imported modules and the 7-test crash cluster comes back —
+    silently, because the fixture would still LOOK like it's
+    restoring the stream.
+
+    Codex r2 BLOCKING #1 flagged this exact concern. Pin it here so
+    the regression guard fires loudly if anyone hoists the import.
+
+    Implementation:
+
+    1. Module-scope: ``vllm_mlx.spec_decode.mtp.generator.generation_stream``
+       attribute MUST NOT exist.
+    2. Function source: ``mtp_generate_step``'s source MUST contain
+       a ``from mlx_lm.generate import generation_stream`` line.
+
+    Both checks are AST/source-text based — no runtime import order
+    games.
+    """
+    import vllm_mlx.spec_decode.mtp.generator as generator_mod
+
+    # 1. Module-scope check.
+    assert not hasattr(generator_mod, "generation_stream"), (
+        "`vllm_mlx.spec_decode.mtp.generator.generation_stream` exists "
+        "as a module-level attribute. This means someone moved the "
+        "`from mlx_lm.generate import generation_stream` import out of "
+        "`mtp_generate_step`'s body and into module scope. That breaks "
+        "the test fixture's restoration path because rebinding "
+        "`sys.modules['mlx_lm.generate'].generation_stream` no longer "
+        "affects already-imported modules. Move the import back inside "
+        "`mtp_generate_step` (see generator.py:226 baseline)."
+    )
+
+    # 2. Function-source check.
+    src = textwrap.dedent(inspect.getsource(generator_mod.mtp_generate_step))
+    assert "from mlx_lm.generate import generation_stream" in src, (
+        "`mtp_generate_step` no longer imports `generation_stream` at "
+        "call time. The function-scope import is load-bearing — the "
+        "test fixture's stream restoration relies on the function "
+        "looking up `mlx_lm.generate.generation_stream` afresh on every "
+        "call. See generator.py:226 baseline."
+    )
