@@ -46,7 +46,6 @@ from typing import Any
 import mlx.core as mx
 import pytest
 
-
 # ---------------------------------------------------------------------------
 # Upstream-contract pins — fail loudly when mlx-vlm drifts the signature.
 # ---------------------------------------------------------------------------

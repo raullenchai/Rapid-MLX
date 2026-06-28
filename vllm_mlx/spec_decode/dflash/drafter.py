@@ -346,9 +346,7 @@ class MlxVlmDFlashDriver:
 
         from vllm_mlx.speculative.dflash import load_runtime
 
-        logger.info(
-            "[dflash.driver] Loading target via mlx-vlm: %s", self.target_repo
-        )
+        logger.info("[dflash.driver] Loading target via mlx-vlm: %s", self.target_repo)
         self._target, self._processor = _mlx_vlm_load(self.target_repo)
         logger.info(
             "[dflash.driver] Loading DFlash drafter: %s (block_size=%r)",
@@ -417,7 +415,22 @@ class MlxVlmDFlashDriver:
         )
         if self.block_size is not None:
             gen_kwargs["draft_block_size"] = self.block_size
-        yield from stream_generate(self.target, self.processor, prompt, **gen_kwargs)
+        # NOTE: deliberately not ``yield from`` here — a bare ``yield
+        # from`` would leak the upstream generator on early caller
+        # break (e.g. the bench's ``if n >= max_tokens: break``). The
+        # try/finally ensures ``stream_generate``'s GeneratorExit
+        # cleanup runs and the drafter's KV cache is released before
+        # the next prompt starts. mlx-vlm transiently doubles GPU
+        # memory if a generator's KV state isn't released — without
+        # this close() the next prompt would race a half-freed cache.
+        upstream = stream_generate(self.target, self.processor, prompt, **gen_kwargs)
+        try:
+            for chunk in upstream:
+                yield chunk
+        finally:
+            close = getattr(upstream, "close", None)
+            if callable(close):
+                close()
 
     def accept_stats(self) -> dict[str, Any]:
         """Return per-request DFlash accept stats from the underlying drafter.

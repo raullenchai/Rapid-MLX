@@ -222,6 +222,23 @@ def _parse_args() -> argparse.Namespace:
 def _resolve_prompt_indices(args: argparse.Namespace) -> list[int]:
     if args.prompt_indices.strip():
         ix = [int(x) for x in args.prompt_indices.split(",") if x.strip()]
+        # Reject duplicates — pooling the same prompt twice silently
+        # weights it 2x in the summary and reports misleading
+        # speedup. The operator likely meant to type two different
+        # indices; surface the typo loudly instead.
+        seen: set[int] = set()
+        dupes: list[int] = []
+        for i in ix:
+            if i in seen:
+                dupes.append(i)
+            else:
+                seen.add(i)
+        if dupes:
+            raise ValueError(
+                f"--prompt-indices contains duplicate entries "
+                f"{sorted(set(dupes))}; each prompt should appear at most "
+                "once or the pooled speedup over-weights the repeated prompt."
+            )
         for i in ix:
             if i < 0 or i >= len(_BENCH_PROMPTS):
                 raise ValueError(
