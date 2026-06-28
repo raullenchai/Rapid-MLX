@@ -43,8 +43,12 @@ import sys
 import types
 from typing import Any
 
-import mlx.core as mx
 import pytest
+
+# ``mlx.core`` is an optional dep (in ``[dflash]`` extras). The
+# signature test below imports it lazily after ``importorskip`` so a
+# collect on a bare-Python env doesn't crash with ImportError before
+# pytest can skip.
 
 # ---------------------------------------------------------------------------
 # Upstream-contract pins — fail loudly when mlx-vlm drifts the signature.
@@ -62,6 +66,7 @@ def test_mlx_vlm_draft_block_signature_matches_0_6_3() -> None:
     update the rapid-mlx wrapper") instead of a flaky GPU crash.
     """
     pytest.importorskip("mlx_vlm")
+    mx = pytest.importorskip("mlx.core")
     from mlx_vlm.speculative.drafters.qwen3_dflash.dflash import DFlashDraftModel
 
     sig = inspect.signature(DFlashDraftModel.draft_block)
