@@ -52,6 +52,73 @@ _BYTE_LEVEL_MOJIBAKE_MARKERS: tuple[str, ...] = (
     "ĉ",  # 'ĉ' — GPT-2 byte-level encoding of tab
 )
 
+# SentencePiece metaspace marker — ``▁`` (U+2581). Hybrid SP/byte-level
+# tokenizers (Gemma 4, future GG-style models) encode word boundaries
+# with this character and rely on a ``Replace("▁", " ")`` decoder step
+# to surface them as ASCII spaces. Issue #950 (Gemma 4): swapping the
+# whole decoder for a bare GPT-2 ``ByteLevel`` drops that ``Replace``
+# step and corrupts EVERY space in model output. Gate 2 in
+# ``repair_byte_level_decoder`` detects this configuration and bails
+# before any mutation; gate 3 catches future hybrids that slip past
+# gate 2 by post-swap-decoding a spaced sample and reverting if any
+# ``▁`` leaks. Both gates use this marker.
+_METASPACE_MARKER = "▁"  # ▁
+
+
+def _decoder_has_metaspace_replace(decoder) -> bool:
+    """Return True if ``decoder`` contains a ``Replace("▁", " ")`` step.
+
+    SentencePiece-metaspace tokenizers (Gemma family, Llama base, ...)
+    encode word boundaries as ``▁`` (U+2581) in the vocab and rely on a
+    ``Replace("▁", " ")`` decoder step to surface them as ASCII spaces.
+    A ``Replace`` step may be the top-level decoder OR nested inside a
+    ``Sequence`` (e.g. Gemma 4 ships
+    ``Sequence([Replace("▁"," "), ByteFallback(), Fuse()])``).
+
+    Gate 2 of issue #950 (Gemma 4): when this returns True, the caller
+    must NOT swap the decoder out for a bare ``ByteLevel`` — that would
+    drop the ``Replace`` step and corrupt every space in model output.
+    Such tokenizers are HYBRIDS (SP metaspace + legit GPT-2-pretty byte
+    tokens) and the rare cosmetic byte-token issue PR #793 was solving
+    is not worth universal space corruption.
+
+    Inspects the Rust decoder via ``__getstate__`` which returns a JSON
+    bytes blob describing the decoder tree. We walk it for any
+    ``{"type": "Replace", "pattern": {"String": "▁"}, "content": " "}``
+    node (or ``Regex`` variant of the pattern). Returns False on any
+    introspection failure — a fail-open default that does not block
+    legitimate repairs on tokenizers whose state can't be parsed.
+    """
+    try:
+        state_raw = decoder.__getstate__()
+    except Exception:
+        return False
+    try:
+        state = json.loads(state_raw)
+    except Exception:
+        return False
+
+    def _walk(node) -> bool:
+        if not isinstance(node, dict):
+            return False
+        ntype = node.get("type")
+        if ntype == "Replace":
+            pattern = node.get("pattern") or {}
+            content = node.get("content", "")
+            # The ``pattern`` slot is a discriminated union — either
+            # ``{"String": "<lit>"}`` or ``{"Regex": "<re>"}``. We
+            # accept either if it matches the metaspace marker.
+            pattern_str = pattern.get("String") or pattern.get("Regex") or ""
+            if pattern_str == _METASPACE_MARKER and content == " ":
+                return True
+        if ntype == "Sequence":
+            for child in node.get("decoders", []) or []:
+                if _walk(child):
+                    return True
+        return False
+
+    return _walk(state)
+
 
 def repair_byte_level_decoder(tokenizer) -> bool:
     """Repair a mis-configured byte-level BPE decoder in place.
@@ -83,6 +150,24 @@ def repair_byte_level_decoder(tokenizer) -> bool:
     ``decode([id])`` still contains the marker, swap the live
     ``backend_tokenizer.decoder`` for a plain GPT-2 ``ByteLevel`` decoder.
     The vocab itself is correct — only the decoder side needs swapping.
+
+    **Two safety gates for HYBRID tokenizers (issue #950, Gemma 4):**
+
+    * **Gate 2** — short-circuit when the existing decoder already
+      contains a ``Replace("▁", " ")`` step. Such tokenizers are
+      SentencePiece-metaspace hybrids: vocab has both ``▁``-prefixed
+      space tokens (the dominant case) AND a few legit GPT-2-pretty
+      byte tokens (e.g. Gemma 4's id-240630 ``ĉ`` for tab). The byte
+      probe trips on those rare tokens, but swapping the decoder out
+      drops the ``Replace`` step and corrupts every space — a
+      universal cosmetic regression in exchange for a rare cosmetic
+      fix. Bail before any mutation.
+
+    * **Gate 3** — even after the swap clears the probe, decode a
+      spaced sample (``encode("a b c")`` → ``decode(...)``) and assert
+      no ``▁`` (U+2581) leaks. If it does, restore the original
+      decoder and return False. This catches any future hybrid that
+      slips past gate 2.
 
     Idempotent: a second call on a healthy tokenizer is a no-op.
 
@@ -122,6 +207,46 @@ def repair_byte_level_decoder(tokenizer) -> bool:
         # is healthy by construction.
         return False
     backend = inner.backend_tokenizer
+
+    # Gate 2 (issue #950): HYBRID tokenizers (SentencePiece metaspace +
+    # legit GPT-2-pretty byte tokens) — e.g. Gemma 4 — keep their
+    # existing decoder. Their vocab has both ``▁``-prefixed tokens AND
+    # a few legit byte tokens like ``ĉ`` (tab); the byte probe trips
+    # on the legit byte tokens, but swapping the decoder out drops the
+    # ``Replace("▁", " ")`` step and corrupts every space.
+    #
+    # PR #793's target — DeepSeek/Qwen with a mis-paired Llama SP
+    # decoder over a pure-GPT-2-byte-level vocab — ALSO carries a
+    # ``Replace("▁", " ")`` step in its (broken) decoder, so the decoder-
+    # shape check alone would over-fire. The disambiguator: pure-GPT-2-
+    # byte-level vocabs (DeepSeek distills, Qwen3) ENCODE spaces as
+    # ``Ġ`` and have NO ``▁`` in their vocab — so the (mis-applied)
+    # ``Replace`` step is a no-op and the swap is safe. Hybrid Gemma-4-
+    # style vocabs ENCODE spaces as ``▁`` — encoding "a b c" yields
+    # tokens containing ``▁``. We tell the two apart by encoding a
+    # known-spaced sample: if the resulting tokens contain ``▁``, the
+    # ``Replace`` step is LOAD-BEARING and we must not swap.
+    if _decoder_has_metaspace_replace(backend.decoder):
+        try:
+            spaced_ids = inner.encode("a b c", add_special_tokens=False)
+            spaced_tokens = inner.convert_ids_to_tokens(spaced_ids)
+        except Exception:
+            spaced_tokens = []
+        if any(
+            isinstance(t, str) and _METASPACE_MARKER in t for t in spaced_tokens
+        ):
+            # Hybrid tokenizer: vocab uses ``▁`` for spaces AND the
+            # decoder has the matching ``Replace`` step. Bail without
+            # mutation — the cosmetic byte-token quirk PR #793 was
+            # chasing is not worth corrupting every space.
+            logger.debug(
+                "repair_byte_level_decoder: skipping %s — decoder has "
+                "load-bearing Replace('%s', ' ') step (hybrid "
+                "SentencePiece-metaspace tokenizer)",
+                type(inner).__name__,
+                _METASPACE_MARKER,
+            )
+            return False
 
     # Find a probe id whose pretty token starts with a byte-level marker.
     # We scan the *entire* vocab (codex r2 NIT) — a 4 KB id prefix cap
@@ -207,6 +332,37 @@ def repair_byte_level_decoder(tokenizer) -> bool:
             probe_id,
             probe_pretty,
             verify,
+        )
+        return False
+
+    # Gate 3 (issue #950): even after the probe clears, decode a spaced
+    # sample and ensure no ``▁`` (U+2581) leaks. A hybrid tokenizer
+    # whose decoder didn't trip gate 2 — for instance one whose
+    # ``Replace`` step has a different shape we don't recognise, or one
+    # where the metaspace marker appears via a different decoder
+    # primitive — would here surface ``▁`` in the round-trip and we
+    # must revert so we never ship corrupted spaces to users.
+    try:
+        spaced_ids = inner.encode("a b c", add_special_tokens=False)
+        spaced_decoded = inner.decode(spaced_ids, skip_special_tokens=False)
+    except Exception:
+        spaced_decoded = ""
+    if _METASPACE_MARKER in spaced_decoded:
+        try:
+            backend.decoder = original_decoder
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "repair_byte_level_decoder: could not restore original "
+                "decoder on %s after spaced-sample verification failed: %s",
+                type(inner).__name__,
+                exc,
+            )
+        logger.warning(
+            "repair_byte_level_decoder: post-swap spaced-sample decode "
+            "leaked metaspace marker on %s (encode('a b c') -> %r); "
+            "restored original decoder",
+            type(inner).__name__,
+            spaced_decoded,
         )
         return False
 
