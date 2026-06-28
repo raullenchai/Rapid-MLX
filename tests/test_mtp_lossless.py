@@ -112,6 +112,7 @@ def _reset_mtp_module_state():
     # block inside ``mtp_generate_step`` runs against a stream this
     # thread can materialise.
     import mlx_lm.generate  # noqa: F401 — ensure module exists in sys.modules
+
     sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
         mx.default_device()
     )

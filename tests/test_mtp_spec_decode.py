@@ -95,6 +95,7 @@ def _reset_mtp_module_state():
     # ``sys.modules`` so we never import-trigger inside the fixture
     # for tests that don't end up calling ``mtp_generate_step``.
     import mlx_lm.generate  # noqa: F401 — ensure module exists in sys.modules
+
     sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
         mx.default_device()
     )

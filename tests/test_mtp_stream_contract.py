@@ -161,8 +161,18 @@ def test_mtp_fixture_does_not_call_thread_bound_stream_factories(
 
 
 # ---------------------------------------------------------------------------
-# 2. Dynamic contract — runtime cross-thread contamination + recovery
+# 2. Dynamic contract — drive the actual MTP autouse fixtures
 # ---------------------------------------------------------------------------
+#
+# These tests do NOT inline-reset ``generation_stream``. They directly drive
+# the fixture functions from ``test_mtp_spec_decode`` / ``test_mtp_lossless``
+# as generators, pollute ``generation_stream`` BEFORE invoking ``next(gen)``,
+# and then assert (a) the fixture's setup phase produced a stream this thread
+# can ``mx.eval`` against, and (b) ``mtp_generate_step`` runs cleanly under
+# the fixture-managed state. If the fixture's restoration logic is removed,
+# ``next(gen)`` would leave the polluted stream in place and the subsequent
+# assertions/``mtp_generate_step`` call would crash with the same
+# ``RuntimeError: There is no Stream(gpu, N)`` the operator surfaced.
 
 
 def _pollute_generation_stream_from_worker() -> None:
@@ -185,122 +195,144 @@ def _pollute_generation_stream_from_worker() -> None:
     t.join()
 
 
-def test_mtp_generate_step_survives_worker_thread_generation_stream_leak():
-    """End-to-end runtime contract: after a worker thread re-binds
-    ``mlx_lm.generate.generation_stream`` to its own default stream
-    (exactly the pollution path
-    ``test_batching_deterministic → _init_mlx_step_thread`` triggers in
-    the real pytest sweep), the MTP test fixture must restore
-    ``generation_stream`` to a main-thread-safe stream so
-    ``mtp_generate_step`` runs cleanly.
+def _unwrap_fixture_func(fixture_obj):
+    """Return the bare generator function from a pytest fixture marker.
 
-    Reproduction:
+    ``@pytest.fixture(autouse=True)`` wraps the underlying function in a
+    ``FixtureFunctionMarker``; the original generator function is
+    available via the ``__wrapped__`` attribute (when supported by the
+    pytest version) or via attribute walks. Falling through to the
+    object itself is the safe default if it's already callable as a
+    bare generator function.
+    """
+    candidate = fixture_obj
+    for attr in ("__wrapped__", "func", "fn"):
+        unwrapped = getattr(candidate, attr, None)
+        if callable(unwrapped):
+            candidate = unwrapped
+            break
+    return candidate
 
-    1. ``_pollute_generation_stream_from_worker`` rebinds
-       ``mlx_lm.generate.generation_stream`` from a worker thread.
-    2. The autouse ``_reset_mtp_module_state`` fixture (which this
-       module imports nothing of — it lives in ``tests/test_mtp_spec_decode``
-       only) does NOT run for this test, so we manually replicate the
-       fix's reset inline.
 
-    BEFORE the fix: ``mtp_generate_step`` crashes with
-    ``RuntimeError: There is no Stream(gpu, N) in current thread`` at
-    ``generator.py:420`` (``mx.eval(toks)``).
+def _assert_main_thread_can_eval_under_current_generation_stream() -> None:
+    """Asserts that ``mx.eval`` works on the main thread under the
+    currently-set ``mlx_lm.generate.generation_stream``. Raises the
+    underlying ``RuntimeError`` (``There is no Stream(gpu, N) in
+    current thread``) if it doesn't — exactly the bug we're guarding
+    against."""
+    stream = sys.modules["mlx_lm.generate"].generation_stream
+    with mx.stream(stream):
+        out = mx.array([1.0]) + mx.array([2.0])
+        mx.eval(out)
+        assert out.item() == 3.0
 
-    AFTER the fix: the inline reset re-binds ``generation_stream`` to
-    the current thread's default stream, ``mx.eval`` succeeds, and the
-    generator yields tokens normally.
+
+@pytest.mark.parametrize(
+    "test_module_name",
+    ["tests.test_mtp_spec_decode", "tests.test_mtp_lossless"],
+)
+def test_mtp_fixture_setup_restores_generation_stream_after_worker_pollution(
+    test_module_name: str,
+):
+    """End-to-end runtime contract: the actual autouse fixture's SETUP
+    phase must restore ``mlx_lm.generate.generation_stream`` to a
+    main-thread-safe stream, even when an earlier sweep test polluted
+    it from a worker thread.
+
+    We drive the fixture function directly (NOT via pytest's autouse
+    machinery) so the assertion observes the FIXTURE behavior. No
+    inline reset — if the fixture stops restoring ``generation_stream``,
+    ``next(gen)`` leaves the worker stream in place and the
+    ``mx.eval``-under-current-stream assertion raises.
+
+    Reproduces ``test_batching_deterministic → _init_mlx_step_thread``
+    triggers in the real pytest sweep.
+    """
+    mod = __import__(test_module_name, fromlist=["_reset_mtp_module_state"])
+    fixture_func = _unwrap_fixture_func(mod._reset_mtp_module_state)
+
+    # Pollute BEFORE the fixture's setup runs.
+    _pollute_generation_stream_from_worker()
+    polluted = sys.modules["mlx_lm.generate"].generation_stream
+
+    # Confirm the polluted state is broken from this thread.
+    with (
+        pytest.raises(RuntimeError, match="Stream"),
+        mx.stream(polluted),
+    ):
+        _ = (mx.array([1.0]) + mx.array([2.0])).item()
+
+    # Drive the fixture's setup phase.
+    gen = fixture_func()
+    next(gen)
+    try:
+        # ASSERTION UNDER TEST: the fixture's setup MUST have rebound
+        # ``generation_stream`` to a main-thread-safe stream. We do
+        # NOT inline-reset here — if the fixture stopped restoring,
+        # this assertion would raise the same RuntimeError the operator
+        # bug report names.
+        _assert_main_thread_can_eval_under_current_generation_stream()
+    finally:
+        # Run the fixture's teardown phase. ``next(gen)`` on a finished
+        # generator raises StopIteration; that's expected.
+        try:
+            next(gen)
+        except StopIteration:
+            pass
+
+
+@pytest.mark.parametrize(
+    "test_module_name",
+    ["tests.test_mtp_spec_decode", "tests.test_mtp_lossless"],
+)
+def test_mtp_generate_step_survives_worker_pollution_via_fixture(
+    test_module_name: str,
+):
+    """End-to-end: pollute ``generation_stream`` from a worker thread,
+    drive the MTP autouse fixture's setup, then run ``mtp_generate_step``
+    and assert it yields tokens cleanly.
+
+    This is the highest-confidence regression guard: it exercises the
+    EXACT code path that crashes in the failing sweep (``mtp_generate_step``
+    on the pytest main thread, after a worker re-bound
+    ``generation_stream``) and routes recovery through the fixture
+    function under test. No inline reset.
     """
     from tests.test_mtp_spec_decode import _MockedQwen35Model
     from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
     from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
 
-    # Step 1: pollute. This puts ``mlx_lm.generate.generation_stream``
-    # in a state where ``with mx.stream(generation_stream)`` from THIS
-    # thread will fail at the first ``mx.eval``.
+    mod = __import__(test_module_name, fromlist=["_reset_mtp_module_state"])
+    fixture_func = _unwrap_fixture_func(mod._reset_mtp_module_state)
+
+    # Pollute, then drive the fixture's setup.
     _pollute_generation_stream_from_worker()
-
-    # Step 2: apply the same reset the MTP fixtures now do. This is
-    # what's under test — the test would crash without it.
-    sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
-        mx.default_device()
-    )
-
-    # Step 3: drive a tiny mocked MTP generation. The mocked model
-    # mirrors the contract surface ``mtp_generate_step`` expects and
-    # makes the test deterministic + GPU-free.
-    backbone = [7, 11, 13]
-    mtp_script = [11]
-    model = _MockedQwen35Model(backbone, mtp_script)
-    counter = MTPAcceptCounter()
-    prompt = mx.array([1], dtype=mx.uint32)
-
-    emitted = list(
-        mtp_generate_step(
-            prompt,
-            model,
-            max_tokens=3,
-            accept_counter=counter,
+    gen = fixture_func()
+    next(gen)
+    try:
+        # ``mtp_generate_step`` runs against ``mlx_lm.generate.generation_stream``
+        # as set up by the fixture. If the fixture is broken, this crashes
+        # at generator.py:420 (``mx.eval(toks)``).
+        backbone = [7, 11, 13]
+        mtp_script = [11]
+        model = _MockedQwen35Model(backbone, mtp_script)
+        counter = MTPAcceptCounter()
+        prompt = mx.array([1], dtype=mx.uint32)
+        emitted = list(
+            mtp_generate_step(
+                prompt,
+                model,
+                max_tokens=3,
+                accept_counter=counter,
+            )
         )
-    )
-
-    # If we got here, ``mx.eval`` ran cleanly — the contract holds.
-    assert len(emitted) == 3, (
-        f"Generator did not yield the expected 3 tokens after stream-leak "
-        f"recovery. Got: {emitted}"
-    )
-
-
-def test_mtp_fixture_restores_generation_stream_after_worker_pollution():
-    """Inverse direction: pollute ``generation_stream`` from a worker
-    thread, then let the autouse fixture in this module rerun on the
-    next test — assert the binding is back to the main-thread default.
-
-    This pins the contract from the OTHER side: not just that
-    ``mtp_generate_step`` runs, but that the fixture's restoration
-    behaviour is observable (so a future refactor that drops the
-    restoration won't silently regress).
-    """
-    import mlx_lm.generate  # noqa: F401
-
-    # Reset to a known-good baseline.
-    sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
-        mx.default_device()
-    )
-    baseline = sys.modules["mlx_lm.generate"].generation_stream
-
-    # Pollute.
-    _pollute_generation_stream_from_worker()
-
-    # The polluted stream MUST be the worker thread's — confirmed by
-    # the fact that an ``mx.eval`` under it from this thread crashes.
-    polluted = sys.modules["mlx_lm.generate"].generation_stream
-    with pytest.raises(RuntimeError, match="Stream"):
-        with mx.stream(polluted):
-            _ = (mx.array([1.0]) + mx.array([2.0])).item()
-
-    # Reset (this is what the autouse fixture does at setup).
-    sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
-        mx.default_device()
-    )
-    restored = sys.modules["mlx_lm.generate"].generation_stream
-
-    # After reset, ``mx.eval`` under the restored stream MUST succeed
-    # from this thread.
-    with mx.stream(restored):
-        result = (mx.array([1.0]) + mx.array([2.0])).item()
-    assert result == 3.0, (
-        "After resetting `mlx_lm.generate.generation_stream` to "
-        "`mx.default_stream(mx.default_device())` on the current thread, "
-        "`mx.eval` under that stream must succeed. Got result "
-        f"{result!r} from a stream that the main thread cannot use."
-    )
-    # And the restored stream should differ from the polluted one
-    # (the polluted stream is bound to the worker thread; the restored
-    # one is bound to this thread). The baseline came from the same
-    # main thread call, so identity may or may not hold depending on
-    # how MLX caches the per-thread default — we don't assert that.
-    assert restored is not polluted or baseline is not polluted, (
-        "Reset did not change the binding away from the polluted "
-        "(worker-thread) stream."
-    )
+        assert len(emitted) == 3, (
+            "mtp_generate_step did not yield the expected 3 tokens — "
+            "the autouse fixture's stream restoration logic is likely "
+            f"broken. Got: {emitted}"
+        )
+    finally:
+        try:
+            next(gen)
+        except StopIteration:
+            pass
