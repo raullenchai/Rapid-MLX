@@ -1237,6 +1237,18 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             # validated by VALID_PFLASH_TIERS at JSON load — so a typo'd
             # value fails loud rather than misrouting.
             "pflash_tier",
+            # TurboQuant K8V4 default-on tier (issue #355, PR #952). One
+            # of VALID_TURBOQUANT_TIERS ({"unknown", "k8v4_verified"}).
+            # Same routing-vs-data tradeoff as ``pflash_tier``: the
+            # value flips the engine's no-flag ``--kv-cache-turboquant``
+            # default, but the value space is a closed enum, the
+            # explicit CLI flag still wins, and ``_coerce`` validates
+            # against ``VALID_TURBOQUANT_TIERS`` at JSON load so a
+            # typo'd value fails loud at startup rather than silently
+            # misrouting. New tier fields with this shape MUST be
+            # registered here AND in their VALID_*_TIERS enum — adding
+            # the dataclass field alone is what broke the gate in #952.
+            "turboquant_tier",
         }
     )
 
