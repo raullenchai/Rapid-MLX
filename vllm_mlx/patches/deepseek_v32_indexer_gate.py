@@ -341,16 +341,37 @@ def install_deepseek_v32_indexer_gate() -> None:
             )
             return
 
-        # Detect double-install across module reloads (e.g. pytest restart).
+        # Stash the upstream originals on the ds module itself the FIRST
+        # time we install. On a later install after a module reload, we
+        # retrieve them from there instead of re-capturing the currently-
+        # patched callables (which would self-reference and either
+        # infinite-loop in the wrappers or leak originals through a
+        # subsequent uninstall — codex finding #2 on PR #967 round 3).
+        if not getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False):
+            ds._RAPID_MLX_ORIG_ATTN_CALL = ds.DeepseekV32Attention.__call__
+            ds._RAPID_MLX_ORIG_DECODER_INIT = ds.DeepseekV32DecoderLayer.__init__
+            ds._RAPID_MLX_ORIG_INDEXER_CALL = ds.Indexer.__call__
+            ds._RAPID_MLX_ORIG_MODEL_CALL = ds.DeepseekV32Model.__call__
+            ds._RAPID_MLX_ORIG_FROM_DICT = glm.ModelArgs.from_dict
+
+        # Always copy from the stash into this module's globals so a later
+        # ``uninstall_deepseek_v32_indexer_gate()`` from a freshly-loaded
+        # module instance still restores the true upstream callables.
+        _orig_attn_call = ds._RAPID_MLX_ORIG_ATTN_CALL
+        _orig_decoder_init = ds._RAPID_MLX_ORIG_DECODER_INIT
+        _orig_indexer_call = ds._RAPID_MLX_ORIG_INDEXER_CALL
+        _orig_model_call = ds._RAPID_MLX_ORIG_MODEL_CALL
+        _orig_from_dict = ds._RAPID_MLX_ORIG_FROM_DICT
+
+        # Re-entry guard: if a previous module instance already installed
+        # the gate on the upstream classes, mark this instance as
+        # installed and return WITHOUT re-wrapping (otherwise the new
+        # wrappers would call the old wrappers as "originals" → infinite
+        # delegation). The captured originals above are the un-patched
+        # callables, so uninstall still works.
         if getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False):
             _INSTALLED = True
             return
-
-        _orig_attn_call = ds.DeepseekV32Attention.__call__
-        _orig_decoder_init = ds.DeepseekV32DecoderLayer.__init__
-        _orig_indexer_call = ds.Indexer.__call__
-        _orig_model_call = ds.DeepseekV32Model.__call__
-        _orig_from_dict = glm.ModelArgs.from_dict
 
         def _patched_decoder_init(self, config, layer_idx):
             _orig_decoder_init(self, config, layer_idx)
@@ -422,7 +443,35 @@ def install_deepseek_v32_indexer_gate() -> None:
             if pipeline_rank < pipeline_size - 1:
                 h = mx.distributed.recv_like(h, (pipeline_rank + 1))
 
+            # Initialize from the most-recent full layer in this rank's
+            # range that has run on a prior forward call (its indexer's
+            # ``_last_topk_indices`` slot persists). Critical for two
+            # cases (codex finding #1 on PR #967 round 3):
+            #   (a) pipeline-parallel rank with ``start_idx > 0`` whose
+            #       first owned layer is "shared" — there is no preceding
+            #       full layer in this rank's range to refresh from.
+            #   (b) a fresh decode call after prefill where the layer
+            #       loop's first iteration is the same full layer that
+            #       just ran the last time — without this seeding, that
+            #       full layer's own forward is the FIRST thing to refresh
+            #       ``last_topk_indices``, so any shared layer in
+            #       between would briefly see None.
+            # ``_last_topk_indices`` is only present after at least one
+            # full-layer forward; on the very first call it is None and
+            # leading shared layers correctly hit the dense fallback (the
+            # same path upstream Indexer takes when k.shape[2] <= index_topk).
             last_topk_indices = None
+            for i in range(self.num_layers - 1, -1, -1):
+                layer = self.layers[self.start_idx + i]
+                if layer is None:
+                    continue
+                indexer = getattr(layer.self_attn, "indexer", None)
+                if indexer is None:
+                    continue
+                last_topk_indices = getattr(indexer, "_last_topk_indices", None)
+                if last_topk_indices is not None:
+                    break
+
             for i in range(self.num_layers):
                 layer = self.layers[self.start_idx + i]
                 layer_idx = self.start_idx + i

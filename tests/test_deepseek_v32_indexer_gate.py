@@ -361,6 +361,136 @@ def test_gate_rejects_all_shared_indexer_types(repro_dir):
         load_model(repro)
 
 
+def test_decode_step_after_prefill_still_reuses_topk(repro_dir):
+    """Second forward call (decode) reuses topk from the prior forward.
+
+    Codex finding #1 on PR #967 round 3: the model-level wrapper reset
+    ``last_topk_indices`` to ``None`` on every ``__call__``, so the
+    leading shared layer in a decode step could briefly see ``None``
+    before the first full layer refreshed it. The current implementation
+    seeds ``last_topk_indices`` from the most-recent full layer's
+    persisted ``_last_topk_indices`` at the top of the loop. Pin it
+    here: after a prefill forward, a decode forward continues to hit
+    the REAP reuse path on every shared layer (no dense fallback).
+    """
+    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+
+    gate.install_deepseek_v32_indexer_gate()
+    repro = _forge_repro(repro_dir, ["full", "shared", "full", "shared"])
+
+    from mlx_lm.models.cache import make_prompt_cache
+    from mlx_lm.utils import load_model
+
+    model, _cfg = load_model(repro)
+
+    # Prefill
+    cache = make_prompt_cache(model)
+    gate._SHARED_LAYER_REUSE_COUNT = 0
+    gate._SHARED_LAYER_DENSE_FALLBACK_COUNT = 0
+    prefill = mx.array([[1, 2, 3, 4, 5]], dtype=mx.int32)
+    logits = model(prefill, cache=cache)
+    mx.eval(logits)
+    assert gate._SHARED_LAYER_REUSE_COUNT == 2
+    assert gate._SHARED_LAYER_DENSE_FALLBACK_COUNT == 0
+
+    # Decode step (single new token). The full layers refresh
+    # _last_topk_indices on each step; the seeded loop initial value
+    # also picks up the prior call's last full layer in case ``start_idx
+    # > 0`` (pipeline-parallel) or a future model layout puts a leading
+    # shared layer ahead of all full layers in this rank.
+    gate._SHARED_LAYER_REUSE_COUNT = 0
+    gate._SHARED_LAYER_DENSE_FALLBACK_COUNT = 0
+    next_tok = mx.array([[6]], dtype=mx.int32)
+    logits = model(next_tok, cache=cache)
+    mx.eval(logits)
+    assert gate._SHARED_LAYER_REUSE_COUNT == 2, (
+        "decode step lost topk reuse — "
+        f"reuse={gate._SHARED_LAYER_REUSE_COUNT}, "
+        f"dense_fallback={gate._SHARED_LAYER_DENSE_FALLBACK_COUNT}"
+    )
+    assert gate._SHARED_LAYER_DENSE_FALLBACK_COUNT == 0
+
+
+def test_uninstall_restores_originals_across_module_reload(repro_dir):
+    """``uninstall`` restores upstream callables even after a module-
+    reload-style re-install (codex finding #2, PR #967 round 3).
+
+    Sequence:
+    1. install + uninstall on a fresh module — captures originals,
+       restores them. Sanity.
+    2. install (no uninstall yet) — sets the upstream marker.
+    3. Simulate a module reload: clear THIS module's ``_orig_*``
+       globals + ``_INSTALLED`` flag, then call ``install`` again.
+       Bug behavior would leave ``_orig_*`` = None (because the
+       early-return path skips capture); fixed behavior copies the
+       originals from the upstream-stashed slot.
+    4. uninstall — must restore the un-patched callables.
+    5. Without the gate, loading a REAP config fails (proves the
+       un-patched callables really are back in place).
+    """
+    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+
+    # (1) install + uninstall round-trip — fresh state.
+    gate.uninstall_deepseek_v32_indexer_gate()  # be defensive
+    gate._INSTALLED = False
+    gate._orig_attn_call = None
+    gate._orig_decoder_init = None
+    gate._orig_indexer_call = None
+    gate._orig_model_call = None
+    gate._orig_from_dict = None
+    gate.install_deepseek_v32_indexer_gate()
+    assert gate._INSTALLED is True
+    assert gate._orig_attn_call is not None
+    gate.uninstall_deepseek_v32_indexer_gate()
+    assert gate._INSTALLED is False
+    assert gate._orig_attn_call is None
+
+    # (2) install (now the upstream module has the marker).
+    gate.install_deepseek_v32_indexer_gate()
+    from mlx_lm.models import deepseek_v32 as ds
+
+    assert getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False)
+
+    # (3) simulate module-reload: clear the module-side globals and
+    # call install again. The reload path must populate ``_orig_*``
+    # from the upstream stash, not capture the currently-patched
+    # callables.
+    gate._INSTALLED = False
+    gate._orig_attn_call = None
+    gate._orig_decoder_init = None
+    gate._orig_indexer_call = None
+    gate._orig_model_call = None
+    gate._orig_from_dict = None
+    gate.install_deepseek_v32_indexer_gate()
+    assert gate._INSTALLED is True
+    assert gate._orig_attn_call is not None, (
+        "install after module reload did not populate _orig_attn_call; "
+        "uninstall would silently leave the patches in place. Codex "
+        "PR #967 round-3 finding #2."
+    )
+
+    # (4) uninstall — should restore the true upstream callables.
+    gate.uninstall_deepseek_v32_indexer_gate()
+    assert gate._INSTALLED is False
+    assert not getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False)
+
+    # (5) Without the gate, loading a REAP config crashes with missing
+    # indexer keys — proves the upstream un-patched callables really
+    # are back in place.
+    repro = _forge_repro(repro_dir, ["full", "shared", "full", "shared"])
+
+    from mlx_lm.utils import load_model
+
+    with pytest.raises(ValueError) as exc_info:
+        load_model(repro)
+    msg = str(exc_info.value)
+    assert "Missing 10 parameters" in msg, msg
+    assert "indexer" in msg, msg
+
+    # Re-arm the gate for downstream tests.
+    gate.install_deepseek_v32_indexer_gate()
+
+
 def test_gate_rejects_shared_at_index_zero(repro_dir):
     """``["shared", "full", "full", "full"]`` is invalid — index-0 has no
     anchor to reuse.
