@@ -729,63 +729,71 @@ def test_install_fires_on_real_serve_import_path():
     ...`` — which triggered the install as an import side-effect of the
     test module itself, masking the production gap.
 
-    This test guards against a recurrence by:
-
-    1. Uninstalling the gate via the currently-loaded patch module.
-    2. Purging cached ``vllm_mlx`` modules from ``sys.modules`` so the
-       next import re-runs module-level code.
-    3. Importing a SERVE-path module (``vllm_mlx.utils.tokenizer``),
-       NOT the patch module directly.
-    4. Asserting the gate is installed afterwards.
+    Implementation: we run the import + assertion in a SUBPROCESS rather
+    than the pytest worker process. In-process module purging
+    (``del sys.modules["vllm_mlx..."]``) pollutes the test session because
+    later test modules hold bound references to the OLD class objects,
+    while a re-import installs NEW class objects — every subsequent
+    ``isinstance(obj, OldClass)`` check fails. The subprocess gets a
+    pristine interpreter, executes the import, prints OK/FAIL, and exits.
+    No state leaks back into the parent test session.
 
     A future refactor that moves the install hook back to a module not on
-    the serve import path would fail at step 4 with the same 285-missing-
-    keys symptom that broke real GLM-5.2 boot.
+    the serve import path would make the subprocess assertion fail with
+    the same 285-missing-keys symptom that broke real GLM-5.2 boot.
     """
+    import subprocess
     import sys
+    import textwrap
 
-    # (1) Cleanly uninstall via the currently-loaded patch module so the
-    # subsequent re-install in step 3 truly fires through the new code
-    # path rather than early-returning on a stale _INSTALLED=True flag.
-    from vllm_mlx.patches.deepseek_v32_indexer_gate import (
-        uninstall_deepseek_v32_indexer_gate,
+    # The subprocess does the canonical sequence: import a SERVE-path
+    # module (NOT the patch module directly), then check that the gate's
+    # ``_INSTALLED`` flag and the upstream-class marker are both set.
+    # Anything but "OK" on stdout (or a non-zero exit) is a failure.
+    script = textwrap.dedent(
+        """
+        import sys
+
+        # Import a SERVE-path module. Importing the patch module directly
+        # would mask the bug PR #967 was meant to prevent — the production
+        # boot path goes through utils.tokenizer, not the patch module.
+        import vllm_mlx.utils.tokenizer  # noqa: F401
+
+        # Read the post-install state via the patch module's public API
+        # plus the upstream-class marker (belt + suspenders).
+        from vllm_mlx.patches.deepseek_v32_indexer_gate import is_installed
+
+        if not is_installed():
+            print("FAIL: is_installed() returned False after serve-path import")
+            sys.exit(1)
+
+        from mlx_lm.models import deepseek_v32 as ds
+
+        if not getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False):
+            print(
+                "FAIL: upstream marker mlx_lm.models.deepseek_v32."
+                "_RAPID_MLX_INDEXER_GATE_INSTALLED is missing"
+            )
+            sys.exit(1)
+
+        print("OK")
+        """
+    ).strip()
+
+    result = subprocess.run(
+        [sys.executable, "-c", script],
+        capture_output=True,
+        text=True,
+        timeout=60,
     )
 
-    uninstall_deepseek_v32_indexer_gate()
-
-    # (2) Purge cached vllm_mlx imports so importing utils.tokenizer
-    # re-executes its module-level code (which is where the install
-    # hook now lives — PR #967 wiring fix).
-    for mod_name in list(sys.modules):
-        if mod_name.startswith("vllm_mlx"):
-            del sys.modules[mod_name]
-
-    # (3) Import a SERVE-path module. This MUST trigger the install
-    # hook — that is the whole point of the wiring fix. We deliberately
-    # do NOT touch ``vllm_mlx.patches.deepseek_v32_indexer_gate`` here;
-    # importing it directly would mask the bug.
-    import vllm_mlx.utils.tokenizer  # noqa: F401
-
-    # (4) Assert the gate is now installed. Re-import the patch module
-    # to read its post-install state — the freshly-loaded instance has
-    # ``_INSTALLED = True`` set by the install call that fired during
-    # the ``utils.tokenizer`` import.
-    from vllm_mlx.patches.deepseek_v32_indexer_gate import is_installed
-
-    assert is_installed(), (
-        "install hook did NOT fire when serve-path module "
-        "vllm_mlx.utils.tokenizer was imported — PR #967 wiring "
-        "regression. On real GLM-5.2 REAP weights this symptom is "
-        "'Missing 285 parameters ...indexer...' on boot."
+    assert result.returncode == 0, (
+        f"subprocess install-on-serve-path check failed (exit={result.returncode}).\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}\n"
+        "PR #967 wiring regression — on real GLM-5.2 REAP weights this "
+        "symptom is 'Missing 285 parameters ...indexer...' on boot."
     )
-
-    # Also verify the patch is live on the upstream class (defense-in-
-    # depth — guards against a regression where _INSTALLED gets flipped
-    # to True without the actual monkey-patches being applied).
-    from mlx_lm.models import deepseek_v32 as ds
-
-    assert getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False), (
-        "patch module flag says installed, but the upstream marker on "
-        "mlx_lm.models.deepseek_v32 is missing — the monkey-patch was "
-        "not actually applied"
+    assert "OK" in result.stdout, (
+        f"subprocess did not print OK marker. stdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
     )
