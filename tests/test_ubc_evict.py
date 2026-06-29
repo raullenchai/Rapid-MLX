@@ -194,6 +194,60 @@ def test_ubc_evict_paths_noop_on_linux(monkeypatch, tmp_path):
 # ---------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="munmap simulation needs Darwin libc"
+)
+def test_ubc_evict_munmap_failure_is_not_reported_as_success(tmp_path, caplog):
+    """pr_validate codex round 2 BLOCKING: a munmap failure must NOT publish
+    the file size as evicted — that would be a false success metric AND
+    leak the mapping in our address space. We simulate the failure by
+    swapping the libc handle for a stub whose munmap returns -1.
+    """
+    payload = tmp_path / "p.bin"
+    subprocess.run(
+        ["dd", "if=/dev/urandom", f"of={payload}", "bs=1m", "count=1", "status=none"],
+        check=True,
+    )
+
+    real_libc = ubc_module._get_libc()
+    assert real_libc is not None
+
+    class _StubLibc:
+        # Pass mmap + msync through to the real libc; force munmap to fail.
+        def __init__(self, real):
+            self.mmap = real.mmap
+            self.msync = real.msync
+
+        def munmap(self, addr, size):  # noqa: ARG002 — match libc signature
+            ctypes.set_errno(22)  # EINVAL
+            return -1
+
+    import ctypes
+
+    monkey_libc = _StubLibc(real_libc)
+
+    # Patch _get_libc so the inner ubc_evict picks up the stub on this call.
+    # The lazy-loaded module-level _libc has the same handle, but patching
+    # the getter is enough because the function calls it on every entry.
+    with caplog.at_level(logging.WARNING, logger=ubc_module.logger.name):
+        # Use monkeypatch via attribute replacement.
+        ubc_module._libc = monkey_libc  # type: ignore[assignment]
+        try:
+            result = ubc_evict(str(payload))
+        finally:
+            ubc_module._libc = real_libc  # restore
+
+    assert result == 0, (
+        "munmap failure must NOT report file size as evicted "
+        "(codex round 2 BLOCKING — would publish a false success metric "
+        "and leak the mapping)"
+    )
+    snap = snapshot()
+    assert snap["ubc_evict_failed_total"] == 1
+    assert snap["ubc_evicted_bytes_total"] == 0
+    assert any("munmap" in r.message for r in caplog.records)
+
+
 @pytest.mark.skipif(sys.platform != "darwin", reason="error path checks libc on Darwin")
 def test_ubc_evict_missing_file_returns_zero(tmp_path, caplog):
     """Missing file: returns 0, logs WARNING, counts as failure."""

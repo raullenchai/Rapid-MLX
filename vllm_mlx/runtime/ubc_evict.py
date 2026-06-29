@@ -261,6 +261,8 @@ def ubc_evict(path: str) -> int:
             )
             _bump_counter(0, failed=True)
             return 0
+        msync_ok = False
+        munmap_ok = False
         try:
             ctypes.set_errno(0)
             rc = libc.msync(addr, size, _MS_INVALIDATE)
@@ -273,13 +275,15 @@ def ubc_evict(path: str) -> int:
                     err,
                     os.strerror(err) if err else "unknown",
                 )
-                _bump_counter(0, failed=True)
-                return 0
+            else:
+                msync_ok = True
         finally:
-            # Always release the mapping even if msync failed. pr_validate
-            # codex NIT #2: check the return code so a cleanup leak is at
-            # least visible in the logs (the helper handles large mappings,
-            # so a silent munmap failure would be invisible RSS pressure).
+            # Always attempt to release the mapping, even if msync failed.
+            # pr_validate codex BLOCKING (round 2): a munmap failure leaves
+            # the mapping resident in our address space, so we MUST NOT
+            # report the file size as evicted — that would publish a false
+            # success metric AND leak a potentially GB-sized mapping. Treat
+            # munmap failure as a hard failure even when msync succeeded.
             ctypes.set_errno(0)
             munmap_rc = libc.munmap(addr, size)
             if munmap_rc != 0:
@@ -291,12 +295,17 @@ def ubc_evict(path: str) -> int:
                     err,
                     os.strerror(err) if err else "unknown",
                 )
+            else:
+                munmap_ok = True
     finally:
         try:
             os.close(fd)
         except OSError:  # pragma: no cover — defensive
             pass
 
+    if not (msync_ok and munmap_ok):
+        _bump_counter(0, failed=True)
+        return 0
     _bump_counter(size, failed=False)
     return size
 
