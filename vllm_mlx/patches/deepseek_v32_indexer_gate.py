@@ -457,6 +457,23 @@ def install_deepseek_v32_indexer_gate() -> None:
                 # upstream verbatim.
                 return _orig_model_call(self, x, cache)
 
+            # Validate the local layer slice before entering the REAP
+            # path: a malformed pipeline shard whose ``num_layers``
+            # extends past ``len(self.layers)`` would crash on
+            # ``self.layers[self.start_idx + i]`` deep inside the loop
+            # with an opaque ``IndexError``. Fail with a clear
+            # actionable error before any forward work happens (codex
+            # finding #1 on PR #967 round 7).
+            if self.start_idx + self.num_layers > len(self.layers):
+                raise ValueError(
+                    "deepseek_v32_indexer_gate: pipeline shard "
+                    f"start_idx={self.start_idx}, num_layers="
+                    f"{self.num_layers} extends past local layer list "
+                    f"length {len(self.layers)}. Each rank's "
+                    "[start_idx, start_idx + num_layers) range must fit "
+                    "entirely within self.layers."
+                )
+
             # Reject pipeline-parallel shards whose first locally-iterated
             # layer is ``"shared"``: the REAP reuse contract requires the
             # most-recent ``"full"`` layer's topk indices, which on such a
@@ -510,15 +527,18 @@ def install_deepseek_v32_indexer_gate() -> None:
             # positions computed at a different query/cache length and
             # applying them to a fresh decode step would be a stale
             # selection (codex finding #1 on PR #967 round 5; supersedes
-            # the round-3 seed attempt). When this rank's iteration
-            # window starts with a ``"shared"`` layer (e.g. a pipeline-
-            # parallel slice without a local full-layer anchor), those
-            # leading shared layers correctly hit the dense fallback —
-            # the same path the upstream Indexer takes when
-            # ``k.shape[2] <= index_topk``. Cross-rank communication of
-            # the current full layer's topk would be the
-            # architecturally-correct remedy if needed in the future;
-            # that is out of scope for the surgical D1 fix here.
+            # the round-3 seed attempt). The case where this rank's
+            # iteration window would start with a ``"shared"`` layer
+            # (e.g. a pipeline-parallel slice without a local full-layer
+            # anchor) is rejected by the explicit ``ValueError`` raised
+            # before this point — so when we reach this line, the loop
+            # is guaranteed to encounter a ``"full"`` layer before any
+            # ``"shared"`` layer, and the initial ``None`` value is
+            # never consumed by a shared layer. Cross-rank communication
+            # of the current full layer's topk would be the
+            # architecturally-correct remedy for the rejected case if
+            # ever needed; that is out of scope for the surgical D1 fix
+            # here.
             last_topk_indices = None
 
             for i in range(self.num_layers):

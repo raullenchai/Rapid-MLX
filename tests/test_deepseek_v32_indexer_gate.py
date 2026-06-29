@@ -536,6 +536,38 @@ def test_reuse_path_runs_for_run_of_consecutive_shared_layers(repro_dir):
     assert gate._SHARED_LAYER_DENSE_FALLBACK_COUNT == 0
 
 
+def test_pp_shard_with_oversized_num_layers_raises_clear_error(repro_dir):
+    """Pipeline-parallel shard whose ``num_layers`` extends past the
+    local ``self.layers`` list raises a clear ``ValueError`` before
+    entering the layer loop, instead of a deep opaque ``IndexError``.
+
+    Codex finding #1 on PR #967 round 7: the patched model loop
+    indexes ``self.layers[self.start_idx + i]`` for ``i in
+    range(self.num_layers)`` unconditionally. A malformed shard
+    where ``start_idx + num_layers > len(self.layers)`` would crash
+    deep inside the loop with no actionable error message. Add a
+    pre-loop bounds check.
+    """
+    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+
+    gate.install_deepseek_v32_indexer_gate()
+    repro = _forge_repro(repro_dir, ["full", "shared", "full", "shared"])
+
+    from mlx_lm.utils import load_model
+
+    model, _cfg = load_model(repro)
+    inner = model.model
+
+    # Simulate a malformed PP shard: start_idx legitimate, but
+    # num_layers exceeds local layer list length.
+    inner.start_idx = 2
+    inner.num_layers = 5  # 2 + 5 = 7 > len(layers)=4
+
+    prompt = mx.array([[1, 2, 3]], dtype=mx.int32)
+    with pytest.raises(ValueError, match="extends past local layer list"):
+        model(prompt)
+
+
 def test_pp_shard_starting_on_shared_layer_raises_clear_error(repro_dir):
     """Pipeline-parallel shard whose first locally-iterated layer is
     ``"shared"`` raises a clear ``ValueError`` instead of silently
