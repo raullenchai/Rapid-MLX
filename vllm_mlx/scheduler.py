@@ -4647,7 +4647,7 @@ class Scheduler:
         # method directly on ``batch_gen.active_batch``. Walking both
         # surfaces keeps this hook portable across the mlx-lm versions
         # rapid-mlx supports.
-        batch = getattr(self, "batch_gen", None)
+        batch = getattr(self, "batch_generator", None)
         if batch is None:
             return
         gen_batch = getattr(batch, "_generation_batch", None) or getattr(
