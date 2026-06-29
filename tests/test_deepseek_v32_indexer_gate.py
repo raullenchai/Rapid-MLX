@@ -423,28 +423,26 @@ def test_decode_step_after_prefill_keeps_in_call_reuse(repro_dir):
 
 
 def test_empty_local_layer_slice_delegates_to_upstream(repro_dir):
-    """Pipeline-parallel layout with an empty (or out-of-range) local
-    layer slice safely delegates to upstream instead of crashing.
+    """Pipeline-parallel layout with an out-of-range ``start_idx``
+    safely delegates to ``_orig_model_call`` instead of crashing with
+    ``IndexError``.
 
     Codex finding #3 on PR #967 round 5: the patched ``Model.__call__``
-    used to dereference ``self.layers[self.start_idx]`` unconditionally,
-    which crashes when ``self.start_idx >= len(self.layers)`` (e.g. a
-    sharded slice that owns no layers). Fix: bounds-check before
-    inspecting the local layer's config; delegate to ``_orig_model_call``
-    when the slice is empty.
+    used to dereference ``self.layers[self.start_idx]`` unconditionally.
 
-    We exercise the delegation path by loading a non-REAP config (so
-    ``indexer_types`` is None and the patched call would delegate
-    anyway), then artificially setting ``start_idx`` out of range. The
-    test passes if no IndexError is raised; the assertion that delegation
-    actually fires lives in the unit logic — if the bounds-check were
-    removed, the forward would raise IndexError before reaching
-    ``_orig_model_call``.
+    Codex finding #1 on PR #967 round 6: a prior version of this test
+    only reimplemented the bounds-check inline and never invoked the
+    patched call, so removing the guard would not have caused it to
+    fail. This rewrite monkey-patches ``_orig_model_call`` to a
+    sentinel-recording stub and invokes the patched call on a model
+    whose ``start_idx`` is out of range, then asserts the sentinel was
+    reached. If the bounds-check guard were removed, the patched call
+    would raise ``IndexError`` BEFORE the sentinel is recorded.
     """
     from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
 
     gate.install_deepseek_v32_indexer_gate()
-    # Non-REAP config — upstream Indexer-bearing path is fine.
+    # Non-REAP config — the orig path is the upstream Indexer-bearing one.
     repro = _forge_repro(repro_dir, indexer_types=None)
 
     from mlx_lm.utils import load_model
@@ -452,30 +450,122 @@ def test_empty_local_layer_slice_delegates_to_upstream(repro_dir):
     model, _cfg = load_model(repro)
     inner = model.model
 
-    # Force the bounds-check branch: start_idx >= len(layers) means no
-    # local layer to inspect. The patched call must NOT raise; it must
-    # delegate to upstream (which will run with whatever shape it has).
-    inner.start_idx = len(inner.layers)  # out of range
-    # We do NOT actually run the upstream forward here — it would still
-    # try to iterate ``self.num_layers`` layers and access cache slots;
-    # that's an upstream concern outside this patch's responsibility.
-    # The narrow guarantee this test pins is that the patched code's
-    # config-inspection branch handles the empty slice without an
-    # IndexError before delegation.
-    types = None
-    if (
-        inner.layers
-        and 0 <= inner.start_idx < len(inner.layers)
-        and inner.layers[inner.start_idx] is not None
-    ):
-        cfg = getattr(inner.layers[inner.start_idx].self_attn, "config", None)
-        if cfg is not None:
-            types = getattr(cfg, "indexer_types", None)
-    assert types is None, (
-        "bounds-checked config inspection should yield types=None for an "
-        "out-of-range start_idx; instead got a non-None value, indicating "
-        "the empty-slice guard did not engage."
+    # Out-of-range start_idx — no local layer to inspect.
+    inner.start_idx = len(inner.layers)
+
+    # Stub ``_orig_model_call`` so we can detect that delegation
+    # actually happened (rather than letting the upstream forward
+    # execute, which would still try to iterate a now-bogus slice).
+    sentinel = {"reached": False, "args": None}
+
+    def _stub_orig(self, x, cache=None):
+        sentinel["reached"] = True
+        sentinel["args"] = (x.shape, cache is None)
+        return mx.zeros((x.shape[0], x.shape[1], 64), dtype=mx.float32)
+
+    saved_orig = gate._orig_model_call
+    try:
+        gate._orig_model_call = _stub_orig
+        # Invoke the actual patched call. Bug behavior (no bounds check)
+        # would raise IndexError on ``self.layers[self.start_idx]`` before
+        # reaching the delegation. Fixed behavior delegates cleanly.
+        from mlx_lm.models import deepseek_v32 as ds
+
+        # The patched method is bound at install time and stored on the
+        # class. Call it directly so we're definitely exercising the
+        # patched ``__call__``.
+        x = mx.array([[1, 2, 3]], dtype=mx.int32)
+        _ = ds.DeepseekV32Model.__call__(inner, x, cache=None)
+    finally:
+        gate._orig_model_call = saved_orig
+
+    assert sentinel["reached"], (
+        "_patched_model_call should have delegated to _orig_model_call "
+        "when start_idx is out of range; sentinel was never recorded. "
+        "Either the bounds-check guard fired incorrectly or the patched "
+        "call short-circuited before reaching delegation."
     )
+
+
+def test_reuse_path_runs_for_run_of_consecutive_shared_layers(repro_dir):
+    """Layout with multiple consecutive shared layers after one full
+    anchor — the production-shaped pattern in GLM-5.2 REAP configs.
+
+    Codex finding #3 on PR #967 round 6: prior coverage only used the
+    alternating ``["full","shared","full","shared"]`` pattern, so a
+    regression that broke reuse for the second or third consecutive
+    shared layer would not be caught. The actual GLM-5.2 base config
+    has runs like ``["full","full","full","shared","shared","shared",
+    "full","shared",...]``.
+
+    Pin the in-call reuse semantic on a ``["full","shared","shared",
+    "shared"]`` layout: a SINGLE prefill forward must drive every one
+    of the three consecutive shared layers through the REAP reuse
+    path (not dense fallback), because each shared layer's
+    ``last_topk_indices`` carries forward across the layer loop
+    until the next full layer would refresh it.
+    """
+    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+
+    gate.install_deepseek_v32_indexer_gate()
+    repro = _forge_repro(repro_dir, ["full", "shared", "shared", "shared"])
+
+    from mlx_lm.utils import load_model
+
+    model, _cfg = load_model(repro)
+    layers = model.model.layers
+    # Only layer 0 retains an Indexer; layers 1,2,3 are shared.
+    assert layers[0].self_attn.indexer is not None
+    for i in (1, 2, 3):
+        assert layers[i].self_attn.indexer is None, f"layer {i} should be shared"
+
+    # Forward — every shared layer must take the REAP reuse path.
+    gate._SHARED_LAYER_REUSE_COUNT = 0
+    gate._SHARED_LAYER_DENSE_FALLBACK_COUNT = 0
+    prompt = mx.array([[1, 2, 3, 4, 5]], dtype=mx.int32)
+    out = model(prompt)
+    mx.eval(out)
+    assert gate._SHARED_LAYER_REUSE_COUNT == 3, (
+        "all 3 consecutive shared layers must consume the layer-0 full "
+        f"anchor's topk — reuse={gate._SHARED_LAYER_REUSE_COUNT}, "
+        f"dense_fallback={gate._SHARED_LAYER_DENSE_FALLBACK_COUNT}. The "
+        "layer loop must carry last_topk_indices across consecutive "
+        "shared layers without resetting it (codex PR #967 round-6 "
+        "finding)."
+    )
+    assert gate._SHARED_LAYER_DENSE_FALLBACK_COUNT == 0
+
+
+def test_pp_shard_starting_on_shared_layer_raises_clear_error(repro_dir):
+    """Pipeline-parallel shard whose first locally-iterated layer is
+    ``"shared"`` raises a clear ``ValueError`` instead of silently
+    falling back to dense attention.
+
+    Codex finding #2 on PR #967 round 6: previously such a shard
+    would silently take the dense fallback on its leading shared
+    layers, changing inference semantics relative to the published
+    REAP contract. Fail fast with a clear error message instead;
+    cross-rank communication of the current full layer's topk is
+    the architecturally-correct remedy if ever needed, but that's
+    out of scope for the surgical D1 fix.
+    """
+    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+
+    gate.install_deepseek_v32_indexer_gate()
+    repro = _forge_repro(repro_dir, ["full", "shared", "shared", "shared"])
+
+    from mlx_lm.utils import load_model
+
+    model, _cfg = load_model(repro)
+    inner = model.model
+
+    # Simulate a PP rank that starts mid-model on a shared layer.
+    inner.start_idx = 1
+    inner.num_layers = 3
+
+    prompt = mx.array([[1, 2, 3]], dtype=mx.int32)
+    with pytest.raises(ValueError, match="pipeline-parallel shard"):
+        model(prompt)
 
 
 def test_uninstall_restores_originals_across_module_reload(repro_dir):

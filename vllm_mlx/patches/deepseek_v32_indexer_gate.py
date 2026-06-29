@@ -457,6 +457,36 @@ def install_deepseek_v32_indexer_gate() -> None:
                 # upstream verbatim.
                 return _orig_model_call(self, x, cache)
 
+            # Reject pipeline-parallel shards whose first locally-iterated
+            # layer is ``"shared"``: the REAP reuse contract requires the
+            # most-recent ``"full"`` layer's topk indices, which on such a
+            # shard would have to be communicated from a prior pipeline
+            # rank. The surgical D1 fix here does not implement cross-rank
+            # communication of indexer state, so silently dense-fallback
+            # on the leading shared layers would change inference
+            # semantics relative to the published REAP contract. Fail
+            # clearly instead (codex finding #2 on PR #967 round 6).
+            # Single-rank usage is unaffected because ``_validate_anchor``
+            # already requires ``indexer_types[0] == "full"`` at model
+            # construction, so layer 0 (= start_idx 0) is never shared.
+            if (
+                0 <= self.start_idx < len(self.layers)
+                and self.layers[self.start_idx] is not None
+                and _resolve_mode(types, self.start_idx) == "shared"
+            ):
+                raise ValueError(
+                    "deepseek_v32_indexer_gate: pipeline-parallel shard "
+                    f"starting at layer {self.start_idx} is 'shared' "
+                    "(no local full-layer anchor for the REAP reuse "
+                    "contract). This surgical D1 fix does not implement "
+                    "cross-rank communication of the indexer's "
+                    "topk_indices; running this shard would silently "
+                    "fall back to dense MLA attention and change "
+                    "inference semantics. Re-shard so each rank starts "
+                    "on a 'full' layer, or extend the indexer gate with "
+                    "inter-rank topk communication."
+                )
+
             # Replica of upstream ``DeepseekV32Model.__call__`` with topk
             # threading inserted into the layer loop.
             h = self.embed_tokens(x)
