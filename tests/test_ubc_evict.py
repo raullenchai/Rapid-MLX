@@ -68,14 +68,10 @@ def _vm_stat_pages_free() -> int:
 
 
 def _page_size() -> int:
-    return int(
-        subprocess.run(
-            ["sysctl", "-n", "hw.pagesize"],
-            capture_output=True,
-            text=True,
-            check=True,
-        ).stdout.strip()
-    )
+    """Return the kernel page size (16 KiB on Apple Silicon, 4 KiB on x86)."""
+    # ``os.sysconf("SC_PAGE_SIZE")`` works in unprivileged sandboxes
+    # where the ``sysctl(8)`` wrapper is denied (codex round 1 NIT #3).
+    return os.sysconf("SC_PAGE_SIZE")
 
 
 # ---------------------------------------------------------------------
@@ -379,3 +375,28 @@ def test_post_load_ubc_evict_skips_when_no_shards(monkeypatch, tmp_path):
     # Tmp dir has no .safetensors.
     tk._post_load_ubc_evict("fake/model")
     assert called == []
+
+
+def test_post_load_ubc_evict_does_not_resolve_path_on_non_darwin(monkeypatch):
+    """Codex round 1 BLOCKING: the platform gate must short-circuit BEFORE
+    ``_resolve_model_path`` runs. Otherwise Linux/Windows callers would pay
+    for ``huggingface_hub.snapshot_download`` on a cache miss, inside the
+    load-path ``finally`` clause, for a feature that has no effect on those
+    platforms.
+    """
+    from vllm_mlx.utils import tokenizer as tk
+
+    resolved = []
+
+    def _explode_if_called(_):  # pragma: no cover — asserted not-invoked below
+        resolved.append(True)
+        raise AssertionError(
+            "_resolve_model_path must not run on non-Darwin (codex round 1 BLOCKING)"
+        )
+
+    monkeypatch.setattr(sys, "platform", "linux")
+    monkeypatch.setattr(tk, "_resolve_model_path", _explode_if_called)
+
+    # Must NOT raise (the gate short-circuits before the explode).
+    tk._post_load_ubc_evict("fake/model")
+    assert resolved == []

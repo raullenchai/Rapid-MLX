@@ -618,19 +618,40 @@ def _post_load_ubc_evict(model_name: str) -> None:
     ``msync(MS_INVALIDATE)`` releases those pages back to the free pool.
 
     No-op on non-Darwin platforms (see :mod:`vllm_mlx.runtime.ubc_evict`).
+    The platform gate is at the **TOP** of the function — codex round 1
+    BLOCKING — so Linux/Windows callers don't pay for path resolution
+    (which on a cache-miss could trigger a Hub ``snapshot_download``).
+
     Wrapped in a broad try/except: a failure here MUST NEVER block a
     model from loading. The eviction is opportunistic memory cleanup,
     not a correctness gate.
     """
+    # Platform gate FIRST — every line below this point is Darwin-only
+    # bookkeeping. Codex round 1 caught that without this early return,
+    # Linux/Windows callers paid for ``_resolve_model_path``, which can
+    # invoke ``huggingface_hub.snapshot_download`` on a cache miss —
+    # a potentially expensive side effect inside the load-path
+    # ``finally`` clause for a feature that has no effect on those
+    # platforms.
+    import sys as _sys
+
+    if _sys.platform != "darwin":
+        return
+
     try:
         from ..runtime.ubc_evict import ubc_evict_paths
 
         model_path = _resolve_model_path(model_name)
         if model_path is None:
             return
-        # Enumerate every safetensors shard. ``rglob`` covers a top-level
-        # tokenizer/model.safetensors AND any nested shards (e.g.
-        # MTP weights under ``model-mtp.safetensors``).
+        # Enumerate every safetensors shard at the snapshot root.
+        # Top-level ``glob`` (not ``rglob``) — every mlx-community
+        # checkpoint we serve keeps safetensors at the snapshot root
+        # alongside ``config.json`` / ``tokenizer.json``. Nested
+        # safetensors would be a vendor-specific repo layout we have
+        # not seen, and walking subdirectories on a HF snapshot risks
+        # picking up unrelated payloads (e.g. variant siblings the HF
+        # client materialised but the loader didn't bind).
         shards = sorted(str(p) for p in model_path.glob("*.safetensors"))
         if not shards:
             return
