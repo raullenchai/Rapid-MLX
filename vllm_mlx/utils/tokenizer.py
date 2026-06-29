@@ -606,6 +606,39 @@ def _is_vendored_arch_model(model_name: str) -> bool:
         return False
 
 
+def _post_load_ubc_evict(model_name: str) -> None:
+    """Defect 4: evict the UBC mirror of safetensors shards on Darwin.
+
+    Called from the public ``load_model_with_fallback`` after the
+    underlying loader returns successfully. macOS keeps mmap'd
+    safetensors pages in the Unified Buffer Cache after ``munmap`` +
+    ``close``, which doubles the effective memory pressure of a large
+    MoE load (mmap mirror + materialised UMA tensors) and trips Jetsam
+    on GLM-5.2 / DeepSeek-V3.2 boots. Evicting the mirror via
+    ``msync(MS_INVALIDATE)`` releases those pages back to the free pool.
+
+    No-op on non-Darwin platforms (see :mod:`vllm_mlx.runtime.ubc_evict`).
+    Wrapped in a broad try/except: a failure here MUST NEVER block a
+    model from loading. The eviction is opportunistic memory cleanup,
+    not a correctness gate.
+    """
+    try:
+        from ..runtime.ubc_evict import ubc_evict_paths
+
+        model_path = _resolve_model_path(model_name)
+        if model_path is None:
+            return
+        # Enumerate every safetensors shard. ``rglob`` covers a top-level
+        # tokenizer/model.safetensors AND any nested shards (e.g.
+        # MTP weights under ``model-mtp.safetensors``).
+        shards = sorted(str(p) for p in model_path.glob("*.safetensors"))
+        if not shards:
+            return
+        ubc_evict_paths(shards)
+    except Exception as e:  # pragma: no cover — defensive belt + suspenders
+        logger.debug(f"Defect 4 post-load UBC evict skipped (non-fatal): {e}")
+
+
 def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
     """
     Load model and tokenizer with fallback for non-standard tokenizers.
@@ -617,6 +650,21 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
     Returns:
         Tuple of (model, tokenizer)
     """
+    try:
+        return _load_model_with_fallback_impl(model_name, tokenizer_config)
+    finally:
+        # Defect 4: evict UBC mirror of safetensors shards on Darwin so
+        # the (mmap mirror + materialised weights) burst does not double
+        # the load-window memory footprint. Runs whether load succeeded
+        # or raised: if the load partially populated UBC and then failed,
+        # we still want those pages back. No-op on non-Darwin.
+        _post_load_ubc_evict(model_name)
+
+
+def _load_model_with_fallback_impl(model_name: str, tokenizer_config: dict = None):
+    """Inner load implementation — kept separate so the public wrapper can
+    install a try/finally for the Defect 4 UBC eviction without rewriting
+    every return branch in the loader."""
     from mlx_lm import load
 
     _register_vendored_archs()
