@@ -26,6 +26,7 @@ alike) and doesn't depend on the actual GPU pressure at test time.
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -614,6 +615,170 @@ class TestDtypeInference:
         sched = self._build_sched_with_dtype("some-future-quant-format")
         per_tok = sched._resolve_kv_bytes_per_token()
         assert per_tok == 2 * 4 * 2 * 64 * 4
+
+
+class TestModernDtypeKeyInference:
+    """gemma4-on-18GB false-rejection regression.
+
+    Transformers renamed the config dtype key ``torch_dtype`` →
+    ``dtype``. Newer configs (e.g. Gemma 4, bf16) carry ONLY ``dtype``,
+    so ``_infer_kv_dtype_bytes`` reading only ``torch_dtype`` fell
+    through to the fp32 (4-byte) fallback — DOUBLING the projected KV vs
+    the real bf16 (2-byte) cache and rejecting at admission a request
+    whose real usage fit under the cap (gemma-4-12b on an 18 GB MBP:
+    real 10.7 GB < 11.6 GB cap, but projected 14.4 GB).
+
+    Uses ``SimpleNamespace`` rather than ``MagicMock`` so an UNSET
+    attribute resolves to ``None`` (a MagicMock auto-creates every
+    attribute, which would mask whether the modern key is actually
+    read)."""
+
+    def _sched(self, config_obj):
+        config = SchedulerConfig(
+            max_num_seqs=8,
+            max_concurrent_requests=64,
+            enable_prefix_cache=False,
+            use_memory_aware_cache=False,
+            use_paged_cache=False,
+            gpu_memory_utilization=0.5,
+            metal_cap_kv_bytes_per_token=0,  # exercise auto-derivation
+        )
+        model = MagicMock()
+        model.config = config_obj
+        return Scheduler(model=model, tokenizer=MagicMock(), config=config)
+
+    def test_modern_dtype_key_bf16_uses_2_bytes(self):
+        # Gemma 4 shape: only the modern ``dtype`` key (bf16), no
+        # legacy ``torch_dtype``.
+        cfg = SimpleNamespace(
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            head_dim=64,
+            dtype="bfloat16",
+        )
+        sched = self._sched(cfg)
+        assert sched._infer_kv_dtype_bytes(cfg) == 2
+        # 2 (K+V) × 4 layers × 2 kv_heads × 64 head_dim × 2 bytes —
+        # NOT the fp32 (×4) over-estimate that caused the false reject.
+        assert sched._resolve_kv_bytes_per_token() == 2 * 4 * 2 * 64 * 2
+
+    def test_modern_dtype_key_torchdtype_str_form(self):
+        # ``str(torch.bfloat16)`` form on the modern key.
+        cfg = SimpleNamespace(
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            head_dim=64,
+            dtype="torch.bfloat16",
+        )
+        sched = self._sched(cfg)
+        assert sched._infer_kv_dtype_bytes(cfg) == 2
+
+    def test_modern_dtype_key_preferred_when_both_present(self):
+        # Both keys present with CONFLICTING byte sizes → modern
+        # ``dtype`` (bf16, 2 B) must win over legacy ``torch_dtype``
+        # (fp32, 4 B), matching transformers' own precedence. Using a
+        # conflicting pair is what actually pins the ordering — a
+        # bf16/fp16 pair would pass regardless since both map to 2.
+        cfg = SimpleNamespace(
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            head_dim=64,
+            dtype="bfloat16",
+            torch_dtype="float32",
+        )
+        sched = self._sched(cfg)
+        assert sched._infer_kv_dtype_bytes(cfg) == 2
+
+    def test_legacy_torch_dtype_still_read(self):
+        # Back-compat: a config carrying ONLY the legacy key still works.
+        cfg = SimpleNamespace(
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            head_dim=64,
+            torch_dtype="float32",
+        )
+        sched = self._sched(cfg)
+        assert sched._infer_kv_dtype_bytes(cfg) == 4
+
+    def test_nested_text_config_dtype(self):
+        # Multimodal config: the LM dtype lives on the nested
+        # ``text_config`` while the top level has none.
+        cfg = SimpleNamespace(
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            head_dim=64,
+            text_config=SimpleNamespace(dtype="bfloat16"),
+        )
+        sched = self._sched(cfg)
+        assert sched._infer_kv_dtype_bytes(cfg) == 2
+
+    def test_no_dtype_anywhere_falls_back_to_4(self):
+        # Neither key, no text_config → genuine-unknown fp32 fallback.
+        cfg = SimpleNamespace(
+            num_hidden_layers=4,
+            num_key_value_heads=2,
+            head_dim=64,
+        )
+        sched = self._sched(cfg)
+        assert sched._infer_kv_dtype_bytes(cfg) == 4
+
+    def test_gemma4_12b_on_18gb_admitted_after_fix(self):
+        """End-to-end regression for the reported gemma4用不了 bug.
+
+        gemma-4-12b real config: 48 layers, 8 KV heads, head_dim 256,
+        bf16 KV exposed via the MODERN ``dtype`` key. On an 18 GB MBP
+        the sidecar default ``--gpu-memory-utilization 0.90`` yields an
+        ~11.6 GB cap; the 4-bit weights sit at ~6.7 GB Metal-active.
+
+        Per-token KV with the fix (bf16, 2 bytes):
+            2 (K+V) × 48 × 8 × 256 × 2 = 393_216 B  (384 KB)
+        A ~10 K-token budget projects ≈ 3.94 GB, so
+            6.7 GB active + 3.94 GB projected ≈ 10.6 GB < 11.6 GB cap
+        → ADMIT. Pre-fix the modern ``dtype`` key was ignored, the
+        fp32 fallback doubled per-token KV to 786_432 B → ≈ 7.87 GB
+        projected → 14.6 GB > cap → the first chat was rejected with
+        BackpressureError ("Internal error during streaming") even
+        though the model genuinely fit."""
+        config = SchedulerConfig(
+            max_num_seqs=8,
+            max_concurrent_requests=64,
+            enable_prefix_cache=False,
+            use_memory_aware_cache=False,
+            use_paged_cache=False,
+            gpu_memory_utilization=0.90,
+            metal_cap_kv_bytes_per_token=0,  # auto-derive from config
+        )
+        cfg = SimpleNamespace(
+            num_hidden_layers=48,
+            num_key_value_heads=8,
+            head_dim=256,
+            dtype="bfloat16",  # modern key only (Gemma 4 shape)
+        )
+        model = MagicMock()
+        model.config = cfg
+        sched = Scheduler(model=model, tokenizer=MagicMock(), config=config)
+
+        # Per-token KV is the bf16 value, not the fp32 over-estimate.
+        assert sched._resolve_kv_bytes_per_token() == 2 * 48 * 8 * 256 * 2
+
+        req = _make_request(tokens=12)
+        req.sampling_params = SamplingParams(max_tokens=10_000)
+        with (
+            patch.object(
+                sched, "_resolve_metal_cap_bytes", return_value=11_600_000_000
+            ),
+            patch.object(
+                sched, "_current_metal_active_bytes", return_value=6_700_000_000
+            ),
+        ):
+            # Must NOT raise — the request genuinely fits under the cap.
+            sched._enforce_metal_cap_at_admission(req)
+        assert sched.num_metal_cap_violations == 0
+
+        # And the fp32 mis-read WOULD have exceeded the cap — proving the
+        # fix is what flips this from reject to admit.
+        fp32_projected = (2 * 48 * 8 * 256 * 4) * (12 + 10_000)
+        assert 6_700_000_000 + fp32_projected > 11_600_000_000
 
 
 class TestMetricsRoute:
