@@ -636,6 +636,36 @@ def _render_spec_decode_dflash_counters(cfg: Any) -> list[str]:
     return out
 
 
+def _render_ubc_evict_counters() -> list[str]:
+    """Render the Defect 4 UBC eviction counter.
+
+    Single counter (``rapid_mlx_ubc_evicted_bytes_total{path_kind=
+    "safetensors"}``) — cumulative bytes that the macOS UBC eviction
+    helper has asked the kernel to discard via ``msync(MS_INVALIDATE)``.
+    Non-zero only on Darwin; Linux / Windows builds report a flat 0
+    because they don't suffer the UBC retention bug.
+
+    Delegates to the helper module so the rendering logic lives next to
+    the counter state (same convention as ``_mxfp4_moe_guardrail``).
+    On import error we synthesize an all-zero block so ``/metrics``
+    always exposes the series — operators alerting on
+    ``rapid_mlx_ubc_evicted_bytes_total > 0`` would otherwise see
+    "no data" between rapid-mlx restarts if the helper module ever
+    failed to import.
+    """
+    try:
+        from ..runtime.ubc_evict import render_prometheus_lines
+
+        return render_prometheus_lines()
+    except Exception:
+        return [
+            "# HELP rapid_mlx_ubc_evicted_bytes_total "
+            "Cumulative bytes evicted from the macOS UBC by the Defect 4 helper.",
+            "# TYPE rapid_mlx_ubc_evicted_bytes_total counter",
+            'rapid_mlx_ubc_evicted_bytes_total{path_kind="safetensors"} 0',
+        ]
+
+
 def _render_mxfp4_moe_guardrail_counters() -> list[str]:
     """Render the R15 #297 MoE+MXFP4 / MoE+NVFP4 load-time guardrail counters.
 
@@ -849,6 +879,13 @@ def _render_prometheus(cfg: Any) -> str:
     # whose model trips the cliff at startup has no metric series to
     # alert on until the FIRST request lands.
     lines.extend(_render_mxfp4_moe_guardrail_counters())
+
+    # Defect 4 UBC eviction counter — process-local state, ticked by
+    # the load path when ``msync(MS_INVALIDATE)`` releases safetensors
+    # mirror pages from the macOS Unified Buffer Cache. Surfaced BEFORE
+    # the engine-None / get_stats-failure early returns so dashboards
+    # see the series even between restarts and on cold boot.
+    lines.extend(_render_ubc_evict_counters())
 
     # R15-P1 #302 MTP spec-decode counter triplet + accept-ratio gauge.
     # Same engine-independence rationale: counters are process-local
