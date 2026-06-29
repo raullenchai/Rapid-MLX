@@ -438,15 +438,23 @@ def install_deepseek_v32_indexer_gate() -> None:
             # ``config`` as an attribute. Pick the config off the first
             # decoder layer's attention — every layer's
             # ``self_attn.config`` is set by upstream
-            # ``DeepseekV32Attention.__init__``.
+            # ``DeepseekV32Attention.__init__``. Bounds-check
+            # ``start_idx`` so a pipeline/sharded layout with an empty
+            # local slice (or out-of-range ``start_idx``) safely
+            # delegates to upstream (codex finding #3 on PR #967 round 5).
             types = None
-            if self.layers and self.layers[self.start_idx] is not None:
+            if (
+                self.layers
+                and 0 <= self.start_idx < len(self.layers)
+                and self.layers[self.start_idx] is not None
+            ):
                 cfg = getattr(self.layers[self.start_idx].self_attn, "config", None)
                 if cfg is not None:
                     types = getattr(cfg, "indexer_types", None)
 
             if types is None:
-                # Non-REAP path: delegate to upstream verbatim.
+                # Non-REAP path (or out-of-range slice) — delegate to
+                # upstream verbatim.
                 return _orig_model_call(self, x, cache)
 
             # Replica of upstream ``DeepseekV32Model.__call__`` with topk
@@ -464,42 +472,24 @@ def install_deepseek_v32_indexer_gate() -> None:
             if pipeline_rank < pipeline_size - 1:
                 h = mx.distributed.recv_like(h, (pipeline_rank + 1))
 
-            # Initialize from the most-recent full layer anywhere in
-            # ``self.layers`` that has run on a prior forward call (its
-            # indexer's ``_last_topk_indices`` slot persists). Critical
-            # for the case (codex finding #1 on PR #967 round 3) where
-            # this rank's first iterated layer is ``"shared"`` — e.g.
-            # a pipeline-parallel slice whose head is shared, or a
-            # future model layout that places shared layers ahead of
-            # any full layer in this rank. Without this seed the
-            # leading shared layers would dense-fall-back on every
-            # decode step.
-            #
-            # We iterate ALL ``self.layers`` (not just
-            # ``[start_idx, start_idx+num_layers)``) so a full layer
-            # outside this rank's iteration window — but still owned by
-            # this Python-side model instance — can be the source.
-            # Pipeline-parallel ranks that own NO full layer at all
-            # cannot seed from another rank's indexer state via this
-            # path; that's a separate (out-of-scope here)
-            # inter-rank-communication concern and the dense fallback
-            # remains correct for it.
-            #
-            # ``_last_topk_indices`` is only present after at least one
-            # full-layer forward; on the very first call it is None and
-            # leading shared layers correctly hit the dense fallback
-            # (the same path upstream Indexer takes when
-            # ``k.shape[2] <= index_topk``).
+            # ``last_topk_indices`` is set fresh by each ``"full"``
+            # layer's forward in THIS call and consumed by the
+            # immediately-following ``"shared"`` layers. We deliberately
+            # do NOT seed it from a prior forward's persisted
+            # ``_last_topk_indices`` — those indices reference KV-slot
+            # positions computed at a different query/cache length and
+            # applying them to a fresh decode step would be a stale
+            # selection (codex finding #1 on PR #967 round 5; supersedes
+            # the round-3 seed attempt). When this rank's iteration
+            # window starts with a ``"shared"`` layer (e.g. a pipeline-
+            # parallel slice without a local full-layer anchor), those
+            # leading shared layers correctly hit the dense fallback —
+            # the same path the upstream Indexer takes when
+            # ``k.shape[2] <= index_topk``. Cross-rank communication of
+            # the current full layer's topk would be the
+            # architecturally-correct remedy if needed in the future;
+            # that is out of scope for the surgical D1 fix here.
             last_topk_indices = None
-            for layer in reversed(self.layers):
-                if layer is None:
-                    continue
-                indexer = getattr(layer.self_attn, "indexer", None)
-                if indexer is None:
-                    continue
-                last_topk_indices = getattr(indexer, "_last_topk_indices", None)
-                if last_topk_indices is not None:
-                    break
 
             for i in range(self.num_layers):
                 layer = self.layers[self.start_idx + i]
@@ -534,7 +524,17 @@ def install_deepseek_v32_indexer_gate() -> None:
             # Preserve the REAP extension field. Plain attribute assignment
             # is fine on a non-frozen dataclass; downstream code reads via
             # ``getattr(config, "indexer_types", None)``.
-            if "indexer_types" in params:
+            #
+            # Scope the validation strictly to the GLM-MoE-DSA model
+            # type. Although ``glm.ModelArgs.from_dict`` is itself class-
+            # specific (inherited subclasses of ``BaseModelArgs`` are not
+            # affected by this assignment), gating on ``model_type``
+            # provides a defense-in-depth signal that the validation
+            # only applies to REAP-pruned DeepseekV32/GLM-MoE-DSA
+            # configs and not to any future extension that happens to
+            # reuse this dataclass for a different architecture (codex
+            # finding #2 on PR #967 round 5).
+            if "indexer_types" in params and params.get("model_type") == "glm_moe_dsa":
                 # Validate at config-parse time so a malformed REAP config
                 # fails clearly here rather than later in weight loading
                 # (codex NIT, PR #967 round 4). ``_validate_anchor`` enforces
@@ -544,6 +544,7 @@ def install_deepseek_v32_indexer_gate() -> None:
                     params["indexer_types"],
                     num_hidden_layers=params.get("num_hidden_layers"),
                 )
+            if "indexer_types" in params:
                 instance.indexer_types = params["indexer_types"]
             return instance
 
