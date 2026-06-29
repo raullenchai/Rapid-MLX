@@ -96,8 +96,14 @@ def test_ubc_evict_darwin_releases_pages(tmp_path):
     # not exercise UBC at all and the assertion would be trivially false.
     payload = tmp_path / "ubc_payload.bin"
     subprocess.run(
-        ["dd", "if=/dev/urandom", f"of={payload}", "bs=1m",
-         f"count={size // (1024 * 1024)}", "status=none"],
+        [
+            "dd",
+            "if=/dev/urandom",
+            f"of={payload}",
+            "bs=1m",
+            f"count={size // (1024 * 1024)}",
+            "status=none",
+        ],
         check=True,
     )
     assert payload.stat().st_size == size
@@ -195,13 +201,17 @@ def test_ubc_evict_missing_file_returns_zero(tmp_path, caplog):
     with caplog.at_level(logging.WARNING, logger=ubc_module.logger.name):
         result = ubc_evict(str(missing))
     assert result == 0
-    assert any("cannot stat" in r.message or "stat" in r.message for r in caplog.records)
+    assert any(
+        "cannot stat" in r.message or "stat" in r.message for r in caplog.records
+    )
     snap = snapshot()
     assert snap["ubc_evict_failed_total"] == 1
     assert snap["ubc_evicted_bytes_total"] == 0
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="zero-byte path checks Darwin libc")
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="zero-byte path checks Darwin libc"
+)
 def test_ubc_evict_zero_byte_file_returns_zero(tmp_path, caplog):
     """Zero-byte file: returns 0 cleanly, logs DEBUG, NOT a failure."""
     empty = tmp_path / "empty.bin"
@@ -250,7 +260,9 @@ def test_route_module_render_matches_helper():
 # ---------------------------------------------------------------------
 
 
-@pytest.mark.skipif(sys.platform != "darwin", reason="Counter ticks only on Darwin successes")
+@pytest.mark.skipif(
+    sys.platform != "darwin", reason="Counter ticks only on Darwin successes"
+)
 def test_counter_monotonic_across_calls(tmp_path):
     """Counter accumulates across successive successful evictions."""
     files = []
@@ -258,8 +270,7 @@ def test_counter_monotonic_across_calls(tmp_path):
         p = tmp_path / f"s{i}.bin"
         # 1 MB urandom each.
         subprocess.run(
-            ["dd", "if=/dev/urandom", f"of={p}", "bs=1m", "count=1",
-             "status=none"],
+            ["dd", "if=/dev/urandom", f"of={p}", "bs=1m", "count=1", "status=none"],
             check=True,
         )
         files.append(p)
@@ -324,6 +335,7 @@ def test_post_load_ubc_evict_targets_safetensors_only(monkeypatch, tmp_path):
     # _post_load_ubc_evict (which uses ``from ..runtime.ubc_evict
     # import ubc_evict_paths`` at call time).
     import vllm_mlx.runtime.ubc_evict as runtime_module
+
     monkeypatch.setattr(runtime_module, "ubc_evict_paths", _record)
 
     # Make _resolve_model_path return the tmp dir directly.
@@ -350,6 +362,7 @@ def test_post_load_ubc_evict_skips_when_model_path_unresolved(monkeypatch):
         return 0
 
     import vllm_mlx.runtime.ubc_evict as runtime_module
+
     monkeypatch.setattr(runtime_module, "ubc_evict_paths", _record)
     monkeypatch.setattr(tk, "_resolve_model_path", lambda name: None)
 
@@ -369,6 +382,7 @@ def test_post_load_ubc_evict_skips_when_no_shards(monkeypatch, tmp_path):
         return 0
 
     import vllm_mlx.runtime.ubc_evict as runtime_module
+
     monkeypatch.setattr(runtime_module, "ubc_evict_paths", _record)
     monkeypatch.setattr(tk, "_resolve_model_path", lambda name: tmp_path)
 

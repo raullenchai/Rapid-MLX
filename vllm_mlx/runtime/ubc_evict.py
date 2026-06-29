@@ -76,7 +76,7 @@ import os
 import sys
 import threading
 import time
-from typing import Iterable, Optional
+from collections.abc import Iterable
 
 logger = logging.getLogger(__name__)
 
@@ -107,10 +107,10 @@ _MMAP_FAILED: int = ctypes.c_void_p(-1).value
 # libc resolution — lazy, locked, macOS-only
 # ---------------------------------------------------------------------
 _libc_lock = threading.Lock()
-_libc: Optional[ctypes.CDLL] = None
+_libc: ctypes.CDLL | None = None
 
 
-def _get_libc() -> Optional[ctypes.CDLL]:
+def _get_libc() -> ctypes.CDLL | None:
     """Return the cached libc handle with the three syscalls typed, or None.
 
     Returns None on non-Darwin platforms or when libc cannot be loaded
@@ -276,8 +276,21 @@ def ubc_evict(path: str) -> int:
                 _bump_counter(0, failed=True)
                 return 0
         finally:
-            # Always release the mapping even if msync failed.
-            libc.munmap(addr, size)
+            # Always release the mapping even if msync failed. pr_validate
+            # codex NIT #2: check the return code so a cleanup leak is at
+            # least visible in the logs (the helper handles large mappings,
+            # so a silent munmap failure would be invisible RSS pressure).
+            ctypes.set_errno(0)
+            munmap_rc = libc.munmap(addr, size)
+            if munmap_rc != 0:
+                err = ctypes.get_errno()
+                logger.warning(
+                    "ubc_evict: munmap %s rc=%d errno=%d (%s)",
+                    path,
+                    munmap_rc,
+                    err,
+                    os.strerror(err) if err else "unknown",
+                )
     finally:
         try:
             os.close(fd)

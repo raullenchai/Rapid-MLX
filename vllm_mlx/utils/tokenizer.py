@@ -671,15 +671,18 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
     Returns:
         Tuple of (model, tokenizer)
     """
-    try:
-        return _load_model_with_fallback_impl(model_name, tokenizer_config)
-    finally:
-        # Defect 4: evict UBC mirror of safetensors shards on Darwin so
-        # the (mmap mirror + materialised weights) burst does not double
-        # the load-window memory footprint. Runs whether load succeeded
-        # or raised: if the load partially populated UBC and then failed,
-        # we still want those pages back. No-op on non-Darwin.
-        _post_load_ubc_evict(model_name)
+    result = _load_model_with_fallback_impl(model_name, tokenizer_config)
+    # Defect 4: evict UBC mirror of safetensors shards on Darwin so
+    # the (mmap mirror + materialised weights) burst does not double
+    # the load-window memory footprint. Runs ONLY after a successful
+    # load — pr_validate codex BLOCKING #1: a failed load might be
+    # operating on an uncached HF repo, and resolving the path inside
+    # the failure path could trigger ``snapshot_download`` side effects
+    # for a model whose tensors never materialised. We only have a
+    # mirror worth evicting after the inner loader succeeded.
+    # No-op on non-Darwin.
+    _post_load_ubc_evict(model_name)
+    return result
 
 
 def _load_model_with_fallback_impl(model_name: str, tokenizer_config: dict = None):
