@@ -706,3 +706,86 @@ def test_gate_rejects_shared_at_index_zero(repro_dir):
 
     with pytest.raises(ValueError, match="first layer must be 'full'"):
         load_model(repro)
+
+
+def test_install_fires_on_real_serve_import_path():
+    """Regression for PR #967 wiring bug — the gate must install when a
+    SERVE-path module is imported, not only when the patch module itself
+    is imported directly.
+
+    The original PR #967 wired ``install_deepseek_v32_indexer_gate()`` at
+    ``vllm_mlx/model_runner.py:34``. The real ``rapid-mlx serve`` boot
+    path is::
+
+        cli -> server -> engine.batched._start_llm
+        -> utils.tokenizer.load_model_with_fallback -> mlx_lm.load
+        -> mlx_lm.utils.load_model
+
+    None of those import ``model_runner``, so the gate was NEVER installed
+    in production and ``mlx_lm.load`` aborted with ``Missing 285 parameters
+    ...indexer...`` on real GLM-5.2 REAP-pruned weights. The 11 synthetic
+    regression tests passed only because pytest imports the patch module
+    directly via ``from vllm_mlx.patches.deepseek_v32_indexer_gate import
+    ...`` — which triggered the install as an import side-effect of the
+    test module itself, masking the production gap.
+
+    This test guards against a recurrence by:
+
+    1. Uninstalling the gate via the currently-loaded patch module.
+    2. Purging cached ``vllm_mlx`` modules from ``sys.modules`` so the
+       next import re-runs module-level code.
+    3. Importing a SERVE-path module (``vllm_mlx.utils.tokenizer``),
+       NOT the patch module directly.
+    4. Asserting the gate is installed afterwards.
+
+    A future refactor that moves the install hook back to a module not on
+    the serve import path would fail at step 4 with the same 285-missing-
+    keys symptom that broke real GLM-5.2 boot.
+    """
+    import sys
+
+    # (1) Cleanly uninstall via the currently-loaded patch module so the
+    # subsequent re-install in step 3 truly fires through the new code
+    # path rather than early-returning on a stale _INSTALLED=True flag.
+    from vllm_mlx.patches.deepseek_v32_indexer_gate import (
+        uninstall_deepseek_v32_indexer_gate,
+    )
+
+    uninstall_deepseek_v32_indexer_gate()
+
+    # (2) Purge cached vllm_mlx imports so importing utils.tokenizer
+    # re-executes its module-level code (which is where the install
+    # hook now lives — PR #967 wiring fix).
+    for mod_name in list(sys.modules):
+        if mod_name.startswith("vllm_mlx"):
+            del sys.modules[mod_name]
+
+    # (3) Import a SERVE-path module. This MUST trigger the install
+    # hook — that is the whole point of the wiring fix. We deliberately
+    # do NOT touch ``vllm_mlx.patches.deepseek_v32_indexer_gate`` here;
+    # importing it directly would mask the bug.
+    import vllm_mlx.utils.tokenizer  # noqa: F401
+
+    # (4) Assert the gate is now installed. Re-import the patch module
+    # to read its post-install state — the freshly-loaded instance has
+    # ``_INSTALLED = True`` set by the install call that fired during
+    # the ``utils.tokenizer`` import.
+    from vllm_mlx.patches.deepseek_v32_indexer_gate import is_installed
+
+    assert is_installed(), (
+        "install hook did NOT fire when serve-path module "
+        "vllm_mlx.utils.tokenizer was imported — PR #967 wiring "
+        "regression. On real GLM-5.2 REAP weights this symptom is "
+        "'Missing 285 parameters ...indexer...' on boot."
+    )
+
+    # Also verify the patch is live on the upstream class (defense-in-
+    # depth — guards against a regression where _INSTALLED gets flipped
+    # to True without the actual monkey-patches being applied).
+    from mlx_lm.models import deepseek_v32 as ds
+
+    assert getattr(ds, "_RAPID_MLX_INDEXER_GATE_INSTALLED", False), (
+        "patch module flag says installed, but the upstream marker on "
+        "mlx_lm.models.deepseek_v32 is missing — the monkey-patch was "
+        "not actually applied"
+    )
