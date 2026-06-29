@@ -123,6 +123,44 @@ def repair_byte_level_decoder(tokenizer) -> bool:
         return False
     backend = inner.backend_tokenizer
 
+    try:
+        vocab = inner.get_vocab()
+    except Exception:
+        return False
+
+    # Guard against a false positive on genuine SentencePiece vocabs
+    # (gemma-3 / gemma-4, etc.). The bug this function repairs is specific
+    # to byte-level (GPT-2) vocabs that encode a leading space as ``Ġ`` but
+    # were handed a SentencePiece ``Replace("▁"," ")`` decoder. A real
+    # SentencePiece tokenizer encodes a leading space as the metaspace
+    # marker ``▁`` (U+2581) and its decoder is *correct* — swapping it to
+    # ByteLevel would leak ``▁`` into every space (the gemma-3
+    # ``The▁search▁results`` regression).
+    #
+    # Distinguish the two by the vocab's space-encoding convention, NOT by
+    # "some token's pretty form starts with a marker char": a genuine
+    # SentencePiece vocab can still contain an isolated literal
+    # ``Ġ``/``Ċ``/``ĉ`` *character* token (e.g. gemma-3's ``ĉ`` = U+0109,
+    # id 240630 — plus a single stray ``Ġ``), which tripped the marker
+    # heuristic below and broke detokenisation for the whole model. A
+    # metaspace vocab has ``▁`` on tens of thousands of tokens; a byte-
+    # level vocab has ``Ġ`` on tens of thousands and ``▁`` on ~none. So
+    # compare counts, not presence: if metaspace dominates, the decoder is
+    # already correct and must be left alone.
+    try:
+        metaspace_count = sum(
+            1 for p in vocab if isinstance(p, str) and p.startswith("▁")
+        )
+        byte_level_count = sum(
+            1 for p in vocab if isinstance(p, str) and p.startswith("Ġ")
+        )
+        if metaspace_count > byte_level_count:
+            return False
+    except Exception:
+        # Count failed (unusual vocab surface) — fall through to the marker
+        # heuristic so the byte-level repair still runs.
+        pass
+
     # Find a probe id whose pretty token starts with a byte-level marker.
     # We scan the *entire* vocab (codex r2 NIT) — a 4 KB id prefix cap
     # silently skips valid byte-level vocabs whose byte tokens all live
@@ -133,10 +171,6 @@ def repair_byte_level_decoder(tokenizer) -> bool:
     # round-trip, so even a 200k-entry vocab probes in <5 ms.
     probe_id: int | None = None
     probe_pretty: str | None = None
-    try:
-        vocab = inner.get_vocab()
-    except Exception:
-        return False
     # ``get_vocab`` returns ``{pretty: id}``. Sort by id so the probe
     # is deterministic across HF tokenizer versions (some return dicts
     # in insertion order, others in hash order).

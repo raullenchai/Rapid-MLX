@@ -258,6 +258,84 @@ class TestRepairByteLevelDecoder:
         )
 
 
+def _build_sentencepiece_with_literal_marker_token() -> PreTrainedTokenizerFast:
+    """A genuine SentencePiece (metaspace) tokenizer that ALSO carries an
+    isolated literal ``ĉ`` (U+0109) character token — the exact gemma-3
+    shape that false-tripped ``repair_byte_level_decoder``.
+
+    Spaces are encoded as the metaspace marker ``▁`` and the decoder is the
+    correct SentencePiece ``Replace("▁"," ")`` chain. The lone ``ĉ`` token
+    is a real character in the vocab, NOT byte-level mojibake — the repair
+    must leave this tokenizer untouched.
+    """
+    vocab = {
+        "<pad>": 0,
+        "<s>": 1,
+        "</s>": 2,
+        "▁the": 3,  # ' the'
+        "▁search": 4,  # ' search'
+        "▁results": 5,  # ' results'
+        "ĉ": 6,  # genuine U+0109 literal char token — the trap
+        "the": 7,  # 'the'
+    }
+    model = models.BPE(vocab=vocab, merges=[])
+    tok = Tokenizer(model)
+    tok.pre_tokenizer = pre_tokenizers.Metaspace()
+    tok.decoder = decoders.Sequence(
+        [
+            decoders.Replace("▁", " "),
+            decoders.ByteFallback(),
+            decoders.Fuse(),
+        ]
+    )
+    return PreTrainedTokenizerFast(
+        tokenizer_object=tok,
+        eos_token="</s>",
+        bos_token="<s>",
+        pad_token="<pad>",
+    )
+
+
+class TestRepairSkipsGenuineSentencePiece:
+    """Regression: ``repair_byte_level_decoder`` must NOT swap the decoder
+    on a genuine SentencePiece vocab that happens to contain an isolated
+    literal ``Ġ``/``Ċ``/``ĉ`` *character* token (gemma-3 reported the
+    ``The▁search▁results`` leak — every space rendered as ``▁``)."""
+
+    def test_marker_probe_would_have_tripped(self) -> None:
+        """Sanity: the old marker heuristic DID find a trap token here, so
+        this fixture genuinely exercises the false-positive guard rather
+        than just lacking a marker."""
+        tok = _build_sentencepiece_with_literal_marker_token()
+        vocab = tok.get_vocab()
+        trap = [p for p in vocab if any(p.startswith(m) for m in _BYTE_LEVEL_MOJIBAKE_MARKERS)]
+        assert trap == ["ĉ"], f"expected lone 'ĉ' trap token, got {trap!r}"
+
+    def test_repair_is_noop_on_sentencepiece(self) -> None:
+        tok = _build_sentencepiece_with_literal_marker_token()
+        assert repair_byte_level_decoder(tok) is False
+        # Decoder left as the original SentencePiece Sequence, NOT ByteLevel.
+        assert tok.backend_tokenizer.decoder.__class__.__name__ == "Sequence"
+
+    def test_spaces_survive_after_repair_call(self) -> None:
+        """The actual user-visible contract: ``▁`` decodes back to a space,
+        not leaked verbatim, after the repair pass runs at load time."""
+        tok = _build_sentencepiece_with_literal_marker_token()
+        repair_byte_level_decoder(tok)
+        ids = [3, 4, 5]  # '▁the' '▁search' '▁results'
+        decoded = tok.decode(ids, skip_special_tokens=False)
+        assert "▁" not in decoded, f"metaspace leaked: {decoded!r}"
+        assert decoded == " the search results"
+
+    def test_incremental_stream_keeps_spaces(self) -> None:
+        tok = _build_sentencepiece_with_literal_marker_token()
+        repair_byte_level_decoder(tok)
+        decoder = IncrementalDecoder(tok)
+        emitted = "".join(decoder.add_token(t) for t in (3, 4, 5))
+        assert "▁" not in emitted, f"metaspace leaked in stream: {emitted!r}"
+        assert emitted == " the search results"
+
+
 # ---------------------------------------------------------------------------
 # 2. Streaming surface: IncrementalDecoder (delta.* path)
 # ---------------------------------------------------------------------------
