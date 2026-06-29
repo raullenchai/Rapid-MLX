@@ -606,6 +606,60 @@ def _is_vendored_arch_model(model_name: str) -> bool:
         return False
 
 
+def _post_load_ubc_evict(model_name: str) -> None:
+    """Defect 4: evict the UBC mirror of safetensors shards on Darwin.
+
+    Called from the public ``load_model_with_fallback`` after the
+    underlying loader returns successfully. macOS keeps mmap'd
+    safetensors pages in the Unified Buffer Cache after ``munmap`` +
+    ``close``, which doubles the effective memory pressure of a large
+    MoE load (mmap mirror + materialised UMA tensors) and trips Jetsam
+    on GLM-5.2 / DeepSeek-V3.2 boots. Evicting the mirror via
+    ``msync(MS_INVALIDATE)`` releases those pages back to the free pool.
+
+    No-op on non-Darwin platforms (see :mod:`vllm_mlx.runtime.ubc_evict`).
+    The platform gate is at the **TOP** of the function — codex round 1
+    BLOCKING — so Linux/Windows callers don't pay for path resolution
+    (which on a cache-miss could trigger a Hub ``snapshot_download``).
+
+    Wrapped in a broad try/except: a failure here MUST NEVER block a
+    model from loading. The eviction is opportunistic memory cleanup,
+    not a correctness gate.
+    """
+    # Platform gate FIRST — every line below this point is Darwin-only
+    # bookkeeping. Codex round 1 caught that without this early return,
+    # Linux/Windows callers paid for ``_resolve_model_path``, which can
+    # invoke ``huggingface_hub.snapshot_download`` on a cache miss —
+    # a potentially expensive side effect inside the load-path
+    # ``finally`` clause for a feature that has no effect on those
+    # platforms.
+    import sys as _sys
+
+    if _sys.platform != "darwin":
+        return
+
+    try:
+        from ..runtime.ubc_evict import ubc_evict_paths
+
+        model_path = _resolve_model_path(model_name)
+        if model_path is None:
+            return
+        # Enumerate every safetensors shard at the snapshot root.
+        # Top-level ``glob`` (not ``rglob``) — every mlx-community
+        # checkpoint we serve keeps safetensors at the snapshot root
+        # alongside ``config.json`` / ``tokenizer.json``. Nested
+        # safetensors would be a vendor-specific repo layout we have
+        # not seen, and walking subdirectories on a HF snapshot risks
+        # picking up unrelated payloads (e.g. variant siblings the HF
+        # client materialised but the loader didn't bind).
+        shards = sorted(str(p) for p in model_path.glob("*.safetensors"))
+        if not shards:
+            return
+        ubc_evict_paths(shards)
+    except Exception as e:  # pragma: no cover — defensive belt + suspenders
+        logger.debug(f"Defect 4 post-load UBC evict skipped (non-fatal): {e}")
+
+
 def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
     """
     Load model and tokenizer with fallback for non-standard tokenizers.
@@ -617,6 +671,24 @@ def load_model_with_fallback(model_name: str, tokenizer_config: dict = None):
     Returns:
         Tuple of (model, tokenizer)
     """
+    result = _load_model_with_fallback_impl(model_name, tokenizer_config)
+    # Defect 4: evict UBC mirror of safetensors shards on Darwin so
+    # the (mmap mirror + materialised weights) burst does not double
+    # the load-window memory footprint. Runs ONLY after a successful
+    # load — pr_validate codex BLOCKING #1: a failed load might be
+    # operating on an uncached HF repo, and resolving the path inside
+    # the failure path could trigger ``snapshot_download`` side effects
+    # for a model whose tensors never materialised. We only have a
+    # mirror worth evicting after the inner loader succeeded.
+    # No-op on non-Darwin.
+    _post_load_ubc_evict(model_name)
+    return result
+
+
+def _load_model_with_fallback_impl(model_name: str, tokenizer_config: dict = None):
+    """Inner load implementation — kept separate so the public wrapper can
+    install a try/finally for the Defect 4 UBC eviction without rewriting
+    every return branch in the loader."""
     from mlx_lm import load
 
     _register_vendored_archs()
