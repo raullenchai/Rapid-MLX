@@ -54,7 +54,7 @@ from __future__ import annotations
 import inspect
 import logging
 import threading
-from typing import Any, Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -65,9 +65,9 @@ _ALLOWED_MODES = ("full", "shared")
 # Saved references to the upstream callables; used to undo the patch in tests
 # and (rarely) at runtime via ``uninstall_deepseek_v32_indexer_gate``. ``None``
 # until the gate is installed.
-_orig_attn_call: Optional[Any] = None
-_orig_decoder_init: Optional[Any] = None
-_orig_from_dict: Optional[Any] = None
+_orig_attn_call: Any | None = None
+_orig_decoder_init: Any | None = None
+_orig_from_dict: Any | None = None
 
 
 def _resolve_mode(types, layer_idx: int) -> str:
@@ -83,8 +83,7 @@ def _resolve_mode(types, layer_idx: int) -> str:
     mode = types[layer_idx]
     if mode not in _ALLOWED_MODES:
         raise ValueError(
-            f"indexer_types[{layer_idx}]={mode!r}; "
-            f"expected one of {_ALLOWED_MODES}"
+            f"indexer_types[{layer_idx}]={mode!r}; expected one of {_ALLOWED_MODES}"
         )
     return mode
 
@@ -108,7 +107,9 @@ def _validate_anchor(types) -> None:
         )
 
 
-def _shared_layer_attn_call(self, x, mask, cache):  # pragma: no cover - exercised by smoke test
+def _shared_layer_attn_call(
+    self, x, mask, cache
+):  # pragma: no cover - exercised by smoke test
     """Replica of upstream ``DeepseekV32Attention.__call__`` minus the indexer.
 
     The shared path simply runs dense MLA attention over the full KV window

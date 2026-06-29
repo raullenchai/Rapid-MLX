@@ -26,20 +26,18 @@ configs (e.g. ``mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit``):
 from __future__ import annotations
 
 import json
-import shutil
+from collections.abc import Iterable
 from pathlib import Path
-from typing import Iterable, List, Optional
 
 import mlx.core as mx
 import pytest
-
 
 # ----------------------------------------------------------------------
 # Synthetic glm_moe_dsa config + weight forge (no GLM-5.2 download)
 # ----------------------------------------------------------------------
 
 
-def _config(num_layers: int, indexer_types: Optional[Iterable[str]]) -> dict:
+def _config(num_layers: int, indexer_types: Iterable[str] | None) -> dict:
     cfg = {
         "model_type": "glm_moe_dsa",
         "vocab_size": 256,
@@ -120,8 +118,8 @@ def _layer_keys(layer_idx: int, mode: str, cfg: dict) -> dict:
 
 def _forge_repro(
     tmp_path: Path,
-    indexer_types: Optional[List[str]],
-    layer_modes_for_safetensors: Optional[List[str]] = None,
+    indexer_types: list[str] | None,
+    layer_modes_for_safetensors: list[str] | None = None,
 ) -> Path:
     """Write a tiny config + safetensors stub for the test.
 
@@ -165,9 +163,7 @@ def repro_dir(tmp_path: Path) -> Path:
 # ----------------------------------------------------------------------
 
 
-def test_upstream_without_gate_fails_with_missing_indexer_keys(
-    monkeypatch, repro_dir
-):
+def test_upstream_without_gate_fails_with_missing_indexer_keys(monkeypatch, repro_dir):
     """Pin the bug we are patching around.
 
     Uninstall the gate, then call ``mlx_lm.utils.load_model`` on a 4-layer
