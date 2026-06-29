@@ -209,9 +209,11 @@ def test_upstream_without_gate_fails_with_missing_indexer_keys(monkeypatch, repr
 
 
 def test_gate_loads_mixed_full_shared_config(repro_dir):
-    """4-layer ``["full","shared","full","shared"]`` config loads cleanly.
+    """4-layer ``["full","shared","full","shared"]`` config loads cleanly,
+    and shared layers REUSE the prior full layer's indexer topk (the REAP
+    contract — not a dense fallback).
 
-    Pins three properties beyond "no crash on load":
+    Pins four properties beyond "no crash on load":
 
     1. Only "full" layers retain an Indexer; "shared" layers have
        ``self_attn.indexer is None`` (load-time gate fired correctly).
@@ -220,8 +222,18 @@ def test_gate_loads_mixed_full_shared_config(repro_dir):
        by exactly the number of shared layers traversed). Catches
        regressions where a refactor accidentally routes shared layers
        back through the upstream Indexer-bearing ``__call__``.
-    3. Forward output is finite (no NaN/Inf) — the dense-attention
-       fallback on shared layers produces numerically valid logits.
+    3. The REAP reuse path fires: every shared layer consumes a
+       non-None ``topk_indices`` threaded from the prior full layer
+       (``_SHARED_LAYER_REUSE_COUNT == 2``,
+       ``_SHARED_LAYER_DENSE_FALLBACK_COUNT == 0``). The synthetic
+       config has ``index_topk=4`` and the prompt has 5 tokens, so
+       the indexer's internal early-exit (``k.shape[2] <= index_topk
+       → return None``) does NOT fire and the threaded topk is real.
+       Codex finding #1 on PR #967 round 2: the shared layer must NOT
+       silently take the dense fallback when the model author's intent
+       is sparse top-K reuse.
+    4. Forward output is finite (no NaN/Inf) on both the reuse and
+       dense paths.
     """
     from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
 
@@ -240,8 +252,10 @@ def test_gate_loads_mixed_full_shared_config(repro_dir):
     assert layers[3].self_attn.indexer is None
 
     # (2) shared-layer code path is exercised exactly once per shared layer
-    # per forward call. Reset the counter, run forward, assert delta.
+    # per forward call. Reset counters, run forward, assert deltas.
     gate._SHARED_LAYER_FORWARD_COUNT = 0
+    gate._SHARED_LAYER_REUSE_COUNT = 0
+    gate._SHARED_LAYER_DENSE_FALLBACK_COUNT = 0
     prompt = mx.array([[1, 2, 3, 4, 5]], dtype=mx.int32)
     out = model(prompt)
     mx.eval(out)
@@ -253,13 +267,25 @@ def test_gate_loads_mixed_full_shared_config(repro_dir):
         "routed shared layers back through the upstream Indexer path."
     )
 
-    # (3) logits are finite (synthetic zero weights make absolute values
-    # tiny but the dense-attention fallback should not produce NaN/Inf).
+    # (3) REAP reuse path is the one that fired (prompt=5 tok > index_topk=4
+    # so the prior full layer's indexer DID produce a topk tensor).
+    assert gate._SHARED_LAYER_REUSE_COUNT == 2, (
+        "shared-layer REAP reuse path did not fire on both shared layers — "
+        f"got reuse={gate._SHARED_LAYER_REUSE_COUNT}, "
+        f"dense_fallback={gate._SHARED_LAYER_DENSE_FALLBACK_COUNT}. The "
+        "prior full layer's topk_indices were not threaded through the "
+        "model loop, so shared layers silently ran dense attention instead "
+        "of reusing the top-K KV selection (codex PR #967 round-2 finding)."
+    )
+    assert gate._SHARED_LAYER_DENSE_FALLBACK_COUNT == 0
+
+    # (4) logits are finite (synthetic zero weights make absolute values
+    # tiny but the shared-layer attention path should not produce NaN/Inf).
     import math
 
     out_max = float(mx.max(mx.abs(out)).item())
     assert math.isfinite(out_max), (
-        f"forward output contains NaN/Inf (max |.|={out_max}); the dense "
+        f"forward output contains NaN/Inf (max |.|={out_max}); the "
         "shared-layer attention path produced numerically invalid logits"
     )
 

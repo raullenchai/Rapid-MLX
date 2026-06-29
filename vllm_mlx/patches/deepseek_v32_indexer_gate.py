@@ -4,14 +4,21 @@
 Background
 ----------
 Upstream ``mlx_lm.models.deepseek_v32.DeepseekV32Attention.__init__`` builds
-``self.indexer = Indexer(config)`` on **every** layer unconditionally. REAP-
-pruned variants (e.g. ``mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit``)
-publish a per-layer ``indexer_types: List[str]`` field where each entry is
-either ``"full"`` (this layer owns Indexer weights in the safetensors) or
-``"shared"`` (this layer has **no** Indexer weights and reuses the previous
-full layer's indexer output at inference time). On such configs every
-``"shared"`` layer's Indexer parameters are missing from the safetensors and
-``mlx_lm.load`` aborts with ``Missing N parameters: ...indexer...``.
+``self.indexer = Indexer(config)`` on **every** layer unconditionally. The base
+GLM-5.2 architecture (and its REAP-pruned variant
+``mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit``) publishes a per-layer
+``indexer_types: List[str]`` field where each entry is either ``"full"`` (this
+layer owns Indexer weights in the safetensors) or ``"shared"`` (this layer has
+**no** Indexer weights and is expected at inference time to reuse the
+``topk_indices`` produced by the **most recent preceding "full" layer**'s
+indexer). The GLM-5.2 base config pattern is e.g.
+``["full", "full", "full", "shared", "shared", "shared", "full", "shared", ...]``
+— full anchors at positions 0,1,2,6,10,14,...; shared layers in between.
+
+On such configs every ``"shared"`` layer's Indexer parameters are missing from
+the safetensors and ``mlx_lm.load`` aborts with
+``Missing N parameters: ...indexer...`` (on the full 78-layer model: 11 keys ×
+57 shared layers = 627 missing tensors).
 
 What this module patches
 ------------------------
@@ -20,53 +27,62 @@ What this module patches
    drop ``self_attn.indexer`` (``= None``) so it is removed from the model's
    parameter tree (see :class:`mlx.nn.Module.__setattr__`: assigning a
    non-array/dict/list/tuple deregisters the child from the parameter dict).
-   The ``layer_idx`` is also threaded onto ``self_attn`` for diagnostics.
+   ``layer_idx`` is threaded onto ``self_attn``.
 
-2. ``DeepseekV32Attention.__call__`` — wrap so layers where ``self.indexer is
-   None`` take a shared-layer code path that (a) skips the Indexer call and
-   the sparse-mask block, and (b) skips the trailing
-   ``cache[0].keys = mx.depends(cache[0].keys, (cache[1].keys, cache[1].values))``
-   line. On a shared layer ``cache[1]`` is never populated so ``cache[1].keys``
-   is ``None`` and the ``mx.depends`` call would crash. The shared path falls
-   through to dense MLA attention over the full KV window.
+2. ``Indexer.__call__`` — wrap to stash the return tensor on
+   ``self._last_topk_indices`` so the next shared layer in the same forward
+   pass can pick it up.
 
-   .. warning::
-      Inference-quality caveat: the REAP convention is that a ``"shared"``
-      layer reuses the previous ``"full"`` layer's indexer top-K KV
-      selection. This patch does NOT implement that reuse — it runs dense
-      MLA attention over the full KV window, which is the same fallback
-      the upstream Indexer takes when ``k.shape[2] <= self.index_topk``
-      (see ``Indexer.__call__`` returning ``None``). Dense attention is a
-      strict correctness-preserving SUPERSET of any sparse top-K
-      selection (it attends to ALL keys, not just the top-K), so model
-      outputs are bounded above any sparse approximation, never wrong in
-      the NaN/Inf sense — but the per-token logit distribution will
-      differ from a true REAP-reuse implementation on long sequences.
+3. ``DeepseekV32Model.__call__`` — wrap so it threads the most-recent
+   ``"full"`` layer's ``topk_indices`` into each subsequent ``"shared"``
+   layer's attention via an instance attribute
+   ``self_attn._shared_topk_indices`` (cleared after each shared layer
+   reads it). On non-REAP configs (``indexer_types is None``) the wrapped
+   call delegates immediately to the upstream implementation.
 
-      A spec-compliant reuse path would require threading the previous
-      full layer's ``topk_indices`` tensor through
-      ``DeepseekV32Model.__call__`` so each shared layer can pick it up,
-      which is a larger architectural change. Tracked as a follow-up. We
-      log a warning on the FIRST shared-layer forward so the operator
-      knows the dense path is in play.
+4. ``DeepseekV32Attention.__call__`` — wrap so layers where ``self.indexer is
+   None`` take a shared-layer code path that:
 
-3. ``glm_moe_dsa.ModelArgs.from_dict`` — extend ``BaseModelArgs.from_dict``
+   * Reads ``self._shared_topk_indices`` (set by the model-level wrapper).
+     If non-None, applies the same sparse-mask block as the upstream full
+     layer (so the layer attends to the same top-K KV slots the most-recent
+     full layer selected — the REAP reuse contract).
+   * Falls back to dense MLA attention only when the threaded topk is
+     ``None`` (e.g. when the indexer would itself have returned ``None``
+     because ``k.shape[2] <= self.index_topk``). This matches the natural
+     upstream fallback for short sequences.
+   * Skips the trailing
+     ``cache[0].keys = mx.depends(cache[0].keys, (cache[1].keys, cache[1].values))``
+     line because ``cache[1]`` is never populated on a shared layer
+     (``cache[1].keys`` is ``None`` and the ``mx.depends`` call would crash).
+
+5. ``glm_moe_dsa.ModelArgs.from_dict`` — extend ``BaseModelArgs.from_dict``
    filtering so ``indexer_types`` is preserved on the dataclass instance.
    Upstream's filter (``inspect.signature(cls).parameters``) drops keys not
    declared on the dataclass; without this patch ``indexer_types`` is
-   silently dropped and the gate above never fires.
+   silently dropped and the gates above never fire.
 
 What it does NOT change
 -----------------------
 * Configs **without** ``indexer_types`` (legitimate non-REAP DSv32 / GLM-4.6)
-  take the upstream path verbatim. The patched ``__init__`` returns early,
-  the patched ``__call__`` immediately delegates to the original, and
-  ``from_dict`` matches upstream's behavior when ``indexer_types`` is absent.
+  take the upstream path verbatim. Every patched function delegates straight
+  to the original on the no-types branch.
 * No vendored copy of ``deepseek_v32.py``. Total surface area: this module
   plus one import + one call in ``vllm_mlx.model_runner``.
 
-When upstream mlx_lm lands ``indexer_types`` support, delete this module and
-the import in ``vllm_mlx.model_runner`` — nothing else needs to change.
+Concurrency note
+----------------
+The shared-topk thread runs through per-attention-instance attributes
+(``self_attn._shared_topk_indices``). Concurrent forward passes on the same
+model instance would race on these attributes. rapid-mlx's engine serializes
+forward passes per model (one event loop, one model_runner per process), so
+this is fine in production. The model.__call__ wrapper clears each shared
+layer's attribute IMMEDIATELY before the layer runs so stale values from a
+prior forward cannot leak into a fresh one.
+
+When upstream mlx_lm lands first-class ``indexer_types`` support, delete this
+module and the import in ``vllm_mlx.model_runner`` — nothing else needs to
+change.
 """
 
 from __future__ import annotations
@@ -82,10 +98,11 @@ _LOCK = threading.Lock()
 _INSTALLED = False
 _ALLOWED_MODES = ("full", "shared")
 
-# Counter (test-observable) of how many times the shared-layer dense
-# fallback has run. Tests assert against this to prove the gated code
-# path was exercised; production code ignores it.
+# Counters (test-observable) used by the regression suite to prove the
+# gated code paths actually fire. Production code ignores them.
 _SHARED_LAYER_FORWARD_COUNT = 0
+_SHARED_LAYER_REUSE_COUNT = 0  # shared layers that consumed a non-None prior topk
+_SHARED_LAYER_DENSE_FALLBACK_COUNT = 0  # shared layers that hit the dense fallback
 _WARNED_DENSE_FALLBACK = False
 
 # Saved references to the upstream callables; used to undo the patch in tests
@@ -93,6 +110,8 @@ _WARNED_DENSE_FALLBACK = False
 # until the gate is installed.
 _orig_attn_call: Any | None = None
 _orig_decoder_init: Any | None = None
+_orig_indexer_call: Any | None = None
+_orig_model_call: Any | None = None
 _orig_from_dict: Any | None = None
 
 
@@ -114,15 +133,18 @@ def _resolve_mode(types, layer_idx: int) -> str:
     return mode
 
 
-def _validate_anchor(types) -> None:
-    """Fail fast on configs that have no valid ``"full"`` anchor before a
-    ``"shared"`` layer.
+def _validate_anchor(types, num_hidden_layers: int | None = None) -> None:
+    """Fail fast on structurally invalid ``indexer_types`` configs.
 
     REAP-pruned configs always (a) start with a ``"full"`` layer and
     (b) have at least one ``"full"`` somewhere — every ``"shared"`` layer
     by definition reuses a previous full layer's indexer output, so
     a ``"shared"`` at index 0 has nothing to reuse and the config is
-    structurally invalid.
+    structurally invalid. Also (c) the ``indexer_types`` length must match
+    ``num_hidden_layers`` when both are known — a mismatched config would
+    silently treat the over-the-end layers as ``"full"`` and then crash
+    later with "missing weights" instead of a clear validation error
+    (codex finding #2 on PR #967 round 2).
     """
     if types is None:
         return
@@ -145,39 +167,70 @@ def _validate_anchor(types) -> None:
             "'full' (a REAP-pruned config without any full layer is invalid; "
             "shared layers reuse the previous full layer's indexer output)."
         )
+    # (c) length must equal num_hidden_layers when both are known.
+    if num_hidden_layers is not None and len(types) != num_hidden_layers:
+        raise ValueError(
+            f"indexer_types has length {len(types)} but num_hidden_layers="
+            f"{num_hidden_layers}; the lists must be the same length so each "
+            "layer has an explicit 'full'/'shared' designation."
+        )
 
 
 def _shared_layer_attn_call(self, x, mask, cache):
-    """Replica of upstream ``DeepseekV32Attention.__call__`` minus the indexer.
+    """Replica of upstream ``DeepseekV32Attention.__call__`` for layers
+    where ``self.indexer is None``.
 
-    The shared path simply runs dense MLA attention over the full KV window
-    — the same fallback the upstream code naturally takes when
-    ``topk_indices is None`` (e.g. on the very first decode step), but here
-    we also skip the ``mx.depends`` on ``cache[1]`` since the indexer cache
-    is never populated on shared layers and ``cache[1].keys`` is ``None``.
+    Per the REAP reuse contract: if the model-level wrapper threaded a
+    non-None ``topk_indices`` from the prior ``"full"`` layer onto
+    ``self._shared_topk_indices``, apply the same sparse-mask block as
+    the upstream full layer (so this shared layer attends to the same
+    top-K KV slots). Otherwise (no prior topk — typically because the
+    KV cache is shorter than ``self.index_topk`` so the prior indexer
+    itself returned ``None``), fall through to dense MLA attention over
+    the full KV window — the same natural fallback upstream takes.
 
-    Kept inline (instead of monkey-patching the indexer with a stub) so the
-    failure traceback says ``_shared_layer_attn_call`` if anything goes
-    wrong — easier to grep than a stack ending in upstream code.
+    Always skips the ``cache[0].keys = mx.depends(cache[0].keys,
+    (cache[1].keys, cache[1].values))`` line because ``cache[1]`` is
+    never populated on a shared layer.
 
-    Bumps ``_SHARED_LAYER_FORWARD_COUNT`` so tests can prove the gated
-    path was actually exercised on a "shared" layer (catches regressions
-    where a refactor accidentally routes shared layers back through the
-    upstream Indexer-bearing ``__call__``).
+    Kept inline (instead of monkey-patching the indexer with a stub) so
+    the failure traceback says ``_shared_layer_attn_call`` if anything
+    goes wrong — easier to grep than a stack ending in upstream code.
+
+    Bumps test-observable counters:
+
+    * ``_SHARED_LAYER_FORWARD_COUNT`` — total shared-layer forwards.
+    * ``_SHARED_LAYER_REUSE_COUNT`` — shared forwards that successfully
+      consumed a non-None prior topk (proves the REAP reuse path fired).
+    * ``_SHARED_LAYER_DENSE_FALLBACK_COUNT`` — shared forwards that hit
+      the dense fallback (no prior topk available).
     """
-    global _SHARED_LAYER_FORWARD_COUNT, _WARNED_DENSE_FALLBACK
+    global \
+        _SHARED_LAYER_FORWARD_COUNT, \
+        _SHARED_LAYER_REUSE_COUNT, \
+        _SHARED_LAYER_DENSE_FALLBACK_COUNT, \
+        _WARNED_DENSE_FALLBACK
+
     _SHARED_LAYER_FORWARD_COUNT += 1
-    if not _WARNED_DENSE_FALLBACK:
-        _WARNED_DENSE_FALLBACK = True
-        logger.warning(
-            "[deepseek_v32_indexer_gate] running dense MLA attention on "
-            "a 'shared' layer (layer_idx=%s); this differs from the REAP "
-            "reuse-prior-indexer convention. Outputs are bounded by dense "
-            "attention (a strict superset of any top-K sparse selection), "
-            "but per-token logits may differ from a true REAP-reuse "
-            "implementation on long sequences. See the module docstring.",
-            getattr(self, "layer_idx", "?"),
-        )
+    # Consume + clear the threaded topk so a stale value from a prior
+    # forward cannot leak into a fresh one.
+    topk_indices = getattr(self, "_shared_topk_indices", None)
+    self._shared_topk_indices = None
+
+    if topk_indices is None:
+        _SHARED_LAYER_DENSE_FALLBACK_COUNT += 1
+        if not _WARNED_DENSE_FALLBACK:
+            _WARNED_DENSE_FALLBACK = True
+            logger.warning(
+                "[deepseek_v32_indexer_gate] no prior-full-layer topk "
+                "available on shared layer (layer_idx=%s); falling back to "
+                "dense MLA attention. This is the same behavior the "
+                "upstream Indexer takes when k.shape[2] <= index_topk (short "
+                "KV cache), so it is typically benign.",
+                getattr(self, "layer_idx", "?"),
+            )
+    else:
+        _SHARED_LAYER_REUSE_COUNT += 1
 
     import mlx.core as mx
     from mlx_lm.models.base import scaled_dot_product_attention
@@ -202,10 +255,42 @@ def _shared_layer_attn_call(self, x, mask, cache):
     else:
         cache = [None] * 2
 
-    # No indexer => no sparse mask, no ``cache[0].keys = mx.depends(...)`` on
-    # the (unpopulated) ``cache[1]``. Dense MLA attention over the full KV
-    # window is the natural fallback the upstream code already takes when
-    # ``topk_indices is None``.
+    # REAP reuse: apply the prior full layer's top-K KV selection to this
+    # shared layer, exactly as the upstream full path does after running
+    # its own indexer. The sparse-mask block is a verbatim copy of
+    # ``DeepseekV32Attention.__call__`` in mlx_lm 0.31.3.
+    if topk_indices is not None:
+        if L == 1:
+            idx = topk_indices[:, :, 0, :, None]
+            kv_latent = mx.take_along_axis(
+                kv_latent,
+                mx.broadcast_to(idx, idx.shape[:-1] + (kv_latent.shape[-1],)),
+                axis=2,
+            )
+            k_pe = mx.take_along_axis(
+                k_pe,
+                mx.broadcast_to(idx, idx.shape[:-1] + (k_pe.shape[-1],)),
+                axis=2,
+            )
+            if mask is not None:
+                mask = mx.take_along_axis(mask, topk_indices, axis=-1)
+        else:
+            shape = list(topk_indices.shape)
+            shape[-1] = kv_latent.shape[2]
+            sparse_mask = mx.zeros(shape, dtype=mx.bool_)
+            sparse_mask = mx.put_along_axis(
+                sparse_mask, topk_indices, mx.array(True), axis=-1
+            )
+            if mask is not None:
+                sparse_mask = sparse_mask & mask
+            mask = sparse_mask
+
+    # NB: NO ``cache[0].keys = mx.depends(cache[0].keys, (cache[1].keys,
+    # cache[1].values))`` — cache[1] is never populated on a shared layer
+    # so ``cache[1].keys`` is ``None`` and ``mx.depends`` would crash.
+    # Skipping is safe: that line is an upstream graph-pruning hint, not a
+    # correctness requirement.
+
     pe_scores = (q_pe * self.scale) @ k_pe.swapaxes(-1, -2)
     if mask is not None:
         pe_scores = mx.where(
@@ -233,7 +318,13 @@ def _shared_layer_attn_call(self, x, mask, cache):
 
 def install_deepseek_v32_indexer_gate() -> None:
     """Install the indexer gate. Idempotent and thread-safe."""
-    global _INSTALLED, _orig_attn_call, _orig_decoder_init, _orig_from_dict
+    global \
+        _INSTALLED, \
+        _orig_attn_call, \
+        _orig_decoder_init, \
+        _orig_indexer_call, \
+        _orig_model_call, \
+        _orig_from_dict
 
     with _LOCK:
         if _INSTALLED:
@@ -257,6 +348,8 @@ def install_deepseek_v32_indexer_gate() -> None:
 
         _orig_attn_call = ds.DeepseekV32Attention.__call__
         _orig_decoder_init = ds.DeepseekV32DecoderLayer.__init__
+        _orig_indexer_call = ds.Indexer.__call__
+        _orig_model_call = ds.DeepseekV32Model.__call__
         _orig_from_dict = glm.ModelArgs.from_dict
 
         def _patched_decoder_init(self, config, layer_idx):
@@ -264,11 +357,15 @@ def install_deepseek_v32_indexer_gate() -> None:
             types = getattr(config, "indexer_types", None)
             if types is None:
                 return
-            # Fail fast on the all-shared edge case (no valid REAP config has
-            # this shape; bail before load_weights spits a confusing error).
+            # Fail fast on structurally-invalid configs (no anchor, shared at
+            # index 0, length mismatch).
             if layer_idx == 0:
-                _validate_anchor(types)
+                _validate_anchor(types, num_hidden_layers=config.num_hidden_layers)
             self.self_attn.layer_idx = layer_idx
+            # Initialize the topk reuse slot; the model-level wrapper writes
+            # the prior full layer's topk here before invoking the shared
+            # layer's ``__call__``.
+            self.self_attn._shared_topk_indices = None
             mode = _resolve_mode(types, layer_idx)
             if mode == "shared":
                 # Assigning ``None`` to an nn.Module child removes it from
@@ -277,10 +374,80 @@ def install_deepseek_v32_indexer_gate() -> None:
                 # longer demands the absent ``indexer.*`` keys.
                 self.self_attn.indexer = None
 
+        def _patched_indexer_call(self, x, qr, mask, cache=None):
+            # Cache the return tensor on the instance so the model-level
+            # wrapper can pick it up after the full-layer forward and thread
+            # it into the subsequent shared layers.
+            result = _orig_indexer_call(self, x, qr, mask, cache)
+            self._last_topk_indices = result
+            return result
+
         def _patched_attn_call(self, x, mask=None, cache=None):
             if getattr(self, "indexer", None) is not None:
                 return _orig_attn_call(self, x, mask, cache)
             return _shared_layer_attn_call(self, x, mask, cache)
+
+        def _patched_model_call(self, x, cache=None):
+            # Lazy import so the patch module doesn't pull mlx at import.
+            import mlx.core as mx
+            from mlx_lm.models.base import create_attention_mask
+
+            # ``DeepseekV32Model`` (the inner module) doesn't store
+            # ``config`` as an attribute. Pick the config off the first
+            # decoder layer's attention — every layer's
+            # ``self_attn.config`` is set by upstream
+            # ``DeepseekV32Attention.__init__``.
+            types = None
+            if self.layers and self.layers[self.start_idx] is not None:
+                cfg = getattr(self.layers[self.start_idx].self_attn, "config", None)
+                if cfg is not None:
+                    types = getattr(cfg, "indexer_types", None)
+
+            if types is None:
+                # Non-REAP path: delegate to upstream verbatim.
+                return _orig_model_call(self, x, cache)
+
+            # Replica of upstream ``DeepseekV32Model.__call__`` with topk
+            # threading inserted into the layer loop.
+            h = self.embed_tokens(x)
+            pipeline_rank = self.pipeline_rank
+            pipeline_size = self.pipeline_size
+
+            if cache is None:
+                cache = [None] * self.num_layers
+            mask = create_attention_mask(
+                h, cache[0][0] if cache[0] else None, return_array=True
+            )
+
+            if pipeline_rank < pipeline_size - 1:
+                h = mx.distributed.recv_like(h, (pipeline_rank + 1))
+
+            last_topk_indices = None
+            for i in range(self.num_layers):
+                layer = self.layers[self.start_idx + i]
+                layer_idx = self.start_idx + i
+                mode = _resolve_mode(types, layer_idx)
+                if mode == "shared":
+                    # Thread the most-recent full layer's topk into this
+                    # shared layer's attention BEFORE it runs.
+                    layer.self_attn._shared_topk_indices = last_topk_indices
+                h = layer(h, mask, cache[i])
+                if mode == "full":
+                    # Pick up the topk this layer's indexer just produced
+                    # (may be None if k.shape[2] <= index_topk).
+                    indexer = getattr(layer.self_attn, "indexer", None)
+                    if indexer is not None:
+                        last_topk_indices = getattr(indexer, "_last_topk_indices", None)
+
+            if pipeline_rank != 0:
+                h = mx.distributed.send(h, (pipeline_rank - 1) % pipeline_size)
+                if cache[-1] is not None:
+                    cache[-1][0].keys = mx.depends(cache[-1][0].keys, h)
+
+            if pipeline_size > 1:
+                h = mx.distributed.all_gather(h)[: h.shape[0]]
+
+            return self.norm(h)
 
         @classmethod
         def _patched_from_dict(cls, params):
@@ -295,6 +462,8 @@ def install_deepseek_v32_indexer_gate() -> None:
 
         ds.DeepseekV32Attention.__call__ = _patched_attn_call
         ds.DeepseekV32DecoderLayer.__init__ = _patched_decoder_init
+        ds.Indexer.__call__ = _patched_indexer_call
+        ds.DeepseekV32Model.__call__ = _patched_model_call
         glm.ModelArgs.from_dict = _patched_from_dict
         ds._RAPID_MLX_INDEXER_GATE_INSTALLED = True
         _INSTALLED = True
@@ -303,7 +472,13 @@ def install_deepseek_v32_indexer_gate() -> None:
 
 def uninstall_deepseek_v32_indexer_gate() -> None:
     """Undo the gate. Test-only; production code does not call this."""
-    global _INSTALLED, _orig_attn_call, _orig_decoder_init, _orig_from_dict
+    global \
+        _INSTALLED, \
+        _orig_attn_call, \
+        _orig_decoder_init, \
+        _orig_indexer_call, \
+        _orig_model_call, \
+        _orig_from_dict
 
     with _LOCK:
         if not _INSTALLED:
@@ -317,12 +492,18 @@ def uninstall_deepseek_v32_indexer_gate() -> None:
             ds.DeepseekV32Attention.__call__ = _orig_attn_call
         if _orig_decoder_init is not None:
             ds.DeepseekV32DecoderLayer.__init__ = _orig_decoder_init
+        if _orig_indexer_call is not None:
+            ds.Indexer.__call__ = _orig_indexer_call
+        if _orig_model_call is not None:
+            ds.DeepseekV32Model.__call__ = _orig_model_call
         if _orig_from_dict is not None:
             glm.ModelArgs.from_dict = _orig_from_dict
         ds._RAPID_MLX_INDEXER_GATE_INSTALLED = False
         _INSTALLED = False
         _orig_attn_call = None
         _orig_decoder_init = None
+        _orig_indexer_call = None
+        _orig_model_call = None
         _orig_from_dict = None
 
 
