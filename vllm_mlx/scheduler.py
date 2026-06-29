@@ -4400,15 +4400,12 @@ class Scheduler:
             # comparison. The actual cache extraction + safetensors
             # write happens off the response loop; failures are logged
             # and never tear the response down (best-effort persistence,
-            # mirrors the in-process prefix-cache contract). Wrapped in
-            # try/except so a bug in the new module can never crash the
-            # decode path on a live server.
-            try:
-                self._maybe_disk_checkpoint(request, response)
-            except Exception as _ckpt_err:  # pragma: no cover — defensive
-                logger.debug(
-                    f"[kv_checkpoint] hook raised for {request.request_id}: {_ckpt_err}"
-                )
+            # mirrors the in-process prefix-cache contract). Delegates
+            # to ``_safe_disk_checkpoint`` so the silent-swallow
+            # regression guard has a tested entry point — see the
+            # method docstring for the wrong-attribute typos #919
+            # shipped that motivated this split.
+            self._safe_disk_checkpoint(request, response)
 
             # Record first token time for TTFT metric
             if request.first_token_time is None and request.num_output_tokens > 0:
@@ -4584,6 +4581,44 @@ class Scheduler:
 
         return outputs, finished_ids
 
+    def _safe_disk_checkpoint(self, request: Request, response: Any) -> None:
+        """Wrap ``_maybe_disk_checkpoint`` in a never-raise contract.
+
+        Every *expected* skip path inside ``_maybe_disk_checkpoint`` is
+        an explicit early-return — interval disabled, request has no
+        active batch, cache extraction not yet available, etc. Any
+        exception that reaches this wrapper is by definition
+        unexpected: the wrong-attribute typos shipped in PR #919
+        (``self.scheduler_config`` for the config and ``self.batch_gen``
+        for the BatchGenerator) raised AttributeError here every step
+        and stayed silent at ``logger.debug`` for two releases. The
+        wrapper surfaces them at ``warning`` and bumps a Prometheus
+        error counter so the next class of bug is visible in both the
+        log and ``/metrics``. The wrapper itself never raises — a bug
+        in disk-IO must not crash the decode path on a live server.
+
+        Tested in ``tests/test_scheduler_disk_kv_hook.py`` —
+        ``test_safe_disk_checkpoint_records_silent_failure`` is the
+        explicit regression guard for the silent-swallow class of bug.
+        """
+        try:
+            self._maybe_disk_checkpoint(request, response)
+        except Exception as _ckpt_err:  # pragma: no cover — defensive
+            # Late import so a broken disk_kv_checkpoint module
+            # (e.g. ImportError on a stripped-down deployment) never
+            # bubbles up from the error path itself.
+            try:
+                from .runtime import disk_kv_checkpoint as _dkc_err
+
+                _dkc_err.record_hook_error()
+            except Exception:  # pragma: no cover — defensive of the defensive
+                pass
+            logger.warning(
+                "[kv_checkpoint] hook raised for %s: %r",
+                request.request_id,
+                _ckpt_err,
+            )
+
     def _maybe_disk_checkpoint(self, request: Request, response: Any) -> None:
         """Trigger a disk-backed KV checkpoint at the next 256-tok boundary.
 
@@ -4591,7 +4626,7 @@ class Scheduler:
         ``_process_batch_responses`` after the token has been appended to
         the request. Gated tightly so disabled servers pay nothing:
 
-        - ``scheduler_config.kv_disk_checkpoint_interval == 0`` →
+        - ``self.config.kv_disk_checkpoint_interval == 0`` →
           immediate return. This is the dominant case for the first wave
           of deploys (operators opt in deliberately).
         - Lazy per-request bookkeeping: a ``_kv_checkpoint_state`` attr
@@ -4607,7 +4642,7 @@ class Scheduler:
         Any failure is swallowed with a debug log; the caller wraps this
         whole method in a broad try/except as belt-and-suspenders.
         """
-        interval = getattr(self.scheduler_config, "kv_disk_checkpoint_interval", 0)
+        interval = getattr(self.config, "kv_disk_checkpoint_interval", 0)
         if interval is None or interval <= 0:
             return
 
@@ -4632,8 +4667,7 @@ class Scheduler:
                 requires_full_checkpoint=_dkc.model_requires_full_checkpoint(
                     getattr(self, "_model_name", None)
                 ),
-                kv_dtype=getattr(self.scheduler_config, "kv_cache_dtype", "bf16")
-                or "bf16",
+                kv_dtype=getattr(self.config, "kv_cache_dtype", "bf16") or "bf16",
                 model_name=getattr(self, "_model_name", None),
             )
             request._kv_checkpoint_state = state
@@ -4647,7 +4681,7 @@ class Scheduler:
         # method directly on ``batch_gen.active_batch``. Walking both
         # surfaces keeps this hook portable across the mlx-lm versions
         # rapid-mlx supports.
-        batch = getattr(self, "batch_gen", None)
+        batch = getattr(self, "batch_generator", None)
         if batch is None:
             return
         gen_batch = getattr(batch, "_generation_batch", None) or getattr(
@@ -4690,7 +4724,17 @@ class Scheduler:
         try:
             _dkc.enforce_disk_cap(_dkc.get_default_root())
         except Exception as _evict_err:  # pragma: no cover — defensive
-            logger.debug(f"[kv_checkpoint] enforce_disk_cap failed: {_evict_err}")
+            # Promoted from debug to warning + error counter for the
+            # same reason as the outer wrapper at the call site: every
+            # expected skip is an early-return inside enforce_disk_cap,
+            # so anything reaching here is an unexpected fault.
+            try:
+                _dkc.record_hook_error()
+            except Exception:  # pragma: no cover — defensive of the defensive
+                pass
+            logger.warning(
+                "[kv_checkpoint] enforce_disk_cap failed: %r", _evict_err
+            )
 
     def _cleanup_finished(self, finished_ids: set[str]) -> None:
         """Clean up finished requests and store caches for reuse."""

@@ -1399,6 +1399,21 @@ def _render_prometheus(cfg: Any) -> str:
             int(_coerce_number(kv_ckpt_stats.get("evictions"))),
         )
     )
+    lines.extend(
+        _fmt_metric(
+            "rapid_mlx_kv_checkpoint_hook_errors_total",
+            "counter",
+            (
+                "Cumulative unexpected exceptions caught by the scheduler's "
+                "disk-KV hook wrapper. Operators expect this to stay 0 — "
+                "any non-zero value means the hook is silently bailing on "
+                "every call (the typos shipped in #919 sat at debug-level "
+                "for two releases without surfacing; this counter is the "
+                "regression guard for the same class of bug)."
+            ),
+            int(_coerce_number(kv_ckpt_stats.get("hook_errors"))),
+        )
+    )
 
     # Prometheus requires a trailing newline.
     return "\n".join(lines) + "\n"

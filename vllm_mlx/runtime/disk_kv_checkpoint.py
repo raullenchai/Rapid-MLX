@@ -193,12 +193,23 @@ class CheckpointStats:
         evictions: cumulative oldest-first evictions performed because the
             byte total crossed the cap. One per evicted file (so a single
             scan that releases 5 files bumps the counter by 5).
+        hook_errors: cumulative unexpected exceptions caught by the
+            scheduler's disk-KV hook wrapper (``Scheduler.``
+            ``_process_batch_responses`` ``try/except`` around
+            ``_maybe_disk_checkpoint``, plus the ``enforce_disk_cap``
+            catch inside the hook itself). Counts wrong-attribute typos
+            and similarly silent-shipped regressions. **Operators expect
+            this to stay 0.** Added 2026-06-29 after PR #919's
+            ``self.scheduler_config`` / ``self.batch_gen`` typos shipped
+            for two releases without any signal — see the parent commit
+            of this PR for the root-cause writeup.
     """
 
     writes: int = 0
     loads: int = 0
     bytes: int = 0
     evictions: int = 0
+    hook_errors: int = 0
 
 
 # Module-level stats (process-monotonic). Mutated under the lock below.
@@ -221,7 +232,23 @@ def get_stats() -> dict[str, int]:
             "loads": _STATS.loads,
             "bytes": _STATS.bytes,
             "evictions": _STATS.evictions,
+            "hook_errors": _STATS.hook_errors,
         }
+
+
+def record_hook_error() -> None:
+    """Bump the ``hook_errors`` counter under the stats lock.
+
+    The scheduler's wrapper at ``Scheduler._process_batch_responses``
+    calls this every time the disk-KV hook raises an unexpected
+    exception (every *expected* skip path is an early-return inside
+    ``_maybe_disk_checkpoint`` and never reaches the wrapper). The
+    `enforce_disk_cap` catch inside the hook itself also calls this.
+    Surfaces silent regressions like the wrong-attribute typos shipped
+    in #919 — see the ``hook_errors`` field doc.
+    """
+    with _STATS_LOCK:
+        _STATS.hook_errors += 1
 
 
 def reset_stats_for_tests() -> None:
@@ -1009,6 +1036,7 @@ __all__ = [
     "maybe_write_checkpoint",
     "metadata_path",
     "model_requires_full_checkpoint",
+    "record_hook_error",
     "request_hash",
     "reset_stats_for_tests",
     "resolve_max_disk_bytes",
