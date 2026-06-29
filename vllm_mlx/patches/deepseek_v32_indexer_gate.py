@@ -145,11 +145,32 @@ def _validate_anchor(types, num_hidden_layers: int | None = None) -> None:
     silently treat the over-the-end layers as ``"full"`` and then crash
     later with "missing weights" instead of a clear validation error
     (codex finding #2 on PR #967 round 2).
+
+    Malformed non-``None`` values (wrong type, empty, invalid mode) are
+    rejected up-front rather than silently treated as all-``"full"``
+    (codex NIT on PR #967 round 4).
     """
     if types is None:
         return
-    if not isinstance(types, (list, tuple)) or len(types) == 0:
-        return
+    # Reject malformed non-None values up-front — previously this branch
+    # silently returned and downstream code would treat the config as all-
+    # "full", masking the misconfiguration until safetensors loading
+    # eventually crashed with a less clear "missing weights" error.
+    if not isinstance(types, (list, tuple)):
+        raise ValueError(
+            f"indexer_types must be a list or tuple when present, got "
+            f"{type(types).__name__}"
+        )
+    if len(types) == 0:
+        raise ValueError(
+            "indexer_types is present but empty; omit the field entirely "
+            "for non-REAP configs"
+        )
+    for i, m in enumerate(types):
+        if m not in _ALLOWED_MODES:
+            raise ValueError(
+                f"indexer_types[{i}]={m!r}; expected one of {_ALLOWED_MODES}"
+            )
     # (a) the very first entry must be "full" — there is no prior layer
     # for an index-0 "shared" to reuse from.
     if types[0] != "full":
@@ -443,26 +464,34 @@ def install_deepseek_v32_indexer_gate() -> None:
             if pipeline_rank < pipeline_size - 1:
                 h = mx.distributed.recv_like(h, (pipeline_rank + 1))
 
-            # Initialize from the most-recent full layer in this rank's
-            # range that has run on a prior forward call (its indexer's
-            # ``_last_topk_indices`` slot persists). Critical for two
-            # cases (codex finding #1 on PR #967 round 3):
-            #   (a) pipeline-parallel rank with ``start_idx > 0`` whose
-            #       first owned layer is "shared" — there is no preceding
-            #       full layer in this rank's range to refresh from.
-            #   (b) a fresh decode call after prefill where the layer
-            #       loop's first iteration is the same full layer that
-            #       just ran the last time — without this seeding, that
-            #       full layer's own forward is the FIRST thing to refresh
-            #       ``last_topk_indices``, so any shared layer in
-            #       between would briefly see None.
+            # Initialize from the most-recent full layer anywhere in
+            # ``self.layers`` that has run on a prior forward call (its
+            # indexer's ``_last_topk_indices`` slot persists). Critical
+            # for the case (codex finding #1 on PR #967 round 3) where
+            # this rank's first iterated layer is ``"shared"`` — e.g.
+            # a pipeline-parallel slice whose head is shared, or a
+            # future model layout that places shared layers ahead of
+            # any full layer in this rank. Without this seed the
+            # leading shared layers would dense-fall-back on every
+            # decode step.
+            #
+            # We iterate ALL ``self.layers`` (not just
+            # ``[start_idx, start_idx+num_layers)``) so a full layer
+            # outside this rank's iteration window — but still owned by
+            # this Python-side model instance — can be the source.
+            # Pipeline-parallel ranks that own NO full layer at all
+            # cannot seed from another rank's indexer state via this
+            # path; that's a separate (out-of-scope here)
+            # inter-rank-communication concern and the dense fallback
+            # remains correct for it.
+            #
             # ``_last_topk_indices`` is only present after at least one
             # full-layer forward; on the very first call it is None and
-            # leading shared layers correctly hit the dense fallback (the
-            # same path upstream Indexer takes when k.shape[2] <= index_topk).
+            # leading shared layers correctly hit the dense fallback
+            # (the same path upstream Indexer takes when
+            # ``k.shape[2] <= index_topk``).
             last_topk_indices = None
-            for i in range(self.num_layers - 1, -1, -1):
-                layer = self.layers[self.start_idx + i]
+            for layer in reversed(self.layers):
                 if layer is None:
                     continue
                 indexer = getattr(layer.self_attn, "indexer", None)
@@ -506,6 +535,15 @@ def install_deepseek_v32_indexer_gate() -> None:
             # is fine on a non-frozen dataclass; downstream code reads via
             # ``getattr(config, "indexer_types", None)``.
             if "indexer_types" in params:
+                # Validate at config-parse time so a malformed REAP config
+                # fails clearly here rather than later in weight loading
+                # (codex NIT, PR #967 round 4). ``_validate_anchor`` enforces
+                # type, allowed values, length, anchor-at-0 and at-least-one-
+                # anchor — see its docstring.
+                _validate_anchor(
+                    params["indexer_types"],
+                    num_hidden_layers=params.get("num_hidden_layers"),
+                )
                 instance.indexer_types = params["indexer_types"]
             return instance
 

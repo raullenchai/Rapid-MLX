@@ -362,51 +362,86 @@ def test_gate_rejects_all_shared_indexer_types(repro_dir):
 
 
 def test_decode_step_after_prefill_still_reuses_topk(repro_dir):
-    """Second forward call (decode) reuses topk from the prior forward.
+    """Second forward call (decode) reuses topk from the prior forward
+    EVEN WHEN the first iterated layer in the decode pass is ``"shared"``.
 
     Codex finding #1 on PR #967 round 3: the model-level wrapper reset
-    ``last_topk_indices`` to ``None`` on every ``__call__``, so the
-    leading shared layer in a decode step could briefly see ``None``
-    before the first full layer refreshed it. The current implementation
-    seeds ``last_topk_indices`` from the most-recent full layer's
-    persisted ``_last_topk_indices`` at the top of the loop. Pin it
-    here: after a prefill forward, a decode forward continues to hit
-    the REAP reuse path on every shared layer (no dense fallback).
+    ``last_topk_indices`` to ``None`` on every ``__call__``, so any
+    leading shared layer in a decode step could fall back to dense.
+    The current implementation seeds ``last_topk_indices`` from the
+    most-recent full layer's persisted ``_last_topk_indices`` by
+    scanning all of ``self.layers`` (not just this rank's slice).
+
+    Codex finding (PR #967 round 4): a test that uses
+    ``["full","shared","full","shared"]`` would still pass with the
+    seed code deleted, because layer 0 (full) re-runs first and
+    refreshes ``last_topk_indices`` before any shared layer. To
+    actually exercise the seed code path, construct a scenario where
+    the first iterated layer in the decode pass is ``"shared"`` —
+    here we use a config with a single full anchor at layer 0 and
+    then simulate a pipeline-parallel rank that only iterates layers
+    [1, 2, 3] (all shared). Layer 0 stays in ``self.layers`` so the
+    seed loop can find its persisted state.
     """
     from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
 
     gate.install_deepseek_v32_indexer_gate()
-    repro = _forge_repro(repro_dir, ["full", "shared", "full", "shared"])
+    # Single full anchor at index 0, three shared layers after.
+    repro = _forge_repro(repro_dir, ["full", "shared", "shared", "shared"])
 
     from mlx_lm.models.cache import make_prompt_cache
     from mlx_lm.utils import load_model
 
     model, _cfg = load_model(repro)
+    inner = model.model  # DeepseekV32Model
 
-    # Prefill
+    # ---- Prefill on the full model: layer 0 (full) populates its
+    # indexer._last_topk_indices, all 3 shared layers reuse it.
     cache = make_prompt_cache(model)
     gate._SHARED_LAYER_REUSE_COUNT = 0
     gate._SHARED_LAYER_DENSE_FALLBACK_COUNT = 0
     prefill = mx.array([[1, 2, 3, 4, 5]], dtype=mx.int32)
     logits = model(prefill, cache=cache)
     mx.eval(logits)
-    assert gate._SHARED_LAYER_REUSE_COUNT == 2
+    assert gate._SHARED_LAYER_REUSE_COUNT == 3
     assert gate._SHARED_LAYER_DENSE_FALLBACK_COUNT == 0
+    # Sanity: layer 0's indexer DID persist a topk tensor.
+    assert (
+        getattr(inner.layers[0].self_attn.indexer, "_last_topk_indices", None)
+        is not None
+    )
 
-    # Decode step (single new token). The full layers refresh
-    # _last_topk_indices on each step; the seeded loop initial value
-    # also picks up the prior call's last full layer in case ``start_idx
-    # > 0`` (pipeline-parallel) or a future model layout puts a leading
-    # shared layer ahead of all full layers in this rank.
+    # ---- Simulate a pipeline-parallel rank-1 that only iterates
+    # layers [1, 2, 3] (all shared). With this layout, the decode
+    # pass's FIRST iterated layer is shared — the only way for it to
+    # hit the REAP reuse path is if `last_topk_indices` is seeded
+    # from layer 0's persisted indexer state BEFORE the layer loop
+    # begins. Without the seed code, all three shared layers fall
+    # back to dense.
+    inner.start_idx = 1
+    inner.num_layers = 3
+    # The layer loop now consumes cache[0..2] for layers [1..3]; drop
+    # cache[0] which was for layer 0.
+    cache = cache[1:]
+
     gate._SHARED_LAYER_REUSE_COUNT = 0
     gate._SHARED_LAYER_DENSE_FALLBACK_COUNT = 0
     next_tok = mx.array([[6]], dtype=mx.int32)
     logits = model(next_tok, cache=cache)
     mx.eval(logits)
-    assert gate._SHARED_LAYER_REUSE_COUNT == 2, (
-        "decode step lost topk reuse — "
+    # Three shared layers, all must reuse — dense fallback would mean
+    # the seed code path didn't fire. The previous-round test (using
+    # ["full","shared","full","shared"] with start_idx=0) would still
+    # have passed without the seed code because layer 0 re-runs first
+    # in the iteration; this test fails if the seed code is deleted.
+    assert gate._SHARED_LAYER_REUSE_COUNT == 3, (
+        "decode step with leading shared layer in this rank lost the seed-"
+        "from-prior-forward topk reuse — "
         f"reuse={gate._SHARED_LAYER_REUSE_COUNT}, "
-        f"dense_fallback={gate._SHARED_LAYER_DENSE_FALLBACK_COUNT}"
+        f"dense_fallback={gate._SHARED_LAYER_DENSE_FALLBACK_COUNT}. The "
+        "seed loop at the top of `_patched_model_call` must find layer 0's "
+        "persisted indexer._last_topk_indices and thread it into the first "
+        "iterated shared layer (codex PR #967 round-4 finding)."
     )
     assert gate._SHARED_LAYER_DENSE_FALLBACK_COUNT == 0
 
