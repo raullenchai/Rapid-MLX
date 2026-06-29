@@ -438,24 +438,54 @@ def install_deepseek_v32_indexer_gate() -> None:
             # ``config`` as an attribute. Pick the config off the first
             # decoder layer's attention — every layer's
             # ``self_attn.config`` is set by upstream
-            # ``DeepseekV32Attention.__init__``. Bounds-check
-            # ``start_idx`` so a pipeline/sharded layout with an empty
-            # local slice (or out-of-range ``start_idx``) safely
-            # delegates to upstream (codex finding #3 on PR #967 round 5).
-            types = None
-            if (
-                self.layers
+            # ``DeepseekV32Attention.__init__``.
+            #
+            # The slice is considered "inspectable" when the local
+            # ``self.layers`` list is non-empty and the local
+            # ``start_idx`` points to a real layer in it. An out-of-
+            # range ``start_idx`` is a pre-condition violation
+            # specifically for REAP shards (single-rank, non-REAP
+            # models always have ``start_idx == 0`` and a populated
+            # layer list, so they cannot hit this branch).
+            in_range = (
+                bool(self.layers)
                 and 0 <= self.start_idx < len(self.layers)
                 and self.layers[self.start_idx] is not None
-            ):
+            )
+            types = None
+            if in_range:
                 cfg = getattr(self.layers[self.start_idx].self_attn, "config", None)
                 if cfg is not None:
                     types = getattr(cfg, "indexer_types", None)
 
             if types is None:
-                # Non-REAP path (or out-of-range slice) — delegate to
-                # upstream verbatim.
+                # Non-REAP path: delegate to upstream verbatim. If
+                # ``in_range`` is False but this is genuinely a non-REAP
+                # model, upstream's own forward will handle the bogus
+                # slice the same way it always has — we are not making
+                # things any worse. We do NOT reach into the REAP path
+                # in this branch.
+                if not in_range:
+                    # Sanity: a non-REAP model with an out-of-range
+                    # slice is operator error. Delegating to upstream
+                    # here matches the prior behavior; we intentionally
+                    # do not raise so legitimate non-REAP edge cases
+                    # are not regressed.
+                    pass
                 return _orig_model_call(self, x, cache)
+
+            # From here on we know we're in a REAP path. Reject any
+            # out-of-range slice for REAP shards explicitly — silently
+            # delegating to upstream would leave the REAP semantic
+            # ambiguous (codex finding #2 on PR #967 round 8).
+            if not in_range:
+                raise ValueError(
+                    "deepseek_v32_indexer_gate: REAP shard start_idx="
+                    f"{self.start_idx} is out of range for local layers "
+                    f"list of length {len(self.layers)}. Each rank's "
+                    "start_idx must point to a real layer in its local "
+                    "self.layers."
+                )
 
             # Validate the local layer slice before entering the REAP
             # path: a malformed pipeline shard whose ``num_layers``
@@ -541,6 +571,17 @@ def install_deepseek_v32_indexer_gate() -> None:
             # here.
             last_topk_indices = None
 
+            # Cache contract (mirrors upstream DeepseekV3Model.__call__
+            # exactly): ``cache`` is the LOCAL per-rank cache, length
+            # ``self.num_layers`` (not the full model's
+            # ``num_hidden_layers``). ``cache[i]`` corresponds to
+            # ``self.layers[self.start_idx + i]`` — the i-th layer in
+            # THIS rank's slice. Upstream's ``DeepseekV3Model.make_cache``
+            # builds the per-rank slice list and the wrapper's forward
+            # iterates ``enumerate(self.layers[start:end])`` indexing
+            # ``cache[e]`` the same way. Do not change ``cache[i]`` to
+            # ``cache[layer_idx]`` — it would mis-index the per-rank
+            # cache list and corrupt KV state across layers.
             for i in range(self.num_layers):
                 layer = self.layers[self.start_idx + i]
                 layer_idx = self.start_idx + i
