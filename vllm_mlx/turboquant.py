@@ -64,9 +64,23 @@ def resolve_turboquant_mode_default(args: Any, *, model_name: str) -> str | None
     when the legacy ``--kv-cache-quantization`` is pinned (mutually
     exclusive); else ``"k8v4"`` when the alias profile carries
     ``turboquant_tier == "k8v4_verified"``; else ``None``.
+
+    The sentinel value ``"none"`` (passed by the operator as
+    ``--kv-cache-turboquant none``) is the explicit off-switch — it
+    bypasses the ``k8v4_verified`` auto-resolution and returns
+    ``None`` so the engine boots with the bare FP16 KV path. This
+    is the A/B knob for the ``k8v4_verified`` decode-ratio gate.
     """
-    if getattr(args, "kv_cache_turboquant", None) is not None:
-        return args.kv_cache_turboquant
+    raw = getattr(args, "kv_cache_turboquant", None)
+    if raw == "none":
+        logger.info(
+            "TurboQuant off-switch: --kv-cache-turboquant=none — disabling "
+            "TurboQuant even though alias %r may carry turboquant_tier.",
+            model_name,
+        )
+        return None
+    if raw is not None:
+        return raw
     if getattr(args, "kv_cache_quantization", False):
         return None
     try:

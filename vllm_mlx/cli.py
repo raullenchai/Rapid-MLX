@@ -5938,6 +5938,10 @@ Examples:
     #   --kv-cache-turboquant              → V-only legacy (v4)
     #   --kv-cache-turboquant v4           → V-only explicit
     #   --kv-cache-turboquant k8v4         → K-8bit + V-4bit mix (R15 Phase 4)
+    #   --kv-cache-turboquant none         → explicit off-switch (overrides
+    #                                        alias ``turboquant_tier=k8v4_verified``
+    #                                        auto-resolution; see
+    #                                        ``resolve_turboquant_mode_default``)
     #
     # The bare-flag form preserves PR #157 backward compatibility. Mode
     # is mutually exclusive with --kv-cache-quantization.
@@ -5946,12 +5950,15 @@ Examples:
         nargs="?",
         const="v4",
         default=None,
-        choices=["v4", "k8v4"],
+        choices=["v4", "k8v4", "none"],
         help="Enable TurboQuant KV-cache compression. ``v4`` (default when "
         "the flag is bare) is V-only 3-4 bit Lloyd-Max with K in FP16; "
         "``k8v4`` is the R15 Phase 4 mix — K at 8-bit Walsh-Hadamard + V at "
-        "4-bit Lloyd-Max (~4.6x KV compression on dense models). "
-        "Experimental — mutually exclusive with --kv-cache-quantization.",
+        "4-bit Lloyd-Max (~4.6x KV compression on dense models); ``none`` "
+        "is the explicit off-switch — overrides the alias-driven "
+        "``turboquant_tier=k8v4_verified`` default so the operator can A/B "
+        "the bare FP16 KV path. Experimental — mutually exclusive with "
+        "--kv-cache-quantization.",
     )
     serve_parser.add_argument(
         "--kv-cache-turboquant-bits",
