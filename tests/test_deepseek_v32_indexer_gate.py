@@ -211,14 +211,21 @@ def test_upstream_without_gate_fails_with_missing_indexer_keys(monkeypatch, repr
 def test_gate_loads_mixed_full_shared_config(repro_dir):
     """4-layer ``["full","shared","full","shared"]`` config loads cleanly.
 
-    Only "full" layers retain an Indexer; "shared" layers have
-    ``self_attn.indexer is None``.
-    """
-    from vllm_mlx.patches.deepseek_v32_indexer_gate import (
-        install_deepseek_v32_indexer_gate,
-    )
+    Pins three properties beyond "no crash on load":
 
-    install_deepseek_v32_indexer_gate()
+    1. Only "full" layers retain an Indexer; "shared" layers have
+       ``self_attn.indexer is None`` (load-time gate fired correctly).
+    2. The shared-layer attention codepath is actually invoked during
+       forward (the counter ``_SHARED_LAYER_FORWARD_COUNT`` increments
+       by exactly the number of shared layers traversed). Catches
+       regressions where a refactor accidentally routes shared layers
+       back through the upstream Indexer-bearing ``__call__``.
+    3. Forward output is finite (no NaN/Inf) — the dense-attention
+       fallback on shared layers produces numerically valid logits.
+    """
+    from vllm_mlx.patches import deepseek_v32_indexer_gate as gate
+
+    gate.install_deepseek_v32_indexer_gate()
     repro = _forge_repro(repro_dir, ["full", "shared", "full", "shared"])
 
     from mlx_lm.utils import load_model
@@ -226,17 +233,35 @@ def test_gate_loads_mixed_full_shared_config(repro_dir):
     model, _cfg = load_model(repro)
     layers = model.model.layers
     assert len(layers) == 4
+    # (1) load-time gate
     assert layers[0].self_attn.indexer is not None
     assert layers[1].self_attn.indexer is None
     assert layers[2].self_attn.indexer is not None
     assert layers[3].self_attn.indexer is None
 
-    # And a forward pass through the model executes without crash on
-    # both the full and shared layers.
+    # (2) shared-layer code path is exercised exactly once per shared layer
+    # per forward call. Reset the counter, run forward, assert delta.
+    gate._SHARED_LAYER_FORWARD_COUNT = 0
     prompt = mx.array([[1, 2, 3, 4, 5]], dtype=mx.int32)
     out = model(prompt)
     mx.eval(out)
     assert out.shape == (1, 5, 256)
+    # 2 "shared" layers in this config; forward visits each once.
+    assert gate._SHARED_LAYER_FORWARD_COUNT == 2, (
+        "shared-layer attention path was not invoked exactly twice — "
+        f"got {gate._SHARED_LAYER_FORWARD_COUNT}. A regression may have "
+        "routed shared layers back through the upstream Indexer path."
+    )
+
+    # (3) logits are finite (synthetic zero weights make absolute values
+    # tiny but the dense-attention fallback should not produce NaN/Inf).
+    import math
+
+    out_max = float(mx.max(mx.abs(out)).item())
+    assert math.isfinite(out_max), (
+        f"forward output contains NaN/Inf (max |.|={out_max}); the dense "
+        "shared-layer attention path produced numerically invalid logits"
+    )
 
 
 # ----------------------------------------------------------------------
@@ -283,6 +308,11 @@ def test_gate_rejects_all_shared_indexer_types(repro_dir):
     the shared layers reuse a prior full layer's indexer output. An all-
     shared config has no Indexer at all and could never be inferenced.
     Fail fast at model build instead of crashing later in forward.
+
+    The (a) index-0 check fires first (``shared`` at the first layer has
+    no anchor to reuse), so the ``ValueError`` message specifically calls
+    out the first-layer violation; the all-shared check is the (b)
+    defensive backstop covered by ``test_gate_rejects_shared_at_index_zero``.
     """
     from vllm_mlx.patches.deepseek_v32_indexer_gate import (
         install_deepseek_v32_indexer_gate,
@@ -299,5 +329,35 @@ def test_gate_rejects_all_shared_indexer_types(repro_dir):
 
     from mlx_lm.utils import load_model
 
-    with pytest.raises(ValueError, match="no 'full' anchor"):
+    with pytest.raises(
+        ValueError, match="(?:no 'full' anchor|first layer must be 'full')"
+    ):
+        load_model(repro)
+
+
+def test_gate_rejects_shared_at_index_zero(repro_dir):
+    """``["shared", "full", "full", "full"]`` is invalid — index-0 has no
+    anchor to reuse.
+
+    Codex finding (PR #967, round 1): the original ``_validate_anchor``
+    only rejected all-``"shared"`` configs and accepted ``["shared",
+    "full", ...]`` as valid. The first-layer guard added in response
+    rejects any ``indexer_types[0] != "full"``; pin it here.
+    """
+    from vllm_mlx.patches.deepseek_v32_indexer_gate import (
+        install_deepseek_v32_indexer_gate,
+    )
+
+    install_deepseek_v32_indexer_gate()
+    repro = _forge_repro(
+        repro_dir,
+        ["shared", "full", "full", "full"],
+        # Lie about safetensors so the validator fires before
+        # missing-keys does (layer 0's safetensors emits "full" keys).
+        layer_modes_for_safetensors=["full"] * 4,
+    )
+
+    from mlx_lm.utils import load_model
+
+    with pytest.raises(ValueError, match="first layer must be 'full'"):
         load_model(repro)

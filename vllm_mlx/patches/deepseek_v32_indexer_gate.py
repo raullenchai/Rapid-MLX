@@ -30,6 +30,26 @@ What this module patches
    is ``None`` and the ``mx.depends`` call would crash. The shared path falls
    through to dense MLA attention over the full KV window.
 
+   .. warning::
+      Inference-quality caveat: the REAP convention is that a ``"shared"``
+      layer reuses the previous ``"full"`` layer's indexer top-K KV
+      selection. This patch does NOT implement that reuse — it runs dense
+      MLA attention over the full KV window, which is the same fallback
+      the upstream Indexer takes when ``k.shape[2] <= self.index_topk``
+      (see ``Indexer.__call__`` returning ``None``). Dense attention is a
+      strict correctness-preserving SUPERSET of any sparse top-K
+      selection (it attends to ALL keys, not just the top-K), so model
+      outputs are bounded above any sparse approximation, never wrong in
+      the NaN/Inf sense — but the per-token logit distribution will
+      differ from a true REAP-reuse implementation on long sequences.
+
+      A spec-compliant reuse path would require threading the previous
+      full layer's ``topk_indices`` tensor through
+      ``DeepseekV32Model.__call__`` so each shared layer can pick it up,
+      which is a larger architectural change. Tracked as a follow-up. We
+      log a warning on the FIRST shared-layer forward so the operator
+      knows the dense path is in play.
+
 3. ``glm_moe_dsa.ModelArgs.from_dict`` — extend ``BaseModelArgs.from_dict``
    filtering so ``indexer_types`` is preserved on the dataclass instance.
    Upstream's filter (``inspect.signature(cls).parameters``) drops keys not
@@ -62,6 +82,12 @@ _LOCK = threading.Lock()
 _INSTALLED = False
 _ALLOWED_MODES = ("full", "shared")
 
+# Counter (test-observable) of how many times the shared-layer dense
+# fallback has run. Tests assert against this to prove the gated code
+# path was exercised; production code ignores it.
+_SHARED_LAYER_FORWARD_COUNT = 0
+_WARNED_DENSE_FALLBACK = False
+
 # Saved references to the upstream callables; used to undo the patch in tests
 # and (rarely) at runtime via ``uninstall_deepseek_v32_indexer_gate``. ``None``
 # until the gate is installed.
@@ -89,16 +115,30 @@ def _resolve_mode(types, layer_idx: int) -> str:
 
 
 def _validate_anchor(types) -> None:
-    """Fail fast on configs with no ``"full"`` anchor.
+    """Fail fast on configs that have no valid ``"full"`` anchor before a
+    ``"shared"`` layer.
 
-    A real REAP-pruned model always has at least one ``"full"`` layer at the
-    front; an all-``"shared"`` config would have no Indexer weights at all
-    and could never be inferenced.
+    REAP-pruned configs always (a) start with a ``"full"`` layer and
+    (b) have at least one ``"full"`` somewhere — every ``"shared"`` layer
+    by definition reuses a previous full layer's indexer output, so
+    a ``"shared"`` at index 0 has nothing to reuse and the config is
+    structurally invalid.
     """
     if types is None:
         return
     if not isinstance(types, (list, tuple)) or len(types) == 0:
         return
+    # (a) the very first entry must be "full" — there is no prior layer
+    # for an index-0 "shared" to reuse from.
+    if types[0] != "full":
+        raise ValueError(
+            f"indexer_types[0]={types[0]!r}; the first layer must be "
+            "'full' (a 'shared' layer at index 0 has no previous full "
+            "layer to reuse the indexer output from)."
+        )
+    # (b) at least one "full" anchor must exist. Redundant given (a),
+    # but kept defensively so refactors of (a) don't silently weaken
+    # the validator.
     if all(m == "shared" for m in types):
         raise ValueError(
             "indexer_types has no 'full' anchor — at least one layer must be "
@@ -107,9 +147,7 @@ def _validate_anchor(types) -> None:
         )
 
 
-def _shared_layer_attn_call(
-    self, x, mask, cache
-):  # pragma: no cover - exercised by smoke test
+def _shared_layer_attn_call(self, x, mask, cache):
     """Replica of upstream ``DeepseekV32Attention.__call__`` minus the indexer.
 
     The shared path simply runs dense MLA attention over the full KV window
@@ -121,7 +159,26 @@ def _shared_layer_attn_call(
     Kept inline (instead of monkey-patching the indexer with a stub) so the
     failure traceback says ``_shared_layer_attn_call`` if anything goes
     wrong — easier to grep than a stack ending in upstream code.
+
+    Bumps ``_SHARED_LAYER_FORWARD_COUNT`` so tests can prove the gated
+    path was actually exercised on a "shared" layer (catches regressions
+    where a refactor accidentally routes shared layers back through the
+    upstream Indexer-bearing ``__call__``).
     """
+    global _SHARED_LAYER_FORWARD_COUNT, _WARNED_DENSE_FALLBACK
+    _SHARED_LAYER_FORWARD_COUNT += 1
+    if not _WARNED_DENSE_FALLBACK:
+        _WARNED_DENSE_FALLBACK = True
+        logger.warning(
+            "[deepseek_v32_indexer_gate] running dense MLA attention on "
+            "a 'shared' layer (layer_idx=%s); this differs from the REAP "
+            "reuse-prior-indexer convention. Outputs are bounded by dense "
+            "attention (a strict superset of any top-K sparse selection), "
+            "but per-token logits may differ from a true REAP-reuse "
+            "implementation on long sequences. See the module docstring.",
+            getattr(self, "layer_idx", "?"),
+        )
+
     import mlx.core as mx
     from mlx_lm.models.base import scaled_dot_product_attention
 
