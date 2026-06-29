@@ -4732,9 +4732,7 @@ class Scheduler:
                 _dkc.record_hook_error()
             except Exception:  # pragma: no cover — defensive of the defensive
                 pass
-            logger.warning(
-                "[kv_checkpoint] enforce_disk_cap failed: %r", _evict_err
-            )
+            logger.warning("[kv_checkpoint] enforce_disk_cap failed: %r", _evict_err)
 
     def _cleanup_finished(self, finished_ids: set[str]) -> None:
         """Clean up finished requests and store caches for reuse."""

@@ -274,9 +274,7 @@ def test_safe_disk_checkpoint_records_silent_failure(
     # what the #919 typos did. Direct attribute write because Scheduler
     # is a regular class, not a dataclass.
     def _raises(self: Scheduler, request: Request, response: Any) -> None:
-        raise AttributeError(
-            "Scheduler object has no attribute 'scheduler_config'"
-        )
+        raise AttributeError("Scheduler object has no attribute 'scheduler_config'")
 
     monkeypatch.setattr(Scheduler, "_maybe_disk_checkpoint", _raises)
 
@@ -304,6 +302,16 @@ def test_safe_disk_checkpoint_records_silent_failure(
         f"guarding against. caplog records: {[(r.levelname, r.getMessage()) for r in caplog.records]}"
     )
 
-    # 3. Never re-raise — the assertion above already passed, but verify
-    # explicitly that we got past the call.
-    assert True
+    # 3. Never re-raise — the wrapper's contract is that it MUST NOT
+    # propagate exceptions, because a disk-IO failure must not crash a
+    # live decode. Re-invoke the wrapper inside ``pytest.raises`` with a
+    # ``no exception`` clause (negative-control idiom) so a future
+    # refactor that drops the broad ``except`` is caught here, not by
+    # a request timing out in production.
+    sched._safe_disk_checkpoint(req, response=SimpleNamespace())  # must not raise
+
+    # And the regression test would have also caught the *original* bug
+    # had it been in place at #919's review — bump the assertion to
+    # double-check the second call ticked again, so a "swallows but
+    # forgets to record" regression also fails here.
+    assert _dkc.get_stats()["hook_errors"] == after + 1
