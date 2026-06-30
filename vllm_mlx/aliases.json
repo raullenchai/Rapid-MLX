@@ -34,7 +34,8 @@
     "is_hybrid": false,
     "is_hybrid_explicit": true,
     "supports_spec_decode": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "turboquant_tier": "k8v4_verified"
   },
   "qwen3.5-9b-8bit": {
     "hf_path": "mlx-community/Qwen3.5-9B-8bit",
@@ -45,7 +46,8 @@
     "is_moe": false,
     "supports_spec_decode": false,
     "supports_dflash": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "turboquant_tier": "k8v4_verified"
   },
   "qwen3.5-9b-6bit": {
     "hf_path": "mlx-community/Qwen3.5-9B-6bit",
@@ -63,7 +65,8 @@
     "is_hybrid": false,
     "is_hybrid_explicit": true,
     "supports_spec_decode": false,
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "turboquant_tier": "k8v4_verified"
   },
   "qwen3.5-35b-8bit": {
     "hf_path": "mlx-community/Qwen3.5-35B-A3B-8bit",
@@ -72,8 +75,7 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "pflash_tier": "verified"
   },
   "qwen3.5-35b-4bit": {
     "hf_path": "mlx-community/Qwen3.5-35B-A3B-4bit",
@@ -82,8 +84,7 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "pflash_tier": "verified"
   },
   "qwen3.5-35b-6bit": {
     "hf_path": "mlx-community/Qwen3.5-35B-A3B-6bit",
@@ -193,7 +194,8 @@
     "supports_spec_decode": false,
     "supports_dflash": true,
     "dflash_draft_model": "z-lab/Qwen3.5-27B-DFlash",
-    "pflash_tier": "verified"
+    "pflash_tier": "verified",
+    "turboquant_tier": "k8v4_verified"
   },
   "qwen3.5-27b-6bit": {
     "hf_path": "mlx-community/Qwen3.5-27B-6bit",
@@ -278,8 +280,7 @@
     "is_hybrid": true,
     "supports_spec_decode": false,
     "is_moe": true,
-    "pflash_tier": "verified",
-    "turboquant_tier": "k8v4_verified"
+    "pflash_tier": "verified"
   },
   "qwen3.6-35b-dwq": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit-DWQ",
@@ -297,8 +298,7 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true,
-    "turboquant_tier": "k8v4_verified"
+    "is_moe": true
   },
   "qwen3.6-35b-nvfp4": {
     "hf_path": "mlx-community/Qwen3.6-35B-A3B-nvfp4",
@@ -306,8 +306,7 @@
     "reasoning_parser": "qwen3",
     "is_hybrid": true,
     "supports_spec_decode": false,
-    "is_moe": true,
-    "turboquant_tier": "k8v4_verified"
+    "is_moe": true
   },
   "deepseek-v4-flash-2bit": {
     "hf_path": "mlx-community/DeepSeek-V4-Flash-2bit-DQ",
