@@ -18,11 +18,20 @@ from typing import TYPE_CHECKING, Any
 
 import mlx.core as mx
 
+from vllm_mlx.patches.deepseek_v32_indexer_gate import (
+    install_deepseek_v32_indexer_gate as _install_dsv32_indexer_gate,
+)
+
 if TYPE_CHECKING:
     from vllm.config import VllmConfig
     from vllm.v1.core.sched.output import SchedulerOutput
 
 logger = logging.getLogger(__name__)
+
+# Install the per-layer Indexer gate so REAP-pruned DeepseekV32 configs
+# (e.g. mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit) load via mlx_lm.
+# Idempotent + no-op on configs that don't publish ``indexer_types``.
+_install_dsv32_indexer_gate()
 
 
 @dataclass

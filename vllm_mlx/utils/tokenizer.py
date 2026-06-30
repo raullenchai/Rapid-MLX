@@ -15,6 +15,22 @@ from .chat_templates import DEFAULT_CHATML_TEMPLATE, NEMOTRON_CHAT_TEMPLATE
 
 logger = logging.getLogger(__name__)
 
+# Install the per-layer Indexer gate for REAP-pruned DeepseekV32 configs
+# (e.g. mlx-community/pipenetwork-GLM-5.2-REAP50-MLX-4bit). The hook is
+# placed HERE (and not only in vllm_mlx.model_runner) because the real
+# `rapid-mlx serve` boot path is:
+#   cli -> server -> engine.batched._start_llm -> utils.tokenizer.load_model_with_fallback
+#   -> mlx_lm.load -> mlx_lm.utils.load_model
+# None of those import model_runner, so installing the gate there alone
+# missed the production load path (PR #967 wiring bug). Install is
+# idempotent (_LOCK + _INSTALLED early-return) and a no-op on configs
+# that don't publish ``indexer_types``.
+from ..patches.deepseek_v32_indexer_gate import (
+    install_deepseek_v32_indexer_gate as _install_dsv32_indexer_gate,
+)
+
+_install_dsv32_indexer_gate()
+
 # Models that require tokenizer fallback
 FALLBACK_MODELS = [
     "nemotron",
