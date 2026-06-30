@@ -95,7 +95,7 @@ Notes:
 - Throughput peaks at **1024–2048** tokens, then dips at 4096 — consistent with KV-cache pressure as the rolling window fills.
 - Memory delta (baseline → DFlash) tracks the draft model + verification overhead; see the source benchmark for the exact figure.
 
-`Qwen3.6-35B-A3B-8bit` ships with DFlash enabled by default (`✨` in the alias table); these numbers reflect the out-of-the-box experience.
+`Qwen3.6-35B-A3B-8bit` supports DFlash as an experimental opt-in (install `[dflash]` extra, pass `--enable-dflash`); numbers above are from a community benchmark and reflect that single run.
 
 ## Prefix Cache Results
 
