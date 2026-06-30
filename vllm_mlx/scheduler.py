@@ -3100,50 +3100,84 @@ class Scheduler:
         """Best-effort KV-cache dtype-bytes inference.
 
         Codex round 5 BLOCKING #2: returns the size in bytes of the
-        KV-cache element dtype. Falls back to ``4`` (fp32) when the
-        dtype cannot be determined, which is the largest plausible
-        dtype for typical MLX deployments — over-estimating is the
-        safe direction (admission rejects a borderline request
-        rather than letting it slip past the cap).
+        KV-cache element dtype. Falls back to ``4`` (fp32) ONLY when the
+        dtype genuinely cannot be determined — over-estimating is the
+        safe direction for a TRULY unknown dtype (admission rejects a
+        borderline request rather than letting it slip past the cap).
 
-        Reads ``torch_dtype`` (the HuggingFace config convention).
+        Reads the element dtype from, in priority order:
+          1. ``dtype`` — the MODERN HuggingFace/transformers key.
+             ``torch_dtype`` was renamed to ``dtype`` upstream, so newer
+             configs (e.g. Gemma 4) carry ONLY ``dtype``.
+          2. ``torch_dtype`` — the legacy key, still emitted by older
+             configs.
+          3. The same two keys on a nested ``text_config`` — multimodal
+             configs (Gemma 4, Qwen-VL) nest the language-model config
+             there and may leave the top level without a usable dtype.
+
+        Why this matters (gemma4-on-18GB false-rejection bug): reading
+        ONLY ``torch_dtype`` meant a config that uses the modern
+        ``dtype`` key fell through to the fp32 fallback, DOUBLING the
+        projected KV (bf16 2 B/elem mis-read as fp32 4 B/elem) and
+        rejecting at admission a request whose real usage fits under the
+        cap. An MLX fp16/bf16 model's KV cache is 2 bytes/elem; fp32 KV
+        is not a real MLX deployment, so the fallback should be the rare
+        last resort, not the default for every modern config.
+
         Quantized KV-cache deployments are not auto-detected — the
         operator-tuned ``metal_cap_kv_bytes_per_token`` knob is the
         right escape hatch for those.
         """
+        mapping = {
+            "float64": 8,
+            "fp64": 8,
+            "double": 8,
+            "float32": 4,
+            "fp32": 4,
+            "float16": 2,
+            "fp16": 2,
+            "half": 2,
+            "bfloat16": 2,
+            "bf16": 2,
+            "int8": 1,
+            "uint8": 1,
+            "float8": 1,
+            "fp8": 1,
+        }
+
+        def _bytes_from(obj: Any) -> int:
+            # ``dtype`` (modern) and ``torch_dtype`` (legacy) may each be
+            # a string (``"bfloat16"``) or a ``torch.dtype`` whose
+            # ``str()`` is e.g. ``"torch.bfloat16"``. Note ``"float16"``
+            # is a substring of ``"bfloat16"`` — harmless here since both
+            # map to 2.
+            for attr in ("dtype", "torch_dtype"):
+                raw = getattr(obj, attr, None)
+                if raw is None:
+                    continue
+                dtype_str = str(raw).lower()
+                for needle, n in mapping.items():
+                    if needle in dtype_str:
+                        return n
+            return 0
+
         try:
-            dtype_str = ""
-            torch_dtype = getattr(model_config, "torch_dtype", None)
-            if torch_dtype is not None:
-                # ``torch_dtype`` is sometimes a string
-                # (``"float16"``, ``"bfloat16"``) and sometimes a
-                # ``torch.dtype`` whose ``str()`` is e.g.
-                # ``"torch.float16"``.
-                dtype_str = str(torch_dtype).lower()
-            mapping = {
-                "float64": 8,
-                "fp64": 8,
-                "double": 8,
-                "float32": 4,
-                "fp32": 4,
-                "float16": 2,
-                "fp16": 2,
-                "half": 2,
-                "bfloat16": 2,
-                "bf16": 2,
-                "int8": 1,
-                "uint8": 1,
-                "float8": 1,
-                "fp8": 1,
-            }
-            for needle, n in mapping.items():
-                if needle in dtype_str:
+            n = _bytes_from(model_config)
+            if n > 0:
+                return n
+            # Multimodal configs nest the LM dtype under ``text_config``.
+            text_config = getattr(model_config, "text_config", None)
+            if text_config is not None:
+                n = _bytes_from(text_config)
+                if n > 0:
                     return n
         except Exception:
             pass
         # Default: assume the LARGEST plausible dtype (fp32 = 4) so we
         # over-estimate KV usage and err toward rejection rather than
-        # admitting a request that exceeds the cap.
+        # admitting a request that exceeds the cap. Reached only when
+        # NEITHER ``dtype`` nor ``torch_dtype`` is present on the config
+        # or its ``text_config`` — rare on real HF/MLX configs.
         return 4
 
     def _resolve_kv_bytes_per_token(self) -> int:
