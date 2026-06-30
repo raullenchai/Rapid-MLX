@@ -453,6 +453,45 @@ class TestAnthropicToOpenai:
         assert result.messages[1].role == "assistant"
         assert result.messages[2].role == "user"
 
+    def test_mid_stream_system_role_merges_to_single_leading_system(self):
+        # Regression for #975. Claude Code (cc_version=2.1.197.x) sends
+        # a top-level ``system`` field AND an extra ``role="system"``
+        # item inside ``messages`` after the initial user turn (its
+        # "Available agent types" preamble). Qwen / Llama / Gemma chat
+        # templates require exactly one system message at index 0 and
+        # otherwise raise ``System message must be at the beginning.``,
+        # surfacing on the wire as HTTP 400. Mirrors the Responses-side
+        # coverage in
+        # ``test_responses_adapter::test_multiple_systems_merge_to_single_at_index_0``.
+        msgs = [
+            AnthropicMessage(role="user", content="hello"),
+            AnthropicMessage(role="system", content="Be terse."),
+        ]
+        req = self._make_request(system="You are Claude Code.", messages=msgs)
+        result = anthropic_to_openai(req)
+        system_msgs = [m for m in result.messages if m.role == "system"]
+        assert len(system_msgs) == 1
+        assert result.messages[0].role == "system"
+        assert "You are Claude Code." in result.messages[0].content
+        assert "Be terse." in result.messages[0].content
+        # User turn survives, in order, unchanged.
+        assert any(m.role == "user" and m.content == "hello" for m in result.messages)
+
+    def test_mid_stream_system_role_without_top_level_system(self):
+        # Same template-error trigger, but with no top-level ``system``
+        # field: the lone mid-stream system role still has to land at
+        # index 0 instead of past loop.first.
+        msgs = [
+            AnthropicMessage(role="user", content="hi"),
+            AnthropicMessage(role="system", content="Answer in one word."),
+        ]
+        req = self._make_request(messages=msgs)
+        result = anthropic_to_openai(req)
+        system_msgs = [m for m in result.messages if m.role == "system"]
+        assert len(system_msgs) == 1
+        assert result.messages[0].role == "system"
+        assert result.messages[0].content == "Answer in one word."
+
 
 class TestOpenaiToAnthropic:
     """Tests for openai_to_anthropic conversion."""

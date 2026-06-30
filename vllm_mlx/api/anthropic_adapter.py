@@ -35,6 +35,7 @@ from .models import (
     ResponseFormatJsonSchema,
     ToolDefinition,
 )
+from .responses_adapter import _merge_system_messages
 from .utils import sanitize_output, strip_reasoning_channel_markup
 
 # F9: Anthropic's public spec uses ``id="toolu_<hex>"`` on every
@@ -149,6 +150,18 @@ def anthropic_to_openai(request: AnthropicRequest) -> ChatCompletionRequest:
     for msg in request.messages:
         converted = _convert_message(msg)
         messages.extend(converted)
+
+    # Defensive coercion: Claude Code (observed on cc_version=2.1.197.x)
+    # sends extra ``role="system"`` items inside ``messages`` after the
+    # initial user turn — e.g. an "Available agent types" preamble.
+    # Qwen / Llama / Gemma chat templates require at most one system
+    # message at index 0 and otherwise raise
+    # ``System message must be at the beginning.``. Mirror the
+    # ``responses_adapter`` coercion so a mid-stream system role gets
+    # folded into the leading system message instead of tripping the
+    # template. Mirrors the Codex-side fix covered by
+    # ``test_responses_adapter::test_multiple_systems_merge_to_single_at_index_0``.
+    messages = _merge_system_messages(messages)
 
     # Convert tools
     tools = None
