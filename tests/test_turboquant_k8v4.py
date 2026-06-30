@@ -693,9 +693,7 @@ def test_k8v4_default_on_whitelist_matches_aliases_json():
     import json
     from pathlib import Path
 
-    aliases_path = (
-        Path(__file__).resolve().parent.parent / "vllm_mlx" / "aliases.json"
-    )
+    aliases_path = Path(__file__).resolve().parent.parent / "vllm_mlx" / "aliases.json"
     aliases = json.loads(aliases_path.read_text())
 
     on = {
