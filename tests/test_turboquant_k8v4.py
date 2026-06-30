@@ -647,3 +647,76 @@ def test_codec_preserves_input_dtype():
     out = TurboQuantKVCache.from_kv_cache(src, cfg).to_kv_cache()
     assert out.keys.dtype == mx.bfloat16
     assert out.values.dtype == mx.bfloat16
+
+
+# K8V4 default-on alias whitelist (0.9 release, option B). The
+# 9-entry roster below is the operator-approved set after the 体感
+# sweep: 4 Qwen3.5 dense aliases (9b/27b × 4/8bit) plus the 5
+# Qwen3.5/3.6-35B-A3B MoE variants that cleared coverage. mxfp4 is
+# explicitly excluded because the codec interacts badly with the
+# sub-fp4 weight quantization (4/10 prompts text-diff in coverage).
+#
+# Tightening this list is a release-notes-claim change ("lossless
+# across the default-on alias matrix") — touch the whitelist and the
+# release-notes phrasing together.
+K8V4_DEFAULT_ON_ALIASES_0_9: frozenset[str] = frozenset(
+    {
+        "qwen3.5-9b-4bit",
+        "qwen3.5-9b-8bit",
+        "qwen3.5-27b-4bit",
+        "qwen3.5-27b-8bit",
+        "qwen3.5-35b-6bit",
+        "qwen3.6-35b-4bit",
+        "qwen3.6-35b-6bit",
+        "qwen3.6-35b-8bit",
+        "qwen3.6-35b-dwq",
+    }
+)
+
+
+def test_k8v4_default_on_whitelist_matches_aliases_json():
+    """The aliases.json K8V4 default-on roster must equal the 0.9 whitelist.
+
+    Catches accidental drift in either direction:
+
+    * adding ``turboquant_tier=k8v4_verified`` to a new alias without
+      a corresponding coverage signoff (false positive — the alias
+      flips on silently and the release-notes lossless claim no
+      longer holds);
+    * dropping ``turboquant_tier=k8v4_verified`` from a verified
+      alias (false negative — operators that relied on the codec
+      default-on regress to FP16 KV with no warning).
+
+    mxfp4 specifically must NOT be in the on-list (coverage 4/10
+    prompts text-diff against FP16 KV reference).
+    """
+    import json
+    from pathlib import Path
+
+    aliases_path = (
+        Path(__file__).resolve().parent.parent / "vllm_mlx" / "aliases.json"
+    )
+    aliases = json.loads(aliases_path.read_text())
+
+    on = {
+        name
+        for name, profile in aliases.items()
+        if profile.get("turboquant_tier") == "k8v4_verified"
+    }
+
+    assert on == K8V4_DEFAULT_ON_ALIASES_0_9, (
+        "K8V4 default-on roster drifted from the 0.9 whitelist.\n"
+        f"  extra (in aliases.json but not whitelist): {sorted(on - K8V4_DEFAULT_ON_ALIASES_0_9)}\n"
+        f"  missing (in whitelist but not aliases.json): {sorted(K8V4_DEFAULT_ON_ALIASES_0_9 - on)}\n"
+        "Update vllm_mlx/aliases.json AND the K8V4_DEFAULT_ON_ALIASES_0_9 "
+        "frozenset above in lockstep, and re-frame the release notes claim "
+        "if the matrix changes."
+    )
+
+    # Defensive: mxfp4 must stay off even if a future hand-edit
+    # broadens the on-list. Coverage 2026-06-29 showed 4/10 text-diff
+    # against the FP16 KV reference.
+    assert "qwen3.6-35b-mxfp4" not in on, (
+        "qwen3.6-35b-mxfp4 must not be K8V4 default-on; codec interacts "
+        "with sub-fp4 weight quant (option B / 2026-06-29 coverage)."
+    )
