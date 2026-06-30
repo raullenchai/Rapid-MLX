@@ -39,6 +39,7 @@ Usage::
 
 from __future__ import annotations
 
+import copy
 import logging
 import math
 import re
@@ -756,6 +757,32 @@ class TurboQuantKVCache:
         # bf16 models pay a ~46% decode-throughput tax if the cache is
         # handed back as fp16. ``None`` preserves the legacy fp16 contract.
         self.original_dtype = original_dtype
+
+    def __deepcopy__(self, memo):
+        """Deep-copy that tolerates the immutable ``mx.Dtype`` attribute.
+
+        ``memory_cache`` deep-copies stored prefix-cache layers on every
+        fetch / trim so a request mutates its own copy, never the shared
+        entry. ``copy.deepcopy`` cannot pickle ``mlx.core.Dtype`` (an
+        immutable C value type), so a raw deepcopy of a K8V4
+        ``TurboQuantKVCache`` — whose ``original_dtype`` holds one —
+        raised ``TypeError: cannot pickle 'mlx.core.Dtype' object``. That
+        surfaced to the user as a 500 on every K8V4-cached request that
+        hit the prefix cache (e.g. the 2nd+ tool call reusing a system /
+        tool-schema prefix). ``mx.Dtype`` is a singleton value, so
+        sharing the reference across copies is correct; every other
+        attribute (the packed arrays, config, offsets) is deep-copied as
+        before so the returned layer stays independent of the cached one.
+        """
+        cls = self.__class__
+        new = cls.__new__(cls)
+        memo[id(self)] = new
+        for key, value in self.__dict__.items():
+            if isinstance(value, mx.Dtype):
+                new.__dict__[key] = value
+            else:
+                new.__dict__[key] = copy.deepcopy(value, memo)
+        return new
 
     @property
     def mode(self) -> str:

@@ -19,6 +19,7 @@ skipped + fused gauges.
 from __future__ import annotations
 
 import argparse
+import copy
 import subprocess
 import sys
 from unittest.mock import patch
@@ -247,6 +248,61 @@ class TestK8V4Cache:
         assert k8v4.memory_bytes < v4.memory_bytes
         # And strictly positive.
         assert k8v4.memory_bytes > 0
+
+
+# ---------------------------------------------------------------------------
+# 4b. K8V4 prefix-cache deepcopy (release 0.9.9 regression guard)
+# ---------------------------------------------------------------------------
+
+
+class TestK8V4DeepcopyPrefixCache:
+    """``memory_cache`` deep-copies stored prefix-cache layers on every
+    fetch / trim so a request mutates its own copy, never the shared
+    entry. A raw ``copy.deepcopy`` of a K8V4 ``TurboQuantKVCache`` used to
+    raise ``TypeError: cannot pickle 'mlx.core.Dtype' object`` on the
+    immutable ``original_dtype`` attribute — surfaced to the user as a
+    500 on every K8V4-cached request that hit the prefix cache (the 2nd+
+    tool call reusing a system / tool-schema prefix). #970 turned K8V4
+    default-on for 9 Qwen3.5/3.6 aliases, widening the blast radius to the
+    desktop default-tier models. These pin the ``__deepcopy__`` fix.
+    """
+
+    def test_deepcopy_k8v4_layer_does_not_raise(self):
+        kv = _make_kv(head_dim=128)
+        tq = TurboQuantKVCache.from_kv_cache(kv, TurboQuantConfig(bits=4, mode="k8v4"))
+        # The attribute that used to break deepcopy.
+        assert isinstance(tq.original_dtype, mx.Dtype)
+        clone = copy.deepcopy(tq)  # must not raise
+        # Immutable dtype singleton is shared by reference (correct).
+        assert clone.original_dtype is tq.original_dtype
+
+    def test_deepcopy_clone_roundtrips_identically(self):
+        kv = _make_kv(head_dim=128)
+        tq = TurboQuantKVCache.from_kv_cache(kv, TurboQuantConfig(bits=4, mode="k8v4"))
+        clone = copy.deepcopy(tq)
+        assert clone is not tq
+        # Arrays survived the copy intact: the clone decompresses to the
+        # exact same KV as the original.
+        orig_restored = tq.to_kv_cache()
+        clone_restored = clone.to_kv_cache()
+        np.testing.assert_array_equal(
+            np.array(clone_restored.keys), np.array(orig_restored.keys)
+        )
+        np.testing.assert_array_equal(
+            np.array(clone_restored.values), np.array(orig_restored.values)
+        )
+
+    def test_deepcopy_layer_list_matches_memory_cache_fetch(self):
+        # memory_cache fetches via ``copy.deepcopy(entry.cache)`` where
+        # ``entry.cache`` is the per-layer list — exercise that exact shape.
+        kv = _make_kv(head_dim=128)
+        layers = [
+            TurboQuantKVCache.from_kv_cache(kv, TurboQuantConfig(bits=4, mode="k8v4"))
+            for _ in range(3)
+        ]
+        cloned = copy.deepcopy(layers)  # must not raise
+        assert len(cloned) == 3
+        assert all(isinstance(c.original_dtype, mx.Dtype) for c in cloned)
 
 
 # ---------------------------------------------------------------------------
