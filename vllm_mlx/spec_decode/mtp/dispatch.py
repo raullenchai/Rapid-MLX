@@ -100,6 +100,19 @@ _MTP_VALIDATE_DISPATCH: dict[str, tuple[str, str]] = {
 }
 
 
+# Codex round-5 blocking fix: model_types that HAVE a registered
+# family inject module but whose implementation is still scaffold-only
+# (not production-ready). The dispatcher shortcuts these to False so
+# any production caller — bench, CLI, `rapid-mlx serve` boot path —
+# gets a uniformly-honest "MTP is not enabled here" signal.
+#
+# Tests that need to exercise the family-specific inject directly
+# (wiring probe, sidecar refusal, architecture guard) must import
+# from ``gemma4_inject`` directly rather than going through the
+# dispatcher.
+_PRODUCTION_SCAFFOLD_REFUSE: frozenset[str] = frozenset({"gemma4", "gemma4_unified"})
+
+
 def dispatch_mtp_inject(
     model: Any,
     model_type: str,
@@ -126,13 +139,27 @@ def dispatch_mtp_inject(
         when the model_type has no registered inject, when the
         family-specific inject refused (sidecar unresolvable, config
         missing ``mtp_num_hidden_layers``, architectural mismatch),
-        or when the module import failed.
+        when the model_type is on the :data:`_PRODUCTION_SCAFFOLD_REFUSE`
+        gate (Gemma 4 today), or when the module import failed.
 
     Never raises — an unknown ``model_type`` is treated as "no MTP
     support for this arch" (log-and-return False), matching the
     fail-closed default the codex round-5 review installed on
     ``qwen3_5_inject.inject_mtp_support``.
     """
+    if model_type in _PRODUCTION_SCAFFOLD_REFUSE:
+        logger.warning(
+            "[mtp.dispatch] model_type=%r has a registered inject module "
+            "but the implementation is scaffold-only (surfaces attach + "
+            "raise on invocation). The dispatcher refuses this in "
+            "production — the real AssistantModel-based inject lands in "
+            "a follow-up PR. Direct callers who want the scaffold for "
+            "wiring probes should import from "
+            "vllm_mlx.spec_decode.mtp.gemma4_inject.",
+            model_type,
+        )
+        return False
+
     key = _MTP_INJECT_DISPATCH.get(model_type)
     if key is None:
         logger.info(
@@ -182,9 +209,14 @@ def dispatch_mtp_validate(model: Any, model_type: str) -> bool:
     invalid. This helper routes the validator by the same
     ``model_type`` table.
 
-    Returns ``False`` for any unknown model_type (fail-closed default —
-    matches :func:`dispatch_mtp_inject`).
+    Returns ``False`` for any unknown model_type, and (codex round-5
+    parity) for any model_type on :data:`_PRODUCTION_SCAFFOLD_REFUSE`
+    — the paired inject would have refused, so the validator refuses
+    too. Matches :func:`dispatch_mtp_inject` behavior.
     """
+    if model_type in _PRODUCTION_SCAFFOLD_REFUSE:
+        return False
+
     key = _MTP_VALIDATE_DISPATCH.get(model_type)
     if key is None:
         logger.info(

@@ -462,51 +462,39 @@ def test_inject_mtp_support_refuses_assistant_architecture_sidecar():
 # ---------------------------------------------------------------------------
 
 
-def test_dispatcher_routes_gemma4_to_gemma4_inject():
-    """``model_type='gemma4'`` dispatches to ``gemma4_inject.inject_mtp_support``."""
-    from vllm_mlx.spec_decode.mtp.dispatch import dispatch_mtp_inject
-
-    try:
-        model = _build_tiny_gemma4_text_model()
-    except (TypeError, AttributeError) as exc:
-        pytest.skip(f"Gemma 4 text ModelArgs schema mismatch: {exc}")
-
-    result = dispatch_mtp_inject(
-        model,
-        model_type="gemma4",
-        allow_random_init=True,
-    )
-    assert result is True, (
-        "Dispatcher must forward to gemma4_inject for model_type='gemma4'"
-    )
-    # Scaffold: validate returns False (attached, but not production-ready).
-    from vllm_mlx.spec_decode.mtp.dispatch import dispatch_mtp_validate
-
-    assert dispatch_mtp_validate(model, model_type="gemma4") is False
-    # But the surfaces DID attach — check directly.
-    assert getattr(model, "mtp", None) is not None
-
-
-def test_dispatcher_routes_gemma4_unified_to_gemma4_inject():
-    """``model_type='gemma4_unified'`` dispatches to the same module.
-
-    The 12B unified variants (``gemma4_unified`` model_type) share the
-    inject with the multimodal ``gemma4`` — the inner text-model
-    architecture is identical for MTP purposes.
+def test_dispatcher_refuses_gemma4_in_production():
+    """Codex round-5 blocking fix: the dispatcher refuses ``gemma4`` /
+    ``gemma4_unified`` — the family inject is scaffold-only, and no
+    production caller (bench, CLI, serve boot) should see True from
+    the dispatcher for Gemma 4. Direct callers who want the scaffold
+    for wiring probes must import from ``gemma4_inject`` themselves.
     """
-    from vllm_mlx.spec_decode.mtp.dispatch import dispatch_mtp_inject
+    from vllm_mlx.spec_decode.mtp.dispatch import (
+        dispatch_mtp_inject,
+        dispatch_mtp_validate,
+    )
 
     try:
         model = _build_tiny_gemma4_text_model()
     except (TypeError, AttributeError) as exc:
         pytest.skip(f"Gemma 4 text ModelArgs schema mismatch: {exc}")
 
-    result = dispatch_mtp_inject(
-        model,
-        model_type="gemma4_unified",
-        allow_random_init=True,
-    )
-    assert result is True
+    for model_type in ("gemma4", "gemma4_unified"):
+        result = dispatch_mtp_inject(
+            model,
+            model_type=model_type,
+            allow_random_init=True,  # even the test opt-in must not open the door
+        )
+        assert result is False, (
+            f"Dispatcher must refuse model_type={model_type!r} until the "
+            "AssistantModel PR lands. Passing True here would let bench / "
+            "CLI enable a scaffold whose forward raises."
+        )
+        # The paired validator likewise refuses.
+        assert dispatch_mtp_validate(model, model_type=model_type) is False
+        # And the model is left completely unmodified — no surfaces
+        # attached because the family inject was never invoked.
+        assert getattr(model, "mtp", None) is None
 
 
 def test_dispatcher_rejects_gemma3():
@@ -562,11 +550,19 @@ def test_dispatcher_forwards_model_and_kwargs_verbatim(monkeypatch):
     * Return-value mismangling (dispatcher returns ``None`` / truthy
       wrong object instead of the ``bool`` the family fn returned).
 
-    We monkey-patch the target module's ``inject_mtp_support`` so the
-    test doesn't have to build a real Gemma 4 model to prove the wire.
+    We exercise the forwarding wire on the ``qwen3_5`` branch because
+    ``gemma4`` / ``gemma4_unified`` are on the
+    :data:`_PRODUCTION_SCAFFOLD_REFUSE` gate (codex round-5) and short
+    -circuit to False before the dispatcher reaches the family module —
+    so they cannot demonstrate kwarg forwarding. The forwarding logic
+    itself is architecture-agnostic (single import + call site in
+    :func:`dispatch_mtp_inject`); covering it once on any registered
+    branch is sufficient. The paired
+    :func:`test_dispatcher_refuses_gemma4_in_production` locks the
+    gemma4/gemma4_unified refuse behavior separately.
     """
     from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
-    from vllm_mlx.spec_decode.mtp import gemma4_inject
+    from vllm_mlx.spec_decode.mtp import qwen3_5_inject
 
     calls: list[dict] = []
 
@@ -580,14 +576,14 @@ def test_dispatcher_forwards_model_and_kwargs_verbatim(monkeypatch):
         )
         return True
 
-    monkeypatch.setattr(gemma4_inject, "inject_mtp_support", _fake_inject)
+    monkeypatch.setattr(qwen3_5_inject, "inject_mtp_support", _fake_inject)
 
     sentinel_model = object()
     sentinel_sidecar = "/tmp/nonexistent-sentinel-sidecar.safetensors"
 
     result = _dispatch.dispatch_mtp_inject(
         sentinel_model,
-        model_type="gemma4_unified",
+        model_type="qwen3_5",
         mtp_sidecar=sentinel_sidecar,
         allow_random_init=False,
     )
@@ -598,9 +594,13 @@ def test_dispatcher_forwards_model_and_kwargs_verbatim(monkeypatch):
     assert calls[0]["allow_random_init"] is False
 
     # A second call with different kwargs must forward those too.
+    # ``qwen3_5_moe`` also routes to qwen3_5_inject.inject_mtp_support,
+    # so the monkey-patch catches it too — this exercises the shared
+    # dispatch-entry case (two model_types → one module) at the same
+    # time.
     result = _dispatch.dispatch_mtp_inject(
         sentinel_model,
-        model_type="gemma4",
+        model_type="qwen3_5_moe",
         mtp_sidecar=None,
         allow_random_init=True,
     )

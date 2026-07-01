@@ -449,6 +449,10 @@ def main(argv: list[str] | None = None) -> int:
             "model-mtp.safetensors",
             "model-mtp.tmp.safetensors",
             "config.json",
+            # ``_atomic_write_bytes`` writes to ``<dst>.tmp`` before
+            # renaming; include the config.json scratch file too
+            # (codex round-5 NIT: was previously left behind).
+            "config.json.tmp",
         ):
             with contextlib.suppress(FileNotFoundError):
                 (out_dir / known_artifact).unlink()
@@ -555,13 +559,33 @@ def main(argv: list[str] | None = None) -> int:
     logger.info("Wrote %s", cfg_dst)
 
     # --- Verify by re-loading ---
+    # Codex round-5 NIT: check shape + dtype per tensor, not just the
+    # key set. A corrupt shape / dtype mapping would otherwise pass
+    # verification and produce a sidecar the follow-up consumer
+    # cannot load.
     try:
         reloaded = mx.load(str(st_dst))
-        assert set(reloaded.keys()) == set(mtp_weights.keys()), (
-            f"Re-load mismatch: {set(mtp_weights.keys()) - set(reloaded.keys())}"
+        missing_after_load = set(mtp_weights.keys()) - set(reloaded.keys())
+        extra_after_load = set(reloaded.keys()) - set(mtp_weights.keys())
+        assert not missing_after_load and not extra_after_load, (
+            f"Re-load key set mismatch: missing={sorted(missing_after_load)[:5]}, "
+            f"extra={sorted(extra_after_load)[:5]}"
         )
+        for k, original in mtp_weights.items():
+            reloaded_arr = reloaded[k]
+            if tuple(reloaded_arr.shape) != tuple(original.shape):
+                raise AssertionError(
+                    f"{k}: shape drift on re-load "
+                    f"(wrote {tuple(original.shape)}, read {tuple(reloaded_arr.shape)})"
+                )
+            if reloaded_arr.dtype != original.dtype:
+                raise AssertionError(
+                    f"{k}: dtype drift on re-load "
+                    f"(wrote {original.dtype}, read {reloaded_arr.dtype})"
+                )
         logger.info(
-            "Verify: re-load matches (%d keys). Sidecar is loadable via mx.load.",
+            "Verify: re-load matches (%d keys, shapes + dtypes checked). "
+            "Sidecar is loadable via mx.load.",
             len(reloaded),
         )
     except Exception as exc:
