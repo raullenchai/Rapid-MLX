@@ -9,6 +9,7 @@ Supports:
 
 import logging
 import os
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -64,6 +65,25 @@ _VAD_MODEL_REPO = "mlx-community/silero-vad"
 _VAD_TRIM_PAD_SECONDS = 0.2
 _VAD_SAMPLE_RATE = 16_000
 
+# Codex r2 BLOCKING: bias Silero toward false positives (skip
+# Whisper less often than default) so quiet / whispered / breathy
+# speech doesn't get silenced. Silero's default threshold is 0.5;
+# 0.3 keeps the "confident no speech" bar the same at ~-50 dBFS
+# noise floors but starts calling ambiguous chunks "speech" earlier.
+# On pure digital silence the probability is essentially 0.0 (well
+# below either threshold) so this doesn't weaken the #961 guard.
+_VAD_SPEECH_THRESHOLD = 0.3
+
+# Codex r2 BLOCKING: additional defense — if VAD reports "no speech"
+# BUT the waveform's RMS is above this floor, distrust VAD and fall
+# back to Whisper. A signal at -50 dBFS is on the loud side for pure
+# background noise; anything louder is more likely to be quiet
+# speech (or intentional audio the caller wants transcribed) than
+# actual silence. The 12 s digital-silence repro in #961 has
+# RMS ≈ 0 so it stays firmly below this bar.
+# 10**(-50/20) ≈ 3.16e-3
+_VAD_NO_SPEECH_RMS_FLOOR = 3.16e-3
+
 # Load-once cache. Kept module-level (not instance-level) so multiple
 # STTEngine instances share one VAD model — the Silero weights are
 # ~1.7 MB but the mx.array upload isn't free either.
@@ -85,6 +105,13 @@ _VAD_SAMPLE_RATE = 16_000
 _VAD_MODEL_CACHE: Any | None = None
 _VAD_IMPORT_UNAVAILABLE = False
 _VAD_LOAD_FAILURE_LOGGED = False
+# Codex r2 NIT #3: serialize the first-load path so concurrent
+# transcriptions on server startup don't kick off N duplicate
+# downloads / weight-load rounds for the same singleton. The lock is
+# only held during the load itself; the fast-path (cache hit or
+# import-permanently-unavailable) skips the lock via the double-
+# checked read at the top of ``_get_vad_model``.
+_VAD_LOAD_LOCK = threading.Lock()
 
 
 # F-K-WHISPER-500: every mlx-community Whisper repo ships ONLY
@@ -190,41 +217,55 @@ def _get_vad_model() -> Any | None:
     block for the wider design.
     """
     global _VAD_MODEL_CACHE, _VAD_IMPORT_UNAVAILABLE, _VAD_LOAD_FAILURE_LOGGED
+    # Fast path (unlocked double-checked read): if the cache is warm
+    # or the module is permanently unavailable, don't take the load
+    # lock at all — every concurrent request would otherwise contend
+    # on a lock they never need.
     if _VAD_MODEL_CACHE is not None:
         return _VAD_MODEL_CACHE
     if _VAD_IMPORT_UNAVAILABLE:
         return None
-    try:
-        from mlx_audio.vad import load as vad_load  # noqa: PLC0415
-    except ImportError as e:
-        # Permanent for this process (module isn't importable).
-        _VAD_IMPORT_UNAVAILABLE = True
-        logger.warning(
-            "VAD pre-trim disabled: mlx_audio.vad not importable (%s). "
-            "Install rapid-mlx[audio] to enable the anti-hallucination "
-            "guard for pure-silence clips (#961).",
-            e,
-        )
-        return None
-    try:
-        _VAD_MODEL_CACHE = vad_load(_VAD_MODEL_REPO)
-    except Exception as e:  # noqa: BLE001
-        # Transient: log ONCE, then retry on every subsequent call so
-        # a recovered network / freed disk still gets the guard back.
-        if not _VAD_LOAD_FAILURE_LOGGED:
+    # Codex r2 NIT #3: serialize the actual load so N concurrent
+    # first-requests don't kick off N duplicate downloads / weight
+    # loads. Re-check under the lock in case a prior caller already
+    # succeeded.
+    with _VAD_LOAD_LOCK:
+        if _VAD_MODEL_CACHE is not None:
+            return _VAD_MODEL_CACHE
+        if _VAD_IMPORT_UNAVAILABLE:
+            return None
+        try:
+            from mlx_audio.vad import load as vad_load  # noqa: PLC0415
+        except ImportError as e:
+            # Permanent for this process (module isn't importable).
+            _VAD_IMPORT_UNAVAILABLE = True
             logger.warning(
-                "VAD pre-trim: could not load %r (%s). Retrying on "
-                "next request. Guard falls back to unmodified "
-                "transcription until load succeeds.",
-                _VAD_MODEL_REPO,
+                "VAD pre-trim disabled: mlx_audio.vad not importable (%s). "
+                "Install rapid-mlx[audio] to enable the anti-hallucination "
+                "guard for pure-silence clips (#961).",
                 e,
             )
-            _VAD_LOAD_FAILURE_LOGGED = True
-        return None
-    # Reset the log-once flag on eventual success so a subsequent
-    # process-level unload/re-init still surfaces a fresh warning.
-    _VAD_LOAD_FAILURE_LOGGED = False
-    return _VAD_MODEL_CACHE
+            return None
+        try:
+            _VAD_MODEL_CACHE = vad_load(_VAD_MODEL_REPO)
+        except Exception as e:  # noqa: BLE001
+            # Transient: log ONCE, then retry on every subsequent call
+            # so a recovered network / freed disk still gets the guard
+            # back.
+            if not _VAD_LOAD_FAILURE_LOGGED:
+                logger.warning(
+                    "VAD pre-trim: could not load %r (%s). Retrying on "
+                    "next request. Guard falls back to unmodified "
+                    "transcription until load succeeds.",
+                    _VAD_MODEL_REPO,
+                    e,
+                )
+                _VAD_LOAD_FAILURE_LOGGED = True
+            return None
+        # Reset the log-once flag on eventual success so a subsequent
+        # process-level unload/re-init still surfaces a fresh warning.
+        _VAD_LOAD_FAILURE_LOGGED = False
+        return _VAD_MODEL_CACHE
 
 
 def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
@@ -268,6 +309,7 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
         speech_ts = vad.get_speech_timestamps(
             waveform,
             sample_rate=_VAD_SAMPLE_RATE,
+            threshold=_VAD_SPEECH_THRESHOLD,
             return_seconds=True,
         )
     except Exception as e:  # noqa: BLE001
@@ -280,6 +322,22 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
         return _VADTrimResult(skipped=True)
 
     if not speech_ts:
+        # Codex r2 BLOCKING #1: VAD false-negative defence. Silero at
+        # threshold 0.3 is already biased toward false positives, but
+        # quiet / whispered / breathy speech in a noisy room can still
+        # slip past. Sanity-check the "no speech" verdict with an
+        # audio-energy floor: if the clip has non-trivial RMS
+        # (> ~-50 dBFS), trust the audio over the classifier and fall
+        # back to Whisper. Pure digital silence (RMS ≈ 0, the #961
+        # repro) stays well below the floor so the guard still fires.
+        if _rms_above_floor(waveform, _VAD_NO_SPEECH_RMS_FLOOR):
+            logger.info(
+                "VAD reported no speech but audio RMS exceeds silence "
+                "floor (%.4g) — falling back to Whisper to guard "
+                "against a Silero false negative on quiet speech.",
+                _VAD_NO_SPEECH_RMS_FLOOR,
+            )
+            return _VADTrimResult(skipped=True)
         return _VADTrimResult(skipped=False, has_speech=False)
 
     # Codex r1 BLOCKING: extract the span defensively. Upstream Silero
@@ -322,6 +380,42 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
         offset_seconds=start_s,
         sample_rate=_VAD_SAMPLE_RATE,
     )
+
+
+def _rms_above_floor(waveform: Any, floor: float) -> bool:
+    """Return ``True`` if the waveform's RMS energy exceeds ``floor``.
+
+    Used to sanity-check a "no speech" verdict from Silero — see
+    ``_maybe_vad_trim``. Accepts any array supporting ``float()``-able
+    ``mx.mean(x ** 2)`` (``mx.array``, ``np.ndarray``, list-of-floats
+    via numpy fallback). On any computation error returns ``True``
+    conservatively — the operative philosophy is "when in doubt,
+    transcribe" so we err toward calling Whisper.
+    """
+    try:
+        # Prefer mx.core if available for float32 fidelity; fall back
+        # to numpy which every audio-backed engine already ships.
+        import mlx.core as _mx  # noqa: PLC0415
+
+        arr = (
+            waveform
+            if isinstance(waveform, _mx.array)
+            else _mx.array(waveform, dtype=_mx.float32)
+        )
+        arr = arr.astype(_mx.float32)
+        rms = float(_mx.sqrt(_mx.mean(arr * arr)))
+    except Exception:  # noqa: BLE001
+        try:
+            import numpy as _np  # noqa: PLC0415
+
+            arr = _np.asarray(waveform, dtype=_np.float32)
+            rms = float(_np.sqrt(_np.mean(arr * arr)))
+        except Exception:  # noqa: BLE001
+            # If we can't measure energy, err toward "trust it's
+            # speech" — that's the conservative choice for #961's
+            # invariant (never eat real audio).
+            return True
+    return rms > floor
 
 
 def _shift_segment_time(seg: Any, offset: float) -> None:

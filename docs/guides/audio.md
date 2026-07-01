@@ -261,6 +261,35 @@ curl http://localhost:8000/v1/audio/transcriptions \
   -F model=whisper-large-v3
 ```
 
+#### Silence-hallucination guard (Whisper only)
+
+Whisper is known to invent tokens like `"Thank you."` or
+`"Thanks for watching!"` when handed pure-silence input, and to append
+similar tails to legitimate clips that end in dead-air (issue #961).
+Every Whisper request is therefore pre-filtered by Silero VAD
+(bundled with the `[audio]` extra):
+
+- **Pure-silence clips** — VAD detects no speech; the endpoint returns
+  `{"text": "", "segments": [], "language": null}` and skips Whisper
+  entirely (latency win: ~200 ms VAD vs multi-second decode).
+- **Clips with leading / trailing silence** — VAD reports the speech
+  span; Whisper only sees the trimmed waveform, and returned segment
+  timestamps are shifted back to the original file's absolute time.
+- **Sanity check** — if VAD reports no speech but the waveform still
+  has non-trivial energy (RMS > ~-50 dBFS), the guard trusts the
+  audio and falls back to Whisper. Real quiet / whispered speech is
+  never silenced.
+
+Operator controls:
+
+| Knob | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `RAPID_MLX_STT_VAD_PRETRIM` | env var | on | Set to `0`, `false`, `no`, or `off` to disable the guard run-wide and restore the pre-fix pass-through behaviour. |
+| `STTEngine(..., enable_vad_pretrim=True)` | Python API | `True` | Same effect at the engine level; use when embedding `STTEngine` directly. |
+
+The guard applies only to Whisper backends. Parakeet, Canary, and
+other non-Whisper STT engines are never pre-filtered.
+
 ### POST /v1/audio/speech
 
 Generate speech from text (OpenAI TTS API compatible).
