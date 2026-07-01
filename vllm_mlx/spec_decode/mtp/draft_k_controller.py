@@ -353,7 +353,8 @@ def get_global_controller() -> DraftKController | None:
     ``k`` fast path — only an ``is None`` check separates the two
     modes in the hot loop.
     """
-    return _global_controller
+    with _global_controller_lock:
+        return _global_controller
 
 
 def install_global_controller(controller: DraftKController) -> None:
