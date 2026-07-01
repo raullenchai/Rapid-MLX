@@ -421,12 +421,13 @@ def _tool_call_arguments_need_mutation(tool_call: dict) -> tuple[bool, bool]:
 
     * ``nested_needs`` — ``function.arguments`` is present AND non-dict.
     * ``top_needs`` — ``tool_call.arguments`` (top-level) is present AND
-      non-dict AND there is no nested ``function`` dict (top-level
-      arguments is the fallback shape for legacy clients that flatten
-      the OpenAI envelope; when ``function`` is present the OpenAI
-      convention is that ``function.arguments`` is authoritative and
-      the top-level ``arguments`` doesn't exist — a defensive extra
-      normalisation there could double-mutate).
+      non-dict. Both shapes are normalised INDEPENDENTLY: a mixed-shape
+      replay that carries BOTH nested and top-level ``arguments`` (some
+      SDKs mirror the field for template compatibility) must have both
+      forms dict-safe, otherwise a template that iterates
+      ``tc.arguments|items`` still crashes even when
+      ``tc.function.arguments`` was normalised (codex r3 BLOCKING on
+      PR #981).
 
     Absent ``arguments`` keys yield ``False`` — we don't invent a
     payload for something the caller never sent (codex r1 NIT).
@@ -437,10 +438,8 @@ def _tool_call_arguments_need_mutation(tool_call: dict) -> tuple[bool, bool]:
         and "arguments" in function
         and not isinstance(function.get("arguments"), dict)
     )
-    top_needs = (
-        not isinstance(function, dict)
-        and "arguments" in tool_call
-        and not isinstance(tool_call.get("arguments"), dict)
+    top_needs = "arguments" in tool_call and not isinstance(
+        tool_call.get("arguments"), dict
     )
     return nested_needs, top_needs
 
@@ -461,7 +460,7 @@ def _normalize_assistant_tool_call_arguments(messages: list) -> list:
     * ABSENT ``arguments`` key is untouched — we do not invent a
       payload the client never sent (codex r1 NIT).
 
-    Both OpenAI-wire shapes are covered:
+    Both OpenAI-wire shapes are covered INDEPENDENTLY:
 
     * Nested — ``tool_call.function.arguments`` (OpenAI ChatCompletion
       canonical shape; pydantic_ai / OpenAI SDK).
@@ -471,6 +470,13 @@ def _normalize_assistant_tool_call_arguments(messages: list) -> list:
       ``if tool_call.function is defined`` unwrap step, so the
       nested-only fix leaked the JSON-string form to those templates
       and the same ``TypeError`` fired.
+
+    A mixed-shape replay (both nested AND top-level ``arguments``
+    populated — some SDKs mirror the field for template compatibility)
+    normalises BOTH. Codex r3 BLOCKING on PR #981 — a defensive
+    "top-level only when nested absent" gate still leaked the
+    JSON-string form to ``tc.arguments|items`` templates on the mixed
+    replay shape.
 
     Idempotent: repeated calls after the first are no-ops for
     dict-form arguments, so this can safely layer on top of upstream

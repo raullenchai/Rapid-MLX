@@ -237,11 +237,13 @@ class TestNormalizeAssistantToolCallArguments:
         # Original untouched.
         assert messages[0]["tool_calls"][0]["arguments"] == '{"city": "Paris"}'
 
-    def test_top_level_arguments_only_normalized_when_no_function_envelope(self):
-        """When ``function`` is present, ``function.arguments`` is
-        authoritative and any stray top-level ``arguments`` MUST NOT be
-        normalised — normalising both would double-mutate and could
-        introduce inconsistent state.
+    def test_mixed_shape_normalizes_both_nested_and_top_level(self):
+        """Codex r3 BLOCKING on PR #981 — a mixed-shape replay that
+        carries BOTH ``function.arguments`` and top-level ``arguments``
+        (some SDKs mirror the field for template compatibility) must
+        normalise both, otherwise a template that iterates
+        ``tc.arguments|items`` still crashes even when
+        ``tc.function.arguments`` was normalised.
         """
         messages = [
             {
@@ -249,16 +251,16 @@ class TestNormalizeAssistantToolCallArguments:
                 "tool_calls": [
                     {
                         "function": {"name": "x", "arguments": '{"a": 1}'},
-                        # Deliberately stray top-level payload — kept as-is.
-                        "arguments": "some other string",
+                        "arguments": '{"a": 1}',
                     }
                 ],
             }
         ]
         out = _normalize_assistant_tool_call_arguments(messages)
+        # Both shapes end up dict-form; templates that read either
+        # location render without crashing.
         assert out[0]["tool_calls"][0]["function"]["arguments"] == {"a": 1}
-        # Top-level left alone.
-        assert out[0]["tool_calls"][0]["arguments"] == "some other string"
+        assert out[0]["tool_calls"][0]["arguments"] == {"a": 1}
 
     def test_top_level_arguments_malformed_wrapped(self):
         messages = [
