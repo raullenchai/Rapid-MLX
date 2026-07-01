@@ -51,6 +51,12 @@ import mlx.core as mx
 # missing-class-attr to a class-default-None.
 from .accept_counter import get_global_counter
 from .cache_patch import patch_arrays_cache_rollback_state
+from .draft_k_controller import (
+    DraftKController,
+)
+from .draft_k_controller import (
+    get_global_controller as _get_global_draft_k_controller,
+)
 
 patch_arrays_cache_rollback_state()
 
@@ -184,6 +190,7 @@ def mtp_generate_step(
     xtc_threshold: float = 0.0,
     xtc_special_tokens: list[int] | None = None,
     accept_counter=None,
+    draft_k_controller: DraftKController | None = None,
 ) -> Generator[tuple[int, mx.array, bool], None, None]:
     """Generator that uses the model's native MTP head for spec decode.
 
@@ -222,6 +229,22 @@ def mtp_generate_step(
             :class:`MTPAcceptCounter`. Tests pass a fresh counter to
             isolate measurements; production callers pass ``None``
             and the module-global counter is used.
+        draft_k_controller: Optional runtime auto-tune controller for
+            the number of draft tokens per verify pass (PR-1 of the
+            0.9.11 Gemma-4 MTP roadmap). When ``None`` (the default),
+            the module-global controller is consulted via
+            :func:`~vllm_mlx.spec_decode.mtp.draft_k_controller.get_global_controller`;
+            when that is also ``None`` the generator is in
+            static-``k`` mode and behaves byte-identically to the
+            pre-PR-1 code path. When set, every verify-pass outcome
+            (accept or reject) is recorded on the controller AFTER
+            the accept/reject decision has been made. The controller
+            does NOT change the arithmetic of this generator — the
+            lossless verify/accept contract from PR #990 is
+            preserved verbatim. Reading ``current_k()`` and looping
+            over ``k`` draft tokens per verify pass is a follow-up
+            PR (Gemma-4 sidecar); PR-1 only lands the feedback
+            input.
     """
     from mlx_lm.generate import generation_stream, maybe_quantize_kv_cache
     from mlx_lm.models import cache as _cache_module
@@ -230,6 +253,13 @@ def mtp_generate_step(
     xtc_special_tokens = xtc_special_tokens or []
     if accept_counter is None:
         accept_counter = get_global_counter()
+    # Fall back to the module-global controller when the caller
+    # doesn't pass one. ``get_global_controller()`` returns ``None``
+    # when auto-tune has not been installed at boot — that keeps the
+    # hot loop cost to one ``is None`` check per verify pass, so the
+    # static-``k`` fast path is byte-identical to the pre-PR-1 code.
+    if draft_k_controller is None:
+        draft_k_controller = _get_global_draft_k_controller()
 
     y = prompt.astype(mx.uint32)
     prev_tokens: mx.array | None = None
@@ -468,6 +498,12 @@ def mtp_generate_step(
             if accept:
                 _clear_rollback()
                 accept_counter.record_accept(tokens_saved=1)
+                # PR-1 auto-tune feedback: record the accepted verify
+                # outcome. When the controller is not installed this
+                # branch is skipped entirely, preserving the pre-PR-1
+                # code path byte-for-byte.
+                if draft_k_controller is not None:
+                    draft_k_controller.record_attempt(accepted=True)
                 ntoks += 1
                 yield draft_tok_id, draft_lp, True
                 if ntoks >= max_tokens:
@@ -490,6 +526,12 @@ def mtp_generate_step(
             else:
                 _rollback_draft()
                 accept_counter.record_reject()
+                # PR-1 auto-tune feedback: record the rejected verify
+                # outcome. Same reasoning as the accept branch — the
+                # ``is None`` check keeps the static-``k`` path
+                # unchanged when the controller is not installed.
+                if draft_k_controller is not None:
+                    draft_k_controller.record_attempt(accepted=False)
                 if logits_processors and prev_tokens is not None:
                     prev_tokens = prev_tokens[:-1]  # discard rejected
                 verify_tok_id = verify_pred.item()

@@ -428,6 +428,24 @@ def test_cli_spec_decode_flag_advertised_in_help():
     assert "none,mtp" in text or "mtp,none" in text
 
 
+def test_cli_mtp_draft_k_auto_tune_flags_advertised_in_help():
+    """0.9.11 PR-1: all six ``--mtp-draft-k-*`` flags must appear in
+    ``rapid-mlx serve --help``. Guards against a future refactor
+    silently dropping any of the surface — the flag names ARE the
+    public contract.
+    """
+    text = _serve_help_stdout()
+    for flag in (
+        "--mtp-draft-k-auto-tune",
+        "--mtp-draft-k-max",
+        "--mtp-draft-k-window",
+        "--mtp-draft-k-upshift-threshold",
+        "--mtp-draft-k-downshift-threshold",
+        "--mtp-draft-k-cooldown",
+    ):
+        assert flag in text, f"{flag} missing from serve --help"
+
+
 def test_cli_spec_decode_flag_rejects_unknown_value():
     """``--spec-decode eagle`` is rejected by argparse choices."""
     import subprocess
@@ -531,6 +549,70 @@ def test_metrics_renders_post_acceptance_counters():
     # accept_ratio = 0.75 → must appear rounded to 4 decimals.
     assert "0.75" in body
     reset_global_counter_for_tests()
+
+
+def test_metrics_current_draft_k_gauge_absent_without_controller():
+    """0.9.11 PR-1: the current-draft-k gauge is only emitted when
+    the auto-tune controller has been installed at boot. Without
+    the controller, ``0`` in the gauge would falsely imply the
+    controller ratcheted k to zero — instead we skip the line.
+    """
+    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+    from vllm_mlx.spec_decode.mtp.draft_k_controller import (
+        clear_global_controller,
+    )
+
+    reset_global_counter_for_tests()
+    clear_global_controller()
+
+    class _Cfg:
+        model_alias = "qwen3.5-9b-4bit"
+
+    body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
+    assert "rapid_mlx_spec_decode_mtp_current_draft_k" not in body
+
+
+def test_metrics_current_draft_k_gauge_reports_controller_state():
+    """0.9.11 PR-1: with a controller installed, the gauge should
+    surface its current ``k`` value. The label set is joined with
+    the other MTP counters via the shared ``family``/``method``
+    keys.
+    """
+    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+    from vllm_mlx.spec_decode.mtp.draft_k_controller import (
+        DraftKController,
+        clear_global_controller,
+        install_global_controller,
+    )
+
+    reset_global_counter_for_tests()
+    clear_global_controller()
+    controller = DraftKController(
+        k_min=1,
+        k_max=4,
+        k_start=3,
+        window=4,
+        cooldown=4,
+    )
+    install_global_controller(controller)
+    try:
+
+        class _Cfg:
+            model_alias = "qwen3.5-9b-4bit"
+
+        body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
+        assert (
+            "rapid_mlx_spec_decode_mtp_current_draft_k{"
+            'family="qwen3.5-9b-4bit",method="mtp"} 3'
+        ) in body
+    finally:
+        clear_global_controller()
 
 
 def test_metrics_renders_zero_ratio_when_no_attempts():
