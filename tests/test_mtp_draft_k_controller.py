@@ -37,7 +37,6 @@ from vllm_mlx.spec_decode.mtp.draft_k_controller import (
     install_global_controller,
 )
 
-
 # ---------------------------------------------------------------------------
 # Fixture — isolate the module-level singleton between cases.
 # ---------------------------------------------------------------------------

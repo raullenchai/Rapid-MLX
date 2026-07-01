@@ -608,7 +608,7 @@ def test_metrics_current_draft_k_gauge_reports_controller_state():
 
         body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
         assert (
-            'rapid_mlx_spec_decode_mtp_current_draft_k{'
+            "rapid_mlx_spec_decode_mtp_current_draft_k{"
             'family="qwen3.5-9b-4bit",method="mtp"} 3'
         ) in body
     finally:

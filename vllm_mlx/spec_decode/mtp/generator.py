@@ -53,6 +53,8 @@ from .accept_counter import get_global_counter
 from .cache_patch import patch_arrays_cache_rollback_state
 from .draft_k_controller import (
     DraftKController,
+)
+from .draft_k_controller import (
     get_global_controller as _get_global_draft_k_controller,
 )
 
