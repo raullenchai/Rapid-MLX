@@ -410,13 +410,8 @@ def _load_parent_config(repo: str) -> dict:
         return json.load(f)
 
 
-def _atomic_write_bytes(dst: Path, contents: bytes) -> None:
-    tmp = dst.with_suffix(dst.suffix + ".tmp")
-    tmp.write_bytes(contents)
-    os.replace(tmp, dst)
-
-
 def _atomic_move(tmp: Path, dst: Path) -> None:
+    """Rename ``tmp`` → ``dst`` atomically (within the same filesystem)."""
     os.replace(tmp, dst)
 
 
@@ -485,9 +480,10 @@ def main(argv: list[str] | None = None) -> int:
             "model-mtp.safetensors",
             "model-mtp.tmp.safetensors",
             "config.json",
-            # ``_atomic_write_bytes`` writes to ``<dst>.tmp`` before
-            # renaming; include the config.json scratch file too
-            # (codex round-5 NIT: was previously left behind).
+            # config.json's scratch file (rounds 5 + 10) — the
+            # main() write path uses ``config.json.tmp`` explicitly
+            # so that a partially-written config leaves NO half-file
+            # at ``config.json`` (the tmp-then-rename shape).
             "config.json.tmp",
         }
     )
@@ -598,30 +594,55 @@ def main(argv: list[str] | None = None) -> int:
         source_filename=args.gguf_filename,
     )
 
-    # --- Write safetensors atomically ---
+    # --- Write both artifacts atomically ---
+    # Codex round-10 NIT: emit BOTH .tmp files first, verify, then
+    # rename both into place. Previously the safetensors was renamed
+    # into its final path before the config.json write started, so a
+    # disk-full / interrupted config write left a stale
+    # ``model-mtp.safetensors`` behind — indistinguishable from a
+    # complete previous run to any downstream consumer, and requiring
+    # ``--force`` on the next attempt. The tmp-then-rename-both shape
+    # means an interrupted run leaves ONLY .tmp files, which the
+    # ``--force`` cleanup list already handles.
     import mlx.core as mx
 
     st_dst = out_dir / "model-mtp.safetensors"
-    # ``mx.save_safetensors`` auto-appends ``.safetensors`` when the
-    # given path doesn't already end in that extension. Sidestep by
-    # writing directly to a ``.tmp.safetensors`` filename, then
-    # renaming to the final destination in an atomic step.
     st_tmp_write = out_dir / "model-mtp.tmp.safetensors"
-    logger.info("Writing %d tensors to %s ...", len(mtp_weights), st_dst)
-    # Codex round-3 nit: guard against a failed os.replace leaving the
-    # ``.tmp.safetensors`` file behind. try/finally always unlinks the
-    # temp path (a no-op after successful rename).
+    cfg_dst = out_dir / "config.json"
+    cfg_tmp_write = out_dir / "config.json.tmp"
+
+    logger.info(
+        "Writing %d tensors to %s and config to %s (both via .tmp) ...",
+        len(mtp_weights),
+        st_dst,
+        cfg_dst,
+    )
     try:
+        # Write both scratch files first.
+        # ``mx.save_safetensors`` auto-appends ``.safetensors`` when the
+        # given path doesn't already end in that extension — that's why
+        # the safetensors scratch is ``model-mtp.tmp.safetensors``, not
+        # ``model-mtp.safetensors.tmp``.
         mx.save_safetensors(str(st_tmp_write), mtp_weights)
+        cfg_tmp_write.write_bytes(json.dumps(sidecar_cfg, indent=2).encode() + b"\n")
+
+        # Rename BOTH artifacts only after BOTH scratch writes
+        # succeeded. os.replace is atomic within a filesystem, so the
+        # window where the safetensors is renamed and the config is
+        # not is limited to the gap BETWEEN these two calls (no
+        # userspace work in between). A crash inside that gap leaves a
+        # renamed safetensors + un-renamed config.json.tmp — the next
+        # ``--force`` run will clear config.json.tmp and re-emit both.
         _atomic_move(st_tmp_write, st_dst)
+        _atomic_move(cfg_tmp_write, cfg_dst)
     finally:
+        # Always clean up scratch files. A no-op after successful
+        # renames.
         with contextlib.suppress(FileNotFoundError):
             st_tmp_write.unlink()
-
-    # --- Write config.json atomically ---
-    cfg_dst = out_dir / "config.json"
-    _atomic_write_bytes(cfg_dst, json.dumps(sidecar_cfg, indent=2).encode() + b"\n")
-    logger.info("Wrote %s", cfg_dst)
+        with contextlib.suppress(FileNotFoundError):
+            cfg_tmp_write.unlink()
+    logger.info("Wrote %s and %s", st_dst, cfg_dst)
 
     # --- Verify by re-loading ---
     # Codex round-5 NIT: check shape + dtype per tensor, not just the

@@ -573,21 +573,31 @@ def test_inject_mtp_support_refuses_assistant_architecture_sidecar():
     --mtp-sidecar`` at the output, and gets a random-init draft that
     silently yields zero speedup. The architecture-guard log message
     must fire and inject must return False.
+
+    Codex round-10 BLOCKING fix: strengthen the assertion. The
+    previous shape (``validate_mtp_support(model) is False``) would
+    also pass if a bug in ``inject_mtp_support`` attached scaffold
+    surfaces, set the ``_mtp_is_scaffold`` marker, and then returned
+    ``False``. The invariant we depend on is **the model is
+    bit-for-bit unmodified when inject refuses**, so check the
+    concrete mutation contract directly (same shape as
+    ``test_inject_mtp_support_refuses_no_sidecar_by_default``).
     """
     import tempfile
     from pathlib import Path
 
     import mlx.core as _mx
 
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
-        inject_mtp_support,
-        validate_mtp_support,
-    )
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         model = _build_tiny_gemma4_text_model()
     except (TypeError, AttributeError) as exc:
         pytest.skip(f"Gemma 4 text ModelArgs schema mismatch: {exc}")
+
+    # Snapshot the inner model's class BEFORE the inject so we can
+    # prove no scaffold class swap happened.
+    original_class = type(model)
 
     # Build a tiny "assistant-shaped" sidecar with pre/post projection
     # keys — enough for _looks_like_assistant_sidecar to trigger.
@@ -609,8 +619,27 @@ def test_inject_mtp_support_refuses_assistant_architecture_sidecar():
             "gemma4_inject must REFUSE a sidecar carrying the assistant "
             "architecture markers. The architecture guard has regressed."
         )
-        assert validate_mtp_support(model) is False, (
-            "Refused inject must leave the model unmodified — no surfaces attached."
+
+        # ── Concrete mutation contract — refused inject == no-op ────
+        assert getattr(model, "mtp", None) is None, (
+            ".mtp attached despite refused assistant sidecar — the "
+            "codex round-10 strengthened check locks against a "
+            "regression where the architecture guard fires AFTER "
+            "the scaffold has been attached."
+        )
+        assert not callable(getattr(model, "mtp_forward", None)), (
+            ".mtp_forward attached despite refused assistant sidecar."
+        )
+        assert not callable(getattr(model, "make_mtp_cache", None)), (
+            ".make_mtp_cache attached despite refused assistant sidecar."
+        )
+        assert type(model) is original_class, (
+            "inner.__class__ was swapped despite refused assistant "
+            "sidecar — the scaffold class installation must be gated "
+            "on the architecture guard passing."
+        )
+        assert not getattr(model, "_mtp_is_scaffold", False), (
+            "_mtp_is_scaffold marker set despite refused assistant sidecar."
         )
 
 
