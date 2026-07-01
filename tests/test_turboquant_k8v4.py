@@ -543,6 +543,193 @@ class TestCLIFlag:
         assert "mutually exclusive" in source.lower()
 
 
+# ---------------------------------------------------------------------------
+# 8b. #969 — ``python -m vllm_mlx.server`` entrypoint parity
+# ---------------------------------------------------------------------------
+#
+# Pre-fix, the standalone ``python -m vllm_mlx.server`` argparse:
+#   * rejected the ``"none"`` off-switch added in #962 (``choices`` set
+#     to ``["v4", "k8v4"]`` only), and
+#   * silently dropped every TurboQuant value at the ``SchedulerConfig``
+#     construction site — the parser accepted ``--kv-cache-turboquant
+#     k8v4`` but the engine still booted with FP16 KV.
+#
+# Both are user-visible silent-flag-drop bugs of the same class as #400.
+# The fix mirrors ``cli.py``'s behaviour: add ``"none"`` to choices,
+# resolve the mode via ``resolve_turboquant_mode_default``, and thread
+# the values into ``SchedulerConfig`` via the shared
+# ``turboquant_scheduler_kwargs`` helper. The two entries share the
+# helper so future TurboQuant fields can't drift.
+
+
+def _extract_server_argparse_choices(flag_name: str) -> list[str] | None:
+    """AST-scrape ``server.main``'s argparse for the given flag's ``choices``.
+
+    Avoids invoking the parser at test time (which would drag the full
+    mlx-core / uvicorn stack via ``server.main``'s imports).
+    """
+    import ast
+
+    source = (
+        __import__("pathlib").Path(__file__).parent.parent / "vllm_mlx" / "server.py"
+    ).read_text()
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if not (isinstance(node, ast.Call)):
+            continue
+        # add_argument("--flag", ...)
+        if not (
+            isinstance(node.func, ast.Attribute) and node.func.attr == "add_argument"
+        ):
+            continue
+        if not node.args or not isinstance(node.args[0], ast.Constant):
+            continue
+        if node.args[0].value != flag_name:
+            continue
+        for kw in node.keywords:
+            if kw.arg == "choices" and isinstance(kw.value, ast.List):
+                return [e.value for e in kw.value.elts if isinstance(e, ast.Constant)]
+    return None
+
+
+class TestServerEntrypointParity:
+    """#969 — the standalone ``python -m vllm_mlx.server`` entrypoint
+    must honor ``--kv-cache-turboquant`` at parity with ``cli.py``.
+    """
+
+    def test_server_argparse_accepts_none_off_switch(self):
+        """#969 pre-fix: ``choices=["v4", "k8v4"]`` REJECTED the
+        ``--kv-cache-turboquant none`` off-switch added in #962. Post-fix
+        the standalone entry must accept it just like ``rapid-mlx serve``.
+        """
+        choices = _extract_server_argparse_choices("--kv-cache-turboquant")
+        assert choices is not None, (
+            "--kv-cache-turboquant argparse entry missing from server.main"
+        )
+        assert "none" in choices, (
+            f"--kv-cache-turboquant on `python -m vllm_mlx.server` must "
+            f"accept the ``none`` off-switch added in #962 (got choices="
+            f"{choices!r}). Pre-fix, argparse rejected the off-switch "
+            f"outright."
+        )
+        assert "v4" in choices and "k8v4" in choices, (
+            f"choice set drifted from cli.py: got {choices!r}"
+        )
+
+    def test_server_main_threads_turboquant_into_scheduler_config(self):
+        """#969 silent-drop regression — ``server.main`` must plumb the
+        parsed TurboQuant values into ``SchedulerConfig`` (like the #400
+        fix for ``--prefill-step-size``). The shared
+        ``turboquant_scheduler_kwargs`` helper is the canonical mirror,
+        so the test asserts either the direct kwargs OR the helper
+        star-unpacking is present at the construction site.
+        """
+        import ast
+        from pathlib import Path
+
+        source = (Path(__file__).parent.parent / "vllm_mlx" / "server.py").read_text()
+        tree = ast.parse(source)
+        # Find the ``main`` function and its ``SchedulerConfig(...)`` call.
+        main_func = next(
+            (
+                n
+                for n in ast.walk(tree)
+                if isinstance(n, ast.FunctionDef) and n.name == "main"
+            ),
+            None,
+        )
+        assert main_func is not None, "server.main not found"
+        sc_call = None
+        for node in ast.walk(main_func):
+            if (
+                isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Name)
+                and node.func.id == "SchedulerConfig"
+            ):
+                sc_call = node
+                break
+        assert sc_call is not None, "SchedulerConfig(...) call missing in server.main"
+
+        required = {
+            "kv_cache_turboquant",
+            "kv_cache_turboquant_bits",
+            "kv_cache_turboquant_group_size",
+            "kv_cache_turboquant_mode",
+        }
+        direct_kwargs = {kw.arg for kw in sc_call.keywords if kw.arg is not None}
+
+        # Star-unpacked ``**helper(args)`` counts as passing the fields
+        # the helper injects, matching the audit script's
+        # ``KWARG_INJECTOR_HELPERS`` map.
+        star_kwargs: set[str] = set()
+        helper_names = {
+            "turboquant_scheduler_kwargs",
+            "_turboquant_scheduler_kwargs",
+            "_server_turboquant_scheduler_kwargs",
+        }
+        for kw in sc_call.keywords:
+            if (
+                kw.arg is None
+                and isinstance(kw.value, ast.Call)
+                and isinstance(kw.value.func, ast.Name)
+                and kw.value.func.id in helper_names
+            ):
+                star_kwargs |= required
+
+        passed = direct_kwargs | star_kwargs
+        missing = required - passed
+        assert not missing, (
+            f"regression #969: server.main SchedulerConfig(...) drops "
+            f"TurboQuant fields {sorted(missing)}. Either pass them "
+            f"directly or unpack ``**turboquant_scheduler_kwargs(args)``. "
+            f"Pre-fix, this entrypoint accepted ``--kv-cache-turboquant`` "
+            f"but never threaded the value to the engine (silent flag "
+            f"drop, same bug class as #400)."
+        )
+
+    def test_shared_turboquant_scheduler_kwargs_returns_all_fields(self):
+        """Helper must return every ``SchedulerConfig`` TurboQuant field
+        so both entrypoints stay in lock-step. If a new TurboQuant field
+        lands on ``SchedulerConfig`` but the helper doesn't emit it,
+        server.py's SchedulerConfig would silently regress even though
+        cli.py's banner code keeps the arg refs live.
+        """
+        from types import SimpleNamespace
+
+        from vllm_mlx.turboquant import turboquant_scheduler_kwargs
+
+        # All-off shape.
+        off = turboquant_scheduler_kwargs(
+            SimpleNamespace(
+                kv_cache_turboquant=None,
+                kv_cache_turboquant_bits=None,
+                kv_cache_turboquant_group_size=32,
+            )
+        )
+        assert off == {
+            "kv_cache_turboquant": False,
+            "kv_cache_turboquant_bits": None,
+            "kv_cache_turboquant_group_size": 32,
+            # Off: mode collapses to the dataclass default ``"v4"``.
+            "kv_cache_turboquant_mode": "v4",
+        }
+
+        # K8V4 explicit — bool True, mode carries the string.
+        on = turboquant_scheduler_kwargs(
+            SimpleNamespace(
+                kv_cache_turboquant="k8v4",
+                kv_cache_turboquant_bits=4,
+                kv_cache_turboquant_group_size=64,
+            )
+        )
+        assert on == {
+            "kv_cache_turboquant": True,
+            "kv_cache_turboquant_bits": 4,
+            "kv_cache_turboquant_group_size": 64,
+            "kv_cache_turboquant_mode": "k8v4",
+        }
+
+
 # subprocess / sys are kept available for future regression scenarios.
 _ = (subprocess, sys)
 

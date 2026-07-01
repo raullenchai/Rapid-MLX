@@ -1786,13 +1786,19 @@ Examples:
     parser.add_argument("--kv-group-size", type=int, default=64, help=_ap.SUPPRESS)
     parser.add_argument("--draft-model", type=str, default=None, help=_ap.SUPPRESS)
     parser.add_argument("--num-draft-tokens", type=int, default=4, help=_ap.SUPPRESS)
-    # TurboQuant flags — accepted but only functional via rapid-mlx serve (cli.py)
+    # TurboQuant flags — MUST match ``rapid-mlx serve`` (cli.py) choice
+    # set + defaults so this standalone entry is functionally at parity.
+    # Pre-#969, this parser was missing the ``"none"`` off-switch added
+    # in #962 (argparse rejected the flag outright) AND the parsed values
+    # were never threaded into ``SchedulerConfig`` below (silent drop —
+    # same bug class as #400). Both entries now share the
+    # ``turboquant_scheduler_kwargs`` helper.
     parser.add_argument(
         "--kv-cache-turboquant",
         nargs="?",
         const="v4",
         default=None,
-        choices=["v4", "k8v4"],
+        choices=["v4", "k8v4", "none"],
         help=_ap.SUPPRESS,
     )
     parser.add_argument(
@@ -2141,9 +2147,28 @@ Examples:
     except ValueError as e:
         parser.error(str(e))
 
+    # TurboQuant resolution (#969): mirror ``rapid-mlx serve`` so the
+    # standalone entry actually honors ``--kv-cache-turboquant``. The
+    # helper collapses the ``"none"`` off-switch sentinel to ``None`` and
+    # applies the per-alias ``k8v4_verified`` default. There is no
+    # ``--kv-cache-quantization`` flag on this parser, so the mutual-
+    # exclusion check in ``cli.py`` is a no-op here (``getattr`` guard on
+    # the shared helper covers programmatic callers that inject one).
+    from .turboquant import (
+        resolve_turboquant_mode_default as _server_turboquant_resolve_default,
+    )
+    from .turboquant import (
+        turboquant_scheduler_kwargs as _server_turboquant_scheduler_kwargs,
+    )
+
+    args.kv_cache_turboquant = _server_turboquant_resolve_default(
+        args, model_name=args.model
+    )
+
     scheduler_config = SchedulerConfig(
         prefill_step_size=args.prefill_step_size,
         pflash_config=server_pflash_config,
+        **_server_turboquant_scheduler_kwargs(args),
     )
 
     # Load model before starting server
