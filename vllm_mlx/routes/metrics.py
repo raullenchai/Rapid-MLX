@@ -501,6 +501,40 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             labels=common_labels,
         )
     )
+
+    # 0.9.11 PR-1: MTP draft-``k`` auto-tune current-k gauge.
+    #
+    # Emitted ONLY when a controller has been installed at boot via
+    # ``--mtp-draft-k-auto-tune``. When auto-tune is off the gauge
+    # is skipped entirely — emitting a placeholder ``0`` would
+    # falsely imply the controller ratcheted ``k`` to zero, which
+    # is not a state the controller can reach (``k_min >= 1``).
+    #
+    # Labelled with the same ``family`` (model alias) as the accept
+    # counters so a dashboard can join the two on a single panel
+    # without cardinality gymnastics.
+    try:
+        from ..spec_decode.mtp import get_global_controller
+
+        controller = get_global_controller()
+    except ImportError:  # pragma: no cover — defensive, matches counter path
+        controller = None
+    if controller is not None:
+        controller_snapshot = controller.snapshot()
+        out.extend(
+            _fmt_metric(
+                "rapid_mlx_spec_decode_mtp_current_draft_k",
+                "gauge",
+                (
+                    "Currently in-use MTP draft-k as chosen by the "
+                    "0.9.11 auto-tune controller. Bounded by "
+                    "--mtp-draft-k-min and --mtp-draft-k-max at boot. "
+                    "Only emitted when --mtp-draft-k-auto-tune is set."
+                ),
+                int(controller_snapshot["current_k"]),
+                labels=common_labels,
+            )
+        )
     return out
 
 

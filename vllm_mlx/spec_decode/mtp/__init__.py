@@ -65,12 +65,22 @@ from __future__ import annotations
 from .accept_counter import MTPAcceptCounter, get_global_counter
 from .cache_patch import patch_arrays_cache_rollback_state
 from .detect import MTPEligibility, detect_mtp_eligibility
+from .draft_k_controller import (
+    DraftKController,
+    clear_global_controller,
+    get_global_controller,
+    install_global_controller,
+)
 
 __all__ = [
+    "DraftKController",
     "MTPAcceptCounter",
     "MTPEligibility",
+    "clear_global_controller",
     "detect_mtp_eligibility",
+    "get_global_controller",
     "get_global_counter",
+    "install_global_controller",
     "patch_arrays_cache_rollback_state",
 ]
 

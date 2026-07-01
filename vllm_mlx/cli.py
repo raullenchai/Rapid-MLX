@@ -2435,6 +2435,84 @@ def serve_command(args):
             sys.exit(2)
         print(f"Spec-decode: mtp ({eligibility.value})")
 
+    # 0.9.11 PR-1: universal MTP draft-``k`` auto-tune controller.
+    # Gate: EITHER --enable-mtp (Qwen3-Next legacy path) OR
+    # --spec-decode mtp (Qwen3.5/3.6 native path from PR #990) must
+    # already be on. Requiring one of them is a defensive check —
+    # without an MTP path installed the controller would sit
+    # installed but never receive ``record_attempt()`` calls, which
+    # is a silent no-op that's hard to diagnose from the operator
+    # side. Fail loud at boot instead. (Task PR description said
+    # "requires --enable-mtp"; the wider gate covers the vendored
+    # spec-decode path since the controller wires into
+    # ``generator.py`` which only runs under --spec-decode mtp.)
+    if getattr(args, "mtp_draft_k_auto_tune", False):
+        if not (
+            args.enable_mtp or getattr(args, "spec_decode", "none") == "mtp"
+        ):
+            print(
+                "error: --mtp-draft-k-auto-tune requires either "
+                "--enable-mtp or --spec-decode mtp to be set. The "
+                "controller only receives accept/reject feedback from "
+                "an active MTP path.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        k_max = args.mtp_draft_k_max
+        if k_max < 1 or k_max > 8:
+            print(
+                f"error: --mtp-draft-k-max must be in [1, 8]; got {k_max}.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        # ``--mtp-num-draft-tokens`` is the starting-k seed when
+        # auto-tune is on. Must satisfy k_min=1 <= start <= k_max
+        # else the controller constructor would raise deep inside
+        # the boot path — trap here so the operator gets a clean
+        # error line instead of an ImportError-shaped traceback.
+        k_start = args.mtp_num_draft_tokens
+        if not (1 <= k_start <= k_max):
+            print(
+                f"error: --mtp-num-draft-tokens ({k_start}) must satisfy "
+                f"1 <= start <= --mtp-draft-k-max ({k_max}) when "
+                "--mtp-draft-k-auto-tune is set.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        # Construct + install. Constructor raises on NaN / +Inf /
+        # -Inf thresholds, inverted thresholds, non-positive window
+        # / cooldown, etc. — surface those with a clean error line.
+        try:
+            from vllm_mlx.spec_decode.mtp import (
+                DraftKController,
+                install_global_controller,
+            )
+
+            controller = DraftKController(
+                k_min=1,
+                k_max=k_max,
+                k_start=k_start,
+                window=args.mtp_draft_k_window,
+                upshift_threshold=args.mtp_draft_k_upshift_threshold,
+                downshift_threshold=args.mtp_draft_k_downshift_threshold,
+                cooldown=args.mtp_draft_k_cooldown,
+            )
+        except (TypeError, ValueError) as exc:
+            print(
+                f"error: --mtp-draft-k-auto-tune controller config invalid: {exc}",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        install_global_controller(controller)
+        print(
+            "MTP draft-k auto-tune: enabled "
+            f"(k_start={k_start}, k_max={k_max}, "
+            f"window={args.mtp_draft_k_window}, "
+            f"upshift={args.mtp_draft_k_upshift_threshold}, "
+            f"downshift={args.mtp_draft_k_downshift_threshold}, "
+            f"cooldown={args.mtp_draft_k_cooldown})"
+        )
+
     # ``--spec-decode dflash`` is normalized to ``--enable-dflash`` near
     # the top of serve_command (#318 redirect); by the time we reach
     # here, args.spec_decode is "none" for dflash callers. The
@@ -6161,6 +6239,97 @@ Examples:
         default=False,
         help="Skip MTP acceptance check for maximum speed. "
         "~5-10%% wrong tokens. Best for chat, not for code.",
+    )
+    # ------------------------------------------------------------------
+    # 0.9.11 PR-1: universal MTP draft-``k`` auto-tune controller.
+    #
+    # The controller lives in ``vllm_mlx.spec_decode.mtp.draft_k_controller``
+    # and adjusts ``k`` (draft tokens per verify pass) between
+    # ``--mtp-draft-k-min=1`` and ``--mtp-draft-k-max`` based on the
+    # rolling accept rate. Design rationale: hysteresis (two
+    # thresholds) + cooldown prevents the ``k = 3 ↔ k = 4`` oscillation
+    # a single-threshold controller would show when the accept rate
+    # hovers right at the boundary between "one more draft is a win"
+    # and "one more draft is a loss".
+    #
+    # The controller is opt-in (default off) so the pre-0.9.11
+    # static-``k`` behaviour is preserved byte-for-byte for operators
+    # who don't pass the flag. The generator (`generator.py`) checks
+    # the module-global controller once per verify pass via an
+    # ``is None`` guard, so the fast-path cost when off is a single
+    # attribute load per step.
+    #
+    # PR-1 lands the controller + feedback loop. PR-2/3 (Gemma-4
+    # sidecar) will consume ``controller.current_k()`` in the
+    # generator hot loop to actually draft ``k`` tokens per verify
+    # pass — that requires the upstream MTP sidecar (parked).
+    serve_parser.add_argument(
+        "--mtp-draft-k-auto-tune",
+        action="store_true",
+        default=False,
+        help=(
+            "Enable the runtime MTP draft-k auto-tune controller "
+            "(0.9.11 PR-1). Requires --enable-mtp or --spec-decode mtp; "
+            "boot fails otherwise. Adjusts draft-k between 1 and "
+            "--mtp-draft-k-max based on the rolling accept rate. "
+            "Default off — the pre-0.9.11 static-k path is preserved."
+        ),
+    )
+    serve_parser.add_argument(
+        "--mtp-draft-k-max",
+        type=int,
+        default=4,
+        help=(
+            "Upper bound on MTP draft-k when auto-tune is enabled "
+            "(default: 4; range: 1-8). Ignored when "
+            "--mtp-draft-k-auto-tune is off."
+        ),
+    )
+    serve_parser.add_argument(
+        "--mtp-draft-k-window",
+        type=int,
+        default=64,
+        help=(
+            "Rolling window size (in attempts) used to compute the "
+            "accept rate that drives auto-tune adjustments "
+            "(default: 64). Ignored when auto-tune is off."
+        ),
+    )
+    serve_parser.add_argument(
+        "--mtp-draft-k-upshift-threshold",
+        type=float,
+        default=0.80,
+        help=(
+            "Accept-rate at or above which draft-k is bumped up "
+            "(default: 0.80). Must be strictly greater than "
+            "--mtp-draft-k-downshift-threshold. NaN / +Inf / -Inf "
+            "and values outside (0, 1] are rejected at boot. Ignored "
+            "when auto-tune is off."
+        ),
+    )
+    serve_parser.add_argument(
+        "--mtp-draft-k-downshift-threshold",
+        type=float,
+        default=0.40,
+        help=(
+            "Accept-rate at or below which draft-k is cut down "
+            "(default: 0.40). Must be strictly less than "
+            "--mtp-draft-k-upshift-threshold. NaN / +Inf / -Inf and "
+            "values outside [0, 1) are rejected at boot. Ignored "
+            "when auto-tune is off."
+        ),
+    )
+    serve_parser.add_argument(
+        "--mtp-draft-k-cooldown",
+        type=int,
+        default=128,
+        help=(
+            "Minimum number of recorded verify attempts between "
+            "auto-tune adjustment decisions (default: 128). Prevents "
+            "a lucky streak of accepts right after cold-start from "
+            "ratcheting k up before steady-state behaviour kicks in. "
+            "Ignored when auto-tune is off."
+        ),
     )
     # R15-P1 #302: native Qwen3.5/3.6 MTP via vendored mlx-lm PR #990.
     # Lives next to the existing ``--enable-mtp`` (Qwen3-Next runtime
