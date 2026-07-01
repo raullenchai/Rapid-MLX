@@ -527,9 +527,9 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
                 "gauge",
                 (
                     "Currently in-use MTP draft-k as chosen by the "
-                    "0.9.11 auto-tune controller. Bounded by "
-                    "--mtp-draft-k-min and --mtp-draft-k-max at boot. "
-                    "Only emitted when --mtp-draft-k-auto-tune is set."
+                    "0.9.11 auto-tune controller. Bounded between 1 "
+                    "and --mtp-draft-k-max (default 4). Only emitted "
+                    "when --mtp-draft-k-auto-tune is set."
                 ),
                 int(controller_snapshot["current_k"]),
                 labels=common_labels,
