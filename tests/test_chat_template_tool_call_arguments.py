@@ -185,6 +185,91 @@ class TestNormalizeAssistantToolCallArguments:
         m2 = [{"role": "assistant", "tool_calls": [{"function": "oops"}]}]
         assert _normalize_assistant_tool_call_arguments(m2) is m2
 
+    def test_absent_arguments_key_is_not_invented(self):
+        """Missing ``arguments`` key MUST NOT be materialised as
+        ``{"value": None}`` — that would silently invent a payload the
+        client never sent (codex r1 NIT on PR #981).
+        """
+        # Missing on nested function
+        m1 = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "x"}}],
+            }
+        ]
+        assert _normalize_assistant_tool_call_arguments(m1) is m1
+        # Missing on top-level (no ``function`` envelope)
+        m2 = [{"role": "assistant", "tool_calls": [{"name": "x"}]}]
+        assert _normalize_assistant_tool_call_arguments(m2) is m2
+        # Present but None on nested — treat as present (get_arguments
+        # explicitly wrapped) — this IS the SDK-bug case the wrapper
+        # exists for; verify we wrap None as {"value": None} only when
+        # the key is actually present.
+        m3 = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"function": {"name": "x", "arguments": None}}],
+            }
+        ]
+        out3 = _normalize_assistant_tool_call_arguments(m3)
+        assert out3[0]["tool_calls"][0]["function"]["arguments"] == {"value": None}
+
+    def test_top_level_arguments_string_becomes_dict(self):
+        """Codex r1 BLOCKING: some templates access ``tool_call.arguments``
+        directly (no ``tool_call.function`` unwrap). The nested-only
+        normaliser leaked the JSON-string form to those templates.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "name": "get_weather",
+                        "arguments": '{"city": "Paris"}',
+                    }
+                ],
+            }
+        ]
+        out = _normalize_assistant_tool_call_arguments(messages)
+        assert out[0]["tool_calls"][0]["arguments"] == {"city": "Paris"}
+        # Original untouched.
+        assert messages[0]["tool_calls"][0]["arguments"] == '{"city": "Paris"}'
+
+    def test_top_level_arguments_only_normalized_when_no_function_envelope(self):
+        """When ``function`` is present, ``function.arguments`` is
+        authoritative and any stray top-level ``arguments`` MUST NOT be
+        normalised — normalising both would double-mutate and could
+        introduce inconsistent state.
+        """
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "function": {"name": "x", "arguments": '{"a": 1}'},
+                        # Deliberately stray top-level payload — kept as-is.
+                        "arguments": "some other string",
+                    }
+                ],
+            }
+        ]
+        out = _normalize_assistant_tool_call_arguments(messages)
+        assert out[0]["tool_calls"][0]["function"]["arguments"] == {"a": 1}
+        # Top-level left alone.
+        assert out[0]["tool_calls"][0]["arguments"] == "some other string"
+
+    def test_top_level_arguments_malformed_wrapped(self):
+        messages = [
+            {
+                "role": "assistant",
+                "tool_calls": [{"name": "x", "arguments": "not json"}],
+            }
+        ]
+        out = _normalize_assistant_tool_call_arguments(messages)
+        assert out[0]["tool_calls"][0]["arguments"] == {"value": "not json"}
+
 
 # ---------------------------------------------------------------------------
 # Cross-parser end-to-end coverage — apply_chat_template with fake
@@ -335,6 +420,25 @@ QWEN3_CODER_XML_LIKE_TEMPLATE = """\
 {% endfor -%}
 """
 
+# Top-level (flat) shape — some templates access ``tc.arguments`` directly
+# without an ``if tool_call.function is defined`` unwrap. Codex r1
+# BLOCKING on PR #981: the nested-only fix left this shape crashing.
+FLAT_TOP_LEVEL_TEMPLATE = """\
+{% for m in messages -%}
+{% if m.role == 'assistant' and m.tool_calls -%}
+{% for tc in m.tool_calls -%}
+<tool_call name={{ tc.name }}>
+{% for k, v in tc.arguments|items -%}
+{{ k }}={{ v }}
+{% endfor -%}
+</tool_call>
+{% endfor -%}
+{% else -%}
+{{ m.role }}: {{ m.content }}
+{% endif -%}
+{% endfor -%}
+"""
+
 # Table of (parser_family_id, template_str, expected_substrings_dict_form).
 # Each parser family gets exercised for both the dict-form input (baseline)
 # and the JSON-string input (the GH-973 crash form). Post-fix, both
@@ -456,6 +560,62 @@ def test_cross_parser_dict_and_string_render_identically(
         f"dict-form:\n{dict_form}\n"
         f"str-form:\n{string_form}"
     )
+
+
+def _messages_with_flat_top_level_tool_call(arguments):
+    """Legacy / flat wire shape: ``tool_call`` carries ``name`` + ``arguments``
+    directly, no ``function`` envelope. Some templates access it via
+    ``tc.arguments`` without an unwrap step; this is the codex r1
+    BLOCKING case on PR #981.
+    """
+    return [
+        {"role": "user", "content": "What's the weather in Paris?"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call_1",
+                    "type": "function",
+                    "name": "get_weather",
+                    "arguments": arguments,
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call_1",
+            "content": "sunny, 22C in Paris",
+        },
+        {"role": "user", "content": "and tomorrow?"},
+    ]
+
+
+def test_flat_top_level_template_json_string_arguments_renders():
+    """Codex r1 BLOCKING on PR #981 — templates that iterate
+    ``tc.arguments|items`` on the FLAT wire shape (no ``function``
+    unwrap) MUST also be normalised at the boundary.
+    """
+    tokenizer = _fake_tokenizer_with_template(FLAT_TOP_LEVEL_TEMPLATE)
+    messages = _messages_with_flat_top_level_tool_call('{"city": "Paris", "unit": "C"}')
+    prompt = apply_chat_template(tokenizer, messages)
+    assert "city=Paris" in prompt
+    assert "unit=C" in prompt
+
+
+def test_flat_top_level_template_dict_arguments_identical():
+    """The dict-form input and JSON-string input render identically on
+    the flat wire shape too."""
+    tokenizer_a = _fake_tokenizer_with_template(FLAT_TOP_LEVEL_TEMPLATE)
+    tokenizer_b = _fake_tokenizer_with_template(FLAT_TOP_LEVEL_TEMPLATE)
+    dict_form = apply_chat_template(
+        tokenizer_a,
+        _messages_with_flat_top_level_tool_call({"city": "Paris", "unit": "C"}),
+    )
+    string_form = apply_chat_template(
+        tokenizer_b,
+        _messages_with_flat_top_level_tool_call('{"city": "Paris", "unit": "C"}'),
+    )
+    assert dict_form == string_form
 
 
 def test_pydantic_ai_style_retry_message_list_does_not_crash():

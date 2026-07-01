@@ -384,9 +384,70 @@ def _normalize_text_only_content_arrays(messages: list[dict]) -> list[dict]:
 #     wrapper so log-style renderers keep the original text.
 
 
+def _coerce_arguments_to_dict(arguments):
+    """Convert an ``arguments`` value to a dict per the GH-973 rules.
+
+    * ``dict`` → returned unchanged (idempotent).
+    * ``str`` → ``json.loads``; if the parsed value is a dict, use it;
+      otherwise wrap the parsed value as ``{"value": <parsed>}``.
+    * ``str`` that fails to JSON-parse → wrap as ``{"value": <raw>}``.
+    * Anything else (``list``, scalar, ...) → wrap as ``{"value": <raw>}``.
+
+    Callers MUST have already checked that an ``arguments`` key is
+    present on the source dict — this helper is only invoked after
+    presence-and-non-dict is confirmed by the two-pass walk in
+    :func:`_normalize_assistant_tool_call_arguments`, so an absent key
+    never reaches here (codex r1 NIT: pre-fix we synthesised
+    ``{"value": None}`` for absent ``arguments``, silently inventing an
+    argument payload; the presence guard closes that).
+    """
+    if isinstance(arguments, dict):
+        return arguments
+    if isinstance(arguments, str):
+        try:
+            parsed = json.loads(arguments)
+        except (json.JSONDecodeError, ValueError, TypeError):
+            return {"value": arguments}
+        if isinstance(parsed, dict):
+            return parsed
+        return {"value": parsed}
+    # Non-string, non-dict — rarely seen (an SDK bug or a test injecting
+    # a bare list/int). Wrap so ``|items`` still works.
+    return {"value": arguments}
+
+
+def _tool_call_arguments_need_mutation(tool_call: dict) -> tuple[bool, bool]:
+    """Return ``(nested_needs, top_needs)`` for ``tool_call``.
+
+    * ``nested_needs`` — ``function.arguments`` is present AND non-dict.
+    * ``top_needs`` — ``tool_call.arguments`` (top-level) is present AND
+      non-dict AND there is no nested ``function`` dict (top-level
+      arguments is the fallback shape for legacy clients that flatten
+      the OpenAI envelope; when ``function`` is present the OpenAI
+      convention is that ``function.arguments`` is authoritative and
+      the top-level ``arguments`` doesn't exist — a defensive extra
+      normalisation there could double-mutate).
+
+    Absent ``arguments`` keys yield ``False`` — we don't invent a
+    payload for something the caller never sent (codex r1 NIT).
+    """
+    function = tool_call.get("function")
+    nested_needs = (
+        isinstance(function, dict)
+        and "arguments" in function
+        and not isinstance(function.get("arguments"), dict)
+    )
+    top_needs = (
+        not isinstance(function, dict)
+        and "arguments" in tool_call
+        and not isinstance(tool_call.get("arguments"), dict)
+    )
+    return nested_needs, top_needs
+
+
 def _normalize_assistant_tool_call_arguments(messages: list) -> list:
     """Return ``messages`` with every ``assistant``-role tool_call's
-    ``function.arguments`` normalized to a dict.
+    ``arguments`` normalised to a dict.
 
     Rules (mirror ``engine/batched.py::_normalize_tool_call_arguments_
     for_template`` so the two normalisers are semantically identical
@@ -397,6 +458,19 @@ def _normalize_assistant_tool_call_arguments(messages: list) -> list:
       otherwise wrap as ``{"value": <parsed>}``.
     * ``str`` that fails to JSON-parse → wrap as ``{"value": <raw>}``.
     * Every non-assistant role is untouched.
+    * ABSENT ``arguments`` key is untouched — we do not invent a
+      payload the client never sent (codex r1 NIT).
+
+    Both OpenAI-wire shapes are covered:
+
+    * Nested — ``tool_call.function.arguments`` (OpenAI ChatCompletion
+      canonical shape; pydantic_ai / OpenAI SDK).
+    * Top-level — ``tool_call.arguments`` (legacy / MCP / a few chat
+      templates that flatten the envelope). Codex r1 BLOCKING: some
+      templates access ``tool_call.arguments`` directly without an
+      ``if tool_call.function is defined`` unwrap step, so the
+      nested-only fix leaked the JSON-string form to those templates
+      and the same ``TypeError`` fired.
 
     Idempotent: repeated calls after the first are no-ops for
     dict-form arguments, so this can safely layer on top of upstream
@@ -405,16 +479,17 @@ def _normalize_assistant_tool_call_arguments(messages: list) -> list:
 
     The scan is O(N) over messages. When nothing needs mutation we
     return the caller's list unchanged (no copy). When at least one
-    ``function.arguments`` needs conversion we materialise a shallow
-    copy of the touched messages (and their ``tool_calls``) so the
-    caller's message list — which the route layer treats as the API
-    surface where ``arguments`` MUST stay a string — is left intact.
+    ``arguments`` needs conversion we materialise a shallow copy of
+    the touched messages (and their ``tool_calls``) so the caller's
+    message list — which the route layer treats as the API surface
+    where ``arguments`` MUST stay a string — is left intact.
     """
     if not isinstance(messages, list) or not messages:
         return messages
 
-    # First pass: detect whether any assistant tool_call.function.arguments
-    # is a non-dict. If none, short-circuit without touching the list.
+    # First pass: detect whether any assistant tool_call has a
+    # non-dict ``arguments`` payload (either nested under ``function``
+    # or top-level). If none, short-circuit without touching the list.
     needs_mutation = False
     for msg in messages:
         if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -425,10 +500,8 @@ def _normalize_assistant_tool_call_arguments(messages: list) -> list:
         for tc in tool_calls:
             if not isinstance(tc, dict):
                 continue
-            function = tc.get("function")
-            if not isinstance(function, dict):
-                continue
-            if not isinstance(function.get("arguments"), dict):
+            nested_needs, top_needs = _tool_call_arguments_need_mutation(tc)
+            if nested_needs or top_needs:
                 needs_mutation = True
                 break
         if needs_mutation:
@@ -453,37 +526,20 @@ def _normalize_assistant_tool_call_arguments(messages: list) -> list:
             if not isinstance(tc, dict):
                 new_tool_calls.append(tc)
                 continue
-            function = tc.get("function")
-            if not isinstance(function, dict):
+            nested_needs, top_needs = _tool_call_arguments_need_mutation(tc)
+            if not nested_needs and not top_needs:
                 new_tool_calls.append(tc)
                 continue
-            arguments = function.get("arguments")
-            if isinstance(arguments, dict):
-                new_tool_calls.append(tc)
-                continue
-            # arguments is a string (or something else we treat as the
-            # OpenAI wire shape). Try to parse; fall through to the
-            # ``{"value": ...}`` wrapper on failure or non-dict result.
-            new_arguments: dict
-            if isinstance(arguments, str):
-                try:
-                    parsed = json.loads(arguments)
-                except (json.JSONDecodeError, ValueError, TypeError):
-                    new_arguments = {"value": arguments}
-                else:
-                    if isinstance(parsed, dict):
-                        new_arguments = parsed
-                    else:
-                        new_arguments = {"value": parsed}
-            else:
-                # Non-string, non-dict — rarely seen (an SDK bug or a
-                # test injecting a bare list/int). Wrap so the template's
-                # ``|items`` still works.
-                new_arguments = {"value": arguments}
-            new_function = dict(function)
-            new_function["arguments"] = new_arguments
             new_tc = dict(tc)
-            new_tc["function"] = new_function
+            if nested_needs:
+                function = tc["function"]
+                new_function = dict(function)
+                new_function["arguments"] = _coerce_arguments_to_dict(
+                    function["arguments"]
+                )
+                new_tc["function"] = new_function
+            if top_needs:
+                new_tc["arguments"] = _coerce_arguments_to_dict(tc["arguments"])
             new_tool_calls.append(new_tc)
             touched_any = True
         if touched_any:
