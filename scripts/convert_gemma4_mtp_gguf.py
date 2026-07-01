@@ -454,7 +454,10 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--force",
         action="store_true",
-        help="Overwrite an existing output directory (default: refuse if non-empty).",
+        help="Overwrite this converter's known artifacts (safetensors + "
+        "config.json + their .tmp scratch files) in the output dir. "
+        "REFUSES if the dir also holds UNKNOWN files — pass a fresh "
+        "--out-dir if you need a clean staging area (codex round-9).",
     )
     args = p.parse_args(argv)
 
@@ -470,8 +473,15 @@ def main(argv: list[str] | None = None) -> int:
     # would nuke unrelated operator files if they pointed --out-dir at
     # a shared location). The safetensors + config.json + the .tmp
     # scratch file are the full artifact set this converter emits.
-    if args.force:
-        for known_artifact in (
+    #
+    # Codex round-9 NIT: strengthen the guard — after clearing the
+    # known artifacts, REFUSE if any UNKNOWN files remain in the
+    # output dir. Otherwise a stale artifact from a previous
+    # converter version (e.g. an old ``tokenizer.json`` or
+    # ``model-mtp.metadata.json``) could survive --force and be
+    # mistaken for part of the newly generated sidecar downstream.
+    _KNOWN_ARTIFACTS = frozenset(
+        {
             "model-mtp.safetensors",
             "model-mtp.tmp.safetensors",
             "config.json",
@@ -479,9 +489,32 @@ def main(argv: list[str] | None = None) -> int:
             # renaming; include the config.json scratch file too
             # (codex round-5 NIT: was previously left behind).
             "config.json.tmp",
-        ):
+        }
+    )
+    if args.force:
+        for known_artifact in _KNOWN_ARTIFACTS:
             with contextlib.suppress(FileNotFoundError):
                 (out_dir / known_artifact).unlink()
+
+        # After known-artifact removal, any residual entry is an
+        # UNKNOWN file. Refuse rather than silently mixing it into
+        # the new sidecar output. The operator has two options: (a)
+        # move --out-dir to a fresh empty location, or (b) manually
+        # verify + remove the stray file(s) and re-run.
+        residual = sorted(p.name for p in out_dir.iterdir())
+        if residual:
+            logger.error(
+                "Output dir %s still contains %d unknown file(s) after "
+                "clearing known artifacts: %s. Refusing to overwrite an "
+                "output dir with foreign contents. Pass a fresh --out-dir "
+                "or manually remove the residual files. Known artifacts "
+                "this converter manages: %s",
+                out_dir,
+                len(residual),
+                residual,
+                sorted(_KNOWN_ARTIFACTS),
+            )
+            return 2
 
     # --- Download GGUF ---
     try:

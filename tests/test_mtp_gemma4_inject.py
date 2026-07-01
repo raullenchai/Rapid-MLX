@@ -270,14 +270,41 @@ def test_inject_delegates_surfaces_to_outer_wrapper():
     # generator) does not silently work-and-then-drift. The
     # extended signature lives on ``inner.__call__`` — validated
     # separately by ``test_inject_mtp_support_attaches_four_surfaces``.
+    #
+    # Codex round-9 blocking fix: use ``getattr`` guarded lookup —
+    # ``_FakeOuterVLM`` deliberately doesn't define its own
+    # ``__call__`` (matches the operator use case where the outer
+    # VLM's __call__ takes pixels), and
+    # ``inspect.signature(cls.__call__)`` on such a class raises
+    # ``AttributeError`` before the assertion can fire. Two
+    # accepted end-states:
+    #
+    # 1. The outer class defines NO ``__call__`` of its own — the
+    #    round-6 delegation did not install one. ``getattr(...,
+    #    "__call__", None)`` returns None (via MRO) or type's
+    #    metaclass-provided ``__call__``; either way the
+    #    extended-MTP params are absent.
+    # 2. The outer class defines its own ``__call__`` (real VLM
+    #    wrapper) — inspect the signature and assert the extended
+    #    params are NOT present.
     import inspect
 
-    outer_call_sig = inspect.signature(type(outer).__call__)
-    assert "return_hidden" not in outer_call_sig.parameters, (
-        "outer wrapper's __call__ should NOT carry the extended "
-        "MTP signature — all callers unwrap to inner first."
-    )
-    assert "n_confirmed" not in outer_call_sig.parameters
+    outer_call = getattr(type(outer), "__call__", None)
+    if outer_call is not None:
+        try:
+            outer_call_sig = inspect.signature(outer_call)
+        except (TypeError, ValueError):
+            # e.g. builtin metaclass slot with no introspectable
+            # signature — treat as "not the extended MTP __call__".
+            outer_call_sig = None
+        if outer_call_sig is not None:
+            assert "return_hidden" not in outer_call_sig.parameters, (
+                "outer wrapper's __call__ should NOT carry the extended "
+                "MTP signature — all callers unwrap to inner first."
+            )
+            assert "n_confirmed" not in outer_call_sig.parameters, (
+                "outer wrapper's __call__ should NOT carry n_confirmed."
+            )
 
 
 # ---------------------------------------------------------------------------

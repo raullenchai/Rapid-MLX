@@ -379,7 +379,23 @@ def _run_once(
         # Validate through the SAME family dispatcher — codex round-2
         # flagged that mixing families here (inject via gemma4, validate
         # via qwen3_5) would falsely fail Gemma 4 patches.
-        assert dispatch_mtp_validate(model, model_type=model_type)
+        #
+        # Codex round-9 blocking fix: `assert` is stripped under
+        # ``python -O``, so a failed validator would let a scaffold
+        # (or a family whose validate refuses the injected surfaces)
+        # slip into the ``mtp_generate_step`` call and crash mid-decode
+        # instead of failing loudly at the front door. Use an explicit
+        # RuntimeError so the -O path is protected too.
+        if not dispatch_mtp_validate(model, model_type=model_type):
+            raise RuntimeError(
+                f"MTP validate refused model {model_alias!r} (model_type="
+                f"{model_type!r}) after inject returned True. For Gemma 4 "
+                "this typically means the scaffold marker fired — the "
+                "inject module attaches surfaces but validate reports "
+                "not-production-ready. Do NOT run the bench in that "
+                "state; the follow-up AssistantModel PR is the real "
+                "consumer."
+            )
         # The patch lands on the inner TextModel (the VLM wrapper's
         # ``language_model`` field). The generator drives the model
         # directly, so re-bind ``model`` to the patched inner for the
