@@ -344,6 +344,157 @@ def _normalize_text_only_content_arrays(messages: list[dict]) -> list[dict]:
     return out
 
 
+# =============================================================================
+# GH-973: assistant tool_call.arguments dict-form invariant
+# =============================================================================
+#
+# The OpenAI wire contract encodes ``message.tool_calls[i].function.arguments``
+# as a JSON string (see: https://platform.openai.com/docs/api-reference/chat/
+# create → ``tool_calls.function.arguments``). Every mainstream HF chat
+# template (Qwen3 / Hermes / Llama3 / GLM4 / Nemotron / minimax) iterates
+# that field as a mapping — ``tool_call.arguments|items`` — so a JSON-string
+# render blows up with:
+#
+#     TypeError: Can only get item pairs from a mapping.
+#
+# The bug surfaces on the ``pydantic_ai`` structured-output retry path
+# (GH-973): pydantic_ai replays the prior assistant tool_call verbatim in
+# the OpenAI wire shape (``arguments`` = JSON string), and the retry pass
+# through ``apply_chat_template`` crashes with 500. The direct fix upstream
+# in ``routes/chat.py::extract_multimodal_content`` and
+# ``engine/batched.py::_normalize_tool_call_arguments_for_template`` covers
+# the standard ``/v1/chat/completions`` non-MLLM path, but every other
+# caller of the shared ``apply_chat_template`` (guided-generation
+# ``BatchedEngine.stream_guided_completion``, native-video path, direct
+# engine callers, tests) bypassed those. Moving the invariant to the
+# shared ``apply_chat_template`` boundary makes it a single choke point.
+#
+# Behaviour matches ``engine/batched.py::_normalize_tool_call_arguments_
+# for_template`` (str → parsed dict when JSON dict; parsed non-dict
+# wrapped as ``{"value": <parsed>}``; malformed JSON wrapped as
+# ``{"value": <raw>}``). Dict-form arguments pass through unchanged
+# (idempotent), so callers that already normalised upstream pay no cost.
+#
+# NON-GOALS:
+#   * Parser output shape is untouched — tool_parsers/*.py write dict
+#     for round-trip correctness; this fix is about REPLAYED messages
+#     from the client.
+#   * User / tool / system messages are untouched — only assistant.
+#   * Malformed JSON is preserved verbatim inside the ``{"value": ...}``
+#     wrapper so log-style renderers keep the original text.
+
+
+def _normalize_assistant_tool_call_arguments(messages: list) -> list:
+    """Return ``messages`` with every ``assistant``-role tool_call's
+    ``function.arguments`` normalized to a dict.
+
+    Rules (mirror ``engine/batched.py::_normalize_tool_call_arguments_
+    for_template`` so the two normalisers are semantically identical
+    and safe to layer):
+
+    * ``dict`` → unchanged.
+    * ``str`` → ``json.loads``; if the parsed value is a dict, use it;
+      otherwise wrap as ``{"value": <parsed>}``.
+    * ``str`` that fails to JSON-parse → wrap as ``{"value": <raw>}``.
+    * Every non-assistant role is untouched.
+
+    Idempotent: repeated calls after the first are no-ops for
+    dict-form arguments, so this can safely layer on top of upstream
+    normalisers in ``routes/chat.py`` and ``engine/batched.py`` without
+    double-work.
+
+    The scan is O(N) over messages. When nothing needs mutation we
+    return the caller's list unchanged (no copy). When at least one
+    ``function.arguments`` needs conversion we materialise a shallow
+    copy of the touched messages (and their ``tool_calls``) so the
+    caller's message list — which the route layer treats as the API
+    surface where ``arguments`` MUST stay a string — is left intact.
+    """
+    if not isinstance(messages, list) or not messages:
+        return messages
+
+    # First pass: detect whether any assistant tool_call.function.arguments
+    # is a non-dict. If none, short-circuit without touching the list.
+    needs_mutation = False
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            continue
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            continue
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                continue
+            function = tc.get("function")
+            if not isinstance(function, dict):
+                continue
+            if not isinstance(function.get("arguments"), dict):
+                needs_mutation = True
+                break
+        if needs_mutation:
+            break
+    if not needs_mutation:
+        return messages
+
+    # Second pass: shallow-copy touched messages + tool_calls + function
+    # dicts. Untouched messages are shared by reference (cheap).
+    normalized: list = []
+    for msg in messages:
+        if not isinstance(msg, dict) or msg.get("role") != "assistant":
+            normalized.append(msg)
+            continue
+        tool_calls = msg.get("tool_calls")
+        if not isinstance(tool_calls, list):
+            normalized.append(msg)
+            continue
+        new_tool_calls: list = []
+        touched_any = False
+        for tc in tool_calls:
+            if not isinstance(tc, dict):
+                new_tool_calls.append(tc)
+                continue
+            function = tc.get("function")
+            if not isinstance(function, dict):
+                new_tool_calls.append(tc)
+                continue
+            arguments = function.get("arguments")
+            if isinstance(arguments, dict):
+                new_tool_calls.append(tc)
+                continue
+            # arguments is a string (or something else we treat as the
+            # OpenAI wire shape). Try to parse; fall through to the
+            # ``{"value": ...}`` wrapper on failure or non-dict result.
+            new_arguments: dict
+            if isinstance(arguments, str):
+                try:
+                    parsed = json.loads(arguments)
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    new_arguments = {"value": arguments}
+                else:
+                    if isinstance(parsed, dict):
+                        new_arguments = parsed
+                    else:
+                        new_arguments = {"value": parsed}
+            else:
+                # Non-string, non-dict — rarely seen (an SDK bug or a
+                # test injecting a bare list/int). Wrap so the template's
+                # ``|items`` still works.
+                new_arguments = {"value": arguments}
+            new_function = dict(function)
+            new_function["arguments"] = new_arguments
+            new_tc = dict(tc)
+            new_tc["function"] = new_function
+            new_tool_calls.append(new_tc)
+            touched_any = True
+        if touched_any:
+            new_msg = dict(msg)
+            new_msg["tool_calls"] = new_tool_calls
+            normalized.append(new_msg)
+        else:
+            normalized.append(msg)
+    return normalized
+
+
 def _baseline_sanitize_messages(messages):
     """Fail-closed fallback for ``_sanitize_messages_for_template``.
 
@@ -656,6 +807,23 @@ def apply_chat_template(
     # the same "tool content missing" footgun (Qwen3 rendered an empty
     # ``<tool_response>``, Hermes3 ``TypeError``-d).
     messages = _normalize_text_only_content_arrays(messages)
+
+    # GH-973: enforce the assistant tool_call.arguments = dict invariant
+    # BEFORE any Jinja rendering. Every mainstream HF chat template
+    # (Qwen3 / Hermes / Llama3 / GLM4 / Nemotron / minimax) iterates
+    # ``tool_call.arguments|items`` and blows up with
+    # ``TypeError: Can only get item pairs from a mapping`` when the
+    # OpenAI-wire JSON-string form leaks through. Upstream normalisers
+    # in ``routes/chat.py::extract_multimodal_content`` and
+    # ``engine/batched.py::_normalize_tool_call_arguments_for_template``
+    # cover the standard ``/v1/chat/completions`` non-MLLM path, but
+    # every other caller (guided-generation
+    # ``BatchedEngine.stream_guided_completion``, native-video path,
+    # direct engine callers, tests) bypasses them. Applying the
+    # invariant here — the single ``apply_chat_template`` choke point —
+    # closes the gap uniformly. Idempotent: dict-form arguments pass
+    # through unchanged, so callers that already normalised pay no cost.
+    messages = _normalize_assistant_tool_call_arguments(messages)
 
     # Neutralize chat-template role markers in untrusted (user/tool)
     # content BEFORE the tokenizer parses them. Runs unconditionally for
