@@ -143,12 +143,15 @@ def test_inject_mtp_support_attaches_four_surfaces():
     attach, and ``__call__`` accepts both ``return_hidden`` and
     ``n_confirmed`` kwargs.
 
-    Mirrors the Qwen3.5 wiring probe test shape. The scaffold module
-    that lands here (see ``gemma4_inject._build_scaffold_mtp_module``)
-    is NOT the eventual gemma4-assistant architecture — the wiring
-    probe only proves that the inject can attach surfaces to a Gemma
-    4-shaped model.
+    Codex round-4 refined the shape: ``inject_mtp_support`` returns
+    True (the surfaces DO attach — that's what "inject" advertises),
+    but ``validate_mtp_support`` returns False because the scaffold's
+    surfaces raise on invocation. This is the honest split — production
+    callers who route through the dispatcher validator get False and
+    correctly skip spec-decode.
     """
+    import inspect
+
     from vllm_mlx.spec_decode.mtp.gemma4_inject import (
         inject_mtp_support,
         validate_mtp_support,
@@ -163,9 +166,21 @@ def test_inject_mtp_support_attaches_four_surfaces():
     assert result is True, (
         "inject_mtp_support should attach the scaffold under allow_random_init=True."
     )
-    assert validate_mtp_support(model) is True, (
-        "validate_mtp_support should see all four surfaces after the "
-        "wiring probe fires."
+
+    # Wiring probe: check surfaces DIRECTLY (validate_mtp_support
+    # deliberately returns False for the scaffold).
+    assert getattr(model, "mtp", None) is not None
+    assert callable(getattr(model, "mtp_forward", None))
+    assert callable(getattr(model, "make_mtp_cache", None))
+    sig = inspect.signature(type(model).__call__)
+    assert "return_hidden" in sig.parameters
+    assert "n_confirmed" in sig.parameters
+
+    # Honest signal to production callers — scaffold is NOT production-ready.
+    assert validate_mtp_support(model) is False, (
+        "Scaffold must NOT validate as production-ready. The dispatcher's "
+        "validator surface is what production callers trust; returning True "
+        "here would silently mask the scaffold state."
     )
 
 
@@ -290,7 +305,11 @@ def test_inject_mtp_support_loads_synthetic_sidecar_under_test_opt_in():
             "load. If this failed, the coverage check has drifted from "
             "the scaffold's parameter tree."
         )
-        assert validate_mtp_support(model_b) is True
+        # Scaffold: validate returns False (surfaces attached but not
+        # production-ready). Check attach via surfaces directly.
+        assert model_b.mtp is not None
+        assert callable(model_b.mtp_forward)
+        assert validate_mtp_support(model_b) is False
 
         # Verify byte-equal load.
         loaded = dict(tree_flatten(model_b.mtp.parameters()))
@@ -460,9 +479,12 @@ def test_dispatcher_routes_gemma4_to_gemma4_inject():
     assert result is True, (
         "Dispatcher must forward to gemma4_inject for model_type='gemma4'"
     )
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import validate_mtp_support
+    # Scaffold: validate returns False (attached, but not production-ready).
+    from vllm_mlx.spec_decode.mtp.dispatch import dispatch_mtp_validate
 
-    assert validate_mtp_support(model) is True
+    assert dispatch_mtp_validate(model, model_type="gemma4") is False
+    # But the surfaces DID attach — check directly.
+    assert getattr(model, "mtp", None) is not None
 
 
 def test_dispatcher_routes_gemma4_unified_to_gemma4_inject():

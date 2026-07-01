@@ -290,14 +290,48 @@ def _run_once(
 
         # Route through the family dispatcher so Gemma 4 aliases
         # (``gemma4`` / ``gemma4_unified``) can reach the bench too
-        # once the follow-up AssistantModel PR lands. Model_type is
-        # read off the outer wrapper's args — mlx-lm sets this on
-        # every loaded model.
-        model_type = (
-            getattr(getattr(model, "args", None), "model_type", None)
-            or getattr(model, "model_type", None)
-            or "qwen3_5"  # bench historical default
-        )
+        # once the follow-up AssistantModel PR lands.
+        #
+        # Codex round-4 blocking fix: resolve ``model_type`` through
+        # every nested config surface. mlx-lm's Gemma 4 wrapper carries
+        # the outer type on ``model.args.model_type`` (matches Qwen3.5),
+        # but VLM-style wrappers may only expose it via
+        # ``language_model.args.model_type`` or ``args.text_config``.
+        # Falling back to "qwen3_5" would misroute Gemma 4 aliases to
+        # the Qwen injector; fail closed on unresolved instead.
+        def _resolve_model_type(m):
+            probes = (
+                getattr(getattr(m, "args", None), "model_type", None),
+                getattr(m, "model_type", None),
+                getattr(getattr(m, "config", None), "model_type", None),
+                getattr(
+                    getattr(getattr(m, "language_model", None), "args", None),
+                    "model_type",
+                    None,
+                ),
+                getattr(getattr(m, "language_model", None), "model_type", None),
+            )
+            for candidate in probes:
+                if isinstance(candidate, str) and candidate:
+                    return candidate
+            # Nested text_config dict on the outer wrapper's args (the
+            # gemma4 / gemma4_unified shape).
+            outer_args = getattr(m, "args", None)
+            text_cfg = getattr(outer_args, "text_config", None) or {}
+            if isinstance(text_cfg, dict):
+                tc_type = text_cfg.get("model_type")
+                if isinstance(tc_type, str) and tc_type:
+                    return tc_type
+            return None
+
+        model_type = _resolve_model_type(model)
+        if model_type is None:
+            raise RuntimeError(
+                f"Could not resolve model_type on {model_alias!r}. Bench "
+                "refuses to default to a family — checked args.model_type, "
+                ".model_type, .config.model_type, .language_model.*, and "
+                ".args.text_config.model_type."
+            )
         if not dispatch_mtp_inject(
             model, model_type=model_type, mtp_sidecar=mtp_sidecar
         ):

@@ -702,10 +702,18 @@ def inject_mtp_support(
             return [KVCache() for _ in self.mtp.layers]
 
     inner.__class__ = _Gemma4WithMTP
+    # Codex round-4 blocking fix: stamp the scaffold marker on the
+    # inner model so ``validate_mtp_support`` can honestly report the
+    # model as NOT production-ready. Without this, a caller through
+    # the dispatcher sees ``inject=True`` + ``validate=True`` and
+    # trusts the model — but every actual invocation raises.
+    inner._mtp_is_scaffold = True
+
     logger.info(
         "[mtp.inject.gemma4] Patched %s with MTP surfaces "
         "(return_hidden, n_confirmed, mtp_forward, make_mtp_cache). "
-        "SCAFFOLD wiring only.",
+        "SCAFFOLD wiring only — validate_mtp_support will return False "
+        "so production callers do NOT trust this model as MTP-capable.",
         original_class.__name__,
     )
     return True
@@ -717,6 +725,15 @@ def validate_mtp_support(model: Any) -> bool:
     Same shape as :func:`vllm_mlx.spec_decode.mtp.qwen3_5_inject.validate_mtp_support`
     — checks ``.mtp``, ``.mtp_forward``, ``.make_mtp_cache``, and the
     ``__call__`` signature.
+
+    **Scaffold guard (codex round-4)**: if the model carries the
+    ``_mtp_is_scaffold`` marker set by :func:`inject_mtp_support`, this
+    validator returns ``False``. The scaffold's methods raise
+    ``NotImplementedError`` when invoked, so from any production
+    caller's perspective the model is NOT MTP-capable — even though
+    the four surfaces attach. This matches the dispatcher contract:
+    ``dispatch_mtp_validate`` seeing ``False`` here tells the bench
+    (or CLI) that Gemma 4 spec-decode is not yet ready.
     """
     import inspect
 
@@ -742,6 +759,16 @@ def validate_mtp_support(model: Any) -> bool:
     if "n_confirmed" not in sig.parameters:
         logger.warning(
             "[mtp.validate.gemma4] model.__call__ does not accept n_confirmed."
+        )
+        return False
+    if getattr(inner, "_mtp_is_scaffold", False):
+        logger.warning(
+            "[mtp.validate.gemma4] model carries the scaffold marker — "
+            "the four surfaces attach but every invocation of "
+            "mtp_forward / __call__(return_hidden=True) raises "
+            "NotImplementedError. Reporting False so production callers "
+            "do not enable spec-decode. The real AssistantModel-based "
+            "inject lands in the follow-up PR."
         )
         return False
     return True

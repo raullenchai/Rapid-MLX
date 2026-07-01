@@ -175,13 +175,39 @@ def _decode_tensor(t):
 # ---------------------------------------------------------------------------
 
 
+class _UnmappedTensorError(Exception):
+    """Raised when a GGUF tensor name is neither mapped nor on the drop-list.
+
+    Codex round-4 blocking fix: silently returning ``None`` for
+    unrecognized names meant a GGUF schema drift (new field added by
+    an upstream converter, typo in a block name) would produce a
+    sidecar missing required weights while the converter exits with
+    success. This exception surfaces at the caller, which then aborts
+    the run with a non-zero exit — the operator sees the missing
+    mapping explicitly.
+    """
+
+
+# Names we intentionally drop from the sidecar (MLX computes them
+# dynamically from ``rope_theta`` — no on-disk state needed).
+_INTENTIONAL_DROP: frozenset[str] = frozenset({"rope_freqs.weight"})
+
+
 def _map_tensor_name(name: str) -> str | None:
     """Rewrite a GGUF tensor name to the Rapid-MLX MTP sidecar name.
 
-    Returns ``None`` for tensors we deliberately drop (RoPE freqs — MLX
-    computes these dynamically from ``rope_theta``).
+    Returns:
+        * The remapped name for known tensors.
+        * ``None`` ONLY when the name is on the explicit
+          :data:`_INTENTIONAL_DROP` list.
+
+    Raises:
+        _UnmappedTensorError: for any tensor that is neither in the map
+            nor on the drop-list. The caller aborts on this exception —
+            silent drops of unknown tensors are a schema-drift trap
+            that the earlier version of this converter was exposed to.
     """
-    if name == "rope_freqs.weight":
+    if name in _INTENTIONAL_DROP:
         return None
 
     if name == "token_embd.weight":
@@ -196,7 +222,7 @@ def _map_tensor_name(name: str) -> str | None:
 
     # blk.N.* → mtp.layers.N.*
     if name.startswith("blk."):
-        head, _, tail = name.partition(".")  # "blk"
+        _, _, tail = name.partition(".")  # "blk"
         blk_idx, _, sub = tail.partition(".")  # "0", "attn_q.weight"
         block_prefix = f"mtp.layers.{blk_idx}"
         # Per-block name map.
@@ -217,9 +243,20 @@ def _map_tensor_name(name: str) -> str | None:
             "ffn_down.weight": f"{block_prefix}.mlp.down_proj.weight",
             "layer_output_scale.weight": f"{block_prefix}.layer_scalar",
         }
-        return _blk_map.get(sub)
+        mapped = _blk_map.get(sub)
+        if mapped is None:
+            raise _UnmappedTensorError(
+                f"blk.* tensor {name!r} has no mapping. This is either a "
+                "GGUF schema drift (upstream added a new field) or a typo "
+                "in the converter — investigate before proceeding to avoid "
+                "shipping a partial sidecar."
+            )
+        return mapped
 
-    return None
+    raise _UnmappedTensorError(
+        f"top-level tensor {name!r} has no mapping. Update _map_tensor_name "
+        "or _INTENTIONAL_DROP explicitly rather than silently dropping."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +438,21 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    # Codex round-4 nit: --force previously overwrote only the two
+    # target filenames but left any stale sibling files behind. Clear
+    # KNOWN generated artifacts explicitly (not the whole dir — that
+    # would nuke unrelated operator files if they pointed --out-dir at
+    # a shared location). The safetensors + config.json + the .tmp
+    # scratch file are the full artifact set this converter emits.
+    if args.force:
+        for known_artifact in (
+            "model-mtp.safetensors",
+            "model-mtp.tmp.safetensors",
+            "config.json",
+        ):
+            with contextlib.suppress(FileNotFoundError):
+                (out_dir / known_artifact).unlink()
+
     # --- Download GGUF ---
     try:
         from huggingface_hub import hf_hub_download
@@ -437,7 +489,14 @@ def main(argv: list[str] | None = None) -> int:
     mtp_weights: dict[str, object] = {}
     dropped: list[str] = []
     for t in reader.tensors:
-        mapped = _map_tensor_name(t.name)
+        try:
+            mapped = _map_tensor_name(t.name)
+        except _UnmappedTensorError as exc:
+            logger.error(
+                "Refusing to write a partial sidecar: %s",
+                exc,
+            )
+            return 6
         if mapped is None:
             dropped.append(t.name)
             continue
