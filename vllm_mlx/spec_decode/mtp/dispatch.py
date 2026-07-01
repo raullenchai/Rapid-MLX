@@ -100,19 +100,6 @@ _MTP_VALIDATE_DISPATCH: dict[str, tuple[str, str]] = {
 }
 
 
-# Codex round-5 blocking fix: model_types that HAVE a registered
-# family inject module but whose implementation is still scaffold-only
-# (not production-ready). The dispatcher shortcuts these to False so
-# any production caller — bench, CLI, `rapid-mlx serve` boot path —
-# gets a uniformly-honest "MTP is not enabled here" signal.
-#
-# Tests that need to exercise the family-specific inject directly
-# (wiring probe, sidecar refusal, architecture guard) must import
-# from ``gemma4_inject`` directly rather than going through the
-# dispatcher.
-_PRODUCTION_SCAFFOLD_REFUSE: frozenset[str] = frozenset({"gemma4", "gemma4_unified"})
-
-
 def dispatch_mtp_inject(
     model: Any,
     model_type: str,
@@ -138,28 +125,46 @@ def dispatch_mtp_inject(
         model now exposes the four MTP contract surfaces. ``False``
         when the model_type has no registered inject, when the
         family-specific inject refused (sidecar unresolvable, config
-        missing ``mtp_num_hidden_layers``, architectural mismatch),
-        when the model_type is on the :data:`_PRODUCTION_SCAFFOLD_REFUSE`
-        gate (Gemma 4 today), or when the module import failed.
+        missing ``mtp_num_hidden_layers``, architectural mismatch,
+        or the family's scaffold-only production gate), or when the
+        module import failed.
 
     Never raises — an unknown ``model_type`` is treated as "no MTP
     support for this arch" (log-and-return False), matching the
     fail-closed default the codex round-5 review installed on
     ``qwen3_5_inject.inject_mtp_support``.
-    """
-    if model_type in _PRODUCTION_SCAFFOLD_REFUSE:
-        logger.warning(
-            "[mtp.dispatch] model_type=%r has a registered inject module "
-            "but the implementation is scaffold-only (surfaces attach + "
-            "raise on invocation). The dispatcher refuses this in "
-            "production — the real AssistantModel-based inject lands in "
-            "a follow-up PR. Direct callers who want the scaffold for "
-            "wiring probes should import from "
-            "vllm_mlx.spec_decode.mtp.gemma4_inject.",
-            model_type,
-        )
-        return False
 
+    Scaffold vs production gating (codex round-7 blocking fix)
+    ----------------------------------------------------------
+
+    The dispatcher used to carry a table
+    (``_PRODUCTION_SCAFFOLD_REFUSE``) shortcutting ``gemma4`` /
+    ``gemma4_unified`` to ``False`` before reaching the family
+    module. Codex round-7 flagged this as a two-place inconsistency
+    — the family module could then never actually run through the
+    dispatcher, which contradicted the reason we registered the
+    entries in the first place.
+
+    The dispatcher is now architecture-agnostic. Scaffold-only
+    families (``gemma4_inject`` today) must gate themselves in
+    their own ``inject_mtp_support``. The Gemma 4 module does this
+    on FOUR redundant surfaces:
+
+    1. ``mtp_sidecar is None and not allow_random_init`` → False
+       (the fail-closed default matches the Qwen3.5 side).
+    2. Sidecar fingerprints as ``gemma4-assistant`` → False.
+    3. Non-assistant sidecar without the
+       ``_accept_scaffold_sidecar_for_tests`` private opt-in → False
+       (scaffold cannot drive multi-token KV cache).
+    4. Successful inject stamps ``_mtp_is_scaffold`` so
+       :func:`dispatch_mtp_validate` returns False even when
+       :func:`dispatch_mtp_inject` returned True (the wiring-probe
+       path with ``allow_random_init=True``).
+
+    Points (1) + (4) together prevent any production caller from
+    accidentally driving the Gemma 4 scaffold, and (2) + (3) keep
+    even a well-meaning operator-supplied sidecar from mis-loading.
+    """
     key = _MTP_INJECT_DISPATCH.get(model_type)
     if key is None:
         logger.info(
@@ -209,14 +214,13 @@ def dispatch_mtp_validate(model: Any, model_type: str) -> bool:
     invalid. This helper routes the validator by the same
     ``model_type`` table.
 
-    Returns ``False`` for any unknown model_type, and (codex round-5
-    parity) for any model_type on :data:`_PRODUCTION_SCAFFOLD_REFUSE`
-    — the paired inject would have refused, so the validator refuses
-    too. Matches :func:`dispatch_mtp_inject` behavior.
+    Returns ``False`` for any unknown model_type. Family-side scaffold
+    gating (codex round-7): the family's own ``validate_mtp_support``
+    is responsible for returning False on scaffold-only injects —
+    ``gemma4_inject.validate_mtp_support`` checks the
+    ``_mtp_is_scaffold`` marker set by the paired inject and returns
+    False even when the surfaces attach.
     """
-    if model_type in _PRODUCTION_SCAFFOLD_REFUSE:
-        return False
-
     key = _MTP_VALIDATE_DISPATCH.get(model_type)
     if key is None:
         logger.info(

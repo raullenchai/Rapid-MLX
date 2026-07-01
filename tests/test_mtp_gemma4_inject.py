@@ -565,12 +565,30 @@ def test_inject_mtp_support_refuses_assistant_architecture_sidecar():
 # ---------------------------------------------------------------------------
 
 
-def test_dispatcher_refuses_gemma4_in_production():
-    """Codex round-5 blocking fix: the dispatcher refuses ``gemma4`` /
-    ``gemma4_unified`` — the family inject is scaffold-only, and no
-    production caller (bench, CLI, serve boot) should see True from
-    the dispatcher for Gemma 4. Direct callers who want the scaffold
-    for wiring probes must import from ``gemma4_inject`` themselves.
+def test_dispatcher_refuses_gemma4_production_use():
+    """Codex round-7 blocking fix: refusal is FAMILY-SIDE, not dispatch-side.
+
+    The dispatcher no longer carries a ``_PRODUCTION_SCAFFOLD_REFUSE``
+    table (round-5 approach) — that made the dispatcher entries for
+    ``gemma4`` / ``gemma4_unified`` unreachable, and codex flagged
+    that as a contradiction (why register an entry the router
+    unconditionally shortcuts?). Refusal now lives inside
+    ``gemma4_inject.inject_mtp_support`` on four surfaces:
+
+    1. Default ``mtp_sidecar=None`` + ``allow_random_init=False`` →
+       inject returns False.
+    2. Any Mia-AiLab-style ``gemma4-assistant`` sidecar → False.
+    3. Any non-assistant sidecar without the private
+       ``_accept_scaffold_sidecar_for_tests`` opt-in → False.
+    4. When (1)+(2)+(3) all pass (i.e. the wiring-probe path
+       ``allow_random_init=True``), inject returns True BUT sets
+       ``_mtp_is_scaffold=True`` so ``dispatch_mtp_validate`` returns
+       False — production callers correctly see the model as NOT
+       MTP-capable.
+
+    This test locks the two production-critical outcomes: the
+    default no-sidecar boot fails closed via dispatch, AND the
+    validator refuses even when the wiring probe succeeded.
     """
     from vllm_mlx.spec_decode.mtp.dispatch import (
         dispatch_mtp_inject,
@@ -583,21 +601,36 @@ def test_dispatcher_refuses_gemma4_in_production():
         pytest.skip(f"Gemma 4 text ModelArgs schema mismatch: {exc}")
 
     for model_type in ("gemma4", "gemma4_unified"):
-        result = dispatch_mtp_inject(
-            model,
-            model_type=model_type,
-            allow_random_init=True,  # even the test opt-in must not open the door
-        )
+        # Production shape: no sidecar, no allow_random_init.
+        result = dispatch_mtp_inject(model, model_type=model_type)
         assert result is False, (
-            f"Dispatcher must refuse model_type={model_type!r} until the "
-            "AssistantModel PR lands. Passing True here would let bench / "
-            "CLI enable a scaffold whose forward raises."
+            f"Dispatcher must refuse model_type={model_type!r} on the "
+            "default no-sidecar boot path (the family-side fail-closed "
+            "gate). Passing True here would silently allow scaffold "
+            "wiring in a bench/CLI/serve boot."
         )
-        # The paired validator likewise refuses.
-        assert dispatch_mtp_validate(model, model_type=model_type) is False
-        # And the model is left completely unmodified — no surfaces
-        # attached because the family inject was never invoked.
+        # Model must be untouched — the family fn's early-refusal
+        # gate ran BEFORE any scaffold allocation (codex round-7).
         assert getattr(model, "mtp", None) is None
+
+    # Second production-shape assertion: the wiring probe path
+    # (``allow_random_init=True``) DOES attach surfaces (inject
+    # returns True) — that's expected and locked by the wiring probe
+    # test. But the paired validator must still return False so no
+    # production caller trusts the resulting model as MTP-capable.
+    result = dispatch_mtp_inject(
+        model,
+        model_type="gemma4_unified",
+        allow_random_init=True,
+    )
+    assert result is True, (
+        "Wiring-probe path should attach surfaces (codex round-4 shape)."
+    )
+    assert dispatch_mtp_validate(model, model_type="gemma4_unified") is False, (
+        "dispatch_mtp_validate must return False on the scaffold — "
+        "gemma4_inject.validate_mtp_support checks the "
+        "_mtp_is_scaffold marker."
+    )
 
 
 def test_dispatcher_rejects_gemma3():
@@ -653,16 +686,13 @@ def test_dispatcher_forwards_model_and_kwargs_verbatim(monkeypatch):
     * Return-value mismangling (dispatcher returns ``None`` / truthy
       wrong object instead of the ``bool`` the family fn returned).
 
-    We exercise the forwarding wire on the ``qwen3_5`` branch because
-    ``gemma4`` / ``gemma4_unified`` are on the
-    :data:`_PRODUCTION_SCAFFOLD_REFUSE` gate (codex round-5) and short
-    -circuit to False before the dispatcher reaches the family module —
-    so they cannot demonstrate kwarg forwarding. The forwarding logic
-    itself is architecture-agnostic (single import + call site in
-    :func:`dispatch_mtp_inject`); covering it once on any registered
-    branch is sufficient. The paired
-    :func:`test_dispatcher_refuses_gemma4_in_production` locks the
-    gemma4/gemma4_unified refuse behavior separately.
+    We exercise the forwarding wire on the ``qwen3_5`` branch — the
+    forwarding logic is architecture-agnostic (single import + call
+    site in :func:`dispatch_mtp_inject`), so covering it once on any
+    registered branch is sufficient. Using ``qwen3_5`` avoids
+    entangling this test with the Gemma 4 scaffold semantics
+    (validated separately by
+    :func:`test_dispatcher_refuses_gemma4_production_use`).
     """
     from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
     from vllm_mlx.spec_decode.mtp import qwen3_5_inject

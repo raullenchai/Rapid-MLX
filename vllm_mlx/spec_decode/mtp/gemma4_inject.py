@@ -458,6 +458,87 @@ def inject_mtp_support(
         )
         return False
 
+    # --- Codex round-7 blocking fix: EARLY refusal gates ------------------
+    # Move the fail-closed refusals BEFORE the (expensive) MTP module
+    # construction + quantization. A production Gemma 4 boot that hits
+    # any of the refuse paths below previously allocated a full
+    # scaffold head (num_mtp_layers × hidden_size × ~4× MLP fan-out
+    # weights, then quantized copy) just to throw it away on return
+    # False. Cheap parameter-only checks first; expensive allocation
+    # after.
+    if mtp_sidecar is None and not allow_random_init:
+        logger.warning(
+            "[mtp.inject.gemma4] inject_mtp_support called without "
+            "mtp_sidecar and allow_random_init=False; refusing to ship "
+            "a random-init MTP head. Pass a converted sidecar via "
+            "scripts/convert_gemma4_mtp_gguf.py, or set "
+            "allow_random_init=True for unit-test wiring probes."
+        )
+        return False
+
+    # Pre-flight the sidecar (resolve + architecture-fingerprint +
+    # scaffold-refusal) BEFORE constructing the scaffold module. If any
+    # of these fail we return False without having allocated the
+    # scaffold head. We stash the parsed weights in a local so the
+    # loading branch below can skip the redundant load.
+    resolved_weights_file: Path | None = None
+    resolved_mtp_weights: dict[str, Any] | None = None
+    if mtp_sidecar is not None:
+        resolved_weights_file = _resolve_sidecar_file(mtp_sidecar)
+        if resolved_weights_file is None:
+            logger.warning(
+                "[mtp.inject.gemma4] sidecar %r could not be resolved to a "
+                "safetensors file; skipping MTP injection.",
+                mtp_sidecar,
+            )
+            return False
+
+        try:
+            _raw_preflight = mx.load(str(resolved_weights_file))
+        except Exception as exc:
+            logger.warning(
+                "[mtp.inject.gemma4] sidecar %s failed to load via mx.load: %s. "
+                "Refusing to inject; caller can fall back to non-spec-decode.",
+                resolved_weights_file.name,
+                exc,
+            )
+            return False
+        _mtp_weights_preflight = {
+            (k.removeprefix("mtp.") if k.startswith("mtp.") else k): v
+            for k, v in _raw_preflight.items()
+        }
+
+        if _looks_like_assistant_sidecar(
+            _raw_preflight
+        ) or _looks_like_assistant_sidecar(_mtp_weights_preflight):
+            logger.warning(
+                "[mtp.inject.gemma4] sidecar %s fingerprints as a "
+                "'gemma4-assistant' architecture (Mia-AiLab-style draft "
+                "model with pre/post projection layers). This inject "
+                "currently only carries the wiring-probe scaffold — the "
+                "AssistantModel code path (cross-hidden-dim projections + "
+                "base-model K/V bridge) lands in a follow-up PR. Refusing "
+                "to inject rather than ship a broken/random-init draft. "
+                "Track: `gemma4-assistant MTP` follow-up in the PR body.",
+                resolved_weights_file.name,
+            )
+            return False
+
+        if not _accept_scaffold_sidecar_for_tests:
+            logger.warning(
+                "[mtp.inject.gemma4] Refusing to load sidecar %s in "
+                "production. The Gemma 4 inject in this PR is scaffold-"
+                "only — its decoder layer does not update KVCache, so "
+                "any accepted sidecar would break multi-token spec "
+                "decode. Track: `gemma4-assistant MTP` follow-up in "
+                "the PR body. For CI wiring probes pass "
+                "allow_random_init=True (no sidecar).",
+                resolved_weights_file.name,
+            )
+            return False
+
+        resolved_mtp_weights = _mtp_weights_preflight
+
     # --- Step 1: Build the scaffold MTP module -----------------------------
     args = inner.args
     mtp = _build_scaffold_mtp_module(args, num_mtp_layers)
@@ -485,116 +566,43 @@ def inject_mtp_support(
         )
 
     # --- Step 3: Load sidecar weights --------------------------------------
-    if mtp_sidecar is not None:
-        weights_file = _resolve_sidecar_file(mtp_sidecar)
-        if weights_file is None:
-            logger.warning(
-                "[mtp.inject.gemma4] sidecar %r could not be resolved to a "
-                "safetensors file; skipping MTP injection.",
-                mtp_sidecar,
-            )
-            return False
-
-        # mx.load raises on corrupt / non-safetensors files. The public
-        # inject contract is "never raises", so guard here and fall back
-        # to False on any parse failure. Codex round-2 blocking fix.
-        try:
-            raw = mx.load(str(weights_file))
-        except Exception as exc:
-            logger.warning(
-                "[mtp.inject.gemma4] sidecar %s failed to load via mx.load: %s. "
-                "Refusing to inject; caller can fall back to non-spec-decode.",
-                weights_file.name,
-                exc,
-            )
-            return False
-        mtp_weights = {
-            (k.removeprefix("mtp.") if k.startswith("mtp.") else k): v
-            for k, v in raw.items()
-        }
-
-        # ARCHITECTURE GUARD: detect the ``gemma4-assistant`` sidecar
-        # shipped by Mia-AiLab (converted via
-        # ``scripts/convert_gemma4_mtp_gguf.py``) and refuse it. That
-        # architecture needs a dedicated AssistantModel class + K/V
-        # bridge (see module docstring); the scaffold head cannot
-        # meaningfully consume its ``pre_projection`` /
-        # ``post_projection`` tensors.
-        if _looks_like_assistant_sidecar(raw) or _looks_like_assistant_sidecar(
-            mtp_weights
-        ):
-            logger.warning(
-                "[mtp.inject.gemma4] sidecar %s fingerprints as a "
-                "'gemma4-assistant' architecture (Mia-AiLab-style draft "
-                "model with pre/post projection layers). This inject "
-                "currently only carries the wiring-probe scaffold — the "
-                "AssistantModel code path (cross-hidden-dim projections + "
-                "base-model K/V bridge) lands in a follow-up PR. Refusing "
-                "to inject rather than ship a broken/random-init draft. "
-                "Track: `gemma4-assistant MTP` follow-up in the PR body.",
-                weights_file.name,
-            )
-            return False
-
-        # PRODUCTION SIDECAR REFUSAL (codex round-2 blocking fix):
-        # even a non-assistant sidecar is refused unless a test opts
-        # in via _accept_scaffold_sidecar_for_tests. The scaffold's
-        # ``_ScaffoldDecoderLayer.__call__`` does not update the
-        # KVCache passed by ``make_mtp_cache``, so
-        # ``mtp_generate_step``'s multi-token draft loop would run
-        # against a stale cache — silently emitting wrong drafts.
-        # The follow-up AssistantModel PR replaces this guard with
-        # the real KV-cache-aware forward path.
-        if not _accept_scaffold_sidecar_for_tests:
-            logger.warning(
-                "[mtp.inject.gemma4] Refusing to load sidecar %s in "
-                "production. The Gemma 4 inject in this PR is scaffold-"
-                "only — its decoder layer does not update KVCache, so "
-                "any accepted sidecar would break multi-token spec "
-                "decode. Track: `gemma4-assistant MTP` follow-up in "
-                "the PR body. For CI wiring probes pass "
-                "allow_random_init=True (no sidecar).",
-                weights_file.name,
-            )
-            return False
-
-        # Non-assistant sidecar: coverage-check as ``qwen3_5_inject`` does.
+    # All refusal gates ran in the pre-flight block above (before the
+    # scaffold allocation) — codex round-7 blocking fix. Here we only
+    # do the coverage-check + weight load using the already-parsed
+    # ``resolved_mtp_weights``, or fall through to the random-init
+    # branch when no sidecar was passed.
+    if resolved_mtp_weights is not None:
+        assert resolved_weights_file is not None  # narrow for the type checker
         from mlx.utils import tree_flatten
 
         expected_keys = {k for k, _ in tree_flatten(mtp.parameters())}
-        loaded_keys = set(mtp_weights.keys())
+        loaded_keys = set(resolved_mtp_weights.keys())
         missing = expected_keys - loaded_keys
         if missing:
             logger.warning(
                 "[mtp.inject.gemma4] sidecar %s is missing %d required MTP "
                 "tensor(s); refusing to ship a partially-random-init head. "
                 "Missing keys (first 8): %s",
-                weights_file.name,
+                resolved_weights_file.name,
                 len(missing),
                 sorted(missing)[:8],
             )
             return False
 
-        mtp.load_weights(list(mtp_weights.items()), strict=False)
+        mtp.load_weights(list(resolved_mtp_weights.items()), strict=False)
         mx.eval(mtp.parameters())
         extra = loaded_keys - expected_keys
         logger.info(
             "[mtp.inject.gemma4] Loaded %d/%d expected MTP weight tensors from %s%s",
             len(expected_keys),
             len(expected_keys),
-            weights_file.name,
+            resolved_weights_file.name,
             f" (+{len(extra)} extra sidecar key(s) ignored)" if extra else "",
         )
     else:
-        if not allow_random_init:
-            logger.warning(
-                "[mtp.inject.gemma4] inject_mtp_support called without "
-                "mtp_sidecar and allow_random_init=False; refusing to ship "
-                "a random-init MTP head. Pass a converted sidecar via "
-                "scripts/convert_gemma4_mtp_gguf.py, or set "
-                "allow_random_init=True for unit-test wiring probes."
-            )
-            return False
+        # ``mtp_sidecar is None and allow_random_init=True`` — the
+        # ``allow_random_init=False`` case was already refused in the
+        # early-refusal block above.
         mx.eval(mtp.parameters())
         logger.warning(
             "[mtp.inject.gemma4] inject_mtp_support called with "
