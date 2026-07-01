@@ -35,6 +35,41 @@ CLI_ENTRY_PATHS = [
     REPO_ROOT / "vllm_mlx" / "server.py",
 ]
 
+# Helpers that RETURN a dict of ``SchedulerConfig`` kwargs and are
+# star-unpacked at construction sites via ``**helper(args)``. The audit
+# expands the starred unpacking into the field set the helper injects
+# so the drift check doesn't false-positive on the shared entrypoint
+# mirror pattern (#969 — ``cli.py`` and ``server.py`` both call
+# ``turboquant_scheduler_kwargs`` to guarantee lock-step behaviour).
+#
+# Key: helper function name (matches ``Call.func.id``); may include
+# local aliases used by ``from ... import ... as _local``.
+# Value: the set of ``SchedulerConfig`` field names the helper returns.
+# Keep the field set in sync with the helper body — a mismatch here
+# either (a) hides a real drift (values in helper, missing here) or
+# (b) creates a false-clean audit (values here, not in helper).
+KWARG_INJECTOR_HELPERS: dict[str, set[str]] = {
+    "turboquant_scheduler_kwargs": {
+        "kv_cache_turboquant",
+        "kv_cache_turboquant_bits",
+        "kv_cache_turboquant_group_size",
+        "kv_cache_turboquant_mode",
+    },
+    # Import-time aliases used inside the two entrypoints.
+    "_turboquant_scheduler_kwargs": {
+        "kv_cache_turboquant",
+        "kv_cache_turboquant_bits",
+        "kv_cache_turboquant_group_size",
+        "kv_cache_turboquant_mode",
+    },
+    "_server_turboquant_scheduler_kwargs": {
+        "kv_cache_turboquant",
+        "kv_cache_turboquant_bits",
+        "kv_cache_turboquant_group_size",
+        "kv_cache_turboquant_mode",
+    },
+}
+
 
 def _dataclass_field_names(source_path: Path, class_name: str) -> set[str]:
     """Extract field names of a @dataclass via AST — no runtime import.
@@ -104,7 +139,19 @@ def audit(cli_path: Path, config_source: Path, config_cls_name: str) -> list[str
             ):
                 continue
 
-            kwargs = {kw.arg for kw in call.keywords if kw.arg}
+            kwargs: set[str] = set()
+            for kw in call.keywords:
+                if kw.arg is not None:
+                    kwargs.add(kw.arg)
+                elif (
+                    isinstance(kw.value, ast.Call)
+                    and isinstance(kw.value.func, ast.Name)
+                    and kw.value.func.id in KWARG_INJECTOR_HELPERS
+                ):
+                    # ``**helper(args)`` star-unpacking — pick up the
+                    # injected fields so the shared entrypoint helper
+                    # pattern (#969) doesn't false-positive as drift.
+                    kwargs |= KWARG_INJECTOR_HELPERS[kw.value.func.id]
             # Fields that this function CAN supply (args.X is referenced) but
             # this construction site does NOT pass.
             dropped = (field_names & arg_refs) - kwargs

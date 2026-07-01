@@ -2166,8 +2166,16 @@ def serve_command(args):
         print("\n  ⚠ --specprefill is deprecated and has no effect.\n")
 
     # Resolve per-alias TurboQuant default before the mutual-exclusion
-    # check below — operator-explicit values still win.
-    from .turboquant import resolve_turboquant_mode_default
+    # check below — operator-explicit values still win. The
+    # ``turboquant_scheduler_kwargs`` helper is the shared invariant
+    # (#969) — ``python -m vllm_mlx.server`` calls the same helper so
+    # the two entrypoints can't drift.
+    from .turboquant import (
+        resolve_turboquant_mode_default,
+    )
+    from .turboquant import (
+        turboquant_scheduler_kwargs as _turboquant_scheduler_kwargs,
+    )
 
     args.kv_cache_turboquant = resolve_turboquant_mode_default(
         args, model_name=args.model
@@ -2363,21 +2371,20 @@ def serve_command(args):
         kv_cache_quantization_bits=args.kv_cache_quantization_bits,
         kv_cache_quantization_group_size=args.kv_cache_quantization_group_size,
         kv_cache_min_quantize_tokens=args.kv_cache_min_quantize_tokens,
-        # TurboQuant compression (R15 Phase 4: mode-aware)
-        # ``--kv-cache-turboquant`` now carries a mode value: ``None``
-        # when off, ``"v4"`` for the legacy V-only path, ``"k8v4"`` for
-        # the K-8bit + V-4bit mix. SchedulerConfig keeps the boolean
-        # ``kv_cache_turboquant`` for downstream callers; the mode
-        # string rides on the dedicated field below.
-        kv_cache_turboquant=bool(args.kv_cache_turboquant),
-        kv_cache_turboquant_bits=args.kv_cache_turboquant_bits,
-        kv_cache_turboquant_group_size=args.kv_cache_turboquant_group_size,
+        # TurboQuant compression (R15 Phase 4: mode-aware). Shared
+        # helper (#969) — ``python -m vllm_mlx.server`` calls the same
+        # ``turboquant_scheduler_kwargs`` so both entrypoints stay in
+        # lock-step. ``--kv-cache-turboquant`` carries a mode value:
+        # ``None`` when off, ``"v4"`` for the legacy V-only path,
+        # ``"k8v4"`` for the K-8bit + V-4bit mix. SchedulerConfig keeps
+        # the boolean ``kv_cache_turboquant`` for downstream callers;
+        # the mode string rides on the dedicated ``_mode`` field.
+        **_turboquant_scheduler_kwargs(args),
         # R15-P1 (task #296): disk-backed KV checkpointing at 256-tok
         # boundaries. ``0`` disables; the runtime module guards every
         # hot-path call with ``should_checkpoint`` so the cost when off
         # is one int comparison.
         kv_disk_checkpoint_interval=getattr(args, "kv_disk_checkpoint_interval", 256),
-        kv_cache_turboquant_mode=(args.kv_cache_turboquant or "v4"),
         # PFlash long-prompt compression (#287)
         pflash_config=pflash_config,
         # D-METAL-CAP: thread the user's --gpu-memory-utilization into

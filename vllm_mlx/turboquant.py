@@ -99,6 +99,35 @@ def resolve_turboquant_mode_default(args: Any, *, model_name: str) -> str | None
     return None
 
 
+def turboquant_scheduler_kwargs(args: Any) -> dict[str, Any]:
+    """Build ``SchedulerConfig`` kwargs from the resolved ``args.kv_cache_turboquant*``.
+
+    Systematic invariant (#969): every user-facing entrypoint that owns
+    a ``--kv-cache-turboquant*`` argparse surface MUST route the parsed
+    values through this helper so the primary ``rapid-mlx serve`` path
+    and the standalone ``python -m vllm_mlx.server`` path stay in
+    lock-step. Prior to the fix, ``server.py`` accepted the flags but
+    silently dropped them at the ``SchedulerConfig(...)`` construction
+    site — same silent-flag-drop bug class as #400.
+
+    Callers must first normalise ``args.kv_cache_turboquant`` via
+    :func:`resolve_turboquant_mode_default` so the ``"none"`` off-switch
+    sentinel has been collapsed to ``None``. Mutual exclusion with
+    ``--kv-cache-quantization`` is a caller responsibility because the
+    error-reporting convention differs per entry (``sys.exit`` vs
+    ``parser.error`` vs library ``ValueError``).
+    """
+    return {
+        "kv_cache_turboquant": bool(args.kv_cache_turboquant),
+        "kv_cache_turboquant_bits": args.kv_cache_turboquant_bits,
+        "kv_cache_turboquant_group_size": args.kv_cache_turboquant_group_size,
+        # SchedulerConfig requires a string mode even when the boolean
+        # toggle is off; ``"v4"`` matches the dataclass default and the
+        # historical behaviour prior to R15 Phase 4.
+        "kv_cache_turboquant_mode": (args.kv_cache_turboquant or "v4"),
+    }
+
+
 # ---------------------------------------------------------------------------
 # Configuration
 # ---------------------------------------------------------------------------
