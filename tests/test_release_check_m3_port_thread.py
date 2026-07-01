@@ -126,37 +126,52 @@ def test_script_asserts_g7_env_matches_port() -> None:
     invocation_idx = text.find("tests/integrations/test_anthropic_sdk.py", idx)
     assert invocation_idx != -1, "G7 no longer runs test_anthropic_sdk.py"
     g7_block = text[idx:invocation_idx]
-    assert 'RAPID_MLX_BASE_URL' in g7_block, (
+    assert "RAPID_MLX_BASE_URL" in g7_block, (
         "G7 block should reference RAPID_MLX_BASE_URL in an assertion"
     )
-    assert 'G7 env mismatch' in g7_block, (
+    assert "G7 env mismatch" in g7_block, (
         "G7 assertion should print a distinctive 'G7 env mismatch' error"
     )
 
 
 def test_every_integration_base_url_env_is_covered() -> None:
-    """Systematic guard: every ``os.environ.get("<FOO>_BASE_URL", ...)``
-    (or ``_API_BASE`` / ``_ENDPOINT``) any integration test reads MUST
-    be exported by the shell script. Adding a new harness that reads a
-    novel env var should trip this test."""
+    """Systematic guard: every env var an integration test reads with an
+    HTTP-URL default MUST be exported by the shell script. Adding a new
+    harness that reads a novel HTTP endpoint env should trip this test.
+
+    We identify endpoint envs by the *shape of the default* (starts with
+    ``http://`` or ``https://``) rather than by the env-var name. A
+    name-based regex would false-positive on unrelated envs like
+    ``DATABASE_URL`` (which happens to end in ``BASE_URL`` but points at
+    a DB DSN, not an HTTP API) — codex_review NIT on PR #982.
+    """
+    # Capture the env-var name AND its default. Both single- and
+    # double-quoted forms; whitespace tolerant. We require the default
+    # to be a string literal (not a Python expression) so we can
+    # inspect the URL scheme directly.
     pattern = re.compile(
-        r'os\.environ\.get\(\s*["\']([A-Z_]*(?:BASE(?:_URL)?|API_BASE|ENDPOINT))["\']'
+        r"""os\.environ\.get\(
+            \s*["']([A-Z_][A-Z0-9_]*)["']
+            \s*,\s*
+            (?:f?["']([^"']*)["'])
+            \s*\)""",
+        re.VERBOSE,
     )
-    found: set[str] = set()
+    endpoint_envs: set[str] = set()
     for path in INTEGRATIONS.glob("*.py"):
         text = path.read_text()
-        found.update(pattern.findall(text))
-    # Only interesting envs — filter out obvious misses.
-    interesting = {name for name in found if "BASE" in name or "ENDPOINT" in name}
-    uncovered = interesting - KNOWN_BASE_URL_ENVS
+        for name, default in pattern.findall(text):
+            if default.startswith(("http://", "https://")):
+                endpoint_envs.add(name)
+    uncovered = endpoint_envs - KNOWN_BASE_URL_ENVS
     assert not uncovered, (
-        f"Integration tests read env vars {uncovered!r} that the release "
-        f"script does not export. Either export them in "
+        f"Integration tests read HTTP-endpoint env vars {uncovered!r} "
+        f"that the release script does not export. Either export them in "
         f"scripts/release_check_m3.sh or add to KNOWN_BASE_URL_ENVS with "
         f"a justification."
     )
-    # And every covered env MUST actually appear as an ``export`` in
-    # the script prelude — no drift the other direction either.
+    # And every declared env MUST actually appear as an ``export`` in
+    # the script — no drift the other direction either.
     script_text = SCRIPT.read_text()
     for env in KNOWN_BASE_URL_ENVS:
         assert re.search(rf"^\s*export\s+{env}=", script_text, flags=re.MULTILINE), (
