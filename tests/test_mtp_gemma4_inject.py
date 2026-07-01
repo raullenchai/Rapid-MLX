@@ -161,8 +161,7 @@ def test_inject_mtp_support_attaches_four_surfaces():
 
     result = inject_mtp_support(model, allow_random_init=True)
     assert result is True, (
-        "inject_mtp_support should attach the scaffold under "
-        "allow_random_init=True."
+        "inject_mtp_support should attach the scaffold under allow_random_init=True."
     )
     assert validate_mtp_support(model) is True, (
         "validate_mtp_support should see all four surfaces after the "
@@ -417,11 +416,9 @@ def test_dispatcher_still_routes_qwen3_5():
     """Qwen3.5 routing must NOT regress — the dispatcher must
     forward ``model_type='qwen3_5'`` to ``qwen3_5_inject.inject_mtp_support``.
 
-    This test doesn't try to inject an actual Qwen3.5 model (would
-    require the Qwen3.5 TextModel schema) — it verifies the dispatcher
-    entry exists and the forward call reaches ``qwen3_5_inject``. The
-    call will return False for a shell model, which is the expected
-    behavior (no config).
+    Locks the dispatch table entries in place (a copy-paste swap of
+    ``qwen3_5_inject`` for ``gemma4_inject`` on the ``qwen3_5``
+    branch would silently misroute production Qwen3.5 requests).
     """
     from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
 
@@ -435,3 +432,79 @@ def test_dispatcher_still_routes_qwen3_5():
     for mt in ("gemma4", "gemma4_unified"):
         mp, _ = _dispatch._MTP_INJECT_DISPATCH[mt]
         assert mp == "vllm_mlx.spec_decode.mtp.gemma4_inject"
+
+
+def test_dispatcher_forwards_model_and_kwargs_verbatim(monkeypatch):
+    """Dispatcher must forward ``model``, ``mtp_sidecar``, and
+    ``allow_random_init`` verbatim to the family-specific inject.
+
+    Guards against:
+    * Silent argument drops (e.g. dispatcher forgets to pass through
+      ``mtp_sidecar``, and inject silently random-inits).
+    * Return-value mismangling (dispatcher returns ``None`` / truthy
+      wrong object instead of the ``bool`` the family fn returned).
+
+    We monkey-patch the target module's ``inject_mtp_support`` so the
+    test doesn't have to build a real Gemma 4 model to prove the wire.
+    """
+    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
+    from vllm_mlx.spec_decode.mtp import gemma4_inject
+
+    calls: list[dict] = []
+
+    def _fake_inject(model, mtp_sidecar=None, *, allow_random_init=False):
+        calls.append(
+            {
+                "model": model,
+                "mtp_sidecar": mtp_sidecar,
+                "allow_random_init": allow_random_init,
+            }
+        )
+        return True
+
+    monkeypatch.setattr(gemma4_inject, "inject_mtp_support", _fake_inject)
+
+    sentinel_model = object()
+    sentinel_sidecar = "/tmp/nonexistent-sentinel-sidecar.safetensors"
+
+    result = _dispatch.dispatch_mtp_inject(
+        sentinel_model,
+        model_type="gemma4_unified",
+        mtp_sidecar=sentinel_sidecar,
+        allow_random_init=False,
+    )
+    assert result is True, "dispatcher must return the family fn's bool verbatim"
+    assert len(calls) == 1
+    assert calls[0]["model"] is sentinel_model
+    assert calls[0]["mtp_sidecar"] == sentinel_sidecar
+    assert calls[0]["allow_random_init"] is False
+
+    # A second call with different kwargs must forward those too.
+    result = _dispatch.dispatch_mtp_inject(
+        sentinel_model,
+        model_type="gemma4",
+        mtp_sidecar=None,
+        allow_random_init=True,
+    )
+    assert result is True
+    assert len(calls) == 2
+    assert calls[1]["allow_random_init"] is True
+    assert calls[1]["mtp_sidecar"] is None
+
+
+def test_dispatcher_returns_false_for_unknown_model_type():
+    """Unknown ``model_type`` → False, no exception. Fail-closed default.
+
+    Guards against a KeyError leak — the dispatcher is designed to
+    treat unknown types as "no MTP for this arch" and log rather than
+    raise (matches the ``qwen3_5_inject`` fail-closed default codex
+    round-5 installed).
+    """
+    from vllm_mlx.spec_decode.mtp.dispatch import dispatch_mtp_inject
+
+    result = dispatch_mtp_inject(
+        object(),
+        model_type="not_a_real_model_type_xyzzy",
+        allow_random_init=True,
+    )
+    assert result is False

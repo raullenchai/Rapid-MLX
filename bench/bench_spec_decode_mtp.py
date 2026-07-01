@@ -282,13 +282,25 @@ def _run_once(
     model, tokenizer = load(model_alias)
 
     if condition == "mtp":
+        from vllm_mlx.spec_decode.mtp.dispatch import dispatch_mtp_inject
         from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
         from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
-            inject_mtp_support,
             validate_mtp_support,
         )
 
-        if not inject_mtp_support(model, mtp_sidecar=mtp_sidecar):
+        # Route through the family dispatcher so Gemma 4 aliases
+        # (``gemma4`` / ``gemma4_unified``) can reach the bench too
+        # once the follow-up AssistantModel PR lands. Model_type is
+        # read off the outer wrapper's args — mlx-lm sets this on
+        # every loaded model.
+        model_type = (
+            getattr(getattr(model, "args", None), "model_type", None)
+            or getattr(model, "model_type", None)
+            or "qwen3_5"  # bench historical default
+        )
+        if not dispatch_mtp_inject(
+            model, model_type=model_type, mtp_sidecar=mtp_sidecar
+        ):
             raise RuntimeError(
                 f"MTP injection failed on model {model_alias!r} — "
                 f"sidecar {mtp_sidecar!r}. Confirm the sidecar repo or "

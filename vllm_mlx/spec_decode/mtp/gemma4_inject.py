@@ -242,7 +242,7 @@ def _build_scaffold_mtp_module(args: Any, num_layers: int):
     import mlx.core as mx
     import mlx.nn as nn
     from mlx_lm.models.base import create_attention_mask
-    from mlx_lm.models.gemma4_text import MLP as _Gemma4MLP
+    from mlx_lm.models.gemma4_text import MLP
 
     if num_layers < 1:
         raise ValueError(
@@ -275,7 +275,7 @@ def _build_scaffold_mtp_module(args: Any, num_layers: int):
             self.post_attention_layernorm = nn.RMSNorm(
                 hidden, eps=layer_args.rms_norm_eps
             )
-            self.mlp = _Gemma4MLP(layer_args, layer_idx=0)
+            self.mlp = MLP(layer_args, layer_idx=0)
             self.n_heads = n_heads
             self.n_kv_heads = n_kv_heads
             self.head_dim = head_dim
@@ -526,8 +526,7 @@ def inject_mtp_support(
         mx.eval(mtp.parameters())
         extra = loaded_keys - expected_keys
         logger.info(
-            "[mtp.inject.gemma4] Loaded %d/%d expected MTP weight tensors "
-            "from %s%s",
+            "[mtp.inject.gemma4] Loaded %d/%d expected MTP weight tensors from %s%s",
             len(expected_keys),
             len(expected_keys),
             weights_file.name,

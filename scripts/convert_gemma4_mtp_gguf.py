@@ -285,9 +285,7 @@ def _build_sidecar_config(reader, parent_config: dict, num_mtp_layers: int) -> d
         "num_key_value_heads": _read_field_scalar(
             reader, "gemma4-assistant.attention.head_count_kv"
         ),
-        "head_dim": _read_field_scalar(
-            reader, "gemma4-assistant.attention.key_length"
-        ),
+        "head_dim": _read_field_scalar(reader, "gemma4-assistant.attention.key_length"),
         "head_dim_swa": _read_field_scalar(
             reader, "gemma4-assistant.attention.key_length_swa"
         ),
@@ -390,7 +388,9 @@ def main(argv: list[str] | None = None) -> int:
         level=logging.INFO,
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
-    p = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p = argparse.ArgumentParser(
+        description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter
+    )
     p.add_argument("--repo", default=DEFAULT_REPO, help="Source HF repo id")
     p.add_argument(
         "--gguf-filename",
@@ -430,9 +430,7 @@ def main(argv: list[str] | None = None) -> int:
 
     out_dir = Path(os.path.expanduser(args.out_dir)).resolve()
     if out_dir.exists() and any(out_dir.iterdir()) and not args.force:
-        logger.error(
-            "Output dir %s is non-empty. Pass --force to overwrite.", out_dir
-        )
+        logger.error("Output dir %s is non-empty. Pass --force to overwrite.", out_dir)
         return 2
     out_dir.mkdir(parents=True, exist_ok=True)
 
@@ -442,7 +440,9 @@ def main(argv: list[str] | None = None) -> int:
     except ImportError:  # pragma: no cover
         logger.error("huggingface_hub not installed; cannot download GGUF.")
         return 3
-    logger.info("Downloading %s from %s (cached if present)...", args.gguf_filename, args.repo)
+    logger.info(
+        "Downloading %s from %s (cached if present)...", args.gguf_filename, args.repo
+    )
     gguf_path = hf_hub_download(repo_id=args.repo, filename=args.gguf_filename)
     logger.info("GGUF cached at: %s", gguf_path)
 

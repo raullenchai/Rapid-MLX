@@ -179,11 +179,12 @@ extract_content "${BODY_BASELINE}" > "${CONTENT_BASELINE}"
 
 echo ""
 echo "═════ LOSSLESS DIFF ═════"
+LOSSLESS_OK=1
 if diff -u "${CONTENT_BASELINE}" "${CONTENT_MTP}"; then
   echo "PASS: mtp completion == baseline completion (byte-equal)."
 else
   echo "FAIL: mtp completion differs from baseline — MTP lossless contract broken." >&2
-  # Do not exit — still emit telemetry so operator sees the accept rate.
+  LOSSLESS_OK=0
 fi
 
 echo ""
@@ -193,4 +194,11 @@ extract_mtp_stats "${METRICS_BASELINE}"
 
 echo ""
 echo "[smoke] Workdir preserved: ${WORKDIR}"
+
+if (( LOSSLESS_OK == 0 )); then
+  # Exit non-zero AFTER telemetry so the operator (or CI wrapper) has
+  # the accept-rate context alongside the failure signal.
+  echo "[smoke] FAIL: lossless diff mismatched — see diff above." >&2
+  exit 1
+fi
 echo "[smoke] Done."
