@@ -282,11 +282,11 @@ def _run_once(
     model, tokenizer = load(model_alias)
 
     if condition == "mtp":
-        from vllm_mlx.spec_decode.mtp.dispatch import dispatch_mtp_inject
-        from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
-        from vllm_mlx.spec_decode.mtp.qwen3_5_inject import (
-            validate_mtp_support,
+        from vllm_mlx.spec_decode.mtp.dispatch import (
+            dispatch_mtp_inject,
+            dispatch_mtp_validate,
         )
+        from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
 
         # Route through the family dispatcher so Gemma 4 aliases
         # (``gemma4`` / ``gemma4_unified``) can reach the bench too
@@ -308,7 +308,10 @@ def _run_once(
                 "expected MTP head schema, and the base model's "
                 "config carries mtp_num_hidden_layers >= 1."
             )
-        assert validate_mtp_support(model)
+        # Validate through the SAME family dispatcher — codex round-2
+        # flagged that mixing families here (inject via gemma4, validate
+        # via qwen3_5) would falsely fail Gemma 4 patches.
+        assert dispatch_mtp_validate(model, model_type=model_type)
         # The patch lands on the inner TextModel (the VLM wrapper's
         # ``language_model`` field). The generator drives the model
         # directly, so re-bind ``model`` to the patched inner for the

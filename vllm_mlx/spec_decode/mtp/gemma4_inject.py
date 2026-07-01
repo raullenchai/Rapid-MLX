@@ -382,6 +382,7 @@ def inject_mtp_support(
     mtp_sidecar: str | Path | None = None,
     *,
     allow_random_init: bool = False,
+    _accept_scaffold_sidecar_for_tests: bool = False,
 ) -> bool:
     """Inject MTP support into a loaded Gemma 4 (or ``gemma4_unified``) model.
 
@@ -396,6 +397,18 @@ def inject_mtp_support(
             =None`` and ships a random-init scaffold MTP head. Match
             the ``qwen3_5_inject`` default of ``False`` — production
             callers MUST pass a sidecar.
+        _accept_scaffold_sidecar_for_tests: **PRIVATE / TEST-ONLY**.
+            When ``True``, the sidecar path is allowed to load
+            weights that match the scaffold module's parameter tree.
+            Codex round-2 flagged that the scaffold layer does not
+            carry a working ``KVCache`` update path, so any accepted
+            production sidecar would break multi-token spec decode.
+            The default of ``False`` REFUSES every sidecar for the
+            duration of PR-3 — the follow-up ``AssistantModel`` PR
+            replaces this gate with the real consumer. Tests set
+            this to True to exercise the sidecar resolver + coverage
+            check without pretending the scaffold can drive
+            production traffic.
 
     Returns:
         ``True`` if the four contract surfaces attached. ``False``
@@ -407,12 +420,18 @@ def inject_mtp_support(
         * ``mtp_sidecar=None`` with ``allow_random_init=False`` (the
           fail-closed default codex round-5 installed on the Qwen3.5
           side).
-        * Sidecar file is missing / unresolvable.
+        * Sidecar file is missing / unresolvable / not a valid
+          safetensors.
         * **The sidecar fingerprints as a ``gemma4-assistant``
           architecture** (see :func:`_looks_like_assistant_sidecar`
           / the module docstring). That case is REFUSED with a
           specific "architecture-not-yet-supported" log — a
           follow-up PR lands the ``AssistantModel`` code path.
+        * A non-assistant sidecar was passed AND
+          ``_accept_scaffold_sidecar_for_tests`` is ``False``. The
+          scaffold module cannot drive production multi-token spec
+          decode (no KVCache path in its forward); refusing here
+          prevents the codex round-2 broken-cache regression.
 
     Never raises — every failure returns ``False`` and leaves the
     model unmodified so the caller can fall back to non-spec-decode.
@@ -476,7 +495,19 @@ def inject_mtp_support(
             )
             return False
 
-        raw = mx.load(str(weights_file))
+        # mx.load raises on corrupt / non-safetensors files. The public
+        # inject contract is "never raises", so guard here and fall back
+        # to False on any parse failure. Codex round-2 blocking fix.
+        try:
+            raw = mx.load(str(weights_file))
+        except Exception as exc:
+            logger.warning(
+                "[mtp.inject.gemma4] sidecar %s failed to load via mx.load: %s. "
+                "Refusing to inject; caller can fall back to non-spec-decode.",
+                weights_file.name,
+                exc,
+            )
+            return False
         mtp_weights = {
             (k.removeprefix("mtp.") if k.startswith("mtp.") else k): v
             for k, v in raw.items()
@@ -501,6 +532,28 @@ def inject_mtp_support(
                 "base-model K/V bridge) lands in a follow-up PR. Refusing "
                 "to inject rather than ship a broken/random-init draft. "
                 "Track: `gemma4-assistant MTP` follow-up in the PR body.",
+                weights_file.name,
+            )
+            return False
+
+        # PRODUCTION SIDECAR REFUSAL (codex round-2 blocking fix):
+        # even a non-assistant sidecar is refused unless a test opts
+        # in via _accept_scaffold_sidecar_for_tests. The scaffold's
+        # ``_ScaffoldDecoderLayer.__call__`` does not update the
+        # KVCache passed by ``make_mtp_cache``, so
+        # ``mtp_generate_step``'s multi-token draft loop would run
+        # against a stale cache — silently emitting wrong drafts.
+        # The follow-up AssistantModel PR replaces this guard with
+        # the real KV-cache-aware forward path.
+        if not _accept_scaffold_sidecar_for_tests:
+            logger.warning(
+                "[mtp.inject.gemma4] Refusing to load sidecar %s in "
+                "production. The Gemma 4 inject in this PR is scaffold-"
+                "only — its decoder layer does not update KVCache, so "
+                "any accepted sidecar would break multi-token spec "
+                "decode. Track: `gemma4-assistant MTP` follow-up in "
+                "the PR body. For CI wiring probes pass "
+                "allow_random_init=True (no sidecar).",
                 weights_file.name,
             )
             return False

@@ -86,8 +86,10 @@ Usage
         --out-dir /path/to/staging/mlx-community-gemma-4-12b-mtp-fp16
 
 By default, output goes under ``$HOME/rapid-mlx-staging/
-gemma-4-12b-mtp-fp16``. Pass ``--quantize 4`` to apply q4 to the
-projection + layer bodies (fc bf16 + q4 layers per task #383 queue).
+gemma-4-12b-mtp-fp16``. Q4 quantization of the layer bodies is NOT
+supported here — the AssistantModel class doesn't exist yet, so the
+``nn.quantize`` walk has nothing to walk. Track the q4 conversion
+work item on the follow-up "AssistantModel MTP" PR.
 """
 
 from __future__ import annotations
@@ -355,34 +357,6 @@ def _atomic_move(tmp: Path, dst: Path) -> None:
     os.replace(tmp, dst)
 
 
-def _maybe_quantize(weights: dict, bits: int) -> dict:
-    """Apply q4 to layer bodies (fc + linear projections in mtp.layers.*).
-
-    Norms and layer_scalar stay bf16. The Rapid-MLX runtime consumes
-    the ``.weight`` / ``.scales`` / ``.biases`` triple ``mlx.core.load``
-    produces for quantized entries. This function DOES NOT quantize the
-    assistant-model pre/post projections — those live outside a
-    QuantizedLinear-eligible surface until the AssistantModel PR wires
-    them into an ``nn.Linear`` node.
-
-    NOTE: this is a placeholder — full quantization requires
-    instantiating an ``nn.Module`` shell and calling ``nn.quantize``.
-    That in turn requires the AssistantModel class to exist. Left as a
-    no-op for now (returns the input dict unchanged) with a warning so
-    downstream tooling can pick up the eventual q4 path once the
-    follow-up PR lands.
-    """
-    if bits <= 0 or bits >= 16:
-        return weights
-    logger.warning(
-        "[convert] --quantize %d requested, but K-safe q4 requires the "
-        "AssistantModel class (follow-up PR). Skipping quantization; "
-        "sidecar shipped at fp16 / bf16.",
-        bits,
-    )
-    return weights
-
-
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(
         level=logging.INFO,
@@ -413,13 +387,6 @@ def main(argv: list[str] | None = None) -> int:
         type=int,
         default=1,
         help="Value to stitch into config.json (matches Qwen3.5 sidecar convention)",
-    )
-    p.add_argument(
-        "--quantize",
-        type=int,
-        default=0,
-        help="Target bit-width for layer body quantization (0=no quantize). "
-        "Placeholder — see docstring.",
     )
     p.add_argument(
         "--force",
@@ -485,9 +452,6 @@ def main(argv: list[str] | None = None) -> int:
         len(dropped),
         ", ".join(dropped) if dropped else "none",
     )
-
-    # --- Quantize (placeholder — see fn docstring) ---
-    mtp_weights = _maybe_quantize(mtp_weights, args.quantize)
 
     # --- Load parent config + stitch ---
     logger.info("Fetching parent config.json from %s...", args.parent_repo)

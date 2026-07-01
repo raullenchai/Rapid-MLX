@@ -230,14 +230,18 @@ def test_inject_mtp_support_rejects_model_without_mtp_config():
 # ---------------------------------------------------------------------------
 
 
-def test_inject_mtp_support_loads_synthetic_sidecar():
-    """A hand-built sidecar matching the SCAFFOLD's parameter tree must
-    round-trip through save → load → attach without dtype errors.
+def test_inject_mtp_support_loads_synthetic_sidecar_under_test_opt_in():
+    """A hand-built sidecar matching the SCAFFOLD's parameter tree
+    round-trips through save → load → attach when the test-only opt-in
+    (``_accept_scaffold_sidecar_for_tests=True``) is passed.
 
-    This test does NOT prove the sidecar produces correct drafts — the
-    scaffold module is wiring-only. It DOES prove the sidecar
-    resolver, the coverage check, and ``mx.save_safetensors`` +
-    ``mx.load`` round-trip correctly for the current inject shape.
+    This exercises the sidecar resolver + coverage check + safetensors
+    round-trip. It does NOT claim the scaffold can drive production
+    drafts — codex round-2 established that the scaffold decoder layer
+    has no KVCache update path, so multi-token spec decode against it
+    would be broken. The private opt-in kwarg exists precisely to
+    exercise the loader machinery in unit tests without opening a
+    production regression window.
     """
     import tempfile
     from pathlib import Path
@@ -267,10 +271,23 @@ def test_inject_mtp_support_loads_synthetic_sidecar():
         _mx.save_safetensors(str(sidecar_path), flat)
 
         model_b = _build_tiny_gemma4_text_model()
-        result = inject_mtp_support(model_b, mtp_sidecar=str(sidecar_path))
+
+        # Default path: any sidecar is refused in production. Codex
+        # round-2 blocking fix — no KVCache in the scaffold layer.
+        assert inject_mtp_support(model_b, mtp_sidecar=str(sidecar_path)) is False
+        assert validate_mtp_support(model_b) is False, (
+            "Production-default refusal must leave the model unmodified."
+        )
+
+        # Test opt-in path — proves the loader machinery works.
+        result = inject_mtp_support(
+            model_b,
+            mtp_sidecar=str(sidecar_path),
+            _accept_scaffold_sidecar_for_tests=True,
+        )
         assert result is True, (
-            "inject_mtp_support should have accepted a scaffold-shaped "
-            "sidecar. If this failed, the coverage check has drifted from "
+            "With the test opt-in kwarg, a scaffold-shaped sidecar should "
+            "load. If this failed, the coverage check has drifted from "
             "the scaffold's parameter tree."
         )
         assert validate_mtp_support(model_b) is True
@@ -285,6 +302,35 @@ def test_inject_mtp_support_loads_synthetic_sidecar():
         for k in flat:
             diff = _mx.sum(loaded[k] != flat[k]).item()
             assert diff == 0, f"{k}: loaded weight differs by {diff} entries"
+
+
+def test_inject_mtp_support_refuses_corrupt_sidecar():
+    """A sidecar file that isn't valid safetensors must be REFUSED,
+    not crash the caller. Codex round-2 blocking fix: mx.load raises
+    on garbage input, and the ``never raises`` inject contract must
+    catch that.
+    """
+    import tempfile
+    from pathlib import Path
+
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+
+    try:
+        model = _build_tiny_gemma4_text_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 text ModelArgs schema mismatch: {exc}")
+
+    with tempfile.TemporaryDirectory() as tmp:
+        bad_sidecar = Path(tmp) / "corrupt.safetensors"
+        bad_sidecar.write_bytes(b"this is not a safetensors file, just garbage")
+
+        # Must NOT raise; must return False.
+        result = inject_mtp_support(
+            model,
+            mtp_sidecar=str(bad_sidecar),
+            _accept_scaffold_sidecar_for_tests=True,
+        )
+        assert result is False
 
 
 # ---------------------------------------------------------------------------

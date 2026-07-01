@@ -76,6 +76,30 @@ _MTP_INJECT_DISPATCH: dict[str, tuple[str, str]] = {
 }
 
 
+# Same schema, but for ``validate_mtp_support``. Kept as a separate
+# table so a family with a bespoke validator can register it
+# independently of the inject entry. All entries currently share the
+# ``validate_mtp_support`` symbol name.
+_MTP_VALIDATE_DISPATCH: dict[str, tuple[str, str]] = {
+    "qwen3_5": (
+        "vllm_mlx.spec_decode.mtp.qwen3_5_inject",
+        "validate_mtp_support",
+    ),
+    "qwen3_5_moe": (
+        "vllm_mlx.spec_decode.mtp.qwen3_5_inject",
+        "validate_mtp_support",
+    ),
+    "gemma4": (
+        "vllm_mlx.spec_decode.mtp.gemma4_inject",
+        "validate_mtp_support",
+    ),
+    "gemma4_unified": (
+        "vllm_mlx.spec_decode.mtp.gemma4_inject",
+        "validate_mtp_support",
+    ),
+}
+
+
 def dispatch_mtp_inject(
     model: Any,
     model_type: str,
@@ -147,3 +171,41 @@ def dispatch_mtp_inject(
             allow_random_init=allow_random_init,
         )
     )
+
+
+def dispatch_mtp_validate(model: Any, model_type: str) -> bool:
+    """Route a ``validate_mtp_support`` call to the family-specific validator.
+
+    Codex round-2 flagged that PR-3's bench call site injects Gemma 4
+    via the dispatcher but validates via ``qwen3_5_inject.validate_mtp_support``,
+    which reads the Qwen3.5 surface and misjudges the Gemma 4 patch as
+    invalid. This helper routes the validator by the same
+    ``model_type`` table.
+
+    Returns ``False`` for any unknown model_type (fail-closed default —
+    matches :func:`dispatch_mtp_inject`).
+    """
+    key = _MTP_VALIDATE_DISPATCH.get(model_type)
+    if key is None:
+        logger.info(
+            "[mtp.dispatch] model_type=%r has no registered validator; "
+            "returning False.",
+            model_type,
+        )
+        return False
+
+    module_path, func_name = key
+    try:
+        module = importlib.import_module(module_path)
+    except ImportError as exc:
+        logger.warning(
+            "[mtp.dispatch] could not import %s for validator: %s",
+            module_path,
+            exc,
+        )
+        return False
+
+    fn = getattr(module, func_name, None)
+    if fn is None:
+        return False
+    return bool(fn(model))
