@@ -102,6 +102,15 @@ boot_and_prompt() {
   local pid=$!
   echo "[smoke:${mode}] server pid=${pid}"
 
+  # ── Codex round-3 fix: install a RETURN-time trap so ANY exit
+  # path (curl failure, timeout, set -e trip, etc.) tears down the
+  # background server. Without this, `set -e` short-circuits before
+  # `kill` at the bottom and leaves rapid-mlx serve running on the
+  # port for the NEXT boot_and_prompt call to collide with.
+  # ─────────────────────────────────────────────────────────────
+  # shellcheck disable=SC2064  # want $pid expanded now
+  trap "kill -TERM ${pid} 2>/dev/null || true; wait ${pid} 2>/dev/null || true; trap - RETURN" RETURN
+
   # Wait up to 180s for /healthz.
   local start_ts=$SECONDS
   while :; do
@@ -111,19 +120,21 @@ boot_and_prompt() {
     if ! kill -0 "${pid}" 2>/dev/null; then
       echo "[smoke:${mode}] server died before ready. Last 40 lines:" >&2
       tail -40 "${server_log}" >&2
-      exit 4
+      return 4  # trap fires — server pid is already gone, kill is a no-op
     fi
     if (( SECONDS - start_ts > 180 )); then
       echo "[smoke:${mode}] server did not become ready in 180s. Last 40 lines:" >&2
       tail -40 "${server_log}" >&2
-      kill -TERM "${pid}" 2>/dev/null || true
-      exit 4
+      return 4  # trap tears down the still-running server
     fi
     sleep 1
   done
   echo "[smoke:${mode}] Server ready in $((SECONDS - start_ts))s"
 
   # Fixed prompt, temp=0, max_tokens=80. Timeout 120s.
+  # curl -f exits non-zero on 5xx — with `set -e` at file scope, a
+  # failure here would blow up the function. The RETURN trap will
+  # tear down the server before the outer script exits.
   curl -fsS \
     -X POST \
     -H 'Content-Type: application/json' \
@@ -135,6 +146,8 @@ boot_and_prompt() {
   # Scrape metrics after generation.
   curl -fsS "${BASE_URL}/metrics" > "${out_metrics}" || true
 
+  # Explicit teardown at happy path — the RETURN trap will also fire
+  # here (harmless — kill on a dead pid is a no-op).
   kill -TERM "${pid}" 2>/dev/null || true
   wait "${pid}" 2>/dev/null || true
   echo "[smoke:${mode}] Server stopped."

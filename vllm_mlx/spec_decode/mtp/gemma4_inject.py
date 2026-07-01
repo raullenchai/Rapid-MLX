@@ -633,44 +633,34 @@ def inject_mtp_support(
             return_hidden: bool = False,
             n_confirmed: int = 0,
         ):
-            # Delegate to the original forward, but with a
-            # return_hidden probe. We compute the pre-norm hidden
-            # ourselves by tapping the backbone's final layer output
-            # (Gemma 4's ``__call__`` normally returns the post-norm
-            # hidden via ``self.norm(h)``). To keep the scaffold
-            # simple we just re-normalise after the fact — the
-            # MTP head takes the post-norm hidden here rather than
-            # the pre-norm hidden Qwen3.5 uses. This is the
-            # WIRING PROBE ONLY — production code path lands with
-            # the follow-up assistant PR.
-            out = original_class.__call__(
+            # Codex round-3: neither ``return_hidden`` nor ``n_confirmed``
+            # can be honestly implemented in the scaffold — we'd have to
+            # tap the pre-norm hidden state (requires forking the
+            # backbone's __call__) and thread n_confirmed through the
+            # base model's linear-attention rollback (Gemma 4 has none;
+            # for Qwen3.5 this is the GatedDeltaNet rollback path). Both
+            # semantics land in the follow-up ``AssistantModel`` PR. If a
+            # caller reaches here with either flag set, RAISE loudly
+            # instead of silently returning fake data — that's the codex
+            # round-3 fix (was: returned all-zero hidden; hidden was
+            # then fed to mtp_forward and produced garbage drafts).
+            if return_hidden or n_confirmed:
+                raise NotImplementedError(
+                    "[mtp.inject.gemma4] scaffold __call__ received "
+                    f"return_hidden={return_hidden} / n_confirmed={n_confirmed}, "
+                    "which the scaffold cannot honestly implement. This is "
+                    "wiring-only surface parity — the semantically-correct "
+                    "path lands in the follow-up AssistantModel PR. Only the "
+                    "bare forward (return_hidden=False, n_confirmed=0) is "
+                    "supported here."
+                )
+            return original_class.__call__(
                 self,
                 inputs,
                 cache=cache,
                 input_embeddings=input_embeddings,
                 per_layer_inputs=per_layer_inputs,
             )
-            if return_hidden:
-                # Re-derive a hidden-state proxy shaped ``(B, L, H)``
-                # so ``mtp_forward`` can accept it. The proxy is a
-                # linear inversion of the ``embed_tokens.as_linear``
-                # projection when tie_word_embeddings=True; for the
-                # untied case we can't cheaply recover hidden, so
-                # this path is intentionally lossy. Wiring probe only.
-                # Real hidden-state tap lands in the assistant PR.
-                B = out.shape[0]
-                L = out.shape[1]
-                H = getattr(self.args, "hidden_size", None)
-                if H is None:
-                    text_config = getattr(self.args, "text_config", {}) or {}
-                    H = text_config.get("hidden_size", 3840)
-                # Wiring-only tensor — not a semantically correct hidden
-                # (the assistant PR wires a real hidden tap).
-                import mlx.core as _mx
-
-                hidden = _mx.zeros((B, L, H))
-                return out, hidden
-            return out
 
         def mtp_forward(
             self,
@@ -678,19 +668,35 @@ def inject_mtp_support(
             next_token_ids,
             mtp_cache,
         ):
-            """Run the scaffold MTP head and project through the lm_head.
+            """Scaffold placeholder — raises to prevent silent misuse.
 
-            Wiring probe — real draft quality is not a goal. See
-            module docstring for the follow-up plan.
+            Codex round-3 blocking fix: the scaffold cannot produce
+            production-correct drafts (no KVCache update in the
+            decoder layer, no valid hidden-state tap in ``__call__``).
+            Instead of returning wrong output, raise so any caller
+            that reaches here gets a loud, actionable error. The real
+            forward lands in the follow-up AssistantModel PR.
             """
-            embed = self.model.embed_tokens
-            mtp_out = self.mtp(hidden_states, next_token_ids, embed, mtp_cache)
-            if getattr(self, "tie_word_embeddings", True):
-                return embed.as_linear(mtp_out)
-            return self.lm_head(mtp_out)
+            raise NotImplementedError(
+                "[mtp.inject.gemma4] scaffold mtp_forward is not "
+                "implemented — the scaffold module attaches surfaces so "
+                "the wiring probe can validate the injection contract, "
+                "but the production-quality forward (using pre/post "
+                "projections + base-model K/V bridge) lands in the "
+                "follow-up AssistantModel PR. If you see this error at "
+                "runtime, `rapid-mlx serve --spec-decode mtp` should NOT "
+                "be enabled for Gemma 4 aliases yet."
+            )
 
         def make_mtp_cache(self):
-            """One ``KVCache`` per scaffold MTP layer (all full attention)."""
+            """One ``KVCache`` per scaffold MTP layer (all full attention).
+
+            Returned cache slot is real (matches the KVCache contract
+            the generator expects). Since ``mtp_forward`` raises
+            immediately, the cache is never actually populated — the
+            slot exists purely to satisfy the wiring probe's
+            ``callable(make_mtp_cache)`` check.
+            """
             from mlx_lm.models.cache import KVCache
 
             return [KVCache() for _ in self.mtp.layers]

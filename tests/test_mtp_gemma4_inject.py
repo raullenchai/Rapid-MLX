@@ -304,6 +304,56 @@ def test_inject_mtp_support_loads_synthetic_sidecar_under_test_opt_in():
             assert diff == 0, f"{k}: loaded weight differs by {diff} entries"
 
 
+def test_scaffold_mtp_forward_raises_loudly_when_invoked():
+    """Codex round-3 fix: the scaffold ``mtp_forward`` must RAISE when
+    called, not silently return zeros. Prevents a caller that reaches
+    the scaffold at runtime from producing garbage drafts and thinking
+    everything is fine.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+
+    try:
+        model = _build_tiny_gemma4_text_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 text ModelArgs schema mismatch: {exc}")
+
+    assert inject_mtp_support(model, allow_random_init=True) is True
+
+    # mtp_forward must raise NotImplementedError with the
+    # AssistantModel-follow-up message.
+    with pytest.raises(NotImplementedError, match="AssistantModel"):
+        model.mtp_forward(mx.zeros((1, 1, 64)), mx.zeros((1, 1), dtype=mx.uint32), [])
+
+
+def test_scaffold_call_raises_on_return_hidden_or_n_confirmed():
+    """Codex round-3 fix: ``__call__`` on the scaffold must raise when
+    ``return_hidden=True`` or ``n_confirmed>0`` — those flags cannot
+    be honestly implemented in the scaffold, and returning fake
+    zeros (previous behavior) silently corrupted downstream drafts.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+
+    try:
+        model = _build_tiny_gemma4_text_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 text ModelArgs schema mismatch: {exc}")
+
+    assert inject_mtp_support(model, allow_random_init=True) is True
+
+    inputs = mx.array([[1, 2, 3]], dtype=mx.uint32)
+    with pytest.raises(NotImplementedError, match="wiring-only"):
+        model(inputs, return_hidden=True)
+    with pytest.raises(NotImplementedError, match="wiring-only"):
+        model(inputs, n_confirmed=1)
+
+    # Bare forward (no MTP flags) must still work — the scaffold does
+    # not corrupt the base model's non-MTP forward path.
+    out = model(inputs)
+    assert out.shape[:2] == inputs.shape, (
+        f"bare forward output shape {out.shape} doesn't match input {inputs.shape}"
+    )
+
+
 def test_inject_mtp_support_refuses_corrupt_sidecar():
     """A sidecar file that isn't valid safetensors must be REFUSED,
     not crash the caller. Codex round-2 blocking fix: mx.load raises

@@ -480,8 +480,15 @@ def main(argv: list[str] | None = None) -> int:
     # renaming to the final destination in an atomic step.
     st_tmp_write = out_dir / "model-mtp.tmp.safetensors"
     logger.info("Writing %d tensors to %s ...", len(mtp_weights), st_dst)
-    mx.save_safetensors(str(st_tmp_write), mtp_weights)
-    _atomic_move(st_tmp_write, st_dst)
+    # Codex round-3 nit: guard against a failed os.replace leaving the
+    # ``.tmp.safetensors`` file behind. try/finally always unlinks the
+    # temp path (a no-op after successful rename).
+    try:
+        mx.save_safetensors(str(st_tmp_write), mtp_weights)
+        _atomic_move(st_tmp_write, st_dst)
+    finally:
+        with contextlib.suppress(FileNotFoundError):
+            st_tmp_write.unlink()
 
     # --- Write config.json atomically ---
     cfg_dst = out_dir / "config.json"
@@ -501,12 +508,6 @@ def main(argv: list[str] | None = None) -> int:
     except Exception as exc:
         logger.error("Verify failed — re-load raised %s. Sidecar may be corrupt.", exc)
         return 5
-
-    # Cleanup any temp shrapnel (the ``st_tmp_write`` was renamed to
-    # its final destination above; this catches the case where a prior
-    # run crashed between write and rename).
-    with contextlib.suppress(FileNotFoundError):
-        st_tmp_write.unlink()
 
     logger.info(
         "\n=== Conversion OK ===\n"
