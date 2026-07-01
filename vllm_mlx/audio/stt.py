@@ -67,8 +67,24 @@ _VAD_SAMPLE_RATE = 16_000
 # Load-once cache. Kept module-level (not instance-level) so multiple
 # STTEngine instances share one VAD model — the Silero weights are
 # ~1.7 MB but the mx.array upload isn't free either.
+#
+# Codex r1 BLOCKING: distinguish permanent import failure from
+# transient load failure. Previously a single ``_VAD_LOAD_ATTEMPTED``
+# flag latched TRUE on ANY failure, so a one-off network hiccup at
+# process start would silently disable the guard for the entire
+# lifetime of the server — reintroducing the silence hallucination
+# for every later request. New scheme:
+#
+#   * ``_VAD_IMPORT_UNAVAILABLE`` — set only when ``import mlx_audio.vad``
+#     itself fails. That state cannot change without a process restart
+#     (the extras aren't installed), so caching TRUE is safe.
+#   * ``_VAD_LOAD_FAILURE_LOGGED`` — log-once suppression for transient
+#     ``vad_load(...)`` failures (HF 500, disk-full, weight mismatch).
+#     The failure is NOT cached — every subsequent call retries, so a
+#     later request whose network has recovered will succeed.
 _VAD_MODEL_CACHE: Any | None = None
-_VAD_LOAD_ATTEMPTED = False
+_VAD_IMPORT_UNAVAILABLE = False
+_VAD_LOAD_FAILURE_LOGGED = False
 
 
 # F-K-WHISPER-500: every mlx-community Whisper repo ships ONLY
@@ -156,21 +172,33 @@ def _vad_pretrim_disabled_by_env() -> bool:
 def _get_vad_model() -> Any | None:
     """Return the shared Silero VAD model, loading it on first call.
 
-    Returns ``None`` on any failure (import error, network hiccup,
-    weight-file mismatch) so callers fall back to the unmodified
-    transcription path without ever raising into ``transcribe()``.
-    The failure is logged at WARNING once — subsequent calls short-
-    circuit off ``_VAD_LOAD_ATTEMPTED`` and produce no more log spam.
+    Returns ``None`` on any failure so callers fall back to the
+    unmodified transcription path without ever raising into
+    ``transcribe()``. Failure caching is split by kind:
+
+    * ``ImportError`` — ``mlx_audio.vad`` isn't installed. Cached
+      permanently via ``_VAD_IMPORT_UNAVAILABLE``: the outcome cannot
+      change without a process restart.
+    * Any other load exception (HF fetch failed, weight mismatch,
+      disk full, transient network hiccup) — NOT cached. Subsequent
+      calls retry so a later request whose network has recovered can
+      still load the VAD. To avoid log spam we suppress repeat
+      warnings via ``_VAD_LOAD_FAILURE_LOGGED``.
+
+    Codex r1 BLOCKING: this split closes the "process-wide silent
+    disable on transient hiccup" hole. See the module-level comment
+    block for the wider design.
     """
-    global _VAD_MODEL_CACHE, _VAD_LOAD_ATTEMPTED
+    global _VAD_MODEL_CACHE, _VAD_IMPORT_UNAVAILABLE, _VAD_LOAD_FAILURE_LOGGED
     if _VAD_MODEL_CACHE is not None:
         return _VAD_MODEL_CACHE
-    if _VAD_LOAD_ATTEMPTED:
+    if _VAD_IMPORT_UNAVAILABLE:
         return None
-    _VAD_LOAD_ATTEMPTED = True
     try:
         from mlx_audio.vad import load as vad_load  # noqa: PLC0415
     except ImportError as e:
+        # Permanent for this process (module isn't importable).
+        _VAD_IMPORT_UNAVAILABLE = True
         logger.warning(
             "VAD pre-trim disabled: mlx_audio.vad not importable (%s). "
             "Install rapid-mlx[audio] to enable the anti-hallucination "
@@ -181,13 +209,21 @@ def _get_vad_model() -> Any | None:
     try:
         _VAD_MODEL_CACHE = vad_load(_VAD_MODEL_REPO)
     except Exception as e:  # noqa: BLE001
-        # Network failure, weight mismatch, HF gate — log once + bail.
-        logger.warning(
-            "VAD pre-trim disabled: could not load %r: %s",
-            _VAD_MODEL_REPO,
-            e,
-        )
+        # Transient: log ONCE, then retry on every subsequent call so
+        # a recovered network / freed disk still gets the guard back.
+        if not _VAD_LOAD_FAILURE_LOGGED:
+            logger.warning(
+                "VAD pre-trim: could not load %r (%s). Retrying on "
+                "next request. Guard falls back to unmodified "
+                "transcription until load succeeds.",
+                _VAD_MODEL_REPO,
+                e,
+            )
+            _VAD_LOAD_FAILURE_LOGGED = True
         return None
+    # Reset the log-once flag on eventual success so a subsequent
+    # process-level unload/re-init still surfaces a fresh warning.
+    _VAD_LOAD_FAILURE_LOGGED = False
     return _VAD_MODEL_CACHE
 
 
@@ -246,12 +282,29 @@ def _maybe_vad_trim(audio_path: str) -> _VADTrimResult:
     if not speech_ts:
         return _VADTrimResult(skipped=False, has_speech=False)
 
+    # Codex r1 BLOCKING: extract the span defensively. Upstream Silero
+    # today always emits ``{"start": float, "end": float}`` dicts (see
+    # ``mlx_audio.vad.models.silero_vad.silero_vad.Model._probs_to_
+    # timestamps``), but the contract is not typed and a future refactor
+    # / a mocked-in-test implementation could pass ``None`` or omit a
+    # key. A ``KeyError`` / ``TypeError`` here would escape the helper's
+    # "never raises" contract and 500 the request before Whisper's own
+    # fallback runs. Wrap + fall back to ``skipped=True``.
     total_seconds = waveform.shape[-1] / _VAD_SAMPLE_RATE
-    start_s = max(0.0, float(speech_ts[0]["start"]) - _VAD_TRIM_PAD_SECONDS)
-    end_s = min(
-        total_seconds,
-        float(speech_ts[-1]["end"]) + _VAD_TRIM_PAD_SECONDS,
-    )
+    try:
+        first_start = float(speech_ts[0]["start"])
+        last_end = float(speech_ts[-1]["end"])
+    except (KeyError, TypeError, ValueError, IndexError) as e:
+        logger.warning(
+            "VAD pre-trim: malformed timestamp entry %r: %s — falling "
+            "back to unmodified transcription.",
+            speech_ts,
+            e,
+        )
+        return _VADTrimResult(skipped=True)
+
+    start_s = max(0.0, first_start - _VAD_TRIM_PAD_SECONDS)
+    end_s = min(total_seconds, last_end + _VAD_TRIM_PAD_SECONDS)
     if end_s <= start_s:
         # Degenerate span (shouldn't happen with valid VAD output, but
         # be defensive). Treat as no speech to avoid pushing a zero-

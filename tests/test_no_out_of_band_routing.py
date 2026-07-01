@@ -338,6 +338,16 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # blow up the FS. Pure wire-level capacity gate — never
         # selects a model, parser, or routing tier.
         "RAPID_MLX_KV_CHECKPOINT_MAX_BYTES",
+        # F-K-WHISPER-961 anti-hallucination VAD pre-trim opt-out
+        # (accepts ``0`` / ``false`` / ``no`` / ``off``). Consumed by
+        # ``vllm_mlx.audio.stt._vad_pretrim_disabled_by_env`` only to
+        # decide whether ``STTEngine.transcribe`` runs Silero VAD
+        # before Whisper for silence-hallucination suppression on
+        # pure-silence and trailing-silence clips (issue #961). Pure
+        # behaviour-policy knob on a single existing STT engine —
+        # never selects a model, parser, or routing tier; identical
+        # semantic shape to ``RAPID_MLX_REASONING_RESCUE`` above.
+        "RAPID_MLX_STT_VAD_PRETRIM",
     }
 )
 

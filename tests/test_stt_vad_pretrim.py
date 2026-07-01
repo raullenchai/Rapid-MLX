@@ -139,7 +139,8 @@ def stub_engine(monkeypatch, tmp_path):
     # Reset the module-level VAD cache between tests so each fixture
     # gets a fresh singleton pinned to its own _FakeVAD.
     monkeypatch.setattr(stt_mod, "_VAD_MODEL_CACHE", None, raising=True)
-    monkeypatch.setattr(stt_mod, "_VAD_LOAD_ATTEMPTED", False, raising=True)
+    monkeypatch.setattr(stt_mod, "_VAD_IMPORT_UNAVAILABLE", False, raising=True)
+    monkeypatch.setattr(stt_mod, "_VAD_LOAD_FAILURE_LOGGED", False, raising=True)
     # Ensure env override does not leak in from the host.
     monkeypatch.delenv("RAPID_MLX_STT_VAD_PRETRIM", raising=False)
 
@@ -339,9 +340,14 @@ class TestAbsoluteTimestampsPreserved:
 
         result = eng.transcribe(path)
 
+        # Codex r1 NIT: assert exact shifted values, not just lower
+        # bounds — a double-shift bug would still pass a >= check.
+        # Trim offset = max(0, 3.0 - 0.2) = 2.8.
         words = result.segments[0]["words"]
-        assert words[0]["start"] >= 2.7
-        assert words[1]["end"] >= 4.7
+        assert words[0]["start"] == pytest.approx(2.8, abs=1e-6)
+        assert words[0]["end"] == pytest.approx(3.3, abs=1e-6)
+        assert words[1]["start"] == pytest.approx(3.3, abs=1e-6)
+        assert words[1]["end"] == pytest.approx(4.8, abs=1e-6)
 
 
 class TestKwargOverrideDisables:
@@ -381,7 +387,8 @@ class TestVADImportFailureFallsBack:
 
         importlib.reload(stt_mod)
         monkeypatch.setattr(stt_mod, "_VAD_MODEL_CACHE", None)
-        monkeypatch.setattr(stt_mod, "_VAD_LOAD_ATTEMPTED", False)
+        monkeypatch.setattr(stt_mod, "_VAD_IMPORT_UNAVAILABLE", False)
+        monkeypatch.setattr(stt_mod, "_VAD_LOAD_FAILURE_LOGGED", False)
         monkeypatch.delenv("RAPID_MLX_STT_VAD_PRETRIM", raising=False)
 
         import sys as _sys
@@ -417,6 +424,173 @@ class TestVADImportFailureFallsBack:
         assert len(fake_whisper.calls) == 1
         audio_in, _ = fake_whisper.calls[0]
         assert audio_in == path
+
+
+class TestMalformedVADOutputFallsBack:
+    """Codex r1 BLOCKING #2 defense: if the VAD helper returns
+    malformed timestamps (missing ``start`` / ``end`` keys, wrong types,
+    empty dicts), the guard must fall back to unmodified transcription
+    instead of raising ``KeyError`` out of ``transcribe()``."""
+
+    def test_missing_start_key_falls_back(self, stub_engine):
+        eng, fake_vad, fake_whisper, path, *_ = stub_engine
+        fake_vad._timestamps = [{"end": 2.0}]  # missing 'start'
+
+        # Must not raise. Whisper is invoked with the original path
+        # as the fallback (the reporter's pre-fix behaviour is
+        # preferable to a 500).
+        result = eng.transcribe(path)
+
+        assert result.text == "hello world"
+        audio_in, _ = fake_whisper.calls[0]
+        assert audio_in == path
+
+    def test_missing_end_key_falls_back(self, stub_engine):
+        eng, fake_vad, fake_whisper, path, *_ = stub_engine
+        fake_vad._timestamps = [{"start": 1.0}]  # missing 'end'
+
+        result = eng.transcribe(path)
+
+        assert result.text == "hello world"
+        audio_in, _ = fake_whisper.calls[0]
+        assert audio_in == path
+
+    def test_none_valued_timestamp_falls_back(self, stub_engine):
+        eng, fake_vad, fake_whisper, path, *_ = stub_engine
+        fake_vad._timestamps = [{"start": None, "end": 2.0}]  # TypeError
+
+        result = eng.transcribe(path)
+
+        assert result.text == "hello world"
+        audio_in, _ = fake_whisper.calls[0]
+        assert audio_in == path
+
+
+class TestTransientLoadFailureRetries:
+    """Codex r1 BLOCKING #1 defense: a transient ``vad_load(...)``
+    failure must NOT permanently disable the guard for the process
+    lifetime. Import failures are permanent (weights aren't installed)
+    and DO stay cached, but transient load errors retry on every
+    subsequent call.
+    """
+
+    def test_transient_load_failure_retries_on_next_call(self, monkeypatch):
+        from vllm_mlx.audio import stt as stt_mod
+
+        # Fresh module state.
+        monkeypatch.setattr(stt_mod, "_VAD_MODEL_CACHE", None)
+        monkeypatch.setattr(stt_mod, "_VAD_IMPORT_UNAVAILABLE", False)
+        monkeypatch.setattr(stt_mod, "_VAD_LOAD_FAILURE_LOGGED", False)
+
+        # Fake ``mlx_audio.vad.load`` that fails the first call, then
+        # succeeds the second — mimics a network hiccup that recovers.
+        import sys as _sys
+        import types as _types
+
+        state = {"calls": 0}
+
+        def _flaky_load(_repo):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                raise RuntimeError("simulated: HF 502")
+            return _FakeVAD(timestamps=[])
+
+        fake_vad_pkg = _types.ModuleType("mlx_audio.vad")
+        fake_vad_pkg.load = _flaky_load
+        monkeypatch.setitem(_sys.modules, "mlx_audio.vad", fake_vad_pkg)
+
+        # First call — transient failure.
+        assert stt_mod._get_vad_model() is None
+        assert state["calls"] == 1
+        # Permanent-unavailable flag must NOT be latched.
+        assert stt_mod._VAD_IMPORT_UNAVAILABLE is False
+
+        # Second call — retries, succeeds.
+        vad = stt_mod._get_vad_model()
+        assert vad is not None
+        assert state["calls"] == 2
+
+    def test_permanent_import_failure_is_cached(self, monkeypatch):
+        """ImportError → cached, no retries (module isn't installed
+        and can't become installed without a process restart)."""
+        from vllm_mlx.audio import stt as stt_mod
+
+        monkeypatch.setattr(stt_mod, "_VAD_MODEL_CACHE", None)
+        monkeypatch.setattr(stt_mod, "_VAD_IMPORT_UNAVAILABLE", False)
+        monkeypatch.setattr(stt_mod, "_VAD_LOAD_FAILURE_LOGGED", False)
+
+        import sys as _sys
+
+        # Ensure any cached mlx_audio.vad module is gone so the import
+        # actually runs. Then block re-imports of it.
+        for name in list(_sys.modules):
+            if name.startswith("mlx_audio.vad"):
+                monkeypatch.delitem(_sys.modules, name, raising=False)
+
+        import builtins
+
+        real_import = builtins.__import__
+
+        def _blocked(name, *args, **kwargs):
+            if name == "mlx_audio.vad" or name.startswith("mlx_audio.vad."):
+                raise ImportError("simulated: not installed")
+            return real_import(name, *args, **kwargs)
+
+        monkeypatch.setattr(builtins, "__import__", _blocked)
+
+        assert stt_mod._get_vad_model() is None
+        assert stt_mod._VAD_IMPORT_UNAVAILABLE is True
+
+        # Now un-block the import and call again — must NOT retry,
+        # because permanent failures stay cached.
+        monkeypatch.setattr(builtins, "__import__", real_import)
+        assert stt_mod._get_vad_model() is None
+
+
+class TestUpstreamWhisperInputContract:
+    """Codex r1 NIT #3 defense: pin the upstream Whisper
+    ``generate()`` input-shape contract so if
+    ``mlx_audio.stt.models.whisper.Model._prepare_audio`` ever narrows
+    its accepted input types we fail loudly here instead of in
+    production. This tests the real installed ``mlx_audio`` (not our
+    fake) but does NOT download weights.
+    """
+
+    def test_whisper_prepare_audio_accepts_np_and_mx(self):
+        try:
+            from mlx_audio.stt.models.whisper.whisper import Model
+        except ImportError:
+            pytest.skip("mlx_audio not installed; contract check n/a")
+
+        import inspect
+        import typing as _typing
+
+        sig = inspect.signature(Model._prepare_audio)
+        audio_param = sig.parameters.get("audio")
+        assert audio_param is not None, (
+            "Upstream ``Model._prepare_audio`` renamed the ``audio`` "
+            "parameter — VAD trim path passes a positional array here."
+        )
+        annotation = audio_param.annotation
+        # Accept both the raw ``Union[str, np.ndarray, mx.array]`` typing
+        # and any subclass that still allows a bare ndarray/mx.array
+        # positional. If the signature narrows to ``str`` only, this
+        # would need to catch it — flag by asserting the annotation
+        # isn't the bare string type.
+        assert annotation is not str, (
+            "Upstream ``Model._prepare_audio`` narrowed to str-only. "
+            "The VAD trim path can no longer pass a trimmed waveform."
+        )
+        # Fallback: if the annotation is a Union, at least one of the
+        # arms must be a non-``str`` type (numpy or mx.array).
+        origin = _typing.get_origin(annotation)
+        if origin is not None:
+            args = _typing.get_args(annotation)
+            non_str = [a for a in args if a is not str]
+            assert non_str, (
+                "Upstream ``Model._prepare_audio`` audio Union no longer "
+                f"has a non-str arm: {annotation}"
+            )
 
 
 class TestParakeetEngineSkipsVAD:
