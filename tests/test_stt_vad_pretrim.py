@@ -759,16 +759,30 @@ class TestUpstreamWhisperInputContract:
                 f"has a non-str arm: {annotation}"
             )
 
-    def test_whisper_log_mel_spectrogram_accepts_np_and_mx(self):
-        """Codex r2 NIT #2: prove at RUNTIME that the array-conversion
-        + mel-spectrogram path inside ``_prepare_audio`` actually
-        accepts both numpy and mx.array shapes. This is stricter than
-        the annotation check — a runtime narrowing (e.g. an
-        ``assert isinstance(audio, mx.array)`` added upstream) would
-        make the annotation check pass but break the trim path.
+    def test_numpy_to_mx_conversion_still_works(self):
+        """Codex r3 BLOCKING: pin the ``elif not isinstance(audio,
+        mx.array): audio = mx.array(audio)`` branch inside
+        ``Model._prepare_audio``. If ``mx.array(np.ndarray)`` ever
+        stopped accepting a numpy float32 waveform, the trim path
+        (which hands Whisper an mx.array converted from numpy or
+        loaded via ``load_audio``) would break in production.
+        """
+        try:
+            import mlx.core as mx  # noqa: PLC0415
+            import numpy as np  # noqa: PLC0415
+        except ImportError:
+            pytest.skip("mlx.core / numpy not installed; contract check n/a")
 
-        Runs on a 1-second synthetic waveform so it's weight-free and
-        deterministic.
+        sample_rate = 16_000
+        one_second = np.zeros(sample_rate, dtype=np.float32)
+        converted = mx.array(one_second)
+        assert converted.shape == (sample_rate,)
+
+    def test_whisper_log_mel_spectrogram_accepts_mx_array(self):
+        """Codex r2 NIT #2 / r3 BLOCKING: prove at RUNTIME that the
+        mel-spectrogram path — the very next step ``_prepare_audio``
+        takes after the array conversion above — still accepts the
+        ``mx.array`` shape our trim path hands Whisper. Weight-free.
         """
         try:
             from mlx_audio.stt.models.whisper.audio import (  # noqa: PLC0415
@@ -782,17 +796,20 @@ class TestUpstreamWhisperInputContract:
 
         sample_rate = 16_000
         one_second = np.zeros(sample_rate, dtype=np.float32)
-
-        # numpy → mx.array (mirrors the ``elif not isinstance(audio,
-        # mx.array): audio = mx.array(audio)`` branch inside
-        # _prepare_audio).
         as_mx = mx.array(one_second)
-        mel_np = log_mel_spectrogram(as_mx, n_mels=80, padding=0)
-        assert mel_np.shape[-1] == 80 or mel_np.shape[-2] == 80
 
-        # Pure mx.array input — should also succeed.
-        mel_mx = log_mel_spectrogram(as_mx, n_mels=80, padding=0)
-        assert mel_mx.shape == mel_np.shape
+        # This is the shape the trim path passes to model.generate()
+        # → _prepare_audio() → log_mel_spectrogram(). A runtime
+        # narrowing to str-only would raise here.
+        mel = log_mel_spectrogram(as_mx, n_mels=80, padding=0)
+        # log_mel_spectrogram returns a rank-2 (time, n_mels) or
+        # (n_mels, time) tensor — assert one axis matches n_mels
+        # rather than pin the exact layout (upstream has flipped it
+        # historically).
+        assert 80 in mel.shape, (
+            f"log_mel_spectrogram output shape {mel.shape} lacks the "
+            "requested n_mels=80 axis — upstream contract change."
+        )
 
 
 class TestParakeetEngineSkipsVAD:
