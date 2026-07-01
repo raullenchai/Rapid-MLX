@@ -2436,25 +2436,31 @@ def serve_command(args):
         print(f"Spec-decode: mtp ({eligibility.value})")
 
     # 0.9.11 PR-1: universal MTP draft-``k`` auto-tune controller.
-    # Gate: EITHER --enable-mtp (Qwen3-Next legacy path) OR
-    # --spec-decode mtp (Qwen3.5/3.6 native path from PR #990) must
-    # already be on. Requiring one of them is a defensive check —
-    # without an MTP path installed the controller would sit
-    # installed but never receive ``record_attempt()`` calls, which
-    # is a silent no-op that's hard to diagnose from the operator
-    # side. Fail loud at boot instead. (Task PR description said
-    # "requires --enable-mtp"; the wider gate covers the vendored
-    # spec-decode path since the controller wires into
-    # ``generator.py`` which only runs under --spec-decode mtp.)
+    #
+    # Gate: --spec-decode mtp MUST be set. The only ``record_attempt()``
+    # feedback wiring in PR-1 lives inside
+    # ``vllm_mlx/spec_decode/mtp/generator.py::mtp_generate_step`` —
+    # which only runs when ``--spec-decode mtp`` is active. The legacy
+    # ``--enable-mtp`` (Qwen3-Next) path uses a different scheduler-
+    # side monkey-patch (``_install_mtp`` in scheduler.py) that does
+    # NOT touch the controller, so allowing ``--enable-mtp`` alone
+    # would install a controller that never receives feedback — a
+    # silent no-op that would confuse operators looking at the
+    # ``rapid_mlx_spec_decode_mtp_current_draft_k`` gauge sitting on
+    # its cold-start value forever. Fail loud instead. The stricter
+    # gate is intentional; a future PR that wires the controller into
+    # ``_install_mtp`` can loosen this to ``args.enable_mtp or
+    # spec_decode == "mtp"``.
     if getattr(args, "mtp_draft_k_auto_tune", False):
-        if not (
-            args.enable_mtp or getattr(args, "spec_decode", "none") == "mtp"
-        ):
+        if getattr(args, "spec_decode", "none") != "mtp":
             print(
-                "error: --mtp-draft-k-auto-tune requires either "
-                "--enable-mtp or --spec-decode mtp to be set. The "
-                "controller only receives accept/reject feedback from "
-                "an active MTP path.",
+                "error: --mtp-draft-k-auto-tune requires --spec-decode "
+                "mtp to be set. The controller's accept/reject "
+                "feedback wiring lives inside the vendored "
+                "mtp_generate_step (from mlx-lm PR #990), which only "
+                "runs under --spec-decode mtp. The legacy --enable-mtp "
+                "(Qwen3-Next) path does not feed the controller and "
+                "would leave the current-k gauge frozen at cold-start.",
                 file=sys.stderr,
             )
             sys.exit(2)
@@ -6269,10 +6275,12 @@ Examples:
         default=False,
         help=(
             "Enable the runtime MTP draft-k auto-tune controller "
-            "(0.9.11 PR-1). Requires --enable-mtp or --spec-decode mtp; "
-            "boot fails otherwise. Adjusts draft-k between 1 and "
-            "--mtp-draft-k-max based on the rolling accept rate. "
-            "Default off — the pre-0.9.11 static-k path is preserved."
+            "(0.9.11 PR-1). Requires --spec-decode mtp (the vendored "
+            "PR #990 path — the only path that feeds the controller "
+            "in PR-1); boot fails otherwise. Adjusts draft-k between "
+            "1 and --mtp-draft-k-max based on the rolling accept "
+            "rate. Default off — the pre-0.9.11 static-k path is "
+            "preserved."
         ),
     )
     serve_parser.add_argument(

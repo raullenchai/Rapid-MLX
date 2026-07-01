@@ -49,10 +49,47 @@ def _clear_controller_singleton():
 
     Tests that flip on the global for integration coverage must not
     leak into subsequent cases.
+
+    Also resets ``mlx_lm.generate.generation_stream`` and the
+    ``vllm_mlx.spec_decode.mtp`` module singletons — mirrors the
+    :func:`tests.test_mtp_spec_decode._reset_mtp_module_state`
+    fixture so this file is robust to full-sweep ordering. Without
+    it, the integration test at the bottom of this file can leave
+    the ArraysCache patch mutated (or the ``generation_stream``
+    stamped by a prior sweep test's worker executor) and cascade
+    failures into ``tests/test_mtp_lossless.py`` +
+    ``tests/test_mtp_spec_decode.py`` when the whole suite runs
+    together. See the full rationale in the corresponding fixture
+    docstring at ``tests/test_mtp_spec_decode.py:_reset_mtp_module_state``.
     """
+    import sys
+
+    try:
+        import mlx.core as mx
+        import mlx_lm.generate  # noqa: F401
+    except ImportError:
+        mx = None
+
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+    from vllm_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
+
     clear_global_controller()
+    _unpatch_for_tests()
+    reset_global_counter_for_tests()
+    if mx is not None:
+        sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
+            mx.default_device()
+        )
     yield
     clear_global_controller()
+    _unpatch_for_tests()
+    reset_global_counter_for_tests()
+    if mx is not None:
+        sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
+            mx.default_device()
+        )
 
 
 # ---------------------------------------------------------------------------
@@ -399,43 +436,41 @@ def test_generator_static_k_path_unchanged_without_controller():
     from vllm_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
     from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
 
-    # Ensure the ArraysCache patch is a clean install for this
-    # case (matches the test_mtp_lossless fixture behaviour).
-    _unpatch_for_tests()
-
-    # Re-bind mlx_lm.generate.generation_stream to this thread's
-    # default stream (see test_mtp_spec_decode fixture docstring).
-    import sys
-
-    import mlx_lm.generate  # noqa: F401
-
-    sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
-        mx.default_device()
-    )
-
-    # Global controller must be uninstalled (autouse fixture guarantees
-    # this) — sanity-check the invariant.
+    # The autouse ``_clear_controller_singleton`` fixture already
+    # unpatches ArraysCache + resets the accept counter + re-binds
+    # ``mlx_lm.generate.generation_stream`` before/after this test.
+    # Sanity-check the module-global controller is uninstalled
+    # (the fixture invariant).
     assert get_global_controller() is None
 
-    # Same all-accept script as test_mtp_lossless: primary=7, three
-    # accept pairs.
-    backbone_script = [7, 11, 13, 15, 17, 19, 21]
-    mtp_script = [11, 0, 15, 0, 19]
-    model = _MockedQwen35Model(backbone_script, mtp_script)
-    counter = MTPAcceptCounter()
+    try:
+        # Same all-accept script as test_mtp_lossless: primary=7,
+        # three accept pairs.
+        backbone_script = [7, 11, 13, 15, 17, 19, 21]
+        mtp_script = [11, 0, 15, 0, 19]
+        model = _MockedQwen35Model(backbone_script, mtp_script)
+        counter = MTPAcceptCounter()
 
-    tokens = [
-        tok
-        for tok, _lp, _fd in mtp_generate_step(
-            mx.array([1], mx.uint32),
-            model,
-            max_tokens=7,
-            accept_counter=counter,
-        )
-    ]
+        tokens = [
+            tok
+            for tok, _lp, _fd in mtp_generate_step(
+                mx.array([1], mx.uint32),
+                model,
+                max_tokens=7,
+                accept_counter=counter,
+            )
+        ]
 
-    # The regression guard: static-k output matches the reference
-    # sequence. Any change to generator.py that broke the
-    # controller-off path would flip this.
-    assert tokens == [7, 11, 13, 15, 17, 19, 21]
-    _unpatch_for_tests()
+        # The regression guard: static-k output matches the
+        # reference sequence. Any change to generator.py that broke
+        # the controller-off path would flip this.
+        assert tokens == [7, 11, 13, 15, 17, 19, 21]
+    finally:
+        # Codex NIT: guarantee the cache patch is torn down even
+        # when the assert (or an unexpected exception in
+        # mtp_generate_step) fires, so a mid-test failure doesn't
+        # leave the ArraysCache patch installed for later cases.
+        # The autouse fixture teardown also unpatches, but a
+        # belt-and-braces call here keeps the state clean if the
+        # fixture teardown ever changes.
+        _unpatch_for_tests()
