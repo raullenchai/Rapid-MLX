@@ -717,23 +717,35 @@ def inject_mtp_support(
     # trusts the model — but every actual invocation raises.
     inner._mtp_is_scaffold = True
 
-    # Codex round-6 blocking fix: if the caller passed the OUTER
-    # Gemma 4 wrapper (mlx_lm.load()'s standard return shape —
-    # ``gemma4.Model`` wrapping ``.language_model``, or Rapid-MLX's
-    # ``Gemma4TextWrapper`` for ``gemma4_unified``), the four
-    # contract surfaces (``.mtp``, ``.mtp_forward``,
-    # ``.make_mtp_cache``, and the ``__call__(return_hidden, n_confirmed)``
-    # extended signature) currently exist only on ``inner``. That
-    # means a caller who does ``model.mtp_forward(...)`` on the
-    # object they passed in gets ``AttributeError``, even though
-    # ``inject_mtp_support`` returned ``True``. Delegate the three
-    # attribute surfaces from the outer wrapper down to inner so
-    # the advertised contract holds. ``__call__`` is deliberately
-    # NOT delegated — the outer VLM wrapper's ``__call__`` signature
-    # differs (it accepts pixels, tokens, etc.), and the vendored
-    # ``mtp_generate_step`` in ``generator.py`` only ever invokes
-    # ``make_mtp_cache`` / ``mtp_forward`` directly on a base
-    # text-model shape.
+    # Codex round-6 blocking fix + round-8 nit clarification: when
+    # the caller passed the OUTER Gemma 4 wrapper (mlx_lm.load()'s
+    # standard return shape — ``gemma4.Model`` wrapping
+    # ``.language_model``, or Rapid-MLX's ``Gemma4TextWrapper`` for
+    # ``gemma4_unified``), delegate the THREE attribute surfaces
+    # (``.mtp``, ``.mtp_forward``, ``.make_mtp_cache``) from the
+    # outer wrapper down to inner so ``outer.mtp_forward(...)``
+    # doesn't ``AttributeError`` after a successful inject.
+    #
+    # The FOURTH contract surface — the extended
+    # ``__call__(return_hidden, n_confirmed)`` signature — is
+    # DELIBERATELY NOT delegated on the outer wrapper. Two reasons:
+    #   1. The outer VLM wrapper's ``__call__`` accepts pixels,
+    #      tokens, image tokens etc.; overriding it to intercept
+    #      ``return_hidden`` / ``n_confirmed`` would either mask
+    #      the multi-modal signature or fork two ``__call__``
+    #      shapes on the same class.
+    #   2. All existing MTP callers (bench, generator) unwrap the
+    #      outer to inner BEFORE driving the extended ``__call__``
+    #      signature. See ``bench/bench_spec_decode_mtp.py``'s
+    #      ``if hasattr(model, "language_model"): model =
+    #      model.language_model`` step, mirrored inside the
+    #      vendored ``mtp_generate_step``. The extended
+    #      ``__call__`` only needs to live on the inner text model.
+    #
+    # ``validate_mtp_support`` reflects this asymmetry — it
+    # ``_resolve_inner_text_model``s before checking the
+    # ``__call__`` signature so an outer wrapper still validates
+    # correctly.
     if model is not inner:
         import types as _types
 

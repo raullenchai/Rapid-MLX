@@ -300,10 +300,52 @@ def _run_once(
         # Falling back to "qwen3_5" would misroute Gemma 4 aliases to
         # the Qwen injector; fail closed on unresolved instead.
         def _resolve_model_type(m):
-            probes = (
+            """Resolve ``model_type`` walking outer surfaces first.
+
+            Codex round-8 blocking fix: the previous probe order
+            reached ``language_model.args.model_type`` BEFORE
+            ``args.text_config.model_type``, so a Gemma 4 wrapper
+            whose inner text model exposes ``gemma4_text`` (or
+            ``gemma4_unified_text``) resolved to the inner text
+            type. The dispatcher does now also accept those text
+            aliases (defense in depth on the dispatch side), but
+            preferring the OUTER type here still matches every
+            other rapid-mlx code path — the alias / detect surfaces
+            all work at the outer type.
+
+            Probe order (outer → inner, config → wrapper):
+
+            1. ``m.args.model_type`` — outer wrapper's args
+            2. ``m.model_type`` — outer wrapper direct attribute
+            3. ``m.config.model_type`` — outer wrapper's config
+            4. ``m.args.text_config.model_type`` — outer text_config
+               dict (the gemma4 / gemma4_unified nested shape)
+            5. ``m.language_model.args.model_type`` — inner text
+               model's args (last resort — this is the inner text
+               type like ``gemma4_text``; dispatcher aliases handle
+               it but resolving the outer type is cleaner)
+            6. ``m.language_model.model_type`` — inner direct attr
+            """
+            # (1) — (3): outer surfaces first.
+            outer_probes = (
                 getattr(getattr(m, "args", None), "model_type", None),
                 getattr(m, "model_type", None),
                 getattr(getattr(m, "config", None), "model_type", None),
+            )
+            for candidate in outer_probes:
+                if isinstance(candidate, str) and candidate:
+                    return candidate
+
+            # (4): outer text_config dict on the outer wrapper's args.
+            outer_args = getattr(m, "args", None)
+            text_cfg = getattr(outer_args, "text_config", None) or {}
+            if isinstance(text_cfg, dict):
+                tc_type = text_cfg.get("model_type")
+                if isinstance(tc_type, str) and tc_type:
+                    return tc_type
+
+            # (5) — (6): inner language_model surfaces (last resort).
+            inner_probes = (
                 getattr(
                     getattr(getattr(m, "language_model", None), "args", None),
                     "model_type",
@@ -311,17 +353,9 @@ def _run_once(
                 ),
                 getattr(getattr(m, "language_model", None), "model_type", None),
             )
-            for candidate in probes:
+            for candidate in inner_probes:
                 if isinstance(candidate, str) and candidate:
                     return candidate
-            # Nested text_config dict on the outer wrapper's args (the
-            # gemma4 / gemma4_unified shape).
-            outer_args = getattr(m, "args", None)
-            text_cfg = getattr(outer_args, "text_config", None) or {}
-            if isinstance(text_cfg, dict):
-                tc_type = text_cfg.get("model_type")
-                if isinstance(tc_type, str) and tc_type:
-                    return tc_type
             return None
 
         model_type = _resolve_model_type(model)

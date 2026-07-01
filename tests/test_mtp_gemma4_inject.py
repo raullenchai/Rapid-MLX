@@ -190,12 +190,22 @@ def test_inject_mtp_support_attaches_four_surfaces():
 
 
 def test_inject_delegates_surfaces_to_outer_wrapper():
-    """Codex round-6 blocking fix: when the caller passes the outer
-    Gemma 4 VLM wrapper (``model.language_model = inner``), the four
-    MTP surfaces must be reachable ON THE OUTER too — not only on
-    ``inner``. Otherwise a caller who does ``outer.mtp_forward(...)``
-    hits ``AttributeError`` even though ``inject_mtp_support(outer)``
+    """Codex round-6 blocking fix (+ round-8 clarification): when
+    the caller passes the outer Gemma 4 VLM wrapper
+    (``model.language_model = inner``), the THREE attribute-based
+    MTP surfaces (``.mtp``, ``.mtp_forward``, ``.make_mtp_cache``)
+    must be reachable on the outer — not only on ``inner``.
+    Otherwise a caller who does ``outer.mtp_forward(...)`` hits
+    ``AttributeError`` even though ``inject_mtp_support(outer)``
     returned ``True``.
+
+    The FOURTH surface (extended ``__call__(return_hidden,
+    n_confirmed)``) is DELIBERATELY NOT delegated on the outer —
+    see the ``__call__`` note in ``inject_mtp_support`` for why
+    (all callers unwrap the outer → inner before invoking the
+    extended signature). ``validate_mtp_support`` uses
+    ``_resolve_inner_text_model`` so it inspects the extended
+    signature on the inner, not the outer.
 
     Uses a minimal fake outer wrapper (real ``mlx_lm.models.gemma4.Model``
     requires the multi-modal SigLIP encoder which drags in a
@@ -251,6 +261,23 @@ def test_inject_delegates_surfaces_to_outer_wrapper():
     # The scaffold marker also mirrors onto the outer so any validator
     # that walks the outer directly still sees the scaffold state.
     assert getattr(outer, "_mtp_is_scaffold", False) is True
+
+    # Codex round-8 nit clarification: the extended
+    # ``__call__(return_hidden, n_confirmed)`` signature is
+    # deliberately NOT delegated on the outer wrapper. Locking
+    # that here so a future edit that adds outer.__call__
+    # delegation without also patching the callers (bench,
+    # generator) does not silently work-and-then-drift. The
+    # extended signature lives on ``inner.__call__`` — validated
+    # separately by ``test_inject_mtp_support_attaches_four_surfaces``.
+    import inspect
+
+    outer_call_sig = inspect.signature(type(outer).__call__)
+    assert "return_hidden" not in outer_call_sig.parameters, (
+        "outer wrapper's __call__ should NOT carry the extended "
+        "MTP signature — all callers unwrap to inner first."
+    )
+    assert "n_confirmed" not in outer_call_sig.parameters
 
 
 # ---------------------------------------------------------------------------
@@ -631,6 +658,31 @@ def test_dispatcher_refuses_gemma4_production_use():
         "gemma4_inject.validate_mtp_support checks the "
         "_mtp_is_scaffold marker."
     )
+
+
+def test_dispatcher_accepts_gemma4_text_aliases():
+    """Codex round-8 blocking fix: the dispatcher must route the
+    inner ``gemma4_text`` / ``gemma4_unified_text`` model_types to
+    the Gemma 4 inject module (same target as the outer
+    ``gemma4`` / ``gemma4_unified`` types). Callers that resolve
+    model_type on the inner ``language_model.args`` (bench does,
+    as a last-resort probe) would otherwise miss the entry and
+    treat the arch as unsupported.
+    """
+    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
+
+    for text_type in ("gemma4_text", "gemma4_unified_text"):
+        assert text_type in _dispatch._MTP_INJECT_DISPATCH, (
+            f"text-type alias {text_type!r} missing from inject dispatch"
+        )
+        mp, _ = _dispatch._MTP_INJECT_DISPATCH[text_type]
+        assert mp == "vllm_mlx.spec_decode.mtp.gemma4_inject"
+
+        assert text_type in _dispatch._MTP_VALIDATE_DISPATCH, (
+            f"text-type alias {text_type!r} missing from validate dispatch"
+        )
+        mp_v, _ = _dispatch._MTP_VALIDATE_DISPATCH[text_type]
+        assert mp_v == "vllm_mlx.spec_decode.mtp.gemma4_inject"
 
 
 def test_dispatcher_rejects_gemma3():

@@ -61,15 +61,27 @@ _MTP_INJECT_DISPATCH: dict[str, tuple[str, str]] = {
         "inject_mtp_support",
     ),
     # Gemma 4 — 12B unified (dense / 8bit) and the multimodal / MoE
-    # variants (e2b, e4b, 26B-A4B). Both text_config model_types
-    # (``gemma4_text``, ``gemma4_unified_text``) live under the same
-    # outer ``gemma4`` / ``gemma4_unified`` wrapper, so the routing
-    # happens on the OUTER type only.
+    # variants (e2b, e4b, 26B-A4B). Both the OUTER wrapper model_types
+    # (``gemma4`` / ``gemma4_unified``) and the INNER text model_types
+    # (``gemma4_text`` / ``gemma4_unified_text``) route to the same
+    # ``gemma4_inject`` module. Codex round-8 blocking fix: callers
+    # that resolve model_type on the inner ``language_model.args``
+    # (bench does this) would otherwise get ``None`` from the dispatch
+    # table on the text-type surface, even though the family is
+    # actually supported.
     "gemma4": (
         "vllm_mlx.spec_decode.mtp.gemma4_inject",
         "inject_mtp_support",
     ),
     "gemma4_unified": (
+        "vllm_mlx.spec_decode.mtp.gemma4_inject",
+        "inject_mtp_support",
+    ),
+    "gemma4_text": (
+        "vllm_mlx.spec_decode.mtp.gemma4_inject",
+        "inject_mtp_support",
+    ),
+    "gemma4_unified_text": (
         "vllm_mlx.spec_decode.mtp.gemma4_inject",
         "inject_mtp_support",
     ),
@@ -94,6 +106,15 @@ _MTP_VALIDATE_DISPATCH: dict[str, tuple[str, str]] = {
         "validate_mtp_support",
     ),
     "gemma4_unified": (
+        "vllm_mlx.spec_decode.mtp.gemma4_inject",
+        "validate_mtp_support",
+    ),
+    # Text-type aliases — parity with :data:`_MTP_INJECT_DISPATCH`.
+    "gemma4_text": (
+        "vllm_mlx.spec_decode.mtp.gemma4_inject",
+        "validate_mtp_support",
+    ),
+    "gemma4_unified_text": (
         "vllm_mlx.spec_decode.mtp.gemma4_inject",
         "validate_mtp_support",
     ),
