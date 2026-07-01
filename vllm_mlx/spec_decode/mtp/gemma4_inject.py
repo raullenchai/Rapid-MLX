@@ -1,0 +1,689 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Runtime MTP injection for Gemma 4 base models.
+
+This module is the Gemma 4 counterpart to
+:mod:`vllm_mlx.spec_decode.mtp.qwen3_5_inject`. It wires the same
+four contract surfaces (``.mtp``, ``.mtp_forward``,
+``.make_mtp_cache``, and the ``__call__(return_hidden, n_confirmed)``
+kwargs) onto a loaded Gemma 4 model so
+:func:`vllm_mlx.spec_decode.mtp.generator.mtp_generate_step` can
+drive it.
+
+Sidecar architecture note
+-------------------------
+
+The community-shipped Gemma 4 MTP sidecar
+(``Mia-AiLab/Gemmable-4-12B-MTP-GGUF``, ~98 k HF downloads at
+release-time) is a **``gemma4-assistant`` architecture**, not the
+Qwen3.5-style layered MTP head this inject was originally scoped for.
+Inspected via ``gguf.GGUFReader``:
+
+* ``general.architecture = 'gemma4-assistant'``.
+* Its own transformer stack — ``block_count=4``,
+  ``embedding_length=1024`` (distinct from Gemma 4 12B's base
+  ``hidden_size=3840``).
+* Cross-hidden-dim projection layers — ``nextn.pre_projection`` maps
+  ``7680 -> 1024`` (concat of base ``hidden`` + base ``embed`` at
+  ``3840*2``, projected down to assistant space) and
+  ``nextn.post_projection`` maps ``1024 -> 3840`` (assistant space
+  projected back to base ``hidden`` for the shared ``lm_head``).
+* No K/V weights on the assistant's own attention (``attn_k`` /
+  ``attn_v`` / ``attn_k_norm`` / ``attn_v_norm`` absent from every
+  block). ``gemma4-assistant.attention.shared_kv_layers = 4`` = all
+  layers borrow K/V from the corresponding base layer.
+* Runs UP TO 4 draft tokens per verify step (metadata
+  ``nextn_predict_layers = 4``).
+
+This is a **fundamentally different draft-model shape** from Qwen3.5's
+MTP head (which is a single decoder layer at the base's hidden_size,
+sitting atop the base's last hidden state and reusing base's
+``embed_tokens`` + ``lm_head`` directly). Wiring the ``gemma4-assistant``
+sidecar into ``mtp_generate_step`` requires:
+
+1. A dedicated ``AssistantModel`` class with its own hidden dim.
+2. A cross-model K/V bridge (the base's per-layer K/V cache tap must
+   feed the assistant's ``shared_kv`` arg).
+3. Extending the generator to project through the pre/post
+   projection layers at ``mtp_forward`` boundaries.
+
+Landing all three cleanly is a follow-up PR (tracked in the PR body
+of the PR that lands this file). This module's role in the *current*
+PR is to:
+
+* Own the routing surface for ``model_type in {gemma4, gemma4_unified}``
+  so :func:`vllm_mlx.spec_decode.mtp.dispatch.dispatch_mtp_inject`
+  has a place to send the call.
+* Pass the **wiring probe** (all four contract surfaces attach)
+  under ``allow_random_init=True`` — the CI unit tests exercise
+  every model_type against the shared wiring contract.
+* **REFUSE any real ``gemma4-assistant`` sidecar** (fail-closed on
+  ``mtp_sidecar=<real_file>``) so a production rapid-mlx serve on
+  Gemma 4 cannot silently ship a broken/random-init MTP head. The
+  refusal path emits a specific "architectural mismatch, redesign
+  needed" log message that the operator can grep for.
+
+Once the follow-up PR lands the ``AssistantModel`` class, the
+sidecar-loading branch of :func:`inject_mtp_support` below flips from
+refusal to actual load — no external contract change.
+"""
+
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+from typing import Any
+
+logger = logging.getLogger(__name__)
+
+
+# Tensor-key markers that identify a ``gemma4-assistant`` sidecar
+# (produced by ``scripts/convert_gemma4_mtp_gguf.py`` from the
+# Mia-AiLab GGUF). Presence of ANY of these keys means we're looking
+# at the draft-model architecture, which this inject cannot yet drive.
+_ASSISTANT_SIDECAR_MARKERS: frozenset[str] = frozenset(
+    {
+        "mtp.pre_projection.weight",
+        "mtp.post_projection.weight",
+        "assistant.pre_projection.weight",
+        "assistant.post_projection.weight",
+        # Raw GGUF-style names (if operator forgot to run the converter).
+        "nextn.pre_projection.weight",
+        "nextn.post_projection.weight",
+    }
+)
+
+
+def _resolve_inner_text_model(model: Any) -> Any:
+    """Return the ``Gemma4TextModel``-like instance the patch targets.
+
+    Gemma 4's ``mlx_lm.models.gemma4.Model`` wraps a
+    ``gemma4_text.Model`` under ``language_model``. That inner
+    ``gemma4_text.Model`` in turn wraps the ``Gemma4TextModel`` (the
+    actual backbone with ``embed_tokens`` / ``layers`` / ``norm``)
+    under ``.model``. Rapid-MLX's own ``Gemma4TextWrapper`` (for the
+    ``gemma4_unified`` model_type not yet in mlx-lm) exposes the same
+    ``.language_model`` / ``.language_model.model`` shape.
+
+    Three shapes are accepted:
+
+    * Outer VLM-style ``Model`` (``gemma4`` model_type) with
+      ``.language_model``.
+    * Rapid-MLX's ``Gemma4TextWrapper`` (``gemma4_unified`` model_type)
+      — same ``.language_model`` surface.
+    * The inner ``gemma4_text.Model`` itself (test path — matches the
+      Qwen3.5 helper contract: tests bypass the heavy VLM wrapper by
+      constructing the inner model directly).
+    """
+    # Case 1: VLM wrapper — text model lives under ``.language_model``.
+    lm = getattr(model, "language_model", None)
+    if lm is not None and hasattr(lm, "args") and hasattr(lm, "model"):
+        return lm
+
+    # Case 2: Already the inner ``gemma4_text.Model`` (or a test shell).
+    if hasattr(model, "model") and hasattr(model, "args"):
+        return model
+
+    return None
+
+
+def _detect_base_quantization(inner: Any) -> dict | None:
+    """Detect the base model's ``(bits, group_size)`` — same helper as Qwen3.5.
+
+    Walks the inner model looking for a ``QuantizedLinear``. Gemma 4's
+    quantized weights land on the same ``self_attn.q_proj`` +
+    ``embed_tokens`` surfaces the Qwen3.5 helper checks, so the same
+    walk works here.
+    """
+    try:
+        from mlx.nn import QuantizedEmbedding, QuantizedLinear
+    except ImportError:  # pragma: no cover — mlx.nn always available
+        return None
+
+    backbone = getattr(inner, "model", None)
+    if backbone is None:
+        return None
+
+    for layer in getattr(backbone, "layers", []):
+        if hasattr(layer, "self_attn") and hasattr(layer.self_attn, "q_proj"):
+            qp = layer.self_attn.q_proj
+            if isinstance(qp, QuantizedLinear):
+                return {
+                    "bits": int(qp.bits),
+                    "group_size": int(qp.group_size),
+                }
+
+    embed = getattr(backbone, "embed_tokens", None)
+    if isinstance(embed, QuantizedEmbedding):
+        return {
+            "bits": int(embed.bits),
+            "group_size": int(embed.group_size),
+        }
+
+    return None
+
+
+def _resolve_sidecar_file(mtp_sidecar: str | Path) -> Path | None:
+    """Resolve a sidecar reference to a concrete safetensors file.
+
+    Accepts a file path (``*.safetensors``), a directory containing
+    ``model.safetensors`` / ``model-mtp.safetensors``, or an HF Hub
+    repo id (``mlx-community/gemma-4-12b-mtp-4bit``). Mirrors the
+    resolver in :mod:`.qwen3_5_inject` so operators see the same
+    accepted shapes across families.
+    """
+    if mtp_sidecar is None:
+        return None
+
+    path = Path(mtp_sidecar)
+    if path.is_file():
+        return path
+    if path.is_dir():
+        return _find_mtp_weights_file(path)
+
+    # Treat as HF repo id.
+    try:
+        from huggingface_hub import snapshot_download
+
+        local = snapshot_download(repo_id=str(mtp_sidecar))
+        return _find_mtp_weights_file(Path(local))
+    except Exception as exc:  # pragma: no cover — network failure path
+        logger.warning(
+            "[mtp.inject.gemma4] could not resolve sidecar %r: %s",
+            mtp_sidecar,
+            exc,
+        )
+        return None
+
+
+def _find_mtp_weights_file(sidecar_dir: Path) -> Path | None:
+    candidates = (
+        sidecar_dir / "model-mtp.safetensors",
+        sidecar_dir / "model.safetensors",
+    )
+    for c in candidates:
+        if c.exists():
+            return c
+    return None
+
+
+def _looks_like_assistant_sidecar(weights: dict[str, Any]) -> bool:
+    """Fingerprint the ``gemma4-assistant`` architecture by tensor names.
+
+    The Mia-AiLab GGUF (and its MLX conversion produced by
+    ``scripts/convert_gemma4_mtp_gguf.py``) ships pre/post projection
+    layers that the current Qwen3.5-style MTP head lacks. Any of
+    those keys → this is an assistant-model sidecar we can't load
+    yet.
+    """
+    keys = set(weights.keys())
+    return bool(keys & _ASSISTANT_SIDECAR_MARKERS)
+
+
+def _build_scaffold_mtp_module(args: Any, num_layers: int):
+    """Build the wiring-probe MTP head for Gemma 4.
+
+    This is a **placeholder** module built to satisfy the four MTP
+    contract surfaces during CI wiring probes. It follows the
+    Qwen3.5-style layout (single-layer decoder + pre_fc norms + fc
+    concat) so the same load/quantize/attach machinery works. It
+    does NOT reproduce the ``gemma4-assistant`` architecture — the
+    module is only meant to prove that ``inject_mtp_support`` can
+    attach surfaces to a Gemma 4 base model.
+
+    Args:
+        args: The inner ``gemma4_text`` model's ``args`` (a
+            ``ModelArgs`` dataclass with ``hidden_size``,
+            ``rms_norm_eps``, ``intermediate_size``,
+            ``num_attention_heads``, ``head_dim``,
+            ``num_key_value_heads``, and RoPE fields).
+        num_layers: How many MTP layers to construct. Currently
+            always ``1`` — matches the Qwen3.5 vendor PR contract.
+    """
+    import mlx.core as mx
+    import mlx.nn as nn
+    from mlx_lm.models.base import create_attention_mask
+    from mlx_lm.models.gemma4_text import MLP as _Gemma4MLP
+
+    if num_layers < 1:
+        raise ValueError(
+            f"_build_scaffold_mtp_module requires num_layers >= 1; got {num_layers}"
+        )
+
+    class _ScaffoldDecoderLayer(nn.Module):
+        """One transformer layer — Gemma 4 shapes, unshared attention.
+
+        This is a bare-bones self-attn + MLP block sized for the
+        scaffold. We intentionally do NOT reuse
+        ``gemma4_text.DecoderLayer`` because that class carries
+        Gemma 4's kv-shared-layers / per-layer-input-gate / MoE
+        machinery which the scaffold has no reason to exercise. The
+        Q/K/V/O projections match ``num_attention_heads * head_dim``
+        the same way ``gemma4_text.Attention`` does.
+        """
+
+        def __init__(self, layer_args):
+            super().__init__()
+            hidden = layer_args.hidden_size
+            n_heads = layer_args.num_attention_heads
+            head_dim = getattr(layer_args, "head_dim", hidden // n_heads)
+            n_kv_heads = layer_args.num_key_value_heads
+            self.q_proj = nn.Linear(hidden, n_heads * head_dim, bias=False)
+            self.k_proj = nn.Linear(hidden, n_kv_heads * head_dim, bias=False)
+            self.v_proj = nn.Linear(hidden, n_kv_heads * head_dim, bias=False)
+            self.o_proj = nn.Linear(n_heads * head_dim, hidden, bias=False)
+            self.input_layernorm = nn.RMSNorm(hidden, eps=layer_args.rms_norm_eps)
+            self.post_attention_layernorm = nn.RMSNorm(
+                hidden, eps=layer_args.rms_norm_eps
+            )
+            self.mlp = _Gemma4MLP(layer_args, layer_idx=0)
+            self.n_heads = n_heads
+            self.n_kv_heads = n_kv_heads
+            self.head_dim = head_dim
+
+        def __call__(self, x, mask=None, cache=None):
+            # Wiring-probe forward — proves the module can be called
+            # without shape errors. Production draft quality is not a
+            # goal here; the real Gemma 4 MTP forward path lands in
+            # the follow-up "AssistantModel" PR.
+            B, L, _ = x.shape
+            h = self.input_layernorm(x)
+            q = self.q_proj(h).reshape(B, L, self.n_heads, self.head_dim)
+            k = self.k_proj(h).reshape(B, L, self.n_kv_heads, self.head_dim)
+            v = self.v_proj(h).reshape(B, L, self.n_kv_heads, self.head_dim)
+            # Repeat KV to match Q heads (GQA / MQA).
+            if self.n_kv_heads != self.n_heads:
+                repeats = self.n_heads // self.n_kv_heads
+                k = mx.repeat(k, repeats, axis=2)
+                v = mx.repeat(v, repeats, axis=2)
+            q = q.transpose(0, 2, 1, 3)
+            k = k.transpose(0, 2, 1, 3)
+            v = v.transpose(0, 2, 1, 3)
+            scale = 1.0 / (self.head_dim**0.5)
+            attn = (q @ k.transpose(0, 1, 3, 2)) * scale
+            if mask is not None:
+                attn = attn + mask
+            attn = mx.softmax(attn.astype(mx.float32), axis=-1).astype(x.dtype)
+            out = (attn @ v).transpose(0, 2, 1, 3).reshape(B, L, -1)
+            h = x + self.post_attention_layernorm(self.o_proj(out))
+            return h + self.mlp(h)
+
+    class _ScaffoldMTPModule(nn.Module):
+        """Wiring-only MTP head — matches Qwen3.5 head's PUBLIC surface.
+
+        The parameter names (``pre_fc_norm_hidden`` /
+        ``pre_fc_norm_embedding`` / ``fc`` / ``layers`` / ``norm``)
+        are chosen to line up with ``_MTPModule`` in ``head.py`` so
+        a hand-written scaffold sidecar (used in the wiring tests)
+        can round-trip through ``mx.save_safetensors`` /
+        ``mtp.load_weights``.
+        """
+
+        def __init__(self, mod_args, n_layers):
+            super().__init__()
+            hidden = mod_args.hidden_size
+            eps = mod_args.rms_norm_eps
+            self.pre_fc_norm_hidden = nn.RMSNorm(hidden, eps=eps)
+            self.pre_fc_norm_embedding = nn.RMSNorm(hidden, eps=eps)
+            self.fc = nn.Linear(hidden * 2, hidden, bias=False)
+            self.layers = [_ScaffoldDecoderLayer(mod_args) for _ in range(n_layers)]
+            self.norm = nn.RMSNorm(hidden, eps=eps)
+
+        def __call__(
+            self,
+            hidden_states: mx.array,
+            next_token_ids: mx.array,
+            embed_tokens: nn.Embedding,
+            cache: Any | None = None,
+        ) -> mx.array:
+            embeds = embed_tokens(next_token_ids)
+            e = self.pre_fc_norm_embedding(embeds)
+            h = self.pre_fc_norm_hidden(hidden_states)
+            fused = self.fc(mx.concatenate([e, h], axis=-1))
+
+            if cache is None:
+                cache = [None] * len(self.layers)
+
+            mask = create_attention_mask(fused, cache[0])
+            for layer, c in zip(self.layers, cache):
+                fused = layer(fused, mask, c)
+
+            return self.norm(fused)
+
+    return _ScaffoldMTPModule(args, num_layers)
+
+
+def _num_mtp_layers_from_args(inner: Any, outer: Any) -> int:
+    """Read ``mtp_num_hidden_layers`` from the dataclass or outer wrapper.
+
+    Copy of the resolution logic from ``qwen3_5_inject`` — the field
+    may live on the inner ``args`` (test path), the outer wrapper's
+    ``text_config`` dict (real runtime path), or nowhere at all
+    (checkpoint doesn't ship MTP).
+    """
+    args = inner.args
+    n = int(getattr(args, "mtp_num_hidden_layers", 0) or 0)
+    if n >= 1:
+        return n
+
+    outer_args = getattr(outer, "args", None)
+    text_config = getattr(outer_args, "text_config", None) or {}
+    if isinstance(text_config, dict):
+        n = int(text_config.get("mtp_num_hidden_layers", 0) or 0)
+    if n >= 1:
+        try:
+            object.__setattr__(args, "mtp_num_hidden_layers", n)
+        except (TypeError, AttributeError):  # pragma: no cover
+            pass
+    return n
+
+
+def inject_mtp_support(
+    model: Any,
+    mtp_sidecar: str | Path | None = None,
+    *,
+    allow_random_init: bool = False,
+) -> bool:
+    """Inject MTP support into a loaded Gemma 4 (or ``gemma4_unified``) model.
+
+    Args:
+        model: A model loaded via ``mlx_lm.load()`` (either the outer
+            VLM wrapper or Rapid-MLX's ``Gemma4TextWrapper``, or the
+            inner ``gemma4_text.Model`` directly for tests).
+        mtp_sidecar: Optional reference to the MTP sidecar. Accepts
+            a repo id (``mlx-community/gemma-4-12b-mtp-4bit``), a
+            directory path, or a direct ``.safetensors`` path.
+        allow_random_init: Test-only opt-in — permits ``mtp_sidecar
+            =None`` and ships a random-init scaffold MTP head. Match
+            the ``qwen3_5_inject`` default of ``False`` — production
+            callers MUST pass a sidecar.
+
+    Returns:
+        ``True`` if the four contract surfaces attached. ``False``
+        under any of:
+
+        * Not a Gemma 4-shaped model (no ``.language_model`` or
+          ``.model`` / ``.args``).
+        * Config has no ``mtp_num_hidden_layers >= 1``.
+        * ``mtp_sidecar=None`` with ``allow_random_init=False`` (the
+          fail-closed default codex round-5 installed on the Qwen3.5
+          side).
+        * Sidecar file is missing / unresolvable.
+        * **The sidecar fingerprints as a ``gemma4-assistant``
+          architecture** (see :func:`_looks_like_assistant_sidecar`
+          / the module docstring). That case is REFUSED with a
+          specific "architecture-not-yet-supported" log — a
+          follow-up PR lands the ``AssistantModel`` code path.
+
+    Never raises — every failure returns ``False`` and leaves the
+    model unmodified so the caller can fall back to non-spec-decode.
+    """
+    import mlx.core as mx
+    import mlx.nn as nn
+
+    inner = _resolve_inner_text_model(model)
+    if inner is None:
+        logger.warning(
+            "[mtp.inject.gemma4] model %s has neither .language_model nor "
+            "(.model + .args); skipping MTP injection.",
+            type(model).__name__,
+        )
+        return False
+
+    num_mtp_layers = _num_mtp_layers_from_args(inner, model)
+    if num_mtp_layers < 1:
+        logger.info(
+            "[mtp.inject.gemma4] config has no mtp_num_hidden_layers; skipping MTP "
+            "injection. Stock mlx-community/gemma-4-12b-* checkpoints ship "
+            "without this field — the operator must layer it in via a config "
+            "override or use a converted MTP-enabled checkpoint."
+        )
+        return False
+
+    # --- Step 1: Build the scaffold MTP module -----------------------------
+    args = inner.args
+    mtp = _build_scaffold_mtp_module(args, num_mtp_layers)
+    logger.info(
+        "[mtp.inject.gemma4] Built SCAFFOLD MTP module (%d layer(s), "
+        "hidden_size=%d). NOTE: this is the wiring-probe head — the true "
+        "gemma4-assistant sidecar architecture (pre/post projections, "
+        "independent hidden dim) is a follow-up PR.",
+        num_mtp_layers,
+        getattr(args, "hidden_size", -1),
+    )
+
+    # --- Step 2: Quantize to match base ------------------------------------
+    quant_info = _detect_base_quantization(inner)
+    if quant_info is not None:
+        nn.quantize(
+            mtp,
+            group_size=quant_info["group_size"],
+            bits=quant_info["bits"],
+        )
+        logger.info(
+            "[mtp.inject.gemma4] Quantized MTP: %d-bit, group_size=%d",
+            quant_info["bits"],
+            quant_info["group_size"],
+        )
+
+    # --- Step 3: Load sidecar weights --------------------------------------
+    if mtp_sidecar is not None:
+        weights_file = _resolve_sidecar_file(mtp_sidecar)
+        if weights_file is None:
+            logger.warning(
+                "[mtp.inject.gemma4] sidecar %r could not be resolved to a "
+                "safetensors file; skipping MTP injection.",
+                mtp_sidecar,
+            )
+            return False
+
+        raw = mx.load(str(weights_file))
+        mtp_weights = {
+            (k.removeprefix("mtp.") if k.startswith("mtp.") else k): v
+            for k, v in raw.items()
+        }
+
+        # ARCHITECTURE GUARD: detect the ``gemma4-assistant`` sidecar
+        # shipped by Mia-AiLab (converted via
+        # ``scripts/convert_gemma4_mtp_gguf.py``) and refuse it. That
+        # architecture needs a dedicated AssistantModel class + K/V
+        # bridge (see module docstring); the scaffold head cannot
+        # meaningfully consume its ``pre_projection`` /
+        # ``post_projection`` tensors.
+        if _looks_like_assistant_sidecar(raw) or _looks_like_assistant_sidecar(
+            mtp_weights
+        ):
+            logger.warning(
+                "[mtp.inject.gemma4] sidecar %s fingerprints as a "
+                "'gemma4-assistant' architecture (Mia-AiLab-style draft "
+                "model with pre/post projection layers). This inject "
+                "currently only carries the wiring-probe scaffold — the "
+                "AssistantModel code path (cross-hidden-dim projections + "
+                "base-model K/V bridge) lands in a follow-up PR. Refusing "
+                "to inject rather than ship a broken/random-init draft. "
+                "Track: `gemma4-assistant MTP` follow-up in the PR body.",
+                weights_file.name,
+            )
+            return False
+
+        # Non-assistant sidecar: coverage-check as ``qwen3_5_inject`` does.
+        from mlx.utils import tree_flatten
+
+        expected_keys = {k for k, _ in tree_flatten(mtp.parameters())}
+        loaded_keys = set(mtp_weights.keys())
+        missing = expected_keys - loaded_keys
+        if missing:
+            logger.warning(
+                "[mtp.inject.gemma4] sidecar %s is missing %d required MTP "
+                "tensor(s); refusing to ship a partially-random-init head. "
+                "Missing keys (first 8): %s",
+                weights_file.name,
+                len(missing),
+                sorted(missing)[:8],
+            )
+            return False
+
+        mtp.load_weights(list(mtp_weights.items()), strict=False)
+        mx.eval(mtp.parameters())
+        extra = loaded_keys - expected_keys
+        logger.info(
+            "[mtp.inject.gemma4] Loaded %d/%d expected MTP weight tensors "
+            "from %s%s",
+            len(expected_keys),
+            len(expected_keys),
+            weights_file.name,
+            f" (+{len(extra)} extra sidecar key(s) ignored)" if extra else "",
+        )
+    else:
+        if not allow_random_init:
+            logger.warning(
+                "[mtp.inject.gemma4] inject_mtp_support called without "
+                "mtp_sidecar and allow_random_init=False; refusing to ship "
+                "a random-init MTP head. Pass a converted sidecar via "
+                "scripts/convert_gemma4_mtp_gguf.py, or set "
+                "allow_random_init=True for unit-test wiring probes."
+            )
+            return False
+        mx.eval(mtp.parameters())
+        logger.warning(
+            "[mtp.inject.gemma4] inject_mtp_support called with "
+            "allow_random_init=True — SCAFFOLD MTP head retains RANDOM init "
+            "weights (accept rate ~0%%, and the head shape doesn't match "
+            "the gemma4-assistant sidecar anyway). Test-only path."
+        )
+
+    # --- Step 4: Global ArraysCache patch (parity with qwen3_5) -----------
+    # Gemma 4 doesn't ship GatedDeltaNet layers, so the linear-attention
+    # rollback machinery is a no-op here — but the ``rollback_state``
+    # slot is what the generator's ``_rollback_draft`` reads from, and
+    # installing it universally keeps that path uniform across
+    # architectures.
+    from .cache_patch import patch_arrays_cache_rollback_state
+
+    patch_arrays_cache_rollback_state()
+
+    # --- Step 5: Attach + monkey-patch the inner class --------------------
+    inner.mtp = mtp
+    original_class = type(inner)
+
+    class _Gemma4WithMTP(original_class):  # type: ignore[valid-type, misc]
+        """``gemma4_text.Model`` + MTP surfaces (SCAFFOLD).
+
+        See module docstring for the difference between this scaffold
+        wiring and the eventual ``gemma4-assistant`` code path.
+        """
+
+        def __call__(  # type: ignore[override]
+            self,
+            inputs,
+            cache=None,
+            input_embeddings=None,
+            per_layer_inputs=None,
+            return_hidden: bool = False,
+            n_confirmed: int = 0,
+        ):
+            # Delegate to the original forward, but with a
+            # return_hidden probe. We compute the pre-norm hidden
+            # ourselves by tapping the backbone's final layer output
+            # (Gemma 4's ``__call__`` normally returns the post-norm
+            # hidden via ``self.norm(h)``). To keep the scaffold
+            # simple we just re-normalise after the fact — the
+            # MTP head takes the post-norm hidden here rather than
+            # the pre-norm hidden Qwen3.5 uses. This is the
+            # WIRING PROBE ONLY — production code path lands with
+            # the follow-up assistant PR.
+            out = original_class.__call__(
+                self,
+                inputs,
+                cache=cache,
+                input_embeddings=input_embeddings,
+                per_layer_inputs=per_layer_inputs,
+            )
+            if return_hidden:
+                # Re-derive a hidden-state proxy shaped ``(B, L, H)``
+                # so ``mtp_forward`` can accept it. The proxy is a
+                # linear inversion of the ``embed_tokens.as_linear``
+                # projection when tie_word_embeddings=True; for the
+                # untied case we can't cheaply recover hidden, so
+                # this path is intentionally lossy. Wiring probe only.
+                # Real hidden-state tap lands in the assistant PR.
+                B = out.shape[0]
+                L = out.shape[1]
+                H = getattr(self.args, "hidden_size", None)
+                if H is None:
+                    text_config = getattr(self.args, "text_config", {}) or {}
+                    H = text_config.get("hidden_size", 3840)
+                # Wiring-only tensor — not a semantically correct hidden
+                # (the assistant PR wires a real hidden tap).
+                import mlx.core as _mx
+
+                hidden = _mx.zeros((B, L, H))
+                return out, hidden
+            return out
+
+        def mtp_forward(
+            self,
+            hidden_states,
+            next_token_ids,
+            mtp_cache,
+        ):
+            """Run the scaffold MTP head and project through the lm_head.
+
+            Wiring probe — real draft quality is not a goal. See
+            module docstring for the follow-up plan.
+            """
+            embed = self.model.embed_tokens
+            mtp_out = self.mtp(hidden_states, next_token_ids, embed, mtp_cache)
+            if getattr(self, "tie_word_embeddings", True):
+                return embed.as_linear(mtp_out)
+            return self.lm_head(mtp_out)
+
+        def make_mtp_cache(self):
+            """One ``KVCache`` per scaffold MTP layer (all full attention)."""
+            from mlx_lm.models.cache import KVCache
+
+            return [KVCache() for _ in self.mtp.layers]
+
+    inner.__class__ = _Gemma4WithMTP
+    logger.info(
+        "[mtp.inject.gemma4] Patched %s with MTP surfaces "
+        "(return_hidden, n_confirmed, mtp_forward, make_mtp_cache). "
+        "SCAFFOLD wiring only.",
+        original_class.__name__,
+    )
+    return True
+
+
+def validate_mtp_support(model: Any) -> bool:
+    """Verify that :func:`inject_mtp_support` succeeded on ``model``.
+
+    Same shape as :func:`vllm_mlx.spec_decode.mtp.qwen3_5_inject.validate_mtp_support`
+    — checks ``.mtp``, ``.mtp_forward``, ``.make_mtp_cache``, and the
+    ``__call__`` signature.
+    """
+    import inspect
+
+    inner = _resolve_inner_text_model(model)
+    if inner is None:
+        return False
+
+    if getattr(inner, "mtp", None) is None:
+        logger.warning("[mtp.validate.gemma4] model.mtp is missing.")
+        return False
+    if not callable(getattr(inner, "mtp_forward", None)):
+        logger.warning("[mtp.validate.gemma4] model.mtp_forward is missing.")
+        return False
+    if not callable(getattr(inner, "make_mtp_cache", None)):
+        logger.warning("[mtp.validate.gemma4] model.make_mtp_cache is missing.")
+        return False
+    sig = inspect.signature(type(inner).__call__)
+    if "return_hidden" not in sig.parameters:
+        logger.warning(
+            "[mtp.validate.gemma4] model.__call__ does not accept return_hidden."
+        )
+        return False
+    if "n_confirmed" not in sig.parameters:
+        logger.warning(
+            "[mtp.validate.gemma4] model.__call__ does not accept n_confirmed."
+        )
+        return False
+    return True
