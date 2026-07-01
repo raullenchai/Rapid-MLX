@@ -28,6 +28,30 @@ PORT="${PORT:-8000}"
 LOG=/tmp/release-check-m3.log
 PIDFILE=/tmp/release-check-m3.pid
 
+# Base URL the gauntlet expects every child gate to hit. Threaded from
+# $PORT so `PORT=8011 bash scripts/release_check_m3.sh` correctly aims
+# every gate at 127.0.0.1:8011 — including gates that read the URL from
+# env instead of accepting --base-url / --port.
+#
+# Issue #974: previously, only G5/G6/G7b/G9/G12 threaded $PORT (via
+# --port / --base-url / hardcoded "http://127.0.0.1:$PORT" URLs). The
+# G7 SDK integration tests (Anthropic / pydantic_ai / smolagents /
+# langchain / hermes) read the URL from ``RAPID_MLX_BASE_URL`` with a
+# hardcoded default of ``http://localhost:8000/v1``. With
+# ``PORT=8011``, the SDK tests silently hit whatever was on 8000 —
+# typically the operator's production server — reporting either false
+# failures (wrong model served) or, worse, false PASSes (prod happens
+# to answer). Export the URL here so every downstream block inherits
+# it regardless of how the child gate resolves its endpoint.
+#
+# We also export the OpenAI-SDK conventional sibling env vars
+# (OPENAI_BASE_URL / OPENAI_API_BASE) as a defensive belt-and-braces
+# for any future integration test that follows the OpenAI SDK
+# convention instead of RAPID_MLX_BASE_URL.
+export RAPID_MLX_BASE_URL="http://127.0.0.1:${PORT}/v1"
+export OPENAI_BASE_URL="http://127.0.0.1:${PORT}/v1"
+export OPENAI_API_BASE="http://127.0.0.1:${PORT}/v1"
+
 line() { printf '%s\n' "============================================================"; }
 
 line
@@ -35,6 +59,7 @@ echo "  M3 release gauntlet"
 echo "  model:    $MODEL"
 echo "  python:   $PY"
 echo "  port:     $PORT"
+echo "  base_url: $RAPID_MLX_BASE_URL"
 echo "  log:      $LOG"
 line
 
@@ -85,6 +110,18 @@ line
 "$PY" scripts/dev_test.py stress --port "$PORT"
 
 #-------------------- G7 SDK integration --------------------------
+# Fail-loud assertion: G7 SDK tests read the target endpoint from
+# ``RAPID_MLX_BASE_URL`` (see issue #974). If the top-of-script export
+# is ever regressed / clobbered downstream / disabled, bail out here
+# rather than silently pointing G7 at whatever server the default URL
+# lands on (typically the operator's production 8000).
+_expected_base="http://127.0.0.1:${PORT}/v1"
+if [ "${RAPID_MLX_BASE_URL:-}" != "$_expected_base" ]; then
+  echo "ERROR: G7 env mismatch — RAPID_MLX_BASE_URL='${RAPID_MLX_BASE_URL:-}' expected '$_expected_base'." >&2
+  echo "  This means G7 SDK tests would hit a different server than the gauntlet booted." >&2
+  exit 1
+fi
+
 line
 echo "  G7 — Anthropic SDK"
 line
