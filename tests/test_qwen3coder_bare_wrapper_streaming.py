@@ -244,6 +244,92 @@ def test_wrapped_streaming_still_works():
         )
 
 
+def test_function_prefix_in_parameter_value_not_counted_as_tool_boundary():
+    """Unit test on ``_function_start_positions``: a ``<function=``
+    substring inside a ``<parameter=…>…</parameter>`` value MUST NOT
+    count as a top-level tool boundary.
+
+    Codex adversarial review on this PR flagged the naive ``str.find``
+    variant as a corruption vector: with it, streaming would advance
+    ``current_tool_index`` mid-argument and either miss trailing
+    content or emit a phantom second tool call. The fix scans
+    top-level occurrences by skipping past parameter-value spans.
+    """
+    parser = Qwen3CoderToolParser(tokenizer=None)
+
+    text = (
+        "<function=echo>"
+        "<parameter=text>call <function=inner> in a code snippet</parameter>"
+        "</function>"
+    )
+    starts = parser._function_start_positions(text)
+    assert starts == [0], (
+        f"top-level ``<function=`` scanner miscounted: expected [0], got {starts!r}"
+    )
+
+
+def test_function_end_in_parameter_value_not_counted_as_tool_close():
+    """Unit test on ``_top_level_function_close_count``: a
+    ``</function>`` substring inside a parameter value MUST NOT count
+    as a structural tool close.
+
+    Same codex concern as above, applied to the ``</function>`` counter
+    that drives ``current_tool_index`` advancement.
+    """
+    parser = Qwen3CoderToolParser(tokenizer=None)
+
+    text = "<function=echo><parameter=code>foo</function>bar</parameter></function>"
+    starts = parser._function_start_positions(text)
+    close_count = parser._top_level_function_close_count(text, starts)
+    assert close_count == 1, (
+        f"top-level ``</function>`` scanner miscounted: expected 1, "
+        f"got {close_count}. starts={starts!r}"
+    )
+
+
+def test_streaming_state_not_corrupted_by_function_prefix_in_value():
+    """End-to-end: even when a parameter value carries a full inner
+    ``<function=inner></function>`` block, the state machine MUST emit
+    exactly ONE tool call — not a phantom second call anchored on the
+    inner literal, and not a stalled advance that swallows trailing
+    content.
+
+    This is the exact regression codex round-1 caught: with the naive
+    ``count(<function=)`` and ``count(</function>)`` the advance block
+    would try to promote the inner literal to a real tool_call.
+    """
+    parser = Qwen3CoderToolParser(tokenizer=None)
+    request = _request_with_tool("echo", {"note": {"type": "string"}})
+
+    chunks = [
+        "<function=echo>",
+        "<parameter=note>",
+        # Full inner XML — the naive scanner would see 2 openers and 2
+        # closers here and try to advance mid-argument.
+        "see also <function=inner></function> below",
+        "</parameter>",
+        "</function>",
+        # Trailing content after the real tool closes — the naive
+        # scanner would still think ``is_tool_call_started`` is True
+        # and try to slice a phantom second block instead of emitting
+        # this as a content event.
+        " done.",
+    ]
+
+    deltas = _feed(parser, chunks, request)
+    names = _names_by_index(deltas)
+    assert set(names.keys()) == {0}, (
+        f"phantom tool index emitted; names={names!r}, deltas={deltas!r}"
+    )
+    assert names[0] == "echo"
+    # Trailing content after the real tool close must reach the
+    # content stream, not vanish into a phantom advance.
+    contents = _content_events(deltas)
+    assert any("done" in c for c in contents), (
+        f"trailing content swallowed by phantom advance; contents={contents!r}"
+    )
+
+
 def test_content_before_bare_function_is_emitted_as_content():
     """Prose before a bare ``<function=`` opener must surface as a ``content``
     delta — not be swallowed and not be miscategorized as tool_call payload.

@@ -359,22 +359,98 @@ class Qwen3CoderToolParser(ToolParser):
             or self.tool_call_prefix in delta_text
         )
 
-    def _function_start_positions(self, text: str) -> list[int]:
-        """All top-level ``<function=`` positions in ``text``, in order.
+    def _top_level_function_close(self, text: str, start: int) -> int:
+        """Return the position of the top-level ``</function>`` that closes
+        the tool opened at ``start`` — i.e. the first ``</function>`` after
+        ``start`` that is NOT inside a ``<parameter=…>…</parameter>`` value.
 
-        Each position marks the start of a tool-call block; the state
-        machine uses this list to slice the current block and to decide
-        when to advance the tool index. Independent of whether the model
-        wrapped the block in ``<tool_call>...</tool_call>``.
+        Returns ``-1`` when the tool hasn't closed yet in the buffer. A
+        ``</function>`` embedded in a user's ``code`` parameter (XML
+        code samples are the canonical example) MUST NOT be treated as
+        the tool boundary; otherwise streaming truncates mid-argument
+        (codex review on #978).
+        """
+        prefix_len = len(self.tool_call_prefix)
+        param_open_len = len(self.parameter_prefix)
+        param_close_len = len(self.parameter_end_token)
+        j = start + prefix_len
+        n = len(text)
+        while j < n:
+            next_param = text.find(self.parameter_prefix, j)
+            next_close = text.find(self.function_end_token, j)
+            if next_close == -1:
+                return -1
+            if next_param != -1 and next_param < next_close:
+                header_end = text.find(">", next_param + param_open_len)
+                if header_end == -1:
+                    return -1
+                pclose = text.find(self.parameter_end_token, header_end + 1)
+                if pclose == -1:
+                    return -1
+                j = pclose + param_close_len
+                continue
+            return next_close
+        return -1
+
+    def _top_level_function_close_count(
+        self, text: str, top_level_starts: list[int]
+    ) -> int:
+        """Count ``</function>`` tokens that structurally close a top-level
+        ``<function=…>`` opener from ``top_level_starts``.
+
+        Uses ``_top_level_function_close`` per start so a ``</function>``
+        inside a ``<parameter=…>…</parameter>`` value (e.g. a user's
+        ``code`` argument containing XML) never counts as a tool close.
+        """
+        return sum(
+            1
+            for start in top_level_starts
+            if self._top_level_function_close(text, start) != -1
+        )
+
+    def _function_start_positions(self, text: str) -> list[int]:
+        """Positions of TOP-LEVEL ``<function=`` openers in ``text``.
+
+        Skips ``<function=`` substrings that appear inside a
+        ``<parameter=…>…</parameter>`` value — those are user data (e.g.
+        a ``code`` parameter containing XML), not structural tool-call
+        boundaries. Function tags don't nest in Qwen3-Coder XML, so a
+        top-level scan alternates between (a) looking for the next
+        function opener while skipping parameter-value spans and (b)
+        recording found openers. Both the tool-index slicing AND the
+        "any more tools?" counter rely on this — using a naive
+        ``str.count(...)`` for either would let a bogus in-value
+        ``<function=…>`` corrupt streaming state (codex review on #978).
+
+        Incomplete parameter tails (opener without matching
+        ``</parameter>``) terminate the scan: everything after an
+        unclosed value is potentially user data, so we conservatively
+        refuse to promote further ``<function=`` occurrences until the
+        value closes.
         """
         positions: list[int] = []
-        idx = 0
-        while True:
-            idx = text.find(self.tool_call_prefix, idx)
-            if idx == -1:
+        i = 0
+        n = len(text)
+        prefix_len = len(self.tool_call_prefix)
+        param_open_len = len(self.parameter_prefix)
+        param_close_len = len(self.parameter_end_token)
+        while i < n:
+            next_func = text.find(self.tool_call_prefix, i)
+            next_param = text.find(self.parameter_prefix, i)
+            if next_func == -1:
                 return positions
-            positions.append(idx)
-            idx += len(self.tool_call_prefix)
+            if next_param != -1 and next_param < next_func:
+                header_end = text.find(">", next_param + param_open_len)
+                if header_end == -1:
+                    return positions
+                close_pos = text.find(self.parameter_end_token, header_end + 1)
+                if close_pos == -1:
+                    return positions
+                i = close_pos + param_close_len
+                continue
+            positions.append(next_func)
+            i = next_func + prefix_len
+        return positions
 
     def extract_tool_calls_streaming(
         self,
@@ -400,9 +476,18 @@ class Qwen3CoderToolParser(ToolParser):
 
         # Check if we need to advance to next tool. The tool boundary is
         # ``</function>`` — that is the invariant close, whether or not
-        # a wrapping ``</tool_call>`` follows.
+        # a wrapping ``</tool_call>`` follows. Both the close-count and
+        # the "any more tools?" check must ignore ``<function=`` /
+        # ``</function>`` substrings inside parameter values — a
+        # ``code`` parameter carrying XML code would otherwise trip the
+        # advance loop into targeting a bogus next block (codex review
+        # on #978).
         if self.json_closed and not self.in_function:
-            tool_ends = current_text.count(self.function_end_token)
+            top_level_starts = self._function_start_positions(current_text)
+            tool_count = len(top_level_starts)
+            tool_ends = self._top_level_function_close_count(
+                current_text, top_level_starts
+            )
             if tool_ends > self.current_tool_index:
                 self.current_tool_index += 1
                 self.header_sent = False
@@ -410,7 +495,7 @@ class Qwen3CoderToolParser(ToolParser):
                 self.json_started = False
                 self.json_closed = False
                 self.accumulated_params = {}
-                if self.current_tool_index >= current_text.count(self.tool_call_prefix):
+                if self.current_tool_index >= tool_count:
                     self.is_tool_call_started = False
                 return None
 
@@ -443,14 +528,17 @@ class Qwen3CoderToolParser(ToolParser):
                 return {"content": delta_text}
 
         # Find current tool call portion. Slice from the current
-        # ``<function=`` opener to the matching ``</function>`` close —
-        # this is the wrapper-agnostic tool-call block.
+        # ``<function=`` opener to the matching top-level ``</function>``
+        # close — this is the wrapper-agnostic tool-call block. Both
+        # ends use the parameter-aware scanners so a user-visible
+        # ``<function=…>`` OR ``</function>`` embedded in a parameter
+        # value can't corrupt the slice.
         function_starts = self._function_start_positions(current_text)
         if self.current_tool_index >= len(function_starts):
             return None
 
         tool_start_idx = function_starts[self.current_tool_index]
-        func_close_idx = current_text.find(self.function_end_token, tool_start_idx)
+        func_close_idx = self._top_level_function_close(current_text, tool_start_idx)
         if func_close_idx == -1:
             tool_text = current_text[tool_start_idx:]
         else:
