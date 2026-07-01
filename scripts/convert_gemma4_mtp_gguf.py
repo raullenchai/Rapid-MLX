@@ -285,13 +285,37 @@ def _read_field_scalar(reader, key: str):
     return None
 
 
-def _build_sidecar_config(reader, parent_config: dict, num_mtp_layers: int) -> dict:
+def _build_sidecar_config(
+    reader,
+    parent_config: dict,
+    num_mtp_layers: int,
+    *,
+    source_repo: str = DEFAULT_REPO,
+    source_filename: str | None = None,
+) -> dict:
     """Merge GGUF metadata with the parent Gemma 4 config.
 
     The parent config is the base Gemma-4 checkpoint's config.json
     (its ``text_config`` block is what the inject reads). We layer
     ``mtp_num_hidden_layers`` on top plus the assistant-architecture
     hints from the GGUF header.
+
+    Args:
+        reader: Open ``gguf.GGUFReader`` for the source GGUF.
+        parent_config: The parent Gemma-4 checkpoint's ``config.json``
+            (dict).
+        num_mtp_layers: Value stitched into ``mtp_num_hidden_layers``
+            and mirrored into ``text_config``.
+        source_repo: HF repo id the GGUF was pulled from. Codex
+            round-6 NIT: previously hard-coded to ``DEFAULT_REPO``
+            so ``--repo`` overrides emitted misleading provenance
+            into ``config.json``. Thread the CLI-selected repo
+            through so the emitted ``mtp_assistant.source_repo``
+            actually matches the file the operator converted.
+        source_filename: GGUF filename inside ``source_repo``.
+            Recorded alongside ``source_repo`` for the same reason.
+            Falls back to the GGUF ``general.name`` metadata field
+            if not provided (matches previous behavior).
     """
     cfg = dict(parent_config)
 
@@ -352,8 +376,10 @@ def _build_sidecar_config(reader, parent_config: dict, num_mtp_layers: int) -> d
         "rope_theta_swa": _read_field_scalar(
             reader, "gemma4-assistant.rope.freq_base_swa"
         ),
-        "source_repo": DEFAULT_REPO,
-        "source_file": _read_field_scalar(reader, "general.name") or "unknown",
+        "source_repo": source_repo,
+        "source_file": source_filename
+        or _read_field_scalar(reader, "general.name")
+        or "unknown",
         # Bookkeeping: mark this as an assistant sidecar so the inject's
         # `_looks_like_assistant_sidecar` guard has TWO signals (tensor
         # keys AND config marker).
@@ -531,7 +557,13 @@ def main(argv: list[str] | None = None) -> int:
             "model_type": "gemma4_unified",
             "text_config": {"model_type": "gemma4_unified_text"},
         }
-    sidecar_cfg = _build_sidecar_config(reader, parent_cfg, args.mtp_num_hidden_layers)
+    sidecar_cfg = _build_sidecar_config(
+        reader,
+        parent_cfg,
+        args.mtp_num_hidden_layers,
+        source_repo=args.repo,
+        source_filename=args.gguf_filename,
+    )
 
     # --- Write safetensors atomically ---
     import mlx.core as mx

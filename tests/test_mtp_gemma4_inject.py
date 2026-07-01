@@ -185,6 +185,75 @@ def test_inject_mtp_support_attaches_four_surfaces():
 
 
 # ---------------------------------------------------------------------------
+# 1b. Outer-wrapper delegation — codex round-6 blocking fix
+# ---------------------------------------------------------------------------
+
+
+def test_inject_delegates_surfaces_to_outer_wrapper():
+    """Codex round-6 blocking fix: when the caller passes the outer
+    Gemma 4 VLM wrapper (``model.language_model = inner``), the four
+    MTP surfaces must be reachable ON THE OUTER too — not only on
+    ``inner``. Otherwise a caller who does ``outer.mtp_forward(...)``
+    hits ``AttributeError`` even though ``inject_mtp_support(outer)``
+    returned ``True``.
+
+    Uses a minimal fake outer wrapper (real ``mlx_lm.models.gemma4.Model``
+    requires the multi-modal SigLIP encoder which drags in a
+    ~200 MB weight tree — overkill for a wiring probe). The wrapper
+    exposes the same ``.language_model`` surface
+    :func:`_resolve_inner_text_model` recognizes.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+
+    try:
+        inner = _build_tiny_gemma4_text_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 text ModelArgs schema mismatch: {exc}")
+
+    class _FakeOuterVLM:
+        """Mimics ``mlx_lm.models.gemma4.Model`` — carries the text
+        model under ``.language_model`` (the shape
+        ``_resolve_inner_text_model`` case 1 matches)."""
+
+        def __init__(self, lm):
+            self.language_model = lm
+
+    outer = _FakeOuterVLM(inner)
+
+    result = inject_mtp_support(outer, allow_random_init=True)
+    assert result is True, "inject on outer VLM wrapper should return True"
+
+    # Outer must carry all three attribute surfaces — the codex
+    # round-6 blocker was that these lived only on ``inner``.
+    assert getattr(outer, "mtp", None) is not None, (
+        "outer.mtp missing — delegation from outer to inner did not fire."
+    )
+    assert callable(getattr(outer, "mtp_forward", None)), (
+        "outer.mtp_forward missing — advertised surface unreachable on the "
+        "object the caller passed in."
+    )
+    assert callable(getattr(outer, "make_mtp_cache", None)), (
+        "outer.make_mtp_cache missing."
+    )
+
+    # The delegated calls must reach the inner scaffold and raise
+    # NotImplementedError (proving they actually delegate rather than
+    # being stubs that return None).
+    with pytest.raises(NotImplementedError):
+        outer.mtp_forward(None, None, None)
+
+    # ``outer.make_mtp_cache()`` returns the KVCache list from the
+    # scaffold — it doesn't raise, so we only check it's a list.
+    cache = outer.make_mtp_cache()
+    assert isinstance(cache, list)
+    assert len(cache) == 1  # one MTP layer in the tiny fixture
+
+    # The scaffold marker also mirrors onto the outer so any validator
+    # that walks the outer directly still sees the scaffold state.
+    assert getattr(outer, "_mtp_is_scaffold", False) is True
+
+
+# ---------------------------------------------------------------------------
 # 2. Sidecar refusal — no sidecar + default => False
 # ---------------------------------------------------------------------------
 
@@ -198,23 +267,57 @@ def test_inject_mtp_support_refuses_no_sidecar_by_default():
     refusal path is CRITICAL for gemma4 because the scaffold MTP head
     here isn't even the correct architecture, so a random-init inject
     would be doubly-wrong.
+
+    Codex round-6 BLOCKING fix: assert the concrete mutation contract
+    directly rather than relying on ``validate_mtp_support`` alone.
+    ``validate_mtp_support`` returns ``False`` even for a
+    successfully-injected scaffold (it checks the ``_mtp_is_scaffold``
+    marker), so a bug where a failed inject STILL attached scaffold
+    surfaces would silently pass this test if we only checked
+    ``validate_mtp_support(model) is False``. The invariant the caller
+    depends on is: **failed inject leaves the model bit-for-bit
+    unmodified** — no ``.mtp``, no ``.mtp_forward``, no
+    ``.make_mtp_cache``, no scaffold class swap on the inner text
+    model. Check all of those.
     """
-    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
-        inject_mtp_support,
-        validate_mtp_support,
-    )
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
         model = _build_tiny_gemma4_text_model()
     except (TypeError, AttributeError) as exc:
         pytest.skip(f"Gemma 4 text ModelArgs schema mismatch: {exc}")
 
+    # Snapshot the inner model's class + type identity BEFORE the
+    # inject so we can prove the scaffold class swap did NOT happen.
+    original_class = type(model)
+
     assert inject_mtp_support(model) is False, (
         "Default inject_mtp_support without sidecar should return False."
     )
-    assert validate_mtp_support(model) is False, (
-        "The model must NOT have been patched — none of the four "
-        "surfaces should exist on a failed inject."
+
+    # ── Concrete mutation contract ────────────────────────────────
+    # None of the four MTP surfaces should have attached.
+    assert getattr(model, "mtp", None) is None, (
+        ".mtp attached despite failed inject — this is the codex "
+        "round-6 regression the strengthened check locks against."
+    )
+    assert not callable(getattr(model, "mtp_forward", None)), (
+        ".mtp_forward attached despite failed inject."
+    )
+    assert not callable(getattr(model, "make_mtp_cache", None)), (
+        ".make_mtp_cache attached despite failed inject."
+    )
+    # The scaffold class swap (`inner.__class__ = _Gemma4WithMTP`)
+    # must NOT have run — the class identity of the inner text model
+    # should be identical to what it was before inject.
+    assert type(model) is original_class, (
+        "inner.__class__ was swapped despite failed inject — "
+        "scaffold class installation must be gated on successful "
+        "sidecar resolution."
+    )
+    # The scaffold marker must not exist.
+    assert not getattr(model, "_mtp_is_scaffold", False), (
+        "_mtp_is_scaffold marker set despite failed inject."
     )
 
 

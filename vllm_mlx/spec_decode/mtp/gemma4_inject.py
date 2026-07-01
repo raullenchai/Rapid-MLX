@@ -709,6 +709,41 @@ def inject_mtp_support(
     # trusts the model — but every actual invocation raises.
     inner._mtp_is_scaffold = True
 
+    # Codex round-6 blocking fix: if the caller passed the OUTER
+    # Gemma 4 wrapper (mlx_lm.load()'s standard return shape —
+    # ``gemma4.Model`` wrapping ``.language_model``, or Rapid-MLX's
+    # ``Gemma4TextWrapper`` for ``gemma4_unified``), the four
+    # contract surfaces (``.mtp``, ``.mtp_forward``,
+    # ``.make_mtp_cache``, and the ``__call__(return_hidden, n_confirmed)``
+    # extended signature) currently exist only on ``inner``. That
+    # means a caller who does ``model.mtp_forward(...)`` on the
+    # object they passed in gets ``AttributeError``, even though
+    # ``inject_mtp_support`` returned ``True``. Delegate the three
+    # attribute surfaces from the outer wrapper down to inner so
+    # the advertised contract holds. ``__call__`` is deliberately
+    # NOT delegated — the outer VLM wrapper's ``__call__`` signature
+    # differs (it accepts pixels, tokens, etc.), and the vendored
+    # ``mtp_generate_step`` in ``generator.py`` only ever invokes
+    # ``make_mtp_cache`` / ``mtp_forward`` directly on a base
+    # text-model shape.
+    if model is not inner:
+        import types as _types
+
+        model.mtp = inner.mtp
+
+        def _delegate_mtp_forward(_self, hidden_states, next_token_ids, mtp_cache):
+            return inner.mtp_forward(hidden_states, next_token_ids, mtp_cache)
+
+        def _delegate_make_mtp_cache(_self):
+            return inner.make_mtp_cache()
+
+        model.mtp_forward = _types.MethodType(_delegate_mtp_forward, model)
+        model.make_mtp_cache = _types.MethodType(_delegate_make_mtp_cache, model)
+        # Mirror the scaffold marker on the outer so any validator
+        # that resolves the outer directly (rather than via
+        # ``_resolve_inner_text_model``) still sees a scaffold model.
+        model._mtp_is_scaffold = True
+
     logger.info(
         "[mtp.inject.gemma4] Patched %s with MTP surfaces "
         "(return_hidden, n_confirmed, mtp_forward, make_mtp_cache). "
