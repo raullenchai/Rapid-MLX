@@ -181,6 +181,147 @@ def test_detect_eligibility_qwen3_5_stripped_checkpoint():
     assert detect_mtp_eligibility(config) is MTPEligibility.NONE
 
 
+# ---------------------------------------------------------------------------
+# 1b. Gemma 4 detection (community fp16-mtp sidecar path)
+# ---------------------------------------------------------------------------
+# Gemma 4 ships in two ``model_type`` flavours (verified against the
+# cached mlx-community configs on 2026-07-01):
+#
+#   * ``gemma4_unified`` — text-only variant. ``Gemma4UnifiedForConditional
+#     Generation``. Used by the 12B dense checkpoints
+#     (``gemma-4-12B-it-4bit`` / ``gemma-4-12B-it-8bit``), which is the
+#     target of the Mia-AiLab fp16-mtp sidecar (``Mia-AiLab/Gemmable-4-12B
+#     -MTP-GGUF``).
+#   * ``gemma4`` — multimodal variant. ``Gemma4ForConditionalGeneration``.
+#     Covers the effective-MoE ``gemma-4-26b-a4b-it-4bit`` and the small
+#     vision-tower e2b / e4b checkpoints.
+#
+# Base checkpoints do NOT carry ``mtp_num_hidden_layers`` in their
+# ``config.json`` (verified for all four cache probes) — the sidecar
+# layers it on. We therefore test both the CHAIN path (sidecar applied,
+# mtp=1) and the NONE path (sidecar absent, mtp missing/0).
+
+
+def test_detect_eligibility_gemma4_dense_unified_chain():
+    """Gemma 4 12B dense (``gemma4_unified``) with sidecar applied → CHAIN.
+
+    This is the Mia-AiLab primary target: ``gemma-4-12B-it-*`` reports
+    ``model_type: gemma4_unified`` at the top of ``config.json``. Once
+    the sidecar sets ``mtp_num_hidden_layers=1``, detection MUST return
+    CHAIN so ``--spec-decode mtp`` boots.
+    """
+    from vllm_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    config = {"model_type": "gemma4_unified", "mtp_num_hidden_layers": 1}
+    assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
+
+
+def test_detect_eligibility_gemma4_dense_unified_stripped_none():
+    """Gemma 4 12B dense with sidecar NOT applied (mtp=0) → NONE.
+
+    Base ``mlx-community/gemma-4-12b-it-4bit`` ships without an MTP
+    head; ``mtp_num_hidden_layers`` is either absent or 0. Detection
+    must collapse to NONE so ``--spec-decode mtp`` is rejected at boot
+    with a clear ``sidecar missing`` hint rather than silently emitting
+    random-init draft tokens.
+    """
+    from vllm_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    # Explicit 0 (stripped/no-sidecar): reject.
+    config_zero = {"model_type": "gemma4_unified", "mtp_num_hidden_layers": 0}
+    assert detect_mtp_eligibility(config_zero) is MTPEligibility.NONE
+    # Missing key (stock HF Gemma 4 shape): reject.
+    config_missing = {"model_type": "gemma4_unified"}
+    assert detect_mtp_eligibility(config_missing) is MTPEligibility.NONE
+
+
+def test_detect_eligibility_gemma4_moe_chain():
+    """Gemma 4 26B-A4B effective-MoE (``gemma4``) with sidecar → CHAIN.
+
+    Verified against
+    ``mlx-community/gemma-4-26b-a4b-it-4bit/config.json``: top-level
+    ``model_type`` is ``gemma4`` (the MoE is served by the same
+    ``Gemma4ForConditionalGeneration`` class as e2b / e4b, with an MoE
+    text sub-config). Same allowlist entry, same CHAIN path.
+    """
+    from vllm_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    config = {"model_type": "gemma4", "mtp_num_hidden_layers": 1}
+    assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
+
+
+def test_detect_eligibility_gemma4_vision_tower_does_not_confuse_detection():
+    """Gemma 4 e2b / e4b (``gemma4`` with a vision tower) → still CHAIN.
+
+    ``gemma-4-e2b-it-4bit`` and ``gemma-4-e4b-it-4bit`` ship as
+    ``model_type: gemma4`` with a ``vision_config`` block, an
+    ``audio_config`` block, and a ``text_config`` sub-config. Detection
+    reads ONLY the top-level ``model_type`` string, so the presence of
+    vision / audio fields must not alter the eligibility verdict. This
+    test locks that contract by stuffing the config with the real
+    fields we observed on those checkpoints (``vision_config``,
+    ``audio_config``, ``image_token_id``, ``architectures``).
+    """
+    from vllm_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    config = {
+        "model_type": "gemma4",
+        "mtp_num_hidden_layers": 1,
+        # Fields observed on the actual e2b / e4b / 26B-A4B configs.
+        # Detection must ignore all of these.
+        "architectures": ["Gemma4ForConditionalGeneration"],
+        "vision_config": {"model_type": "siglip_vision_model"},
+        "audio_config": {"model_type": "gemma4_audio"},
+        "text_config": {"model_type": "gemma4_text"},
+        "image_token_id": 262144,
+    }
+    assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
+
+
+def test_detect_eligibility_gemma_lookalikes_still_rejected():
+    """Gemma 2 / Gemma 3 (and other lookalikes) MUST remain NONE.
+
+    Regression guard against a future refactor that switches the
+    allowlist to a startswith check ("gemma") or a `.split('_')[0]`
+    check. Gemma 3 in particular is close enough to Gemma 4 that
+    getting confused would put the wrong model class through the MTP
+    inject path.
+    """
+    from vllm_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    for model_type in (
+        "gemma",
+        "gemma2",
+        "gemma3",
+        "gemma3_text",
+        "gemma3_moe",
+        # A plausible-looking string an operator might scribble in
+        # after seeing a Gemma-3 27B checkpoint dropped by a fine-tuner.
+        # Detection is an exact allowlist match — must NOT allow.
+        "gemma-3-27b-it",
+    ):
+        config = {"model_type": model_type, "mtp_num_hidden_layers": 1}
+        assert detect_mtp_eligibility(config) is MTPEligibility.NONE, (
+            f"Gemma lookalike model_type={model_type!r} must NOT match MTP "
+            "path (would risk wrong model architecture being patched)."
+        )
+
+
 def test_detect_eligibility_handles_string_and_float_config():
     """Hand-edited / HF re-uploaded configs may carry strings / floats —
     detection coerces rather than crashing.

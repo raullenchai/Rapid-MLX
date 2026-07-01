@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Qwen3.5 / Qwen3.6 MTP architecture detection (R15 task #302).
+"""Qwen3.5 / Qwen3.6 / Gemma 4 MTP architecture detection (R15 task #302).
 
 Detection lives off the loaded ``config.json`` dict rather than the
 ``aliases.json`` schema. Reasons:
@@ -12,15 +12,19 @@ Detection lives off the loaded ``config.json`` dict rather than the
 * The ``mtp_num_hidden_layers`` value is an intrinsic property of the
   checkpoint, not of the alias. A user passing a raw HF path like
   ``Qwen/Qwen3.5-27B`` should still get MTP eligibility without us
-  having to ship an alias for every Qwen3.5 / Qwen3.6 quant.
+  having to ship an alias for every Qwen3.5 / Qwen3.6 quant. The same
+  reasoning applies to Gemma 4 checkpoints that carry an MTP sidecar
+  (community fp16-mtp variant from ``Mia-AiLab/Gemmable-4-12B-MTP-GGUF``).
 * ``model_type`` is already populated on every HF config and is the
   canonical anchor mlx-lm itself uses to route to a model class — we
   just piggyback on it.
 
-Eligibility is binary right now (``MTP`` or ``NONE``). A future ``TREE``
-variant would land here once upstream ships a ``mtp_num_hidden_layers
->= 2`` checkpoint, but as of vendoring date every released Qwen3.5 /
-Qwen3.6 checkpoint ships ``mtp_num_hidden_layers: 1`` — chain MTP only.
+Eligibility is binary right now (``CHAIN`` or ``NONE``). A future
+``TREE`` variant would land here once upstream ships a
+``mtp_num_hidden_layers >= 2`` checkpoint, but as of vendoring date
+every released Qwen3.5 / Qwen3.6 checkpoint (and the Mia-AiLab
+Gemma 4 fp16-mtp sidecar) ships ``mtp_num_hidden_layers: 1`` — chain
+MTP only.
 """
 
 from __future__ import annotations
@@ -35,12 +39,15 @@ class MTPEligibility(str, enum.Enum):
 
     ``NONE`` — model architecture does not have an MTP head, or the
     config explicitly sets ``mtp_num_hidden_layers: 0`` (Qwen3.5 / 3.6
-    checkpoints that have been re-converted with MTP stripped). The CLI
-    must reject ``--spec-decode mtp`` in this case.
+    checkpoints that have been re-converted with MTP stripped, or a
+    stock Gemma 4 checkpoint without the Mia-AiLab fp16-mtp sidecar
+    layered on). The CLI must reject ``--spec-decode mtp`` in this
+    case.
 
     ``CHAIN`` — model has a single MTP layer (``mtp_num_hidden_layers
     == 1``). One draft token per backbone step. This is what every
-    upstream Qwen3.5 / Qwen3.6 release ships today.
+    upstream Qwen3.5 / Qwen3.6 release ships today, and it is also the
+    layout of the Mia-AiLab Gemma 4 fp16-mtp sidecar.
 
     ``TREE`` — reserved for ``mtp_num_hidden_layers >= 2``. Not in use
     yet; emits a runtime warning and is treated as ``CHAIN`` until the
@@ -52,16 +59,45 @@ class MTPEligibility(str, enum.Enum):
     TREE = "tree"
 
 
-# Architectures (``config.json::model_type``) that the upstream PR #990
-# touches. Qwen3.5 dense / MoE share ``qwen3_5`` / ``qwen3_5_moe`` (the
-# MoE subclasses the dense model and routes through the same MTP path).
-# Qwen3.6 reuses the same code paths upstream; ``qwen3_5`` is the
-# canonical ``model_type`` for the dense Qwen3.6 release too, while the
-# MoE variant carries ``qwen3_5_moe``.
+# Architectures (``config.json::model_type``) whose model class ships an
+# MTP head that this engine knows how to drive.
+#
+# Two source families right now:
+#
+# 1. Upstream mlx-lm PR #990 (Qwen3.5 / Qwen3.6):
+#    - ``qwen3_5``     — dense (also the canonical model_type for the
+#                        dense Qwen3.6 release).
+#    - ``qwen3_5_moe`` — MoE variant; subclasses the dense model and
+#                        routes through the same MTP path.
+#
+# 2. Community fp16-mtp sidecar for Gemma 4 (source:
+#    ``Mia-AiLab/Gemmable-4-12B-MTP-GGUF`` — ~98 k downloads at time
+#    of writing; NOT part of upstream PR #990):
+#    - ``gemma4``         — multimodal variant (``Gemma4ForConditional
+#                            Generation``). Covers the effective MoE
+#                            (26B-A4B) and the small e2b / e4b vision
+#                            checkpoints. Detection only inspects the
+#                            top-level ``model_type`` string, so a
+#                            vision tower on the wrapper does not
+#                            confuse this check.
+#    - ``gemma4_unified`` — text-only unified variant
+#                            (``Gemma4UnifiedForConditional
+#                            Generation``). The 12B dense checkpoints
+#                            (``gemma-4-12B-it-4bit`` /
+#                            ``gemma-4-12B-it-8bit``) ship as unified.
+#
+# The Mia-AiLab sidecar targets 12B (unified) today; ``gemma4`` is
+# included so that when a community fp16-mtp variant lands for the
+# multimodal 26B-A4B or e2b / e4b lineage the detector accepts it
+# without another allowlist bump.
 _SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
     {
+        # Qwen3.5 / Qwen3.6 (upstream PR #990)
         "qwen3_5",
         "qwen3_5_moe",
+        # Gemma 4 (community sidecar — Mia-AiLab/Gemmable-4-12B-MTP-GGUF)
+        "gemma4",
+        "gemma4_unified",
     }
 )
 
@@ -145,10 +181,15 @@ def _detect_mtp_eligibility_verbose(
 
     num_mtp_layers = _safe_int(config.get("mtp_num_hidden_layers"), 0)
     if num_mtp_layers <= 0:
-        # Qwen3.5 / Qwen3.6 model_type but MTP stripped from this checkpoint —
-        # operator must re-convert from HF with the PR #990 sanitize() path
-        # that preserves ``mtp.*`` weights. See task report for the conversion
-        # SOP.
+        # MTP-capable model_type but MTP weights not present on this
+        # checkpoint. For Qwen3.5 / Qwen3.6 this is a stripped convert —
+        # operator must re-convert from HF with the PR #990 sanitize()
+        # path that preserves ``mtp.*`` weights. For Gemma 4 this is
+        # the default: the base checkpoint has no MTP head; operator
+        # must layer on the Mia-AiLab fp16-mtp sidecar. Either way,
+        # detection collapses to NONE so ``--spec-decode mtp`` is
+        # rejected loudly at boot. See task report for the conversion
+        # / sidecar SOP.
         return _DetectionResult(
             MTPEligibility.NONE,
             model_type,
