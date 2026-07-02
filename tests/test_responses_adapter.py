@@ -26,8 +26,10 @@ from vllm_mlx.api.responses_adapter import (
     _convert_tool_choice,
     _convert_tools,
     _merge_system_messages,
+    normalize_responses_tool_types,
     openai_to_responses,
     responses_to_openai,
+    validate_responses_tool_types,
 )
 from vllm_mlx.api.responses_models import (
     ResponsesContentItem,
@@ -113,6 +115,63 @@ class TestConvertTools:
         tools = _convert_tools([{"type": "function", "name": "minimal"}])
         assert tools is not None and len(tools) == 1
         assert tools[0].function["parameters"] == {"type": "object", "properties": {}}
+
+
+class TestNormalizeResponsesToolTypes:
+    """Codex 0.137 compat: ``normalize_responses_tool_types`` flattens
+    ``type:"namespace"`` tool groups into their contained function tools
+    and drops hosted tools the local engine cannot run, so the allowlist
+    gate accepts a real Codex tools array instead of 400-ing on
+    ``type:"namespace"``.
+    """
+
+    def test_flattens_namespace_into_function_tools(self):
+        tools = [
+            {"type": "function", "name": "shell"},
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "tools": [
+                    {"type": "function", "name": "spawn_agent"},
+                    {"type": "function", "name": "close_agent"},
+                ],
+            },
+        ]
+        normalize_responses_tool_types(tools)
+        assert [t.get("type") for t in tools] == ["function", "function", "function"]
+        assert [t["name"] for t in tools] == ["shell", "spawn_agent", "close_agent"]
+
+    def test_drops_hosted_tools(self):
+        tools = [
+            {"type": "function", "name": "shell"},
+            {"type": "web_search"},
+            {"type": "file_search"},
+        ]
+        normalize_responses_tool_types(tools)
+        assert [t.get("type") for t in tools] == ["function"]
+
+    def test_codex_shape_passes_validation(self):
+        tools = [
+            {"type": "function", "name": "exec_command"},
+            {"type": "web_search"},
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "tools": [{"type": "function", "name": "spawn_agent"}],
+            },
+        ]
+        normalize_responses_tool_types(tools)
+        validate_responses_tool_types(tools)  # must not raise
+        assert all(t["type"] == "function" for t in tools)
+        assert {t["name"] for t in tools} == {"exec_command", "spawn_agent"}
+
+    def test_noop_canonicalises_without_dropping_supported(self):
+        tools = [
+            {"type": "function", "name": "a"},
+            {"type": "computer_use_preview"},
+        ]
+        normalize_responses_tool_types(tools)
+        assert [t["type"] for t in tools] == ["function", "computer_20251022"]
 
 
 # ---------------------------------------------------------------------------

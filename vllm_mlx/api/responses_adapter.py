@@ -131,9 +131,38 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
 
     Non-dict entries and entries without a ``type`` field are
     untouched; the validation pass owns the rejection envelope.
+
+    Codex 0.137 compat: Codex groups its function tools under one or
+    more ``{"type":"namespace","name":...,"tools":[{type:function,...}]}``
+    entries (e.g. the ``multi_agent_v1`` group) and also submits hosted
+    tools (``web_search``) the local engine cannot execute. Flatten each
+    namespace into its contained function tools and drop the hosted tools
+    we can't serve, so the allowlist gate in
+    :func:`validate_responses_tool_types` accepts the request instead of
+    400-ing on ``type:"namespace"``.
     """
     if not tools:
         return
+    # Hosted tool types the local engine cannot run; Codex includes some
+    # of these by default. Drop them rather than 400 the whole request.
+    _drop_hosted = {
+        "web_search",
+        "web_search_preview",
+        "file_search",
+        "code_interpreter",
+        "image_generation",
+    }
+    flattened: list = []
+    for t in tools:
+        if isinstance(t, dict) and t.get("type") == "namespace":
+            for sub in t.get("tools") or []:
+                if isinstance(sub, dict):
+                    flattened.append(sub)
+            continue
+        if isinstance(t, dict) and _canonicalize_tool_type(t.get("type")) in _drop_hosted:
+            continue
+        flattened.append(t)
+    tools[:] = flattened
     for t in tools:
         if not isinstance(t, dict):
             continue
