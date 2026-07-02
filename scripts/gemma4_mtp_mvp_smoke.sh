@@ -128,9 +128,20 @@ boot_and_prompt() {
   # background server. Without this, `set -e` short-circuits before
   # `kill` at the bottom and leaves rapid-mlx serve running on the
   # port for the NEXT boot_and_prompt call to collide with.
+  #
+  # Round-5 nit: use a cleanup function that reads the pid from a
+  # module-scope variable instead of interpolating pid into the trap
+  # string. Safer if pid is unset/malformed.
   # ─────────────────────────────────────────────────────────────
-  # shellcheck disable=SC2064  # want $pid expanded now
-  trap "kill -TERM ${pid} 2>/dev/null || true; wait ${pid} 2>/dev/null || true; trap - RETURN" RETURN
+  _boot_current_pid=${pid}
+  _cleanup_boot() {
+    if [[ -n "${_boot_current_pid:-}" ]]; then
+      kill -TERM "${_boot_current_pid}" 2>/dev/null || true
+      wait "${_boot_current_pid}" 2>/dev/null || true
+    fi
+    trap - RETURN
+  }
+  trap _cleanup_boot RETURN
 
   # Wait up to 180s for /healthz.
   local start_ts=$SECONDS

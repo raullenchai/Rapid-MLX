@@ -209,14 +209,33 @@ def _load_assistant_config(sidecar_dir: Path) -> dict | None:
 
 
 def _find_safetensors(sidecar_dir: Path) -> Path | None:
-    """Return the first ``.safetensors`` file in the assistant dir."""
+    """Return the sole ``.safetensors`` file in the assistant dir.
+
+    Google's official assistant release ships a single ``model.safetensors``
+    (806 MB for the 12B assistant). If the directory contains multiple
+    ``*.safetensors`` (accidental sharding, mixed downloads), refuse
+    to guess — sharded / indexed loading is out of scope for the MVP
+    consumer and picking the "first" file could silently load the
+    wrong tensors.
+    """
     for name in ("model.safetensors", "model-mtp.safetensors"):
         p = sidecar_dir / name
         if p.exists():
             return p
-    # Fallback: any *.safetensors — Google's release ships single-file.
-    for p in sorted(sidecar_dir.glob("*.safetensors")):
-        return p
+    # Fallback: exactly one *.safetensors (bare-name variant that
+    # Google occasionally publishes). Refuse ambiguity.
+    matches = sorted(sidecar_dir.glob("*.safetensors"))
+    if len(matches) == 1:
+        return matches[0]
+    if len(matches) > 1:
+        logger.warning(
+            "[mtp.inject.gemma4] %s contains %d .safetensors files: %s. "
+            "Refusing to guess — sharded / multi-file assistant loading "
+            "is not supported.",
+            sidecar_dir,
+            len(matches),
+            [p.name for p in matches[:5]],
+        )
     return None
 
 
@@ -576,8 +595,13 @@ def inject_mtp_support(
 
     patch_arrays_cache_rollback_state()
 
-    # ── Attach + monkey-patch the inner class ────────────────────────
-    inner.mtp = assistant
+    # ── Prepare the patched class + delegation ───────────────────────
+    # Class swap and attribute delegation are staged locally, then
+    # committed transactionally at the very end: on any failure the
+    # target model is left bit-for-bit unmodified (codex round-5
+    # blocking fix — a mid-inject exception would previously leave
+    # ``inner.__class__`` swapped + ``inner.mtp`` set even though
+    # ``inject_mtp_support`` returned False).
     original_class = type(inner)
     _target_num_layers = len(getattr(inner.model, "layers", []) or [])
     _n_assistant_layers = len(assistant.model.layers)
@@ -681,6 +705,15 @@ def inject_mtp_support(
                 )
             shared_kv_slots = target_cache[-n_take:]
 
+            # Normalize unbatched shapes — the vendored
+            # ``mtp_generate_step`` uses batched (B=1) tensors, but
+            # defensive handling covers callers that pass raw
+            # ``(T, H)`` / ``(T,)`` arrays.
+            if hidden_states.ndim == 2:
+                hidden_states = hidden_states[None]  # (1, T, H)
+            if next_token_ids.ndim == 1:
+                next_token_ids = next_token_ids[None]  # (1, T)
+
             # Take the LAST position from hidden_states / next_token_ids.
             # The generator only USES the last-position logit anyway,
             # and running a single query means shared_kv offset = target
@@ -717,6 +750,22 @@ def inject_mtp_support(
                     keys = state
                     values = state
                 offset = _mx.array(int(tgt_cache.offset))
+                # mask=None is correct for a SINGLE drafter query
+                # attending to a target cache that only holds
+                # COMMITTED positions:
+                # * Fresh draft path: cache holds [0..main_pos];
+                #   drafter Q is at main_pos+1; attends to
+                #   [0..main_pos]. No future.
+                # * Post-verify path: cache holds
+                #   [0..committed, draft]; drafter Q is at
+                #   draft+1; attends to [0..draft]. Still all
+                #   committed. No future.
+                # * Sliding layers: target uses ``RotatingKVCache``
+                #   which naturally truncates to the window, so
+                #   the K/V slice is already window-bounded.
+                # Adding a causal / sliding mask here would be a
+                # no-op — the cache slice IS the causal / sliding
+                # window.
                 h, _shared, _off = layer(
                     h,
                     mask=None,
@@ -778,26 +827,53 @@ def inject_mtp_support(
 
             return [KVCache() for _ in self.mtp.model.layers]
 
-    inner.__class__ = _Gemma4WithMTP
+    # ── Transactional commit: swap class + delegate surfaces ─────────
+    # Prepare all outer-wrapper delegation methods BEFORE mutating any
+    # inner state. If anything goes wrong (attribute setattr blocked,
+    # method construction fails), abort with the target unmodified.
+    import types as _types
 
-    # Delegate the three attribute surfaces onto the outer wrapper so
-    # ``outer.mtp_forward(...)`` doesn't AttributeError. The extended
-    # ``__call__(return_hidden, n_confirmed)`` signature is deliberately
-    # NOT delegated onto the outer — callers unwrap to inner before
-    # invoking (matches qwen3_5 and PR #989 delegation contract).
-    if model is not inner:
-        import types as _types
+    try:
+        _delegate_forward = None
+        _delegate_cache = None
+        if model is not inner:
 
-        model.mtp = inner.mtp
+            def _delegate_forward(_self, hidden_states, next_token_ids, mtp_cache):
+                return inner.mtp_forward(hidden_states, next_token_ids, mtp_cache)
 
-        def _delegate_mtp_forward(_self, hidden_states, next_token_ids, mtp_cache):
-            return inner.mtp_forward(hidden_states, next_token_ids, mtp_cache)
+            def _delegate_cache(_self):
+                return inner.make_mtp_cache()
 
-        def _delegate_make_mtp_cache(_self):
-            return inner.make_mtp_cache()
-
-        model.mtp_forward = _types.MethodType(_delegate_mtp_forward, model)
-        model.make_mtp_cache = _types.MethodType(_delegate_make_mtp_cache, model)
+        # Commit: class swap first so the surfaces are visible via the
+        # inner's own method resolution, then set attributes on inner
+        # + (optionally) delegate onto the outer.
+        inner.__class__ = _Gemma4WithMTP
+        inner.mtp = assistant
+        if model is not inner:
+            model.mtp = inner.mtp
+            model.mtp_forward = _types.MethodType(_delegate_forward, model)
+            model.make_mtp_cache = _types.MethodType(_delegate_cache, model)
+    except Exception as exc:
+        # Roll back any partial state.
+        try:
+            if type(inner) is _Gemma4WithMTP:
+                inner.__class__ = original_class
+            if hasattr(inner, "mtp"):
+                del inner.mtp
+            if model is not inner:
+                for attr in ("mtp", "mtp_forward", "make_mtp_cache"):
+                    if hasattr(model, attr):
+                        try:
+                            delattr(model, attr)
+                        except AttributeError:  # pragma: no cover
+                            pass
+        except Exception:  # pragma: no cover — best-effort rollback
+            pass
+        logger.warning(
+            "[mtp.inject.gemma4] failed during inject commit; rolled back. Error: %s",
+            exc,
+        )
+        return False
 
     logger.info(
         "[mtp.inject.gemma4] Injected Google assistant drafter "
