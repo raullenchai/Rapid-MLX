@@ -54,10 +54,17 @@ set -euo pipefail
 SIDECAR_PATH="${1:-}"
 if [[ -z "${SIDECAR_PATH}" ]]; then
   echo "Usage: $0 /path/to/gemma-4-12B-it-assistant" >&2
+  echo "       $0 google/gemma-4-12B-it-assistant     # HF repo id also accepted" >&2
   exit 2
 fi
-if [[ ! -d "${SIDECAR_PATH}" ]]; then
-  echo "Sidecar path does not exist: ${SIDECAR_PATH}" >&2
+# Accept either a local directory OR an HF repo id. Repo ids look like
+# 'owner/name' — inject_mtp_support will snapshot_download on demand.
+# Local file paths (single safetensors) are also accepted by the
+# resolver, so we only fail-fast on an obvious 'file does not exist'
+# spelling — anything else is passed through to inject_mtp_support to
+# surface the specific error.
+if [[ "${SIDECAR_PATH}" != */* ]] && [[ ! -d "${SIDECAR_PATH}" ]] && [[ ! -f "${SIDECAR_PATH}" ]]; then
+  echo "Sidecar path does not exist and does not look like an HF repo id: ${SIDECAR_PATH}" >&2
   exit 2
 fi
 

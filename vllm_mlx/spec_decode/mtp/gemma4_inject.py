@@ -576,9 +576,15 @@ def inject_mtp_support(
             cache=None,
             input_embeddings=None,
             per_layer_inputs=None,
+            *args,
             return_hidden: bool = False,
             n_confirmed: int = 0,
+            **kwargs,
         ):
+            # Forward any positional / keyword args mlx-lm might add in
+            # a future gemma4_text.Model.__call__ revision — this
+            # patched shape adds ``return_hidden`` + ``n_confirmed``
+            # only, and refuses to mask new base-model kwargs.
             # Stash target cache for mtp_forward — read-only reference,
             # single-request scheduler flow (no concurrent MTP).
             self._mtp_target_cache = cache
@@ -587,9 +593,11 @@ def inject_mtp_support(
             # what we feed to ``pre_projection`` on the drafter side.
             hidden = self.model(
                 inputs,
+                *args,
                 cache=cache,
                 input_embeddings=input_embeddings,
                 per_layer_inputs=per_layer_inputs,
+                **kwargs,
             )
             # Logits path — matches mlx_lm gemma4_text.Model.__call__:
             # tied embed_tokens.as_linear + optional softcap.
@@ -702,6 +710,18 @@ def inject_mtp_support(
 
         def make_mtp_cache(self):
             """Empty KVCache slots — safe no-ops for the generator.
+
+            **Length note:** returns one slot per ASSISTANT layer (4
+            for Gemma 4), NOT one per target layer. This matches the
+            Qwen3.5 contract (``[KVCache() for _ in self.mtp.layers]``
+            in ``qwen3_5_inject``) and the generator's own split:
+            ``model_cache = prompt_cache[:n_main]; mtp_cache =
+            prompt_cache[n_main:] or model.make_mtp_cache()``, where
+            ``n_main == len(model.layers)`` is target-layer count.
+            The generator's ``quantize_cache_fn`` and ``_prefill``
+            walks operate on both lists independently, so a size
+            mismatch between them is expected and correct.
+            ``_rollback_draft`` walks ``model_cache`` only.
 
             The drafter reads K/V from TARGET's cache; its own MTP
             cache is never written into by ``mtp_forward`` above. But
