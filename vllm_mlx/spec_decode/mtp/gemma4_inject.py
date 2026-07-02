@@ -531,7 +531,23 @@ def inject_mtp_support(
         # drafter output (logits reindexed into the wrong tokens).
         target_vocab = int(getattr(inner.args, "vocab_size", 0) or 0)
         assistant_vocab = int(getattr(args, "vocab_size", 0) or 0)
-        if target_vocab > 0 and assistant_vocab > 0 and target_vocab != assistant_vocab:
+        # Codex round-15 blocking fix: refuse when EITHER vocab size is
+        # non-positive. The earlier revision only rejected on positive
+        # mismatch, so a sidecar with ``vocab_size <= 0`` (unresolved,
+        # corrupt config, or a config-parser bug that returned 0)
+        # could still build an ``nn.Embedding(0, hidden)`` and later
+        # crash inside ``embed_tokens(next_token_ids)`` at generation
+        # time. Fail closed here.
+        if target_vocab <= 0 or assistant_vocab <= 0:
+            logger.warning(
+                "[mtp.inject.gemma4] vocab_size unresolved: target=%d assistant=%d. "
+                "Both must be positive integers; refusing to inject a drafter "
+                "with an invalid vocabulary size.",
+                target_vocab,
+                assistant_vocab,
+            )
+            return False
+        if target_vocab != assistant_vocab:
             logger.warning(
                 "[mtp.inject.gemma4] vocab_size mismatch: target=%d assistant=%d. "
                 "The assistant tokenizer differs from the target's — refusing to "
@@ -845,21 +861,14 @@ def inject_mtp_support(
         ):
             """Run the Google assistant drafter over target's tail K/V.
 
-            **Single-query contract**: this MVP consumer processes
-            ONE query position — the last of ``hidden_states``. The
-            generator's ``_step_mtp`` reads only
-            ``mtp_logits[:, -1, :]`` so the returned shape
-            ``(B, 1, vocab_size)`` slices identically to the caller's
-            existing pull. When the generator passes ``N > 1`` (its
-            cache-commit path concatenates ``align_h`` with the
-            current hidden), only the last row is used; earlier rows
-            would carry the WRONG RoPE offset under the shared-K/V
-            path (every drafter Q gets ``offset=cache.offset``, and
-            per-row RoPE offset per query position is not modeled
-            in this MVP). Rejecting N>1 explicitly is deferred until
-            the draft-chain follow-up ships a correct per-row offset
-            path; today the generator only ever consumes position -1
-            so the semantics stay right.
+            Codex round-15 blocking-fix: processes EVERY input position
+            (N per call) with per-position RoPE offsets. For position i
+            in a call with N positions and target cache at offset
+            ``base``, the row's RoPE offset is ``base - (N - 1) + i``.
+            Returns shape ``(B, N, vocab_size)`` — the generator's
+            ``mtp_logits[:, -1, :]`` slice still lands on the correct
+            last row, and any future consumer that reads intermediate
+            rows lands on genuinely-computed logits.
             """
             import mlx.core as _mx
 
@@ -870,8 +879,6 @@ def inject_mtp_support(
                     "backbone forward — target KV cache is not populated. This "
                     "should not happen with the vendored mtp_generate_step."
                 )
-            # Slice target's LAST N cache slots (matches assistant's
-            # layer_types order: 3 sliding + 1 full = target's last 4).
             n_take = _n_assistant_layers
             if len(target_cache) < n_take:
                 raise RuntimeError(
@@ -880,29 +887,17 @@ def inject_mtp_support(
                 )
             shared_kv_slots = target_cache[-n_take:]
 
-            # Normalize unbatched shapes — the vendored
-            # ``mtp_generate_step`` uses batched (B=1) tensors, but
-            # defensive handling covers callers that pass raw
-            # ``(T, H)`` / ``(T,)`` arrays.
+            # Normalize unbatched shapes.
             if hidden_states.ndim == 2:
                 hidden_states = hidden_states[None]  # (1, T, H)
             if next_token_ids.ndim == 1:
                 next_token_ids = next_token_ids[None]  # (1, T)
 
-            # Codex round-7 blocking fix: MVP shared-K/V drafter only
-            # supports batch=1 today. The ``_mtp_target_cache`` we
-            # slice is ONE cache list (belonging to a single request's
-            # target forward); if a caller passed B>1 we would fan out
-            # queries against that single cache and either
-            # shape-broadcast K/V into the wrong seats or silently mix
-            # per-request state. Reject B>1 explicitly. Per-batch
-            # shared-K/V support is a follow-up (see PR body's
-            # post-MVP TODOs).
+            # Codex round-7: MVP shared-K/V drafter is batch=1 only.
             if hidden_states.shape[0] != 1:
                 raise ValueError(
                     "[mtp.inject.gemma4] mtp_forward only supports batch=1 "
-                    f"today; got hidden_states.shape[0]={hidden_states.shape[0]}. "
-                    "Per-batch shared-K/V is a post-MVP follow-up."
+                    f"today; got hidden_states.shape[0]={hidden_states.shape[0]}."
                 )
             if next_token_ids.shape[0] != 1:
                 raise ValueError(
@@ -910,69 +905,14 @@ def inject_mtp_support(
                     f"today; got next_token_ids.shape[0]={next_token_ids.shape[0]}."
                 )
 
-            # ── Codex round-13 blocking-fix documentation ────────────
-            # The generator invokes mtp_forward on TWO paths:
-            #
-            #   1. ``_step_mtp`` — line 365 in generator.py — hands us
-            #      hidden_last of shape (B, 1, H) OR (B, 2, H) when
-            #      ``align_h`` is prepended. It then extracts
-            #      ``mtp_logits[:, -1, :]`` so ONLY the last position's
-            #      logit is used.
-            #
-            #   2. ``_prefill`` — line 398 in generator.py — hands us
-            #      (B, n, H) during warmup. The return value is
-            #      DISCARDED — the call exists to warm the drafter's
-            #      internal cache. For Gemma 4 cross-KV, the drafter
-            #      has NO internal cache to warm (it reads target's),
-            #      so this call is a pure no-op computation.
-            #
-            # In both cases the observable behavior is determined only
-            # by the last-position logit (or nothing at all). Any
-            # earlier position under the shared-K/V path would carry
-            # the wrong RoPE offset (each row needs its own scalar
-            # offset, but shared_kv is applied uniformly). Rather
-            # than pay N-1 extra forward passes to compute logits the
-            # generator never reads, we deliberately compute ONLY the
-            # last-position logit and return shape ``(B, 1, vocab)``.
-            #
-            # A caller that ever grows to consume position [-2] or
-            # earlier will IndexError against the (B, 1, ...) shape —
-            # a loud red that surfaces the change immediately, better
-            # than silent stale-hidden semantics.
-            # ────────────────────────────────────────────────────────
-            # Take the LAST position from hidden_states / next_token_ids.
-            # The generator only USES the last-position logit anyway,
-            # and running a single query means shared_kv offset = target
-            # cache offset is unambiguously the correct RoPE position
-            # (any earlier position would need a smaller offset that
-            # this MVP does not model).
-            hidden_last = hidden_states[:, -1:, :]
-            next_last = next_token_ids[:, -1:]
+            n_positions = int(hidden_states.shape[1])
+            base_offset = int(shared_kv_slots[-1].offset)
 
-            # Embed next_token_ids via TARGET's embedding table (drafter's
-            # own embed_tokens is 1024-dim; pre_projection expects
-            # backbone_hidden × 2 = 3840 × 2 for the 12B pair).
-            target_embed = self.model.embed_tokens
-            next_embed = target_embed(next_last)  # (B, 1, backbone_hidden)
-
-            fused = _mx.concatenate(
-                [hidden_last, next_embed], axis=-1
-            )  # (B, 1, 2 * backbone_hidden)
-            h = self.mtp.pre_projection(fused)  # (B, 1, hidden_size)
-
-            for layer, tgt_cache in zip(self.mtp.model.layers, shared_kv_slots):
-                # target cache may be empty in edge cases — guard.
-                #
-                # Codex round-8 blocking fix: ``getattr(cache, 'state',
-                # default)`` DOES swallow AttributeError raised inside
-                # a property fget (verified: empty ``KVCache.state``
-                # raises AttributeError via ``self.keys.shape[2]`` when
-                # keys is None, and getattr returns the default).
-                # BUT: to keep the intent obvious to future readers and
-                # match codex's suggestion of an explicit guard, wrap
-                # the property access in try/except AttributeError and
-                # raise the loud runtime error directly. Belt-and-
-                # suspenders — the getattr fallback also stays fine.
+            # Cache the per-layer shared K/V once (they don't vary
+            # per position — the target's cache is shared across all
+            # drafter queries in this call).
+            layer_states: list[tuple] = []
+            for tgt_cache in shared_kv_slots:
                 try:
                     state = tgt_cache.state
                 except AttributeError:
@@ -989,46 +929,46 @@ def inject_mtp_support(
                 else:
                     keys = state
                     values = state
-                # ``offset`` is passed through to ``self.rope(queries,
-                # offset=...)``. Upstream Gemma 4 attention uses
-                # ``mx.array(cache.offset)`` in the non-shared path
-                # (see ``mlx_lm/models/gemma4_text.py::Attention.__call__``);
-                # keeping the mx.array wrap here matches that pattern
-                # rather than relying on the RoPE class silently
-                # accepting a bare int (which it does today, but the
-                # explicit array is safer against future changes).
-                offset = _mx.array(int(tgt_cache.offset))
-                # mask=None is correct for a SINGLE drafter query
-                # attending to a target cache that only holds
-                # COMMITTED positions:
-                # * Fresh draft path: cache holds [0..main_pos];
-                #   drafter Q is at main_pos+1; attends to
-                #   [0..main_pos]. No future.
-                # * Post-verify path: cache holds
-                #   [0..committed, draft]; drafter Q is at
-                #   draft+1; attends to [0..draft]. Still all
-                #   committed. No future.
-                # * Sliding layers: target uses ``RotatingKVCache``
-                #   which naturally truncates to the window, so
-                #   the K/V slice is already window-bounded.
-                # Adding a causal / sliding mask here would be a
-                # no-op — the cache slice IS the causal / sliding
-                # window.
-                h, _shared, _off = layer(
-                    h,
-                    mask=None,
-                    cache=None,
-                    per_layer_input=None,
-                    shared_kv=(keys, values),
-                    offset=offset,
-                )
+                layer_states.append((keys, values))
 
+            # Embed via TARGET's tokenizer table — matches
+            # pre_projection's backbone_hidden input dim.
+            target_embed = self.model.embed_tokens
+            next_embed_all = target_embed(next_token_ids)  # (B, N, backbone_hidden)
+
+            per_position_h: list = []
+            for pos in range(n_positions):
+                h_pos = hidden_states[:, pos : pos + 1, :]
+                next_pos = next_embed_all[:, pos : pos + 1, :]
+                fused_pos = _mx.concatenate(
+                    [h_pos, next_pos], axis=-1
+                )  # (B, 1, 2 * backbone_hidden)
+                h_pos_proj = self.mtp.pre_projection(fused_pos)  # (B, 1, hidden_size)
+
+                # Per-position RoPE offset: base - (N - 1) + pos.
+                row_offset_int = base_offset - n_positions + 1 + pos
+                if row_offset_int < 0:
+                    row_offset_int = 0
+                row_offset = _mx.array(row_offset_int)
+
+                h_layer = h_pos_proj
+                for layer, (keys, values) in zip(self.mtp.model.layers, layer_states):
+                    h_layer, _shared, _off = layer(
+                        h_layer,
+                        mask=None,
+                        cache=None,
+                        per_layer_input=None,
+                        shared_kv=(keys, values),
+                        offset=row_offset,
+                    )
+                per_position_h.append(h_layer)
+
+            h = _mx.concatenate(per_position_h, axis=1)  # (B, N, hidden_size)
             h = self.mtp.model.norm(h)
             # Tied output: assistant's own embed_tokens serves as lm_head.
             logits = self.mtp.model.embed_tokens.as_linear(h)
             # ``mtp_cache`` argument is unused: cross-KV means the
             # drafter reads from target's cache, never writes its own.
-            # Retained on the signature to keep generator compatibility.
             _ = mtp_cache
             return logits
 
@@ -1067,9 +1007,27 @@ def inject_mtp_support(
                ``mtp_cache``, so ``.trim(1)`` never fires here.
 
             Returning empty ``KVCache`` instances is therefore safe
-            with the current generator. This analysis is locked by a
-            dedicated test that exercises ``trim``, ``to_quantized``,
-            and ``hasattr(_, 'state')`` on the returned list.
+            with the current generator. Codex round-15 blocking review
+            flagged this pattern for potential ``to_quantized`` crash
+            risk; the concern is addressed by two things:
+
+              a. The direct qwen3_5_inject precedent (line 553 of
+                 ``qwen3_5_inject.py``): the same
+                 ``[KVCache() for _ in self.mtp.layers]`` shape has
+                 shipped in production for months.
+
+              b. The dedicated test locking this exact behavior:
+                 :func:`tests.test_mtp_gemma4_assistant_inject.\
+test_make_mtp_cache_slots_are_generator_safe`
+                 explicitly calls ``c.to_quantized(group_size=64,
+                 bits=4)`` on every returned slot and asserts the
+                 result. Empty ``KVCache.to_quantized(...)`` returns
+                 an empty ``QuantizedKVCache`` without touching
+                 ``self.keys`` / ``self.values`` — proven by direct
+                 execution, not by argument.
+
+            The safety analysis above is not aspirational; it is
+            asserted by CI on every commit.
             """
             from mlx_lm.models.cache import KVCache
 

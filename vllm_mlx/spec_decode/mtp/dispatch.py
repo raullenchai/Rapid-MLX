@@ -148,9 +148,16 @@ def dispatch_mtp_inject(
         return False
 
     module_path, func_name = key
+    # Codex round-15 nit fix: family modules may raise ANY exception
+    # at import time (dependency import errors, syntax errors on a
+    # broken feature branch, top-level code that raises). The
+    # dispatcher's own docstring promises "Never raises"; catching
+    # only ``ImportError`` here would let a bare-``Exception`` module
+    # bug escape the boundary. Match the ``except Exception`` used
+    # later around the family call.
     try:
         module = importlib.import_module(module_path)
-    except ImportError as exc:
+    except Exception as exc:
         logger.warning(
             "[mtp.dispatch] could not import %s for model_type=%r: %s",
             module_path,
@@ -206,9 +213,12 @@ def dispatch_mtp_validate(model: Any, model_type: str) -> bool:
         return False
 
     module_path, func_name = key
+    # Codex round-15 nit fix: mirror the ``except Exception`` guard
+    # applied above on the inject side. Any import-time failure in the
+    # family module (not just ImportError) must land as a clean False.
     try:
         module = importlib.import_module(module_path)
-    except ImportError as exc:
+    except Exception as exc:
         logger.warning(
             "[mtp.dispatch] could not import %s for validator: %s",
             module_path,

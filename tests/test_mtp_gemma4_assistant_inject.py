@@ -1210,16 +1210,20 @@ def _build_matched_head_dim_target_model():
     return Model(args)
 
 
-def test_mtp_forward_returns_single_last_position_shape():
-    """Codex round-13/14 blocking-fix documentation locked in.
+def test_mtp_forward_returns_per_position_shape():
+    """Codex round-15 blocking-fix contract locked in.
 
-    ``mtp_forward`` computes ONLY the last-position logit under the
-    shared-K/V path (per-row RoPE offsets would need N separate
-    forward passes; the generator discards intermediate positions).
-    Assert the returned shape is (B, 1, vocab) regardless of the
-    input N so any future caller that reads position != -1 will
-    IndexError against the (B, 1, ...) shape — a loud red rather
-    than silent stale-hidden semantics.
+    ``mtp_forward`` computes EVERY input position (N per call) with
+    per-position RoPE offsets. For a call with N positions and target
+    cache at ``base`` offset, the row at position i uses RoPE offset
+    ``base - (N - 1) + i``. Returns shape (B, N, vocab) — the
+    generator's ``mtp_logits[:, -1, :]`` slice still lands on the
+    correct last row, AND any future consumer that reads intermediate
+    rows lands on genuinely-computed logits (not stale hidden state).
+
+    Prior rounds (13/14) had mtp_forward return only (B, 1, vocab)
+    for the last position, which codex round-15 flagged as violating
+    the mlx_lm mtp_generate_step contract.
 
     Codex round-14: uses a matched-head_dim target so the forward
     actually runs (previous try/except skip would have masked a
@@ -1247,20 +1251,115 @@ def test_mtp_forward_returns_single_last_position_shape():
     tgt_caches = []
     for _ in range(n_target_layers):
         c = KVCache()
-        k = mx.random.normal((1, n_kv, 1, head_dim))
-        v = mx.random.normal((1, n_kv, 1, head_dim))
+        # Prime with T=3 so base offset is non-trivial and per-position
+        # offsets exercise the row_offset arithmetic in mtp_forward.
+        k = mx.random.normal((1, n_kv, 3, head_dim))
+        v = mx.random.normal((1, n_kv, 3, head_dim))
         c.update_and_fetch(k, v)
         tgt_caches.append(c)
     target._mtp_target_cache = tgt_caches
 
-    # Pass N=2 hidden — mtp_forward should still return (B, 1, vocab).
+    # Pass N=2 hidden — mtp_forward should return (B, N, vocab).
     h = mx.random.normal((1, 2, inner_args.hidden_size))
     ids = mx.zeros((1, 2), dtype=mx.int32)
     mtp_cache = target.make_mtp_cache()
     # No try/except — any failure here means mtp_forward is broken
-    # and the test MUST fail (codex round-14 blocking-fix).
+    # and the test MUST fail (codex round-14/15 blocking-fix).
     out = target.mtp_forward(h, ids, mtp_cache)
-    # (B, 1, vocab) — last-position-only contract.
+    # (B, N, vocab) — per-position contract; N matches input.
     assert out.shape[0] == 1
-    assert out.shape[1] == 1, f"expected N=1 output, got shape {out.shape}"
+    assert out.shape[1] == 2, f"expected N=2 output, got shape {out.shape}"
     assert out.shape[2] == inner_args.vocab_size
+
+    # Also verify N=1 (the generator's steady-state single-token
+    # decode) still returns (B, 1, vocab).
+    h1 = mx.random.normal((1, 1, inner_args.hidden_size))
+    ids1 = mx.zeros((1, 1), dtype=mx.int32)
+    out1 = target.mtp_forward(h1, ids1, target.make_mtp_cache())
+    assert out1.shape == (1, 1, inner_args.vocab_size)
+
+
+def test_inject_refuses_sidecar_with_nonpositive_vocab_size(tmp_path):
+    """Codex round-15 blocking-fix locked in.
+
+    The vocab compatibility guard must refuse when EITHER
+    ``target_vocab`` or ``assistant_vocab`` is non-positive. Prior
+    revisions only rejected on positive-vs-positive mismatch, so a
+    sidecar with ``vocab_size <= 0`` (unresolved config, corrupt
+    config, or a config-parser bug) could still slip through and
+    later crash inside ``embed_tokens`` at generation time.
+    """
+    from mlx.utils import tree_flatten
+
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+        _build_assistant_model,
+        _build_assistant_model_args,
+        inject_mtp_support,
+    )
+
+    # Build a sidecar config with vocab_size=0 (the "unresolved" case).
+    # We never reach the weight-load step, so a dummy safetensors is
+    # enough to pass the ``_find_safetensors`` gate. inject_mtp_support
+    # must refuse at the vocab guard (step 7) before touching
+    # ``_build_assistant_model`` or ``mx.load``.
+    cfg = _google_shaped_assistant_config(hidden=64, backbone=128, n_layers=4)
+    cfg["text_config"]["vocab_size"] = 0
+    _ = tree_flatten  # keep import used across other tests
+
+    sidecar_dir = tmp_path / "vocab-zero-assistant"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    (sidecar_dir / "config.json").write_text(json.dumps(cfg))
+    # Dummy safetensors — a single non-empty tensor; contents are
+    # irrelevant because inject_mtp_support refuses before mx.load().
+    mx.save_safetensors(
+        str(sidecar_dir / "model.safetensors"),
+        {"_placeholder": mx.zeros((1, 1))},
+    )
+    # Sanity: _build_assistant_model_args should still accept
+    # vocab_size=0 (returning args with vocab_size=0), because the
+    # vocab guard lives in inject_mtp_support at line ~532.
+    args = _build_assistant_model_args(cfg, target_backbone_hidden=128)
+    if args is None:
+        pytest.skip(
+            "_build_assistant_model_args also refuses vocab_size=0 (equally OK)."
+        )
+    assert int(getattr(args, "vocab_size", -1)) == 0
+    _ = _build_assistant_model  # silence unused warning
+
+    try:
+        target = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    ok = inject_mtp_support(target, mtp_sidecar=str(sidecar_dir))
+    assert ok is False, "vocab_size<=0 must fail closed"
+
+
+def test_dispatcher_swallows_family_import_exception(monkeypatch):
+    """Codex round-15 nit-fix locked in.
+
+    ``dispatch_mtp_inject`` documents "Never raises". Prior revision
+    only caught ``ImportError`` around ``importlib.import_module``, so
+    a family module that raised (e.g.) ``RuntimeError`` at import
+    time would escape the dispatcher. Verify that any exception at
+    import time is swallowed to a clean ``False``.
+    """
+    import importlib as _il
+
+    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
+
+    def _boom(name):
+        raise RuntimeError(f"synthetic import failure for {name}")
+
+    monkeypatch.setattr(_il, "import_module", _boom)
+
+    ok = _dispatch.dispatch_mtp_inject(
+        model=object(),
+        model_type="gemma4",
+        mtp_sidecar=None,
+        allow_random_init=False,
+    )
+    assert ok is False, "non-ImportError at import time must land as False"
+
+    ok_v = _dispatch.dispatch_mtp_validate(model=object(), model_type="gemma4")
+    assert ok_v is False, "non-ImportError at import time must land as False (validate)"

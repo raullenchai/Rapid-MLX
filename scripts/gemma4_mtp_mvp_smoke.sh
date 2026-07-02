@@ -222,7 +222,10 @@ extract_content() {
   if command -v jq > /dev/null 2>&1; then
     jq -r '.choices[0].message.content // .choices[0].delta.content // ""' "$1"
   else
-    python3 -c "import json, sys; d=json.load(open(sys.argv[1])); \
+    # Codex round-15 nit fix: close the file handle via ``with open``.
+    python3 -c "import json, sys
+with open(sys.argv[1]) as f:
+    d = json.load(f)
 print((d.get('choices') or [{}])[0].get('message', {}).get('content', ''))" "$1"
   fi
 }
