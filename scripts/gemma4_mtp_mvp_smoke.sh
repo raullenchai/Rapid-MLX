@@ -57,14 +57,19 @@ if [[ -z "${SIDECAR_PATH}" ]]; then
   echo "       $0 google/gemma-4-12B-it-assistant     # HF repo id also accepted" >&2
   exit 2
 fi
-# Accept either a local directory OR an HF repo id. Repo ids look like
-# 'owner/name' — inject_mtp_support will snapshot_download on demand.
-# Local file paths (single safetensors) are also accepted by the
-# resolver, so we only fail-fast on an obvious 'file does not exist'
-# spelling — anything else is passed through to inject_mtp_support to
-# surface the specific error.
-if [[ "${SIDECAR_PATH}" != */* ]] && [[ ! -d "${SIDECAR_PATH}" ]] && [[ ! -f "${SIDECAR_PATH}" ]]; then
-  echo "Sidecar path does not exist and does not look like an HF repo id: ${SIDECAR_PATH}" >&2
+# Accept either a local directory OR a local safetensors file OR an
+# HF repo id ('owner/name'). Existing local paths (with or without
+# a slash) are accepted first so bare names like
+# 'gemma-4-12B-it-assistant' in the working directory don't get
+# misclassified. Only if the argument is neither an existing path
+# nor an HF-repo-id-shape do we fail fast; anything else is passed
+# to inject_mtp_support which surfaces a family-specific error.
+if [[ -d "${SIDECAR_PATH}" ]] || [[ -f "${SIDECAR_PATH}" ]]; then
+  : # local path — accept
+elif [[ "${SIDECAR_PATH}" == */* ]]; then
+  : # looks like HF repo id — accept, snapshot_download will handle it
+else
+  echo "Sidecar '${SIDECAR_PATH}' is neither an existing local path nor an HF repo id (owner/name)." >&2
   exit 2
 fi
 

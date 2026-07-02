@@ -537,15 +537,30 @@ def inject_mtp_support(
                 sorted(missing)[:8],
             )
             return False
+        # ``strict=False`` tolerates EXTRA keys that our AssistantModel
+        # doesn't consume (metadata / centroid tables that Google
+        # publishes but this MVP consumer doesn't load). We already
+        # asserted no REQUIRED keys are missing, so ``strict=False``
+        # cannot mask a partial-load bug. Extras are elevated from
+        # INFO to WARNING per codex round-4 so the operator sees them.
         assistant.load_weights(list(raw.items()), strict=False)
         mx.eval(assistant.parameters())
         extra = loaded_keys - expected_keys
+        if extra:
+            logger.warning(
+                "[mtp.inject.gemma4] sidecar %s carries %d tensor(s) the MVP "
+                "consumer does not load (first 8: %s). Loading continues; "
+                "review the follow-up TODOs (centroid embedder / draft chain) "
+                "before treating these as unused.",
+                weights_file.name,
+                len(extra),
+                sorted(extra)[:8],
+            )
         logger.info(
-            "[mtp.inject.gemma4] Loaded %d/%d assistant tensors from %s%s",
+            "[mtp.inject.gemma4] Loaded %d/%d assistant tensors from %s",
             len(expected_keys),
             len(expected_keys),
             weights_file.name,
-            f" (+{len(extra)} extra ignored)" if extra else "",
         )
     else:
         mx.eval(assistant.parameters())
@@ -586,14 +601,14 @@ def inject_mtp_support(
             # patched shape adds ``return_hidden`` + ``n_confirmed``
             # only, and refuses to mask new base-model kwargs.
             # Stash target cache for mtp_forward — read-only reference,
-            # single-request scheduler flow (no concurrent MTP). Only
-            # overwrite when the caller supplied a real cache; never
-            # None-clobber a previously-stashed populated cache (the
-            # cache is populated by earlier target forwards and read
-            # by the very next mtp_forward — losing that reference
-            # via ``cache=None`` on a stray call would break MTP).
-            if cache is not None:
-                self._mtp_target_cache = cache
+            # single-request scheduler flow (no concurrent MTP).
+            # Always overwrite: a subsequent target forward for a
+            # different request must NOT let mtp_forward read K/V
+            # from a stale prior-request cache. When ``cache is
+            # None`` (e.g. a stray forward outside the MTP loop), we
+            # store None too; mtp_forward validates and raises a
+            # clear error rather than reusing stale state.
+            self._mtp_target_cache = cache
             # Run the target's backbone directly to get pre-lm-head
             # hidden — inner.model returns ``norm(h)`` which is exactly
             # what we feed to ``pre_projection`` on the drafter side.
