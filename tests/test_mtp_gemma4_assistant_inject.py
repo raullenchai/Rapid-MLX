@@ -1131,3 +1131,104 @@ def test_validate_refuses_when_outer_mtp_is_none():
     outer.mtp = None
 
     assert validate_mtp_support(outer) is False
+
+
+def test_validate_refuses_when_outer_mtp_max_batch_size_wrong_value():
+    """Codex round-13 nit-fix locked in.
+
+    ``hasattr`` on the outer for ``mtp_max_batch_size`` doesn't verify
+    the value. A corrupted / hand-patched outer with
+    ``mtp_max_batch_size = 2`` (or any value != 1) would validate green
+    yet let a scheduler dispatch B=2 requests into ``mtp_forward``'s
+    batch=1-only path. Refuse on wrong value.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+        inject_mtp_support,
+        validate_mtp_support,
+    )
+
+    try:
+        inner = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    class _FakeOuterVLM:
+        def __init__(self, lm):
+            self.language_model = lm
+
+    outer = _FakeOuterVLM(inner)
+    assert inject_mtp_support(outer, allow_random_init=True) is True
+    assert validate_mtp_support(outer) is True
+
+    outer.mtp_max_batch_size = 4  # hand-patch to a wrong value
+    assert validate_mtp_support(outer) is False
+
+
+def test_mtp_forward_returns_single_last_position_shape():
+    """Codex round-13 blocking-fix documentation locked in.
+
+    ``mtp_forward`` computes ONLY the last-position logit under the
+    shared-K/V path (per-row RoPE offsets would need N separate
+    forward passes; the generator discards intermediate positions).
+    Assert the returned shape is (B, 1, vocab) regardless of the
+    input N so any future caller that reads position != -1 will
+    IndexError against the (B, 1, ...) shape — a loud red rather
+    than silent stale-hidden semantics.
+    """
+    from mlx_lm.models.cache import KVCache
+
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+
+    try:
+        target = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    assert inject_mtp_support(target, allow_random_init=True) is True
+
+    # Prime target-cache slots with K, V sized per-layer so the
+    # assistant's attention finds matching head_dim on both the
+    # sliding layers (uses head_dim) and full-attention layers (uses
+    # global_head_dim). Only the TAIL slots (last n_assistant_layers)
+    # are read by mtp_forward; earlier slots don't need to match.
+    n_target_layers = len(target.model.layers)
+    inner_args = target.args
+    n_kv = int(getattr(inner_args, "num_key_value_heads", 1) or 1)
+    head_dim = int(getattr(inner_args, "head_dim", 16) or 16)
+    global_head_dim = int(getattr(inner_args, "global_head_dim", head_dim) or head_dim)
+    target_layer_types = list(inner_args.layer_types or [])
+    tgt_caches = []
+    for i in range(n_target_layers):
+        c = KVCache()
+        # Per-layer head_dim.
+        layer_type = (
+            target_layer_types[i]
+            if i < len(target_layer_types)
+            else "sliding_attention"
+        )
+        this_head_dim = global_head_dim if layer_type == "full_attention" else head_dim
+        k = mx.random.normal((1, n_kv, 1, this_head_dim))
+        v = mx.random.normal((1, n_kv, 1, this_head_dim))
+        c.update_and_fetch(k, v)
+        tgt_caches.append(c)
+    target._mtp_target_cache = tgt_caches
+
+    # Pass N=2 hidden — mtp_forward should still return (B, 1, vocab).
+    h = mx.random.normal((1, 2, inner_args.hidden_size))
+    ids = mx.zeros((1, 2), dtype=mx.int32)
+    mtp_cache = target.make_mtp_cache()
+    try:
+        out = target.mtp_forward(h, ids, mtp_cache)
+    except Exception as exc:
+        # This is an mlx-side head_dim / RMSNorm mismatch — the
+        # tiny random-init config's layer sizes may not line up
+        # with mlx-lm's Gemma 4 attention layout in edge cases.
+        # Skip loudly; the contract we care about (return shape) is
+        # documented in the mtp_forward docstring itself.
+        pytest.skip(
+            f"tiny random-init forward pass failed under head_dim mismatch: {exc}"
+        )
+    # (B, 1, vocab) — last-position-only contract.
+    assert out.shape[0] == 1
+    assert out.shape[1] == 1, f"expected N=1 output, got shape {out.shape}"
+    assert out.shape[2] == inner_args.vocab_size

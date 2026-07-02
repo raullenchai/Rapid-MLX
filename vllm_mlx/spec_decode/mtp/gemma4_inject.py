@@ -894,6 +894,36 @@ def inject_mtp_support(
                     f"today; got next_token_ids.shape[0]={next_token_ids.shape[0]}."
                 )
 
+            # ── Codex round-13 blocking-fix documentation ────────────
+            # The generator invokes mtp_forward on TWO paths:
+            #
+            #   1. ``_step_mtp`` — line 365 in generator.py — hands us
+            #      hidden_last of shape (B, 1, H) OR (B, 2, H) when
+            #      ``align_h`` is prepended. It then extracts
+            #      ``mtp_logits[:, -1, :]`` so ONLY the last position's
+            #      logit is used.
+            #
+            #   2. ``_prefill`` — line 398 in generator.py — hands us
+            #      (B, n, H) during warmup. The return value is
+            #      DISCARDED — the call exists to warm the drafter's
+            #      internal cache. For Gemma 4 cross-KV, the drafter
+            #      has NO internal cache to warm (it reads target's),
+            #      so this call is a pure no-op computation.
+            #
+            # In both cases the observable behavior is determined only
+            # by the last-position logit (or nothing at all). Any
+            # earlier position under the shared-K/V path would carry
+            # the wrong RoPE offset (each row needs its own scalar
+            # offset, but shared_kv is applied uniformly). Rather
+            # than pay N-1 extra forward passes to compute logits the
+            # generator never reads, we deliberately compute ONLY the
+            # last-position logit and return shape ``(B, 1, vocab)``.
+            #
+            # A caller that ever grows to consume position [-2] or
+            # earlier will IndexError against the (B, 1, ...) shape —
+            # a loud red that surfaces the change immediately, better
+            # than silent stale-hidden semantics.
+            # ────────────────────────────────────────────────────────
             # Take the LAST position from hidden_states / next_token_ids.
             # The generator only USES the last-position logit anyway,
             # and running a single query means shared_kv offset = target
@@ -1197,6 +1227,22 @@ def validate_mtp_support(model: Any) -> bool:
             logger.warning(
                 "[mtp.validate.gemma4] outer wrapper's ``mtp`` attribute is "
                 "None; drafter is not attached."
+            )
+            return False
+        # Codex round-13 nit fix: verify ``mtp_max_batch_size`` value
+        # (not just presence). A corrupted / hand-patched outer with
+        # ``mtp_max_batch_size = 2`` (or any other truthy value) would
+        # pass ``hasattr`` but let a scheduler dispatch B=2 requests
+        # into ``mtp_forward``'s B=1-only path. Require the exact
+        # value the inject commit path set.
+        outer_max_batch = getattr(model, "mtp_max_batch_size", None)
+        if outer_max_batch != 1:
+            logger.warning(
+                "[mtp.validate.gemma4] outer wrapper's mtp_max_batch_size=%r "
+                "does not equal 1 (the value the inject path sets). This "
+                "would let schedulers dispatch B>1 requests into the "
+                "batch=1-only mtp_forward path.",
+                outer_max_batch,
             )
             return False
         if not callable(getattr(model, "mtp_forward", None)):

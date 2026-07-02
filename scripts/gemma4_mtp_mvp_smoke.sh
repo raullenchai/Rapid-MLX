@@ -40,11 +40,15 @@
 #      --spec-decode mtp --mtp-sidecar $1 --mtp-num-draft-tokens 4``
 #      and waits for the "Server ready" health probe.
 #   2. Sends a fixed prompt to /v1/chat/completions with temperature 0
-#      and captures the raw token stream.
+#      and captures the FINAL completion text (choices[0].message.content).
 #   3. Second run: same but WITHOUT ``--enable-mtp`` — the baseline.
-#   4. Diffs the two token streams byte-for-byte. A mismatch fails the
-#      smoke — the MTP lossless contract requires bit-identical output
-#      at temp=0.
+#   4. Diffs the two FINAL completion strings byte-for-byte. A mismatch
+#      fails the smoke — the MTP lossless contract requires bit-
+#      identical FINAL TEXT at temp=0. This smoke does NOT compare
+#      per-token streaming order (see codex round-13 note): a
+#      tokenizer / streaming-order regression that produces the same
+#      final text will pass this smoke; catching those regressions
+#      requires a separate SSE / event-stream contract test.
 #   5. Reports accept rate + tok/s from Prometheus
 #      ``rapid_mlx_spec_decode_*``.
 
@@ -250,10 +254,14 @@ extract_content "${BODY_MTP}"      > "${CONTENT_MTP}"
 extract_content "${BODY_BASELINE}" > "${CONTENT_BASELINE}"
 
 echo ""
-echo "═════ LOSSLESS DIFF ═════"
+echo "═════ LOSSLESS DIFF (FINAL CONTENT ONLY) ═════"
+echo "Note (codex round-13): this diff compares FINAL completion text,"
+echo "not per-token stream. A tokenizer / streaming-order regression"
+echo "that yields the same final text passes here. A separate SSE"
+echo "contract smoke is the right tool for streaming-order equality."
 LOSSLESS_OK=1
 if diff -u "${CONTENT_BASELINE}" "${CONTENT_MTP}"; then
-  echo "PASS: mtp completion == baseline completion (byte-equal)."
+  echo "PASS: mtp completion == baseline completion (byte-equal final text)."
 else
   echo "FAIL: mtp completion differs from baseline — MTP lossless contract broken." >&2
   LOSSLESS_OK=0
