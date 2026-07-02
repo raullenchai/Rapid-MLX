@@ -942,3 +942,85 @@ def test_mtp_forward_rejects_batch_greater_than_one():
 
     with pytest.raises(ValueError, match="batch=1"):
         target.mtp_forward(hidden_states, next_token_ids, mtp_cache)
+
+
+# ---------------------------------------------------------------------------
+# 10. Codex round-8/9 fail-closed coverage
+# ---------------------------------------------------------------------------
+
+
+def test_injected_class_exposes_mtp_max_batch_size_static_gate():
+    """Codex round-9 blocking-fix locked in.
+
+    Schedulers that fold multiple requests into a single (B>1, T, H)
+    tensor must be able to STATICALLY gate the MTP fast-path off at
+    dispatch time. The injected class exposes an
+    ``mtp_max_batch_size`` attribute equal to 1 so this gate is
+    trivial to implement (``getattr(model, 'mtp_max_batch_size', 1)
+    >= batch_size`` at scheduler entry).
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+
+    try:
+        target = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    assert inject_mtp_support(target, allow_random_init=True) is True
+    assert getattr(target, "mtp_max_batch_size", None) == 1
+
+
+def test_resolve_sidecar_refuses_non_hf_shape_local_typo(tmp_path):
+    """Codex round-9 nit-fix locked in.
+
+    A typo'd local path (e.g. ``/tmp/gemma-assistant-typo`` — leading
+    slash, no owner/name shape) must NOT be treated as an HF repo id
+    and attempted via ``snapshot_download``. Refuse immediately as an
+    unresolvable local path instead of spending a network round-trip.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import _resolve_sidecar_dir
+
+    # Absolute path to a non-existent dir.
+    result = _resolve_sidecar_dir(str(tmp_path / "does-not-exist-typo"))
+    assert result is None
+
+    # Relative-path shape.
+    result = _resolve_sidecar_dir("./does-not-exist-here")
+    assert result is None
+
+    # HF-id-shape (owner/name) is still accepted by the resolver — it
+    # will only fail later inside snapshot_download when the network
+    # request comes back empty. We don't test that here since it
+    # requires network.
+    # Sanity: ``google/gemma-4-12B-it-assistant`` looks like an HF id.
+    # We don't call the resolver on it in this test to avoid a
+    # network dependency — the shape detection itself is tested by
+    # this test's negative-shape refusal, not the positive-shape
+    # acceptance.
+
+
+def test_inject_random_init_refuses_when_target_has_no_vocab_size():
+    """Codex round-9 blocking-fix locked in.
+
+    The ``allow_random_init=True`` path used to hard-code
+    ``vocab_size=128``. If the target model's own vocab is 262144,
+    the drafter's embed_tokens table would silently mismatch and any
+    caller invoking ``embed_tokens(next_token_ids)`` would OOB-lookup.
+    Fix: derive vocab_size from ``inner.args.vocab_size``, and refuse
+    to build the random drafter when the target has no resolvable
+    vocab_size. This test constructs a target whose args carry
+    ``vocab_size = 0`` and asserts refusal.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+
+    try:
+        target = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    # Break the target's vocab_size — mimic a checkpoint whose args
+    # somehow lost the field.
+    target.args.vocab_size = 0
+
+    ok = inject_mtp_support(target, allow_random_init=True)
+    assert ok is False, "random-init inject must refuse when target has no vocab_size"

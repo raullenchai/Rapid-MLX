@@ -169,6 +169,31 @@ def _resolve_sidecar_dir(mtp_sidecar: str | Path) -> Path | None:
         )
         return None
 
+    # Codex round-9 nit fix: only attempt snapshot_download for
+    # strings that LOOK LIKE HF repo ids (``owner/name`` shape). A
+    # typo'd local path like ``/tmp/missing-assistant`` should fail
+    # as a local-path error immediately instead of spending a network
+    # round-trip against a nonexistent HF repo. Detection: string
+    # must contain exactly one non-leading '/', no path separators
+    # that indicate an absolute or nested filesystem path.
+    ref = str(mtp_sidecar)
+    is_hf_shape = (
+        "/" in ref
+        and not ref.startswith("/")
+        and not ref.startswith("./")
+        and not ref.startswith("../")
+        and ref.count("/") == 1
+        and not ref.endswith("/")
+    )
+    if not is_hf_shape:
+        logger.warning(
+            "[mtp.inject.gemma4] sidecar %r is neither an existing local path "
+            "nor an HF-repo-id-shape (``owner/name``). Refusing to attempt "
+            "snapshot_download.",
+            ref,
+        )
+        return None
+
     # Treat as HF repo id.
     try:
         from huggingface_hub import snapshot_download
@@ -519,6 +544,22 @@ def inject_mtp_support(
         # the target so the drafter surfaces still attach on tests.
         from mlx_lm.models.gemma4_text import ModelArgs
 
+        # Codex round-9 blocking fix: derive vocab_size from the
+        # target's ``inner.args.vocab_size`` instead of hard-coding
+        # 128. Under random-init the drafter's embed_tokens can never
+        # be correct (it's random by design), but the SHAPE must at
+        # least match the target's tokenizer so that any test which
+        # calls ``embed_tokens(next_token_ids)`` doesn't OOB-lookup on
+        # a token id from the target's real vocab. Refuse if the
+        # target's vocab_size cannot be resolved.
+        random_vocab = int(getattr(inner.args, "vocab_size", 0) or 0)
+        if random_vocab <= 0:
+            logger.warning(
+                "[mtp.inject.gemma4] allow_random_init=True but target has no "
+                "resolvable vocab_size; refusing to build random drafter.",
+            )
+            return False
+
         args = ModelArgs(
             model_type="gemma4_unified_text",
             hidden_size=64,
@@ -530,7 +571,7 @@ def inject_mtp_support(
             num_key_value_heads=1,
             num_global_key_value_heads=1,
             rms_norm_eps=1e-6,
-            vocab_size=128,
+            vocab_size=random_vocab,
             vocab_size_per_layer_input=0,
             num_kv_shared_layers=2,
             hidden_size_per_layer_input=0,
@@ -669,7 +710,23 @@ def inject_mtp_support(
     _n_assistant_layers = len(assistant.model.layers)
 
     class _Gemma4WithMTP(original_class):  # type: ignore[valid-type, misc]
-        """Target model + MTP surfaces for the Google assistant drafter."""
+        """Target model + MTP surfaces for the Google assistant drafter.
+
+        Codex round-9 blocking-fix documentation: the shared-K/V path
+        used by ``mtp_forward`` reads the target's cache list — one
+        list per request. Consequently this drafter is a strict
+        single-request path today; a scheduler that folds multiple
+        requests into a single (B, T, H) tensor must NOT dispatch
+        through the MTP fast-path. The class attribute
+        :attr:`mtp_max_batch_size` (=1) is set here so a future
+        scheduler can read it as a static gate. ``mtp_forward`` itself
+        also raises ``ValueError`` on B>1 as a defense-in-depth — the
+        vendored ``mtp_generate_step`` is inherently single-request so
+        the raise never fires under normal operation.
+        """
+
+        # Static gate for schedulers — see class docstring.
+        mtp_max_batch_size = 1
 
         def __call__(  # type: ignore[override]
             self,
