@@ -882,11 +882,14 @@ def test_inject_refuses_sidecar_with_vocab_size_mismatch(tmp_path):
         inject_mtp_support,
     )
 
-    # Build a sidecar with an intentionally WRONG vocab_size (128 vs
-    # target's typical 128).
+    # Build a sidecar with an intentionally WRONG vocab_size (assistant
+    # says 999, but the tiny target we build below has vocab_size=128;
+    # inject must refuse). Codex round-8 nit: comment previously said
+    # "128 vs 128" which contradicted the code — now correctly states
+    # the mismatch numbers.
     cfg = _google_shaped_assistant_config(hidden=64, backbone=128, n_layers=4)
-    # Override vocab_size to something different from the target's default.
-    cfg["text_config"]["vocab_size"] = 999  # target uses 128
+    # Override vocab_size on the assistant sidecar to 999 (vs target's 128).
+    cfg["text_config"]["vocab_size"] = 999  # tiny target uses vocab_size=128
     args = _build_assistant_model_args(cfg, target_backbone_hidden=128)
     model_template = _build_assistant_model(args, backbone_hidden_size=128)
     mx.eval(model_template.parameters())

@@ -78,9 +78,6 @@ PORT="${RAPID_MLX_PORT:-8990}"
 PROMPT='{"model":"'"${MODEL_ALIAS}"'","messages":[{"role":"user","content":"Explain in exactly 40 words why the sky appears blue at midday."}],"temperature":0,"max_tokens":80}'
 BASE_URL="http://127.0.0.1:${PORT}"
 
-WORKDIR="$(mktemp -d -t gemma4-mtp-smoke.XXXXXX)"
-echo "[smoke] Workdir: ${WORKDIR}"
-
 # Locate rapid-mlx binary.
 RAPID_MLX_BIN="${RAPID_MLX_BIN:-$(command -v rapid-mlx || true)}"
 if [[ -z "${RAPID_MLX_BIN}" ]]; then
@@ -100,6 +97,10 @@ fi
 # usage error deep in ``WORKDIR/server_mtp.log``. The operator can
 # skip this gate by exporting ``SKIP_MTP_SIDECAR_PREFLIGHT=1`` on a
 # build that DOES ship the flag.
+#
+# Codex round-8 nit fix: defer WORKDIR creation until AFTER preflight,
+# so a build that lacks the flag doesn't leak a temp dir on every
+# expected-failure invocation.
 if [[ "${SKIP_MTP_SIDECAR_PREFLIGHT:-0}" != "1" ]]; then
   if ! "${RAPID_MLX_BIN}" serve --help 2>&1 | grep -q -- '--mtp-sidecar'; then
     cat <<EOF >&2
@@ -112,6 +113,11 @@ EOF
     exit 4
   fi
 fi
+
+# Deferred until after preflight so a rejected-preflight run doesn't
+# leak a stale temp directory.
+WORKDIR="$(mktemp -d -t gemma4-mtp-smoke.XXXXXX)"
+echo "[smoke] Workdir: ${WORKDIR}"
 
 # ── boot_and_prompt ──────────────────────────────────────────────────
 # Boot rapid-mlx, wait for ready, send the prompt, dump the completion,

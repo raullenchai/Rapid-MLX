@@ -819,7 +819,21 @@ def inject_mtp_support(
 
             for layer, tgt_cache in zip(self.mtp.model.layers, shared_kv_slots):
                 # target cache may be empty in edge cases — guard.
-                state = getattr(tgt_cache, "state", None)
+                #
+                # Codex round-8 blocking fix: ``getattr(cache, 'state',
+                # default)`` DOES swallow AttributeError raised inside
+                # a property fget (verified: empty ``KVCache.state``
+                # raises AttributeError via ``self.keys.shape[2]`` when
+                # keys is None, and getattr returns the default).
+                # BUT: to keep the intent obvious to future readers and
+                # match codex's suggestion of an explicit guard, wrap
+                # the property access in try/except AttributeError and
+                # raise the loud runtime error directly. Belt-and-
+                # suspenders — the getattr fallback also stays fine.
+                try:
+                    state = tgt_cache.state
+                except AttributeError:
+                    state = None
                 if state is None or (
                     isinstance(state, tuple) and state[0] is None
                 ):  # pragma: no cover — defensive
@@ -832,6 +846,14 @@ def inject_mtp_support(
                 else:
                     keys = state
                     values = state
+                # ``offset`` is passed through to ``self.rope(queries,
+                # offset=...)``. Upstream Gemma 4 attention uses
+                # ``mx.array(cache.offset)`` in the non-shared path
+                # (see ``mlx_lm/models/gemma4_text.py::Attention.__call__``);
+                # keeping the mx.array wrap here matches that pattern
+                # rather than relying on the RoPE class silently
+                # accepting a bare int (which it does today, but the
+                # explicit array is safer against future changes).
                 offset = _mx.array(int(tgt_cache.offset))
                 # mask=None is correct for a SINGLE drafter query
                 # attending to a target cache that only holds
@@ -938,18 +960,38 @@ def inject_mtp_support(
             model.make_mtp_cache = _types.MethodType(_delegate_cache, model)
     except Exception as exc:
         # Roll back any partial state.
+        #
+        # Codex round-8 blocking fix: previous rollback used
+        # ``hasattr(inner, 'mtp')`` which invokes descriptors on the
+        # possibly-half-patched object (the class swap already ran, so
+        # attribute lookup goes through ``_Gemma4WithMTP.__mro__``).
+        # Use direct ``__dict__.pop`` on the instance to bypass
+        # descriptors entirely, and unconditional guarded ``delattr``
+        # instead of ``hasattr + delattr``.
         try:
             if type(inner) is _Gemma4WithMTP:
                 inner.__class__ = original_class
-            if hasattr(inner, "mtp"):
-                del inner.mtp
+            # Direct __dict__ removal — bypasses any potential
+            # descriptor / __getattr__ interception on inner.
+            try:
+                inner.__dict__.pop("mtp", None)
+            except Exception:  # pragma: no cover
+                pass
             if model is not inner:
                 for attr in ("mtp", "mtp_forward", "make_mtp_cache"):
-                    if hasattr(model, attr):
-                        try:
-                            delattr(model, attr)
-                        except AttributeError:  # pragma: no cover
-                            pass
+                    # Direct __dict__ removal first (fast path), then
+                    # a guarded delattr as a fallback for objects
+                    # that route attribute writes through __setattr__.
+                    try:
+                        model.__dict__.pop(attr, None)
+                    except Exception:  # pragma: no cover
+                        pass
+                    try:
+                        delattr(model, attr)
+                    except AttributeError:  # attribute already gone
+                        pass
+                    except Exception:  # pragma: no cover — best effort
+                        pass
         except Exception:  # pragma: no cover — best-effort rollback
             pass
         logger.warning(
