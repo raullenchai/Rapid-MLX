@@ -496,6 +496,66 @@ def test_inject_refuses_non_assistant_model_type(tmp_path):
     assert getattr(target, "mtp", None) is None
 
 
+def test_build_assistant_model_args_rejects_layer_types_length_mismatch():
+    """When ``layer_types`` length doesn't match ``num_hidden_layers``,
+    fail closed at build time — a bad list would crash later inside
+    ``DecoderLayer.Attention`` with an opaque IndexError.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import _build_assistant_model_args
+
+    cfg = _google_shaped_assistant_config(hidden=64, backbone=128, n_layers=4)
+    # Corrupt: 3 layer types for 4 layers.
+    cfg["text_config"]["layer_types"] = ["sliding_attention"] * 3
+
+    args = _build_assistant_model_args(cfg, target_backbone_hidden=128)
+    assert args is None, "schema mismatch on layer_types must refuse the build"
+
+
+# ---------------------------------------------------------------------------
+# 5b. mtp_cache safety
+# ---------------------------------------------------------------------------
+
+
+def test_make_mtp_cache_slots_are_generator_safe():
+    """Lock the ``make_mtp_cache`` safety analysis (docstring on the
+    method): empty ``KVCache`` slots must survive every generator
+    walk without raising.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+
+    try:
+        target = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    assert inject_mtp_support(target, allow_random_init=True) is True
+
+    caches = target.make_mtp_cache()
+    assert isinstance(caches, list) and len(caches) == len(target.mtp.model.layers)
+
+    for c in caches:
+        # Walk 1: ``quantize_cache_fn`` — kv_bits=None short-circuits,
+        # but with kv_bits set it calls ``to_quantized`` on each slot.
+        # Confirm the empty-slot path doesn't raise.
+        q = c.to_quantized(group_size=64, bits=4)
+        assert q is not None
+        assert q.offset == 0
+
+        # Walk 2: ``_prefill`` scans ``[c.state for ... if hasattr(c, 'state')]``.
+        # ``hasattr`` on an empty KVCache swallows the AttributeError
+        # raised by the getter and returns False — so the empty slot
+        # is skipped entirely (no ``mx.eval((None, None))`` corner case).
+        assert not hasattr(c, "state"), (
+            "empty KVCache should not advertise state via hasattr — the "
+            "generator's ``if hasattr(c, 'state')`` skip depends on this."
+        )
+
+        # Walk 3: trim(1) on empty is a no-op returning 0 (source
+        # inspection of KVCache.trim).
+        assert c.trim(1) == 0
+        assert c.offset == 0
+
+
 # ---------------------------------------------------------------------------
 # 6. Dispatcher routing
 # ---------------------------------------------------------------------------

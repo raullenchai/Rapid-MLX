@@ -53,7 +53,7 @@ set -euo pipefail
 # ── Config ────────────────────────────────────────────────────────────
 SIDECAR_PATH="${1:-}"
 if [[ -z "${SIDECAR_PATH}" ]]; then
-  echo "Usage: $0 /path/to/gemma-4-12b-mtp-4bit" >&2
+  echo "Usage: $0 /path/to/gemma-4-12B-it-assistant" >&2
   exit 2
 fi
 if [[ ! -d "${SIDECAR_PATH}" ]]; then

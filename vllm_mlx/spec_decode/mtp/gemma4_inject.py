@@ -247,12 +247,16 @@ def _build_assistant_model_args(
     n_layers = int(tc.get("num_hidden_layers", 4))
     layer_types = list(tc.get("layer_types") or [])
     if len(layer_types) != n_layers:
+        # Fail closed on the schema mismatch — a bad list would land in
+        # ModelArgs and later crash inside DecoderLayer's Attention with
+        # an opaque IndexError. Better to refuse at inject time.
         logger.warning(
             "[mtp.inject.gemma4] layer_types has %d entries but num_hidden_layers=%d; "
-            "using layer_types as-is (may misalign).",
+            "refusing to build assistant args (schema mismatch).",
             len(layer_types),
             n_layers,
         )
+        return None
 
     args = ModelArgs(
         model_type=str(tc.get("model_type", "gemma4_unified_text")),
@@ -613,7 +617,24 @@ def inject_mtp_support(
         ):
             """Run the Google assistant drafter over target's tail K/V.
 
-            MVP semantics — see module docstring for caveats.
+            Returns logits at ALL input positions (shape
+            ``(B, N, vocab_size)``) so the caller can select whichever
+            it needs. The generator today reads only the last position
+            (``mtp_logits[:, -1, :]``) but returning all N preserves
+            generality against a future draft-chain caller — matches
+            the qwen3_5 ``mtp_forward`` shape contract.
+
+            MVP caveats:
+            * Every drafter query attends to target's cache at
+              ``cache.offset``, i.e. all queries share the same
+              attention window. For ``N == 1`` (the fresh draft path
+              and the wiring-probe) that's exactly right. For
+              ``N > 1`` (the cache-commit path where the generator
+              passes ``align_h`` alongside ``hidden_last``) the last
+              logit is still correct; the ``align_h`` logit is
+              ignored by the current generator.
+            * The drafter's own hidden chaining between draft-token
+              iterations is deferred to a follow-up (see PR body).
             """
             import mlx.core as _mx
 
@@ -634,26 +655,16 @@ def inject_mtp_support(
                 )
             shared_kv_slots = target_cache[-n_take:]
 
-            # Take the LAST N positions of hidden / next_token_ids —
-            # MVP simplification: we treat each drafter forward as a
-            # single-query attention on target's current cache. If the
-            # generator ever passes N > 1 (cache_commit path), we still
-            # only emit one draft position; the follow-up hidden-chain
-            # implementation lives in the same class as a later
-            # extension.
-            hidden_last = hidden_states[:, -1:, :]
-            next_last = next_token_ids[:, -1:]
-
-            # Embed via TARGET's embedding table (drafter's own
-            # embed_tokens is 1024-dim; pre_projection expects
-            # backbone-hidden × 2 = 3840 × 2 for the 12B pair).
+            # Embed next_token_ids via TARGET's embedding table (drafter's
+            # own embed_tokens is 1024-dim; pre_projection expects
+            # backbone_hidden × 2 = 3840 × 2 for the 12B pair).
             target_embed = self.model.embed_tokens
-            next_embed = target_embed(next_last)  # (B, 1, backbone_hidden)
+            next_embed = target_embed(next_token_ids)  # (B, N, backbone_hidden)
 
             fused = _mx.concatenate(
-                [hidden_last, next_embed], axis=-1
-            )  # (B, 1, 2 * backbone_hidden)
-            h = self.mtp.pre_projection(fused)  # (B, 1, hidden_size)
+                [hidden_states, next_embed], axis=-1
+            )  # (B, N, 2 * backbone_hidden)
+            h = self.mtp.pre_projection(fused)  # (B, N, hidden_size)
 
             for layer, tgt_cache in zip(self.mtp.model.layers, shared_kv_slots):
                 # target cache may be empty in edge cases — guard.
@@ -690,13 +701,31 @@ def inject_mtp_support(
             return logits
 
         def make_mtp_cache(self):
-            """Empty KVCache slots — trimmable no-ops for the generator.
+            """Empty KVCache slots — safe no-ops for the generator.
 
-            The drafter reads K/V from target's cache; its own MTP
-            cache is never written. Return real KVCache instances so
-            the generator's ``cache.trim(1)`` and ``quantize_cache_fn``
-            calls are legitimate no-ops (empty caches are trimmable
-            and quantize to nothing).
+            The drafter reads K/V from TARGET's cache; its own MTP
+            cache is never written into by ``mtp_forward`` above. But
+            the generator still walks ``mtp_cache`` on three paths:
+
+            1. ``quantize_cache_fn(mtp_cache)`` — the underlying
+               ``maybe_quantize_kv_cache`` short-circuits when
+               ``kv_bits is None`` (the default). When ``kv_bits`` is
+               set, the walk calls ``c.to_quantized(...)`` on each
+               slot; empty ``KVCache.to_quantized()`` returns an
+               empty ``QuantizedKVCache`` without touching
+               ``self.keys / self.values``.
+            2. ``_prefill``'s ``mx.eval([c.state for c in ... if
+               hasattr(c, 'state')])`` — on an empty ``KVCache``,
+               ``state`` raises ``AttributeError`` (``self.keys`` is
+               None → ``.shape[2]``), which ``hasattr`` swallows to
+               return False. The empty slot is skipped.
+            3. ``_rollback_draft`` walks ``model_cache`` NOT
+               ``mtp_cache``, so ``.trim(1)`` never fires here.
+
+            Returning empty ``KVCache`` instances is therefore safe
+            with the current generator. This analysis is locked by a
+            dedicated test that exercises ``trim``, ``to_quantized``,
+            and ``hasattr(_, 'state')`` on the returned list.
             """
             from mlx_lm.models.cache import KVCache
 
