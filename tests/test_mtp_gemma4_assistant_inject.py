@@ -756,6 +756,10 @@ def test_inject_delegates_surfaces_to_outer_wrapper():
     assert getattr(outer, "mtp", None) is not None
     assert callable(getattr(outer, "mtp_forward", None))
     assert callable(getattr(outer, "make_mtp_cache", None))
+    # Codex round-11: mtp_max_batch_size must be visible on the outer
+    # wrapper too, so schedulers that inspect the caller-visible
+    # object can gate B>1 dispatch statically.
+    assert getattr(outer, "mtp_max_batch_size", None) == 1
 
     # make_mtp_cache returns a list from the inner scaffold — assert
     # it's a real list of cache instances.
@@ -848,7 +852,9 @@ def test_validate_refuses_when_outer_wrapper_missing_delegated_surface():
 
     # Simulate a partially-rolled-back state: strip the outer-only
     # delegations while leaving the inner correctly patched.
-    for attr in ("mtp", "mtp_forward", "make_mtp_cache"):
+    # Codex round-11: also strip mtp_max_batch_size (now a required
+    # delegated surface).
+    for attr in ("mtp", "mtp_forward", "make_mtp_cache", "mtp_max_batch_size"):
         if hasattr(outer, attr):
             delattr(outer, attr)
 

@@ -1055,6 +1055,15 @@ def inject_mtp_support(
             model.mtp = inner.mtp
             model.mtp_forward = _types.MethodType(_delegate_forward, model)
             model.make_mtp_cache = _types.MethodType(_delegate_cache, model)
+            # Codex round-11 blocking fix: mirror the static batch-size
+            # gate onto the OUTER wrapper. Schedulers that inspect the
+            # caller-visible ``model`` object (not the buried inner
+            # text model) need to read this attribute at dispatch time
+            # to skip B>1 requests off the MTP fast-path. Inner's
+            # class-level ``mtp_max_batch_size`` was invisible to
+            # them; setting it as an instance attribute on the outer
+            # wrapper closes that gap.
+            model.mtp_max_batch_size = _Gemma4WithMTP.mtp_max_batch_size
     except Exception as exc:
         # Roll back any partial state.
         #
@@ -1075,7 +1084,12 @@ def inject_mtp_support(
             except Exception:  # pragma: no cover
                 pass
             if model is not inner:
-                for attr in ("mtp", "mtp_forward", "make_mtp_cache"):
+                for attr in (
+                    "mtp",
+                    "mtp_forward",
+                    "make_mtp_cache",
+                    "mtp_max_batch_size",
+                ):
                     # Direct __dict__ removal first (fast path), then
                     # a guarded delattr as a fallback for objects
                     # that route attribute writes through __setattr__.
@@ -1153,7 +1167,17 @@ def validate_mtp_support(model: Any) -> bool:
     # correctly patched while the outer stays bare. Explicitly
     # re-check the delegated surfaces on the outer to catch that.
     if model is not inner:
-        for attr in ("mtp", "mtp_forward", "make_mtp_cache"):
+        # Codex round-11 blocking fix: mtp_max_batch_size is a
+        # scheduler-visible static gate. The commit path sets it on
+        # the outer; a partially-rolled-back inject that leaves it
+        # missing means schedulers can't safely gate. Include it in
+        # the required-delegated-surface list.
+        for attr in (
+            "mtp",
+            "mtp_forward",
+            "make_mtp_cache",
+            "mtp_max_batch_size",
+        ):
             if not hasattr(model, attr):
                 logger.warning(
                     "[mtp.validate.gemma4] outer wrapper missing delegated "
