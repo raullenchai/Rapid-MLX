@@ -1098,3 +1098,36 @@ def test_find_safetensors_refuses_multi_file_even_with_model_safetensors(tmp_pat
 
     # Refuse — even though ``model.safetensors`` is one of the files.
     assert _find_safetensors(d) is None
+
+
+def test_validate_refuses_when_outer_mtp_is_none():
+    """Codex round-12 blocking-fix locked in.
+
+    ``hasattr`` cannot distinguish an attribute that was cleared to
+    ``None`` from one that was never set. A partial-rollback path
+    that leaves ``outer.mtp = None`` would validate green via the old
+    ``hasattr``-only check yet deliver no drafter to the generator.
+    Assert the outer-wrapper validate now catches this.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+        inject_mtp_support,
+        validate_mtp_support,
+    )
+
+    try:
+        inner = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    class _FakeOuterVLM:
+        def __init__(self, lm):
+            self.language_model = lm
+
+    outer = _FakeOuterVLM(inner)
+    assert inject_mtp_support(outer, allow_random_init=True) is True
+    assert validate_mtp_support(outer) is True
+
+    # Clear mtp to None (simulate a partial-rollback / racy teardown).
+    outer.mtp = None
+
+    assert validate_mtp_support(outer) is False

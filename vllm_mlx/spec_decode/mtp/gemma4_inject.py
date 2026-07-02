@@ -1186,6 +1186,19 @@ def validate_mtp_support(model: Any) -> bool:
                     attr,
                 )
                 return False
+        # Codex round-12 blocking fix: hasattr can't distinguish an
+        # attribute that was cleared to ``None`` from one that was
+        # never set. A partial rollback that assigned ``None`` (e.g.
+        # via a well-meaning ``setattr(model, 'mtp', None)`` in some
+        # future teardown path) would validate green via hasattr but
+        # deliver no usable drafter to the generator. Match the inner
+        # check by requiring the actual attribute value.
+        if getattr(model, "mtp", None) is None:
+            logger.warning(
+                "[mtp.validate.gemma4] outer wrapper's ``mtp`` attribute is "
+                "None; drafter is not attached."
+            )
+            return False
         if not callable(getattr(model, "mtp_forward", None)):
             logger.warning(
                 "[mtp.validate.gemma4] outer wrapper's mtp_forward is not callable."
