@@ -618,6 +618,36 @@ def _resolve_audio_model_for_serve(model_name: str):
     return resolve_audio_alias(model_name)
 
 
+def _resolve_audio_download_alias(command: str | None, model: str) -> str | None:
+    """Resolve a short audio alias to its concrete HF id for ``pull``/``rm``.
+
+    #991: the CLI's alias resolver (``resolve_model``) only knows *text*
+    aliases (``aliases.json``); audio aliases live in the separate audio
+    registry and resolve via :func:`resolve_audio_alias`. ``serve`` keeps
+    the short alias and resolves it at request time (see
+    :func:`_resolve_audio_model_for_serve` and the route-level
+    ``TTS_MODEL_ALIASES`` / ``STT_MODEL_ALIASES`` lookup), but ``pull`` and
+    ``rm`` consume ``args.model`` verbatim with no request-time path:
+
+      * ``pull`` — the R2 mirror catalog is keyed by ``hf_path``, so a bare
+        alias misses the mirror and then 404s at HF
+        (``snapshot_download("whisper")``).
+      * ``rm`` — the HF cache is scanned by ``models--<owner>--<repo>``,
+        which a bare alias can never match.
+
+    Returns the resolved HF id when ``command`` is ``pull``/``rm`` AND
+    ``model`` is a known audio alias; otherwise ``None`` — no rewrite, so
+    ``serve``/``chat``/``bench`` keep the short alias and non-audio names
+    fall through to the text path unchanged.
+    """
+    if command not in {"pull", "rm"}:
+        return None
+    from .audio.registry import resolve_audio_alias
+
+    entry = resolve_audio_alias(model)
+    return entry.hf_id if entry is not None else None
+
+
 def _serve_audio_mode(args, entry) -> None:
     """Bind the audio-only serve path for a resolved registry entry.
 
@@ -7379,6 +7409,20 @@ Examples:
                     args.model, full_path_example="mlx-community/Qwen3.5-9B-4bit"
                 )
                 sys.exit(1)
+            else:
+                # #991: it IS an audio alias. ``serve`` keeps the short
+                # alias for request-time resolution, but ``pull``/``rm``
+                # consume ``args.model`` directly and would miss the R2
+                # mirror (catalog keyed by ``hf_path``) then 404 at HF.
+                # Stamp the concrete HF id up front for those two commands
+                # only, mirroring the text-alias banner above.
+                _audio_hf_id = _resolve_audio_download_alias(
+                    getattr(args, "command", None), args.model
+                )
+                if _audio_hf_id is not None:
+                    print(f"  Alias: {args.model} → {_audio_hf_id}")
+                    args._original_alias = args.model
+                    args.model = _audio_hf_id
         # Round 16 codex catch: record the resolved (or already-canonical)
         # model so ``session_end`` can report what this invocation loaded.
         # ``normalize_model_path`` inside the emit helper redacts local
