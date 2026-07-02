@@ -586,8 +586,14 @@ def inject_mtp_support(
             # patched shape adds ``return_hidden`` + ``n_confirmed``
             # only, and refuses to mask new base-model kwargs.
             # Stash target cache for mtp_forward — read-only reference,
-            # single-request scheduler flow (no concurrent MTP).
-            self._mtp_target_cache = cache
+            # single-request scheduler flow (no concurrent MTP). Only
+            # overwrite when the caller supplied a real cache; never
+            # None-clobber a previously-stashed populated cache (the
+            # cache is populated by earlier target forwards and read
+            # by the very next mtp_forward — losing that reference
+            # via ``cache=None`` on a stray call would break MTP).
+            if cache is not None:
+                self._mtp_target_cache = cache
             # Run the target's backbone directly to get pre-lm-head
             # hidden — inner.model returns ``norm(h)`` which is exactly
             # what we feed to ``pre_projection`` on the drafter side.
@@ -625,24 +631,21 @@ def inject_mtp_support(
         ):
             """Run the Google assistant drafter over target's tail K/V.
 
-            Returns logits at ALL input positions (shape
-            ``(B, N, vocab_size)``) so the caller can select whichever
-            it needs. The generator today reads only the last position
-            (``mtp_logits[:, -1, :]``) but returning all N preserves
-            generality against a future draft-chain caller — matches
-            the qwen3_5 ``mtp_forward`` shape contract.
-
-            MVP caveats:
-            * Every drafter query attends to target's cache at
-              ``cache.offset``, i.e. all queries share the same
-              attention window. For ``N == 1`` (the fresh draft path
-              and the wiring-probe) that's exactly right. For
-              ``N > 1`` (the cache-commit path where the generator
-              passes ``align_h`` alongside ``hidden_last``) the last
-              logit is still correct; the ``align_h`` logit is
-              ignored by the current generator.
-            * The drafter's own hidden chaining between draft-token
-              iterations is deferred to a follow-up (see PR body).
+            **Single-query contract**: this MVP consumer processes
+            ONE query position — the last of ``hidden_states``. The
+            generator's ``_step_mtp`` reads only
+            ``mtp_logits[:, -1, :]`` so the returned shape
+            ``(B, 1, vocab_size)`` slices identically to the caller's
+            existing pull. When the generator passes ``N > 1`` (its
+            cache-commit path concatenates ``align_h`` with the
+            current hidden), only the last row is used; earlier rows
+            would carry the WRONG RoPE offset under the shared-K/V
+            path (every drafter Q gets ``offset=cache.offset``, and
+            per-row RoPE offset per query position is not modeled
+            in this MVP). Rejecting N>1 explicitly is deferred until
+            the draft-chain follow-up ships a correct per-row offset
+            path; today the generator only ever consumes position -1
+            so the semantics stay right.
             """
             import mlx.core as _mx
 
@@ -663,16 +666,25 @@ def inject_mtp_support(
                 )
             shared_kv_slots = target_cache[-n_take:]
 
+            # Take the LAST position from hidden_states / next_token_ids.
+            # The generator only USES the last-position logit anyway,
+            # and running a single query means shared_kv offset = target
+            # cache offset is unambiguously the correct RoPE position
+            # (any earlier position would need a smaller offset that
+            # this MVP does not model).
+            hidden_last = hidden_states[:, -1:, :]
+            next_last = next_token_ids[:, -1:]
+
             # Embed next_token_ids via TARGET's embedding table (drafter's
             # own embed_tokens is 1024-dim; pre_projection expects
             # backbone_hidden × 2 = 3840 × 2 for the 12B pair).
             target_embed = self.model.embed_tokens
-            next_embed = target_embed(next_token_ids)  # (B, N, backbone_hidden)
+            next_embed = target_embed(next_last)  # (B, 1, backbone_hidden)
 
             fused = _mx.concatenate(
-                [hidden_states, next_embed], axis=-1
-            )  # (B, N, 2 * backbone_hidden)
-            h = self.mtp.pre_projection(fused)  # (B, N, hidden_size)
+                [hidden_last, next_embed], axis=-1
+            )  # (B, 1, 2 * backbone_hidden)
+            h = self.mtp.pre_projection(fused)  # (B, 1, hidden_size)
 
             for layer, tgt_cache in zip(self.mtp.model.layers, shared_kv_slots):
                 # target cache may be empty in edge cases — guard.

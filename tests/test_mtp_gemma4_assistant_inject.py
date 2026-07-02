@@ -601,6 +601,89 @@ def test_dispatcher_returns_false_for_unknown_model_type():
     assert result is False
 
 
+def test_dispatcher_swallows_family_exceptions(monkeypatch):
+    """The dispatcher's "never raises" contract must hold even if the
+    family injector raises (loader bug, weight shape mismatch, etc.).
+    Codex round-3 blocker: unwrapped ``fn(...)`` calls could propagate.
+    """
+    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
+    from vllm_mlx.spec_decode.mtp import gemma4_inject
+
+    def _raising_inject(model, mtp_sidecar=None, *, allow_random_init=False):
+        raise RuntimeError("simulated loader crash inside gemma4_inject")
+
+    monkeypatch.setattr(gemma4_inject, "inject_mtp_support", _raising_inject)
+
+    result = _dispatch.dispatch_mtp_inject(
+        object(),
+        model_type="gemma4_unified",
+        allow_random_init=True,
+    )
+    assert result is False, "dispatcher must convert family exceptions to False"
+
+
+def test_dispatcher_validate_swallows_family_exceptions(monkeypatch):
+    """Same as above but for ``dispatch_mtp_validate``."""
+    from vllm_mlx.spec_decode.mtp import dispatch as _dispatch
+    from vllm_mlx.spec_decode.mtp import gemma4_inject
+
+    def _raising_validate(model):
+        raise RuntimeError("simulated validator crash")
+
+    monkeypatch.setattr(gemma4_inject, "validate_mtp_support", _raising_validate)
+
+    result = _dispatch.dispatch_mtp_validate(object(), model_type="gemma4_unified")
+    assert result is False
+
+
+def test_gemma4_text_modelargs_carries_fields_this_module_reads():
+    """Hard-fail (NOT skip) if mlx-lm's ``gemma4_text.ModelArgs`` no
+    longer accepts a field this inject reads. Skip-happy tests hide
+    upstream schema drift; this test is the canary.
+
+    Codex round-3 nit: without a hard-fail here, a future mlx-lm
+    version that renames (say) ``num_kv_shared_layers`` to
+    ``kv_shared_layer_count`` would silently skip every wiring probe
+    test, and reviewers would see all-green with zero coverage.
+    """
+    from mlx_lm.models.gemma4_text import ModelArgs
+
+    # These are the exact fields the inject reads via
+    # ``_build_assistant_model_args``. If any drops, hard-fail so a
+    # follow-up can update the field mapping.
+    required_fields = {
+        "model_type",
+        "hidden_size",
+        "num_hidden_layers",
+        "intermediate_size",
+        "num_attention_heads",
+        "head_dim",
+        "global_head_dim",
+        "rms_norm_eps",
+        "vocab_size",
+        "num_key_value_heads",
+        "num_global_key_value_heads",
+        "num_kv_shared_layers",
+        "hidden_size_per_layer_input",
+        "rope_parameters",
+        "sliding_window",
+        "sliding_window_pattern",
+        "max_position_embeddings",
+        "attention_k_eq_v",
+        "final_logit_softcapping",
+        "use_double_wide_mlp",
+        "enable_moe_block",
+        "tie_word_embeddings",
+        "layer_types",
+    }
+    dataclass_fields = set(ModelArgs.__dataclass_fields__.keys())
+    missing = required_fields - dataclass_fields
+    assert not missing, (
+        f"mlx-lm gemma4_text.ModelArgs dropped fields the Gemma 4 inject "
+        f"depends on: {sorted(missing)}. Update _build_assistant_model_args."
+    )
+
+
 def test_dispatcher_routes_gemma4_unified_to_gemma4_inject(monkeypatch):
     """The dispatcher forwards ``model`` + kwargs verbatim to gemma4_inject.
 

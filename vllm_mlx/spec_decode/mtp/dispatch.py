@@ -166,19 +166,35 @@ def dispatch_mtp_inject(
         )
         return False
 
-    return bool(
-        fn(
-            model,
-            mtp_sidecar=mtp_sidecar,
-            allow_random_init=allow_random_init,
+    # The family injector is expected to return bool (never raise per
+    # its own docstring), but the dispatcher's own "never raises"
+    # contract is stricter than the family's — any loader crash,
+    # weight-shape mismatch, or bug inside the family must still land
+    # here as a clean False. Wrap defensively.
+    try:
+        return bool(
+            fn(
+                model,
+                mtp_sidecar=mtp_sidecar,
+                allow_random_init=allow_random_init,
+            )
         )
-    )
+    except Exception as exc:
+        logger.warning(
+            "[mtp.dispatch] %s.%s raised for model_type=%r: %s. "
+            "Treating as inject failure.",
+            module_path,
+            func_name,
+            model_type,
+            exc,
+        )
+        return False
 
 
 def dispatch_mtp_validate(model: Any, model_type: str) -> bool:
     """Route a ``validate_mtp_support`` call to the family validator.
 
-    Returns ``False`` for any unknown ``model_type``.
+    Returns ``False`` for any unknown ``model_type``. Never raises.
     """
     key = _MTP_VALIDATE_DISPATCH.get(model_type)
     if key is None:
@@ -203,4 +219,13 @@ def dispatch_mtp_validate(model: Any, model_type: str) -> bool:
     fn = getattr(module, func_name, None)
     if fn is None:
         return False
-    return bool(fn(model))
+    try:
+        return bool(fn(model))
+    except Exception as exc:
+        logger.warning(
+            "[mtp.dispatch] %s.%s raised for validate: %s. Returning False.",
+            module_path,
+            func_name,
+            exc,
+        )
+        return False
