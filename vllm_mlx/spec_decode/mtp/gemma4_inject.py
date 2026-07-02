@@ -492,6 +492,28 @@ def inject_mtp_support(
         if args is None:
             return False
         backbone_hidden = int(getattr(args, "backbone_hidden_size", target_hidden))
+        # Codex round-7 blocking fix: vocab_size mismatch would let a
+        # sidecar with the correct backbone_hidden_size but a
+        # different tokenizer vocab inject cleanly and later return
+        # logits over the WRONG vocabulary. Compare against the
+        # target's inner vocab_size and refuse before loading weights.
+        # ``tie_word_embeddings`` on the assistant means its
+        # ``embed_tokens`` doubles as the tied ``lm_head`` — the
+        # emitted logits are (B, N, assistant.vocab_size), so a
+        # mismatch here is fatal for both drafter attention (embed
+        # lookup on next_token_ids from the target's tokenizer) and
+        # drafter output (logits reindexed into the wrong tokens).
+        target_vocab = int(getattr(inner.args, "vocab_size", 0) or 0)
+        assistant_vocab = int(getattr(args, "vocab_size", 0) or 0)
+        if target_vocab > 0 and assistant_vocab > 0 and target_vocab != assistant_vocab:
+            logger.warning(
+                "[mtp.inject.gemma4] vocab_size mismatch: target=%d assistant=%d. "
+                "The assistant tokenizer differs from the target's — refusing to "
+                "inject; drafter logits would be indexed into the wrong vocab.",
+                target_vocab,
+                assistant_vocab,
+            )
+            return False
     else:
         # allow_random_init path — synthesize a minimal config sized to
         # the target so the drafter surfaces still attach on tests.
@@ -753,6 +775,27 @@ def inject_mtp_support(
                 hidden_states = hidden_states[None]  # (1, T, H)
             if next_token_ids.ndim == 1:
                 next_token_ids = next_token_ids[None]  # (1, T)
+
+            # Codex round-7 blocking fix: MVP shared-K/V drafter only
+            # supports batch=1 today. The ``_mtp_target_cache`` we
+            # slice is ONE cache list (belonging to a single request's
+            # target forward); if a caller passed B>1 we would fan out
+            # queries against that single cache and either
+            # shape-broadcast K/V into the wrong seats or silently mix
+            # per-request state. Reject B>1 explicitly. Per-batch
+            # shared-K/V support is a follow-up (see PR body's
+            # post-MVP TODOs).
+            if hidden_states.shape[0] != 1:
+                raise ValueError(
+                    "[mtp.inject.gemma4] mtp_forward only supports batch=1 "
+                    f"today; got hidden_states.shape[0]={hidden_states.shape[0]}. "
+                    "Per-batch shared-K/V is a post-MVP follow-up."
+                )
+            if next_token_ids.shape[0] != 1:
+                raise ValueError(
+                    "[mtp.inject.gemma4] mtp_forward only supports batch=1 "
+                    f"today; got next_token_ids.shape[0]={next_token_ids.shape[0]}."
+                )
 
             # Take the LAST position from hidden_states / next_token_ids.
             # The generator only USES the last-position logit anyway,

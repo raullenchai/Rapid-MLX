@@ -259,12 +259,30 @@ echo ""
 extract_mtp_stats "${METRICS_BASELINE}"
 
 echo ""
-echo "[smoke] Workdir preserved: ${WORKDIR}"
 
+# ── Cleanup / preserve decision ──────────────────────────────────────
+# Codex round-7 nit fix: previously we ALWAYS preserved WORKDIR, which
+# accretes multi-megabyte server logs + response bodies across repeated
+# operator smokes. Default is now: preserve on failure (so the operator
+# can eyeball logs), clean on success. Opt out with
+# ``PRESERVE_WORKDIR=1`` to keep the dir even after a green run
+# (useful when comparing back-to-back baseline vs mtp telemetry).
 if (( LOSSLESS_OK == 0 )); then
-  # Exit non-zero AFTER telemetry so the operator (or CI wrapper) has
-  # the accept-rate context alongside the failure signal.
+  echo "[smoke] Workdir PRESERVED at ${WORKDIR} (lossless diff failed)."
   echo "[smoke] FAIL: lossless diff mismatched — see diff above." >&2
   exit 1
+fi
+
+if [[ "${PRESERVE_WORKDIR:-0}" == "1" ]]; then
+  echo "[smoke] Workdir preserved (PRESERVE_WORKDIR=1): ${WORKDIR}"
+else
+  # rm -rf under mktemp -d output: safe because $WORKDIR was produced
+  # by mktemp -t under the OS temp dir; guard anyway.
+  if [[ -n "${WORKDIR}" && "${WORKDIR}" == */gemma4-mtp-smoke.* && -d "${WORKDIR}" ]]; then
+    rm -rf "${WORKDIR}"
+    echo "[smoke] Workdir cleaned (PRESERVE_WORKDIR=1 to keep): ${WORKDIR}"
+  else
+    echo "[smoke] Workdir untouched (unexpected path shape): ${WORKDIR}"
+  fi
 fi
 echo "[smoke] Done."

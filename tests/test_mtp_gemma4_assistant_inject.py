@@ -858,3 +858,84 @@ def test_validate_refuses_when_outer_wrapper_missing_delegated_surface():
     # And validate on the inner directly still succeeds — we only
     # tightened the outer-check, not the inner-check.
     assert validate_mtp_support(inner) is True
+
+
+# ---------------------------------------------------------------------------
+# 9. Codex round-7 fail-closed coverage
+# ---------------------------------------------------------------------------
+
+
+def test_inject_refuses_sidecar_with_vocab_size_mismatch(tmp_path):
+    """Codex round-7 blocking-fix locked in.
+
+    A sidecar with the correct ``backbone_hidden_size`` but a
+    different ``vocab_size`` (i.e. paired to a different tokenizer)
+    must fail closed. Otherwise the drafter's tied ``embed_tokens``
+    would return logits over the wrong vocabulary and the caller
+    would silently draft garbage tokens.
+    """
+    from mlx.utils import tree_flatten
+
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+        _build_assistant_model,
+        _build_assistant_model_args,
+        inject_mtp_support,
+    )
+
+    # Build a sidecar with an intentionally WRONG vocab_size (128 vs
+    # target's typical 128).
+    cfg = _google_shaped_assistant_config(hidden=64, backbone=128, n_layers=4)
+    # Override vocab_size to something different from the target's default.
+    cfg["text_config"]["vocab_size"] = 999  # target uses 128
+    args = _build_assistant_model_args(cfg, target_backbone_hidden=128)
+    model_template = _build_assistant_model(args, backbone_hidden_size=128)
+    mx.eval(model_template.parameters())
+    flat = dict(tree_flatten(model_template.parameters()))
+
+    sidecar_dir = tmp_path / "vocab-mismatch-assistant"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    (sidecar_dir / "config.json").write_text(json.dumps(cfg))
+    mx.save_safetensors(str(sidecar_dir / "model.safetensors"), flat)
+
+    try:
+        target = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    # Should refuse before any weights load.
+    ok = inject_mtp_support(target, mtp_sidecar=str(sidecar_dir))
+    assert ok is False, "vocab-mismatched sidecar must fail closed"
+
+
+def test_mtp_forward_rejects_batch_greater_than_one():
+    """Codex round-7 blocking-fix locked in.
+
+    ``mtp_forward`` fans out one shared ``_mtp_target_cache`` reference
+    across the query — for B>1 that cache list can't be safely split
+    per-request. Rejecting B>1 up front prevents cross-request K/V
+    leakage until the follow-up multi-request path lands.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
+
+    try:
+        target = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    assert inject_mtp_support(target, allow_random_init=True) is True
+
+    # Prime _mtp_target_cache with a set of empty caches to bypass the
+    # early "backbone was never called" guard.
+    from mlx_lm.models.cache import KVCache
+
+    n_layers = len(target.model.layers)
+    target._mtp_target_cache = [KVCache() for _ in range(n_layers)]
+
+    hidden_size = target.args.hidden_size
+    # (B=2, T=1, H) — should raise
+    hidden_states = mx.zeros((2, 1, hidden_size))
+    next_token_ids = mx.zeros((2, 1), dtype=mx.int32)
+    mtp_cache = target.make_mtp_cache()
+
+    with pytest.raises(ValueError, match="batch=1"):
+        target.mtp_forward(hidden_states, next_token_ids, mtp_cache)
