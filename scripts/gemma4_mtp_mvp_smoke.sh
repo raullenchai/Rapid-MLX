@@ -92,6 +92,27 @@ if [[ ! -x "${RAPID_MLX_BIN}" ]]; then
   exit 3
 fi
 
+# ── Preflight: --mtp-sidecar must be a recognized CLI arg ─────────────
+# Codex round-6 nit fix: this script wires ``--mtp-sidecar`` into the
+# rapid-mlx serve invocation, but that flag does NOT exist on main as
+# of this PR (see header docstring). Fail fast with a clear message
+# instead of letting argparse eat the flag and print an unrelated
+# usage error deep in ``WORKDIR/server_mtp.log``. The operator can
+# skip this gate by exporting ``SKIP_MTP_SIDECAR_PREFLIGHT=1`` on a
+# build that DOES ship the flag.
+if [[ "${SKIP_MTP_SIDECAR_PREFLIGHT:-0}" != "1" ]]; then
+  if ! "${RAPID_MLX_BIN}" serve --help 2>&1 | grep -q -- '--mtp-sidecar'; then
+    cat <<EOF >&2
+[smoke] Preflight failed: this rapid-mlx build does not advertise --mtp-sidecar.
+[smoke] The smoke script depends on the server-side wiring PR that lands the
+[smoke] CLI arg + scheduler hook (post-MVP TODO in this PR's body). Once that
+[smoke] PR merges, re-run this smoke; or export SKIP_MTP_SIDECAR_PREFLIGHT=1
+[smoke] to force it on a hand-patched build.
+EOF
+    exit 4
+  fi
+fi
+
 # ── boot_and_prompt ──────────────────────────────────────────────────
 # Boot rapid-mlx, wait for ready, send the prompt, dump the completion,
 # then kill the server. Args:

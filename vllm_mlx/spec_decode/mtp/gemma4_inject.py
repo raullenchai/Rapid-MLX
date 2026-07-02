@@ -545,7 +545,9 @@ def inject_mtp_support(
             return False
         from mlx.utils import tree_flatten
 
-        expected_keys = {k for k, _ in tree_flatten(assistant.parameters())}
+        expected_pairs = list(tree_flatten(assistant.parameters()))
+        expected_shapes = {k: tuple(v.shape) for k, v in expected_pairs}
+        expected_keys = set(expected_shapes)
         loaded_keys = set(raw.keys())
         missing = expected_keys - loaded_keys
         if missing:
@@ -556,14 +558,52 @@ def inject_mtp_support(
                 sorted(missing)[:8],
             )
             return False
+        # Codex round-6 blocking fix (defense-in-depth): MLX's
+        # ``load_weights`` accepts mismatched shapes silently (lazy
+        # array assignment doesn't validate), so a sidecar with all
+        # the right KEYS but a wrong-shape tensor would sneak through
+        # and later crash inside ``mtp_forward``. Explicitly compare
+        # shapes up front and refuse before any monkey-patching.
+        shape_mismatches: list[tuple[str, tuple, tuple]] = []
+        for k in expected_keys:
+            got = tuple(raw[k].shape)
+            want = expected_shapes[k]
+            if got != want:
+                shape_mismatches.append((k, got, want))
+        if shape_mismatches:
+            logger.warning(
+                "[mtp.inject.gemma4] %d tensor(s) in %s have shapes "
+                "incompatible with the AssistantModel. First 4: %s. "
+                "Refusing to inject.",
+                len(shape_mismatches),
+                weights_file,
+                [(k, g, w) for (k, g, w) in shape_mismatches[:4]],
+            )
+            return False
         # ``strict=False`` tolerates EXTRA keys that our AssistantModel
         # doesn't consume (metadata / centroid tables that Google
         # publishes but this MVP consumer doesn't load). We already
         # asserted no REQUIRED keys are missing, so ``strict=False``
         # cannot mask a partial-load bug. Extras are elevated from
         # INFO to WARNING per codex round-4 so the operator sees them.
-        assistant.load_weights(list(raw.items()), strict=False)
-        mx.eval(assistant.parameters())
+        #
+        # Codex round-6 blocking fix: wrap the load + eval in a
+        # try/except — a sidecar carrying all the expected KEYS but
+        # tensors with INCOMPATIBLE SHAPES (e.g. a checkpoint from a
+        # different assistant size that happens to share the layout
+        # names) would raise here otherwise, breaking the
+        # documented "fail closed on any refusal" contract.
+        try:
+            assistant.load_weights(list(raw.items()), strict=False)
+            mx.eval(assistant.parameters())
+        except Exception as exc:
+            logger.warning(
+                "[mtp.inject.gemma4] load_weights / eval failed on %s: %s. "
+                "Refusing to inject with an inconsistent drafter.",
+                weights_file,
+                exc,
+            )
+            return False
         extra = loaded_keys - expected_keys
         if extra:
             logger.warning(
@@ -920,4 +960,34 @@ def validate_mtp_support(model: Any) -> bool:
             "[mtp.validate.gemma4] model.__call__ does not accept n_confirmed."
         )
         return False
+
+    # Codex round-6 blocking fix: when ``model`` is an outer wrapper
+    # (e.g. ``Gemma4Unified`` with ``model.language_model`` as the
+    # actual text model), we resolved down to ``inner`` above. But
+    # the generator will call ``model.mtp_forward(...)`` /
+    # ``model.make_mtp_cache()`` on the object the CALLER passed —
+    # which is the outer wrapper. Inject wires those delegations onto
+    # the outer, but a partially-rolled-back inject could leave inner
+    # correctly patched while the outer stays bare. Explicitly
+    # re-check the delegated surfaces on the outer to catch that.
+    if model is not inner:
+        for attr in ("mtp", "mtp_forward", "make_mtp_cache"):
+            if not hasattr(model, attr):
+                logger.warning(
+                    "[mtp.validate.gemma4] outer wrapper missing delegated "
+                    "surface: %s. Inner-only patch would cause the generator "
+                    "to AttributeError on the outer.",
+                    attr,
+                )
+                return False
+        if not callable(getattr(model, "mtp_forward", None)):
+            logger.warning(
+                "[mtp.validate.gemma4] outer wrapper's mtp_forward is not callable."
+            )
+            return False
+        if not callable(getattr(model, "make_mtp_cache", None)):
+            logger.warning(
+                "[mtp.validate.gemma4] outer wrapper's make_mtp_cache is not callable."
+            )
+            return False
     return True

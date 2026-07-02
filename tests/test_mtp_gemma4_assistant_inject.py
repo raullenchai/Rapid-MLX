@@ -764,3 +764,97 @@ def test_inject_delegates_surfaces_to_outer_wrapper():
     assert len(cache) == inner.args.num_hidden_layers or len(cache) == len(
         inner.mtp.model.layers
     )
+
+
+# ---------------------------------------------------------------------------
+# 8. Codex round-6 fail-closed coverage
+# ---------------------------------------------------------------------------
+
+
+def test_inject_refuses_sidecar_with_shape_mismatched_tensor(tmp_path):
+    """Codex round-6 blocking-fix locked in.
+
+    A sidecar carrying all the EXPECTED keys but with an INCOMPATIBLE
+    shape on one tensor (e.g. a checkpoint from a different assistant
+    size sharing the layout names) must not propagate the load_weights
+    exception up — inject_mtp_support has to fail closed and return
+    ``False``, matching its documented contract.
+    """
+    from mlx.utils import tree_flatten
+
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+        _build_assistant_model,
+        _build_assistant_model_args,
+        inject_mtp_support,
+    )
+
+    cfg = _google_shaped_assistant_config(hidden=64, backbone=128, n_layers=4)
+    args = _build_assistant_model_args(cfg, target_backbone_hidden=128)
+    model_template = _build_assistant_model(args, backbone_hidden_size=128)
+    mx.eval(model_template.parameters())
+    flat = dict(tree_flatten(model_template.parameters()))
+
+    # Corrupt ONE tensor to a totally wrong shape.
+    bad_key = "model.embed_tokens.weight"
+    assert bad_key in flat, "template should have embed_tokens.weight"
+    original_shape = flat[bad_key].shape
+    flat[bad_key] = mx.zeros((original_shape[0] + 7, original_shape[1] + 3))
+
+    sidecar_dir = tmp_path / "shape-mismatch-assistant"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    (sidecar_dir / "config.json").write_text(json.dumps(cfg))
+    mx.save_safetensors(str(sidecar_dir / "model.safetensors"), flat)
+
+    try:
+        target = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    # Should return False (not raise) even though the loaded tensor's
+    # shape is incompatible with the template.
+    ok = inject_mtp_support(target, mtp_sidecar=str(sidecar_dir))
+    assert ok is False, "shape-mismatched sidecar must fail closed"
+
+
+def test_validate_refuses_when_outer_wrapper_missing_delegated_surface():
+    """Codex round-6 blocking-fix locked in.
+
+    If a caller manually replicates the inner-side wiring but skips the
+    outer-wrapper delegation (which the generator would need for
+    ``outer.mtp_forward(...)`` / ``outer.make_mtp_cache()``),
+    ``validate_mtp_support`` must return False — a green validate that
+    later AttributeErrors inside the generator is worse than a red
+    validate up front.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+        inject_mtp_support,
+        validate_mtp_support,
+    )
+
+    try:
+        inner = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    class _FakeOuterVLM:
+        def __init__(self, lm):
+            self.language_model = lm
+
+    outer = _FakeOuterVLM(inner)
+
+    # Normal inject wires everything.
+    assert inject_mtp_support(outer, allow_random_init=True) is True
+    assert validate_mtp_support(outer) is True
+
+    # Simulate a partially-rolled-back state: strip the outer-only
+    # delegations while leaving the inner correctly patched.
+    for attr in ("mtp", "mtp_forward", "make_mtp_cache"):
+        if hasattr(outer, attr):
+            delattr(outer, attr)
+
+    # Now validate on the outer must refuse — even though the inner
+    # itself still has all four surfaces.
+    assert validate_mtp_support(outer) is False
+    # And validate on the inner directly still succeeds — we only
+    # tightened the outer-check, not the inner-check.
+    assert validate_mtp_support(inner) is True
