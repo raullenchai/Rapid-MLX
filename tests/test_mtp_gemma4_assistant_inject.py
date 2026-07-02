@@ -1024,3 +1024,71 @@ def test_inject_random_init_refuses_when_target_has_no_vocab_size():
 
     ok = inject_mtp_support(target, allow_random_init=True)
     assert ok is False, "random-init inject must refuse when target has no vocab_size"
+
+
+def test_inject_refuses_when_target_tail_layer_types_mismatch(tmp_path):
+    """Codex round-10 blocking-fix locked in.
+
+    Cross-KV reads assume the drafter's layer_types match the target's
+    TAIL layer_types slot-for-slot. If the target variant has a
+    different tail pattern (e.g. all-full where the assistant expects
+    [sliding, sliding, sliding, full]), inject must refuse.
+    """
+    from mlx.utils import tree_flatten
+
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import (
+        _build_assistant_model,
+        _build_assistant_model_args,
+        inject_mtp_support,
+    )
+
+    cfg = _google_shaped_assistant_config(hidden=64, backbone=128, n_layers=4)
+    args = _build_assistant_model_args(cfg, target_backbone_hidden=128)
+    model_template = _build_assistant_model(args, backbone_hidden_size=128)
+    mx.eval(model_template.parameters())
+    flat = dict(tree_flatten(model_template.parameters()))
+
+    sidecar_dir = tmp_path / "tail-mismatch-assistant"
+    sidecar_dir.mkdir(parents=True, exist_ok=True)
+    (sidecar_dir / "config.json").write_text(json.dumps(cfg))
+    mx.save_safetensors(str(sidecar_dir / "model.safetensors"), flat)
+
+    try:
+        target = _build_tiny_gemma4_target_model()
+    except (TypeError, AttributeError) as exc:
+        pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
+
+    # Corrupt the target's layer_types so its tail no longer matches
+    # the assistant's [sliding × 3, full].
+    target.args.layer_types = [
+        "full_attention",
+        "full_attention",
+        "full_attention",
+        "full_attention",  # tail-4 is all-full; assistant expects 3-sliding+1-full
+        "full_attention",
+        "full_attention",
+    ]
+
+    ok = inject_mtp_support(target, mtp_sidecar=str(sidecar_dir))
+    assert ok is False, "layer_types-tail mismatch must fail closed"
+
+
+def test_find_safetensors_refuses_multi_file_even_with_model_safetensors(tmp_path):
+    """Codex round-10 nit-fix locked in.
+
+    ``_find_safetensors`` must refuse when the directory contains
+    multiple ``.safetensors`` files — including the case where one is
+    the well-known ``model.safetensors``. Previously the well-known
+    name shortcut returned early and would silently ignore any
+    shards side-by-side.
+    """
+    from vllm_mlx.spec_decode.mtp.gemma4_inject import _find_safetensors
+
+    d = tmp_path / "multi"
+    d.mkdir()
+    # Create the well-known name AND an "extra" shard.
+    (d / "model.safetensors").write_bytes(b"")
+    (d / "model-00001-of-00002.safetensors").write_bytes(b"")
+
+    # Refuse — even though ``model.safetensors`` is one of the files.
+    assert _find_safetensors(d) is None

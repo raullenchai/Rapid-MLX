@@ -243,15 +243,13 @@ def _find_safetensors(sidecar_dir: Path) -> Path | None:
     consumer and picking the "first" file could silently load the
     wrong tensors.
     """
-    for name in ("model.safetensors", "model-mtp.safetensors"):
-        p = sidecar_dir / name
-        if p.exists():
-            return p
-    # Fallback: exactly one *.safetensors (bare-name variant that
-    # Google occasionally publishes). Refuse ambiguity.
+    # Codex round-10 nit fix: enumerate ALL .safetensors first and
+    # refuse when there is more than one — including when one of them
+    # happens to be named ``model.safetensors``. Previously the
+    # well-known-name shortcut returned early and ignored any
+    # ``model-00001-of-00003.safetensors`` shards that would have
+    # combined into a different weight tree.
     matches = sorted(sidecar_dir.glob("*.safetensors"))
-    if len(matches) == 1:
-        return matches[0]
     if len(matches) > 1:
         logger.warning(
             "[mtp.inject.gemma4] %s contains %d .safetensors files: %s. "
@@ -261,6 +259,9 @@ def _find_safetensors(sidecar_dir: Path) -> Path | None:
             len(matches),
             [p.name for p in matches[:5]],
         )
+        return None
+    if len(matches) == 1:
+        return matches[0]
     return None
 
 
@@ -537,6 +538,45 @@ def inject_mtp_support(
                 "inject; drafter logits would be indexed into the wrong vocab.",
                 target_vocab,
                 assistant_vocab,
+            )
+            return False
+
+        # Codex round-10 blocking fix: verify that the target's TAIL
+        # layer_types match the assistant's layer_types before wiring
+        # up cross-model K/V. The drafter maps its layer i to target
+        # layer ``(target_num_layers - n_assistant_layers) + i`` and
+        # reads that layer's K/V state, applying the SAME sliding /
+        # full attention treatment defined in the drafter's own
+        # ``layer_types``. If the target variant has a different tail
+        # pattern (e.g. all-full, or [sliding, full, sliding, full]),
+        # the drafter would use the wrong RoPE / mask semantics
+        # against a cache that was populated under a different
+        # attention type. Refuse on mismatch.
+        assistant_layer_types = list(getattr(args, "layer_types", []) or [])
+        target_layer_types = list(getattr(inner.args, "layer_types", []) or [])
+        n_assistant = len(assistant_layer_types)
+        if (
+            assistant_layer_types
+            and target_layer_types
+            and len(target_layer_types) >= n_assistant
+        ):
+            target_tail = target_layer_types[-n_assistant:]
+            if target_tail != assistant_layer_types:
+                logger.warning(
+                    "[mtp.inject.gemma4] target tail layer_types %r do not match "
+                    "assistant layer_types %r; refusing to inject cross-KV under "
+                    "mismatched attention semantics.",
+                    target_tail,
+                    assistant_layer_types,
+                )
+                return False
+        elif not target_layer_types and assistant_layer_types:
+            logger.warning(
+                "[mtp.inject.gemma4] target has no layer_types published on "
+                "``inner.args``; cannot verify tail layer_types match the "
+                "assistant's %r. Refusing to inject rather than silently ship "
+                "a semantics-mismatched drafter.",
+                assistant_layer_types,
             )
             return False
     else:
