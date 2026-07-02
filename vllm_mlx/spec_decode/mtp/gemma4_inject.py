@@ -600,16 +600,32 @@ def inject_mtp_support(
             )
             return False
 
+        # Codex round-14 blocking-fix: derive head_dim /
+        # global_head_dim / num_key_value_heads /
+        # num_global_key_value_heads from the target so cross-KV
+        # slots match shape-for-shape. Under random-init the drafter
+        # still has garbage weights (that's the whole point), but its
+        # attention modules must be sized to consume the target's K/V.
+        _target_head_dim = int(getattr(inner.args, "head_dim", 16) or 16)
+        _target_global_head_dim = int(
+            getattr(inner.args, "global_head_dim", _target_head_dim) or _target_head_dim
+        )
+        _target_n_kv = int(getattr(inner.args, "num_key_value_heads", 1) or 1)
+        _target_n_global_kv = int(
+            getattr(inner.args, "num_global_key_value_heads", _target_n_kv)
+            or _target_n_kv
+        )
+
         args = ModelArgs(
             model_type="gemma4_unified_text",
             hidden_size=64,
             num_hidden_layers=2,
             intermediate_size=128,
             num_attention_heads=4,
-            head_dim=16,
-            global_head_dim=32,
-            num_key_value_heads=1,
-            num_global_key_value_heads=1,
+            head_dim=_target_head_dim,
+            global_head_dim=_target_global_head_dim,
+            num_key_value_heads=_target_n_kv,
+            num_global_key_value_heads=_target_n_global_kv,
             rms_norm_eps=1e-6,
             vocab_size=random_vocab,
             vocab_size_per_layer_input=0,
@@ -1184,6 +1200,22 @@ def validate_mtp_support(model: Any) -> bool:
     if "n_confirmed" not in sig.parameters:
         logger.warning(
             "[mtp.validate.gemma4] model.__call__ does not accept n_confirmed."
+        )
+        return False
+
+    # Codex round-14 nit fix: verify ``mtp_max_batch_size`` on the
+    # INNER path too. Previously only the outer-wrapper case checked
+    # this; a caller that inject_mtp_support'd an inner text model
+    # directly (no VLM wrapper) could validate green even if the gate
+    # attribute was missing or corrupted. Inner's class-level
+    # ``mtp_max_batch_size == 1`` should always be present after a
+    # successful inject.
+    inner_max_batch = getattr(inner, "mtp_max_batch_size", None)
+    if inner_max_batch != 1:
+        logger.warning(
+            "[mtp.validate.gemma4] inner model.mtp_max_batch_size=%r does not "
+            "equal 1. Schedulers that inspect this gate would misroute B>1.",
+            inner_max_batch,
         )
         return False
 

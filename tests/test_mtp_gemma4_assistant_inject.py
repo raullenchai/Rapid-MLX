@@ -1164,8 +1164,54 @@ def test_validate_refuses_when_outer_mtp_max_batch_size_wrong_value():
     assert validate_mtp_support(outer) is False
 
 
+def _build_matched_head_dim_target_model():
+    """Target model with head_dim == global_head_dim.
+
+    Codex round-14 blocking-fix: the round-13 shape-contract test
+    caught its own forward under a try/except pytest.skip, which
+    would let a broken ``mtp_forward`` still validate green. Using
+    a target where head_dim == global_head_dim avoids the tiny-
+    random-init per-layer head_dim mismatch and lets the forward
+    actually run under real attention.
+    """
+    from mlx_lm.models.gemma4_text import Model, ModelArgs
+
+    args = ModelArgs(
+        model_type="gemma4_text",
+        hidden_size=128,
+        intermediate_size=256,
+        num_hidden_layers=6,
+        num_attention_heads=4,
+        head_dim=16,
+        global_head_dim=16,  # matched to head_dim so sliding == full head shape
+        num_key_value_heads=1,
+        num_global_key_value_heads=1,
+        rms_norm_eps=1e-6,
+        vocab_size=128,
+        vocab_size_per_layer_input=0,
+        num_kv_shared_layers=0,
+        hidden_size_per_layer_input=0,
+        sliding_window=64,
+        sliding_window_pattern=6,
+        max_position_embeddings=128,
+        final_logit_softcapping=None,
+        enable_moe_block=False,
+        use_double_wide_mlp=False,
+        tie_word_embeddings=True,
+        layer_types=[
+            "sliding_attention",
+            "sliding_attention",
+            "sliding_attention",
+            "sliding_attention",
+            "sliding_attention",
+            "full_attention",
+        ],
+    )
+    return Model(args)
+
+
 def test_mtp_forward_returns_single_last_position_shape():
-    """Codex round-13 blocking-fix documentation locked in.
+    """Codex round-13/14 blocking-fix documentation locked in.
 
     ``mtp_forward`` computes ONLY the last-position logit under the
     shared-K/V path (per-row RoPE offsets would need N separate
@@ -1174,41 +1220,35 @@ def test_mtp_forward_returns_single_last_position_shape():
     input N so any future caller that reads position != -1 will
     IndexError against the (B, 1, ...) shape — a loud red rather
     than silent stale-hidden semantics.
+
+    Codex round-14: uses a matched-head_dim target so the forward
+    actually runs (previous try/except skip would have masked a
+    broken mtp_forward with a green test).
     """
     from mlx_lm.models.cache import KVCache
 
     from vllm_mlx.spec_decode.mtp.gemma4_inject import inject_mtp_support
 
     try:
-        target = _build_tiny_gemma4_target_model()
+        target = _build_matched_head_dim_target_model()
     except (TypeError, AttributeError) as exc:
+        # Only skip on hard schema drift (mlx-lm ModelArgs field
+        # rename), NOT on runtime mismatches — those must fail loud.
         pytest.skip(f"Gemma 4 ModelArgs schema mismatch: {exc}")
 
     assert inject_mtp_support(target, allow_random_init=True) is True
 
-    # Prime target-cache slots with K, V sized per-layer so the
-    # assistant's attention finds matching head_dim on both the
-    # sliding layers (uses head_dim) and full-attention layers (uses
-    # global_head_dim). Only the TAIL slots (last n_assistant_layers)
-    # are read by mtp_forward; earlier slots don't need to match.
+    # Prime target-cache slots with K, V — all layers now share the
+    # same head_dim, so a single shape works for all slots.
     n_target_layers = len(target.model.layers)
     inner_args = target.args
     n_kv = int(getattr(inner_args, "num_key_value_heads", 1) or 1)
-    head_dim = int(getattr(inner_args, "head_dim", 16) or 16)
-    global_head_dim = int(getattr(inner_args, "global_head_dim", head_dim) or head_dim)
-    target_layer_types = list(inner_args.layer_types or [])
+    head_dim = int(inner_args.head_dim)
     tgt_caches = []
-    for i in range(n_target_layers):
+    for _ in range(n_target_layers):
         c = KVCache()
-        # Per-layer head_dim.
-        layer_type = (
-            target_layer_types[i]
-            if i < len(target_layer_types)
-            else "sliding_attention"
-        )
-        this_head_dim = global_head_dim if layer_type == "full_attention" else head_dim
-        k = mx.random.normal((1, n_kv, 1, this_head_dim))
-        v = mx.random.normal((1, n_kv, 1, this_head_dim))
+        k = mx.random.normal((1, n_kv, 1, head_dim))
+        v = mx.random.normal((1, n_kv, 1, head_dim))
         c.update_and_fetch(k, v)
         tgt_caches.append(c)
     target._mtp_target_cache = tgt_caches
@@ -1217,17 +1257,9 @@ def test_mtp_forward_returns_single_last_position_shape():
     h = mx.random.normal((1, 2, inner_args.hidden_size))
     ids = mx.zeros((1, 2), dtype=mx.int32)
     mtp_cache = target.make_mtp_cache()
-    try:
-        out = target.mtp_forward(h, ids, mtp_cache)
-    except Exception as exc:
-        # This is an mlx-side head_dim / RMSNorm mismatch — the
-        # tiny random-init config's layer sizes may not line up
-        # with mlx-lm's Gemma 4 attention layout in edge cases.
-        # Skip loudly; the contract we care about (return shape) is
-        # documented in the mtp_forward docstring itself.
-        pytest.skip(
-            f"tiny random-init forward pass failed under head_dim mismatch: {exc}"
-        )
+    # No try/except — any failure here means mtp_forward is broken
+    # and the test MUST fail (codex round-14 blocking-fix).
+    out = target.mtp_forward(h, ids, mtp_cache)
     # (B, 1, vocab) — last-position-only contract.
     assert out.shape[0] == 1
     assert out.shape[1] == 1, f"expected N=1 output, got shape {out.shape}"
