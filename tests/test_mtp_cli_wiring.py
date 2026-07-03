@@ -1144,34 +1144,147 @@ def test_get_mtp_dispatch_timeout_sec_malformed_falls_back_to_default(monkeypatc
 
 
 def test_start_llm_calls_apply_mtp_dispatch():
-    """Codex round-G NIT #4 regression guard: verify that
+    """Codex round-G NIT #4 + round-L NIT: verify that
     ``BatchedEngine._start_llm`` invokes the extracted
-    :func:`_apply_mtp_dispatch` helper.
+    :func:`_apply_mtp_dispatch` helper at runtime.
 
-    This complements the runtime-behavior tests above by pinning
-    the wiring itself — if a future refactor inlines the dispatch
-    call back into ``_start_llm``, this guard forces the change to
-    also update the ``_apply_mtp_dispatch`` tests. Without it, a
-    silent inline would leave the helper's tests running against a
-    dead codepath.
+    Round-G shipped an ``inspect.getsource()`` grep-style check
+    here; codex round-L correctly flagged that as a source-string
+    assertion that would happily pass for a comment or a dead
+    reference (e.g. a docstring-only mention of the helper name).
+    Fix: monkey-patch ``_apply_mtp_dispatch`` to a recorder that
+    also raises a sentinel to bail out of the rest of ``_start_llm``,
+    then actually invoke ``_start_llm`` and assert the recorder
+    fired with the expected arguments.
 
-    Uses ``inspect.getsource`` as a lightweight wiring check — the
-    behavioral tests above are the actual correctness gate; this
-    just prevents drift where the helper survives but stops being
-    called.
+    The MLX-heavy path (Metal warmup, AsyncEngineCore start, etc.)
+    lives past the dispatch call so the sentinel-raise pattern
+    scopes the test to just the wiring under review.
     """
-    import inspect
+    import asyncio
+    from types import SimpleNamespace
 
     from vllm_mlx.engine import batched as _batched
+    from vllm_mlx.scheduler import SchedulerConfig
+    from vllm_mlx.utils import tokenizer as _tokenizer_mod
 
-    src = inspect.getsource(_batched.BatchedEngine._start_llm)
-    assert "_apply_mtp_dispatch" in src, (
-        "codex round-G NIT #4: _start_llm no longer calls "
-        "_apply_mtp_dispatch. Either the helper was renamed / inlined "
-        "and the behavioral tests above are now covering dead code, or "
-        "the boot path was refactored. Update the tests OR restore the "
-        "helper invocation."
+    # 1. Build a BatchedEngine WITHOUT running its __init__ (which
+    #    would probe MLLM registries / do I/O). Setting only the
+    #    fields ``_start_llm`` reads keeps the test hermetic.
+    engine = object.__new__(_batched.BatchedEngine)
+    engine._model_name = "mlx-community/gemma-4-12B-it-4bit"
+    engine._trust_remote_code = False
+    engine._scheduler_config = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_model_type="gemma4_unified",
+        # enable_mtp is the legacy Qwen3-Next-baked-in flag; must
+        # stay False so we don't route into the pre-dispatch
+        # legacy validate branch that runs when both flags are set.
+        enable_mtp=False,
     )
+    engine._gpu_memory_utilization = 0.90
+    engine._is_mllm = False
+    engine._model = None
+    engine._tokenizer = None
+    engine._engine = None
+    engine._loaded = False
+    engine._engine_started = False
+
+    # 2. Stub the model loader so we don't touch HF / MLX weights.
+    def _fake_load(model_name, tokenizer_config=None):
+        # Return a duck-typed model + tokenizer; the real code just
+        # stashes them on ``self`` and hands the model to the
+        # dispatch helper.
+        fake_model = object()
+        fake_tokenizer = SimpleNamespace(eos_token_id=0)
+        return fake_model, fake_tokenizer
+
+    monkeypatch = _MonkeypatchScope()
+    try:
+        monkeypatch.setattr(
+            _tokenizer_mod, "load_model_with_fallback", _fake_load
+        )
+
+        # 3. Monkey-patch _apply_mtp_dispatch on the batched module.
+        #    Record args, then raise a sentinel to short-circuit the
+        #    rest of _start_llm (Metal limits, AsyncEngineCore, etc.).
+        dispatch_calls: list[dict] = []
+
+        class _ScopedTestSentinel(RuntimeError):
+            """Sentinel — signals the test's monkey-patched dispatch
+            helper fired. Distinct type so an unrelated RuntimeError
+            elsewhere in _start_llm does NOT satisfy the assertion.
+            """
+
+        def _recording_apply_mtp_dispatch(
+            *, model, model_name, scheduler_config, executor
+        ) -> str:
+            dispatch_calls.append(
+                {
+                    "model": model,
+                    "model_name": model_name,
+                    "scheduler_config": scheduler_config,
+                    "executor": executor,
+                }
+            )
+            raise _ScopedTestSentinel("apply_mtp_dispatch invoked")
+
+        monkeypatch.setattr(
+            _batched, "_apply_mtp_dispatch", _recording_apply_mtp_dispatch
+        )
+
+        # 4. Drive _start_llm. The sentinel unwinds after the dispatch
+        #    fires, avoiding the Metal / AsyncEngineCore setup.
+        try:
+            asyncio.run(engine._start_llm())
+        except _ScopedTestSentinel:
+            pass  # expected — the recorder tripped the sentinel
+
+    finally:
+        monkeypatch.undo()
+
+    # 5. The recorder MUST have fired exactly once with the fields
+    #    the round-G contract pins:
+    #      * ``model`` is the object returned by ``load_model_with_fallback``.
+    #      * ``model_name`` matches the engine's model_name.
+    #      * ``scheduler_config`` is the engine's config (same object).
+    #      * ``executor`` is the engine's ``_model_load_executor``.
+    assert len(dispatch_calls) == 1, (
+        "codex round-L NIT: _start_llm did NOT invoke "
+        "_apply_mtp_dispatch. The wiring is broken and the behavioral "
+        f"tests above are covering dead code (got dispatch_calls={dispatch_calls!r})."
+    )
+    call = dispatch_calls[0]
+    assert call["model_name"] == engine._model_name
+    assert call["scheduler_config"] is engine._scheduler_config
+    assert call["executor"] is engine._model_load_executor, (
+        "codex round-L NIT: dispatch was called with the wrong "
+        "executor — must be the same mlx-step worker that loaded "
+        "the model (see #170 / round-J BLOCKING #1)."
+    )
+
+
+class _MonkeypatchScope:
+    """Micro monkeypatch helper for the standalone round-L NIT test.
+
+    ``pytest.monkeypatch`` is only available as a fixture; this test
+    is written procedural-style (no fixture) so it can be reasoned
+    about linearly. This tiny helper wraps ``setattr`` + ``undo()``
+    to give the same scope guarantee.
+    """
+
+    def __init__(self):
+        self._undo_stack: list[tuple] = []
+
+    def setattr(self, target, name, value):
+        original = getattr(target, name)
+        self._undo_stack.append((target, name, original))
+        setattr(target, name, value)
+
+    def undo(self):
+        while self._undo_stack:
+            target, name, original = self._undo_stack.pop()
+            setattr(target, name, original)
 
 
 # ---------------------------------------------------------------------------
