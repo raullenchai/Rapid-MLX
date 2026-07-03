@@ -28,6 +28,125 @@ from .base import BaseEngine, GenerationOutput
 logger = logging.getLogger(__name__)
 
 
+def _resolve_hf_model_type(model_name: str) -> str | None:
+    """Best-effort read of ``config.json::model_type`` for ``model_name``.
+
+    ``model_name`` is whatever the operator passed to the CLI — an alias
+    (``gemma4-12b-4bit``), an HF repo id
+    (``mlx-community/gemma-4-12B-it-4bit``), or a local path. We resolve
+    aliases first, then look at the HF cache. Never raises: on any
+    failure (offline, missing config, malformed JSON, alias lookup blows
+    up) we return ``None`` so the caller can skip the MTP inject step
+    with a clear log rather than crashing engine boot.
+    """
+    import json as _json
+    import os as _os
+
+    hf_path: str | None = model_name
+    # Alias resolution — a contributor-curated ``gemma4-12b-4bit`` alias
+    # resolves to ``mlx-community/gemma-4-12B-it-4bit`` for the cache
+    # lookup below.
+    try:
+        from ..model_aliases import resolve_profile
+
+        profile = resolve_profile(model_name)
+        if profile is not None:
+            hf_path = getattr(profile, "hf_path", None) or model_name
+    except Exception:
+        # Alias resolution must never block engine boot — the raw
+        # model_name still works if it's already an HF repo id or path.
+        pass
+
+    # Local path — read config.json directly.
+    if hf_path and _os.path.isdir(hf_path):
+        cfg_path = _os.path.join(hf_path, "config.json")
+        if _os.path.isfile(cfg_path):
+            try:
+                with open(cfg_path) as fh:
+                    cfg = _json.load(fh)
+                mt = cfg.get("model_type") if isinstance(cfg, dict) else None
+                if isinstance(mt, str):
+                    return mt
+            except Exception:
+                pass
+
+    # HF Hub — look at whatever ``huggingface_hub`` has already cached.
+    # Same pattern the CLI eligibility gate uses (``cli.py::
+    # _gather_kv_cache_dtype_inputs``) so a config that boots on the CLI
+    # will boot here.
+    try:
+        from huggingface_hub import try_to_load_from_cache as _cache_lookup
+
+        cached = _cache_lookup(repo_id=hf_path, filename="config.json")
+        if cached and _os.path.exists(cached):
+            with open(cached) as fh:
+                cfg = _json.load(fh)
+            mt = cfg.get("model_type") if isinstance(cfg, dict) else None
+            if isinstance(mt, str):
+                return mt
+    except Exception:
+        pass
+
+    return None
+
+
+def _run_dispatch_mtp_inject(
+    model: Any,
+    model_name: str,
+    mtp_sidecar: str | None,
+) -> bool:
+    """MLX-step-worker entrypoint that runs ``dispatch_mtp_inject``.
+
+    Extracted so ``_start_llm`` can ``submit(...)`` it onto the model-
+    load executor cleanly. Never raises — the dispatcher's own
+    contract is ``never raises``, but we wrap the ``model_type``
+    resolution in the same fail-closed shape so an offline / missing-
+    config path degrades to ``False`` instead of aborting the engine.
+
+    Returns:
+        ``True`` when the family injector attached the MTP contract to
+        ``model`` (``mtp_forward`` / ``make_mtp_cache`` / ``mtp``).
+        ``False`` when we skipped for any reason — no model_type, no
+        registered inject, family injector refused (missing sidecar,
+        loader failure). Callers can key logging on the boolean but
+        MUST NOT gate scheduler build on it — the scheduler's own
+        ``_install_mtp_vendored`` gate re-checks the same attributes
+        and falls through to plain decode when they're missing.
+    """
+    from ..spec_decode.mtp import dispatch_mtp_inject
+
+    model_type = _resolve_hf_model_type(model_name)
+    if model_type is None:
+        logger.warning(
+            "[MTP-vendored] could not resolve model_type for %r; skipping "
+            "dispatch_mtp_inject. --spec-decode mtp will be a no-op.",
+            model_name,
+        )
+        return False
+
+    ok = dispatch_mtp_inject(
+        model,
+        model_type,
+        mtp_sidecar=mtp_sidecar,
+    )
+    if ok:
+        logger.info(
+            "[MTP-vendored] dispatch_mtp_inject succeeded for model_type=%r "
+            "sidecar=%r",
+            model_type,
+            mtp_sidecar,
+        )
+    else:
+        logger.warning(
+            "[MTP-vendored] dispatch_mtp_inject returned False for "
+            "model_type=%r sidecar=%r; --spec-decode mtp will be a no-op "
+            "(scheduler install will skip on missing MTP attributes).",
+            model_type,
+            mtp_sidecar,
+        )
+    return ok
+
+
 def _normalize_tool_call_arguments_for_template(messages: list[dict]) -> list[dict]:
     """Normalize OpenAI tool-call replay for templates expecting mappings.
 
@@ -736,6 +855,32 @@ class BatchedEngine(BaseEngine):
                     "[MTP] MTP validation failed — --enable-mtp will be ignored. "
                     "See warnings above for details."
                 )
+
+        # 0.9.13 PR-A: new-arch MTP inject dispatcher (Gemma 4 external
+        # assistant / Qwen3.5 baked-in MTP). Runs BEFORE the scheduler is
+        # built so ``_install_mtp_vendored`` in scheduler.py sees the
+        # ``mtp_forward`` / ``make_mtp_cache`` / ``mtp`` attributes it
+        # gates on. Kept on the model-load executor thread — the family
+        # injector (Gemma 4 in particular) materialises assistant weights
+        # via ``mlx_lm.load`` and mutates the target model in place, both
+        # of which touch MLX streams that only the mlx-step worker owns
+        # (#170). Running here on the asyncio thread would create a
+        # stray Stream(gpu, N) reference on first assistant forward.
+        #
+        # The CLI eligibility gate at ``cli.py:_gather_kv_cache_dtype_inputs``
+        # / ``detect_mtp_eligibility(...)`` already rejected non-eligible
+        # configs — this call is a strict subordinate of that decision.
+        # Dispatch is a no-op (returns False, logs INFO) for any
+        # ``model_type`` not in the dispatch table, so an operator who
+        # forgot the CLI gate still gets a clean skip rather than a
+        # traceback.
+        if _new_arch_mtp:
+            self._model_load_executor.submit(
+                _run_dispatch_mtp_inject,
+                self._model,
+                self._model_name,
+                getattr(sc, "mtp_sidecar", None),
+            ).result()
 
         # Set Metal memory limits on the SAME mlx-step worker that loaded
         # the model. Calling these from the asyncio loop thread would touch

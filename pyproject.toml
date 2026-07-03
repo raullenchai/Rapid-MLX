@@ -120,6 +120,20 @@ vision = [
 dflash = [
     "mlx-vlm>=0.6.3",
 ]
+# MTP (Multi-Token Prediction) speculative decoding — Gemma 4 external
+# assistant path (``--spec-decode mtp --mtp-sidecar <path>``). The
+# assistant-drafter loader in
+# ``vllm_mlx/spec_decode/mtp/gemma4_inject.py`` transitively imports
+# ``mlx_lm.utils.load`` → ``mlx_vlm.utils`` which reaches for PIL when a
+# checkpoint contains an image-processor preprocessor_config.json (the
+# case for the assistant drafters we've dogfooded so far). Without PIL
+# on PYTHONPATH, boot fails with ``ModuleNotFoundError: No module named
+# 'PIL'`` at the ``dispatch_mtp_inject`` call site, BEFORE the eligibility
+# banner prints — misleading users into thinking their sidecar path is
+# wrong. Text-only otherwise; does NOT pull torch/cv2 like [vision].
+mtp = [
+    "pillow>=10.0.0",
+]
 # Embedding endpoint
 embeddings = [
     "mlx-embeddings>=0.1.0",

@@ -236,6 +236,22 @@ class SchedulerConfig:
     # would resolve.
     dflash_drafter_path: str = ""
 
+    # 0.9.13 PR-A: external MTP sidecar path for the Gemma 4
+    # assistant-drafter route (``--spec-decode mtp --mtp-sidecar <path>``).
+    # ``None`` (the default) matches the pre-0.9.13 shape where
+    # ``--spec-decode mtp`` only supported Qwen3.5/3.6 native-MTP
+    # (i.e. MTP baked into the target checkpoint). When set, the
+    # scheduler routes through ``dispatch_mtp_inject(model,
+    # model_type, mtp_sidecar=<path>)`` at boot, which grafts the
+    # sidecar's ~4-layer drafter onto the target before the
+    # server-side MTP hot loop is installed. Accepts either a local
+    # safetensors directory or an HF repo id — resolution is deferred
+    # to ``dispatch_mtp_inject`` (which itself defers to
+    # ``mlx_lm.utils.load`` for HF resolution). See
+    # ``vllm_mlx/spec_decode/mtp/detect.py::detect_mtp_eligibility``
+    # for how CLI eligibility flips on a non-None value.
+    mtp_sidecar: str | None = None
+
     # SuffixDecoding — drafter-free speculative decoding using a suffix
     # tree over prompt + generated tokens. Predicts repeated patterns
     # (tool boilerplate, JSON schemas, ReAct loops) at zero drafter
@@ -1312,6 +1328,284 @@ def _install_mtp(
     mode_str = "optimistic (no verify)" if optimistic else "always-advance"
     logger.info(
         f"[MTP] installed with num_draft_tokens={num_draft_tokens}, {mode_str} mode"
+    )
+    return True
+
+
+def _install_mtp_vendored(
+    batch_gen: "BatchGenerator",
+    model: Any,
+    requests: dict[str, Any] | None = None,
+    uid_to_request_id: dict[int, str] | None = None,
+) -> bool:
+    """Install the vendored PR #990 ``mtp_generate_step`` hot loop into
+    ``GenerationBatch._step``.
+
+    This is the SERVER-SIDE wiring for ``--spec-decode mtp`` (Gemma 4
+    external assistant + Qwen3.5 baked-in MTP). It supplants the legacy
+    :func:`_install_mtp` (which targets a stale mlx-lm 0.30 shape whose
+    ``BatchGenerator._step`` no longer exists in 0.31+).
+
+    Gate (all required):
+      * ``model`` exposes the ``mtp_generate_step`` protocol:
+        ``mtp_forward``, ``make_mtp_cache`` (installed by
+        :func:`~vllm_mlx.spec_decode.mtp.dispatch.dispatch_mtp_inject`).
+      * ``batch_gen._generation_batch`` exists (mlx-lm 0.31+).
+
+    On a gate miss, logs a WARN and returns ``False`` — the request
+    continues on plain autoregressive decode.
+
+    Hook shape: replaces ``GenerationBatch._step`` (mlx-lm 0.31+ shape:
+    ``() -> (List[int], List[mx.array])``). Per-step, exactly one primary
+    token is returned to keep the mlx-lm ``next()`` contract intact.
+    Multi-token gains come from the generator's internal batched
+    backbone+MTP passes (up to 2 tokens per pass), not from returning
+    multiple tokens per ``_step`` call. Extra tokens produced by the
+    generator are queued and drained on the following ``_step`` calls.
+
+    K=1 chain-of-1 scope (PR-A of 0.9.13 stack):
+
+    * Single-request only (``len(gb.uids) == 1``). Multi-request batches
+      fall through to ``_orig_step`` — Gemma 4's MTP fast-path is
+      batch=1-only (``mtp_forward`` raises on B>1) and the vendored
+      generator maintains its own per-request state. Auto-K controller
+      lives in PR-B; batched residual+bonus sync lives in PR-C.
+
+    * Greedy sampling only (temperature == 0). Non-greedy falls through
+      to ``_orig_step`` — the byte-lossless verify contract lives in the
+      generator's residual-distribution sampling on reject, which the
+      MVP does not exercise. Non-greedy support is a follow-up.
+
+    * No logits processors. If any position of ``gb.logits_processors``
+      is truthy we fall through — the generator has its own logits-
+      processor plumbing but wiring the mlx-lm per-uid processor list
+      through to the generator is out of MVP scope.
+
+    * On the very first ``_step`` call we short-circuit and return the
+      token that mlx-lm's fresh ``GenerationBatch.__init__._step()``
+      already sampled and stashed in ``_next_tokens``. This preserves
+      byte-equal output vs. baseline: the FIRST generated token is the
+      argmax(prefill-final-logits), identical to plain decode. We seed
+      the generator with that same token so its first backbone step
+      produces the SECOND generated token.
+    """
+    gb = getattr(batch_gen, "_generation_batch", None)
+    if gb is None:
+        logger.warning(
+            "[MTP-vendored] disabled: BatchGenerator has no _generation_batch "
+            "attribute (mlx-lm version mismatch — expected >=0.31)."
+        )
+        return False
+
+    if not (
+        hasattr(model, "mtp_forward")
+        and hasattr(model, "make_mtp_cache")
+        and hasattr(model, "mtp")
+    ):
+        logger.warning(
+            "[MTP-vendored] disabled: model lacks mtp_forward / make_mtp_cache / "
+            "mtp attributes — dispatch_mtp_inject did not run or returned False. "
+            "--spec-decode mtp will be a no-op; requests continue on plain "
+            "autoregressive decode."
+        )
+        return False
+
+    # Lazy import — the generator module pulls in mlx-lm's sample_utils and
+    # patches ArraysCache; keep the import off the scheduler boot path so a
+    # non-MTP build has zero cost.
+    from .spec_decode.mtp.generator import mtp_generate_step
+
+    _orig_step = gb._step
+
+    # Per-uid MTP state. Each entry:
+    #   {
+    #     "gen": the mtp_generate_step generator instance (or None on FIRST call),
+    #     "queue": deque of pending (tok_int, lp_array, from_draft_bool),
+    #     "primed": True after we emit the vanilla-sampled first token,
+    #   }
+    # Only one uid is ever active at a time under the batch=1 gate.
+    _state: dict[int, dict[str, Any]] = {}
+    _stats = {
+        "vendored_steps": 0,
+        "fallthrough_steps": 0,
+        "ft_batch_size": 0,
+        "ft_non_greedy": 0,
+        "ft_logits_processors": 0,
+        "gen_exhausted": 0,
+    }
+
+    def _cleanup_uid(uid: int) -> None:
+        state = _state.pop(uid, None)
+        if state is None:
+            return
+        gen = state.get("gen")
+        if gen is not None:
+            try:
+                gen.close()
+            except Exception:  # noqa: BLE001
+                pass
+
+    def _is_greedy_for_uid(uid: int) -> bool:
+        """Return True when the request behind ``uid`` sampled at temp=0.
+
+        K=1 MVP: matches the greedy contract that
+        ``vllm_mlx/spec_decode/mtp/generator.py::mtp_generate_step``
+        implements with ``temp=0.0``. Under temp>0, the vendored
+        generator can still preserve the lossless marginal via its
+        residual-distribution sample on reject — but the MVP install
+        hard-codes ``temp=0.0`` into the generator constructor, so any
+        request with temperature>0 would silently receive a
+        different sampled marginal. Fall through instead.
+
+        The check mirrors ``_install_suffix_decoding._is_greedy_for_uid``
+        (SOP §10 pattern). When the request lookup fails (no
+        ``uid_to_request_id`` map, or the request has been evicted mid-
+        step) we conservatively return True — the smoke path always has
+        a resolvable request and this branch is a
+        defense-in-depth escape.
+        """
+        if uid_to_request_id is None or requests is None:
+            return True
+        req_id = uid_to_request_id.get(uid)
+        req = requests.get(req_id) if req_id else None
+        if req is None or getattr(req, "sampling_params", None) is None:
+            return True
+        temp = getattr(req.sampling_params, "temperature", None)
+        return temp is None or temp == 0.0
+
+    def _mtp_step():
+        """Wrapped ``GenerationBatch._step`` for --spec-decode mtp.
+
+        See :func:`_install_mtp_vendored` docstring for the gate matrix
+        and MVP caveats.
+        """
+        # --- Gate matrix ---
+        # Batch=1 only. mlx-lm's ``PromptProcessingBatch.generate``
+        # constructs a fresh ``GenerationBatch`` with size 1 per request
+        # split; the persistent ``_generation_batch`` then extends
+        # in-place. Under the smoke script's single-request load this
+        # stays at 1 throughout. When B>1 we defer to plain decode.
+        if not gb.uids or len(gb.uids) != 1:
+            _stats["fallthrough_steps"] += 1
+            _stats["ft_batch_size"] += 1
+            return _orig_step()
+
+        uid = gb.uids[0]
+
+        if not _is_greedy_for_uid(uid):
+            _stats["fallthrough_steps"] += 1
+            _stats["ft_non_greedy"] += 1
+            return _orig_step()
+
+        _lp = getattr(gb, "logits_processors", None)
+        if _lp and any(p for p in _lp if p):
+            _stats["fallthrough_steps"] += 1
+            _stats["ft_logits_processors"] += 1
+            return _orig_step()
+
+        state = _state.get(uid)
+
+        if state is None:
+            # --- FIRST call for this uid ---
+            # mlx-lm's fresh ``GenerationBatch.__init__`` ran its
+            # ORIGINAL ``_step`` once (before our patch took effect on
+            # the persistent gb), which fed ``last_prompt_token``
+            # through the model, advanced ``prompt_cache`` by 1
+            # position, and stashed the sampled FIRST generated token
+            # in ``_next_tokens``. Emit that token now to preserve
+            # byte-equality with plain-decode baseline: the argmax at
+            # the prompt-end hidden state is deterministic.
+            #
+            # Then set up the vendored generator seeded with that same
+            # token as the "prompt" — the generator's first backbone
+            # step feeds it, advances the cache to +1, and samples the
+            # SECOND generated token.
+            first_tok_arr = gb._next_tokens
+            first_lp_list = gb._next_logprobs
+            if first_tok_arr is None or not first_lp_list:
+                # Shouldn't happen — the fresh __init__ always calls _step.
+                # But fall back defensively rather than crashing.
+                _stats["fallthrough_steps"] += 1
+                return _orig_step()
+            first_tok = int(first_tok_arr[0].item())
+            first_lp = first_lp_list[0]
+            # Match the bookkeeping mlx-lm's original _step performs
+            # on the ``self.tokens`` list per emitted token.
+            gb.tokens[0].append(first_tok)
+
+            # Compute a generous max_tokens for the generator. Even
+            # when the request's max_tokens is small (e.g. 80), the
+            # generator uses this as an internal upper bound. Overshoot
+            # is fine — mlx-lm's ``next()`` enforces the true max via
+            # ``_num_tokens[i] >= self.max_tokens[i]``.
+            gen_max = int(gb.max_tokens[0]) if gb.max_tokens else 4096
+
+            try:
+                gen = mtp_generate_step(
+                    prompt=first_tok_arr.astype(mx.uint32),
+                    model=model,
+                    max_tokens=gen_max,
+                    prompt_cache=gb.prompt_cache,
+                    temp=0.0,
+                )
+            except Exception as e:  # noqa: BLE001
+                logger.warning(
+                    "[MTP-vendored] mtp_generate_step construction failed "
+                    "(%s); falling back to plain decode for uid=%s.",
+                    e,
+                    uid,
+                )
+                _stats["fallthrough_steps"] += 1
+                return _orig_step()
+
+            _state[uid] = {
+                "gen": gen,
+                "queue": [],
+                "primed": True,
+            }
+            _stats["vendored_steps"] += 1
+            return [first_tok], [first_lp]
+
+        # --- SUBSEQUENT calls: drain queue, else pull from generator ---
+        queue = state["queue"]
+        if not queue:
+            gen = state["gen"]
+            try:
+                tok_int, lp_arr, _from_draft = next(gen)
+                queue.append((int(tok_int), lp_arr))
+            except StopIteration:
+                _stats["gen_exhausted"] += 1
+                _cleanup_uid(uid)
+                # Generator ran out of tokens — this shouldn't happen
+                # before mlx-lm hits max_tokens, but if it does, fall
+                # back so the request can wind down cleanly.
+                return _orig_step()
+            except Exception as e:  # noqa: BLE001
+                logger.exception(
+                    "[MTP-vendored] generator raised on uid=%s: %s", uid, e
+                )
+                _cleanup_uid(uid)
+                return _orig_step()
+
+        tok_int, lp_arr = queue.pop(0)
+        gb.tokens[0].append(tok_int)
+        _stats["vendored_steps"] += 1
+        return [tok_int], [lp_arr]
+
+    # Patch onto the persistent _generation_batch. New GenerationBatch
+    # instances created inside PromptProcessingBatch.generate() use the
+    # CLASS _step for their priming call (which is exactly what we want:
+    # the first sampled token comes from mlx-lm's plain argmax path so
+    # it matches baseline byte-for-byte). The state transfer to the
+    # persistent gb happens via .extend(), after which our patched
+    # _step takes over.
+    gb._step = _mtp_step
+    batch_gen._mtp_vendored_stats = _stats
+
+    logger.info(
+        "[MTP-vendored] installed on GenerationBatch._step "
+        "(single-request greedy K=1 chain-of-1; falls through on B>1 / "
+        "non-greedy / logits-processors)."
     )
     return True
 
@@ -2447,6 +2741,40 @@ class Scheduler:
                 logger.warning(
                     "[MTP] --enable-mtp is set but model has no MTP head "
                     "(model.mtp is None). MTP will be disabled."
+                )
+
+        # 0.9.13 PR-A: server-side wiring for ``--spec-decode mtp``.
+        # This installs the vendored PR #990 ``mtp_generate_step`` hot
+        # loop as ``GenerationBatch._step``, gated on the target having
+        # the ``mtp_forward`` / ``make_mtp_cache`` protocol installed
+        # by ``dispatch_mtp_inject`` (which runs during engine boot in
+        # ``BatchedEngine._start_llm`` before this scheduler is built).
+        #
+        # Distinct from ``enable_mtp`` above: the legacy path targets a
+        # stale mlx-lm 0.30 ``BatchGenerator._step`` hook that no longer
+        # exists in 0.31+; this new path targets the correct
+        # ``_generation_batch._step`` for 0.31+. When both flags are set
+        # the legacy install logs "no _step" and returns False — this
+        # install is what actually runs the MTP draft/verify loop.
+        #
+        # K=1 chain-of-1 only for PR-A. Auto-K controller lands in PR-B
+        # (``feat/mtp-ev-controller-0.9.13``); batched residual+bonus
+        # sync lands in PR-C (``feat/mtp-batched-sync-0.9.14``).
+        if getattr(self.config, "spec_decode", "none") == "mtp":
+            if (
+                getattr(self, "model_config", None) is not None
+                and not self.model_config.supports_spec_decode
+            ):
+                logger.warning(
+                    "[MTP-vendored] --spec-decode mtp requested but profile "
+                    "says supports_spec_decode=False. MTP will be disabled."
+                )
+            else:
+                _install_mtp_vendored(
+                    bg,
+                    model=self.model,
+                    requests=self.requests,
+                    uid_to_request_id=self.uid_to_request_id,
                 )
 
         # Install SuffixDecoding (drafter-free spec-decode). Mutually

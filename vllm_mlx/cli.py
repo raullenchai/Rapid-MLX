@@ -2490,6 +2490,11 @@ def serve_command(args):
         # Qwen3.5/3.6 model + a bound DFlash drafter.
         spec_decode=getattr(args, "spec_decode", "none"),
         dflash_drafter_path=getattr(args, "dflash_drafter_path", "") or "",
+        # 0.9.13 PR-A: Gemma 4 external MTP sidecar path (see
+        # ``SchedulerConfig.mtp_sidecar`` for the routing contract).
+        # ``None`` is the "no sidecar; native-MTP path only" sentinel
+        # matching the argparse default.
+        mtp_sidecar=getattr(args, "mtp_sidecar", None),
         # SuffixDecoding
         enable_suffix_decoding=args.suffix_decoding,
         suffix_max_draft=args.suffix_max_draft,
@@ -2544,6 +2549,13 @@ def serve_command(args):
     # (--spec-decode mtp on a non-Qwen3.5/3.6 model) bounces with a
     # clear error rather than discovering the mismatch when the first
     # backbone forward pass raises ``AttributeError`` mid-generation.
+    #
+    # 0.9.13 PR-A: when ``--mtp-sidecar <path>`` is set, the operator
+    # is opting into the Gemma 4 external assistant-drafter route.
+    # ``detect_mtp_eligibility`` then permits a base Gemma 4 unified
+    # checkpoint (which has no baked-in MTP head — the sidecar carries
+    # the assistant weights) through as CHAIN. Qwen3.5/3.6 still needs
+    # ``mtp_num_hidden_layers >= 1`` on the base config either way.
     if getattr(args, "spec_decode", "none") == "mtp":
         from vllm_mlx.spec_decode.mtp import (
             MTPEligibility,
@@ -2557,18 +2569,33 @@ def serve_command(args):
             hf_cfg_eligibility, _ = _gather_kv_cache_dtype_inputs(args.model)
         except Exception:  # pragma: no cover — best-effort
             hf_cfg_eligibility = None
-        eligibility = detect_mtp_eligibility(hf_cfg_eligibility)
+        has_sidecar = bool(getattr(args, "mtp_sidecar", None))
+        eligibility = detect_mtp_eligibility(
+            hf_cfg_eligibility, has_external_sidecar=has_sidecar
+        )
         if eligibility is MTPEligibility.NONE:
-            print(
-                "error: --spec-decode mtp requires a Qwen3.5 / Qwen3.6 "
-                "checkpoint with mtp_num_hidden_layers >= 1 in "
-                "config.json. The loaded model does not qualify "
-                "(re-convert from HF with mlx-lm PR #990's sanitize() "
-                "path to preserve mtp.* weights).",
-                file=sys.stderr,
-            )
+            if has_sidecar:
+                print(
+                    "error: --spec-decode mtp --mtp-sidecar <path> requires a "
+                    "Gemma 4 unified checkpoint (model_type='gemma4_unified') "
+                    "or a Qwen3.5 / Qwen3.6 checkpoint with "
+                    "mtp_num_hidden_layers >= 1. The loaded model does not "
+                    "qualify.",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    "error: --spec-decode mtp requires a Qwen3.5 / Qwen3.6 "
+                    "checkpoint with mtp_num_hidden_layers >= 1 in "
+                    "config.json, or a Gemma 4 unified checkpoint paired "
+                    "with --mtp-sidecar <path> (see "
+                    "google/gemma-4-*-it-assistant on HF). The loaded "
+                    "model does not qualify.",
+                    file=sys.stderr,
+                )
             sys.exit(2)
-        print(f"Spec-decode: mtp ({eligibility.value})")
+        sidecar_note = f" +sidecar={args.mtp_sidecar}" if has_sidecar else ""
+        print(f"Spec-decode: mtp ({eligibility.value}){sidecar_note}")
 
     # ``--spec-decode dflash`` is normalized to ``--enable-dflash`` near
     # the top of serve_command (#318 redirect); by the time we reach
@@ -6452,6 +6479,28 @@ Examples:
             "#313) for Qwen3.5/3.6 with a bound drafter (default "
             "block size 16). Rejects at boot if the model doesn't "
             "qualify so misuse fails loud."
+        ),
+    )
+    # 0.9.13 PR-A: external MTP sidecar for the Gemma 4 assistant-drafter
+    # route. Combined with ``--spec-decode mtp``, allows a base Gemma 4
+    # unified checkpoint (which never ships an MTP head of its own) to
+    # graft on the ~4-layer assistant drafter from
+    # ``google/gemma-4-*-it-assistant`` (Apache 2.0). Not used by the
+    # Qwen3.5/3.6 native-MTP path — that lineage's MTP head is baked
+    # into the target checkpoint via mlx-lm PR #990's sanitize() pass,
+    # so ``--mtp-sidecar`` has no effect there.
+    serve_parser.add_argument(
+        "--mtp-sidecar",
+        dest="mtp_sidecar",
+        default=None,
+        help=(
+            "Path to a Gemma 4 MTP assistant-drafter checkpoint — either a "
+            "local safetensors directory (``~/.cache/huggingface/hub/…/gemma"
+            "-4-12B-it-assistant``) or an HF repo id "
+            "(``google/gemma-4-12B-it-assistant``). Only consulted when "
+            "``--spec-decode mtp`` is set; ignored for the Qwen3.5/3.6 "
+            "native-MTP path (their head is baked into the target). "
+            "Requires the ``[mtp]`` install extra."
         ),
     )
     # R15-P1 #313: DFlash drafter HF path override. Empty by default
