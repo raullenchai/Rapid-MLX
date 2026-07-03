@@ -938,13 +938,10 @@ def test_apply_mtp_dispatch_raises_runtime_error_on_timeout(monkeypatch):
     from vllm_mlx.scheduler import SchedulerConfig
 
     monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
-    # Codex round-I BLOCKING #1: patch the exit hook so the test
-    # process doesn't die when the timeout branch runs. Recording the
-    # call lets us assert that the hook was actually invoked (see
-    # test_apply_mtp_dispatch_timeout_calls_process_exit_hook below).
-    monkeypatch.setattr(
-        _batched, "_process_exit_on_mtp_dispatch_timeout", lambda _t: None
-    )
+    # Codex round-L BLOCKING #1: no more process-exit hook to patch —
+    # the timeout branch now raises ``RuntimeError`` directly. The
+    # ``_log_mtp_dispatch_timeout`` call is a plain log statement
+    # that has no side effects on the pytest process.
     sc = SchedulerConfig(spec_decode="mtp", mtp_model_type="gemma4_unified")
     try:
         _batched._apply_mtp_dispatch(
@@ -964,30 +961,51 @@ def test_apply_mtp_dispatch_raises_runtime_error_on_timeout(monkeypatch):
     )
 
 
-def test_apply_mtp_dispatch_timeout_calls_process_exit_hook(monkeypatch):
-    """Codex round-I BLOCKING #1 regression guard.
+def test_apply_mtp_dispatch_timeout_logs_critical_and_does_not_call_os_exit(
+    monkeypatch,
+):
+    """Codex round-L BLOCKING #1 regression guard.
 
-    ``future.cancel()`` does not stop a running executor task, so a
-    timed-out dispatch would leave the mlx-step worker mutating
-    ``model`` in place after startup has aborted. The fix runs a
-    process-exit hook on timeout so any orphan mutation dies with
-    the interpreter. Verify the hook fires.
+    The prior implementation shipped a ``_process_exit_on_mtp_
+    dispatch_timeout`` hook that called ``os._exit(1)`` to hammer
+    orphan-mutation risk. Codex round-L rejected that as hostile
+    to embedded callers / pytest sessions / process supervisors.
+    The fix is: the timeout branch emits an operator-facing
+    CRITICAL log line and raises ``RuntimeError``; NO
+    ``os._exit`` call happens anywhere in the timeout path.
+
+    Verify by:
+      1. Patching ``os._exit`` to record any calls — must stay
+         empty.
+      2. Asserting the CRITICAL log line is emitted with the
+         effective timeout value so operator-facing observability
+         is preserved.
+      3. Asserting the ``RuntimeError`` propagates as the sole
+         failure signal.
     """
     from vllm_mlx.engine import batched as _batched
     from vllm_mlx.scheduler import SchedulerConfig
 
     monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
 
-    _exit_calls: list[float] = []
+    exit_codes: list[int] = []
 
-    def _fake_exit(timeout_sec: float) -> None:
-        _exit_calls.append(timeout_sec)
-        # Do NOT re-raise; let the RuntimeError fallback fire so the
-        # test can also verify the fallback is reachable when the
-        # hook has been swapped out.
+    def _fake_os_exit(code: int) -> None:
+        exit_codes.append(code)
 
-    monkeypatch.setattr(_batched, "_process_exit_on_mtp_dispatch_timeout", _fake_exit)
+    monkeypatch.setattr("os._exit", _fake_os_exit)
+
+    log_calls: list[float] = []
+    original_log = _batched._log_mtp_dispatch_timeout
+
+    def _tracking_log(timeout_sec: float) -> None:
+        log_calls.append(timeout_sec)
+        original_log(timeout_sec)
+
+    monkeypatch.setattr(_batched, "_log_mtp_dispatch_timeout", _tracking_log)
+
     sc = SchedulerConfig(spec_decode="mtp", mtp_model_type="gemma4_unified")
+    raised = None
     try:
         _batched._apply_mtp_dispatch(
             model=object(),
@@ -995,26 +1013,49 @@ def test_apply_mtp_dispatch_timeout_calls_process_exit_hook(monkeypatch):
             scheduler_config=sc,
             executor=_TimeoutExecutor(),
         )
-    except RuntimeError:
-        pass
-    else:
-        raise AssertionError(
-            "expected RuntimeError fallback when process-exit hook is "
-            "monkeypatched to a no-op — production must never actually "
-            "reach the raise line because os._exit(1) fires first."
-        )
-    assert _exit_calls, (
-        "codex round-I BLOCKING #1 regression: _apply_mtp_dispatch did "
-        "NOT invoke _process_exit_on_mtp_dispatch_timeout on a dispatch "
-        "timeout. Orphan mutation on the mlx-step worker thread could "
-        "outlive the RuntimeError abort."
+    except RuntimeError as e:
+        raised = e
+
+    assert raised is not None, (
+        "codex round-L BLOCKING #1 regression: _apply_mtp_dispatch did "
+        "NOT raise RuntimeError on dispatch timeout — the timeout branch "
+        "must convert TimeoutError into a startup RuntimeError so the "
+        "CLI (or embedded caller) can surface the failure cleanly."
     )
-    # The hook must receive the effective timeout value so its
-    # CRITICAL log line surfaces the right number to operators.
-    assert _exit_calls[0] == 1.0, (
-        "process-exit hook received the wrong timeout value "
-        f"({_exit_calls[0]!r}); expected 1.0. This breaks the operator-"
-        "facing CRITICAL log line that names the effective timeout."
+    assert "timed out" in str(raised).lower()
+
+    assert exit_codes == [], (
+        "codex round-L BLOCKING #1 regression: _apply_mtp_dispatch called "
+        f"os._exit({exit_codes!r}) on dispatch timeout. Library code MUST "
+        "NOT terminate the interpreter — a plain RuntimeError is the "
+        "contract."
+    )
+
+    assert log_calls == [1.0], (
+        "codex round-L BLOCKING #1 regression: the operator-facing "
+        "CRITICAL log line was not emitted with the effective timeout. "
+        f"log_calls={log_calls!r}."
+    )
+
+
+def test_log_mtp_dispatch_timeout_does_not_call_os_exit(monkeypatch):
+    """Codex round-L BLOCKING #1: the log helper is a pure log
+    statement — it MUST NOT call ``os._exit`` (regression guard against
+    the prior ``_process_exit_on_mtp_dispatch_timeout`` behavior).
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    exit_codes: list[int] = []
+
+    def _fake_os_exit(code: int) -> None:
+        exit_codes.append(code)
+
+    monkeypatch.setattr("os._exit", _fake_os_exit)
+    _batched._log_mtp_dispatch_timeout(600.0)
+    assert exit_codes == [], (
+        "codex round-L BLOCKING #1 regression: _log_mtp_dispatch_timeout "
+        f"called os._exit({exit_codes!r}). The helper is a pure log "
+        "statement — process termination is not its job."
     )
 
 
@@ -1022,27 +1063,23 @@ def test_apply_mtp_dispatch_timeout_does_not_shut_down_shared_executor(monkeypat
     """Codex round-J BLOCKING #1 regression guard.
 
     A prior revision called ``executor.shutdown(wait=False,
-    cancel_futures=True)`` in the timeout branch as belt-and-
-    suspenders alongside the process-exit hook. In production the
-    process-exit hook fires first so the shutdown is redundant; but
-    in embedded callers / tests where the exit hook is patched to
-    return, the shutdown permanently breaks the shared
-    ``_model_load_executor`` — subsequent engine work would fail
-    with ``RuntimeError: cannot schedule new futures after
-    shutdown``.
+    cancel_futures=True)`` in the timeout branch. In embedded
+    callers / tests where the RuntimeError is caught, the shutdown
+    permanently breaks the shared ``_model_load_executor`` —
+    subsequent engine work would fail with ``RuntimeError: cannot
+    schedule new futures after shutdown``.
 
-    The isolation contract is delegated entirely to
-    ``_process_exit_on_mtp_dispatch_timeout``. Verify by tracking
-    ``executor.shutdown`` calls and asserting the shared executor
-    is left untouched.
+    Codex round-L BLOCKING #1 refactor: the timeout branch no
+    longer terminates the process; it emits a CRITICAL log and
+    raises ``RuntimeError``. The shared executor MUST stay
+    untouched so embedded callers can recover / retry / abort
+    their own way. Verify by tracking ``executor.shutdown`` calls
+    and asserting the shared executor is left alone.
     """
     from vllm_mlx.engine import batched as _batched
     from vllm_mlx.scheduler import SchedulerConfig
 
     monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
-    monkeypatch.setattr(
-        _batched, "_process_exit_on_mtp_dispatch_timeout", lambda _t: None
-    )
 
     shutdown_calls: list[dict] = []
 
@@ -1066,31 +1103,6 @@ def test_apply_mtp_dispatch_timeout_does_not_shut_down_shared_executor(monkeypat
         "_model_load_executor MUST stay usable in embedded callers / "
         f"tests where the process-exit hook returns (got "
         f"{shutdown_calls!r})."
-    )
-
-
-def test_process_exit_on_mtp_dispatch_timeout_calls_os_exit(monkeypatch):
-    """Codex round-I BLOCKING #1: the timeout hook's default
-    implementation MUST reach ``os._exit(1)`` so orphan mutation on
-    the mlx-step worker dies with the interpreter. Verify by
-    monkeypatching ``os._exit`` and asserting it receives ``1``.
-    """
-    from vllm_mlx.engine import batched as _batched
-
-    exit_codes: list[int] = []
-
-    def _fake_os_exit(code: int) -> None:
-        exit_codes.append(code)
-        # Do NOT actually exit — let the caller return so the test
-        # can inspect the recorded code.
-
-    monkeypatch.setattr("os._exit", _fake_os_exit)
-    _batched._process_exit_on_mtp_dispatch_timeout(600.0)
-    assert exit_codes == [1], (
-        "codex round-I BLOCKING #1 regression: the default timeout hook "
-        "did NOT call os._exit(1). Without the exit, orphan MLX-step "
-        "worker mutation can outlive the boot abort and end up serving "
-        "requests against a partially-mutated model."
     )
 
 
