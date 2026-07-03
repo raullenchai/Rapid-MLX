@@ -353,6 +353,16 @@ class SchedulerConfig:
     # there would silently downgrade an operator-requested feature.
     mtp_model_type: str | None = None
 
+    # 0.9.13 PR-B: Ollama-style EV depth controller knobs. ``mtp_max_k``
+    # is the hard ceiling on the per-round draft depth the controller
+    # may select. The current generator body implements K∈{0,1}, so
+    # values >1 are clamped at the generator; the default of 3 anticipates
+    # PR-B follow-up work that lifts the K≥2 chain-of-K verify.
+    # ``mtp_disable_auto_k`` bypasses the controller entirely and keeps
+    # the pre-PR-B fixed-K=1 chain-of-1 behavior (used for A/B benching).
+    mtp_max_k: int = 3
+    mtp_disable_auto_k: bool = False
+
     def __post_init__(self) -> None:
         # PFlashConfig is dataclass(frozen=True), so .validate() returns
         # a new instance; reassign so the SchedulerConfig holds the
@@ -1365,6 +1375,9 @@ def _install_mtp_vendored(
     model: Any,
     requests: dict[str, Any] | None = None,
     uid_to_request_id: dict[int, str] | None = None,
+    max_k: int = 3,
+    disable_auto_k: bool = False,
+    controller_key: str | None = None,
 ) -> bool:
     """Install the vendored PR #990 ``mtp_generate_step`` hot loop into
     ``GenerationBatch._step``.
@@ -1966,6 +1979,10 @@ def _install_mtp_vendored(
                     max_tokens=gen_max,
                     prompt_cache=gb.prompt_cache,
                     temp=0.0,
+                    # 0.9.13 PR-B: EV depth controller.
+                    model_id=controller_key or f"mtp-model-{id(model)}",
+                    max_k=max_k,
+                    disable_auto_k=disable_auto_k,
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(
@@ -3321,6 +3338,15 @@ class Scheduler:
                     model=self.model,
                     requests=self.requests,
                     uid_to_request_id=self.uid_to_request_id,
+                    # 0.9.13 PR-B: EV depth controller knobs.
+                    max_k=getattr(self.config, "mtp_max_k", 3),
+                    disable_auto_k=getattr(
+                        self.config, "mtp_disable_auto_k", False
+                    ),
+                    controller_key=getattr(self, "_model_name", None)
+                    or getattr(self.model_config, "name", None)
+                    if getattr(self, "model_config", None) is not None
+                    else None,
                 )
 
         # Install SuffixDecoding (drafter-free spec-decode). Mutually

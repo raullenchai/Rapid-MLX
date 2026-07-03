@@ -2608,6 +2608,9 @@ def serve_command(args):
         # ``_cli_mtp_model_type`` block above for why this is
         # resolved on the CLI thread instead of on the executor.
         mtp_model_type=_cli_mtp_model_type,
+        # 0.9.13 PR-B: EV depth controller knobs.
+        mtp_max_k=getattr(args, "mtp_max_k", 3),
+        mtp_disable_auto_k=getattr(args, "mtp_disable_auto_k", False),
         # SuffixDecoding
         enable_suffix_decoding=args.suffix_decoding,
         suffix_max_draft=args.suffix_max_draft,
@@ -6633,6 +6636,36 @@ Examples:
             "--spec-decode mtp is set; ignored for the Qwen3.5/3.6 "
             "native-MTP path (their head is baked into the target). "
             "Requires the [mtp] install extra."
+        ),
+    )
+    # 0.9.13 PR-B: Ollama-style EV depth controller knobs. The controller
+    # picks K ∈ {0..max_k} per round via ``argmax_K committed(K)/cost(K)``,
+    # persisting cost + acceptance state across requests (per-model).
+    # K=0 "parks" — plain decode, no drafter — which fixes the prose
+    # slowdown from PR-A K=1 (drafter cost dominates on low-accept content).
+    serve_parser.add_argument(
+        "--mtp-max-k",
+        dest="mtp_max_k",
+        type=int,
+        default=3,
+        help=(
+            "Hard ceiling on the per-round draft depth the EV controller "
+            "may select (default: 3). The current generator implements "
+            "K∈{0,1} (park + chain-of-1); values >1 are effectively "
+            "clamped until chain-of-K verify lands. Only consulted when "
+            "--spec-decode mtp is set."
+        ),
+    )
+    serve_parser.add_argument(
+        "--mtp-disable-auto-k",
+        dest="mtp_disable_auto_k",
+        action="store_true",
+        default=False,
+        help=(
+            "Disable the EV depth controller and keep the pre-PR-B "
+            "fixed-K=1 chain-of-1 MTP behavior. Used to A/B bench the "
+            "controller against the fixed-K=1 baseline. Only consulted "
+            "when --spec-decode mtp is set."
         ),
     )
     # R15-P1 #313: DFlash drafter HF path override. Empty by default
