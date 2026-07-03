@@ -348,6 +348,18 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # never selects a model, parser, or routing tier; identical
         # semantic shape to ``RAPID_MLX_REASONING_RESCUE`` above.
         "RAPID_MLX_STT_VAD_PRETRIM",
+        # 0.9.13 PR-A codex round-G BLOCKING #3: bounded wait for the
+        # executor-side MTP dispatch call (``--spec-decode mtp
+        # --mtp-sidecar <path>``). Read by
+        # ``vllm_mlx.engine.batched._get_mtp_dispatch_timeout_sec``
+        # only, once per boot, to convert a stuck sidecar load / HF
+        # Hub outage / corp-proxy hang into a clean startup abort
+        # instead of an indefinite block. Default 600s; ``0``
+        # disables the timeout (matches pre-round-G behaviour on
+        # locked-down networks). Pure deadline knob — never selects
+        # a model, parser, or routing tier; identical semantic shape
+        # to ``RAPID_MLX_PREFIX_CACHE_SHUTDOWN_BUDGET`` above.
+        "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC",
     }
 )
 
