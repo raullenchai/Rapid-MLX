@@ -1491,8 +1491,26 @@ def _install_mtp_vendored(
     }
 
     def _cleanup_uid(uid: int) -> None:
+        # Codex round-G BLOCKING #1: DO NOT clear _disabled_uids here.
+        # This helper runs on every fallthrough branch (B>1, non-greedy,
+        # logits-processors, mid-stream failure), so unconditionally
+        # popping _disabled_uids would silently "un-disable" a uid the
+        # very next step. That would re-enable retry of MTP construction
+        # (or of the vendored generator) on a request whose earlier
+        # ``_mtp_step`` call has already proven the path is broken —
+        # a slow-loss loop that codex round-G rightly called out.
+        #
+        # _disabled_uids has exactly TWO valid clear paths:
+        #   1. Reuse detection in the ``uid in _disabled_uids`` gate
+        #      inside _mtp_step (the round-E fix): a NEW request_id for
+        #      the same uid means mlx-lm reused the uid; clear and let
+        #      MTP re-arm for the new request.
+        #   2. Never for the current request. The disable is a permanent
+        #      marker for the request's lifetime.
+        #
+        # State (the per-uid MTP generator + queue) is cleaned here as
+        # usual — that's per-generator lifecycle, not per-request.
         state = _state.pop(uid, None)
-        _disabled_uids.pop(uid, None)
         if state is None:
             return
         gen = state.get("gen")
@@ -1733,32 +1751,31 @@ def _install_mtp_vendored(
                 queue.append((int(tok_int), lp_arr))
             except StopIteration:
                 _stats["gen_exhausted"] += 1
-                _cleanup_uid(uid)
-                # Generator ran out of tokens — this shouldn't happen
-                # before mlx-lm hits max_tokens, but if it does, fall
-                # back so the request can wind down cleanly.
-                #
+                # Codex round-G BLOCKING #2: preserve the terminal
+                # disabled marker for the current request BEFORE
+                # dropping any state. If mlx-lm somehow re-enters
+                # ``_mtp_step`` for this uid after the raise (e.g.,
+                # the caller decides to retry on a scheduler tick
+                # instead of failing the request), the disabled-uid
+                # gate MUST fire; otherwise the wrapper would try
+                # to construct a fresh generator and hit the same
+                # bug again. Record the request_id so uid reuse
+                # for a NEW request still re-enables MTP.
+                _terminal_req_id = None
+                if uid_to_request_id is not None:
+                    _terminal_req_id = uid_to_request_id.get(uid)
+                _disabled_uids[uid] = _terminal_req_id
+                # Generator's own state can go — nothing to close
+                # here (StopIteration means it already tore down).
+                _state.pop(uid, None)
                 # Codex round-D blocker #3: falling back to
-                # ``_orig_step()`` mid-stream is UNSAFE in general
-                # because we never update ``gb._next_tokens`` in the
-                # vendored path — it still holds ``first_gen_tok``
-                # from the priming ``_step`` in
-                # ``GenerationBatch.__init__``. However on
-                # ``StopIteration`` the generator wound down its
-                # own state cleanly (it advanced ``prompt_cache`` up
-                # to its own ``max_tokens`` bound). Baseline
-                # ``_orig_step()`` here would emit ``first_gen_tok``
-                # AGAIN — a duplicate — because ``_next_tokens`` is
-                # stale relative to what we've already returned.
-                #
-                # Instead: fail this call with a bounded finish
-                # (``num_tokens >= max_tokens`` on the caller side).
-                # We already know we hit the internal max_tokens
-                # bound, and returning a plain EOS is not clean
-                # without tokenizer access. Raise a controlled
-                # RuntimeError; mlx-lm will surface it as a request
-                # failure — better than silently duplicating a
-                # token.
+                # ``_orig_step()`` mid-stream is UNSAFE — see the
+                # comment on the ``Exception`` branch below.
+                # ``StopIteration`` before mlx-lm hits max_tokens is
+                # a plumbing bug; the generator's internal
+                # ``max_tokens`` should always overshoot the
+                # request's ``max_tokens``. Terminating the request
+                # is safer than emitting a duplicate token.
                 raise RuntimeError(
                     "[MTP-vendored] internal generator exhausted "
                     f"for uid={uid} before mlx-lm hit max_tokens. "
@@ -1776,20 +1793,12 @@ def _install_mtp_vendored(
                 # feed it through the model, and emit
                 # ``first_gen_tok`` again — a duplicate. ``gb.tokens
                 # [0]`` would also gain a duplicated ``first_gen_tok``
-                # entry, corrupting the KV/token log invariant. And
-                # cache position is at ``prompt_len + N`` where N is
-                # the number of tokens the generator successfully
-                # yielded, one step past what a fresh baseline
-                # decode would expect.
+                # entry, corrupting the KV/token log invariant.
                 #
                 # The safe options are (a) terminate the request or
                 # (b) rebuild the baseline state before delegating.
                 # (b) is impossible without the next-token — we
                 # never staged one — so (a) is the only clean path.
-                # Re-raise as ``RuntimeError`` so mlx-lm surfaces
-                # the failure to the caller; a partial-decode
-                # request with a mid-stream MTP crash is not
-                # recoverable to plain decode without corruption.
                 _stats["gen_raised"] += 1
                 logger.exception(
                     "[MTP-vendored] generator raised on uid=%s mid-stream: "
@@ -1799,7 +1808,25 @@ def _install_mtp_vendored(
                     uid,
                     e,
                 )
-                _cleanup_uid(uid)
+                # Codex round-G BLOCKING #2: same terminal-marker
+                # treatment as the StopIteration branch. Ensures a
+                # retry on this uid+request_id hits the disable
+                # gate and short-circuits to plain decode instead
+                # of re-arming the vendored path.
+                _terminal_req_id = None
+                if uid_to_request_id is not None:
+                    _terminal_req_id = uid_to_request_id.get(uid)
+                _disabled_uids[uid] = _terminal_req_id
+                # Close the (broken) generator; don't touch
+                # _disabled_uids from inside _cleanup_uid.
+                _state_entry = _state.pop(uid, None)
+                if _state_entry is not None:
+                    _gen = _state_entry.get("gen")
+                    if _gen is not None:
+                        try:
+                            _gen.close()
+                        except Exception:  # noqa: BLE001
+                            pass
                 raise RuntimeError(
                     f"[MTP-vendored] uid={uid} generator raised mid-"
                     f"stream ({type(e).__name__}: {e}); cannot fall "

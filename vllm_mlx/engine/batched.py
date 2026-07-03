@@ -206,6 +206,56 @@ def _run_dispatch_mtp_inject(
     return _DISPATCH_REJECTED
 
 
+# Codex round-G BLOCKING #3: hard cap on the executor-side MTP
+# dispatch call. Sidecar loads that touch HF Hub / large safetensor
+# reads can wedge on a slow network or a stuck DNS lookup; without a
+# timeout, ``rapid-mlx serve --spec-decode mtp --mtp-sidecar
+# <hf-repo>`` boot can block indefinitely. Default 600s covers slow
+# 4-16GB assistant downloads on a typical residential connection; an
+# ops override lives at ``RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC`` for
+# corp networks with mandatory proxies. Set to ``0`` to opt out of
+# the timeout (matches pre-round-G behaviour — not recommended).
+_MTP_DISPATCH_TIMEOUT_SEC_DEFAULT = 600.0
+
+
+def _get_mtp_dispatch_timeout_sec() -> float | None:
+    """Return the bounded timeout for ``_run_dispatch_mtp_inject``.
+
+    Reads ``RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC`` env var; falls back
+    to :data:`_MTP_DISPATCH_TIMEOUT_SEC_DEFAULT` (600s). Returning
+    ``None`` disables the timeout (an explicit ``0`` in the env,
+    for ops that want to preserve pre-round-G behaviour on locked-
+    down corp networks). Any parse failure logs a warning and uses
+    the default — never raises.
+    """
+    import os as _os
+
+    raw = _os.environ.get("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC")
+    if raw is None:
+        return _MTP_DISPATCH_TIMEOUT_SEC_DEFAULT
+    try:
+        parsed = float(raw)
+    except ValueError:
+        logger.warning(
+            "[MTP-vendored] could not parse "
+            "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=%r as a float; "
+            "using default %.0fs.",
+            raw,
+            _MTP_DISPATCH_TIMEOUT_SEC_DEFAULT,
+        )
+        return _MTP_DISPATCH_TIMEOUT_SEC_DEFAULT
+    if parsed <= 0.0:
+        # Explicit opt-out (0 or negative). Log INFO so ops-audit
+        # trails know the boot ran without the safety net.
+        logger.info(
+            "[MTP-vendored] RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=%r "
+            "disables the executor-side dispatch timeout.",
+            raw,
+        )
+        return None
+    return parsed
+
+
 def _decide_mtp_dispatch_action(
     dispatch_result: str,
     *,
@@ -278,6 +328,81 @@ def _decide_mtp_dispatch_action(
         )
 
     return ("continue", None)
+
+
+def _apply_mtp_dispatch(
+    *,
+    model: Any,
+    model_name: str,
+    scheduler_config: Any,
+    executor: Any,
+) -> str:
+    """Executor-side MTP dispatch step used by ``_start_llm``.
+
+    Extracted so tests can drive the full boot-time gate end-to-end
+    (codex round-G NIT #4 — an ``inspect.getsource()`` string check
+    is not a runtime test). Also carries the round-G BLOCKING #3
+    timeout: the executor-side dispatch runs under a bounded wait
+    so a stuck HF download / DNS / sidecar load never wedges
+    server startup.
+
+    Returns the dispatch result string; the caller can key logging
+    or metrics on it. Raises ``RuntimeError`` on hard-fail
+    (rejected, or CLI-vetted-but-not-attached, or timeout).
+
+    Assumes ``spec_decode == "mtp"`` — caller must gate.
+    """
+    import concurrent.futures as _cf
+
+    preferred_mt = getattr(scheduler_config, "mtp_model_type", None)
+    sidecar = getattr(scheduler_config, "mtp_sidecar", None)
+
+    future = executor.submit(
+        _run_dispatch_mtp_inject,
+        model,
+        model_name,
+        sidecar,
+        preferred_model_type=preferred_mt,
+    )
+    timeout = _get_mtp_dispatch_timeout_sec()
+    try:
+        # ``timeout=None`` matches the pre-round-G blocking wait;
+        # only used when the operator explicitly sets the env var
+        # to 0.
+        dispatch_result = future.result(timeout=timeout)
+    except _cf.TimeoutError as exc:
+        # Codex round-G BLOCKING #3: convert executor-side hang
+        # into a clean startup abort. Cancel the future so the
+        # worker doesn't keep running past shutdown.
+        future.cancel()
+        raise RuntimeError(
+            "--spec-decode mtp dispatch timed out after "
+            f"{timeout:.0f}s. Typical causes: HF Hub outage on the "
+            "sidecar path, corp proxy blocking huggingface.co, or "
+            "a very large assistant checkpoint on a slow link. "
+            "Bump the timeout with "
+            "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=<seconds>, or set "
+            "it to 0 to disable the timeout entirely. Refusing to "
+            "boot with an in-flight dispatch that could complete "
+            "after the server accepts requests."
+        ) from exc
+
+    action, err_msg = _decide_mtp_dispatch_action(
+        dispatch_result,
+        cli_vetted_model_type=preferred_mt,
+    )
+    if action == "raise":
+        raise RuntimeError(err_msg)
+    if action == "continue":
+        logger.info(
+            "[MTP-vendored] dispatch soft-skipped (result=%r); "
+            "continuing on plain autoregressive decode. The "
+            "scheduler MTP install gate will also skip. "
+            "(Non-CLI caller — no ``mtp_model_type`` set; a "
+            "CLI caller would have hard-failed here.)",
+            dispatch_result,
+        )
+    return dispatch_result
 
 
 def _normalize_tool_call_arguments_for_template(messages: list[dict]) -> list[dict]:
@@ -1008,34 +1133,19 @@ class BatchedEngine(BaseEngine):
         # forgot the CLI gate still gets a clean skip rather than a
         # traceback.
         if _new_arch_mtp:
-            _preferred_mt = getattr(sc, "mtp_model_type", None)
-            _dispatch_result = self._model_load_executor.submit(
-                _run_dispatch_mtp_inject,
-                self._model,
-                self._model_name,
-                getattr(sc, "mtp_sidecar", None),
-                preferred_model_type=_preferred_mt,
-            ).result()
-            # Codex round-F NIT: the branch predicate is now in
-            # :func:`_decide_mtp_dispatch_action` so the tests can
-            # exercise the actual production helper instead of
-            # replaying it. See that function's docstring for the
-            # rationale behind each ``(action, message)`` tuple.
-            _action, _err_msg = _decide_mtp_dispatch_action(
-                _dispatch_result,
-                cli_vetted_model_type=_preferred_mt,
+            # Codex round-G NIT #4 + BLOCKING #3: entire dispatch
+            # gate now lives in :func:`_apply_mtp_dispatch` so tests
+            # can exercise it end-to-end (not just via a source
+            # string check) and the executor call carries a bounded
+            # timeout that converts a stuck HF/DNS load into a
+            # clean startup ``RuntimeError`` instead of an
+            # indefinite hang.
+            _apply_mtp_dispatch(
+                model=self._model,
+                model_name=self._model_name,
+                scheduler_config=sc,
+                executor=self._model_load_executor,
             )
-            if _action == "raise":
-                raise RuntimeError(_err_msg)
-            if _action == "continue":
-                logger.info(
-                    "[MTP-vendored] dispatch soft-skipped (result=%r); "
-                    "continuing on plain autoregressive decode. The "
-                    "scheduler MTP install gate will also skip. "
-                    "(Non-CLI caller — no ``mtp_model_type`` set; a "
-                    "CLI caller would have hard-failed here.)",
-                    _dispatch_result,
-                )
 
         # Set Metal memory limits on the SAME mlx-step worker that loaded
         # the model. Calling these from the asyncio loop thread would touch

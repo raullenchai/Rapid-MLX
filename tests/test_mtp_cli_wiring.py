@@ -753,28 +753,267 @@ def test_start_llm_raises_on_dispatch_no_inject_when_cli_vetted():
     )
 
 
-def test_start_llm_gate_delegates_to_decide_helper():
-    """Codex round-F NIT regression guard: pin that ``_start_llm``
-    delegates to :func:`_decide_mtp_dispatch_action` rather than
-    reimplementing the predicate inline.
+class _SyncExecutor:
+    """Executor stub that runs submitted callables inline.
 
-    A future refactor that inlines the branch (or renames the
-    helper) MUST update this guard AND rewire the tests above to the
-    new dispatch surface — otherwise every ``test_start_llm_*``
-    below would silently pass while the boot path diverges.
+    Mirrors just enough of ``concurrent.futures.Executor`` for
+    :func:`_apply_mtp_dispatch` to work: ``submit(fn, *args, **kw)``
+    returns a completed ``Future`` whose ``.result(timeout=...)``
+    yields the return value. Used to exercise the production
+    dispatch helper without spinning up a real thread pool.
+    """
+
+    def submit(self, fn, /, *args, **kwargs):
+        import concurrent.futures as _cf
+
+        f: _cf.Future = _cf.Future()
+        try:
+            f.set_result(fn(*args, **kwargs))
+        except BaseException as e:  # noqa: BLE001
+            f.set_exception(e)
+        return f
+
+
+class _TimeoutExecutor:
+    """Executor stub whose ``submit(...).result(timeout=T)`` always
+    raises ``concurrent.futures.TimeoutError``.
+
+    Used to drive the codex round-G BLOCKING #3 timeout branch in
+    :func:`_apply_mtp_dispatch` without a real ``time.sleep``.
+    """
+
+    def submit(self, fn, /, *args, **kwargs):
+        import concurrent.futures as _cf
+
+        class _NeverFuture:
+            @staticmethod
+            def result(timeout=None):
+                raise _cf.TimeoutError("simulated dispatch hang")
+
+            @staticmethod
+            def cancel():
+                return True
+
+        return _NeverFuture()
+
+
+def test_apply_mtp_dispatch_returns_attached_on_happy_path(monkeypatch):
+    """Codex round-G NIT #4 regression guard: exercise the production
+    :func:`_apply_mtp_dispatch` helper — the exact entry point
+    ``_start_llm`` calls — with a fake dispatch that returns
+    ``_DISPATCH_ATTACHED``.
+
+    Replaces the earlier ``inspect.getsource()`` string check which
+    could pass while runtime behavior drifted.
+    """
+    from vllm_mlx.engine import batched as _batched
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    monkeypatch.setattr(
+        _batched,
+        "_run_dispatch_mtp_inject",
+        lambda *a, **kw: _batched._DISPATCH_ATTACHED,
+    )
+    sc = SchedulerConfig(spec_decode="mtp", mtp_model_type="gemma4_unified")
+    result = _batched._apply_mtp_dispatch(
+        model=object(),
+        model_name="mlx-community/gemma-4-12B-it-4bit",
+        scheduler_config=sc,
+        executor=_SyncExecutor(),
+    )
+    assert result == _batched._DISPATCH_ATTACHED
+
+
+def test_apply_mtp_dispatch_raises_on_rejected(monkeypatch):
+    """Codex round-G NIT #4: end-to-end runtime coverage of the
+    hard-fail branch — not a source-string check.
+
+    Behavior: when dispatch returns ``_DISPATCH_REJECTED``,
+    :func:`_apply_mtp_dispatch` raises ``RuntimeError`` regardless of
+    whether the CLI vetted the model_type.
+    """
+    from vllm_mlx.engine import batched as _batched
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    monkeypatch.setattr(
+        _batched,
+        "_run_dispatch_mtp_inject",
+        lambda *a, **kw: _batched._DISPATCH_REJECTED,
+    )
+    sc = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_sidecar="/nonexistent/sidecar",
+    )
+    try:
+        _batched._apply_mtp_dispatch(
+            model=object(),
+            model_name="mlx-community/gemma-4-12B-it-4bit",
+            scheduler_config=sc,
+            executor=_SyncExecutor(),
+        )
+    except RuntimeError as e:
+        assert "rejected" in str(e).lower()
+        return
+    raise AssertionError(
+        "codex round-G NIT #4 regression: _apply_mtp_dispatch did NOT "
+        "raise RuntimeError on _DISPATCH_REJECTED — the production "
+        "hard-fail branch is not being exercised."
+    )
+
+
+def test_apply_mtp_dispatch_raises_when_cli_vetted_and_unresolved(monkeypatch):
+    """Codex round-G NIT #4 + round-E cross-check: when the CLI
+    vetted the model_type but the executor-side dispatch returns
+    ``_DISPATCH_UNRESOLVED``, ``_apply_mtp_dispatch`` must raise —
+    this is the exact "silent no-op" regression codex round-E
+    demanded be closed.
+    """
+    from vllm_mlx.engine import batched as _batched
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    monkeypatch.setattr(
+        _batched,
+        "_run_dispatch_mtp_inject",
+        lambda *a, **kw: _batched._DISPATCH_UNRESOLVED,
+    )
+    sc = SchedulerConfig(spec_decode="mtp", mtp_model_type="gemma4_unified")
+    try:
+        _batched._apply_mtp_dispatch(
+            model=object(),
+            model_name="mlx-community/gemma-4-12B-it-4bit",
+            scheduler_config=sc,
+            executor=_SyncExecutor(),
+        )
+    except RuntimeError as e:
+        assert "gemma4_unified" in str(e)
+        return
+    raise AssertionError(
+        "codex round-G NIT #4 regression: _apply_mtp_dispatch did NOT "
+        "raise RuntimeError on CLI-vetted _DISPATCH_UNRESOLVED — "
+        "operator would boot with MTP silently disabled."
+    )
+
+
+def test_apply_mtp_dispatch_soft_skips_when_not_cli_vetted(monkeypatch):
+    """Codex round-G NIT #4 + round-D cross-check: bench-harness path
+    (no ``mtp_model_type`` on SchedulerConfig) preserves the round-D
+    lenient behaviour — ``_DISPATCH_UNRESOLVED`` continues on plain
+    decode instead of aborting boot.
+    """
+    from vllm_mlx.engine import batched as _batched
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    monkeypatch.setattr(
+        _batched,
+        "_run_dispatch_mtp_inject",
+        lambda *a, **kw: _batched._DISPATCH_UNRESOLVED,
+    )
+    sc = SchedulerConfig(spec_decode="mtp")  # no mtp_model_type — bench shape
+    result = _batched._apply_mtp_dispatch(
+        model=object(),
+        model_name="mlx-community/gemma-4-12B-it-4bit",
+        scheduler_config=sc,
+        executor=_SyncExecutor(),
+    )
+    assert result == _batched._DISPATCH_UNRESOLVED
+
+
+def test_apply_mtp_dispatch_raises_runtime_error_on_timeout(monkeypatch):
+    """Codex round-G BLOCKING #3 regression guard.
+
+    A stuck sidecar download / HF hang would previously block server
+    startup indefinitely (no timeout on ``future.result()``). Fix:
+    ``_apply_mtp_dispatch`` wraps the executor call with a bounded
+    timeout and converts a ``TimeoutError`` into a ``RuntimeError``
+    with an operator-facing message.
+    """
+    from vllm_mlx.engine import batched as _batched
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
+    sc = SchedulerConfig(spec_decode="mtp", mtp_model_type="gemma4_unified")
+    try:
+        _batched._apply_mtp_dispatch(
+            model=object(),
+            model_name="mlx-community/gemma-4-12B-it-4bit",
+            scheduler_config=sc,
+            executor=_TimeoutExecutor(),
+        )
+    except RuntimeError as e:
+        assert "timed out" in str(e).lower()
+        assert "1s" in str(e).replace(" ", "") or "1.0" in str(e) or "1s" in str(e)
+        return
+    raise AssertionError(
+        "codex round-G BLOCKING #3 regression: _apply_mtp_dispatch did "
+        "NOT convert a TimeoutError into a startup RuntimeError. A "
+        "stuck HF/DNS load would hang `rapid-mlx serve` indefinitely."
+    )
+
+
+def test_get_mtp_dispatch_timeout_sec_default():
+    """The dispatch timeout defaults to 600s when the env var is
+    unset — long enough for slow 4-16GB assistant downloads on a
+    typical residential connection.
+    """
+    import os
+
+    from vllm_mlx.engine import batched as _batched
+
+    if "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC" in os.environ:
+        # Test environment cleanup — leave the default codepath
+        # unaffected by an operator override in CI.
+        del os.environ["RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC"]
+    assert _batched._get_mtp_dispatch_timeout_sec() == 600.0
+
+
+def test_get_mtp_dispatch_timeout_sec_zero_disables(monkeypatch):
+    """An explicit ``0`` in the env var disables the timeout — for
+    corp networks where the bounded-wait would false-positive.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "0")
+    assert _batched._get_mtp_dispatch_timeout_sec() is None
+
+
+def test_get_mtp_dispatch_timeout_sec_malformed_falls_back_to_default(monkeypatch):
+    """Bad env var values fall back to the default with a warning
+    instead of crashing engine boot.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "not-a-number")
+    assert _batched._get_mtp_dispatch_timeout_sec() == 600.0
+
+
+def test_start_llm_calls_apply_mtp_dispatch():
+    """Codex round-G NIT #4 regression guard: verify that
+    ``BatchedEngine._start_llm`` invokes the extracted
+    :func:`_apply_mtp_dispatch` helper.
+
+    This complements the runtime-behavior tests above by pinning
+    the wiring itself — if a future refactor inlines the dispatch
+    call back into ``_start_llm``, this guard forces the change to
+    also update the ``_apply_mtp_dispatch`` tests. Without it, a
+    silent inline would leave the helper's tests running against a
+    dead codepath.
+
+    Uses ``inspect.getsource`` as a lightweight wiring check — the
+    behavioral tests above are the actual correctness gate; this
+    just prevents drift where the helper survives but stops being
+    called.
     """
     import inspect
 
     from vllm_mlx.engine import batched as _batched
 
     src = inspect.getsource(_batched.BatchedEngine._start_llm)
-    assert "_decide_mtp_dispatch_action" in src, (
-        "codex round-F NIT regression: _start_llm no longer delegates "
-        "to _decide_mtp_dispatch_action. The tests above exercise that "
-        "helper directly; if _start_llm has inlined the branch (or "
-        "renamed the helper), the tests are no longer covering the "
-        "boot path. Update _drive_start_llm_dispatch_gate to match the "
-        "new surface and update this guard's expected symbol."
+    assert "_apply_mtp_dispatch" in src, (
+        "codex round-G NIT #4: _start_llm no longer calls "
+        "_apply_mtp_dispatch. Either the helper was renamed / inlined "
+        "and the behavioral tests above are now covering dead code, or "
+        "the boot path was refactored. Update the tests OR restore the "
+        "helper invocation."
     )
 
 
@@ -1284,6 +1523,177 @@ def test_install_mtp_vendored_disabled_uid_cleared_on_uid_reuse(monkeypatch):
         f"construction (ctor.calls={ctor.calls!r}). This lets one "
         "bad-sidecar disable permanently downgrade every subsequent "
         "request that draws the same uid."
+    )
+
+
+def test_install_mtp_vendored_cleanup_does_not_clear_disabled_uids(monkeypatch):
+    """Codex round-G BLOCKING #1 regression guard.
+
+    Earlier revision's ``_cleanup_uid`` unconditionally popped
+    ``_disabled_uids[uid]``, which meant any fallthrough branch (B>1
+    transition, non-greedy switch, logits-processors override) that
+    called ``_cleanup_uid`` would silently un-disable a uid — the
+    next single-uid greedy call would then retry MTP construction
+    and hit the same broken path all over again, one construction
+    attempt per token.
+
+    Fix: ``_cleanup_uid`` no longer touches ``_disabled_uids``.
+    The disable state is a per-REQUEST marker cleared only by
+    (a) uid reuse detection with a new request_id, or (b) explicit
+    delete in the reuse-gate branch. State (the generator + queue)
+    is still cleaned by ``_cleanup_uid`` — that's per-generator
+    lifecycle, not per-request.
+
+    This test:
+      1. Drives a first-call construction failure → uid=99 lands
+         in ``_disabled_uids`` keyed by req-A.
+      2. Triggers a B>1 fallthrough (which calls ``_cleanup_uid``
+         for stale uids in ``_state``).
+      3. Returns to B=1 single-uid and drives another step.
+      4. Asserts that MTP construction is NOT retried — the
+         disable marker survived the cleanup.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    construction_attempts = {"n": 0}
+
+    def _raising_ctor(*args, **kwargs):
+        construction_attempts["n"] += 1
+        raise RuntimeError("simulated persistent construction failure")
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _raising_ctor)
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [99]
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-99": request_stub},
+        uid_to_request_id={99: "req-99"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([100], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # Step 1 — construction fails, uid=99 disabled.
+    gb._step()
+    assert construction_attempts["n"] == 1
+
+    # Force a B>1 fallthrough — this calls _cleanup_uid for every
+    # uid in _state. Under the round-G BLOCKING #1 pre-fix this
+    # would ALSO have popped _disabled_uids[99].
+    gb.uids = [99, 100]
+    gb._step()
+    stats = batch_gen._mtp_vendored_stats
+    assert stats.get("ft_batch_size", 0) >= 1
+
+    # Return to B=1 same uid; if _cleanup_uid cleared the disable
+    # (pre-fix), the wrapper would retry construction here. Post-
+    # fix, the disable marker is intact and we short-circuit.
+    gb.uids = [99]
+    gb._next_tokens = mx.array([200], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    gb._step()
+    assert construction_attempts["n"] == 1, (
+        "codex round-G BLOCKING #1 regression: _cleanup_uid cleared "
+        "_disabled_uids on a B>1 fallthrough. Next single-uid step "
+        "retried MTP construction "
+        f"(attempts={construction_attempts['n']!r})."
+    )
+
+
+def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypatch):
+    """Codex round-G BLOCKING #2 regression guard (StopIteration branch).
+
+    On ``StopIteration`` mid-stream, the wrapper must:
+    (a) record the current request_id in ``_disabled_uids`` so any
+        retry short-circuits to plain decode; and
+    (b) raise ``RuntimeError`` so mlx-lm surfaces the failure.
+
+    Earlier revision called ``_cleanup_uid`` which cleared the
+    disable, meaning a retry on the same uid+request_id would re-
+    enter FIRST-call construction and hit the same bug.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    class _EmptyGen:
+        """Yields nothing — first next() call raises StopIteration."""
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise StopIteration
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _EmptyGen())
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [88]
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-88": request_stub},
+        uid_to_request_id={88: "req-88"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([777], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # First call — construct + emit first_gen_tok = 777, populates
+    # _state[88].
+    gb._step()
+
+    # Second call — draining the queue is empty, pulls from _EmptyGen
+    # which raises StopIteration. Wrapper must record 88 in
+    # _disabled_uids (with req-88 as the marker) before raising.
+    try:
+        gb._step()
+    except RuntimeError as e:
+        assert (
+            "generator exhausted" in str(e).lower()
+            or "stopiteration" in str(e).lower()
+            or "before mlx-lm hit" in str(e).lower()
+        )
+        # Simulate a retry: if mlx-lm re-enters _mtp_step with the
+        # same uid+request_id, the disable marker MUST fire and
+        # short-circuit to _orig_step (not re-enter construction).
+        # This can happen if the caller uses the exception as
+        # "back off then retry" rather than propagating.
+        gb._next_tokens = mx.array([500], dtype=mx.uint32)
+        gb._next_logprobs = [mx.array([0.0])]
+        gb.uids = [88]
+        pre_retry_orig_step_calls = gb.orig_step_calls
+        gb._step()
+        # The wrapper hit the disable short-circuit and called
+        # _orig_step. NOT a fresh construction attempt.
+        assert gb.orig_step_calls == pre_retry_orig_step_calls + 1, (
+            "codex round-G BLOCKING #2 regression: retry on the same "
+            "uid+request_id after a StopIteration failure did NOT hit "
+            "the disable short-circuit."
+        )
+        stats = batch_gen._mtp_vendored_stats
+        assert stats.get("ft_disabled", 0) >= 1
+        return
+    raise AssertionError(
+        "codex round-G BLOCKING #2 regression: wrapper did NOT raise "
+        "RuntimeError on internal generator StopIteration."
     )
 
 
