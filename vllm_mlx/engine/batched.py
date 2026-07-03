@@ -115,6 +115,8 @@ def _run_dispatch_mtp_inject(
     model: Any,
     model_name: str,
     mtp_sidecar: str | None,
+    *,
+    preferred_model_type: str | None = None,
 ) -> str:
     """MLX-step-worker entrypoint that runs ``dispatch_mtp_inject``.
 
@@ -154,13 +156,18 @@ def _run_dispatch_mtp_inject(
     from ..spec_decode.mtp import dispatch_mtp_inject
     from ..spec_decode.mtp.dispatch import _MTP_INJECT_DISPATCH
 
-    model_type = _resolve_hf_model_type(model_name)
+    # Codex round-E blocker #2: prefer the CLI-resolved model_type
+    # when available. The CLI reads ``config.json`` on the asyncio
+    # thread before spawning the executor; passing that value down
+    # avoids a re-read on the executor thread that can race with the
+    # CLI's own IO under offline HF cache and produce a spurious
+    # ``_DISPATCH_UNRESOLVED`` even though the config was just read.
+    model_type = preferred_model_type or _resolve_hf_model_type(model_name)
     if model_type is None:
         logger.warning(
             "[MTP-vendored] could not resolve model_type for %r; skipping "
             "dispatch_mtp_inject. --spec-decode mtp will be a no-op on "
-            "this boot (soft-skip; CLI already accepted the flag, so this "
-            "is almost certainly a transient plumbing race).",
+            "this boot.",
             model_name,
         )
         return _DISPATCH_UNRESOLVED
@@ -927,43 +934,46 @@ class BatchedEngine(BaseEngine):
         # forgot the CLI gate still gets a clean skip rather than a
         # traceback.
         if _new_arch_mtp:
+            _preferred_mt = getattr(sc, "mtp_model_type", None)
             _dispatch_result = self._model_load_executor.submit(
                 _run_dispatch_mtp_inject,
                 self._model,
                 self._model_name,
                 getattr(sc, "mtp_sidecar", None),
+                preferred_model_type=_preferred_mt,
             ).result()
-            # Codex round-D blocker #1: fine-grained routing.
+            # Codex round-D + round-E: two-tier failure treatment.
             #
-            # The prior revision (round-C) hard-raised on any
-            # ``False`` return, which turned ``_DISPATCH_UNRESOLVED``
-            # (a transient environment race — CLI just read
-            # config.json on the asyncio thread, executor thread hits
-            # a stale HF cache or an unlinked local dir a few ms
-            # later) into a boot abort. Environments that used to
-            # boot ``rapid-mlx serve --spec-decode mtp`` cleanly under
-            # 0.9.12 would break at 0.9.13.
+            # Codex round-D BLOCKING #1 (kept): the earlier round-C
+            # revision hard-raised on any ``False`` return, which
+            # turned a transient executor-thread config-read race
+            # into a boot abort even for environments where the CLI
+            # had just successfully read ``config.json`` on the
+            # asyncio thread.
             #
-            # Split the treatment:
-            # * ``_DISPATCH_ATTACHED``   — happy path; continue.
-            # * ``_DISPATCH_UNRESOLVED`` — soft-skip; log INFO and
-            #     continue on plain autoregressive decode. The
-            #     scheduler's own ``_install_mtp_vendored`` gate will
-            #     see the missing MTP attributes and skip the hot-
-            #     loop install, so the request just runs on baseline
-            #     ``_step``.
-            # * ``_DISPATCH_NO_INJECT``  — same soft-skip treatment.
-            #     This case is a plumbing skew (CLI approved a
-            #     model_type the dispatcher doesn't know about); the
-            #     request-visible impact is identical to
-            #     ``_DISPATCH_UNRESOLVED``, so treat it identically.
-            # * ``_DISPATCH_REJECTED``   — hard-fail. The operator
-            #     asked for MTP with a resolvable model_type AND a
-            #     registered injector, and the injector actively
-            #     said no (typical: missing/bad ``--mtp-sidecar``).
-            #     Silently continuing here would hide the
-            #     misconfiguration behind a working-but-slower
-            #     ``rapid-mlx serve``.
+            # Codex round-E BLOCKING #2 (adjust): the round-D fix
+            # was too lenient in the other direction — soft-skipping
+            # ``_DISPATCH_UNRESOLVED`` / ``_DISPATCH_NO_INJECT``
+            # meant an operator-explicit ``--spec-decode mtp``
+            # could silently boot with MTP disabled, aside from a
+            # warning line the operator has to grep for. Fix: the
+            # CLI now threads a pre-resolved ``model_type`` down via
+            # ``SchedulerConfig.mtp_model_type``. When that's set,
+            # ``_DISPATCH_UNRESOLVED`` can only mean the executor's
+            # dispatch table lookup found nothing usable AFTER the
+            # CLI's own model_type resolution — a plumbing bug, not
+            # a race — so we hard-fail. Same for
+            # ``_DISPATCH_NO_INJECT``.
+            #
+            # When ``mtp_model_type`` is None (non-CLI caller — a
+            # bench script constructs SchedulerConfig directly), we
+            # preserve the pre-0.9.13 lenient behaviour: only
+            # ``_DISPATCH_REJECTED`` hard-fails, the other two
+            # continue on plain decode. This keeps
+            # ``bench/bench_spec_decode_mtp.py`` and similar
+            # research callers unblocked without the CLI's config
+            # threading burden.
+            _cli_vetted = _preferred_mt is not None
             if _dispatch_result == _DISPATCH_REJECTED:
                 raise RuntimeError(
                     "--spec-decode mtp was set but the family MTP "
@@ -975,11 +985,27 @@ class BatchedEngine(BaseEngine):
                     "boot with MTP silently disabled — pass "
                     "--spec-decode none to continue without MTP."
                 )
+            if _dispatch_result != _DISPATCH_ATTACHED and _cli_vetted:
+                raise RuntimeError(
+                    f"--spec-decode mtp was set and the CLI vetted "
+                    f"model_type={_preferred_mt!r}, but the engine "
+                    f"could not attach the MTP protocol "
+                    f"(dispatch_result={_dispatch_result!r}). This "
+                    "indicates a plumbing skew between the CLI "
+                    "eligibility gate and the engine's dispatch "
+                    "table — not an environment race. Refusing to "
+                    "boot with MTP silently disabled — pass "
+                    "--spec-decode none to continue without MTP, "
+                    "or file an issue with the model_type + engine "
+                    "version."
+                )
             if _dispatch_result != _DISPATCH_ATTACHED:
                 logger.info(
                     "[MTP-vendored] dispatch soft-skipped (result=%r); "
                     "continuing on plain autoregressive decode. The "
-                    "scheduler MTP install gate will also skip.",
+                    "scheduler MTP install gate will also skip. "
+                    "(Non-CLI caller — no ``mtp_model_type`` set; a "
+                    "CLI caller would have hard-failed here.)",
                     _dispatch_result,
                 )
 

@@ -262,6 +262,35 @@ def test_scheduler_config_mtp_sidecar_local_path_round_trip():
     assert cfg.mtp_sidecar == "/tmp/gemma-4-12B-it-assistant"
 
 
+def test_scheduler_config_mtp_model_type_default_none():
+    """Codex round-E blocker #2 regression guard: the new
+    ``mtp_model_type`` field defaults to ``None`` so bench-harness /
+    direct-SchedulerConfig callers keep the pre-round-E lenient
+    behaviour in ``_start_llm``.
+    """
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    cfg = SchedulerConfig()
+    assert cfg.mtp_model_type is None
+
+
+def test_scheduler_config_mtp_model_type_round_trip():
+    """Value passed at construction time is retained verbatim.
+
+    The CLI resolves ``config.json::model_type`` on the asyncio
+    thread and threads it through SchedulerConfig so the engine's
+    model-load-executor dispatch step does NOT re-read config.json
+    (codex round-E fix for the "silent no-op" regression).
+    """
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    cfg = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_model_type="gemma4_unified",
+    )
+    assert cfg.mtp_model_type == "gemma4_unified"
+
+
 # ---------------------------------------------------------------------------
 # 4. Engine dispatch call site — dispatch_mtp_inject sees the sidecar path
 # ---------------------------------------------------------------------------
@@ -439,6 +468,78 @@ def test_run_dispatch_mtp_inject_returns_no_inject_for_unregistered_model_type(
     )
 
 
+def test_run_dispatch_mtp_inject_prefers_cli_provided_model_type(monkeypatch):
+    """Codex round-E blocker #2 regression guard: when the caller
+    passes ``preferred_model_type``, the dispatch step MUST use it
+    verbatim and MUST NOT fall back to reading ``config.json`` on the
+    executor thread.
+
+    This is the CLI's escape hatch out of the offline-HF-cache race:
+    the CLI has already vetted the model_type on the asyncio thread,
+    so re-reading on the executor is both wasteful and racy.
+    """
+    import vllm_mlx.spec_decode.mtp as _mtp
+    from vllm_mlx.engine import batched as _batched
+
+    captured: dict = {}
+    resolve_calls = {"n": 0}
+
+    def _fake_dispatch_mtp_inject(model, model_type, *, mtp_sidecar=None, **kwargs):
+        captured["model_type"] = model_type
+        return True
+
+    def _fake_resolve(*args, **kwargs):
+        resolve_calls["n"] += 1
+        return "SHOULD_NOT_BE_USED"
+
+    monkeypatch.setattr(_mtp, "dispatch_mtp_inject", _fake_dispatch_mtp_inject)
+    monkeypatch.setattr(_batched, "_resolve_hf_model_type", _fake_resolve)
+
+    result = _batched._run_dispatch_mtp_inject(
+        object(),
+        "mlx-community/gemma-4-12B-it-4bit",
+        None,
+        preferred_model_type="gemma4_unified",
+    )
+    assert result == _batched._DISPATCH_ATTACHED
+    assert captured["model_type"] == "gemma4_unified"
+    assert resolve_calls["n"] == 0, (
+        "codex round-E blocker #2 regression: dispatch step re-read "
+        "config.json on the executor even though the CLI already "
+        "vetted the model_type. This reintroduces the offline-cache "
+        "race the round-E fix eliminated."
+    )
+
+
+def test_run_dispatch_mtp_inject_falls_back_when_no_preferred_model_type(monkeypatch):
+    """When ``preferred_model_type`` is None (bench-harness path where
+    no CLI vetted the config), the dispatch step falls back to
+    reading ``config.json`` on the executor thread. This preserves
+    pre-round-E behaviour for direct callers.
+    """
+    import vllm_mlx.spec_decode.mtp as _mtp
+    from vllm_mlx.engine import batched as _batched
+
+    captured: dict = {}
+
+    def _fake_dispatch_mtp_inject(model, model_type, *, mtp_sidecar=None, **kwargs):
+        captured["model_type"] = model_type
+        return True
+
+    monkeypatch.setattr(_mtp, "dispatch_mtp_inject", _fake_dispatch_mtp_inject)
+    monkeypatch.setattr(_batched, "_resolve_hf_model_type", lambda name: "qwen3_5")
+
+    result = _batched._run_dispatch_mtp_inject(
+        object(),
+        "mlx-community/Qwen3.5-4B-4bit",
+        None,
+        # explicitly None — should fall back to _resolve_hf_model_type
+        preferred_model_type=None,
+    )
+    assert result == _batched._DISPATCH_ATTACHED
+    assert captured["model_type"] == "qwen3_5"
+
+
 def test_run_dispatch_mtp_inject_propagates_none_sidecar(monkeypatch):
     """``mtp_sidecar=None`` (i.e. Qwen3.5 native MTP path — no external
     sidecar) is forwarded through as-is. The family injector
@@ -472,27 +573,42 @@ def test_run_dispatch_mtp_inject_propagates_none_sidecar(monkeypatch):
 # ---------------------------------------------------------------------------
 
 
-def _drive_start_llm_dispatch_gate(dispatch_result):
+def _drive_start_llm_dispatch_gate(dispatch_result, cli_vetted_model_type=None):
     """Exercise the exact branch of ``_start_llm`` that inspects
     ``_run_dispatch_mtp_inject`` return codes.
 
-    Returns ``"raised"`` if the branch would raise ``RuntimeError``, else
-    ``"continued"``. Extracted so each return-code test can reason about
-    one branch at a time without spinning up an actual engine (which
-    needs a real model + tokenizer + Metal).
+    Returns ``"continued"`` when the branch would let the boot
+    continue on plain autoregressive decode. Raises ``RuntimeError``
+    otherwise — mirrors the production path.
+
+    ``cli_vetted_model_type`` mirrors the ``SchedulerConfig.
+    mtp_model_type`` value the CLI populates from its own
+    ``config.json`` read. When non-None the gate is strict (codex
+    round-E blocker #2 — ANY non-attached result hard-fails). When
+    None (bench harness / direct SchedulerConfig caller) the gate
+    keeps codex round-D's lenient behaviour: only
+    ``_DISPATCH_REJECTED`` hard-fails.
 
     We can't easily unit-test ``_start_llm`` end-to-end (it awaits an
     async engine, loads a model on a real MLX executor). Instead we
     replay just the gate logic — the SAME conditional the production
     path runs after ``_dispatch_result`` is populated. If this ever
-    drifts from ``_start_llm``, the ``test_gate_matches_start_llm_
-    source`` guard below will flag it.
+    drifts from ``_start_llm``, the ``test_start_llm_gate_matches_
+    source_predicate`` guard below will flag it.
     """
     from vllm_mlx.engine import batched as _batched
 
+    _cli_vetted = cli_vetted_model_type is not None
     if dispatch_result == _batched._DISPATCH_REJECTED:
         raise RuntimeError(
             "--spec-decode mtp was set but the family MTP injector rejected the model."
+        )
+    if dispatch_result != _batched._DISPATCH_ATTACHED and _cli_vetted:
+        raise RuntimeError(
+            "--spec-decode mtp was set and the CLI vetted "
+            f"model_type={cli_vetted_model_type!r}, but the engine "
+            f"could not attach the MTP protocol "
+            f"(dispatch_result={dispatch_result!r})."
         )
     # All other return codes: continue on plain decode.
     return "continued"
@@ -503,55 +619,121 @@ def test_start_llm_raises_runtime_error_on_dispatch_rejected():
     a startup ``RuntimeError`` when dispatch returns
     ``_DISPATCH_REJECTED`` — the operator's explicit ``--spec-decode
     mtp`` flag was accepted by the CLI and rejected by the family
-    injector; silent no-op boot is not an acceptable outcome.
+    injector; silent no-op boot is not an acceptable outcome. The
+    hard-fail fires regardless of whether the CLI vetted the
+    model_type (round-E) — an active injector rejection is always a
+    hard-fail.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    for cli_vetted in (None, "gemma4_unified"):
+        try:
+            _drive_start_llm_dispatch_gate(
+                _batched._DISPATCH_REJECTED, cli_vetted_model_type=cli_vetted
+            )
+        except RuntimeError as e:
+            assert "rejected" in str(e).lower()
+            continue
+        raise AssertionError(
+            "codex round-D NIT #4 regression: _start_llm did NOT raise "
+            "RuntimeError on _DISPATCH_REJECTED "
+            f"(cli_vetted_model_type={cli_vetted!r}) — operator would "
+            "boot with MTP silently disabled."
+        )
+
+
+def test_start_llm_continues_on_dispatch_unresolved_when_not_cli_vetted():
+    """Codex round-D BLOCKING #1 regression guard (bench-harness path).
+
+    When ``SchedulerConfig.mtp_model_type`` is None — the bench /
+    direct-SchedulerConfig caller shape — ``_DISPATCH_UNRESOLVED``
+    (executor-thread config lookup missed) MUST fall through to plain
+    autoregressive decode. Bench scripts already know the target is
+    Qwen3.5 / Gemma 4; they don't want a boot abort on a transient
+    HF cache race.
+
+    This preserves the round-D fix for callers that don't set
+    ``mtp_model_type``.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    result = _drive_start_llm_dispatch_gate(
+        _batched._DISPATCH_UNRESOLVED, cli_vetted_model_type=None
+    )
+    assert result == "continued", (
+        "codex round-D BLOCKING #1 regression: _DISPATCH_UNRESOLVED "
+        "must NOT abort boot for a caller without mtp_model_type "
+        "(bench harness shape)."
+    )
+
+
+def test_start_llm_raises_on_dispatch_unresolved_when_cli_vetted():
+    """Codex round-E BLOCKING #2 regression guard.
+
+    When the CLI has populated ``mtp_model_type`` (production
+    ``rapid-mlx serve --spec-decode mtp`` path), an executor-thread
+    ``_DISPATCH_UNRESOLVED`` return can only be a plumbing bug (the
+    executor doesn't even use the fallback config lookup because the
+    CLI-vetted value takes precedence). Hard-fail so the operator
+    doesn't boot with MTP silently disabled.
+
+    This is the specific behaviour codex round-E BLOCKING #2
+    demanded: "unresolved / no-inject cases for explicit MTP" must
+    NOT silently continue.
     """
     from vllm_mlx.engine import batched as _batched
 
     try:
-        _drive_start_llm_dispatch_gate(_batched._DISPATCH_REJECTED)
+        _drive_start_llm_dispatch_gate(
+            _batched._DISPATCH_UNRESOLVED, cli_vetted_model_type="gemma4_unified"
+        )
     except RuntimeError as e:
-        assert "family MTP injector rejected" in str(e)
+        assert "cli vetted" in str(e).lower() or "vetted model_type" in str(e).lower()
         return
     raise AssertionError(
-        "codex round-D NIT #4 regression: _start_llm did NOT raise "
-        "RuntimeError on _DISPATCH_REJECTED — operator would boot with "
-        "MTP silently disabled."
+        "codex round-E BLOCKING #2 regression: _start_llm did NOT raise "
+        "RuntimeError on _DISPATCH_UNRESOLVED even though the CLI "
+        "vetted model_type. Operator's explicit --spec-decode mtp "
+        "would silently boot without MTP."
     )
 
 
-def test_start_llm_continues_on_dispatch_unresolved():
-    """Codex round-D NIT #4 (companion to the reject case): when dispatch
-    returns ``_DISPATCH_UNRESOLVED`` (transient environment race —
-    CLI's asyncio-thread config lookup succeeded, executor-thread
-    lookup failed), ``_start_llm`` MUST continue on plain
-    autoregressive decode rather than aborting boot.
-
-    This is the specific regression codex round-D BLOCKING #1 flagged:
-    round-C collapsed all failure modes into a hard-raise, which
-    turned an env race into a boot failure for setups that used to
-    work.
+def test_start_llm_continues_on_dispatch_no_inject_when_not_cli_vetted():
+    """Codex round-D + round-E companion: ``_DISPATCH_NO_INJECT``
+    without a CLI-vetted model_type is a bench-harness "unknown
+    lineage" path. Continue on plain decode; the scheduler's install
+    gate also skips.
     """
     from vllm_mlx.engine import batched as _batched
 
-    result = _drive_start_llm_dispatch_gate(_batched._DISPATCH_UNRESOLVED)
-    assert result == "continued", (
-        "codex round-D BLOCKING #1 regression: _DISPATCH_UNRESOLVED "
-        "must NOT abort boot — CLI-accepted configs that hit an "
-        "executor-thread race would fail to serve."
+    result = _drive_start_llm_dispatch_gate(
+        _batched._DISPATCH_NO_INJECT, cli_vetted_model_type=None
     )
-
-
-def test_start_llm_continues_on_dispatch_no_inject():
-    """Codex round-D NIT #4: same soft-skip treatment for
-    ``_DISPATCH_NO_INJECT`` (model_type resolved but not in the
-    dispatch table). The scheduler's own ``_install_mtp_vendored``
-    gate will notice the missing MTP protocol attributes and skip
-    hot-loop install; request path continues on baseline decode.
-    """
-    from vllm_mlx.engine import batched as _batched
-
-    result = _drive_start_llm_dispatch_gate(_batched._DISPATCH_NO_INJECT)
     assert result == "continued"
+
+
+def test_start_llm_raises_on_dispatch_no_inject_when_cli_vetted():
+    """Codex round-E BLOCKING #2 companion: when the CLI vetted
+    the model_type, ``_DISPATCH_NO_INJECT`` means the eligibility
+    gate and the dispatch table are out of sync — a code bug, not
+    an environment issue. Hard-fail so the operator doesn't boot
+    with MTP silently disabled.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    try:
+        _drive_start_llm_dispatch_gate(
+            _batched._DISPATCH_NO_INJECT, cli_vetted_model_type="qwen3_5"
+        )
+    except RuntimeError as e:
+        assert "cli vetted" in str(e).lower() or "vetted model_type" in str(e).lower()
+        return
+    raise AssertionError(
+        "codex round-E BLOCKING #2 regression: _start_llm did NOT raise "
+        "RuntimeError on _DISPATCH_NO_INJECT even though the CLI "
+        "vetted model_type. This is a plumbing skew that operator-"
+        "explicit --spec-decode mtp should NOT silently absorb."
+    )
 
 
 def test_start_llm_gate_matches_source_predicate():
@@ -560,34 +742,35 @@ def test_start_llm_gate_matches_source_predicate():
 
     If the production gate is ever refactored (extra hard-raise
     branches, changed sentinel comparison), this test forces the
-    replay helper above to be updated too — otherwise the four
-    return-code tests above would silently pass while the real
-    behaviour drifted.
+    replay helper above to be updated too — otherwise the return-
+    code tests above would silently pass while the real behaviour
+    drifted.
 
-    We read the raw source and pin the two predicates: (a) the hard-
-    raise fires ONLY on ``_DISPATCH_REJECTED``, (b) any other return
-    code falls through to the info-log continuation branch.
+    We read the raw source and pin the three predicates:
+      (a) hard-raise on ``_DISPATCH_REJECTED`` (round-D).
+      (b) hard-raise on non-attached + CLI-vetted (round-E).
+      (c) info-log continuation for the remaining soft-skip case.
     """
     import inspect
 
     from vllm_mlx.engine import batched as _batched
 
     src = inspect.getsource(_batched.BatchedEngine._start_llm)
-    # Hard-raise gate: exactly one predicate on _DISPATCH_REJECTED.
     assert "_dispatch_result == _DISPATCH_REJECTED" in src, (
         "codex round-D NIT #4 guard: _start_llm no longer hard-raises "
         "on _DISPATCH_REJECTED — either the sentinel name changed or "
         "the branch was refactored. Update _drive_start_llm_dispatch_"
-        "gate to match, or the four return-code tests above are lying."
+        "gate to match."
     )
-    # Continuation predicate: only one branch handles !=_DISPATCH_ATTACHED
-    # after the reject check.
+    assert "_cli_vetted" in src, (
+        "codex round-E blocker #2 guard: _start_llm no longer branches "
+        "on _cli_vetted (the CLI-vetted-model_type discriminator). If "
+        "the branch was renamed, update this guard and "
+        "_drive_start_llm_dispatch_gate accordingly."
+    )
     assert "_dispatch_result != _DISPATCH_ATTACHED" in src, (
         "codex round-D NIT #4 guard: _start_llm no longer has the "
-        "soft-skip continuation branch. _DISPATCH_UNRESOLVED / "
-        "_DISPATCH_NO_INJECT would either hard-raise (regressing the "
-        "codex round-D fix) or silently skip logging. Update "
-        "_drive_start_llm_dispatch_gate accordingly."
+        "non-attached branch. Update _drive_start_llm_dispatch_gate."
     )
 
 
@@ -983,6 +1166,121 @@ def test_install_mtp_vendored_first_call_failure_disables_subsequent_calls(monke
     )
     # And _orig_step ran twice — once per _step() call.
     assert gb.orig_step_calls == 2
+
+
+def test_install_mtp_vendored_disabled_uid_cleared_on_uid_reuse(monkeypatch):
+    """Codex round-E blocker #1 regression guard.
+
+    mlx-lm reuses uid ints once a request completes. The round-D
+    ``_disabled_uids`` fix keyed disable state by uid alone; that
+    let a bad-sidecar disable from request N silently apply to
+    request N+1, N+2, ... if they happened to draw the same uid,
+    permanently disabling MTP after a single bad request.
+
+    Fix: store the request_id at disable time. When the same uid
+    shows up with a DIFFERENT request_id, the disable is stale —
+    clear it and re-enter the normal MTP path.
+
+    This test:
+      1. Drives request A (uid=42, req-A) through a first-call
+         construction failure — uid=42 lands in _disabled_uids.
+      2. Simulates uid=42 being reused for request B (req-B) with
+         a working generator constructor.
+      3. Verifies that the wrapper does NOT stay in the disabled
+         short-circuit — it re-enters the FIRST-call path and
+         successfully seeds a fresh generator for request B.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    class _RecoveringCtor:
+        """First construction raises; subsequent calls yield a fake
+        generator. Simulates "request A had a bad sidecar path,
+        request B was retargeted at a working path."
+        """
+
+        def __init__(self):
+            self.calls = 0
+
+        def __call__(self, *args, **kwargs):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("simulated request-A sidecar failure")
+            return _FakeGen()
+
+    class _FakeGen:
+        def __init__(self):
+            self._n = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self._n += 1
+            return (5000 + self._n, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    ctor = _RecoveringCtor()
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", ctor)
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [42]
+    uid_to_request_id: dict[int, str] = {42: "req-A"}
+    requests: dict = {
+        "req-A": SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0)),
+    }
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests=requests,
+        uid_to_request_id=uid_to_request_id,
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([1], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # Request A step 1 — construction fails, uid=42 goes into _disabled_uids
+    # keyed by req-A.
+    gb._step()
+    assert ctor.calls == 1
+    stats = batch_gen._mtp_vendored_stats
+    assert stats["fallthrough_steps"] >= 1
+
+    # Request A step 2 — still req-A, so the disabled short-circuit
+    # fires; ctor is NOT called again.
+    gb._orig_next_sample = mx.array([2], dtype=mx.uint32)
+    gb._step()
+    assert ctor.calls == 1
+    assert stats.get("ft_disabled", 0) >= 1
+
+    # Now simulate request A completing and uid=42 being reused for
+    # request B. mlx-lm would update uid_to_request_id to the new
+    # request's ID.
+    uid_to_request_id[42] = "req-B"
+    requests["req-B"] = SimpleNamespace(
+        sampling_params=SimpleNamespace(temperature=0.0)
+    )
+    gb._next_tokens = mx.array([100], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # Request B step 1 — request_id changed, disabled state MUST be
+    # cleared and the wrapper MUST re-enter the FIRST-call path.
+    gb._step()
+    assert ctor.calls == 2, (
+        "codex round-E blocker #1 regression: uid=42 was reused for "
+        f"a new request (req-B), but the wrapper stayed in the "
+        "disabled short-circuit and did not attempt fresh MTP "
+        f"construction (ctor.calls={ctor.calls!r}). This lets one "
+        "bad-sidecar disable permanently downgrade every subsequent "
+        "request that draws the same uid."
+    )
 
 
 def test_install_mtp_vendored_mid_stream_generator_failure_raises(monkeypatch):

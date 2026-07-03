@@ -252,6 +252,24 @@ class SchedulerConfig:
     # for how CLI eligibility flips on a non-None value.
     mtp_sidecar: str | None = None
 
+    # 0.9.13 PR-A codex round-E blocker #2: CLI-resolved
+    # ``config.json::model_type`` for the target model, threaded down
+    # from the CLI so the engine's model-load-thread dispatch step
+    # does not re-read config.json (which can race with the CLI's
+    # asyncio-thread read in offline / gated-cache environments and
+    # spuriously report the model_type as unresolvable). ``None`` is
+    # the "not yet resolved" sentinel — the engine will fall back to
+    # a best-effort HF cache lookup, which preserves pre-0.9.13
+    # behaviour for callers who never set this field.
+    #
+    # Codex round-E BLOCKER #2: the executor-thread fallback lookup
+    # was collapsing environment races into a silent MTP no-op. When
+    # the CLI populates this field, the engine can hard-fail on ANY
+    # dispatch mismatch (unresolved / no-inject / rejected) because
+    # the CLI has already vetted the config; a soft-fail there would
+    # silently downgrade an operator-requested feature.
+    mtp_model_type: str | None = None
+
     # SuffixDecoding — drafter-free speculative decoding using a suffix
     # tree over prompt + generated tokens. Predicts repeated patterns
     # (tool boilerplate, JSON schemas, ReAct loops) at zero drafter
@@ -1426,22 +1444,30 @@ def _install_mtp_vendored(
     # Only one uid is ever active at a time under the batch=1 gate.
     _state: dict[int, dict[str, Any]] = {}
 
-    # Codex round-D blocker #2: permanent-skip set. When the FIRST
-    # call for a uid fails to construct the generator, we cannot keep
-    # retrying — every subsequent ``_mtp_step`` on that uid would
-    # re-enter the FIRST-call branch (state is still None), re-read
-    # ``_next_tokens`` (now advanced by ``_orig_step``), and retry
-    # construction. Under a deterministic construction failure (a
-    # broken sidecar path, say) that's an unbounded retry loop
-    # burning one construction attempt per token.
+    # Codex round-D blocker #2 + round-E blocker #1: permanent-skip
+    # map, keyed by uid with the request_id at the time of disabling
+    # as the value. Used to:
     #
-    # Track disabled uids explicitly so the wrapper degrades to a
-    # thin ``_orig_step`` shim for the lifetime of the request.
-    # Cleared when the uid is evicted from ``_state`` via
-    # ``_cleanup_uid`` — but ``_cleanup_uid`` is only called at end-
-    # of-life, so once disabled a uid stays disabled through its
-    # completion.
-    _disabled_uids: set[int] = set()
+    # 1. Skip retrying MTP construction on a uid whose first-call
+    #    construction failed (round-D — otherwise a bad sidecar or
+    #    weight-shape mismatch would DoS the request with one failed
+    #    construction attempt per token).
+    #
+    # 2. Detect uid reuse across requests and re-enable MTP for the
+    #    new request. mlx-lm reuses uid ints when a request completes;
+    #    keying only by uid (round-D's initial fix) let a bad sidecar
+    #    state from request N permanently disable MTP for request
+    #    N+1, N+2, … that happened to draw the same uid.
+    #    (round-E BLOCKER #1). Storing the request_id lets us
+    #    distinguish "same request, still disabled" from "uid was
+    #    reused, forget the stale disable."
+    #
+    # The value can be None (as a placeholder) when the outer install
+    # was called with ``uid_to_request_id=None`` — that case is
+    # unavoidable and we accept the pre-round-E uid-lifetime scope
+    # (this only happens under bench harness callers, where uids are
+    # not reused across requests anyway).
+    _disabled_uids: dict[int, str | None] = {}
 
     _stats = {
         "vendored_steps": 0,
@@ -1456,7 +1482,7 @@ def _install_mtp_vendored(
 
     def _cleanup_uid(uid: int) -> None:
         state = _state.pop(uid, None)
-        _disabled_uids.discard(uid)
+        _disabled_uids.pop(uid, None)
         if state is None:
             return
         gen = state.get("gen")
@@ -1535,16 +1561,43 @@ def _install_mtp_vendored(
 
         uid = gb.uids[0]
 
-        # Codex round-D blocker #2: honour the permanent-skip flag
-        # BEFORE re-entering FIRST-call construction. A uid whose
-        # generator construction failed once will fail every
-        # subsequent time under a deterministic error (bad sidecar
-        # weight shape, missing MTP layer, etc.); running the failing
-        # try/except every step wastes cycles and floods logs.
+        # Codex round-D blocker #2 + round-E blocker #1: honour the
+        # permanent-skip map BEFORE re-entering FIRST-call
+        # construction, but detect uid reuse across requests. mlx-lm
+        # can recycle uid ints once a request completes; without the
+        # request-id cross-check a bad sidecar state from a completed
+        # request could silently disable MTP for every subsequent
+        # request that happened to draw the same uid.
         if uid in _disabled_uids:
-            _stats["fallthrough_steps"] += 1
-            _stats["ft_disabled"] += 1
-            return _orig_step()
+            disabled_req_id = _disabled_uids[uid]
+            current_req_id = None
+            if uid_to_request_id is not None:
+                current_req_id = uid_to_request_id.get(uid)
+            # Same request: still disabled — skip MTP for the rest of
+            # its lifetime.
+            #
+            # Different request (uid reused): the disable state is
+            # stale; drop it and re-enter normal MTP path. The new
+            # request may be pointed at a working sidecar even if the
+            # previous one wasn't.
+            #
+            # Missing bookkeeping (both sides None or the map itself
+            # is None): can't distinguish. Fall back to the round-D
+            # behaviour of honouring the disable — under bench-harness
+            # callers uids aren't reused anyway, and treating this as
+            # "still disabled" is the safe default.
+            if (
+                disabled_req_id is not None
+                and current_req_id is not None
+                and disabled_req_id != current_req_id
+            ):
+                # uid was reused for a new request — forget the stale
+                # disable and fall through to normal MTP path.
+                del _disabled_uids[uid]
+            else:
+                _stats["fallthrough_steps"] += 1
+                _stats["ft_disabled"] += 1
+                return _orig_step()
 
         if not _is_greedy_for_uid(uid):
             _stats["fallthrough_steps"] += 1
@@ -1635,7 +1688,16 @@ def _install_mtp_vendored(
                     e,
                     uid,
                 )
-                _disabled_uids.add(uid)
+                # Codex round-E blocker #1: record the request_id at
+                # disable time so uid reuse across requests re-enables
+                # MTP for the new request. Store ``None`` if the outer
+                # bookkeeping map is None (bench-harness path) — the
+                # gate above treats that as "keep disabled" which is
+                # the safe default for callers without request IDs.
+                _disabled_req_id = None
+                if uid_to_request_id is not None:
+                    _disabled_req_id = uid_to_request_id.get(uid)
+                _disabled_uids[uid] = _disabled_req_id
                 _stats["fallthrough_steps"] += 1
                 return _orig_step()
 

@@ -131,7 +131,17 @@ dflash = [
 # 'PIL'`` at the ``dispatch_mtp_inject`` call site, BEFORE the eligibility
 # banner prints — misleading users into thinking their sidecar path is
 # wrong. Text-only otherwise; does NOT pull torch/cv2 like [vision].
+#
+# Codex round-E NIT: also pin ``mlx-vlm`` explicitly. Even though
+# ``mlx_vlm`` reaches PIL transitively, its own import needs to
+# succeed first — an operator who installs only ``rapid-mlx[mtp]``
+# without ``[vision]`` / ``[dflash]`` would hit
+# ``ModuleNotFoundError: No module named 'mlx_vlm'`` well before the
+# PIL error line above ever fires. Match the floor used by the
+# ``[vision]`` / ``[dflash]`` extras above so composed
+# ``rapid-mlx[mtp,vision]`` installs stay lockstep on the pin.
 mtp = [
+    "mlx-vlm>=0.6.3",
     "pillow>=10.0.0",
 ]
 # Embedding endpoint

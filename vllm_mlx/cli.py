@@ -2455,6 +2455,26 @@ def serve_command(args):
     # Build scheduler config
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
 
+    # 0.9.13 PR-A codex round-E blocker #2: resolve model_type on the
+    # CLI's asyncio thread and thread it down through SchedulerConfig
+    # so the engine's model-load-executor dispatch step does not need
+    # to re-read ``config.json`` (offline HF cache races vs. the CLI's
+    # own read were being collapsed into a silent MTP no-op). Only
+    # runs when the operator explicitly asked for ``--spec-decode
+    # mtp``; for the "none" path the field stays None and the engine
+    # takes the pre-0.9.13 fallback branch that best-effort re-reads
+    # the config on the executor.
+    _cli_mtp_model_type: str | None = None
+    if getattr(args, "spec_decode", "none") == "mtp":
+        try:
+            _hf_cfg_for_mtype, _ = _gather_kv_cache_dtype_inputs(args.model)
+            if isinstance(_hf_cfg_for_mtype, dict):
+                _mt = _hf_cfg_for_mtype.get("model_type")
+                if isinstance(_mt, str):
+                    _cli_mtp_model_type = _mt
+        except Exception:  # pragma: no cover — best-effort
+            _cli_mtp_model_type = None
+
     scheduler_config = SchedulerConfig(
         max_num_seqs=args.max_num_seqs,
         max_concurrent_requests=args.max_concurrent_requests,
@@ -2495,6 +2515,11 @@ def serve_command(args):
         # ``None`` is the "no sidecar; native-MTP path only" sentinel
         # matching the argparse default.
         mtp_sidecar=getattr(args, "mtp_sidecar", None),
+        # 0.9.13 PR-A codex round-E blocker #2: CLI-resolved
+        # ``config.json::model_type`` for the dispatch step. See the
+        # ``_cli_mtp_model_type`` block above for why this is
+        # resolved on the CLI thread instead of on the executor.
+        mtp_model_type=_cli_mtp_model_type,
         # SuffixDecoding
         enable_suffix_decoding=args.suffix_decoding,
         suffix_max_draft=args.suffix_max_draft,
