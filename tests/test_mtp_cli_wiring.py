@@ -306,21 +306,30 @@ def test_run_dispatch_mtp_inject_forwards_sidecar_path(monkeypatch):
         lambda name: "gemma4_unified",
     )
 
-    ok = _batched._run_dispatch_mtp_inject(
+    result = _batched._run_dispatch_mtp_inject(
         sentinel_model,
         "mlx-community/gemma-4-12B-it-4bit",
         "google/gemma-4-12B-it-assistant",
     )
-    assert ok is True
+    assert result == _batched._DISPATCH_ATTACHED
     assert captured["model"] is sentinel_model
     assert captured["model_type"] == "gemma4_unified"
     assert captured["mtp_sidecar"] == "google/gemma-4-12B-it-assistant"
 
 
-def test_run_dispatch_mtp_inject_returns_false_on_unresolvable_model_type(monkeypatch):
-    """When ``_resolve_hf_model_type`` returns ``None`` (offline / gated
-    repo / hand-rolled path), the dispatch step is skipped cleanly and
-    the caller sees ``False`` — engine boot must not abort here.
+def test_run_dispatch_mtp_inject_returns_unresolved_when_model_type_missing(
+    monkeypatch,
+):
+    """Codex round-D blocker #1 regression guard: ``_run_dispatch_mtp_inject``
+    returns the ``_DISPATCH_UNRESOLVED`` sentinel (NOT ``_DISPATCH_REJECTED``)
+    when ``_resolve_hf_model_type`` fails.
+
+    This is the fine-grained routing distinction: ``_DISPATCH_UNRESOLVED``
+    means the executor-thread config lookup couldn't find ``config.json``
+    (offline HF cache, race with the CLI's asyncio-thread read, hand-
+    rolled local path), which is a SOFT-fail; ``_start_llm`` continues
+    on plain autoregressive decode. ``_DISPATCH_REJECTED`` — a distinct
+    return — is the HARD-fail path.
     """
     import vllm_mlx.spec_decode.mtp as _mtp
     from vllm_mlx.engine import batched as _batched
@@ -334,16 +343,99 @@ def test_run_dispatch_mtp_inject_returns_false_on_unresolvable_model_type(monkey
     monkeypatch.setattr(_mtp, "dispatch_mtp_inject", _fake_dispatch_mtp_inject)
     monkeypatch.setattr(_batched, "_resolve_hf_model_type", lambda name: None)
 
-    ok = _batched._run_dispatch_mtp_inject(
+    result = _batched._run_dispatch_mtp_inject(
         object(),
         "some/unresolvable-repo",
         "google/gemma-4-12B-it-assistant",
     )
-    assert ok is False
+    assert result == _batched._DISPATCH_UNRESOLVED
+    assert result != _batched._DISPATCH_REJECTED, (
+        "codex round-D blocker #1 regression: resolution failure MUST NOT "
+        "collapse into _DISPATCH_REJECTED — _start_llm hard-raises on "
+        "_DISPATCH_REJECTED and that would break offline environments the "
+        "CLI already accepted the flag on."
+    )
     assert called["n"] == 0, (
         "dispatch_mtp_inject must NOT be called when model_type is "
         "unresolvable — the caller has no way to pick the family "
         "injector."
+    )
+
+
+def test_run_dispatch_mtp_inject_returns_rejected_when_injector_refuses(monkeypatch):
+    """Codex round-D blocker #1 regression guard: when the family
+    injector is CALLED and returns ``False``, we surface
+    ``_DISPATCH_REJECTED`` — the HARD-fail sentinel that
+    ``_start_llm`` translates to ``RuntimeError``.
+
+    This is the operator-facing misconfiguration path (bad sidecar,
+    wrong assistant model_type, etc.) that MUST not silently fall
+    back to plain decode.
+    """
+    import vllm_mlx.spec_decode.mtp as _mtp
+    from vllm_mlx.engine import batched as _batched
+
+    def _fake_dispatch_mtp_inject(*args, **kwargs):
+        return False  # family injector rejected
+
+    monkeypatch.setattr(_mtp, "dispatch_mtp_inject", _fake_dispatch_mtp_inject)
+    monkeypatch.setattr(
+        _batched, "_resolve_hf_model_type", lambda name: "gemma4_unified"
+    )
+
+    result = _batched._run_dispatch_mtp_inject(
+        object(),
+        "mlx-community/gemma-4-12B-it-4bit",
+        "/nonexistent/sidecar/path",
+    )
+    assert result == _batched._DISPATCH_REJECTED, (
+        "family-injector rejection MUST surface as _DISPATCH_REJECTED so "
+        "_start_llm can raise RuntimeError — silent no-op is unacceptable "
+        "for an explicit --spec-decode mtp flag."
+    )
+
+
+def test_run_dispatch_mtp_inject_returns_no_inject_for_unregistered_model_type(
+    monkeypatch,
+):
+    """Codex round-D blocker #1 regression guard: when ``model_type``
+    resolves but is not in the dispatch table (plumbing skew between
+    the CLI gate and the dispatcher registry), return
+    ``_DISPATCH_NO_INJECT`` — a distinct SOFT-fail sentinel that
+    ``_start_llm`` treats identically to ``_DISPATCH_UNRESOLVED``.
+
+    Also verifies we do NOT call ``dispatch_mtp_inject`` under this
+    path: the module-level helper would just return False (via its
+    own "unknown model_type" branch) and we'd lose the distinction
+    from a family-injector-refused case.
+    """
+    import vllm_mlx.spec_decode.mtp as _mtp
+    from vllm_mlx.engine import batched as _batched
+
+    called = {"n": 0}
+
+    def _fake_dispatch_mtp_inject(*args, **kwargs):
+        called["n"] += 1
+        return True
+
+    monkeypatch.setattr(_mtp, "dispatch_mtp_inject", _fake_dispatch_mtp_inject)
+    monkeypatch.setattr(
+        _batched,
+        "_resolve_hf_model_type",
+        lambda name: "llama",  # not registered
+    )
+
+    result = _batched._run_dispatch_mtp_inject(
+        object(),
+        "meta-llama/Llama-3.1-8B",
+        None,
+    )
+    assert result == _batched._DISPATCH_NO_INJECT
+    assert called["n"] == 0, (
+        "dispatch_mtp_inject must NOT be called for an unregistered "
+        "model_type — the caller pre-filters via the dispatch table so "
+        "we can distinguish this soft-skip from a family-injector "
+        "rejection."
     )
 
 
@@ -365,13 +457,138 @@ def test_run_dispatch_mtp_inject_propagates_none_sidecar(monkeypatch):
     monkeypatch.setattr(_mtp, "dispatch_mtp_inject", _fake_dispatch_mtp_inject)
     monkeypatch.setattr(_batched, "_resolve_hf_model_type", lambda name: "qwen3_5")
 
-    ok = _batched._run_dispatch_mtp_inject(
+    result = _batched._run_dispatch_mtp_inject(
         object(),
         "mlx-community/Qwen3.5-4B-4bit",
         None,
     )
-    assert ok is True
+    assert result == _batched._DISPATCH_ATTACHED
     assert captured["mtp_sidecar"] is None
+
+
+# ---------------------------------------------------------------------------
+# 4b. Boot-time contract — codex round-D NIT #4: verify that _start_llm
+#     interprets the four dispatch return codes correctly.
+# ---------------------------------------------------------------------------
+
+
+def _drive_start_llm_dispatch_gate(dispatch_result):
+    """Exercise the exact branch of ``_start_llm`` that inspects
+    ``_run_dispatch_mtp_inject`` return codes.
+
+    Returns ``"raised"`` if the branch would raise ``RuntimeError``, else
+    ``"continued"``. Extracted so each return-code test can reason about
+    one branch at a time without spinning up an actual engine (which
+    needs a real model + tokenizer + Metal).
+
+    We can't easily unit-test ``_start_llm`` end-to-end (it awaits an
+    async engine, loads a model on a real MLX executor). Instead we
+    replay just the gate logic — the SAME conditional the production
+    path runs after ``_dispatch_result`` is populated. If this ever
+    drifts from ``_start_llm``, the ``test_gate_matches_start_llm_
+    source`` guard below will flag it.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    if dispatch_result == _batched._DISPATCH_REJECTED:
+        raise RuntimeError(
+            "--spec-decode mtp was set but the family MTP injector rejected the model."
+        )
+    # All other return codes: continue on plain decode.
+    return "continued"
+
+
+def test_start_llm_raises_runtime_error_on_dispatch_rejected():
+    """Codex round-D NIT #4 regression guard: ``_start_llm`` MUST raise
+    a startup ``RuntimeError`` when dispatch returns
+    ``_DISPATCH_REJECTED`` — the operator's explicit ``--spec-decode
+    mtp`` flag was accepted by the CLI and rejected by the family
+    injector; silent no-op boot is not an acceptable outcome.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    try:
+        _drive_start_llm_dispatch_gate(_batched._DISPATCH_REJECTED)
+    except RuntimeError as e:
+        assert "family MTP injector rejected" in str(e)
+        return
+    raise AssertionError(
+        "codex round-D NIT #4 regression: _start_llm did NOT raise "
+        "RuntimeError on _DISPATCH_REJECTED — operator would boot with "
+        "MTP silently disabled."
+    )
+
+
+def test_start_llm_continues_on_dispatch_unresolved():
+    """Codex round-D NIT #4 (companion to the reject case): when dispatch
+    returns ``_DISPATCH_UNRESOLVED`` (transient environment race —
+    CLI's asyncio-thread config lookup succeeded, executor-thread
+    lookup failed), ``_start_llm`` MUST continue on plain
+    autoregressive decode rather than aborting boot.
+
+    This is the specific regression codex round-D BLOCKING #1 flagged:
+    round-C collapsed all failure modes into a hard-raise, which
+    turned an env race into a boot failure for setups that used to
+    work.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    result = _drive_start_llm_dispatch_gate(_batched._DISPATCH_UNRESOLVED)
+    assert result == "continued", (
+        "codex round-D BLOCKING #1 regression: _DISPATCH_UNRESOLVED "
+        "must NOT abort boot — CLI-accepted configs that hit an "
+        "executor-thread race would fail to serve."
+    )
+
+
+def test_start_llm_continues_on_dispatch_no_inject():
+    """Codex round-D NIT #4: same soft-skip treatment for
+    ``_DISPATCH_NO_INJECT`` (model_type resolved but not in the
+    dispatch table). The scheduler's own ``_install_mtp_vendored``
+    gate will notice the missing MTP protocol attributes and skip
+    hot-loop install; request path continues on baseline decode.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    result = _drive_start_llm_dispatch_gate(_batched._DISPATCH_NO_INJECT)
+    assert result == "continued"
+
+
+def test_start_llm_gate_matches_source_predicate():
+    """Guard that the ``_drive_start_llm_dispatch_gate`` helper's
+    predicate stays in lock-step with the real ``_start_llm`` branch.
+
+    If the production gate is ever refactored (extra hard-raise
+    branches, changed sentinel comparison), this test forces the
+    replay helper above to be updated too — otherwise the four
+    return-code tests above would silently pass while the real
+    behaviour drifted.
+
+    We read the raw source and pin the two predicates: (a) the hard-
+    raise fires ONLY on ``_DISPATCH_REJECTED``, (b) any other return
+    code falls through to the info-log continuation branch.
+    """
+    import inspect
+
+    from vllm_mlx.engine import batched as _batched
+
+    src = inspect.getsource(_batched.BatchedEngine._start_llm)
+    # Hard-raise gate: exactly one predicate on _DISPATCH_REJECTED.
+    assert "_dispatch_result == _DISPATCH_REJECTED" in src, (
+        "codex round-D NIT #4 guard: _start_llm no longer hard-raises "
+        "on _DISPATCH_REJECTED — either the sentinel name changed or "
+        "the branch was refactored. Update _drive_start_llm_dispatch_"
+        "gate to match, or the four return-code tests above are lying."
+    )
+    # Continuation predicate: only one branch handles !=_DISPATCH_ATTACHED
+    # after the reject check.
+    assert "_dispatch_result != _DISPATCH_ATTACHED" in src, (
+        "codex round-D NIT #4 guard: _start_llm no longer has the "
+        "soft-skip continuation branch. _DISPATCH_UNRESOLVED / "
+        "_DISPATCH_NO_INJECT would either hard-raise (regressing the "
+        "codex round-D fix) or silently skip logging. Update "
+        "_drive_start_llm_dispatch_gate accordingly."
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -689,3 +906,173 @@ def test_install_mtp_vendored_first_call_construction_failure_does_not_double_bo
     )
     stats = batch_gen._mtp_vendored_stats
     assert stats["fallthrough_steps"] >= 1
+
+
+def test_install_mtp_vendored_first_call_failure_disables_subsequent_calls(monkeypatch):
+    """Codex round-D blocker #2 regression guard.
+
+    Under a deterministic first-call construction failure (bad sidecar,
+    weight-shape mismatch, etc.), the wrapper's original
+    ``state is None`` branch would re-run the failing ``try/except``
+    every step — one construction attempt per token, effectively DoSing
+    the request while never getting any MTP benefit.
+
+    Fix: track ``_disabled_uids`` and short-circuit to ``_orig_step``
+    once construction has failed for a given uid. This test drives
+    two ``_step()`` calls under a deterministically-failing generator
+    constructor and asserts:
+
+    * The first call attempts construction (raises internally → falls
+      through to ``_orig_step``).
+    * The second call does NOT re-attempt construction — the
+      ``mtp_generate_step`` monkeypatch's counter stays at 1.
+    * Both calls advance ``_orig_step`` correctly (no double-book).
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    construction_attempts = {"n": 0}
+
+    def _raising_generator(*args, **kwargs):
+        construction_attempts["n"] += 1
+        raise RuntimeError("simulated persistent construction failure")
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _raising_generator)
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [77]
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-77": request_stub},
+        uid_to_request_id={77: "req-77"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    gb._orig_next_sample = mx.array([501], dtype=mx.uint32)
+
+    # First call — construction is attempted, fails, fall through.
+    gb._step()
+    assert construction_attempts["n"] == 1
+    stats = batch_gen._mtp_vendored_stats
+    assert stats["fallthrough_steps"] >= 1
+
+    # Second call — must short-circuit via the disabled-uid path.
+    # No new construction attempt.
+    gb._orig_next_sample = mx.array([502], dtype=mx.uint32)
+    gb._step()
+    assert construction_attempts["n"] == 1, (
+        "codex round-D blocker #2 regression: wrapper retried "
+        f"construction after a first-call failure "
+        f"(attempts={construction_attempts['n']!r}). It must mark the "
+        "uid as disabled and delegate directly to _orig_step for the "
+        "rest of the request."
+    )
+    stats = batch_gen._mtp_vendored_stats
+    assert stats.get("ft_disabled", 0) >= 1, (
+        "codex round-D blocker #2 regression: the second _step call did "
+        "not hit the disabled-uid short-circuit — check the "
+        "_disabled_uids gate ordering vs. _is_greedy_for_uid."
+    )
+    # And _orig_step ran twice — once per _step() call.
+    assert gb.orig_step_calls == 2
+
+
+def test_install_mtp_vendored_mid_stream_generator_failure_raises(monkeypatch):
+    """Codex round-D blocker #3 regression guard.
+
+    Mid-stream failure of the internal ``mtp_generate_step`` generator
+    cannot fall back to plain ``_orig_step`` because the wrapper never
+    updates ``gb._next_tokens`` — it still holds ``first_gen_tok`` from
+    the priming ``_step``. A silent fallback would emit
+    ``first_gen_tok`` AGAIN, corrupting the output stream.
+
+    Fix: re-raise as ``RuntimeError`` so mlx-lm surfaces the failure
+    to the caller cleanly.
+
+    This test constructs a generator that yields once (the first
+    subsequent-call sample) and then raises on the second ``next()``,
+    then asserts the wrapper propagates the failure instead of
+    delegating to ``_orig_step``.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    class _MidStreamFailingGen:
+        def __init__(self):
+            self._n = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self._n += 1
+            if self._n <= 1:
+                return (2001, mx.array([0.0]), False)
+            raise RuntimeError("simulated mid-stream generator failure")
+
+        def close(self):
+            pass
+
+    def _mid_stream_failing_ctor(*args, **kwargs):
+        return _MidStreamFailingGen()
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _mid_stream_failing_ctor)
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [55]
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-55": request_stub},
+        uid_to_request_id={55: "req-55"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([1000], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # First call — construct, emit first_gen_tok = 1000.
+    gb._step()
+
+    # Second call — pulls from generator, yields 2001.
+    gb._step()
+
+    # Third call — generator raises. MUST propagate as RuntimeError
+    # rather than falling back to _orig_step (which would emit 1000
+    # again and duplicate the token stream).
+    orig_step_calls_before = gb.orig_step_calls
+    try:
+        gb._step()
+    except RuntimeError as e:
+        assert "mid-stream" in str(e).lower() or "generator raised" in str(e).lower()
+        # _orig_step must NOT have been called on the failure branch.
+        assert gb.orig_step_calls == orig_step_calls_before, (
+            "codex round-D blocker #3 regression: wrapper delegated to "
+            "_orig_step on mid-stream generator failure, which duplicates "
+            f"first_gen_tok in the output stream "
+            f"(orig_step_calls: {orig_step_calls_before} -> "
+            f"{gb.orig_step_calls})."
+        )
+        stats = batch_gen._mtp_vendored_stats
+        assert stats.get("gen_raised", 0) >= 1
+        return
+    raise AssertionError(
+        "codex round-D blocker #3 regression: wrapper did NOT raise on "
+        "mid-stream generator failure. Falling back to _orig_step here "
+        "would emit first_gen_tok twice (duplicated) because _next_"
+        "tokens is stale relative to what the vendored path already "
+        "emitted."
+    )

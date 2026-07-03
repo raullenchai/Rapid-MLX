@@ -90,39 +90,91 @@ def _resolve_hf_model_type(model_name: str) -> str | None:
     return None
 
 
+# Return codes for :func:`_run_dispatch_mtp_inject`. Fine-grained
+# because ``_start_llm`` needs to distinguish "operator config is bad
+# → abort boot" from "environment race (offline HF cache, missing
+# config on the executor thread even though the CLI just read it)
+# → warn and continue on plain decode."
+#
+# Codex round-D BLOCKER #1: prior revision collapsed all failure modes
+# into ``False`` and the caller then hard-raised on ``False``. That
+# turned a benign transient resolution failure — the CLI had already
+# vetted the config on the asyncio thread — into a boot abort in
+# offline environments that used to work under ``--spec-decode mtp``.
+# Splitting the return keeps the fail-loud contract for
+# operator-facing errors (family injector actively rejected) while
+# preserving the fail-soft contract for pipeline plumbing hiccups
+# (model_type couldn't be resolved on the executor).
+_DISPATCH_ATTACHED = "attached"
+_DISPATCH_UNRESOLVED = "unresolved"
+_DISPATCH_NO_INJECT = "no_inject"
+_DISPATCH_REJECTED = "rejected"
+
+
 def _run_dispatch_mtp_inject(
     model: Any,
     model_name: str,
     mtp_sidecar: str | None,
-) -> bool:
+) -> str:
     """MLX-step-worker entrypoint that runs ``dispatch_mtp_inject``.
 
     Extracted so ``_start_llm`` can ``submit(...)`` it onto the model-
     load executor cleanly. Never raises — the dispatcher's own
     contract is ``never raises``, but we wrap the ``model_type``
     resolution in the same fail-closed shape so an offline / missing-
-    config path degrades to ``False`` instead of aborting the engine.
+    config path degrades to a distinct return code instead of
+    aborting the engine.
 
-    Returns:
-        ``True`` when the family injector attached the MTP contract to
-        ``model`` (``mtp_forward`` / ``make_mtp_cache`` / ``mtp``).
-        ``False`` when we skipped for any reason — no model_type, no
-        registered inject, family injector refused (missing sidecar,
-        loader failure). Callers can key logging on the boolean but
-        MUST NOT gate scheduler build on it — the scheduler's own
-        ``_install_mtp_vendored`` gate re-checks the same attributes
-        and falls through to plain decode when they're missing.
+    Returns one of:
+
+    * :data:`_DISPATCH_ATTACHED` — family injector attached the MTP
+      contract to ``model`` (``mtp_forward`` / ``make_mtp_cache`` /
+      ``mtp``). Happy path.
+    * :data:`_DISPATCH_UNRESOLVED` — could not resolve
+      ``config.json::model_type`` for ``model_name`` (offline HF cache
+      race, missing local config, etc.). Soft-skip: the CLI already
+      accepted the flag with its own config lookup on the asyncio
+      thread, so the executor-thread lookup missing is almost always
+      transient plumbing — the caller should log and continue rather
+      than abort boot.
+    * :data:`_DISPATCH_NO_INJECT` — ``model_type`` resolved but no
+      family injector is registered. Soft-skip: same treatment as
+      unresolved; the CLI's eligibility gate should have already
+      rejected this case, so hitting here means a plumbing skew, not
+      an operator misuse.
+    * :data:`_DISPATCH_REJECTED` — the family injector was invoked and
+      returned ``False`` (missing sidecar, loader failure, weight
+      shape mismatch, etc.). Hard-fail: the operator explicitly asked
+      for ``--spec-decode mtp`` on a valid target and the injector
+      couldn't attach. Caller should abort boot rather than boot with
+      MTP silently disabled.
+
+    Never raises.
     """
     from ..spec_decode.mtp import dispatch_mtp_inject
+    from ..spec_decode.mtp.dispatch import _MTP_INJECT_DISPATCH
 
     model_type = _resolve_hf_model_type(model_name)
     if model_type is None:
         logger.warning(
             "[MTP-vendored] could not resolve model_type for %r; skipping "
-            "dispatch_mtp_inject. --spec-decode mtp will be a no-op.",
+            "dispatch_mtp_inject. --spec-decode mtp will be a no-op on "
+            "this boot (soft-skip; CLI already accepted the flag, so this "
+            "is almost certainly a transient plumbing race).",
             model_name,
         )
-        return False
+        return _DISPATCH_UNRESOLVED
+
+    if model_type not in _MTP_INJECT_DISPATCH:
+        logger.warning(
+            "[MTP-vendored] model_type=%r has no registered MTP inject "
+            "(sidecar=%r); soft-skip. This is a plumbing skew between "
+            "the CLI eligibility gate and the dispatcher table — the "
+            "CLI should have already rejected this case.",
+            model_type,
+            mtp_sidecar,
+        )
+        return _DISPATCH_NO_INJECT
 
     ok = dispatch_mtp_inject(
         model,
@@ -135,15 +187,16 @@ def _run_dispatch_mtp_inject(
             model_type,
             mtp_sidecar,
         )
-    else:
-        logger.warning(
-            "[MTP-vendored] dispatch_mtp_inject returned False for "
-            "model_type=%r sidecar=%r; --spec-decode mtp will be a no-op "
-            "(scheduler install will skip on missing MTP attributes).",
-            model_type,
-            mtp_sidecar,
-        )
-    return ok
+        return _DISPATCH_ATTACHED
+
+    logger.warning(
+        "[MTP-vendored] dispatch_mtp_inject returned False for "
+        "model_type=%r sidecar=%r; family injector rejected. "
+        "--spec-decode mtp will be a hard-fail at boot.",
+        model_type,
+        mtp_sidecar,
+    )
+    return _DISPATCH_REJECTED
 
 
 def _normalize_tool_call_arguments_for_template(messages: list[dict]) -> list[dict]:
@@ -874,37 +927,60 @@ class BatchedEngine(BaseEngine):
         # forgot the CLI gate still gets a clean skip rather than a
         # traceback.
         if _new_arch_mtp:
-            _dispatch_ok = self._model_load_executor.submit(
+            _dispatch_result = self._model_load_executor.submit(
                 _run_dispatch_mtp_inject,
                 self._model,
                 self._model_name,
                 getattr(sc, "mtp_sidecar", None),
             ).result()
-            # Codex round-B blocker: fail loud on dispatch failure when
-            # the operator explicitly asked for ``--spec-decode mtp``.
-            # Prior revision silently continued on plain autoregressive
-            # decode, which meant ``rapid-mlx serve … --spec-decode mtp
-            # --mtp-sidecar <bad-path>`` would boot successfully with
-            # MTP disabled — the operator would only notice via the
-            # missing accept-rate gauge (or, worse, never). The CLI has
-            # already accepted the flag and printed the eligibility
-            # banner at this point, so a startup abort is the correct
-            # failure mode: the alternative would silently break the
-            # dogfood invocation matrix. The scheduler's own
-            # ``_install_mtp_vendored`` protocol-attribute gate is a
-            # DEFENSE-IN-DEPTH check for a different failure class
-            # (dispatch table registered but injector didn't attach
-            # ``mtp_forward``); it stays in place.
-            if not _dispatch_ok:
+            # Codex round-D blocker #1: fine-grained routing.
+            #
+            # The prior revision (round-C) hard-raised on any
+            # ``False`` return, which turned ``_DISPATCH_UNRESOLVED``
+            # (a transient environment race — CLI just read
+            # config.json on the asyncio thread, executor thread hits
+            # a stale HF cache or an unlinked local dir a few ms
+            # later) into a boot abort. Environments that used to
+            # boot ``rapid-mlx serve --spec-decode mtp`` cleanly under
+            # 0.9.12 would break at 0.9.13.
+            #
+            # Split the treatment:
+            # * ``_DISPATCH_ATTACHED``   — happy path; continue.
+            # * ``_DISPATCH_UNRESOLVED`` — soft-skip; log INFO and
+            #     continue on plain autoregressive decode. The
+            #     scheduler's own ``_install_mtp_vendored`` gate will
+            #     see the missing MTP attributes and skip the hot-
+            #     loop install, so the request just runs on baseline
+            #     ``_step``.
+            # * ``_DISPATCH_NO_INJECT``  — same soft-skip treatment.
+            #     This case is a plumbing skew (CLI approved a
+            #     model_type the dispatcher doesn't know about); the
+            #     request-visible impact is identical to
+            #     ``_DISPATCH_UNRESOLVED``, so treat it identically.
+            # * ``_DISPATCH_REJECTED``   — hard-fail. The operator
+            #     asked for MTP with a resolvable model_type AND a
+            #     registered injector, and the injector actively
+            #     said no (typical: missing/bad ``--mtp-sidecar``).
+            #     Silently continuing here would hide the
+            #     misconfiguration behind a working-but-slower
+            #     ``rapid-mlx serve``.
+            if _dispatch_result == _DISPATCH_REJECTED:
                 raise RuntimeError(
-                    "--spec-decode mtp was set but dispatch_mtp_inject "
-                    "could not attach the MTP protocol to the target "
-                    "model. See preceding warnings for the specific "
-                    "failure (typical causes: missing --mtp-sidecar for "
-                    "a Gemma 4 target, sidecar path unreachable, or "
-                    "assistant checkpoint model_type mismatch). "
-                    "Refusing to boot with MTP silently disabled — pass "
+                    "--spec-decode mtp was set but the family MTP "
+                    "injector rejected the model. See preceding "
+                    "warnings for the specific failure (typical "
+                    "causes: missing --mtp-sidecar for a Gemma 4 "
+                    "target, sidecar path unreachable, or assistant "
+                    "checkpoint model_type mismatch). Refusing to "
+                    "boot with MTP silently disabled — pass "
                     "--spec-decode none to continue without MTP."
+                )
+            if _dispatch_result != _DISPATCH_ATTACHED:
+                logger.info(
+                    "[MTP-vendored] dispatch soft-skipped (result=%r); "
+                    "continuing on plain autoregressive decode. The "
+                    "scheduler MTP install gate will also skip.",
+                    _dispatch_result,
                 )
 
         # Set Metal memory limits on the SAME mlx-step worker that loaded
