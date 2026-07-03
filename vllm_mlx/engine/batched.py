@@ -131,8 +131,7 @@ def _run_dispatch_mtp_inject(
     )
     if ok:
         logger.info(
-            "[MTP-vendored] dispatch_mtp_inject succeeded for model_type=%r "
-            "sidecar=%r",
+            "[MTP-vendored] dispatch_mtp_inject succeeded for model_type=%r sidecar=%r",
             model_type,
             mtp_sidecar,
         )

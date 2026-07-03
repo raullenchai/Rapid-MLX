@@ -30,9 +30,6 @@ Deliberately out of scope (deferred to PR-B / PR-C):
 
 from __future__ import annotations
 
-import pytest
-
-
 # ---------------------------------------------------------------------------
 # 1. detect_mtp_eligibility(has_external_sidecar=...) contract
 # ---------------------------------------------------------------------------
@@ -101,8 +98,7 @@ def test_detect_sidecar_no_effect_on_qwen3_5_missing_mtp():
 
     config = {"model_type": "qwen3_5", "mtp_num_hidden_layers": 0}
     assert (
-        detect_mtp_eligibility(config, has_external_sidecar=True)
-        is MTPEligibility.NONE
+        detect_mtp_eligibility(config, has_external_sidecar=True) is MTPEligibility.NONE
     )
     # Same for Qwen3.5 MoE.
     config_moe = {"model_type": "qwen3_5_moe", "mtp_num_hidden_layers": 0}
@@ -130,8 +126,7 @@ def test_detect_sidecar_no_effect_on_gemma4_multimodal():
 
     config = {"model_type": "gemma4", "mtp_num_hidden_layers": 0}
     assert (
-        detect_mtp_eligibility(config, has_external_sidecar=True)
-        is MTPEligibility.NONE
+        detect_mtp_eligibility(config, has_external_sidecar=True) is MTPEligibility.NONE
     )
 
 
@@ -327,8 +322,8 @@ def test_run_dispatch_mtp_inject_returns_false_on_unresolvable_model_type(monkey
     repo / hand-rolled path), the dispatch step is skipped cleanly and
     the caller sees ``False`` — engine boot must not abort here.
     """
-    from vllm_mlx.engine import batched as _batched
     import vllm_mlx.spec_decode.mtp as _mtp
+    from vllm_mlx.engine import batched as _batched
 
     called = {"n": 0}
 
@@ -358,8 +353,8 @@ def test_run_dispatch_mtp_inject_propagates_none_sidecar(monkeypatch):
     (``qwen3_5_inject``) then follows its own default (no random init;
     the baked-in MTP head on the target checkpoint is used).
     """
-    from vllm_mlx.engine import batched as _batched
     import vllm_mlx.spec_decode.mtp as _mtp
+    from vllm_mlx.engine import batched as _batched
 
     captured: dict = {}
 
