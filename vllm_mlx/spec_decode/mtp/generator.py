@@ -39,6 +39,7 @@ from __future__ import annotations
 
 import logging
 import math
+import time
 from collections.abc import Callable, Generator
 from functools import partial
 from typing import Any
@@ -51,6 +52,7 @@ import mlx.core as mx
 # missing-class-attr to a class-default-None.
 from .accept_counter import get_global_counter
 from .cache_patch import patch_arrays_cache_rollback_state
+from .draft_k_controller_v2 import DepthController, get_or_create_controller
 
 patch_arrays_cache_rollback_state()
 
@@ -184,6 +186,17 @@ def mtp_generate_step(
     xtc_threshold: float = 0.0,
     xtc_special_tokens: list[int] | None = None,
     accept_counter=None,
+    # 0.9.13 PR-B (Ollama-style EV depth controller). ``model_id`` keys
+    # the process-global controller registry so cost + acceptance state
+    # persists across requests for the same model+drafter combination.
+    # ``max_k`` bounds the depth the controller may pick; the current
+    # generator body only implements K∈{0,1} (park + chain-of-1), so
+    # picks above 1 are clamped and logged. ``disable_auto_k=True``
+    # keeps the pre-PR-B chain-of-1 behavior unchanged — useful for
+    # A/B benching the controller against a fixed K=1 baseline.
+    model_id: str | None = None,
+    max_k: int = 1,
+    disable_auto_k: bool = False,
 ) -> Generator[tuple[int, mx.array, bool], None, None]:
     """Generator that uses the model's native MTP head for spec decode.
 
@@ -411,28 +424,83 @@ def mtp_generate_step(
     last_cache_block = 0
     draft_tok = draft_lp = draft_accept_lp = draft_xtc_draw = None
 
+    # ------------------------------------------------------------------
+    # 0.9.13 PR-B: Ollama-style EV draft-K controller.
+    #
+    # When ``disable_auto_k=False`` (default), a per-model controller
+    # picks K ∈ {0..max_k_effective} each round. K=0 "parks" — plain
+    # decode, no drafter — which fixes the prose-slowdown regression
+    # from PR-A K=1 (the drafter cost dominates on low-accept content).
+    # When ``disable_auto_k=True``, the pre-PR-B chain-of-1 behavior
+    # is preserved for A/B benching.
+    #
+    # HACK-mode cap: the current body only implements K∈{0,1}. The
+    # controller may internally probe higher depths for cost seeding,
+    # but ``max_k_effective = min(max_k, 1)`` clamps its output. When
+    # chain-of-K verify lands (K≥2), lift this to ``max_k`` directly.
+    # ------------------------------------------------------------------
+    max_k_effective = 1 if not disable_auto_k else 1
+    if not disable_auto_k:
+        max_k_effective = min(max(0, max_k), 1)
+        _controller: DepthController | None = get_or_create_controller(
+            model_id or "__default__", max_k=max_k_effective
+        )
+    else:
+        _controller = None
+
+    # next_k: the K the controller wants for the UPCOMING round. Determines
+    # whether we generate a draft at end of the current round. Bootstrap
+    # value is the controller's initial pick_k (0 if fresh, else the
+    # scheduled depth from the previous request).
+    next_k = _controller.pick_k() if _controller is not None else 1
+
+    def _record_round(k_used: int, round_wall_ms: float, accepts: list[bool]) -> None:
+        """Fold a round outcome into the controller (if enabled)."""
+        if _controller is None:
+            return
+        _controller.record(k_used, round_wall_ms, accepts)
+
     while ntoks < max_tokens:
+        round_start_perf = time.perf_counter()
         if draft_tok is None:
-            # No pending draft: run backbone only, generate first draft.
+            # -------------------------------------------------------
+            # Round K=0 (either bootstrap or a park). Plain backbone
+            # forward emits ONE committed token.
+            # -------------------------------------------------------
             toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
                 y, prev_tokens, n_predict=1
             )
             mx.eval(toks)
             main_tok, main_lp = toks[0], lps[0]
+            round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
+            _record_round(0, round_wall_ms, [])
+
             ntoks += 1
             yield main_tok.item(), main_lp, False
             if ntoks >= max_tokens:
                 return
+
+            # Decide K for the NEXT round.
+            next_k = _controller.pick_k() if _controller is not None else 1
+
             hidden_at_main = hidden[:, -1:, :]
-            draft_tok, draft_lp, draft_accept_lp, draft_xtc_draw = _step_mtp(
-                hidden_at_main, main_tok, prev_tokens
-            )
-            mx.eval(draft_tok)
+            if next_k >= 1:
+                # Generate the first draft for the next round's verify.
+                draft_tok, draft_lp, draft_accept_lp, draft_xtc_draw = _step_mtp(
+                    hidden_at_main, main_tok, prev_tokens
+                )
+                mx.eval(draft_tok)
+            else:
+                # Parking again: no draft. Next round enters this same
+                # branch with ``draft_tok is None`` and pays no drafter
+                # cost — the whole point of park.
+                draft_tok = None
             y = mx.array([main_tok.item()], mx.uint32)
         else:
-            # Verify draft: run backbone over [y, draft_tok].
-            # n_confirmed=1 causes GatedDeltaNet to snapshot its SSM/conv
-            # state at the confirmed boundary so rejection rolls back.
+            # -------------------------------------------------------
+            # Round K=1 (verify path). Backbone forward over
+            # [y, draft_tok] with n_predict=2, n_confirmed=1.
+            # -------------------------------------------------------
             y_with_draft = mx.concatenate([y, mx.array([draft_tok.item()], mx.uint32)])
             toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
                 y_with_draft,
@@ -462,6 +530,9 @@ def mtp_generate_step(
                 ).item()
                 accept = log_accept >= 0 or u.item() < math.exp(log_accept)
 
+            round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
+            _record_round(1, round_wall_ms, [bool(accept)])
+
             hidden_at_confirmed = hidden[:, 0:1, :]
             hidden_at_draft = hidden[:, 1:2, :]
 
@@ -476,16 +547,22 @@ def mtp_generate_step(
                 yield bonus_tok.item(), bonus_lp, False
                 if ntoks >= max_tokens:
                     return
-                # Next draft: cache-commit aligns the cache for the
-                # accepted draft token and generates the next draft in
-                # the same batched forward.
-                draft_tok, draft_lp, draft_accept_lp, draft_xtc_draw = _step_mtp(
-                    hidden_at_draft,
-                    bonus_tok,
-                    prev_tokens,
-                    cache_commit=(hidden_at_confirmed, draft_tok),
-                )
-                mx.eval(draft_tok)
+                # Decide K for the next round BEFORE generating the
+                # next draft (so a park decision skips drafter cost).
+                next_k = _controller.pick_k() if _controller is not None else 1
+                if next_k >= 1:
+                    # Next draft: cache-commit aligns the cache for the
+                    # accepted draft token and generates the next draft
+                    # in the same batched forward.
+                    draft_tok, draft_lp, draft_accept_lp, draft_xtc_draw = _step_mtp(
+                        hidden_at_draft,
+                        bonus_tok,
+                        prev_tokens,
+                        cache_commit=(hidden_at_confirmed, draft_tok),
+                    )
+                    mx.eval(draft_tok)
+                else:
+                    draft_tok = None
                 y = mx.array([bonus_tok.item()], mx.uint32)
             else:
                 _rollback_draft()
@@ -508,13 +585,22 @@ def mtp_generate_step(
                 yield verify_tok_id, verify_lp, False
                 if ntoks >= max_tokens:
                     return
-                # Next draft from MTP at y's hidden state.
-                draft_tok, draft_lp, draft_accept_lp, draft_xtc_draw = _step_mtp(
-                    hidden_at_confirmed,
-                    mx.array([verify_tok_id], mx.uint32),
-                    prev_tokens,
-                )
-                mx.eval(draft_tok)
+                # Decide K for the next round BEFORE generating the
+                # next draft. On reject the controller often sees a
+                # negative EV(1) signal (this round paid for the
+                # target forward but got 0 accepts), so parking is
+                # the common next-step decision on prose.
+                next_k = _controller.pick_k() if _controller is not None else 1
+                if next_k >= 1:
+                    # Next draft from MTP at y's hidden state.
+                    draft_tok, draft_lp, draft_accept_lp, draft_xtc_draw = _step_mtp(
+                        hidden_at_confirmed,
+                        mx.array([verify_tok_id], mx.uint32),
+                        prev_tokens,
+                    )
+                    mx.eval(draft_tok)
+                else:
+                    draft_tok = None
                 y = mx.array([verify_tok_id], mx.uint32)
         block = ntoks // _CACHE_CLEAR_INTERVAL
         if block > last_cache_block:
