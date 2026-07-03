@@ -6495,12 +6495,12 @@ Examples:
         default=None,
         help=(
             "Path to a Gemma 4 MTP assistant-drafter checkpoint — either a "
-            "local safetensors directory (``~/.cache/huggingface/hub/…/gemma"
-            "-4-12B-it-assistant``) or an HF repo id "
-            "(``google/gemma-4-12B-it-assistant``). Only consulted when "
-            "``--spec-decode mtp`` is set; ignored for the Qwen3.5/3.6 "
+            "local safetensors directory (e.g. ~/.cache/huggingface/hub/"
+            "gemma-4-12B-it-assistant) or an HF repo id "
+            "(e.g. google/gemma-4-12B-it-assistant). Only consulted when "
+            "--spec-decode mtp is set; ignored for the Qwen3.5/3.6 "
             "native-MTP path (their head is baked into the target). "
-            "Requires the ``[mtp]`` install extra."
+            "Requires the [mtp] install extra."
         ),
     )
     # R15-P1 #313: DFlash drafter HF path override. Empty by default

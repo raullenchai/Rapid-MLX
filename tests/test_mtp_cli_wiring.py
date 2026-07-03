@@ -382,12 +382,34 @@ def test_run_dispatch_mtp_inject_propagates_none_sidecar(monkeypatch):
 class _StubBatchGen:
     """Minimum shape of ``BatchGenerator._generation_batch`` needed to
     exercise ``_install_mtp_vendored``'s gate matrix without loading a
-    real Qwen3.5 / Gemma 4 checkpoint. Only the attributes touched in
-    the guards are populated; the actual MTP hot-path is never entered
-    (we assert on state transitions, not on token semantics).
+    real Qwen3.5 / Gemma 4 checkpoint.
+
+    Codex round-B blocker #3: earlier revision's ``_step`` was a no-op
+    stub. That papered over any bug where the wrapper leaked state
+    through to the fallthrough — the test wouldn't have caught a
+    double-append or missed-sample because the stub didn't model
+    mlx-lm's real ``GenerationBatch._step`` bookkeeping.
+
+    This shape now mirrors the pieces of mlx-lm's real ``_step`` the
+    wrapper interacts with (see
+    ``mlx_lm.generate.GenerationBatch._step`` — cached at
+    verification time):
+
+    * Reads ``_next_tokens`` (previously-primed token per uid) and
+      appends each element to ``tokens[e]``.
+    * Advances ``_next_tokens`` by one — the stub picks the sampled
+      value from ``_orig_next_sample`` so tests can inspect what the
+      fallthrough emitted.
+    * Returns the tokens list + logprobs list, matching the real
+      shape ``(List[int], List[mx.array])``.
+
+    The forward pass / model / sampler / cache pieces are elided —
+    that's not what these tests validate.
     """
 
     def __init__(self):
+        import mlx.core as mx
+
         self.uids: list[int] = []
         self.tokens: list[list[int]] = [[]]
         self.logits_processors: list = []
@@ -396,10 +418,36 @@ class _StubBatchGen:
         self._next_tokens = None
         self._next_logprobs: list = []
         self.orig_step_calls = 0
+        # What ``_step`` will stash into ``_next_tokens`` after each
+        # call — the "next sampled token." Tests can override.
+        self._orig_next_sample = mx.array([999], dtype=mx.uint32)
+        self._orig_next_logprob = mx.array([0.0])
 
     def _step(self):
+        """Model-side ``mlx_lm.generate.GenerationBatch._step`` mimic.
+
+        Follows the real shape closely enough that any wrapper bug
+        involving ``_next_tokens`` reuse or ``tokens`` double-book
+        would surface in the observable state.
+        """
+        import mlx.core as mx
+
         self.orig_step_calls += 1
-        return [], []
+        # Real _step reads _next_tokens as the current input, appends
+        # each element to tokens[e], samples the next token, and
+        # returns the current inputs.
+        current = self._next_tokens
+        if current is None:
+            return [], []
+        current_list = [int(current[i].item()) for i in range(current.shape[0])]
+        for e, ct in enumerate(current_list):
+            self.tokens[e].append(ct)
+        # Advance _next_tokens for the next call (matches real
+        # _step semantics — asynchronously computed next sample).
+        self._next_tokens = self._orig_next_sample
+        self._next_logprobs = [self._orig_next_logprob]
+        _ = mx.eval  # noqa: F841 — imported to keep parity with real path
+        return current_list, self._next_logprobs
 
 
 class _StubModel:
@@ -617,21 +665,27 @@ def test_install_mtp_vendored_first_call_construction_failure_does_not_double_bo
 
     # Simulate mlx-lm's original _step having primed the first token
     # into ``_next_tokens`` — a 1-D mx.array of length 1 with a real
-    # int payload.
+    # int payload. The realistic stub (_StubBatchGen._step) mirrors
+    # mlx-lm's real _step in ``gb.tokens[0].append(int(inputs[0]))``,
+    # so the exact double-book bug the codex round-A fix addressed
+    # would manifest as a length-2 tokens list with 12345 repeated.
     gb._next_tokens = mx.array([12345], dtype=mx.uint32)
     gb._next_logprobs = [mx.array([0.0])]
 
     gb._step()
 
-    # Fallthrough happened → _orig_step ran exactly once (which owns
-    # its own token append). gb.tokens[0] must not contain 12345 from
-    # OUR path — the vendored install's contract is "either succeed
-    # and record, or fall through cleanly."
+    # Fallthrough happened → _orig_step ran exactly once, which does
+    # ONE ``tokens[0].append(first_tok)`` per mlx-lm's real shape.
+    # Under the round-A pre-fix, our wrapper would ALSO have appended
+    # first_tok before construction — leaving gb.tokens[0] == [first,
+    # first]. Codex round-B blocker #3: this assertion now runs
+    # against the mlx-lm-shaped stub, so it can actually observe the
+    # double-book.
     assert gb.orig_step_calls == 1
-    assert 12345 not in gb.tokens[0], (
-        "codex round-A blocker #2 regression: first-call construction "
-        "failure double-booked ``gb.tokens[0]`` — the token was "
-        "appended before the generator was known good."
+    assert gb.tokens[0] == [12345], (
+        f"codex round-A blocker #2 regression: gb.tokens[0] = "
+        f"{gb.tokens[0]!r} (expected [12345] — one append from "
+        "_orig_step, none from our wrapper's pre-construction append)."
     )
     stats = batch_gen._mtp_vendored_stats
     assert stats["fallthrough_steps"] >= 1

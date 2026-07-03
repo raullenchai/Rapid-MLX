@@ -874,12 +874,38 @@ class BatchedEngine(BaseEngine):
         # forgot the CLI gate still gets a clean skip rather than a
         # traceback.
         if _new_arch_mtp:
-            self._model_load_executor.submit(
+            _dispatch_ok = self._model_load_executor.submit(
                 _run_dispatch_mtp_inject,
                 self._model,
                 self._model_name,
                 getattr(sc, "mtp_sidecar", None),
             ).result()
+            # Codex round-B blocker: fail loud on dispatch failure when
+            # the operator explicitly asked for ``--spec-decode mtp``.
+            # Prior revision silently continued on plain autoregressive
+            # decode, which meant ``rapid-mlx serve … --spec-decode mtp
+            # --mtp-sidecar <bad-path>`` would boot successfully with
+            # MTP disabled — the operator would only notice via the
+            # missing accept-rate gauge (or, worse, never). The CLI has
+            # already accepted the flag and printed the eligibility
+            # banner at this point, so a startup abort is the correct
+            # failure mode: the alternative would silently break the
+            # dogfood invocation matrix. The scheduler's own
+            # ``_install_mtp_vendored`` protocol-attribute gate is a
+            # DEFENSE-IN-DEPTH check for a different failure class
+            # (dispatch table registered but injector didn't attach
+            # ``mtp_forward``); it stays in place.
+            if not _dispatch_ok:
+                raise RuntimeError(
+                    "--spec-decode mtp was set but dispatch_mtp_inject "
+                    "could not attach the MTP protocol to the target "
+                    "model. See preceding warnings for the specific "
+                    "failure (typical causes: missing --mtp-sidecar for "
+                    "a Gemma 4 target, sidecar path unreachable, or "
+                    "assistant checkpoint model_type mismatch). "
+                    "Refusing to boot with MTP silently disabled — pass "
+                    "--spec-decode none to continue without MTP."
+                )
 
         # Set Metal memory limits on the SAME mlx-step worker that loaded
         # the model. Calling these from the asyncio loop thread would touch
