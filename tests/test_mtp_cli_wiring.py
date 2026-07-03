@@ -1018,15 +1018,23 @@ def test_apply_mtp_dispatch_timeout_calls_process_exit_hook(monkeypatch):
     )
 
 
-def test_apply_mtp_dispatch_timeout_shuts_down_executor(monkeypatch):
-    """Codex round-I BLOCKING #1: on timeout, the executor is shut
-    down with ``cancel_futures=True`` so nothing else queues behind
-    the wedged dispatch on the (shared) mlx-step worker. Even if the
-    running dispatch task can't be canceled, no NEW work joins the
-    queue.
+def test_apply_mtp_dispatch_timeout_does_not_shut_down_shared_executor(monkeypatch):
+    """Codex round-J BLOCKING #1 regression guard.
 
-    Verify by tracking ``executor.shutdown`` calls with the right
-    keyword arguments.
+    A prior revision called ``executor.shutdown(wait=False,
+    cancel_futures=True)`` in the timeout branch as belt-and-
+    suspenders alongside the process-exit hook. In production the
+    process-exit hook fires first so the shutdown is redundant; but
+    in embedded callers / tests where the exit hook is patched to
+    return, the shutdown permanently breaks the shared
+    ``_model_load_executor`` — subsequent engine work would fail
+    with ``RuntimeError: cannot schedule new futures after
+    shutdown``.
+
+    The isolation contract is delegated entirely to
+    ``_process_exit_on_mtp_dispatch_timeout``. Verify by tracking
+    ``executor.shutdown`` calls and asserting the shared executor
+    is left untouched.
     """
     from vllm_mlx.engine import batched as _batched
     from vllm_mlx.scheduler import SchedulerConfig
@@ -1052,17 +1060,12 @@ def test_apply_mtp_dispatch_timeout_shuts_down_executor(monkeypatch):
         )
     except RuntimeError:
         pass
-    assert shutdown_calls, (
-        "codex round-I BLOCKING #1 regression: _apply_mtp_dispatch did "
-        "NOT invoke executor.shutdown() on timeout. Further submissions "
-        "could queue behind the wedged dispatch on the shared mlx-step "
-        "worker."
-    )
-    assert shutdown_calls[0] == {"wait": False, "cancel_futures": True}, (
-        "expected shutdown(wait=False, cancel_futures=True); got "
-        f"{shutdown_calls[0]!r}. wait=True would block indefinitely on "
-        "the wedged dispatch; cancel_futures=False would leave queued "
-        "no-op work in the executor at abort time."
+    assert not shutdown_calls, (
+        "codex round-J BLOCKING #1 regression: _apply_mtp_dispatch "
+        "called executor.shutdown() on timeout. The shared "
+        "_model_load_executor MUST stay usable in embedded callers / "
+        f"tests where the process-exit hook returns (got "
+        f"{shutdown_calls!r})."
     )
 
 
@@ -2135,23 +2138,34 @@ def test_install_mtp_vendored_mid_stream_generator_failure_raises(monkeypatch):
     )
 
 
-def test_install_mtp_vendored_first_call_updates_next_tokens(monkeypatch):
-    """Codex round-I BLOCKING #2 regression guard (FIRST-call branch).
+def test_install_mtp_vendored_first_call_syncs_next_tokens(monkeypatch):
+    """Codex round-I BLOCKING #2 + round-J BLOCKING #2/#3 regression
+    guard (FIRST-call branch).
 
-    Under mlx-lm's ``GenerationBatch._step`` contract, after ``_step``
-    returns, ``_next_tokens`` holds the token that will be fed to the
-    model on the NEXT ``_step()`` call. The pre-round-I wrapper's
-    FIRST-call branch emitted ``first_gen_tok`` and left
-    ``gb._next_tokens`` frozen at that same value (stashed by
-    ``__init__``'s priming ``_step``) — so any downstream reader
-    (a defensive ``_orig_step()`` re-entry, ``.filter``,
-    ``.extend``) saw stale state.
+    Contract: after ``_step`` returns, ``gb._next_tokens`` must hold
+    a coherent-shape ``mx.array([tok], dtype=uint32)`` so
+    ``.filter(keep)`` slicing / ``.extend(batch)`` concatenation
+    don't blow up on the frozen ``first_gen_tok`` from the priming
+    step or a torn shape.
 
-    Fix: on successful emission, pre-fetch the next token from the
-    MTP generator, publish it to ``gb._next_tokens`` /
-    ``gb._next_logprobs``, and stash it in the queue for the next
-    wrapper call. Verify by inspecting ``_next_tokens`` after
-    step 1.
+    Round-J review: the initial fix drove the MTP generator one
+    step ahead (a "prefetch") to publish the NEXT to-be-emitted
+    token here, but that advanced ``prompt_cache`` behind
+    mlx-lm's bookkeeping. Round-J directed us to avoid the
+    prefetch and stash a coherent shape from the JUST-emitted
+    token instead. The "stale value" is safe because round-H
+    tightened every ``_orig_step()`` fallthrough branch to raise
+    terminally once ``_state[uid]`` is populated — no downstream
+    reader consumes the placeholder as a model input.
+
+    Verify:
+      * ``_next_tokens`` is not None after the emit.
+      * Its value equals the just-emitted token (stale placeholder,
+        not a prefetched next token).
+      * Shape / dtype are (1,) / uint32 as mlx-lm expects.
+      * The MTP generator was NOT driven ahead — only ONE
+        ``next()`` call happens per wrapper step, and that
+        happens in the SUBSEQUENT branch, not here.
     """
     from types import SimpleNamespace
 
@@ -2174,7 +2188,8 @@ def test_install_mtp_vendored_first_call_updates_next_tokens(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _CountingGen())
+    counting_gen = _CountingGen()
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: counting_gen)
 
     batch_gen, gb = _make_batch_gen_with_gb()
     gb.uids = [7]
@@ -2191,39 +2206,50 @@ def test_install_mtp_vendored_first_call_updates_next_tokens(monkeypatch):
     gb._next_tokens = mx.array([1000], dtype=mx.uint32)
     gb._next_logprobs = [mx.array([0.0])]
 
-    # Step 1 (FIRST-call). Should emit 1000, THEN pre-fetch one from
-    # the generator (yields 2001) and stash into _next_tokens.
+    # Step 1 (FIRST-call). Should emit 1000 and update _next_tokens
+    # to a coherent placeholder (1000, same as just-emitted). The
+    # MTP generator MUST NOT be driven ahead here (round-J BLOCKING
+    # #2 — that would advance prompt_cache behind mlx-lm's
+    # bookkeeping).
     tokens, logprobs = gb._step()
-    assert tokens == [1000], (
-        "FIRST-call emission changed under codex round-I refactor. "
-        f"Expected first_gen_tok=[1000], got {tokens!r}."
-    )
-    # gb._next_tokens must now hold the PRE-FETCHED next token
-    # (2001), NOT the stale first_gen_tok (1000). This is what
-    # ``.filter`` / ``.extend`` / a defensive fallback would read.
+    assert tokens == [1000]
     assert gb._next_tokens is not None, (
         "codex round-I BLOCKING #2 regression: _next_tokens is None "
-        "after successful FIRST-call emission. Downstream .filter / "
-        ".extend paths would blow up on the ``None[keep]`` slice."
+        "after successful FIRST-call emission."
     )
     _next_tok_val = int(gb._next_tokens[0].item())
-    assert _next_tok_val == 2001, (
-        f"codex round-I BLOCKING #2 regression: _next_tokens[0]={_next_tok_val} "
-        "does NOT match the pre-fetched next generator emission (2001). "
-        "The wrapper left the field stale at first_gen_tok=1000."
+    assert _next_tok_val == 1000, (
+        f"codex round-J BLOCKING #2 regression: FIRST-call branch "
+        f"published a value ({_next_tok_val}) other than the just-"
+        "emitted token. The round-J-approved contract is 'stash the "
+        "just-emitted token as a coherent-shape placeholder'; any "
+        "other value would imply a prefetch that advances "
+        "prompt_cache behind mlx-lm's bookkeeping."
     )
-    # _next_logprobs must also carry the pre-fetched logprob, not
-    # the stale first_gen_tok logprob.
+    assert gb._next_tokens.dtype == mx.uint32
+    assert gb._next_tokens.shape == (1,)
     assert len(gb._next_logprobs) == 1
+    # Round-J BLOCKING #2: verify the generator was NOT driven ahead
+    # by the FIRST-call sync. counting_gen.__next__ should not have
+    # been invoked yet — the generator's first next() call happens
+    # in the SUBSEQUENT branch (Step 2 below).
+    assert counting_gen._n == 0, (
+        f"codex round-J BLOCKING #2 regression: the wrapper drove "
+        f"the MTP generator {counting_gen._n} step(s) ahead in the "
+        "FIRST-call branch. This advances prompt_cache behind "
+        "GenerationBatch's bookkeeping and was flagged as unsafe."
+    )
 
 
-def test_install_mtp_vendored_subsequent_updates_next_tokens(monkeypatch):
-    """Codex round-I BLOCKING #2 regression guard (SUBSEQUENT branch).
+def test_install_mtp_vendored_subsequent_syncs_next_tokens(monkeypatch):
+    """Codex round-I BLOCKING #2 + round-J BLOCKING #2 regression
+    guard (SUBSEQUENT branch).
 
-    Same invariant as the FIRST-call variant, but exercises the
-    SUBSEQUENT branch: after each emission from the queue, the
-    wrapper pre-fetches one more token from the generator and
-    publishes it to ``_next_tokens``.
+    Same coherent-shape contract as the FIRST-call variant. Verify
+    ``_next_tokens`` after each SUBSEQUENT emission holds the
+    just-emitted token — not a prefetched next token — and the
+    MTP generator advances EXACTLY once per SUBSEQUENT call
+    (not once for emit + once for prefetch).
     """
     from types import SimpleNamespace
 
@@ -2246,7 +2272,8 @@ def test_install_mtp_vendored_subsequent_updates_next_tokens(monkeypatch):
         def close(self):
             pass
 
-    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _CountingGen())
+    counting_gen = _CountingGen()
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: counting_gen)
 
     batch_gen, gb = _make_batch_gen_with_gb()
     gb.uids = [9]
@@ -2262,38 +2289,47 @@ def test_install_mtp_vendored_subsequent_updates_next_tokens(monkeypatch):
     gb._next_tokens = mx.array([500], dtype=mx.uint32)
     gb._next_logprobs = [mx.array([0.0])]
 
-    # Step 1 — emits 500, pre-fetches 3001.
+    # Step 1 — FIRST-call, emits 500. Generator NOT touched.
     gb._step()
-    assert int(gb._next_tokens[0].item()) == 3001
+    assert int(gb._next_tokens[0].item()) == 500
+    assert counting_gen._n == 0
 
-    # Step 2 — SUBSEQUENT branch. Pops 3001 from queue, pre-fetches 3002.
+    # Step 2 — SUBSEQUENT branch. Pulls one from generator (yields
+    # 3001), emits 3001, syncs _next_tokens=3001.
     tokens, _ = gb._step()
     assert tokens == [3001]
     _val_after_step2 = int(gb._next_tokens[0].item())
-    assert _val_after_step2 == 3002, (
+    assert _val_after_step2 == 3001, (
         "codex round-I BLOCKING #2 regression: SUBSEQUENT branch did "
-        "NOT publish the pre-fetched next token to _next_tokens "
-        f"(got {_val_after_step2}, expected 3002)."
+        f"NOT sync _next_tokens with the just-emitted token (got "
+        f"{_val_after_step2}, expected 3001)."
+    )
+    assert counting_gen._n == 1, (
+        f"codex round-J BLOCKING #2 regression: SUBSEQUENT branch "
+        f"advanced the generator {counting_gen._n} steps ahead of "
+        "the emission — a prefetch was reintroduced."
     )
 
-    # Step 3 — SUBSEQUENT branch again. Pops 3002, pre-fetches 3003.
+    # Step 3 — SUBSEQUENT branch again. Pulls once, emits 3002.
     tokens, _ = gb._step()
     assert tokens == [3002]
-    assert int(gb._next_tokens[0].item()) == 3003
+    assert int(gb._next_tokens[0].item()) == 3002
+    assert counting_gen._n == 2
 
 
-def test_install_mtp_vendored_first_call_prefetch_stop_iteration_stashes_placeholder(
+def test_install_mtp_vendored_next_tokens_shape_survives_stop_iteration(
     monkeypatch,
 ):
-    """Codex round-I BLOCKING #2: when the pre-fetch after emission
-    hits ``StopIteration`` (generator exhausted immediately after
-    the first token), the wrapper must still leave
-    ``gb._next_tokens`` in a coherent shape — falling back to the
-    just-emitted token as a placeholder. The next wrapper call's
-    queue-empty branch will terminal-raise with the real
-    exhaustion traceback, but between now and then any
-    ``.filter`` / ``.extend`` slice must not read stale
-    ``first_gen_tok``.
+    """Codex round-I BLOCKING #2 + round-J BLOCKING #3 regression
+    guard.
+
+    Round-J correctly flagged that swallowing a generator
+    ``StopIteration`` inside a "prefetch" helper delays the
+    terminal-raise. The no-prefetch design has no swallow: the
+    generator is only consumed inside the SUBSEQUENT branch's
+    queue-empty path, and any exception there terminal-raises
+    IMMEDIATELY. Between FIRST-call emit and the SUBSEQUENT
+    terminal-raise, ``_next_tokens`` must still be shape-coherent.
     """
     from types import SimpleNamespace
 
@@ -2330,19 +2366,32 @@ def test_install_mtp_vendored_first_call_prefetch_stop_iteration_stashes_placeho
     gb._next_tokens = mx.array([42], dtype=mx.uint32)
     gb._next_logprobs = [mx.array([0.0])]
 
-    # Step 1 — emits 42. Pre-fetch hits StopIteration immediately.
-    # Placeholder = 42.
+    # Step 1 — FIRST-call, emits 42. No generator prefetch, so no
+    # exception surfaces here. _next_tokens is a coherent-shape
+    # placeholder (just-emitted token).
     tokens, _ = gb._step()
     assert tokens == [42]
     assert gb._next_tokens is not None
-    assert int(gb._next_tokens[0].item()) == 42, (
-        "codex round-I BLOCKING #2 regression: pre-fetch StopIteration "
-        "left _next_tokens in an inconsistent state (expected the "
-        f"emitted token 42 as placeholder, got "
-        f"{int(gb._next_tokens[0].item())})."
-    )
-    # dtype must be uint32 so the mlx-lm downstream slicing works.
     assert gb._next_tokens.dtype == mx.uint32
+    assert gb._next_tokens.shape == (1,)
+
+    # Step 2 — SUBSEQUENT branch. queue empty, generator raises
+    # StopIteration IMMEDIATELY. Terminal-raise fires with the
+    # real error trace; no swallowing, no delay.
+    try:
+        gb._step()
+    except RuntimeError as e:
+        assert (
+            "generator exhausted" in str(e).lower()
+            or "before mlx-lm hit" in str(e).lower()
+        )
+        return
+    raise AssertionError(
+        "codex round-J BLOCKING #3 regression: SUBSEQUENT branch did "
+        "NOT terminal-raise on generator StopIteration. Under the "
+        "no-prefetch design there is no exception to swallow, and the "
+        "raise must fire IMMEDIATELY on the very next _step() call."
+    )
 
 
 def test_cli_mtp_reconciliation_promotes_eligibility_read(monkeypatch, tmp_path):

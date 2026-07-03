@@ -421,25 +421,31 @@ def _apply_mtp_dispatch(
         # ``future.cancel()`` is a no-op for a task that has
         # already started running).
         future.cancel()
-        # Codex round-I BLOCKING #1: ``future.cancel()`` cannot
-        # stop a running task, and the executor is the SHARED
-        # mlx-step worker that both loaded the target model and
-        # will keep serving MLX ops after the dispatch would
-        # complete. Shut down the executor so no further
-        # submissions can queue behind the wedged dispatch, then
-        # hand off to the process-exit hook that guarantees the
-        # orphan mutation cannot outlive the boot. Test suites
-        # monkeypatch ``_process_exit_on_mtp_dispatch_timeout``
-        # so the RuntimeError below is reachable there; in
-        # production the hook calls ``os._exit(1)`` and the
-        # RuntimeError line is unreachable.
-        try:
-            executor.shutdown(wait=False, cancel_futures=True)
-        except Exception:
-            # Shutdown is best-effort — some executor stubs in
-            # tests don't accept ``cancel_futures``; those tests
-            # rely on the exit hook to short-circuit further work.
-            pass
+        # Codex round-I BLOCKING #1 / round-J BLOCKING #1:
+        # ``future.cancel()`` cannot stop a running task, and the
+        # executor here is the SHARED ``_model_load_executor`` —
+        # the same mlx-step worker that loaded the target model
+        # and will keep serving MLX ops after the dispatch. A
+        # prior revision called ``executor.shutdown(wait=False,
+        # cancel_futures=True)`` as belt-and-suspenders; codex
+        # round-J correctly flagged that as harmful: in embedded
+        # callers / tests where ``_process_exit_on_mtp_dispatch_
+        # timeout`` returns instead of terminating, the shutdown
+        # permanently breaks the shared executor and any
+        # subsequent engine work would fail with
+        # ``RuntimeError: cannot schedule new futures after
+        # shutdown``.
+        #
+        # Instead: the process-exit hook is the ONLY isolation
+        # mechanism. In production ``os._exit(1)`` kills the
+        # interpreter (and any orphan mutation thread with it).
+        # In tests / embedded callers the hook is patched to a
+        # no-op and the ``RuntimeError`` fallback raises — the
+        # shared executor stays intact so the calling engine
+        # object remains usable. The orphan mutation risk is
+        # bounded to the specific caller's choice to keep the
+        # process alive past the abort; that's an operator-
+        # visible contract, not a defensive-shutdown concern.
         _process_exit_on_mtp_dispatch_timeout(timeout)
         raise RuntimeError(
             "--spec-decode mtp dispatch timed out after "
