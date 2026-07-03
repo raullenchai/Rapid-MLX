@@ -78,6 +78,25 @@ DEPTH_PROBE_INTERVAL_MAX = 512
 # to match Ollama's tuned band.
 DEFAULT_MAX_K = 3
 
+# Minimum cost samples per depth before the controller stops force-
+# seeding it. Under the pre-0.9.13-fix cold-start, ONE sample per depth
+# passed ``sampled()``, but a single cost measurement is dominated by
+# first-touch host jitter (cold cache line, first kv-cache write). A
+# single-sample K=0 read of ~22ms (instead of the steady-state ~16ms)
+# was enough to flip EV(0) vs EV(1) permanently once the frontier's
+# optimistic 1.0 acceptance fallback lifted EV(1). Once the controller
+# started picking K=1, the periodic probe brought it back to K=0 only
+# every DEPTH_PROBE_INTERVAL=4 rounds — so prose spent 3/4 of its
+# budget paying drafter cost for near-zero accept: the operator's
+# observed "0 park rounds / 81.7% attempts but tok/s tanks" signature.
+#
+# 4 samples per depth folds two clamped innovations at
+# COST_CLAMP_FRACTION=0.25 into the EWMA, which walks a first-touch
+# 22ms → ~17ms and lets the true EV(0)>EV(1) comparison come out
+# right on prose. On coding/JSON where K=1 wins, the extra 3 rounds
+# per depth cost <100ms of setup — negligible against the tok/s gain.
+COST_SEED_MIN_SAMPLES = 4
+
 
 # ---------------------------------------------------------------------------
 # CostModel — per-K target-forward wall-time EWMA.
@@ -97,12 +116,16 @@ class CostModel:
     Mirrors Go ``costModel`` (`speculate_depth.go:130-205`).
     """
 
-    __slots__ = ("_ewma", "_depths")
+    __slots__ = ("_ewma", "_depths", "_visits")
 
     def __init__(self) -> None:
         self._ewma: dict[int, float] = {}
         # Sorted list of sampled depths, maintained via bisect.
         self._depths: list[int] = []
+        # Per-depth observation count. Read by the bootstrap gate so
+        # ``_cost_seed_depth`` can force multiple samples at each depth
+        # before the EV comparator runs on noisy first-touch numbers.
+        self._visits: dict[int, int] = {}
 
     def observe(self, drafts: int, wall_ms: float) -> None:
         """Fold one forward's wall time into the draft depth's EWMA,
@@ -127,6 +150,7 @@ class CostModel:
             elif innovation < -limit:
                 innovation = -limit
             self._ewma[drafts] = prev + COST_EWMA_ALPHA * innovation
+        self._visits[drafts] = self._visits.get(drafts, 0) + 1
 
     def ready(self) -> bool:
         """True when two distinct depths have been sampled, so a slope
@@ -135,6 +159,15 @@ class CostModel:
 
     def sampled(self, drafts: int) -> bool:
         return drafts in self._ewma
+
+    def visits(self, drafts: int) -> int:
+        """Number of times ``observe`` has folded a sample for this depth.
+
+        Read by the bootstrap gate; distinct from ``sampled`` (which is
+        a single-bit "ever seen") to enable a fixed-sample-count warmup
+        that survives first-touch jitter.
+        """
+        return self._visits.get(drafts, 0)
 
     def cost(self, drafts: int) -> float:
         """Estimated target-forward wall time (ms) for validating
@@ -302,6 +335,12 @@ class DepthController:
         # Diagnostics.
         self.park_count = 0
         self.round_count = 0
+        # Per-K round histogram, keyed by the K actually consumed by the
+        # target forward. Populated by ``record`` and read by the
+        # Prometheus renderer (``rapid_mlx_spec_decode_k_chosen_*``).
+        # Kept as a dict rather than a list so a future max_k lift needs
+        # no schema migration on the metrics side.
+        self.k_histogram: dict[int, int] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -382,6 +421,7 @@ class DepthController:
         self.round_count += 1
         if k_used == 0:
             self.park_count += 1
+        self.k_histogram[k_used] = self.k_histogram.get(k_used, 0) + 1
         if wall_ms > 0.0:
             self.cost.observe(k_used, wall_ms)
         if accepts:
@@ -419,12 +459,21 @@ class DepthController:
         return best
 
     def _cost_seed_depth(self) -> int:
-        """Shallowest depth in ``[0, min(frontier+1, max_k)]`` with no
-        clean cost sample, or -1 if all are sampled.
+        """Shallowest depth in ``[0, min(frontier+1, max_k)]`` with fewer
+        than ``COST_SEED_MIN_SAMPLES`` observations, or -1 if every depth
+        is sufficiently sampled.
+
+        0.9.13 fix: was ``sampled(n)`` (1-bit gate). A single cost
+        sample was noisy enough — first-touch cold-cache jitter — to
+        wedge EV comparison in a wrong-signed steady state (see
+        ``COST_SEED_MIN_SAMPLES`` docstring). The threshold read is
+        symmetric across depths, so bootstrap rotates through
+        ``[0]*N + [1]*N`` (then ``[2]*N`` once chain-of-K lifts the
+        max) before releasing to ``_selected()``.
         """
         limit = min(self.frontier() + 1, self.max_k)
         for n in range(0, limit + 1):
-            if not self.cost.sampled(n):
+            if self.cost.visits(n) < COST_SEED_MIN_SAMPLES:
                 return n
         return -1
 
@@ -497,3 +546,25 @@ def get_controller_snapshot() -> dict[str, str]:
     """Snapshot of ``model_id -> diagnostics`` for logging / metrics."""
     with _lock:
         return {k: v.diagnostics() for k, v in _controllers.items()}
+
+
+def sum_across_controllers() -> tuple[int, int, dict[int, int]]:
+    """Aggregate (round_count, park_count, k_histogram) across all
+    registered controllers. Called by the /metrics renderer so a
+    multi-model process reports one park counter per family label.
+
+    Returns a fresh ``k_histogram`` dict rather than a shared reference
+    so metric rendering can iterate it outside the registry lock. The
+    controller instances themselves stay in the registry; only their
+    scalar counters are copied out.
+    """
+    with _lock:
+        round_total = 0
+        park_total = 0
+        hist: dict[int, int] = {}
+        for ctrl in _controllers.values():
+            round_total += ctrl.round_count
+            park_total += ctrl.park_count
+            for k, count in ctrl.k_histogram.items():
+                hist[k] = hist.get(k, 0) + count
+        return round_total, park_total, hist
