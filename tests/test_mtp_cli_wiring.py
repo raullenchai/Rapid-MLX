@@ -1313,8 +1313,8 @@ def test_install_mtp_vendored_gate_fails_closed_on_missing_request_metadata(
     assert gb.orig_step_calls == 1
 
 
-def test_install_mtp_vendored_cleans_up_state_on_fallthrough_batch_size(monkeypatch):
-    """Codex round-A blocker #3 + round-H BLOCKING #1 regression
+def test_install_mtp_vendored_falls_back_to_orig_step_on_batch_size_growth(monkeypatch):
+    """Codex round-A blocker #3 + round-L BLOCKING #2 regression
     guard.
 
     Two contracts under test:
@@ -1322,17 +1322,16 @@ def test_install_mtp_vendored_cleans_up_state_on_fallthrough_batch_size(monkeypa
     * Round-A: a uid that ran MTP for a while then transitions to a
       B>1 batch closes its generator (side-effect observable).
 
-    * Round-H: after MTP has emitted at least one token, the B>1
-      transition is TERMINAL — the wrapper MUST raise
-      ``RuntimeError`` instead of delegating to ``_orig_step()``
-      (which would emit the primed first token AGAIN because
-      ``gb._next_tokens`` is stale). The affected uid must land in
-      ``_disabled_uids`` so a retry still short-circuits.
+    * Round-L: prior round-H revision raised ``RuntimeError`` when
+      B>1 arrived after MTP had emitted tokens, killing the request.
+      That is hostile to a multi-request server where B>1 is the
+      norm. Round-L flips the behavior: the MTP generator is
+      closed, the uid is disabled, and the wrapper delegates to
+      ``_orig_step()`` — the request continues on plain decode with
+      a bounded stream artifact (see :func:`_log_mtp_mid_stream_
+      handoff_once` for the rationale).
 
-    Pre-round-H this test verified the wrapper cleanly fell through
-    to ``_orig_step()``; codex round-H rightly called that out as
-    stream-corrupting. The test now pins the safer terminal-raise
-    behaviour.
+    The historical B>1 raise from round-H is intentionally gone.
     """
     from types import SimpleNamespace
 
@@ -1386,28 +1385,112 @@ def test_install_mtp_vendored_cleans_up_state_on_fallthrough_batch_size(monkeypa
     gb._step()
     assert fake_gen_calls["closed"] == 0
 
-    # Now transition to B=2. Round-H BLOCKING #1: uid=7 has state,
-    # so falling through would corrupt the output stream. The
-    # wrapper MUST raise. Generator MUST be closed on the way out.
+    # Now transition to B=2. Round-L BLOCKING #2: uid=7 has state,
+    # but the wrapper MUST NOT raise. It MUST close the stale
+    # generator (round-A), delegate to _orig_step (round-L), and
+    # increment the mid-stream handoff counter (operator-visible
+    # via stats).
+    orig_step_before = gb.orig_step_calls
     gb.uids = [1, 2]
-    try:
-        gb._step()
-    except RuntimeError as e:
-        assert "b>1" in str(e).lower() or "in-flight" in str(e).lower()
-        stats = batch_gen._mtp_vendored_stats
-        assert stats["ft_batch_size"] >= 1
-        assert fake_gen_calls["closed"] >= 1, (
-            "codex round-A blocker #3 regression: B>1 terminal path "
-            "did not close the stale generator on the way out."
-        )
-        return
-    raise AssertionError(
-        "codex round-H BLOCKING #1 regression: B>1 transition after "
-        "MTP emitted tokens did NOT raise RuntimeError. Falling "
-        "through to _orig_step() at this point would emit "
-        "first_gen_tok (staged in gb._next_tokens) AGAIN, "
-        "corrupting the request's output stream."
+    result = gb._step()
+
+    # Round-L: fall through to _orig_step, not raise.
+    assert result is not None, (
+        "codex round-L BLOCKING #2 regression: B>1 mid-stream must "
+        "return _orig_step()'s tuple, not None. The wrapper is "
+        "expected to hand off silently, not abort."
     )
+    assert gb.orig_step_calls == orig_step_before + 1, (
+        "codex round-L BLOCKING #2 regression: B>1 mid-stream did "
+        "NOT delegate to _orig_step. The request would have been "
+        "killed by a RuntimeError under the round-H invariant that "
+        "round-L relaxed."
+    )
+    stats = batch_gen._mtp_vendored_stats
+    assert stats["ft_batch_size"] >= 1
+    assert stats["ft_mid_stream_handoff"] >= 1, (
+        "codex round-L BLOCKING #2 regression: mid-stream handoff "
+        "counter did not fire. Operator loses observability of the "
+        "MTP → plain decode transition."
+    )
+    assert fake_gen_calls["closed"] >= 1, (
+        "codex round-A blocker #3 regression: B>1 handoff path did "
+        "not close the stale generator on the way out."
+    )
+
+
+def test_install_mtp_vendored_b_gt_1_handoff_keeps_yielding_tokens(monkeypatch):
+    """Codex round-L BLOCKING #2 positive test.
+
+    Once the mid-stream B>1 handoff has fired, subsequent _step
+    calls (still under B>1) MUST keep calling _orig_step — the
+    request stays on plain decode until it completes. The disable
+    marker on the affected uid ensures we don't accidentally re-arm
+    MTP mid-request.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    fake_gen_calls = {"constructed": 0, "closed": 0}
+
+    class _FakeGen:
+        def __init__(self):
+            fake_gen_calls["constructed"] += 1
+            self._n = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self._n += 1
+            return (self._n + 1000, mx.array([0.0]), False)
+
+        def close(self):
+            fake_gen_calls["closed"] += 1
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _FakeGen())
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [7]
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-7": request_stub},
+        uid_to_request_id={7: "req-7"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # Prime MTP with one successful call, then trigger B>1 handoff.
+    gb._step()  # FIRST-call: MTP primed
+    gb.uids = [1, 2]
+    gb._step()  # handoff fires
+    # Handoff happened via _record_terminal_disable, so uid=7 is
+    # now in _disabled_uids (accessible via the state map keyed by
+    # uid). But the wrapper is now installed at B>1, and the
+    # disable gate only fires when len(gb.uids)==1. The B>1 gate
+    # in _mtp_step should keep firing for every subsequent step
+    # while B>1 — the request never re-enters MTP even if the
+    # batch later returns to B=1 for THIS uid because it's
+    # disabled.
+
+    orig_before = gb.orig_step_calls
+    for _ in range(5):
+        gb._step()
+    assert gb.orig_step_calls == orig_before + 5, (
+        "codex round-L BLOCKING #2 regression: post-handoff _step "
+        "calls did not consistently delegate to _orig_step. The "
+        "request must continue on plain decode after the handoff."
+    )
+    stats = batch_gen._mtp_vendored_stats
+    assert stats["ft_batch_size"] >= 5
 
 
 def test_install_mtp_vendored_b_gt_1_soft_fallthrough_when_no_state():
@@ -1883,15 +1966,20 @@ def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypat
     )
 
 
-def test_install_mtp_vendored_non_greedy_after_state_raises(monkeypatch):
-    """Codex round-H BLOCKING #2 regression guard.
+def test_install_mtp_vendored_non_greedy_mid_stream_falls_back_to_orig_step(monkeypatch):
+    """Codex round-L BLOCKING #3 regression guard.
 
-    Mid-stream switch to non-greedy sampling (temp > 0) after MTP
-    has already emitted tokens is TERMINAL. The wrapper cannot
-    fall through to ``_orig_step()`` because ``gb._next_tokens``
-    is stale (still holds ``first_gen_tok`` from the priming
-    ``_step``). The affected uid must land in ``_disabled_uids``
-    and the wrapper must raise.
+    Prior round-H revision raised ``RuntimeError`` when sampling
+    switched to non-greedy after MTP had already emitted tokens.
+    That killed the request whenever an operator adjusted sampling
+    params mid-stream.
+
+    Round-L flip: the wrapper closes the MTP generator, marks the
+    uid disabled, delegates to ``_orig_step()``, and logs a WARN
+    for the operator. Subsequent steps stay on plain decode via
+    the disable short-circuit. Same bounded stream-artifact
+    tradeoff as the B>1 handoff (see :func:`_log_mtp_mid_stream_
+    handoff_once`).
     """
     from types import SimpleNamespace
 
@@ -1899,6 +1987,8 @@ def test_install_mtp_vendored_non_greedy_after_state_raises(monkeypatch):
 
     from vllm_mlx.scheduler import _install_mtp_vendored
     from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    fake_gen_calls = {"closed": 0}
 
     class _FakeGen:
         def __init__(self):
@@ -1912,7 +2002,7 @@ def test_install_mtp_vendored_non_greedy_after_state_raises(monkeypatch):
             return (self._n + 1000, mx.array([0.0]), False)
 
         def close(self):
-            pass
+            fake_gen_calls["closed"] += 1
 
     monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _FakeGen())
 
@@ -1935,36 +2025,59 @@ def test_install_mtp_vendored_non_greedy_after_state_raises(monkeypatch):
     # First call — MTP primed. _state[55] populated.
     gb._step()
 
-    # Mid-stream switch to temp > 0 — round-H terminal branch.
+    # Mid-stream switch to temp > 0 — round-L handoff branch.
+    orig_before = gb.orig_step_calls
     sp.temperature = 0.7
-    try:
-        gb._step()
-    except RuntimeError as e:
-        assert "non-greedy" in str(e).lower()
-        # Uid is now disabled — a retry on same request short-
-        # circuits to _orig_step (not another MTP construction).
-        gb._next_tokens = mx.array([301], dtype=mx.uint32)
-        gb._next_logprobs = [mx.array([0.0])]
-        pre = gb.orig_step_calls
-        gb._step()
-        assert gb.orig_step_calls == pre + 1, (
-            "codex round-H BLOCKING #2 regression: post-raise retry "
-            "did not hit the disable short-circuit."
-        )
-        return
-    raise AssertionError(
-        "codex round-H BLOCKING #2 regression: non-greedy switch "
-        "mid-stream did NOT raise RuntimeError. Falling through to "
-        "_orig_step() here would duplicate first_gen_tok."
+    result = gb._step()
+
+    assert result is not None, (
+        "codex round-L BLOCKING #3 regression: non-greedy mid-stream "
+        "must delegate to _orig_step, not raise. The wrapper hands "
+        "off silently and lets the request continue on plain decode."
+    )
+    assert gb.orig_step_calls == orig_before + 1, (
+        "codex round-L BLOCKING #3 regression: non-greedy mid-stream "
+        "did NOT delegate to _orig_step. Under round-H the request "
+        "would have been killed by a RuntimeError; round-L relaxes "
+        "that to a fallback."
+    )
+    stats = batch_gen._mtp_vendored_stats
+    assert stats["ft_non_greedy"] >= 1
+    assert stats["ft_mid_stream_handoff"] >= 1, (
+        "codex round-L BLOCKING #3 regression: mid-stream handoff "
+        "counter did not fire on non-greedy transition."
+    )
+    assert fake_gen_calls["closed"] >= 1, (
+        "codex round-L BLOCKING #3: non-greedy handoff MUST close "
+        "the stale MTP generator so nothing dangles across the "
+        "request tail."
+    )
+
+    # Subsequent steps stay on plain decode (uid=55 is now disabled).
+    gb._next_tokens = mx.array([301], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    pre = gb.orig_step_calls
+    gb._step()
+    assert gb.orig_step_calls == pre + 1, (
+        "codex round-L BLOCKING #3 regression: post-handoff retry "
+        "did not hit the disable short-circuit; a new MTP generator "
+        "would be constructed and the fallback design regressed."
     )
 
 
-def test_install_mtp_vendored_logits_processors_after_state_raises(monkeypatch):
-    """Codex round-H BLOCKING #3 regression guard.
+def test_install_mtp_vendored_logits_processors_mid_stream_falls_back_to_orig_step(
+    monkeypatch,
+):
+    """Codex round-L BLOCKING #4 regression guard.
 
-    Mid-stream appearance of logits processors after MTP has already
-    emitted tokens is TERMINAL. Same rationale as the non-greedy
-    branch: cannot rebuild ``gb._next_tokens`` for baseline decode.
+    Prior round-H revision raised ``RuntimeError`` when a logits
+    processor was added after MTP had already emitted. That killed
+    the request whenever an operator wired a guided-decoding
+    grammar (or similar per-request processor) mid-stream.
+
+    Round-L flip: close the MTP generator, mark uid disabled,
+    delegate to ``_orig_step`` and log a WARN. Subsequent steps
+    stay on plain decode via the disable short-circuit.
     """
     from types import SimpleNamespace
 
@@ -1972,6 +2085,8 @@ def test_install_mtp_vendored_logits_processors_after_state_raises(monkeypatch):
 
     from vllm_mlx.scheduler import _install_mtp_vendored
     from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    fake_gen_calls = {"closed": 0}
 
     class _FakeGen:
         def __init__(self):
@@ -1985,7 +2100,7 @@ def test_install_mtp_vendored_logits_processors_after_state_raises(monkeypatch):
             return (self._n + 1000, mx.array([0.0]), False)
 
         def close(self):
-            pass
+            fake_gen_calls["closed"] += 1
 
     monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _FakeGen())
 
@@ -2006,17 +2121,40 @@ def test_install_mtp_vendored_logits_processors_after_state_raises(monkeypatch):
     # First call — MTP primed.
     gb._step()
 
-    # Mid-stream: install a truthy logits processor. Round-H
-    # terminal branch.
+    # Mid-stream: install a truthy logits processor — round-L handoff branch.
     gb.logits_processors = [[lambda tokens, logits: logits]]
-    try:
-        gb._step()
-    except RuntimeError as e:
-        assert "logits processor" in str(e).lower()
-        return
-    raise AssertionError(
-        "codex round-H BLOCKING #3 regression: logits-processors "
-        "appearing mid-stream did NOT raise RuntimeError."
+    orig_before = gb.orig_step_calls
+    result = gb._step()
+
+    assert result is not None, (
+        "codex round-L BLOCKING #4 regression: mid-stream logits "
+        "processor MUST delegate to _orig_step, not raise."
+    )
+    assert gb.orig_step_calls == orig_before + 1, (
+        "codex round-L BLOCKING #4 regression: logits-processor "
+        "mid-stream did NOT delegate to _orig_step. The request "
+        "would have been killed by a RuntimeError under the "
+        "round-H invariant that round-L relaxed."
+    )
+    stats = batch_gen._mtp_vendored_stats
+    assert stats["ft_logits_processors"] >= 1
+    assert stats["ft_mid_stream_handoff"] >= 1, (
+        "codex round-L BLOCKING #4 regression: mid-stream handoff "
+        "counter did not fire on lp transition."
+    )
+    assert fake_gen_calls["closed"] >= 1, (
+        "codex round-L BLOCKING #4: lp handoff MUST close the "
+        "stale MTP generator on the way out."
+    )
+
+    # Subsequent step stays on plain decode (uid=33 disabled).
+    gb._next_tokens = mx.array([401], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    pre = gb.orig_step_calls
+    gb._step()
+    assert gb.orig_step_calls == pre + 1, (
+        "codex round-L BLOCKING #4 regression: post-handoff retry "
+        "did not hit the disable short-circuit."
     )
 
 

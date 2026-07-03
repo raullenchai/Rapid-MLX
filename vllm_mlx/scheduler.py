@@ -1498,7 +1498,56 @@ def _install_mtp_vendored(
         "ft_disabled": 0,
         "gen_exhausted": 0,
         "gen_raised": 0,
+        # Codex round-L BLOCKING #2-4: track uids that have been
+        # handed off from MTP to plain decode mid-stream so subsequent
+        # fallback branches can log ONCE per uid rather than once per
+        # step. Silent degradation is per Ollama's depth-0 park
+        # behavior; but we still want the operator to see the
+        # degradation happened, without log spam if the batch stays
+        # B>1 (or non-greedy, or has an lp) for many tokens.
+        "ft_mid_stream_handoff": 0,
     }
+
+    # Codex round-L BLOCKING #2-4: log-once bookkeeping for mid-stream
+    # MTP → plain-decode handoffs. Keyed by (uid, reason) so the same
+    # uid can log both "B>1" and "non-greedy" if it hits both, but
+    # each reason surfaces at most once per uid lifetime.
+    _handoff_logged: set[tuple[int, str]] = set()
+
+    def _log_mtp_mid_stream_handoff_once(uid: int, reason: str, detail: str) -> None:
+        """Emit a WARN log for a mid-stream MTP → plain-decode handoff,
+        at most once per (uid, reason).
+
+        Codex round-L BLOCKING #2-4: the fallback design matches
+        Ollama's depth-0 park behavior — MTP silently degrades to
+        plain decode when the current step is incompatible (B>1,
+        non-greedy, or has a logits processor) instead of aborting
+        the request with a RuntimeError. But the tradeoff is real:
+        ``gb._next_tokens`` currently holds the last-MTP-emitted
+        token (see ``_sync_next_tokens_after_emit``) rather than a
+        fresh baseline sample, so ``_orig_step`` may emit a
+        duplicated token or sample from a slightly stale cache
+        position for one step before the request continues on plain
+        decode. Log the handoff so the operator can correlate the
+        potential stream artifact with the load-balancing event.
+        """
+        key = (uid, reason)
+        if key in _handoff_logged:
+            return
+        _handoff_logged.add(key)
+        logger.warning(
+            "[MTP-vendored] uid=%s handoff to plain decode (%s): %s. "
+            "The MTP generator was closed; the request continues on "
+            "baseline mlx-lm _step. gb._next_tokens still holds the "
+            "last-MTP-emitted token so the next _orig_step call may "
+            "produce a duplicated token or a token sampled from a "
+            "slightly stale cache position for one step — a bounded, "
+            "known tradeoff for not killing the request "
+            "(Ollama-style depth-0 park behavior).",
+            uid,
+            reason,
+            detail,
+        )
 
     def _cleanup_uid(uid: int) -> None:
         # Codex round-G BLOCKING #1: DO NOT clear _disabled_uids here.
@@ -1668,19 +1717,25 @@ def _install_mtp_vendored(
             ``mx.array([tok], dtype=uint32)`` invariant so
             ``.filter`` / ``.extend`` slicing succeeds; the VALUE is
             semantically stale ("last emitted" rather than "next to
-            feed"), but that's fine because:
+            feed"), but that's tolerated:
 
             * ``.filter(keep)`` / ``.extend`` don't forward through
               the model — they mutate the tensor in place. No
               downstream cache interaction.
-            * The wrapper's own ``_orig_step()`` fallthrough branches
-              have all been tightened by round-H to raise TERMINALLY
-              once ``_state[uid]`` is populated (i.e., MTP has
-              emitted). Post-emission ``_orig_step()`` cannot fire
-              without the wrapper raising first; mlx-lm surfaces the
-              exception and doesn't retry ``_step()``. The stale
-              placeholder is therefore never fed into a live model
-              forward.
+            * Codex round-L BLOCKING #2-4 relaxed the round-H
+              terminal-raise contract: the B>1 / non-greedy /
+              logits-processor fallthrough branches now delegate to
+              ``_orig_step()`` instead of aborting the request. In
+              that handoff path, ``_orig_step()`` will read the
+              stale ``_next_tokens`` and may emit a duplicated token
+              or sample from a slightly stale cache position for one
+              step. The wrapper logs a WARN (once per uid+reason)
+              on the handoff so the operator can correlate the
+              artifact with the load-balancing event. This is the
+              accepted tradeoff for not killing the request — see
+              :func:`_log_mtp_mid_stream_handoff_once` and the
+              round-L rationale comments in the three fallthrough
+              branches.
 
             Cache state stays under the MTP generator's control — the
             wrapper never advances ``prompt_cache`` outside a
@@ -1693,26 +1748,34 @@ def _install_mtp_vendored(
         if not gb.uids or len(gb.uids) != 1:
             _stats["fallthrough_steps"] += 1
             _stats["ft_batch_size"] += 1
-            # Codex round-H BLOCKING #1: if any uid in ``_state``
-            # has in-flight MTP emissions, falling through to
-            # ``_orig_step()`` here would corrupt the stream (see
-            # ``_record_terminal_disable`` docstring). Raise
-            # instead. When no uid has state — the pure
-            # "B goes from 1 to N without any single MTP call
-            # having succeeded yet" edge — the fallthrough is safe.
+            # Codex round-L BLOCKING #2: prior round-H revision raised
+            # ``RuntimeError`` here when any uid in ``_state`` had in-
+            # flight MTP emissions. That killed the request whenever
+            # normal continuous-batching load added a second uid to
+            # the batch — hostile behavior for a multi-request server
+            # where B>1 is the norm, not the exception.
+            #
+            # Round-L fix: hand off to ``_orig_step`` regardless of
+            # whether MTP has emitted. The MTP generator is closed and
+            # the affected uid(s) are marked disabled so we don't
+            # retry MTP on subsequent steps. The stream may briefly
+            # exhibit a duplicated token or a token sampled from a
+            # slightly stale cache position (``gb._next_tokens`` still
+            # holds the last-MTP-emitted token) — a bounded, known
+            # tradeoff that matches Ollama's ``depth=0`` park behavior
+            # when speculation cannot proceed. See
+            # :func:`_log_mtp_mid_stream_handoff_once` for the operator-
+            # facing warning contract.
             if _state:
                 terminal_uids = list(_state)
+                _stats["ft_mid_stream_handoff"] += len(terminal_uids)
                 for stale_uid in terminal_uids:
+                    _log_mtp_mid_stream_handoff_once(
+                        stale_uid,
+                        "b_gt_1",
+                        f"batch grew to size {len(gb.uids)}",
+                    )
                     _record_terminal_disable(stale_uid)
-                raise RuntimeError(
-                    "[MTP-vendored] B>1 transition mid-stream with "
-                    f"in-flight MTP state (uids={terminal_uids!r}). "
-                    "Cannot fall back to plain decode: the wrapper "
-                    "never updates gb._next_tokens, so baseline "
-                    "_step would emit the previously-emitted first "
-                    "token again. Failing the affected requests "
-                    "instead of corrupting the output stream."
-                )
             return _orig_step()
 
         uid = gb.uids[0]
@@ -1758,39 +1821,53 @@ def _install_mtp_vendored(
         if not _is_greedy_for_uid(uid):
             _stats["fallthrough_steps"] += 1
             _stats["ft_non_greedy"] += 1
-            # Codex round-H BLOCKING #2: mid-stream switch to non-
-            # greedy is terminal if MTP already emitted. Otherwise
-            # soft-skip (mark disabled so we don't retry the greedy
-            # check on every step for the rest of the request).
+            # Codex round-L BLOCKING #3: prior round-H revision raised
+            # ``RuntimeError`` here when sampling switched to non-
+            # greedy after MTP had already emitted. That killed the
+            # request on a legitimate runtime sampling-param change.
+            #
+            # Round-L fix: hand off to ``_orig_step`` regardless of
+            # state. The MTP generator is closed and the uid is
+            # marked disabled so subsequent steps skip MTP entirely.
+            # Same bounded stream-artifact tradeoff as the B>1 handoff
+            # above; see :func:`_log_mtp_mid_stream_handoff_once` for
+            # the operator-facing WARN contract.
             if uid in _state:
-                _record_terminal_disable(uid)
-                raise RuntimeError(
-                    f"[MTP-vendored] uid={uid} sampling params "
-                    "switched to non-greedy mid-stream after MTP "
-                    "started emitting. Cannot fall back to plain "
-                    "decode without duplicating the last MTP-emitted "
-                    "token."
+                _stats["ft_mid_stream_handoff"] += 1
+                _log_mtp_mid_stream_handoff_once(
+                    uid,
+                    "non_greedy",
+                    "sampling switched to temperature > 0 mid-stream",
                 )
-            _mark_disabled(uid)
+                _record_terminal_disable(uid)
+            else:
+                _mark_disabled(uid)
             return _orig_step()
 
         _lp = getattr(gb, "logits_processors", None)
         if _lp and any(p for p in _lp if p):
             _stats["fallthrough_steps"] += 1
             _stats["ft_logits_processors"] += 1
-            # Codex round-H BLOCKING #3: same treatment as the non-
-            # greedy branch — terminal if MTP already emitted,
-            # soft-skip otherwise.
+            # Codex round-L BLOCKING #4: prior round-H revision raised
+            # ``RuntimeError`` here when a logits processor was added
+            # mid-stream after MTP had already emitted. That killed
+            # the request whenever an operator toggled a per-request
+            # processor (e.g., a guided-decoding grammar) after the
+            # first tokens streamed.
+            #
+            # Round-L fix: hand off to ``_orig_step`` regardless of
+            # state. Same handoff pattern as B>1 and non-greedy: log
+            # once per uid, mark disabled, delegate.
             if uid in _state:
-                _record_terminal_disable(uid)
-                raise RuntimeError(
-                    f"[MTP-vendored] uid={uid} gained a logits "
-                    "processor mid-stream after MTP started "
-                    "emitting. Cannot fall back to plain decode "
-                    "without duplicating the last MTP-emitted "
-                    "token."
+                _stats["ft_mid_stream_handoff"] += 1
+                _log_mtp_mid_stream_handoff_once(
+                    uid,
+                    "logits_processor",
+                    "logits processor appeared mid-stream",
                 )
-            _mark_disabled(uid)
+                _record_terminal_disable(uid)
+            else:
+                _mark_disabled(uid)
             return _orig_step()
 
         state = _state.get(uid)
