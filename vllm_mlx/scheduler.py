@@ -236,39 +236,11 @@ class SchedulerConfig:
     # would resolve.
     dflash_drafter_path: str = ""
 
-    # 0.9.13 PR-A: external MTP sidecar path for the Gemma 4
-    # assistant-drafter route (``--spec-decode mtp --mtp-sidecar <path>``).
-    # ``None`` (the default) matches the pre-0.9.13 shape where
-    # ``--spec-decode mtp`` only supported Qwen3.5/3.6 native-MTP
-    # (i.e. MTP baked into the target checkpoint). When set, the
-    # scheduler routes through ``dispatch_mtp_inject(model,
-    # model_type, mtp_sidecar=<path>)`` at boot, which grafts the
-    # sidecar's ~4-layer drafter onto the target before the
-    # server-side MTP hot loop is installed. Accepts either a local
-    # safetensors directory or an HF repo id — resolution is deferred
-    # to ``dispatch_mtp_inject`` (which itself defers to
-    # ``mlx_lm.utils.load`` for HF resolution). See
-    # ``vllm_mlx/spec_decode/mtp/detect.py::detect_mtp_eligibility``
-    # for how CLI eligibility flips on a non-None value.
-    mtp_sidecar: str | None = None
-
-    # 0.9.13 PR-A codex round-E blocker #2: CLI-resolved
-    # ``config.json::model_type`` for the target model, threaded down
-    # from the CLI so the engine's model-load-thread dispatch step
-    # does not re-read config.json (which can race with the CLI's
-    # asyncio-thread read in offline / gated-cache environments and
-    # spuriously report the model_type as unresolvable). ``None`` is
-    # the "not yet resolved" sentinel — the engine will fall back to
-    # a best-effort HF cache lookup, which preserves pre-0.9.13
-    # behaviour for callers who never set this field.
-    #
-    # Codex round-E BLOCKER #2: the executor-thread fallback lookup
-    # was collapsing environment races into a silent MTP no-op. When
-    # the CLI populates this field, the engine can hard-fail on ANY
-    # dispatch mismatch (unresolved / no-inject / rejected) because
-    # the CLI has already vetted the config; a soft-fail there would
-    # silently downgrade an operator-requested feature.
-    mtp_model_type: str | None = None
+    # (0.9.13 PR-A ``mtp_sidecar`` / ``mtp_model_type`` fields
+    # intentionally live at the END of this dataclass — see the
+    # tail comment below ``pflash_config``. Codex round-F BLOCKING
+    # #1 flagged that adding them in the middle shifted every
+    # subsequent positional argument.)
 
     # SuffixDecoding — drafter-free speculative decoding using a suffix
     # tree over prompt + generated tokens. Predicts repeated patterns
@@ -342,6 +314,44 @@ class SchedulerConfig:
     # see vllm_mlx/pflash.py for the design notes and the prefix-cache
     # bypass on compressed requests.
     pflash_config: PFlashConfig = field(default_factory=PFlashConfig)
+
+    # 0.9.13 PR-A: external MTP sidecar path for the Gemma 4
+    # assistant-drafter route (``--spec-decode mtp --mtp-sidecar <path>``).
+    # ``None`` (the default) matches the pre-0.9.13 shape where
+    # ``--spec-decode mtp`` only supported Qwen3.5/3.6 native-MTP
+    # (i.e. MTP baked into the target checkpoint). When set, the
+    # scheduler routes through ``dispatch_mtp_inject(model,
+    # model_type, mtp_sidecar=<path>)`` at boot, which grafts the
+    # sidecar's ~4-layer drafter onto the target before the
+    # server-side MTP hot loop is installed. Accepts either a local
+    # safetensors directory or an HF repo id — resolution is deferred
+    # to ``dispatch_mtp_inject`` (which itself defers to
+    # ``mlx_lm.utils.load`` for HF resolution). See
+    # ``vllm_mlx/spec_decode/mtp/detect.py::detect_mtp_eligibility``
+    # for how CLI eligibility flips on a non-None value.
+    #
+    # Codex round-F BLOCKING #1: this field (and ``mtp_model_type``
+    # below) live at the very END of the dataclass so no earlier
+    # positional argument gets shifted. Adding them in the middle
+    # of the field list would silently rebind any positional caller
+    # that follows the SuffixDecoding fields.
+    mtp_sidecar: str | None = None
+
+    # 0.9.13 PR-A codex round-E blocker #2: CLI-resolved
+    # ``config.json::model_type`` for the target model, threaded down
+    # from the CLI so the engine's model-load-thread dispatch step
+    # does not re-read config.json (which can race with the CLI's
+    # asyncio-thread read in offline / gated-cache environments and
+    # spuriously report the model_type as unresolvable). ``None`` is
+    # the "not yet resolved" sentinel — the engine will fall back to
+    # a best-effort HF cache lookup, which preserves pre-0.9.13
+    # behaviour for callers who never set this field.
+    #
+    # When the CLI populates this field, the engine can hard-fail
+    # on ANY dispatch mismatch (unresolved / no-inject / rejected)
+    # because the CLI has already vetted the config; a soft-fail
+    # there would silently downgrade an operator-requested feature.
+    mtp_model_type: str | None = None
 
     def __post_init__(self) -> None:
         # PFlashConfig is dataclass(frozen=True), so .validate() returns

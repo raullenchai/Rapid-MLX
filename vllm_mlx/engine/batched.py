@@ -206,6 +206,80 @@ def _run_dispatch_mtp_inject(
     return _DISPATCH_REJECTED
 
 
+def _decide_mtp_dispatch_action(
+    dispatch_result: str,
+    *,
+    cli_vetted_model_type: str | None,
+) -> tuple[str, str | None]:
+    """Production-side predicate for the ``_start_llm`` MTP dispatch gate.
+
+    Codex round-F NIT: the test suite's replay of the gate was
+    reimplementing the predicate instead of exercising a real helper,
+    so the tests could pass while the boot path silently drifted.
+    Extract the branch decision into a single side-effect-free helper
+    that both ``_start_llm`` and the tests call directly.
+
+    Args:
+      dispatch_result: One of the ``_DISPATCH_*`` sentinels returned
+        by :func:`_run_dispatch_mtp_inject`.
+      cli_vetted_model_type: Value of
+        ``SchedulerConfig.mtp_model_type``. When non-None, the CLI
+        already read ``config.json`` on the asyncio thread and vetted
+        the model_type; codex round-E blocker #2 requires the gate to
+        hard-fail on ANY non-attached result in that case. When None
+        (bench-harness / direct-SchedulerConfig caller), the round-D
+        lenient behaviour applies: only ``_DISPATCH_REJECTED`` hard-
+        fails.
+
+    Returns:
+      ``("attached", None)`` on the happy path.
+      ``("continue", None)`` when the caller should proceed on plain
+        autoregressive decode without emitting an error.
+      ``("raise", <error message>)`` when the caller should raise
+        ``RuntimeError`` with the returned message. The message
+        already includes the operator-facing context (dispatch
+        result, CLI-vetted model_type, etc.).
+
+    Pure function — no logging, no exceptions. The caller decides
+    whether to log the "continue" case, so the same helper can serve
+    both production and unit tests without side-effect entanglement.
+    """
+    if dispatch_result == _DISPATCH_ATTACHED:
+        return ("attached", None)
+
+    if dispatch_result == _DISPATCH_REJECTED:
+        return (
+            "raise",
+            "--spec-decode mtp was set but the family MTP "
+            "injector rejected the model. See preceding "
+            "warnings for the specific failure (typical "
+            "causes: missing --mtp-sidecar for a Gemma 4 "
+            "target, sidecar path unreachable, or assistant "
+            "checkpoint model_type mismatch). Refusing to "
+            "boot with MTP silently disabled — pass "
+            "--spec-decode none to continue without MTP.",
+        )
+
+    _cli_vetted = cli_vetted_model_type is not None
+    if _cli_vetted:
+        return (
+            "raise",
+            f"--spec-decode mtp was set and the CLI vetted "
+            f"model_type={cli_vetted_model_type!r}, but the engine "
+            f"could not attach the MTP protocol "
+            f"(dispatch_result={dispatch_result!r}). This "
+            "indicates a plumbing skew between the CLI "
+            "eligibility gate and the engine's dispatch "
+            "table — not an environment race. Refusing to "
+            "boot with MTP silently disabled — pass "
+            "--spec-decode none to continue without MTP, "
+            "or file an issue with the model_type + engine "
+            "version.",
+        )
+
+    return ("continue", None)
+
+
 def _normalize_tool_call_arguments_for_template(messages: list[dict]) -> list[dict]:
     """Normalize OpenAI tool-call replay for templates expecting mappings.
 
@@ -942,64 +1016,18 @@ class BatchedEngine(BaseEngine):
                 getattr(sc, "mtp_sidecar", None),
                 preferred_model_type=_preferred_mt,
             ).result()
-            # Codex round-D + round-E: two-tier failure treatment.
-            #
-            # Codex round-D BLOCKING #1 (kept): the earlier round-C
-            # revision hard-raised on any ``False`` return, which
-            # turned a transient executor-thread config-read race
-            # into a boot abort even for environments where the CLI
-            # had just successfully read ``config.json`` on the
-            # asyncio thread.
-            #
-            # Codex round-E BLOCKING #2 (adjust): the round-D fix
-            # was too lenient in the other direction — soft-skipping
-            # ``_DISPATCH_UNRESOLVED`` / ``_DISPATCH_NO_INJECT``
-            # meant an operator-explicit ``--spec-decode mtp``
-            # could silently boot with MTP disabled, aside from a
-            # warning line the operator has to grep for. Fix: the
-            # CLI now threads a pre-resolved ``model_type`` down via
-            # ``SchedulerConfig.mtp_model_type``. When that's set,
-            # ``_DISPATCH_UNRESOLVED`` can only mean the executor's
-            # dispatch table lookup found nothing usable AFTER the
-            # CLI's own model_type resolution — a plumbing bug, not
-            # a race — so we hard-fail. Same for
-            # ``_DISPATCH_NO_INJECT``.
-            #
-            # When ``mtp_model_type`` is None (non-CLI caller — a
-            # bench script constructs SchedulerConfig directly), we
-            # preserve the pre-0.9.13 lenient behaviour: only
-            # ``_DISPATCH_REJECTED`` hard-fails, the other two
-            # continue on plain decode. This keeps
-            # ``bench/bench_spec_decode_mtp.py`` and similar
-            # research callers unblocked without the CLI's config
-            # threading burden.
-            _cli_vetted = _preferred_mt is not None
-            if _dispatch_result == _DISPATCH_REJECTED:
-                raise RuntimeError(
-                    "--spec-decode mtp was set but the family MTP "
-                    "injector rejected the model. See preceding "
-                    "warnings for the specific failure (typical "
-                    "causes: missing --mtp-sidecar for a Gemma 4 "
-                    "target, sidecar path unreachable, or assistant "
-                    "checkpoint model_type mismatch). Refusing to "
-                    "boot with MTP silently disabled — pass "
-                    "--spec-decode none to continue without MTP."
-                )
-            if _dispatch_result != _DISPATCH_ATTACHED and _cli_vetted:
-                raise RuntimeError(
-                    f"--spec-decode mtp was set and the CLI vetted "
-                    f"model_type={_preferred_mt!r}, but the engine "
-                    f"could not attach the MTP protocol "
-                    f"(dispatch_result={_dispatch_result!r}). This "
-                    "indicates a plumbing skew between the CLI "
-                    "eligibility gate and the engine's dispatch "
-                    "table — not an environment race. Refusing to "
-                    "boot with MTP silently disabled — pass "
-                    "--spec-decode none to continue without MTP, "
-                    "or file an issue with the model_type + engine "
-                    "version."
-                )
-            if _dispatch_result != _DISPATCH_ATTACHED:
+            # Codex round-F NIT: the branch predicate is now in
+            # :func:`_decide_mtp_dispatch_action` so the tests can
+            # exercise the actual production helper instead of
+            # replaying it. See that function's docstring for the
+            # rationale behind each ``(action, message)`` tuple.
+            _action, _err_msg = _decide_mtp_dispatch_action(
+                _dispatch_result,
+                cli_vetted_model_type=_preferred_mt,
+            )
+            if _action == "raise":
+                raise RuntimeError(_err_msg)
+            if _action == "continue":
                 logger.info(
                     "[MTP-vendored] dispatch soft-skipped (result=%r); "
                     "continuing on plain autoregressive decode. The "

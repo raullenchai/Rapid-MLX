@@ -574,44 +574,61 @@ def test_run_dispatch_mtp_inject_propagates_none_sidecar(monkeypatch):
 
 
 def _drive_start_llm_dispatch_gate(dispatch_result, cli_vetted_model_type=None):
-    """Exercise the exact branch of ``_start_llm`` that inspects
-    ``_run_dispatch_mtp_inject`` return codes.
+    """Exercise the production ``_decide_mtp_dispatch_action`` helper
+    that ``_start_llm`` calls after the executor-side dispatch
+    completes.
 
-    Returns ``"continued"`` when the branch would let the boot
-    continue on plain autoregressive decode. Raises ``RuntimeError``
-    otherwise — mirrors the production path.
+    Codex round-F NIT: earlier revisions of this test suite
+    reimplemented the predicate inline, so the tests could pass
+    while the production ``_start_llm`` branch silently drifted.
+    Fix: import the real production helper and let the tests
+    exercise it directly. Now any predicate change in the boot path
+    is automatically covered by every test below.
 
-    ``cli_vetted_model_type`` mirrors the ``SchedulerConfig.
-    mtp_model_type`` value the CLI populates from its own
-    ``config.json`` read. When non-None the gate is strict (codex
-    round-E blocker #2 — ANY non-attached result hard-fails). When
-    None (bench harness / direct SchedulerConfig caller) the gate
-    keeps codex round-D's lenient behaviour: only
-    ``_DISPATCH_REJECTED`` hard-fails.
-
-    We can't easily unit-test ``_start_llm`` end-to-end (it awaits an
-    async engine, loads a model on a real MLX executor). Instead we
-    replay just the gate logic — the SAME conditional the production
-    path runs after ``_dispatch_result`` is populated. If this ever
-    drifts from ``_start_llm``, the ``test_start_llm_gate_matches_
-    source_predicate`` guard below will flag it.
+    Returns ``"continued"`` when the helper says the boot should
+    proceed on plain autoregressive decode, and raises
+    ``RuntimeError`` with the helper's message on the hard-fail
+    path — matching what ``_start_llm`` actually does.
     """
     from vllm_mlx.engine import batched as _batched
 
-    _cli_vetted = cli_vetted_model_type is not None
-    if dispatch_result == _batched._DISPATCH_REJECTED:
-        raise RuntimeError(
-            "--spec-decode mtp was set but the family MTP injector rejected the model."
-        )
-    if dispatch_result != _batched._DISPATCH_ATTACHED and _cli_vetted:
-        raise RuntimeError(
-            "--spec-decode mtp was set and the CLI vetted "
-            f"model_type={cli_vetted_model_type!r}, but the engine "
-            f"could not attach the MTP protocol "
-            f"(dispatch_result={dispatch_result!r})."
-        )
-    # All other return codes: continue on plain decode.
+    action, err_msg = _batched._decide_mtp_dispatch_action(
+        dispatch_result,
+        cli_vetted_model_type=cli_vetted_model_type,
+    )
+    if action == "raise":
+        raise RuntimeError(err_msg)
+    if action == "attached":
+        return "attached"
     return "continued"
+
+
+def test_decide_mtp_dispatch_action_returns_attached_for_attached_result():
+    """Codex round-F NIT regression guard: pin the happy-path return
+    of the production predicate helper."""
+    from vllm_mlx.engine import batched as _batched
+
+    action, msg = _batched._decide_mtp_dispatch_action(
+        _batched._DISPATCH_ATTACHED, cli_vetted_model_type=None
+    )
+    assert action == "attached"
+    assert msg is None
+
+
+def test_decide_mtp_dispatch_action_carries_cli_vetted_model_type_into_error():
+    """The hard-fail message includes the CLI-vetted model_type so
+    the operator sees exactly which model_type the CLI accepted vs.
+    what the dispatcher failed to attach. Pin this in the helper
+    directly so a docstring-only refactor can't drop it.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    action, msg = _batched._decide_mtp_dispatch_action(
+        _batched._DISPATCH_UNRESOLVED,
+        cli_vetted_model_type="gemma4_unified",
+    )
+    assert action == "raise"
+    assert msg is not None and "gemma4_unified" in msg
 
 
 def test_start_llm_raises_runtime_error_on_dispatch_rejected():
@@ -736,41 +753,28 @@ def test_start_llm_raises_on_dispatch_no_inject_when_cli_vetted():
     )
 
 
-def test_start_llm_gate_matches_source_predicate():
-    """Guard that the ``_drive_start_llm_dispatch_gate`` helper's
-    predicate stays in lock-step with the real ``_start_llm`` branch.
+def test_start_llm_gate_delegates_to_decide_helper():
+    """Codex round-F NIT regression guard: pin that ``_start_llm``
+    delegates to :func:`_decide_mtp_dispatch_action` rather than
+    reimplementing the predicate inline.
 
-    If the production gate is ever refactored (extra hard-raise
-    branches, changed sentinel comparison), this test forces the
-    replay helper above to be updated too — otherwise the return-
-    code tests above would silently pass while the real behaviour
-    drifted.
-
-    We read the raw source and pin the three predicates:
-      (a) hard-raise on ``_DISPATCH_REJECTED`` (round-D).
-      (b) hard-raise on non-attached + CLI-vetted (round-E).
-      (c) info-log continuation for the remaining soft-skip case.
+    A future refactor that inlines the branch (or renames the
+    helper) MUST update this guard AND rewire the tests above to the
+    new dispatch surface — otherwise every ``test_start_llm_*``
+    below would silently pass while the boot path diverges.
     """
     import inspect
 
     from vllm_mlx.engine import batched as _batched
 
     src = inspect.getsource(_batched.BatchedEngine._start_llm)
-    assert "_dispatch_result == _DISPATCH_REJECTED" in src, (
-        "codex round-D NIT #4 guard: _start_llm no longer hard-raises "
-        "on _DISPATCH_REJECTED — either the sentinel name changed or "
-        "the branch was refactored. Update _drive_start_llm_dispatch_"
-        "gate to match."
-    )
-    assert "_cli_vetted" in src, (
-        "codex round-E blocker #2 guard: _start_llm no longer branches "
-        "on _cli_vetted (the CLI-vetted-model_type discriminator). If "
-        "the branch was renamed, update this guard and "
-        "_drive_start_llm_dispatch_gate accordingly."
-    )
-    assert "_dispatch_result != _DISPATCH_ATTACHED" in src, (
-        "codex round-D NIT #4 guard: _start_llm no longer has the "
-        "non-attached branch. Update _drive_start_llm_dispatch_gate."
+    assert "_decide_mtp_dispatch_action" in src, (
+        "codex round-F NIT regression: _start_llm no longer delegates "
+        "to _decide_mtp_dispatch_action. The tests above exercise that "
+        "helper directly; if _start_llm has inlined the branch (or "
+        "renamed the helper), the tests are no longer covering the "
+        "boot path. Update _drive_start_llm_dispatch_gate to match the "
+        "new surface and update this guard's expected symbol."
     )
 
 
