@@ -950,19 +950,20 @@ def test_apply_mtp_dispatch_raises_runtime_error_on_timeout(monkeypatch):
     )
 
 
-def test_get_mtp_dispatch_timeout_sec_default():
+def test_get_mtp_dispatch_timeout_sec_default(monkeypatch):
     """The dispatch timeout defaults to 600s when the env var is
     unset — long enough for slow 4-16GB assistant downloads on a
     typical residential connection.
-    """
-    import os
 
+    Codex round-H NIT: use ``monkeypatch.delenv`` instead of a
+    bare ``del os.environ[...]`` so the env-var cleanup is scoped
+    to this test and automatically rolled back on exit — a stray
+    ``del`` would leak the un-set state to the next test in the
+    session.
+    """
     from vllm_mlx.engine import batched as _batched
 
-    if "RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC" in os.environ:
-        # Test environment cleanup — leave the default codepath
-        # unaffected by an operator override in CI.
-        del os.environ["RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC"]
+    monkeypatch.delenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", raising=False)
     assert _batched._get_mtp_dispatch_timeout_sec() == 600.0
 
 
@@ -1157,25 +1158,25 @@ def test_install_mtp_vendored_gate_fails_closed_on_missing_request_metadata(
 
 
 def test_install_mtp_vendored_cleans_up_state_on_fallthrough_batch_size(monkeypatch):
-    """Codex round-A blocker #3 regression guard.
+    """Codex round-A blocker #3 + round-H BLOCKING #1 regression
+    guard.
 
-    A uid that ran MTP for a while then transitions to a B>1 batch
-    (or non-greedy, or logits-processors) fell through to
-    ``_orig_step()`` — but the per-uid MTP state stayed live. On the
-    next single-uid greedy step for the same uid, the stale generator
-    would resume with a ``prompt_cache`` view one position stale
-    behind the actual live cache, silently emitting wrong tokens.
-    Fix: cleanup on every fallthrough branch.
+    Two contracts under test:
 
-    Codex round-B blocker: the earlier revision of this test never
-    reached the successful first-call path, so ``_state`` was empty
-    and the cleanup call at the B>1 branch was a no-op. The test
-    would have passed even with the cleanup removed. Fix: monkeypatch
-    ``mtp_generate_step`` to a fake iterator so the first call
-    populates ``_state[uid]``, drive one warm decode call, then
-    trigger the fallthrough. Prove the generator was ``.close()``-d
-    (side-effect observable) AND that a subsequent single-uid call
-    re-enters the FIRST-call path (i.e. constructs a fresh generator).
+    * Round-A: a uid that ran MTP for a while then transitions to a
+      B>1 batch closes its generator (side-effect observable).
+
+    * Round-H: after MTP has emitted at least one token, the B>1
+      transition is TERMINAL — the wrapper MUST raise
+      ``RuntimeError`` instead of delegating to ``_orig_step()``
+      (which would emit the primed first token AGAIN because
+      ``gb._next_tokens`` is stale). The affected uid must land in
+      ``_disabled_uids`` so a retry still short-circuits.
+
+    Pre-round-H this test verified the wrapper cleanly fell through
+    to ``_orig_step()``; codex round-H rightly called that out as
+    stream-corrupting. The test now pins the safer terminal-raise
+    behaviour.
     """
     from types import SimpleNamespace
 
@@ -1195,8 +1196,6 @@ def test_install_mtp_vendored_cleans_up_state_on_fallthrough_batch_size(monkeypa
             return self
 
         def __next__(self):
-            # Emit a bogus token each call — the test never checks its
-            # value, only that we get through iteration.
             self._n += 1
             return (self._n + 1000, mx.array([0.0]), False)
 
@@ -1231,29 +1230,60 @@ def test_install_mtp_vendored_cleans_up_state_on_fallthrough_batch_size(monkeypa
     gb._step()
     assert fake_gen_calls["closed"] == 0
 
-    # Now transition to B=2. The B>1 fallthrough branch must call
-    # _cleanup_uid on the stale uid, which closes the fake generator.
+    # Now transition to B=2. Round-H BLOCKING #1: uid=7 has state,
+    # so falling through would corrupt the output stream. The
+    # wrapper MUST raise. Generator MUST be closed on the way out.
     gb.uids = [1, 2]
+    try:
+        gb._step()
+    except RuntimeError as e:
+        assert "b>1" in str(e).lower() or "in-flight" in str(e).lower()
+        stats = batch_gen._mtp_vendored_stats
+        assert stats["ft_batch_size"] >= 1
+        assert fake_gen_calls["closed"] >= 1, (
+            "codex round-A blocker #3 regression: B>1 terminal path "
+            "did not close the stale generator on the way out."
+        )
+        return
+    raise AssertionError(
+        "codex round-H BLOCKING #1 regression: B>1 transition after "
+        "MTP emitted tokens did NOT raise RuntimeError. Falling "
+        "through to _orig_step() at this point would emit "
+        "first_gen_tok (staged in gb._next_tokens) AGAIN, "
+        "corrupting the request's output stream."
+    )
+
+
+def test_install_mtp_vendored_b_gt_1_soft_fallthrough_when_no_state():
+    """Codex round-H BLOCKING #1 companion: the B>1 fallthrough
+    remains a soft skip when NO uid has in-flight MTP state.
+
+    This is the "batch legitimately started with B>1" case — the
+    wrapper never got a chance to prime any generator, so
+    ``gb._next_tokens`` is the fresh baseline sample.
+    ``_orig_step()`` here is safe.
+    """
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests=None,
+        uid_to_request_id=None,
+    )
+    assert ok is True
+
+    gb.uids = [1, 2]
+    gb._next_tokens = mx.array([100], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    # No state populated; safe soft-fall-through.
     gb._step()
     stats = batch_gen._mtp_vendored_stats
     assert stats["ft_batch_size"] >= 1
-    assert fake_gen_calls["closed"] >= 1, (
-        "codex round-A blocker #3 regression: B>1 fallthrough did not "
-        "clean up the stale per-uid MTP state"
-    )
-
-    # Back to a single-uid batch — must re-enter FIRST call path
-    # (proving state was cleared). If cleanup was missed the resume
-    # path would reuse the same fake generator instance.
-    gb.uids = [7]
-    gb._next_tokens = mx.array([501], dtype=mx.uint32)
-    gb._next_logprobs = [mx.array([0.0])]
-    gb._step()
-    assert fake_gen_calls["constructed"] == 2, (
-        "cleanup contract broken: single-uid step after fallthrough "
-        "did not re-enter the first-call path (would silently resume "
-        "a stale generator)."
-    )
+    assert gb.orig_step_calls == 1
 
 
 def test_install_mtp_vendored_first_call_construction_failure_does_not_double_book(
@@ -1695,6 +1725,180 @@ def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypat
         "codex round-G BLOCKING #2 regression: wrapper did NOT raise "
         "RuntimeError on internal generator StopIteration."
     )
+
+
+def test_install_mtp_vendored_non_greedy_after_state_raises(monkeypatch):
+    """Codex round-H BLOCKING #2 regression guard.
+
+    Mid-stream switch to non-greedy sampling (temp > 0) after MTP
+    has already emitted tokens is TERMINAL. The wrapper cannot
+    fall through to ``_orig_step()`` because ``gb._next_tokens``
+    is stale (still holds ``first_gen_tok`` from the priming
+    ``_step``). The affected uid must land in ``_disabled_uids``
+    and the wrapper must raise.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    class _FakeGen:
+        def __init__(self):
+            self._n = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self._n += 1
+            return (self._n + 1000, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _FakeGen())
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [55]
+    # Start greedy so MTP primes the generator.
+    sp = SimpleNamespace(temperature=0.0)
+    request_stub = SimpleNamespace(sampling_params=sp)
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-55": request_stub},
+        uid_to_request_id={55: "req-55"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([300], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # First call — MTP primed. _state[55] populated.
+    gb._step()
+
+    # Mid-stream switch to temp > 0 — round-H terminal branch.
+    sp.temperature = 0.7
+    try:
+        gb._step()
+    except RuntimeError as e:
+        assert "non-greedy" in str(e).lower()
+        # Uid is now disabled — a retry on same request short-
+        # circuits to _orig_step (not another MTP construction).
+        gb._next_tokens = mx.array([301], dtype=mx.uint32)
+        gb._next_logprobs = [mx.array([0.0])]
+        pre = gb.orig_step_calls
+        gb._step()
+        assert gb.orig_step_calls == pre + 1, (
+            "codex round-H BLOCKING #2 regression: post-raise retry "
+            "did not hit the disable short-circuit."
+        )
+        return
+    raise AssertionError(
+        "codex round-H BLOCKING #2 regression: non-greedy switch "
+        "mid-stream did NOT raise RuntimeError. Falling through to "
+        "_orig_step() here would duplicate first_gen_tok."
+    )
+
+
+def test_install_mtp_vendored_logits_processors_after_state_raises(monkeypatch):
+    """Codex round-H BLOCKING #3 regression guard.
+
+    Mid-stream appearance of logits processors after MTP has already
+    emitted tokens is TERMINAL. Same rationale as the non-greedy
+    branch: cannot rebuild ``gb._next_tokens`` for baseline decode.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    class _FakeGen:
+        def __init__(self):
+            self._n = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self._n += 1
+            return (self._n + 1000, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _FakeGen())
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [33]
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-33": request_stub},
+        uid_to_request_id={33: "req-33"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([400], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # First call — MTP primed.
+    gb._step()
+
+    # Mid-stream: install a truthy logits processor. Round-H
+    # terminal branch.
+    gb.logits_processors = [[lambda tokens, logits: logits]]
+    try:
+        gb._step()
+    except RuntimeError as e:
+        assert "logits processor" in str(e).lower()
+        return
+    raise AssertionError(
+        "codex round-H BLOCKING #3 regression: logits-processors "
+        "appearing mid-stream did NOT raise RuntimeError."
+    )
+
+
+def test_install_mtp_vendored_non_greedy_before_state_soft_fallthrough(monkeypatch):
+    """Companion to round-H BLOCKING #2: when the request starts
+    non-greedy (never populated ``_state``), the wrapper soft-falls
+    through to ``_orig_step()`` and marks the uid as disabled to
+    prevent re-entry on the next step.
+
+    This preserves the round-A "bench harness with temp>0" path
+    working under the round-H tightening.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [11]
+    # temp > 0 from the start — MTP never primes.
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.7))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-11": request_stub},
+        uid_to_request_id={11: "req-11"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([200], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # Should soft-fall-through, not raise.
+    gb._step()
+    stats = batch_gen._mtp_vendored_stats
+    assert stats["ft_non_greedy"] >= 1
+    assert gb.orig_step_calls == 1
 
 
 def test_install_mtp_vendored_mid_stream_generator_failure_raises(monkeypatch):

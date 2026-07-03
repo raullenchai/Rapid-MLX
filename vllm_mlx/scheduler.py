@@ -1566,25 +1566,87 @@ def _install_mtp_vendored(
         See :func:`_install_mtp_vendored` docstring for the gate matrix
         and MVP caveats.
         """
+
         # --- Gate matrix ---
         # Batch=1 only. mlx-lm's ``PromptProcessingBatch.generate``
         # constructs a fresh ``GenerationBatch`` with size 1 per request
         # split; the persistent ``_generation_batch`` then extends
         # in-place. Under the smoke script's single-request load this
-        # stays at 1 throughout. When B>1 we defer to plain decode.
+        # stays at 1 throughout.
         #
-        # Codex round-A blocker #3: any fallthrough on a uid that had
-        # in-flight MTP state MUST cleanup — otherwise the baseline
-        # ``_orig_step()`` advances ``gb.prompt_cache`` by 1 and the
-        # next MTP call would resume a generator whose internal
-        # ``prompt_cache`` view is one position stale, causing off-by-
-        # one attention (wrong tokens emitted, silent). Cleanup lives
-        # inside a single helper so we can't miss a branch.
+        # Codex round-A blocker #3 (initial cleanup requirement)
+        # + codex round-H BLOCKING #1-3 (fallthrough safety):
+        #
+        # When B>1 (or non-greedy / logits-proc appears MID-stream):
+        # if MTP has already emitted tokens for the affected uid,
+        # falling through to ``_orig_step()`` is UNSAFE. The
+        # wrapper never updates ``gb._next_tokens`` — it still
+        # holds ``first_gen_tok`` from the priming ``_step`` in
+        # ``__init__`` — so ``_orig_step()`` would emit
+        # ``first_gen_tok`` AGAIN, duplicating the stream.
+        #
+        # Two-way split for every fallthrough branch:
+        #   * ``_state`` empty for the affected uid → soft-fall-
+        #     through to ``_orig_step()``. MTP hasn't primed
+        #     anything, ``gb._next_tokens`` is the fresh sample
+        #     baseline ``_step`` needs. Also mark the uid as
+        #     disabled so subsequent steps in this request skip the
+        #     wrapper entirely.
+        #   * ``_state`` non-empty for the affected uid → TERMINAL.
+        #     Record the disable marker (so any retry short-
+        #     circuits) and raise ``RuntimeError``. Recovering to
+        #     plain decode would require synthesising
+        #     ``gb._next_tokens`` from the last MTP-emitted token,
+        #     which we don't stage anywhere.
+        def _record_terminal_disable(u: int) -> None:
+            """Record a terminal disable marker for uid ``u`` and
+            drop any per-generator state. Used on the "MTP already
+            emitted, fallthrough is unsafe" path."""
+            _term_req_id = None
+            if uid_to_request_id is not None:
+                _term_req_id = uid_to_request_id.get(u)
+            _disabled_uids[u] = _term_req_id
+            _state_entry = _state.pop(u, None)
+            if _state_entry is not None:
+                _gen = _state_entry.get("gen")
+                if _gen is not None:
+                    try:
+                        _gen.close()
+                    except Exception:  # noqa: BLE001
+                        pass
+
+        def _mark_disabled(u: int) -> None:
+            """Mark uid ``u`` as disabled (for pre-MTP soft-fall-
+            through paths). No state to clean up because state was
+            empty at this branch."""
+            _term_req_id = None
+            if uid_to_request_id is not None:
+                _term_req_id = uid_to_request_id.get(u)
+            _disabled_uids[u] = _term_req_id
+
         if not gb.uids or len(gb.uids) != 1:
             _stats["fallthrough_steps"] += 1
             _stats["ft_batch_size"] += 1
-            for stale_uid in list(_state):
-                _cleanup_uid(stale_uid)
+            # Codex round-H BLOCKING #1: if any uid in ``_state``
+            # has in-flight MTP emissions, falling through to
+            # ``_orig_step()`` here would corrupt the stream (see
+            # ``_record_terminal_disable`` docstring). Raise
+            # instead. When no uid has state — the pure
+            # "B goes from 1 to N without any single MTP call
+            # having succeeded yet" edge — the fallthrough is safe.
+            if _state:
+                terminal_uids = list(_state)
+                for stale_uid in terminal_uids:
+                    _record_terminal_disable(stale_uid)
+                raise RuntimeError(
+                    "[MTP-vendored] B>1 transition mid-stream with "
+                    f"in-flight MTP state (uids={terminal_uids!r}). "
+                    "Cannot fall back to plain decode: the wrapper "
+                    "never updates gb._next_tokens, so baseline "
+                    "_step would emit the previously-emitted first "
+                    "token again. Failing the affected requests "
+                    "instead of corrupting the output stream."
+                )
             return _orig_step()
 
         uid = gb.uids[0]
@@ -1630,14 +1692,39 @@ def _install_mtp_vendored(
         if not _is_greedy_for_uid(uid):
             _stats["fallthrough_steps"] += 1
             _stats["ft_non_greedy"] += 1
-            _cleanup_uid(uid)
+            # Codex round-H BLOCKING #2: mid-stream switch to non-
+            # greedy is terminal if MTP already emitted. Otherwise
+            # soft-skip (mark disabled so we don't retry the greedy
+            # check on every step for the rest of the request).
+            if uid in _state:
+                _record_terminal_disable(uid)
+                raise RuntimeError(
+                    f"[MTP-vendored] uid={uid} sampling params "
+                    "switched to non-greedy mid-stream after MTP "
+                    "started emitting. Cannot fall back to plain "
+                    "decode without duplicating the last MTP-emitted "
+                    "token."
+                )
+            _mark_disabled(uid)
             return _orig_step()
 
         _lp = getattr(gb, "logits_processors", None)
         if _lp and any(p for p in _lp if p):
             _stats["fallthrough_steps"] += 1
             _stats["ft_logits_processors"] += 1
-            _cleanup_uid(uid)
+            # Codex round-H BLOCKING #3: same treatment as the non-
+            # greedy branch — terminal if MTP already emitted,
+            # soft-skip otherwise.
+            if uid in _state:
+                _record_terminal_disable(uid)
+                raise RuntimeError(
+                    f"[MTP-vendored] uid={uid} gained a logits "
+                    "processor mid-stream after MTP started "
+                    "emitting. Cannot fall back to plain decode "
+                    "without duplicating the last MTP-emitted "
+                    "token."
+                )
+            _mark_disabled(uid)
             return _orig_step()
 
         state = _state.get(uid)
