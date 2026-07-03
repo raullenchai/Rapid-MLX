@@ -1455,21 +1455,23 @@ def _install_mtp_vendored(
         residual-distribution sample on reject — but the MVP install
         hard-codes ``temp=0.0`` into the generator constructor, so any
         request with temperature>0 would silently receive a
-        different sampled marginal. Fall through instead.
+        different sampled marginal.
 
-        The check mirrors ``_install_suffix_decoding._is_greedy_for_uid``
-        (SOP §10 pattern). When the request lookup fails (no
-        ``uid_to_request_id`` map, or the request has been evicted mid-
-        step) we conservatively return True — the smoke path always has
-        a resolvable request and this branch is a
-        defense-in-depth escape.
+        Codex round-A blocker #1: fail closed on unresolvable metadata.
+        Prior revision returned ``True`` when ``uid_to_request_id`` or
+        ``requests`` were ``None`` (or the request lookup failed) —
+        that would silently apply greedy sampling to a temp>0 request
+        whose bookkeeping had just been evicted. Return ``False`` here
+        so the caller falls through to ``_orig_step()`` (which reads
+        the real sampler from ``gb.samplers[0]``) instead of applying
+        the MTP-hardcoded greedy path.
         """
         if uid_to_request_id is None or requests is None:
-            return True
+            return False
         req_id = uid_to_request_id.get(uid)
         req = requests.get(req_id) if req_id else None
         if req is None or getattr(req, "sampling_params", None) is None:
-            return True
+            return False
         temp = getattr(req.sampling_params, "temperature", None)
         return temp is None or temp == 0.0
 
@@ -1485,9 +1487,19 @@ def _install_mtp_vendored(
         # split; the persistent ``_generation_batch`` then extends
         # in-place. Under the smoke script's single-request load this
         # stays at 1 throughout. When B>1 we defer to plain decode.
+        #
+        # Codex round-A blocker #3: any fallthrough on a uid that had
+        # in-flight MTP state MUST cleanup — otherwise the baseline
+        # ``_orig_step()`` advances ``gb.prompt_cache`` by 1 and the
+        # next MTP call would resume a generator whose internal
+        # ``prompt_cache`` view is one position stale, causing off-by-
+        # one attention (wrong tokens emitted, silent). Cleanup lives
+        # inside a single helper so we can't miss a branch.
         if not gb.uids or len(gb.uids) != 1:
             _stats["fallthrough_steps"] += 1
             _stats["ft_batch_size"] += 1
+            for stale_uid in list(_state):
+                _cleanup_uid(stale_uid)
             return _orig_step()
 
         uid = gb.uids[0]
@@ -1495,12 +1507,14 @@ def _install_mtp_vendored(
         if not _is_greedy_for_uid(uid):
             _stats["fallthrough_steps"] += 1
             _stats["ft_non_greedy"] += 1
+            _cleanup_uid(uid)
             return _orig_step()
 
         _lp = getattr(gb, "logits_processors", None)
         if _lp and any(p for p in _lp if p):
             _stats["fallthrough_steps"] += 1
             _stats["ft_logits_processors"] += 1
+            _cleanup_uid(uid)
             return _orig_step()
 
         state = _state.get(uid)
@@ -1529,9 +1543,6 @@ def _install_mtp_vendored(
                 return _orig_step()
             first_tok = int(first_tok_arr[0].item())
             first_lp = first_lp_list[0]
-            # Match the bookkeeping mlx-lm's original _step performs
-            # on the ``self.tokens`` list per emitted token.
-            gb.tokens[0].append(first_tok)
 
             # Compute a generous max_tokens for the generator. Even
             # when the request's max_tokens is small (e.g. 80), the
@@ -1540,6 +1551,13 @@ def _install_mtp_vendored(
             # ``_num_tokens[i] >= self.max_tokens[i]``.
             gen_max = int(gb.max_tokens[0]) if gb.max_tokens else 4096
 
+            # Codex round-A blocker #2: construct the generator BEFORE
+            # mutating ``gb.tokens[0]``. Prior revision appended the
+            # first token first, then constructed the generator; on
+            # construction failure the fallthrough path called
+            # ``_orig_step()`` which appended the SAME token again,
+            # double-booking bookkeeping and emitting a duplicated
+            # token to the stream.
             try:
                 gen = mtp_generate_step(
                     prompt=first_tok_arr.astype(mx.uint32),
@@ -1557,6 +1575,11 @@ def _install_mtp_vendored(
                 )
                 _stats["fallthrough_steps"] += 1
                 return _orig_step()
+
+            # Generator built successfully — safe to record the first
+            # token now. Match the bookkeeping mlx-lm's original _step
+            # performs on the ``self.tokens`` list per emitted token.
+            gb.tokens[0].append(first_tok)
 
             _state[uid] = {
                 "gen": gen,

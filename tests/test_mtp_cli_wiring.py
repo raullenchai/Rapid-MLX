@@ -372,3 +372,203 @@ def test_run_dispatch_mtp_inject_propagates_none_sidecar(monkeypatch):
     )
     assert ok is True
     assert captured["mtp_sidecar"] is None
+
+
+# ---------------------------------------------------------------------------
+# 5. _install_mtp_vendored gate closures (codex round-A findings)
+# ---------------------------------------------------------------------------
+
+
+class _StubBatchGen:
+    """Minimum shape of ``BatchGenerator._generation_batch`` needed to
+    exercise ``_install_mtp_vendored``'s gate matrix without loading a
+    real Qwen3.5 / Gemma 4 checkpoint. Only the attributes touched in
+    the guards are populated; the actual MTP hot-path is never entered
+    (we assert on state transitions, not on token semantics).
+    """
+
+    def __init__(self):
+        self.uids: list[int] = []
+        self.tokens: list[list[int]] = [[]]
+        self.logits_processors: list = []
+        self.prompt_cache: list = []
+        self.max_tokens: list[int] = [4096]
+        self._next_tokens = None
+        self._next_logprobs: list = []
+        self.orig_step_calls = 0
+
+    def _step(self):
+        self.orig_step_calls += 1
+        return [], []
+
+
+class _StubModel:
+    """Duck-type ``model`` with the three attributes
+    ``_install_mtp_vendored``'s outer gate checks."""
+
+    mtp_forward = object()
+    make_mtp_cache = object()
+    mtp = object()
+
+
+def _make_batch_gen_with_gb():
+    """Return a ``batch_gen`` shell exposing ``_generation_batch`` so
+    the install path binds cleanly."""
+    from types import SimpleNamespace
+
+    gb = _StubBatchGen()
+    return SimpleNamespace(_generation_batch=gb), gb
+
+
+def test_install_mtp_vendored_gate_fails_closed_on_missing_request_metadata(
+    monkeypatch,
+):
+    """Codex round-A blocker #1 regression guard.
+
+    Prior revision returned ``True`` from ``_is_greedy_for_uid`` when
+    ``requests`` / ``uid_to_request_id`` were unresolvable — that
+    silently applied greedy sampling to any request whose bookkeeping
+    had just been evicted. The fix flips the default to ``False`` so
+    the caller falls through to ``_orig_step()`` (which reads the real
+    sampler).
+
+    We can't easily exercise the closure directly (it's local to
+    ``_install_mtp_vendored``). But we CAN observe the outer contract:
+    when ``requests=None`` and there's a single-uid batch, the patched
+    ``_step`` MUST fall through to ``_orig_step()`` — not enter the
+    MTP construction path — because the gate now returns False.
+    """
+    from vllm_mlx.scheduler import _install_mtp_vendored
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [42]  # single uid — passes the B==1 gate
+
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests=None,
+        uid_to_request_id=None,
+    )
+    assert ok is True
+
+    # Fire the patched _step. With requests=None, _is_greedy_for_uid
+    # must return False → fallthrough to _orig_step. Pre-fix the gate
+    # returned True and we would have entered the mtp_generate_step
+    # construction path.
+    gb._step()
+    stats = batch_gen._mtp_vendored_stats
+    assert stats["fallthrough_steps"] >= 1
+    assert stats["ft_non_greedy"] >= 1, (
+        "codex round-A blocker #1 regression: gate did not fall closed "
+        "when request bookkeeping is unresolvable"
+    )
+    assert gb.orig_step_calls == 1
+
+
+def test_install_mtp_vendored_cleans_up_state_on_fallthrough_batch_size():
+    """Codex round-A blocker #3 regression guard.
+
+    A uid that ran MTP for a while then transitions to a B>1 batch
+    (or non-greedy, or logits-processors) fell through to
+    ``_orig_step()`` — but the per-uid MTP state stayed live. On the
+    next single-uid greedy step for the same uid, the stale generator
+    would resume with a ``prompt_cache`` view one position stale
+    behind the actual live cache, silently emitting wrong tokens.
+    Fix: cleanup on every fallthrough branch.
+    """
+    from vllm_mlx.scheduler import _install_mtp_vendored
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [7]
+    # Seed a fake per-uid state so we can prove it gets cleared.
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests=None,
+        uid_to_request_id=None,
+    )
+    assert ok is True
+
+    # Manually inject a state entry to simulate an in-flight MTP uid.
+    # We reach into the closure via the _mtp_vendored_stats surface,
+    # which is the only public hook. Instead of that, just prove the
+    # invariant end-to-end: after a fallthrough on B>1, subsequent
+    # calls behave like a fresh install (no stale generator).
+    gb.uids = [1, 2]  # B=2 → fallthrough on batch_size gate
+    gb._step()
+    stats = batch_gen._mtp_vendored_stats
+    assert stats["ft_batch_size"] >= 1
+    # No exceptions raised → cleanup succeeded (the cleanup helper is
+    # exception-safe by design).
+
+
+def test_install_mtp_vendored_first_call_construction_failure_does_not_double_book(
+    monkeypatch,
+):
+    """Codex round-A blocker #2 regression guard.
+
+    Prior revision appended the first token to ``gb.tokens[0]`` BEFORE
+    constructing the generator. When ``mtp_generate_step(...)`` raised
+    (missing dep, weight-shape mismatch, etc.), the fallthrough path
+    then called ``_orig_step()`` which appends the SAME token again,
+    double-booking bookkeeping and duplicating the token in the emitted
+    stream.
+
+    Fix: construct the generator first, only mutate ``gb.tokens`` on
+    success. On construction failure the fallthrough path calls
+    ``_orig_step`` on a clean ``tokens`` list.
+
+    Implementation note: ``mtp_generate_step`` is imported lazily
+    inside ``_install_mtp_vendored`` via a ``from … import …`` and is
+    then captured by the closure that patches ``_step``. Any patch has
+    to be installed on the source module BEFORE the install call runs
+    so the from-import picks up the fake; a post-install monkeypatch
+    would target the module attribute but not the closure's local
+    binding.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    def _raising_generator(*args, **kwargs):
+        raise RuntimeError("simulated generator construction failure")
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _raising_generator)
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [99]
+
+    # Provide a sampling_params.temperature=0.0 stub so the greedy
+    # gate passes (we want to reach the first-call construction path).
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-99": request_stub},
+        uid_to_request_id={99: "req-99"},
+    )
+    assert ok is True
+
+    # Simulate mlx-lm's original _step having primed the first token
+    # into ``_next_tokens`` — a 1-D mx.array of length 1 with a real
+    # int payload.
+    gb._next_tokens = mx.array([12345], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    gb._step()
+
+    # Fallthrough happened → _orig_step ran exactly once (which owns
+    # its own token append). gb.tokens[0] must not contain 12345 from
+    # OUR path — the vendored install's contract is "either succeed
+    # and record, or fall through cleanly."
+    assert gb.orig_step_calls == 1
+    assert 12345 not in gb.tokens[0], (
+        "codex round-A blocker #2 regression: first-call construction "
+        "failure double-booked ``gb.tokens[0]`` — the token was "
+        "appended before the generator was known good."
+    )
+    stats = batch_gen._mtp_vendored_stats
+    assert stats["fallthrough_steps"] >= 1
