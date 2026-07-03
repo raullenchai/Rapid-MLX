@@ -2394,90 +2394,226 @@ def test_install_mtp_vendored_next_tokens_shape_survives_stop_iteration(
     )
 
 
-def test_cli_mtp_reconciliation_promotes_eligibility_read(monkeypatch, tmp_path):
-    """Codex round-I BLOCKING #3 regression guard.
+def test_apply_mtp_cli_model_type_reconciliation_promotes_eligibility_read():
+    """Codex round-I BLOCKING #3 + round-K BLOCKING #2 regression
+    guard.
 
-    Reproduces the "CLI-thread config read fails, engine treats
-    request as non-CLI-vetted, dispatch soft-skips" bug: monkeypatch
-    ``_gather_kv_cache_dtype_inputs`` so the FIRST call returns
-    ``(None, {})`` (simulating a transient failure) and the SECOND
-    call returns a valid Gemma 4 config. Under the pre-round-I
-    code, ``_cli_mtp_model_type`` would stay None even though the
-    eligibility gate accepted the request. Post-fix, the
-    reconciliation block MUST promote the eligibility read's
-    ``model_type`` into ``scheduler_config.mtp_model_type``.
+    Reproduces the "CLI-thread config read fails silently, engine
+    treats request as non-CLI-vetted, dispatch soft-skips" bug via
+    the extracted production helper — NOT via an inline replay in
+    the test body (round-K BLOCKING #2 correctly flagged that an
+    inline replay lets the test pass even if the production code
+    is deleted).
 
-    Rather than driving the full ``serve_command`` (heavy — pulls
-    real model paths), replay the reconciliation logic against the
-    two-read shape. This test is deliberately narrow to prove the
-    reconciliation contract; the ``_apply_mtp_dispatch`` tests
-    above cover the downstream engine plumbing.
+    Contract under test: ``_apply_mtp_cli_model_type_reconciliation``
+    promotes the eligibility gate's ``model_type`` into
+    ``scheduler_config.mtp_model_type`` when the pre-SchedulerConfig
+    best-effort read had returned ``None``.
     """
-    import vllm_mlx.cli as _cli
+    from vllm_mlx.cli import _apply_mtp_cli_model_type_reconciliation
     from vllm_mlx.scheduler import SchedulerConfig
-    from vllm_mlx.spec_decode.mtp import (
-        MTPEligibility,
-        detect_mtp_eligibility,
-    )
 
-    # Simulate the two-read shape: first read fails (returns
-    # None), second read returns a Gemma 4 config with sidecar
-    # support.
-    call_count = {"n": 0}
-    _valid_hf_cfg = {"model_type": "gemma4_unified"}
-
-    def _flaky_gather(model_name):
-        call_count["n"] += 1
-        if call_count["n"] == 1:
-            return None, {}
-        return _valid_hf_cfg, {}
-
-    monkeypatch.setattr(_cli, "_gather_kv_cache_dtype_inputs", _flaky_gather)
-
-    # Step 1: simulate the pre-SchedulerConfig best-effort read that
-    # can fail. This mirrors the block at line ~2362.
-    _cli_mtp_model_type: str | None = None
-    try:
-        _hf_cfg_for_mtype, _ = _cli._gather_kv_cache_dtype_inputs("some-model")
-        if isinstance(_hf_cfg_for_mtype, dict):
-            _mt = _hf_cfg_for_mtype.get("model_type")
-            if isinstance(_mt, str):
-                _cli_mtp_model_type = _mt
-    except Exception:
-        _cli_mtp_model_type = None
-
-    # First read failed silently → _cli_mtp_model_type is None.
-    # This is the bug shape.
-    assert _cli_mtp_model_type is None
-
-    # Build SchedulerConfig with the None value (matches production).
+    # Simulate the production shape: first read failed →
+    # scheduler_config.mtp_model_type is None. Eligibility gate's
+    # read succeeded and returned a valid Gemma 4 config.
     sc = SchedulerConfig(
         spec_decode="mtp",
         mtp_sidecar="/tmp/fake-sidecar",
-        mtp_model_type=_cli_mtp_model_type,
+        mtp_model_type=None,
     )
-    assert sc.mtp_model_type is None
+    hf_cfg_eligibility = {"model_type": "gemma4_unified"}
 
-    # Step 2: simulate the eligibility gate + reconciliation block.
-    hf_cfg_eligibility, _ = _cli._gather_kv_cache_dtype_inputs("some-model")
-    eligibility = detect_mtp_eligibility(hf_cfg_eligibility, has_external_sidecar=True)
-    assert eligibility is not MTPEligibility.NONE
-
-    # Reconciliation logic (mirrors cli.py block after eligibility
-    # check): promote the eligibility read's model_type into
-    # SchedulerConfig.mtp_model_type.
-    _eligibility_model_type: str | None = None
-    if isinstance(hf_cfg_eligibility, dict):
-        _mt_from_eligibility = hf_cfg_eligibility.get("model_type")
-        if isinstance(_mt_from_eligibility, str):
-            _eligibility_model_type = _mt_from_eligibility
-    sc.mtp_model_type = _eligibility_model_type
+    _apply_mtp_cli_model_type_reconciliation(
+        scheduler_config=sc,
+        hf_cfg_eligibility=hf_cfg_eligibility,
+        logger=None,
+    )
 
     assert sc.mtp_model_type == "gemma4_unified", (
         "codex round-I BLOCKING #3 regression: the reconciliation "
-        "block did NOT promote the eligibility read's model_type into "
-        f"SchedulerConfig.mtp_model_type (got {sc.mtp_model_type!r}). "
+        "helper did NOT promote the eligibility read's model_type "
+        f"into SchedulerConfig.mtp_model_type (got {sc.mtp_model_type!r}). "
         "Without this promotion the engine treats an operator's "
         "explicit --spec-decode mtp as non-CLI-vetted and soft-skips "
         "dispatch on any non-attached result."
+    )
+
+
+def test_apply_mtp_cli_model_type_reconciliation_hard_fails_when_model_type_missing(
+    capsys,
+):
+    """Codex round-I BLOCKING #3 defensive branch.
+
+    If ``detect_mtp_eligibility`` ever accepts a config that lacks a
+    string ``model_type`` (theoretical, should be unreachable per
+    the detector's own gates), the reconciliation helper MUST hard-
+    fail rather than silently boot with
+    ``scheduler_config.mtp_model_type=None`` — that's the exact
+    silent-skip bug the whole reconciliation was designed to
+    prevent.
+    """
+    from vllm_mlx.cli import _apply_mtp_cli_model_type_reconciliation
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    sc = SchedulerConfig(spec_decode="mtp", mtp_model_type=None)
+
+    # Config passed the eligibility gate but somehow lacks a string
+    # model_type — the defensive branch.
+    hf_cfg_broken = {"other_field": "value"}
+
+    try:
+        _apply_mtp_cli_model_type_reconciliation(
+            scheduler_config=sc,
+            hf_cfg_eligibility=hf_cfg_broken,
+            logger=None,
+        )
+    except SystemExit as e:
+        assert e.code == 2
+        captured = capsys.readouterr()
+        assert "eligibility passed" in captured.err
+        return
+    raise AssertionError(
+        "codex round-I BLOCKING #3 defensive branch regression: the "
+        "reconciliation helper did NOT sys.exit(2) when eligibility "
+        "accepted a config but model_type couldn't be extracted. "
+        f"scheduler_config.mtp_model_type={sc.mtp_model_type!r}."
+    )
+
+
+def test_apply_mtp_cli_model_type_reconciliation_prefers_eligibility_on_disagreement():
+    """Codex round-I BLOCKING #3: when the earlier CLI-thread read
+    disagreed with the eligibility read, the reconciliation MUST
+    prefer the eligibility read — the eligibility gate is the
+    source of truth for accept/reject decisions.
+    """
+    from vllm_mlx.cli import _apply_mtp_cli_model_type_reconciliation
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    sc = SchedulerConfig(spec_decode="mtp", mtp_model_type="stale_value")
+    hf_cfg_eligibility = {"model_type": "gemma4_unified"}
+
+    _apply_mtp_cli_model_type_reconciliation(
+        scheduler_config=sc,
+        hf_cfg_eligibility=hf_cfg_eligibility,
+        logger=None,
+    )
+    assert sc.mtp_model_type == "gemma4_unified", (
+        "reconciliation helper did NOT prefer the eligibility read "
+        f"on disagreement (kept {sc.mtp_model_type!r}). This regresses "
+        "the round-I contract: on skew, the eligibility gate's read "
+        "wins because it's what decided the accept/reject."
+    )
+
+
+def test_install_mtp_vendored_uid_reuse_clears_stale_state(monkeypatch):
+    """Codex round-K BLOCKING #1 regression guard.
+
+    mlx-lm reuses uid ints when a request completes and a new one
+    joins the batch. Pre-round-K the wrapper's ``_state`` map was
+    keyed on uid alone with NO request_id validation (unlike
+    ``_disabled_uids`` which stores the owning request_id since
+    round-E). Under uid reuse, the wrapper would resume the OLD
+    request's generator on the NEW request's first _step call —
+    a data corruption bug because the SUBSEQUENT branch pulls
+    from the STALE generator (built for the old prompt +
+    prompt_cache) and appends stale tokens to gb.tokens[0].
+
+    Verify:
+      1. Request A drives one FIRST-call emission and populates
+         ``_state[uid=X]`` with request_id=req-A.
+      2. Under uid reuse (uid=X → req-B without any
+         ``_cleanup_uid``), the wrapper's uid-reuse gate MUST fire
+         and treat the entry as stale: close the OLD generator,
+         drop ``_state[uid=X]``, and re-enter the FIRST-call
+         construction path for req-B.
+      3. The new construction ATTEMPT happens (visible via ctor
+         call count) — proving the reuse gate cleared the state
+         rather than resuming the old generator.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    class _FakeGen:
+        def __init__(self, tag):
+            self._n = 0
+            self._tag = tag
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self._n += 1
+            # Encode the tag into the emitted token so the test can
+            # tell which generator produced the token.
+            return (10_000 + 100 * self._tag + self._n, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    generators_built: list[int] = []
+
+    def _tagged_ctor(*args, **kwargs):
+        tag = len(generators_built) + 1
+        generators_built.append(tag)
+        return _FakeGen(tag)
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _tagged_ctor)
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [77]
+    uid_to_request_id: dict[int, str] = {77: "req-A"}
+    requests: dict = {
+        "req-A": SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0)),
+    }
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests=requests,
+        uid_to_request_id=uid_to_request_id,
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([1000], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # Step 1 for req-A — FIRST-call construction, generator #1
+    # built. State populated with request_id=req-A.
+    gb._step()
+    assert len(generators_built) == 1, (
+        f"expected exactly one generator built for req-A, got {generators_built!r}"
+    )
+
+    # Simulate mlx-lm's request completion + uid reuse: same uid,
+    # new request_id. No _cleanup_uid call — this exactly mirrors
+    # what happens between .filter(keep) removing req-A and
+    # .extend(new_batch) adding req-B on the same uid.
+    uid_to_request_id[77] = "req-B"
+    requests["req-B"] = SimpleNamespace(
+        sampling_params=SimpleNamespace(temperature=0.0)
+    )
+    gb._next_tokens = mx.array([2000], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # Step 1 for req-B — the uid-reuse gate MUST fire, close the
+    # OLD generator, and re-enter FIRST-call construction. A NEW
+    # generator (#2) is built. If the round-K fix regressed, the
+    # SUBSEQUENT branch of the wrapper would pull the next token
+    # from the OLD generator (tag=1) and emit a stale token.
+    tokens, _ = gb._step()
+    assert len(generators_built) == 2, (
+        "codex round-K BLOCKING #1 regression: uid reuse for a new "
+        "request did NOT trigger fresh MTP construction. Generators "
+        f"built: {generators_built!r}. The stale OLD generator "
+        "would emit tokens from the previous request's context."
+    )
+    # The FIRST-call emission for req-B is the priming step's
+    # sample (2000, which we set on gb._next_tokens above).
+    assert tokens == [2000], (
+        "req-B's FIRST-call did NOT emit the priming-step sample "
+        f"(got {tokens!r}, expected [2000]). This suggests the "
+        "wrapper resumed the OLD generator's queue / iteration state."
     )

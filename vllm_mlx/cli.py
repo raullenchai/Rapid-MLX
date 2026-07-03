@@ -1092,6 +1092,94 @@ def _gather_kv_cache_dtype_inputs(model_name: str) -> tuple[dict | None, dict | 
     return hf_cfg, alias_meta
 
 
+def _apply_mtp_cli_model_type_reconciliation(
+    *,
+    scheduler_config,
+    hf_cfg_eligibility,
+    logger=None,
+) -> None:
+    """Thread the eligibility gate's ``model_type`` down into
+    ``SchedulerConfig.mtp_model_type``.
+
+    Codex round-I BLOCKING #3 / round-K BLOCKING #2:
+    ``serve_command`` reads the HF config on two paths — an early
+    best-effort read that populates
+    ``scheduler_config.mtp_model_type``, and a second read inside
+    the MTP eligibility gate that decides accept/reject. Under a
+    transient first-read failure (warm HF cache invalidated,
+    filesystem hiccup, etc.), the first read returned ``None`` and
+    the second read succeeded. The engine then treated the
+    operator's explicit ``--spec-decode mtp`` request as
+    "non-CLI-vetted" and soft-skipped dispatch failures — silently
+    degrading MTP to a no-op.
+
+    This helper resolves the skew: it treats the eligibility gate's
+    read as the source of truth (the gate accepted the config, so
+    it MUST be correct), promotes ``model_type`` into
+    ``scheduler_config.mtp_model_type``, and hard-fails at
+    ``sys.exit(2)`` if the eligibility read somehow lacks a string
+    ``model_type`` (should be unreachable per
+    ``detect_mtp_eligibility``'s own gates, but defensive).
+
+    Extracted so tests can drive this helper end-to-end. A
+    purely-inline reconciliation block in ``serve_command`` would
+    let tests still pass after the block was deleted, because
+    replaying the logic inline in a test never exercises the
+    production import path (round-K BLOCKING #2).
+
+    Args:
+      scheduler_config: The already-constructed ``SchedulerConfig``.
+        Its ``mtp_model_type`` field is mutated in place.
+      hf_cfg_eligibility: The dict returned by the eligibility
+        gate's ``_gather_kv_cache_dtype_inputs`` call.
+      logger: Optional ``logging.Logger``. If provided, a warning is
+        emitted when the CLI-thread read disagreed with the
+        eligibility read. Kept optional so tests don't have to
+        conjure a real logger; the ``print`` fallback below covers
+        the ``None`` case with the same operator-visible message.
+    """
+    _eligibility_model_type: str | None = None
+    if isinstance(hf_cfg_eligibility, dict):
+        _mt_from_eligibility = hf_cfg_eligibility.get("model_type")
+        if isinstance(_mt_from_eligibility, str):
+            _eligibility_model_type = _mt_from_eligibility
+    if _eligibility_model_type is None:
+        # Should be unreachable: detect_mtp_eligibility gates on a
+        # dict-shaped config with a string model_type. But if some
+        # detector refactor ever relaxes that invariant, we MUST
+        # hard-fail rather than boot in the silent-skip state.
+        print(
+            "error: --spec-decode mtp eligibility passed but the CLI "
+            "could not extract config.json::model_type — this is a "
+            "plumbing skew between detect_mtp_eligibility (accepted "
+            "the config) and this CLI reconciliation block. Refusing "
+            "to boot: the engine's dispatch requires the CLI-vetted "
+            "model_type to hard-fail on non-attached dispatch results "
+            "(round-E BLOCKER #2 contract). File an issue with the "
+            'output of `python -c "import json; '
+            "print(json.load(open('config.json')).get('model_type'))\" "
+            "run in the model directory.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+    # If the earlier best-effort read succeeded but disagreed with
+    # the eligibility read, prefer the eligibility read — it drives
+    # the accept/reject decision, so it MUST be the source of truth
+    # for the dispatch-side CLI-vetted marker.
+    _prior = getattr(scheduler_config, "mtp_model_type", None)
+    if _prior is not None and _prior != _eligibility_model_type:
+        _msg = (
+            "[MTP] CLI-thread config read disagreed with the "
+            "eligibility gate on model_type (%r vs %r); using the "
+            "eligibility gate's value."
+        )
+        if logger is not None:
+            logger.warning(_msg, _prior, _eligibility_model_type)
+        else:
+            print(_msg % (_prior, _eligibility_model_type), file=sys.stderr)
+    scheduler_config.mtp_model_type = _eligibility_model_type
+
+
 def _check_memory_capacity(model_name: str) -> None:
     """Pre-flight memory check — warn loudly if loading this model is
     likely to push unified memory past the danger threshold.
@@ -2620,69 +2708,23 @@ def serve_command(args):
                 )
             sys.exit(2)
 
-        # Codex round-I BLOCKING #3: the earlier
-        # ``_cli_mtp_model_type`` best-effort read (line 2362 range)
-        # can silently return ``None`` when the CLI-thread config
-        # read fails transiently — e.g., a warm HF cache that gets
-        # invalidated between the two ``_gather_kv_cache_dtype_inputs``
-        # calls, or a filesystem hiccup on the first read followed by
-        # a successful second read (see the eligibility read above).
-        # Prior to this fix the engine's dispatch would then treat the
-        # operator's explicit ``--spec-decode mtp`` request as
-        # "non-CLI-vetted", and codex round-E BLOCKER #2's
-        # hard-fail-on-non-attached contract would degrade to a
-        # SOFT-SKIP — silently booting without MTP even though the
-        # eligibility gate had just accepted the request.
-        #
-        # Reconcile here using the eligibility gate's own
-        # ``hf_cfg_eligibility`` read (guaranteed to be a dict with a
-        # valid ``model_type`` because ``detect_mtp_eligibility``
-        # returned non-NONE — see ``detect.py::_detect_mtp_
-        # eligibility_verbose`` invariants). Promote the eligibility
-        # read's ``model_type`` into ``_cli_mtp_model_type`` /
-        # ``scheduler_config.mtp_model_type`` so downstream dispatch
-        # sees the CLI-vetted marker on the SAME config the
-        # eligibility gate accepted.
-        _eligibility_model_type: str | None = None
-        if isinstance(hf_cfg_eligibility, dict):
-            _mt_from_eligibility = hf_cfg_eligibility.get("model_type")
-            if isinstance(_mt_from_eligibility, str):
-                _eligibility_model_type = _mt_from_eligibility
-        if _eligibility_model_type is None:
-            # Should be unreachable: detect_mtp_eligibility gates on a
-            # dict-shaped config with a string model_type. But if some
-            # detector refactor ever relaxes that invariant, we MUST
-            # hard-fail rather than boot in the silent-skip state.
-            print(
-                "error: --spec-decode mtp eligibility passed but the CLI "
-                "could not extract config.json::model_type — this is a "
-                "plumbing skew between detect_mtp_eligibility (accepted "
-                "the config) and this CLI reconciliation block. Refusing "
-                "to boot: the engine's dispatch requires the CLI-vetted "
-                "model_type to hard-fail on non-attached dispatch results "
-                "(round-E BLOCKER #2 contract). File an issue with the "
-                'output of `python -c "import json; '
-                "print(json.load(open('config.json')).get('model_type'))\" "
-                "run in the model directory.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-        # If the earlier best-effort read succeeded but disagreed with
-        # the eligibility read, prefer the eligibility read — it drives
-        # the accept/reject decision, so it MUST be the source of truth
-        # for the dispatch-side CLI-vetted marker.
-        if (
-            scheduler_config.mtp_model_type is not None
-            and scheduler_config.mtp_model_type != _eligibility_model_type
-        ):
-            logger.warning(
-                "[MTP] CLI-thread config read disagreed with the "
-                "eligibility gate on model_type (%r vs %r); using the "
-                "eligibility gate's value.",
-                scheduler_config.mtp_model_type,
-                _eligibility_model_type,
-            )
-        scheduler_config.mtp_model_type = _eligibility_model_type
+        # Codex round-I BLOCKING #3 / round-K BLOCKING #2:
+        # reconcile the earlier best-effort CLI-thread config read
+        # with the eligibility gate's own read, and thread the
+        # resulting model_type down into
+        # ``scheduler_config.mtp_model_type``. Extracted into
+        # :func:`_apply_mtp_cli_model_type_reconciliation` so a
+        # regression test can drive the helper directly instead of
+        # reimplementing the logic in the test body (round-K
+        # BLOCKING #2 called out that a purely-inline reconciliation
+        # block cannot be exercised without spinning up
+        # ``serve_command``, which lets the test pass even if the
+        # production block is later deleted).
+        _apply_mtp_cli_model_type_reconciliation(
+            scheduler_config=scheduler_config,
+            hf_cfg_eligibility=hf_cfg_eligibility,
+            logger=logger,
+        )
 
         sidecar_note = f" +sidecar={args.mtp_sidecar}" if has_sidecar else ""
         print(f"Spec-decode: mtp ({eligibility.value}){sidecar_note}")

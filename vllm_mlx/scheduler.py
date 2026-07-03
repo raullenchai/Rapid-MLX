@@ -1450,6 +1450,16 @@ def _install_mtp_vendored(
     #     "gen": the mtp_generate_step generator instance (or None on FIRST call),
     #     "queue": deque of pending (tok_int, lp_array, from_draft_bool),
     #     "primed": True after we emit the vanilla-sampled first token,
+    #     "request_id": the request_id captured at construction time —
+    #       codex round-K BLOCKING #1. mlx-lm reuses uid ints when a
+    #       request completes; without tracking the owning request
+    #       here, a new request that draws the same uid would resume
+    #       the OLD generator (built for the old prompt/prompt_cache)
+    #       and emit stale tokens from the previous request — a data
+    #       corruption bug. On every ``_mtp_step`` call, we compare
+    #       ``_state[uid]["request_id"]`` against the current
+    #       ``uid_to_request_id[uid]``; on mismatch we treat the state
+    #       as stale and reset to the FIRST-call branch.
     #   }
     # Only one uid is ever active at a time under the batch=1 gate.
     _state: dict[int, dict[str, Any]] = {}
@@ -1785,6 +1795,37 @@ def _install_mtp_vendored(
 
         state = _state.get(uid)
 
+        # Codex round-K BLOCKING #1: uid reuse detection for the
+        # ACTIVE (non-disabled) state map. mlx-lm reuses uid ints
+        # when a request completes and a new one joins the batch.
+        # Without this check the wrapper would resume the OLD
+        # request's generator (built for a different prompt +
+        # prompt_cache state) on the NEW request's next _step call
+        # — a data corruption bug because the SUBSEQUENT branch
+        # pulls tokens from the stale generator and appends them
+        # to gb.tokens[0]. The round-E fix wired this exact
+        # detection into ``_disabled_uids``; codex round-K
+        # correctly notes the same treatment is missing here.
+        #
+        # If ``uid_to_request_id`` is not plumbed (bench harness)
+        # we can't distinguish reuse from continuation and fall
+        # back to the pre-round-K behaviour; this only matters
+        # for harnesses that DON'T reuse uids anyway.
+        if state is not None and uid_to_request_id is not None:
+            stashed_req_id = state.get("request_id")
+            current_req_id = uid_to_request_id.get(uid)
+            if (
+                stashed_req_id is not None
+                and current_req_id is not None
+                and stashed_req_id != current_req_id
+            ):
+                # uid was reused for a NEW request. Close the OLD
+                # generator + drop the queue, then fall through to
+                # FIRST-call construction so the new request gets a
+                # fresh MTP path.
+                _cleanup_uid(uid)
+                state = None
+
         if state is None:
             # --- FIRST call for this uid ---
             # mlx-lm's fresh ``GenerationBatch.__init__`` ran its
@@ -1877,10 +1918,23 @@ def _install_mtp_vendored(
             # performs on the ``self.tokens`` list per emitted token.
             gb.tokens[0].append(first_tok)
 
+            # Codex round-K BLOCKING #1: capture the owning
+            # request_id so the uid-reuse gate at wrapper entry can
+            # detect when mlx-lm reassigns this uid to a different
+            # request. ``None`` when ``uid_to_request_id`` isn't
+            # plumbed (bench harness); the reuse gate treats
+            # ``None`` as "cannot distinguish, keep existing
+            # state" — safe because harnesses that don't plumb
+            # uid_to_request_id also don't reuse uids.
+            _first_call_req_id: str | None = None
+            if uid_to_request_id is not None:
+                _first_call_req_id = uid_to_request_id.get(uid)
+
             _state[uid] = {
                 "gen": gen,
                 "queue": [],
                 "primed": True,
+                "request_id": _first_call_req_id,
             }
             _stats["vendored_steps"] += 1
             # Codex round-I BLOCKING #2 / round-J BLOCKING #2+#3:
