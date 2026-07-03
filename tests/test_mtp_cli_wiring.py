@@ -465,7 +465,7 @@ def test_install_mtp_vendored_gate_fails_closed_on_missing_request_metadata(
     assert gb.orig_step_calls == 1
 
 
-def test_install_mtp_vendored_cleans_up_state_on_fallthrough_batch_size():
+def test_install_mtp_vendored_cleans_up_state_on_fallthrough_batch_size(monkeypatch):
     """Codex round-A blocker #3 regression guard.
 
     A uid that ran MTP for a while then transitions to a B>1 batch
@@ -475,31 +475,94 @@ def test_install_mtp_vendored_cleans_up_state_on_fallthrough_batch_size():
     would resume with a ``prompt_cache`` view one position stale
     behind the actual live cache, silently emitting wrong tokens.
     Fix: cleanup on every fallthrough branch.
+
+    Codex round-B blocker: the earlier revision of this test never
+    reached the successful first-call path, so ``_state`` was empty
+    and the cleanup call at the B>1 branch was a no-op. The test
+    would have passed even with the cleanup removed. Fix: monkeypatch
+    ``mtp_generate_step`` to a fake iterator so the first call
+    populates ``_state[uid]``, drive one warm decode call, then
+    trigger the fallthrough. Prove the generator was ``.close()``-d
+    (side-effect observable) AND that a subsequent single-uid call
+    re-enters the FIRST-call path (i.e. constructs a fresh generator).
     """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
     from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    fake_gen_calls = {"constructed": 0, "closed": 0}
+
+    class _FakeGen:
+        def __init__(self):
+            fake_gen_calls["constructed"] += 1
+            self._n = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            # Emit a bogus token each call — the test never checks its
+            # value, only that we get through iteration.
+            self._n += 1
+            return (self._n + 1000, mx.array([0.0]), False)
+
+        def close(self):
+            fake_gen_calls["closed"] += 1
+
+    def _fake_mtp_generate_step(*args, **kwargs):
+        return _FakeGen()
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _fake_mtp_generate_step)
 
     batch_gen, gb = _make_batch_gen_with_gb()
     gb.uids = [7]
-    # Seed a fake per-uid state so we can prove it gets cleared.
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
     ok = _install_mtp_vendored(
         batch_gen,
         model=_StubModel(),
-        requests=None,
-        uid_to_request_id=None,
+        requests={"req-7": request_stub},
+        uid_to_request_id={7: "req-7"},
     )
     assert ok is True
 
-    # Manually inject a state entry to simulate an in-flight MTP uid.
-    # We reach into the closure via the _mtp_vendored_stats surface,
-    # which is the only public hook. Instead of that, just prove the
-    # invariant end-to-end: after a fallthrough on B>1, subsequent
-    # calls behave like a fresh install (no stale generator).
-    gb.uids = [1, 2]  # B=2 → fallthrough on batch_size gate
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # First call — construct the fake generator and populate _state[7].
+    gb._step()
+    assert fake_gen_calls["constructed"] == 1
+    assert fake_gen_calls["closed"] == 0
+
+    # Second call in the SAME warm state — draining the queue.
+    gb._step()
+    assert fake_gen_calls["closed"] == 0
+
+    # Now transition to B=2. The B>1 fallthrough branch must call
+    # _cleanup_uid on the stale uid, which closes the fake generator.
+    gb.uids = [1, 2]
     gb._step()
     stats = batch_gen._mtp_vendored_stats
     assert stats["ft_batch_size"] >= 1
-    # No exceptions raised → cleanup succeeded (the cleanup helper is
-    # exception-safe by design).
+    assert fake_gen_calls["closed"] >= 1, (
+        "codex round-A blocker #3 regression: B>1 fallthrough did not "
+        "clean up the stale per-uid MTP state"
+    )
+
+    # Back to a single-uid batch — must re-enter FIRST call path
+    # (proving state was cleared). If cleanup was missed the resume
+    # path would reuse the same fake generator instance.
+    gb.uids = [7]
+    gb._next_tokens = mx.array([501], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    gb._step()
+    assert fake_gen_calls["constructed"] == 2, (
+        "cleanup contract broken: single-uid step after fallthrough "
+        "did not re-enter the first-call path (would silently resume "
+        "a stale generator)."
+    )
 
 
 def test_install_mtp_vendored_first_call_construction_failure_does_not_double_book(

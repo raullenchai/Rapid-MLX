@@ -1465,6 +1465,16 @@ def _install_mtp_vendored(
         so the caller falls through to ``_orig_step()`` (which reads
         the real sampler from ``gb.samplers[0]``) instead of applying
         the MTP-hardcoded greedy path.
+
+        Codex round-B blocker: also fail closed when ``temperature is
+        None``. ``vllm_mlx.request.SamplingParams`` defaults
+        ``temperature=0.7`` (not zero) and ``None`` is not a normal
+        value — it typically signals "use the server / OpenAI-route
+        default," which is likewise nonzero. Treating a bare ``None``
+        as greedy would silently apply the MTP-hardcoded ``temp=0.0``
+        marginal to a request the operator meant to sample stochast-
+        ically. Only an EXPLICIT ``0.0`` passes the gate; every other
+        shape falls through to plain decode.
         """
         if uid_to_request_id is None or requests is None:
             return False
@@ -1473,7 +1483,7 @@ def _install_mtp_vendored(
         if req is None or getattr(req, "sampling_params", None) is None:
             return False
         temp = getattr(req.sampling_params, "temperature", None)
-        return temp is None or temp == 0.0
+        return temp == 0.0
 
     def _mtp_step():
         """Wrapped ``GenerationBatch._step`` for --spec-decode mtp.
