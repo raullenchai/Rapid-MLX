@@ -363,6 +363,38 @@ def _render_response_format_counters() -> list[str]:
     return out
 
 
+def _derive_mtp_family(cfg: Any) -> str:
+    """Best-effort family sniff from ``cfg.model_name`` / ``cfg.model_path``.
+
+    Used as the ``family`` label fallback when ``cfg.model_alias`` is
+    empty (operator loaded via direct HF path — the pre-0.9.13 hard-
+    coded ``"qwen3.5"`` fallback misreported Gemma 4 sidecar runs under
+    the Qwen label, breaking per-family dashboards).
+
+    The check is a substring match against a short table of known MTP
+    lineages. New families only need one row in ``_FAMILY_HINTS`` and
+    the metric label surfaces correctly. Falls back to ``"unknown"``
+    (a stable string — a transient ``""`` swap would drop the series).
+    """
+    _FAMILY_HINTS = (
+        ("gemma-4", "gemma4"),
+        ("gemma4", "gemma4"),
+        ("qwen3.5", "qwen3.5"),
+        ("qwen3_5", "qwen3.5"),
+        ("qwen3.6", "qwen3.6"),
+        ("qwen3_6", "qwen3.6"),
+    )
+    for attr in ("model_name", "model_path", "model"):
+        v = getattr(cfg, attr, None)
+        if not v:
+            continue
+        low = str(v).lower()
+        for needle, label in _FAMILY_HINTS:
+            if needle in low:
+                return label
+    return "unknown"
+
+
 def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     """Render the R15-P1 #302 MTP speculative-decode counter triplet.
 
@@ -432,13 +464,23 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
     # config.json — that re-derivation would add a config.json round-
     # trip to /every/ scrape, which is wasteful for a hot endpoint.
     #
+    # 0.9.13 fix: when the alias is absent (operator loaded by direct
+    # HF path such as ``mlx-community/gemma-4-12b-it-4bit``), fall back
+    # to a family sniffed from ``cfg.model_name`` / ``cfg.model_path``
+    # rather than the misleading hard-coded "qwen3.5" — Gemma 4 sidecar
+    # runs were reporting under a Qwen label, breaking per-family
+    # dashboards. If nothing hints, we still return a stable string
+    # ("unknown") rather than a transient empty label — Prometheus
+    # drops series whose label set changes, and swapping to "" from
+    # "unknown" across a scrape window would break ``rate()``.
+    #
     # ``getattr`` rather than direct attribute access so the test
     # harness's ``types.SimpleNamespace`` cfg stubs (see
     # tests/test_metal_cap_enforcement.py::TestMetricsRoute) keep
     # working — those stubs intentionally only define the engine
     # fields they exercise and would otherwise raise AttributeError
     # here.
-    family = getattr(cfg, "model_alias", None) or "qwen3.5"
+    family = getattr(cfg, "model_alias", None) or _derive_mtp_family(cfg)
 
     common_labels = {"family": family, "method": "mtp"}
     out: list[str] = []
@@ -498,6 +540,96 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
                 "accepts."
             ),
             int(snapshot.tokens_saved),
+            labels=common_labels,
+        )
+    )
+
+    # 0.9.13 PR-B controller-side counters. Read directly from the
+    # DepthController registry so a K=0 park round is observable even
+    # when it does NOT touch the drafter (drafter-side counters would
+    # miss it — a park skips ``mtp_forward`` entirely). Missing when
+    # the controller module is unavailable (e.g. mid-upgrade); emit
+    # zeros so dashboards stay stable across cold-start.
+    try:
+        from ..spec_decode.mtp.draft_k_controller_v2 import (
+            sum_across_controllers,
+        )
+
+        round_total, park_total, k_hist = sum_across_controllers()
+    except Exception:  # noqa: BLE001
+        round_total, park_total, k_hist = 0, 0, {}
+
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_park_total",
+            "counter",
+            (
+                "MTP rounds where the EV depth controller picked K=0 "
+                "(plain-decode park). Non-zero on prose workloads where "
+                "drafter cost dominates acceptance — the operator-visible "
+                "signal that the controller is actively avoiding the "
+                "drafter cost, not silently stuck at K=1. Zero when "
+                "--mtp-disable-auto-k is set."
+            ),
+            int(park_total),
+            labels=common_labels,
+        )
+    )
+
+    # K-chosen histogram: one gauge per K bucket. Gauges (not
+    # ``histogram_bucket``) because Prometheus histogram exposition
+    # requires monotonic cumulative buckets and a ``_sum`` / ``_count``
+    # pair; a simple per-K counter would work but ``rate()`` over the
+    # tail buckets would be tiny and noisy. Gauges let a dashboard
+    # ``k_chosen{k="1"} / round_total`` directly and stay readable when
+    # the controller is still bootstrapping (< COST_SEED_MIN_SAMPLES
+    # rounds).
+    #
+    # We emit one line per K bucket present in the histogram plus
+    # ``k_chosen_rounds_total`` as a denominator, so a dashboard can
+    # compute the share without extra queries. A K value never before
+    # observed is absent from the series — Prometheus will treat that
+    # as a zero for ``rate()``, which is what we want.
+    out.append(
+        "# HELP rapid_mlx_spec_decode_k_chosen_total MTP rounds by "
+        "controller-selected draft depth K (0=park, 1=chain-of-1, "
+        "2+=chain-of-K). Emitted as a per-K counter so a dashboard "
+        "can compute K-share as k_chosen{k=\"N\"} / sum(k_chosen)."
+    )
+    out.append("# TYPE rapid_mlx_spec_decode_k_chosen_total counter")
+    for k_val in sorted(k_hist.keys()):
+        k_labels = {"family": family, "method": "mtp", "k": str(int(k_val))}
+        label_str = ",".join(
+            f'{name}="{_escape_label_value(str(val))}"'
+            for name, val in k_labels.items()
+        )
+        out.append(
+            f"rapid_mlx_spec_decode_k_chosen_total{{{label_str}}} "
+            f"{int(k_hist[k_val])}"
+        )
+    if not k_hist:
+        # Emit a zero-valued K=0 row so the metric is discoverable in
+        # the exposition even before the first round has landed. Same
+        # zero-emission pattern as the ImportError branch above.
+        k_labels = {"family": family, "method": "mtp", "k": "0"}
+        label_str = ",".join(
+            f'{name}="{_escape_label_value(str(val))}"'
+            for name, val in k_labels.items()
+        )
+        out.append(
+            f"rapid_mlx_spec_decode_k_chosen_total{{{label_str}}} 0"
+        )
+
+    out.extend(
+        _fmt_metric(
+            "rapid_mlx_spec_decode_k_chosen_rounds_total",
+            "counter",
+            (
+                "Total MTP rounds observed by the EV depth controller. "
+                "Denominator for k_chosen_share: sum(k_chosen_total) "
+                "should equal this value modulo cold-start races."
+            ),
+            int(round_total),
             labels=common_labels,
         )
     )

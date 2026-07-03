@@ -695,7 +695,13 @@ def test_metrics_renders_post_acceptance_counters():
 
 
 def test_metrics_renders_zero_ratio_when_no_attempts():
-    """Zero attempts → ratio gauge MUST be 0 (not NaN, not missing)."""
+    """Zero attempts → ratio gauge MUST be 0 (not NaN, not missing).
+
+    0.9.13 fix: family label used to hard-code ``"qwen3.5"`` when the
+    alias was absent — that misreported Gemma 4 sidecar runs. Now the
+    fallback is a family sniff on model_name / model_path with a
+    stable ``"unknown"`` residual so the label set never changes.
+    """
     from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
     from vllm_mlx.spec_decode.mtp.accept_counter import (
         reset_global_counter_for_tests,
@@ -707,9 +713,70 @@ def test_metrics_renders_zero_ratio_when_no_attempts():
         model_alias = None
 
     body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
-    # family label falls back to "qwen3.5" when alias is None.
-    assert 'family="qwen3.5"' in body
-    assert 'rapid_mlx_spec_decode_accept_ratio{family="qwen3.5",method="mtp"} 0' in body
+    # No model_alias / model_name / model_path → "unknown" (stable
+    # residual — never a transient empty string).
+    assert 'family="unknown"' in body
+    assert (
+        'rapid_mlx_spec_decode_accept_ratio{family="unknown",method="mtp"} 0'
+        in body
+    )
+
+
+def test_metrics_family_falls_back_to_gemma4_on_model_name():
+    """0.9.13 fix: when the operator loads by direct HF path (no
+    alias, e.g. ``mlx-community/gemma-4-12b-it-4bit``), the family
+    label must reflect Gemma 4 rather than the misleading Qwen
+    fallback that broke per-family dashboards in 0.9.12.
+    """
+    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+
+    reset_global_counter_for_tests()
+
+    class _Cfg:
+        model_alias = None
+        model_name = "mlx-community/gemma-4-12b-it-4bit"
+
+    body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
+    assert 'family="gemma4"' in body
+    assert 'family="qwen3.5"' not in body
+
+
+def test_metrics_includes_park_and_k_chosen_counters():
+    """PR-B counter additions: ``rapid_mlx_spec_decode_park_total`` and
+    the per-K ``rapid_mlx_spec_decode_k_chosen_total`` series must be
+    present at cold-start (zero-valued) so dashboards discover the
+    series before the first controller round lands.
+    """
+    from vllm_mlx.routes.metrics import _render_spec_decode_mtp_counters
+    from vllm_mlx.spec_decode.mtp.accept_counter import (
+        reset_global_counter_for_tests,
+    )
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        reset_controllers,
+    )
+
+    reset_global_counter_for_tests()
+    reset_controllers()
+
+    class _Cfg:
+        model_alias = "gemma-4-12b-4bit"
+
+    body = "\n".join(_render_spec_decode_mtp_counters(_Cfg()))
+    assert (
+        'rapid_mlx_spec_decode_park_total{family="gemma-4-12b-4bit",method="mtp"} 0'
+        in body
+    )
+    # K-chosen histogram emits a zero-valued K=0 line even before any
+    # rounds have run.
+    assert 'rapid_mlx_spec_decode_k_chosen_total' in body
+    assert 'k="0"' in body
+    assert (
+        'rapid_mlx_spec_decode_k_chosen_rounds_total{family="gemma-4-12b-4bit",method="mtp"} 0'
+        in body
+    )
 
 
 def test_metrics_route_includes_spec_decode_series_at_cold_start():
@@ -1200,11 +1267,17 @@ def test_generator_emits_first_token_from_backbone_then_draft():
     counter = MTPAcceptCounter()
     prompt = mx.array([1], dtype=mx.uint32)
     emitted = []
+    # 0.9.13 PR-B: default auto-K controller bootstraps with K=0
+    # rounds, which would emit backbone[1]/backbone[2] as plain-decode
+    # tokens instead of the draft-verify sequence this test asserts.
+    # ``disable_auto_k=True`` pins K=1 chain-of-1 — the pre-PR-B
+    # behavior the test was authored against.
     for tok, _logprobs, from_draft in mtp_generate_step(
         prompt,
         model,
         max_tokens=3,
         accept_counter=counter,
+        disable_auto_k=True,
     ):
         emitted.append((tok, from_draft))
 
@@ -1242,11 +1315,14 @@ def test_generator_rejection_path_does_not_count_as_accept():
     counter = MTPAcceptCounter()
     prompt = mx.array([1], dtype=mx.uint32)
     emitted = []
+    # 0.9.13 PR-B: disable auto-K to pin the K=1 chain-of-1 sequence
+    # this test scripts against.
     for tok, _logprobs, from_draft in mtp_generate_step(
         prompt,
         model,
         max_tokens=2,
         accept_counter=counter,
+        disable_auto_k=True,
     ):
         emitted.append((tok, from_draft))
 
@@ -1359,12 +1435,16 @@ def test_generator_records_counter_on_accept_and_reject():
 
     counter = MTPAcceptCounter()
     prompt = mx.array([1], dtype=mx.uint32)
+    # 0.9.13 PR-B: disable auto-K so the 3-attempt script this test
+    # asserts holds (the controller would otherwise park early and
+    # rearrange the round counts).
     list(
         mtp_generate_step(
             prompt,
             model,
             max_tokens=6,
             accept_counter=counter,
+            disable_auto_k=True,
         )
     )
 
