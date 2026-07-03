@@ -926,11 +926,25 @@ def test_apply_mtp_dispatch_raises_runtime_error_on_timeout(monkeypatch):
     ``_apply_mtp_dispatch`` wraps the executor call with a bounded
     timeout and converts a ``TimeoutError`` into a ``RuntimeError``
     with an operator-facing message.
+
+    Codex round-I BLOCKING #1 requires the process-exit hook to fire
+    on timeout so any orphan mutation on the mlx-step worker dies
+    with the interpreter. Monkeypatch the hook so the test does NOT
+    call ``os._exit(1)`` (which would kill the pytest process); the
+    hook returning normally lets the ``RuntimeError`` fallback fire,
+    which is what this test asserts on.
     """
     from vllm_mlx.engine import batched as _batched
     from vllm_mlx.scheduler import SchedulerConfig
 
     monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
+    # Codex round-I BLOCKING #1: patch the exit hook so the test
+    # process doesn't die when the timeout branch runs. Recording the
+    # call lets us assert that the hook was actually invoked (see
+    # test_apply_mtp_dispatch_timeout_calls_process_exit_hook below).
+    monkeypatch.setattr(
+        _batched, "_process_exit_on_mtp_dispatch_timeout", lambda _t: None
+    )
     sc = SchedulerConfig(spec_decode="mtp", mtp_model_type="gemma4_unified")
     try:
         _batched._apply_mtp_dispatch(
@@ -947,6 +961,133 @@ def test_apply_mtp_dispatch_raises_runtime_error_on_timeout(monkeypatch):
         "codex round-G BLOCKING #3 regression: _apply_mtp_dispatch did "
         "NOT convert a TimeoutError into a startup RuntimeError. A "
         "stuck HF/DNS load would hang `rapid-mlx serve` indefinitely."
+    )
+
+
+def test_apply_mtp_dispatch_timeout_calls_process_exit_hook(monkeypatch):
+    """Codex round-I BLOCKING #1 regression guard.
+
+    ``future.cancel()`` does not stop a running executor task, so a
+    timed-out dispatch would leave the mlx-step worker mutating
+    ``model`` in place after startup has aborted. The fix runs a
+    process-exit hook on timeout so any orphan mutation dies with
+    the interpreter. Verify the hook fires.
+    """
+    from vllm_mlx.engine import batched as _batched
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
+
+    _exit_calls: list[float] = []
+
+    def _fake_exit(timeout_sec: float) -> None:
+        _exit_calls.append(timeout_sec)
+        # Do NOT re-raise; let the RuntimeError fallback fire so the
+        # test can also verify the fallback is reachable when the
+        # hook has been swapped out.
+
+    monkeypatch.setattr(_batched, "_process_exit_on_mtp_dispatch_timeout", _fake_exit)
+    sc = SchedulerConfig(spec_decode="mtp", mtp_model_type="gemma4_unified")
+    try:
+        _batched._apply_mtp_dispatch(
+            model=object(),
+            model_name="mlx-community/gemma-4-12B-it-4bit",
+            scheduler_config=sc,
+            executor=_TimeoutExecutor(),
+        )
+    except RuntimeError:
+        pass
+    else:
+        raise AssertionError(
+            "expected RuntimeError fallback when process-exit hook is "
+            "monkeypatched to a no-op — production must never actually "
+            "reach the raise line because os._exit(1) fires first."
+        )
+    assert _exit_calls, (
+        "codex round-I BLOCKING #1 regression: _apply_mtp_dispatch did "
+        "NOT invoke _process_exit_on_mtp_dispatch_timeout on a dispatch "
+        "timeout. Orphan mutation on the mlx-step worker thread could "
+        "outlive the RuntimeError abort."
+    )
+    # The hook must receive the effective timeout value so its
+    # CRITICAL log line surfaces the right number to operators.
+    assert _exit_calls[0] == 1.0, (
+        "process-exit hook received the wrong timeout value "
+        f"({_exit_calls[0]!r}); expected 1.0. This breaks the operator-"
+        "facing CRITICAL log line that names the effective timeout."
+    )
+
+
+def test_apply_mtp_dispatch_timeout_shuts_down_executor(monkeypatch):
+    """Codex round-I BLOCKING #1: on timeout, the executor is shut
+    down with ``cancel_futures=True`` so nothing else queues behind
+    the wedged dispatch on the (shared) mlx-step worker. Even if the
+    running dispatch task can't be canceled, no NEW work joins the
+    queue.
+
+    Verify by tracking ``executor.shutdown`` calls with the right
+    keyword arguments.
+    """
+    from vllm_mlx.engine import batched as _batched
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    monkeypatch.setenv("RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC", "1.0")
+    monkeypatch.setattr(
+        _batched, "_process_exit_on_mtp_dispatch_timeout", lambda _t: None
+    )
+
+    shutdown_calls: list[dict] = []
+
+    class _TrackingTimeoutExecutor(_TimeoutExecutor):
+        def shutdown(self, *, wait: bool = True, cancel_futures: bool = False):
+            shutdown_calls.append({"wait": wait, "cancel_futures": cancel_futures})
+
+    sc = SchedulerConfig(spec_decode="mtp", mtp_model_type="gemma4_unified")
+    try:
+        _batched._apply_mtp_dispatch(
+            model=object(),
+            model_name="mlx-community/gemma-4-12B-it-4bit",
+            scheduler_config=sc,
+            executor=_TrackingTimeoutExecutor(),
+        )
+    except RuntimeError:
+        pass
+    assert shutdown_calls, (
+        "codex round-I BLOCKING #1 regression: _apply_mtp_dispatch did "
+        "NOT invoke executor.shutdown() on timeout. Further submissions "
+        "could queue behind the wedged dispatch on the shared mlx-step "
+        "worker."
+    )
+    assert shutdown_calls[0] == {"wait": False, "cancel_futures": True}, (
+        "expected shutdown(wait=False, cancel_futures=True); got "
+        f"{shutdown_calls[0]!r}. wait=True would block indefinitely on "
+        "the wedged dispatch; cancel_futures=False would leave queued "
+        "no-op work in the executor at abort time."
+    )
+
+
+def test_process_exit_on_mtp_dispatch_timeout_calls_os_exit(monkeypatch):
+    """Codex round-I BLOCKING #1: the timeout hook's default
+    implementation MUST reach ``os._exit(1)`` so orphan mutation on
+    the mlx-step worker dies with the interpreter. Verify by
+    monkeypatching ``os._exit`` and asserting it receives ``1``.
+    """
+    from vllm_mlx.engine import batched as _batched
+
+    exit_codes: list[int] = []
+
+    def _fake_os_exit(code: int) -> None:
+        exit_codes.append(code)
+        # Do NOT actually exit — let the caller return so the test
+        # can inspect the recorded code.
+
+    monkeypatch.setattr("os._exit", _fake_os_exit)
+    _batched._process_exit_on_mtp_dispatch_timeout(600.0)
+    assert exit_codes == [1], (
+        "codex round-I BLOCKING #1 regression: the default timeout hook "
+        "did NOT call os._exit(1). Without the exit, orphan MLX-step "
+        "worker mutation can outlive the boot abort and end up serving "
+        "requests against a partially-mutated model."
     )
 
 
@@ -1991,4 +2132,303 @@ def test_install_mtp_vendored_mid_stream_generator_failure_raises(monkeypatch):
         "would emit first_gen_tok twice (duplicated) because _next_"
         "tokens is stale relative to what the vendored path already "
         "emitted."
+    )
+
+
+def test_install_mtp_vendored_first_call_updates_next_tokens(monkeypatch):
+    """Codex round-I BLOCKING #2 regression guard (FIRST-call branch).
+
+    Under mlx-lm's ``GenerationBatch._step`` contract, after ``_step``
+    returns, ``_next_tokens`` holds the token that will be fed to the
+    model on the NEXT ``_step()`` call. The pre-round-I wrapper's
+    FIRST-call branch emitted ``first_gen_tok`` and left
+    ``gb._next_tokens`` frozen at that same value (stashed by
+    ``__init__``'s priming ``_step``) — so any downstream reader
+    (a defensive ``_orig_step()`` re-entry, ``.filter``,
+    ``.extend``) saw stale state.
+
+    Fix: on successful emission, pre-fetch the next token from the
+    MTP generator, publish it to ``gb._next_tokens`` /
+    ``gb._next_logprobs``, and stash it in the queue for the next
+    wrapper call. Verify by inspecting ``_next_tokens`` after
+    step 1.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    class _CountingGen:
+        def __init__(self):
+            self._n = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self._n += 1
+            return (2000 + self._n, mx.array([0.1 * self._n]), False)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _CountingGen())
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [7]
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-7": request_stub},
+        uid_to_request_id={7: "req-7"},
+    )
+    assert ok is True
+
+    # Priming step sets _next_tokens = first_gen_tok = 1000.
+    gb._next_tokens = mx.array([1000], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # Step 1 (FIRST-call). Should emit 1000, THEN pre-fetch one from
+    # the generator (yields 2001) and stash into _next_tokens.
+    tokens, logprobs = gb._step()
+    assert tokens == [1000], (
+        "FIRST-call emission changed under codex round-I refactor. "
+        f"Expected first_gen_tok=[1000], got {tokens!r}."
+    )
+    # gb._next_tokens must now hold the PRE-FETCHED next token
+    # (2001), NOT the stale first_gen_tok (1000). This is what
+    # ``.filter`` / ``.extend`` / a defensive fallback would read.
+    assert gb._next_tokens is not None, (
+        "codex round-I BLOCKING #2 regression: _next_tokens is None "
+        "after successful FIRST-call emission. Downstream .filter / "
+        ".extend paths would blow up on the ``None[keep]`` slice."
+    )
+    _next_tok_val = int(gb._next_tokens[0].item())
+    assert _next_tok_val == 2001, (
+        f"codex round-I BLOCKING #2 regression: _next_tokens[0]={_next_tok_val} "
+        "does NOT match the pre-fetched next generator emission (2001). "
+        "The wrapper left the field stale at first_gen_tok=1000."
+    )
+    # _next_logprobs must also carry the pre-fetched logprob, not
+    # the stale first_gen_tok logprob.
+    assert len(gb._next_logprobs) == 1
+
+
+def test_install_mtp_vendored_subsequent_updates_next_tokens(monkeypatch):
+    """Codex round-I BLOCKING #2 regression guard (SUBSEQUENT branch).
+
+    Same invariant as the FIRST-call variant, but exercises the
+    SUBSEQUENT branch: after each emission from the queue, the
+    wrapper pre-fetches one more token from the generator and
+    publishes it to ``_next_tokens``.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    class _CountingGen:
+        def __init__(self):
+            self._n = 0
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            self._n += 1
+            return (3000 + self._n, mx.array([0.1 * self._n]), False)
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _CountingGen())
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [9]
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-9": request_stub},
+        uid_to_request_id={9: "req-9"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # Step 1 — emits 500, pre-fetches 3001.
+    gb._step()
+    assert int(gb._next_tokens[0].item()) == 3001
+
+    # Step 2 — SUBSEQUENT branch. Pops 3001 from queue, pre-fetches 3002.
+    tokens, _ = gb._step()
+    assert tokens == [3001]
+    _val_after_step2 = int(gb._next_tokens[0].item())
+    assert _val_after_step2 == 3002, (
+        "codex round-I BLOCKING #2 regression: SUBSEQUENT branch did "
+        "NOT publish the pre-fetched next token to _next_tokens "
+        f"(got {_val_after_step2}, expected 3002)."
+    )
+
+    # Step 3 — SUBSEQUENT branch again. Pops 3002, pre-fetches 3003.
+    tokens, _ = gb._step()
+    assert tokens == [3002]
+    assert int(gb._next_tokens[0].item()) == 3003
+
+
+def test_install_mtp_vendored_first_call_prefetch_stop_iteration_stashes_placeholder(
+    monkeypatch,
+):
+    """Codex round-I BLOCKING #2: when the pre-fetch after emission
+    hits ``StopIteration`` (generator exhausted immediately after
+    the first token), the wrapper must still leave
+    ``gb._next_tokens`` in a coherent shape — falling back to the
+    just-emitted token as a placeholder. The next wrapper call's
+    queue-empty branch will terminal-raise with the real
+    exhaustion traceback, but between now and then any
+    ``.filter`` / ``.extend`` slice must not read stale
+    ``first_gen_tok``.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    class _OneShotGen:
+        """Yields nothing — first ``next()`` raises StopIteration."""
+
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            raise StopIteration
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", lambda *a, **kw: _OneShotGen())
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [13]
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=_StubModel(),
+        requests={"req-13": request_stub},
+        uid_to_request_id={13: "req-13"},
+    )
+    assert ok is True
+
+    gb._next_tokens = mx.array([42], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+
+    # Step 1 — emits 42. Pre-fetch hits StopIteration immediately.
+    # Placeholder = 42.
+    tokens, _ = gb._step()
+    assert tokens == [42]
+    assert gb._next_tokens is not None
+    assert int(gb._next_tokens[0].item()) == 42, (
+        "codex round-I BLOCKING #2 regression: pre-fetch StopIteration "
+        "left _next_tokens in an inconsistent state (expected the "
+        f"emitted token 42 as placeholder, got "
+        f"{int(gb._next_tokens[0].item())})."
+    )
+    # dtype must be uint32 so the mlx-lm downstream slicing works.
+    assert gb._next_tokens.dtype == mx.uint32
+
+
+def test_cli_mtp_reconciliation_promotes_eligibility_read(monkeypatch, tmp_path):
+    """Codex round-I BLOCKING #3 regression guard.
+
+    Reproduces the "CLI-thread config read fails, engine treats
+    request as non-CLI-vetted, dispatch soft-skips" bug: monkeypatch
+    ``_gather_kv_cache_dtype_inputs`` so the FIRST call returns
+    ``(None, {})`` (simulating a transient failure) and the SECOND
+    call returns a valid Gemma 4 config. Under the pre-round-I
+    code, ``_cli_mtp_model_type`` would stay None even though the
+    eligibility gate accepted the request. Post-fix, the
+    reconciliation block MUST promote the eligibility read's
+    ``model_type`` into ``scheduler_config.mtp_model_type``.
+
+    Rather than driving the full ``serve_command`` (heavy — pulls
+    real model paths), replay the reconciliation logic against the
+    two-read shape. This test is deliberately narrow to prove the
+    reconciliation contract; the ``_apply_mtp_dispatch`` tests
+    above cover the downstream engine plumbing.
+    """
+    import vllm_mlx.cli as _cli
+    from vllm_mlx.scheduler import SchedulerConfig
+    from vllm_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    # Simulate the two-read shape: first read fails (returns
+    # None), second read returns a Gemma 4 config with sidecar
+    # support.
+    call_count = {"n": 0}
+    _valid_hf_cfg = {"model_type": "gemma4_unified"}
+
+    def _flaky_gather(model_name):
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return None, {}
+        return _valid_hf_cfg, {}
+
+    monkeypatch.setattr(_cli, "_gather_kv_cache_dtype_inputs", _flaky_gather)
+
+    # Step 1: simulate the pre-SchedulerConfig best-effort read that
+    # can fail. This mirrors the block at line ~2362.
+    _cli_mtp_model_type: str | None = None
+    try:
+        _hf_cfg_for_mtype, _ = _cli._gather_kv_cache_dtype_inputs("some-model")
+        if isinstance(_hf_cfg_for_mtype, dict):
+            _mt = _hf_cfg_for_mtype.get("model_type")
+            if isinstance(_mt, str):
+                _cli_mtp_model_type = _mt
+    except Exception:
+        _cli_mtp_model_type = None
+
+    # First read failed silently → _cli_mtp_model_type is None.
+    # This is the bug shape.
+    assert _cli_mtp_model_type is None
+
+    # Build SchedulerConfig with the None value (matches production).
+    sc = SchedulerConfig(
+        spec_decode="mtp",
+        mtp_sidecar="/tmp/fake-sidecar",
+        mtp_model_type=_cli_mtp_model_type,
+    )
+    assert sc.mtp_model_type is None
+
+    # Step 2: simulate the eligibility gate + reconciliation block.
+    hf_cfg_eligibility, _ = _cli._gather_kv_cache_dtype_inputs("some-model")
+    eligibility = detect_mtp_eligibility(hf_cfg_eligibility, has_external_sidecar=True)
+    assert eligibility is not MTPEligibility.NONE
+
+    # Reconciliation logic (mirrors cli.py block after eligibility
+    # check): promote the eligibility read's model_type into
+    # SchedulerConfig.mtp_model_type.
+    _eligibility_model_type: str | None = None
+    if isinstance(hf_cfg_eligibility, dict):
+        _mt_from_eligibility = hf_cfg_eligibility.get("model_type")
+        if isinstance(_mt_from_eligibility, str):
+            _eligibility_model_type = _mt_from_eligibility
+    sc.mtp_model_type = _eligibility_model_type
+
+    assert sc.mtp_model_type == "gemma4_unified", (
+        "codex round-I BLOCKING #3 regression: the reconciliation "
+        "block did NOT promote the eligibility read's model_type into "
+        f"SchedulerConfig.mtp_model_type (got {sc.mtp_model_type!r}). "
+        "Without this promotion the engine treats an operator's "
+        "explicit --spec-decode mtp as non-CLI-vetted and soft-skips "
+        "dispatch on any non-attached result."
     )

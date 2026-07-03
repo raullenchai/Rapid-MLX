@@ -256,6 +256,50 @@ def _get_mtp_dispatch_timeout_sec() -> float | None:
     return parsed
 
 
+def _process_exit_on_mtp_dispatch_timeout(timeout_sec: float) -> None:
+    """Terminate the process on MTP dispatch timeout — never returns.
+
+    Codex round-I BLOCKING #1: ``future.cancel()`` does not stop a
+    running executor task, so the mlx-step worker thread can keep
+    mutating ``model`` in place even after :func:`_apply_mtp_dispatch`
+    has raised ``RuntimeError`` and startup is aborting. That leaves
+    the caller with either (a) a partially-injected model whose
+    ``mtp_forward`` / ``make_mtp_cache`` attributes appear mid-boot,
+    or (b) worse, a target-model weight mutation completing after
+    server startup accepts requests.
+
+    Cooperative cancellation would require a ``threading.Event``
+    plumbed through :func:`dispatch_mtp_inject` and every family
+    injector, which is out of PR-A scope. Executor isolation is also
+    not viable: the dispatch touches MLX ops that must run on the
+    stream-owning ``mlx-step`` thread (see ``_init_mlx_step_thread``
+    / issue #170) — the very executor a "fresh dedicated executor"
+    approach would try to avoid.
+
+    That leaves the process-exit hammer as the only reliable
+    isolation: ``os._exit(1)`` bypasses ``atexit`` handlers and
+    non-daemon ``ThreadPoolExecutor`` thread joins, taking any
+    orphan mutation thread down with the interpreter.
+
+    Extracted so tests can ``monkeypatch`` this to raise a sentinel
+    exception instead of actually killing the process; production
+    call sites treat this as "no return", so a fallback
+    ``RuntimeError`` guards against a monkeypatched no-op.
+    """
+    logger.critical(
+        "[MTP-vendored] dispatch timed out after %.0fs — the mlx-step "
+        "worker may still be mutating model in place. Terminating "
+        "process to prevent orphan mutation (codex round-I "
+        "isolation contract). Kill hint: os._exit(1). Bump the "
+        "timeout via RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC=<seconds> "
+        "or set it to 0 to opt out of the safety net.",
+        timeout_sec,
+    )
+    import os as _os
+
+    _os._exit(1)
+
+
 def _decide_mtp_dispatch_action(
     dispatch_result: str,
     *,
@@ -373,8 +417,30 @@ def _apply_mtp_dispatch(
     except _cf.TimeoutError as exc:
         # Codex round-G BLOCKING #3: convert executor-side hang
         # into a clean startup abort. Cancel the future so the
-        # worker doesn't keep running past shutdown.
+        # worker doesn't keep running past shutdown (best-effort:
+        # ``future.cancel()`` is a no-op for a task that has
+        # already started running).
         future.cancel()
+        # Codex round-I BLOCKING #1: ``future.cancel()`` cannot
+        # stop a running task, and the executor is the SHARED
+        # mlx-step worker that both loaded the target model and
+        # will keep serving MLX ops after the dispatch would
+        # complete. Shut down the executor so no further
+        # submissions can queue behind the wedged dispatch, then
+        # hand off to the process-exit hook that guarantees the
+        # orphan mutation cannot outlive the boot. Test suites
+        # monkeypatch ``_process_exit_on_mtp_dispatch_timeout``
+        # so the RuntimeError below is reachable there; in
+        # production the hook calls ``os._exit(1)`` and the
+        # RuntimeError line is unreachable.
+        try:
+            executor.shutdown(wait=False, cancel_futures=True)
+        except Exception:
+            # Shutdown is best-effort — some executor stubs in
+            # tests don't accept ``cancel_futures``; those tests
+            # rely on the exit hook to short-circuit further work.
+            pass
+        _process_exit_on_mtp_dispatch_timeout(timeout)
         raise RuntimeError(
             "--spec-decode mtp dispatch timed out after "
             f"{timeout:.0f}s. Typical causes: HF Hub outage on the "

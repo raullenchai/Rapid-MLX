@@ -123,25 +123,28 @@ dflash = [
 # MTP (Multi-Token Prediction) speculative decoding — Gemma 4 external
 # assistant path (``--spec-decode mtp --mtp-sidecar <path>``). The
 # assistant-drafter loader in
-# ``vllm_mlx/spec_decode/mtp/gemma4_inject.py`` transitively imports
-# ``mlx_lm.utils.load`` → ``mlx_vlm.utils`` which reaches for PIL when a
+# ``vllm_mlx/spec_decode/mtp/gemma4_inject.py`` transitively pulls
+# ``mlx_lm.utils`` → ``transformers`` which reaches for PIL when a
 # checkpoint contains an image-processor preprocessor_config.json (the
 # case for the assistant drafters we've dogfooded so far). Without PIL
 # on PYTHONPATH, boot fails with ``ModuleNotFoundError: No module named
 # 'PIL'`` at the ``dispatch_mtp_inject`` call site, BEFORE the eligibility
 # banner prints — misleading users into thinking their sidecar path is
-# wrong. Text-only otherwise; does NOT pull torch/cv2 like [vision].
+# wrong. Text-only; does NOT pull torch/cv2 like [vision].
 #
-# Codex round-E NIT: also pin ``mlx-vlm`` explicitly. Even though
-# ``mlx_vlm`` reaches PIL transitively, its own import needs to
-# succeed first — an operator who installs only ``rapid-mlx[mtp]``
-# without ``[vision]`` / ``[dflash]`` would hit
-# ``ModuleNotFoundError: No module named 'mlx_vlm'`` well before the
-# PIL error line above ever fires. Match the floor used by the
-# ``[vision]`` / ``[dflash]`` extras above so composed
-# ``rapid-mlx[mtp,vision]`` installs stay lockstep on the pin.
+# Codex round-I NIT (0.9.13 PR-A): do NOT re-pin ``mlx-vlm`` here.
+# The only place a Gemma 4 MTP boot touches ``mlx_vlm`` at all is
+# during target model construction in
+# ``vllm_mlx/models/gemma4_text.py``, which surfaces its own
+# actionable ImportError with a size-tiered install hint (16 MB vs
+# +450 MB). Duplicating that pin under ``[mtp]`` doubled the install
+# surface of a text-only sidecar path just to satisfy a transitive
+# PIL import that ``pillow`` already covers directly. Operators who
+# want Gemma 4 targets install ``rapid-mlx[mtp,vision]`` (or the
+# ``pip install --no-deps mlx-vlm>=0.6.1`` sliver flagged by
+# gemma4_text.py) — the ``[mtp]`` extra stays narrow to just the
+# MTP subsystem's own direct dependencies.
 mtp = [
-    "mlx-vlm>=0.6.3",
     "pillow>=10.0.0",
 ]
 # Embedding endpoint

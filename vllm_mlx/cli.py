@@ -2619,6 +2619,71 @@ def serve_command(args):
                     file=sys.stderr,
                 )
             sys.exit(2)
+
+        # Codex round-I BLOCKING #3: the earlier
+        # ``_cli_mtp_model_type`` best-effort read (line 2362 range)
+        # can silently return ``None`` when the CLI-thread config
+        # read fails transiently — e.g., a warm HF cache that gets
+        # invalidated between the two ``_gather_kv_cache_dtype_inputs``
+        # calls, or a filesystem hiccup on the first read followed by
+        # a successful second read (see the eligibility read above).
+        # Prior to this fix the engine's dispatch would then treat the
+        # operator's explicit ``--spec-decode mtp`` request as
+        # "non-CLI-vetted", and codex round-E BLOCKER #2's
+        # hard-fail-on-non-attached contract would degrade to a
+        # SOFT-SKIP — silently booting without MTP even though the
+        # eligibility gate had just accepted the request.
+        #
+        # Reconcile here using the eligibility gate's own
+        # ``hf_cfg_eligibility`` read (guaranteed to be a dict with a
+        # valid ``model_type`` because ``detect_mtp_eligibility``
+        # returned non-NONE — see ``detect.py::_detect_mtp_
+        # eligibility_verbose`` invariants). Promote the eligibility
+        # read's ``model_type`` into ``_cli_mtp_model_type`` /
+        # ``scheduler_config.mtp_model_type`` so downstream dispatch
+        # sees the CLI-vetted marker on the SAME config the
+        # eligibility gate accepted.
+        _eligibility_model_type: str | None = None
+        if isinstance(hf_cfg_eligibility, dict):
+            _mt_from_eligibility = hf_cfg_eligibility.get("model_type")
+            if isinstance(_mt_from_eligibility, str):
+                _eligibility_model_type = _mt_from_eligibility
+        if _eligibility_model_type is None:
+            # Should be unreachable: detect_mtp_eligibility gates on a
+            # dict-shaped config with a string model_type. But if some
+            # detector refactor ever relaxes that invariant, we MUST
+            # hard-fail rather than boot in the silent-skip state.
+            print(
+                "error: --spec-decode mtp eligibility passed but the CLI "
+                "could not extract config.json::model_type — this is a "
+                "plumbing skew between detect_mtp_eligibility (accepted "
+                "the config) and this CLI reconciliation block. Refusing "
+                "to boot: the engine's dispatch requires the CLI-vetted "
+                "model_type to hard-fail on non-attached dispatch results "
+                "(round-E BLOCKER #2 contract). File an issue with the "
+                'output of `python -c "import json; '
+                "print(json.load(open('config.json')).get('model_type'))\" "
+                "run in the model directory.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        # If the earlier best-effort read succeeded but disagreed with
+        # the eligibility read, prefer the eligibility read — it drives
+        # the accept/reject decision, so it MUST be the source of truth
+        # for the dispatch-side CLI-vetted marker.
+        if (
+            scheduler_config.mtp_model_type is not None
+            and scheduler_config.mtp_model_type != _eligibility_model_type
+        ):
+            logger.warning(
+                "[MTP] CLI-thread config read disagreed with the "
+                "eligibility gate on model_type (%r vs %r); using the "
+                "eligibility gate's value.",
+                scheduler_config.mtp_model_type,
+                _eligibility_model_type,
+            )
+        scheduler_config.mtp_model_type = _eligibility_model_type
+
         sidecar_note = f" +sidecar={args.mtp_sidecar}" if has_sidecar else ""
         print(f"Spec-decode: mtp ({eligibility.value}){sidecar_note}")
 

@@ -1624,6 +1624,79 @@ def _install_mtp_vendored(
                 _term_req_id = uid_to_request_id.get(u)
             _disabled_uids[u] = _term_req_id
 
+        def _update_next_tokens_after_emit(
+            gb_ref: Any,
+            u: int,
+            emitted_tok: int,
+            emitted_lp: Any,
+            gen: Any,
+            queue: list,
+        ) -> None:
+            """Sync ``gb._next_tokens`` / ``gb._next_logprobs`` with the
+            token about to become the next model input.
+
+            Codex round-I BLOCKING #2: mlx-lm's ``GenerationBatch._step``
+            contract maintains ``_next_tokens`` as "the input the model
+            will consume on the next ``_step()`` call." The vendored
+            wrapper's queue-driven emission path never touched those
+            fields, leaving them frozen at the ``first_gen_tok`` staged
+            by ``__init__``'s priming ``_step``. Any downstream path that
+            reads those fields — ``.filter(keep)``'s slice, ``.extend(b)``
+            concatenation onto a joining batch, or a defensive
+            ``_orig_step()`` re-entry — would see stale bookkeeping.
+
+            Strategy: pre-fetch the NEXT generator emission and stash it
+            as both the queue head and the ``_next_tokens`` payload. On
+            :exc:`StopIteration` or an exception from the generator, keep
+            the queue empty and stash the just-emitted token as a safe
+            placeholder — the wrapper's ``queue`` empty branch on the
+            next call will re-hit the same underlying ``next(gen)``
+            outcome and terminal-raise with the full traceback intact.
+
+            Placeholder semantics: mlx-lm's ``_orig_step()`` would feed
+            ``_next_tokens[0]`` as input, forward the model, and append
+            it to ``self.tokens[0]``. In the wrapper's terminal-raise
+            regime the wrapper always fires next (not ``_orig_step()``),
+            so the placeholder value never round-trips through
+            ``_orig_step()``; the invariant we need is shape/dtype
+            coherence for ``.filter`` / ``.extend`` slicing, which
+            ``mx.array([emitted_tok])`` satisfies.
+            """
+            try:
+                peek_tok, peek_lp, _peek_from_draft = next(gen)
+            except StopIteration:
+                # Generator exhausted post-emission. Leave queue empty;
+                # the next wrapper call's queue-empty branch will
+                # StopIteration again and terminal-raise. Placeholder
+                # keeps _next_tokens ndim/dtype coherent for the
+                # request-completion filter path.
+                gb_ref._next_tokens = mx.array([int(emitted_tok)], dtype=mx.uint32)
+                gb_ref._next_logprobs = [emitted_lp]
+                return
+            except Exception as e:  # noqa: BLE001
+                # Generator raised mid-stream. Same placeholder
+                # strategy — the next call will hit the same raise
+                # in the queue-empty branch and record the terminal
+                # disable + raise with a full traceback. Log at
+                # DEBUG here to preserve the audit trail without
+                # spamming when the SUBSEQUENT branch will log at
+                # exception-level right after.
+                logger.debug(
+                    "[MTP-vendored] pre-fetch after emit raised for uid=%s: "
+                    "%s: %s — stashing emitted token as _next_tokens "
+                    "placeholder; next wrapper call will terminal-raise.",
+                    u,
+                    type(e).__name__,
+                    e,
+                )
+                gb_ref._next_tokens = mx.array([int(emitted_tok)], dtype=mx.uint32)
+                gb_ref._next_logprobs = [emitted_lp]
+                return
+            # Happy path: append to queue AND publish to _next_tokens.
+            queue.append((int(peek_tok), peek_lp))
+            gb_ref._next_tokens = mx.array([int(peek_tok)], dtype=mx.uint32)
+            gb_ref._next_logprobs = [peek_lp]
+
         if not gb.uids or len(gb.uids) != 1:
             _stats["fallthrough_steps"] += 1
             _stats["ft_batch_size"] += 1
@@ -1827,6 +1900,24 @@ def _install_mtp_vendored(
                 "primed": True,
             }
             _stats["vendored_steps"] += 1
+            # Codex round-I BLOCKING #2: keep ``gb._next_tokens`` /
+            # ``gb._next_logprobs`` in sync with the token we just
+            # emitted so downstream ``.filter`` / ``.extend`` reads and
+            # any accidental ``_orig_step()`` re-entry see coherent
+            # batch state instead of the stale ``first_gen_tok`` that
+            # ``__init__``'s priming ``_step`` left there. Try to
+            # pre-fetch the NEXT token from the generator — this
+            # matches mlx-lm's contract that ``_next_tokens`` after
+            # ``_step()`` holds the next model INPUT (== the token
+            # that will be emitted on the following ``_step()`` call,
+            # since our wrapper is autoregressive). On generator
+            # exhaustion / raise, stash the just-emitted token as a
+            # safe placeholder: the wrapper's own SUBSEQUENT branch
+            # will re-hit the same ``next(gen)`` on the next call and
+            # terminal-raise with the real traceback there.
+            _update_next_tokens_after_emit(
+                gb, uid, first_tok, first_lp, gen, queue=_state[uid]["queue"]
+            )
             return [first_tok], [first_lp]
 
         # --- SUBSEQUENT calls: drain queue, else pull from generator ---
@@ -1924,6 +2015,19 @@ def _install_mtp_vendored(
         tok_int, lp_arr = queue.pop(0)
         gb.tokens[0].append(tok_int)
         _stats["vendored_steps"] += 1
+        # Codex round-I BLOCKING #2: mirror the FIRST-call branch —
+        # keep ``gb._next_tokens`` / ``gb._next_logprobs`` fresh so
+        # baseline ``.filter`` / ``.extend`` / defensive fallback
+        # readers don't see stale state left over from
+        # ``__init__``'s priming ``_step``. Uses ``state["gen"]``
+        # for the pre-fetch; on peek failure the placeholder falls
+        # back to the just-emitted token and the wrapper's own
+        # SUBSEQUENT branch on the NEXT call will terminal-raise
+        # against the same underlying error (StopIteration /
+        # Exception) with the full context intact.
+        _update_next_tokens_after_emit(
+            gb, uid, tok_int, lp_arr, state["gen"], queue=queue
+        )
         return [tok_int], [lp_arr]
 
     # Patch onto the persistent _generation_batch. New GenerationBatch
