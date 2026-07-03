@@ -945,6 +945,8 @@ def inject_mtp_support(
             hidden_states,
             next_token_ids,
             mtp_cache,
+            *,
+            return_hidden: bool = False,
         ):
             """Run the Google assistant drafter over target's tail K/V.
 
@@ -956,6 +958,22 @@ def inject_mtp_support(
             ``mtp_logits[:, -1, :]`` slice still lands on the correct
             last row, and any future consumer that reads intermediate
             rows lands on genuinely-computed logits.
+
+            0.9.13 PR-B Fix 3 — chain-of-K prerequisite: when
+            ``return_hidden=True`` also returns
+            ``self.mtp.post_projection(h)`` shaped
+            ``(B, N, backbone_hidden)``. This is the drafter's own
+            "would-be backbone hidden" for the just-drafted positions
+            and is safe to feed straight back into the next chain
+            iteration's ``hidden_states`` slot (same shape as target's
+            hidden). Mirrors Google's
+            ``Gemma4AssistantDraftModel.draft_block`` in
+            ``mlx_vlm/speculative/drafters/gemma4_assistant/gemma4_assistant.py``
+            where ``h_prev`` is re-projected each step so the drafter
+            cascades on its OWN representation instead of holding
+            target's hidden constant. The K=1 path
+            (``return_hidden=False``, the default) is byte-identical
+            to the prior contract.
             """
             import mlx.core as _mx
 
@@ -1146,6 +1164,16 @@ def inject_mtp_support(
             # ``mtp_cache`` argument is unused: cross-KV means the
             # drafter reads from target's cache, never writes its own.
             _ = mtp_cache
+            if return_hidden:
+                # ``post_projection`` maps the drafter's own hidden
+                # (``args.hidden_size``, e.g. 1024) back into target's
+                # backbone-hidden space (e.g. 3840 for the 12B target).
+                # Google's ``draft_block`` chains this projection into
+                # the NEXT iteration's ``pre_projection`` input slot,
+                # giving each successive draft a fresh drafter-hidden
+                # context instead of reusing target's frozen hidden.
+                drafter_backbone_hidden = self.mtp.post_projection(h)
+                return logits, drafter_backbone_hidden
             return logits
 
         def make_mtp_cache(self):
@@ -1220,8 +1248,20 @@ test_make_mtp_cache_slots_are_generator_safe`
         _delegate_cache = None
         if model is not inner:
 
-            def _delegate_forward(_self, hidden_states, next_token_ids, mtp_cache):
-                return inner.mtp_forward(hidden_states, next_token_ids, mtp_cache)
+            def _delegate_forward(
+                _self,
+                hidden_states,
+                next_token_ids,
+                mtp_cache,
+                *,
+                return_hidden: bool = False,
+            ):
+                return inner.mtp_forward(
+                    hidden_states,
+                    next_token_ids,
+                    mtp_cache,
+                    return_hidden=return_hidden,
+                )
 
             def _delegate_cache(_self):
                 return inner.make_mtp_cache()

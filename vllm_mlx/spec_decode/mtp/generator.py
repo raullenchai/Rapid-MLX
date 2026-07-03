@@ -236,6 +236,8 @@ def mtp_generate_step(
             isolate measurements; production callers pass ``None``
             and the module-global counter is used.
     """
+    import inspect as _inspect
+
     from mlx_lm.generate import generation_stream, maybe_quantize_kv_cache
     from mlx_lm.models import cache as _cache_module
     from mlx_lm.sample_utils import categorical_sampling
@@ -243,6 +245,29 @@ def mtp_generate_step(
     xtc_special_tokens = xtc_special_tokens or []
     if accept_counter is None:
         accept_counter = get_global_counter()
+
+    # ------------------------------------------------------------------
+    # Chain-of-K drafter-hidden-cascade capability probe.
+    #
+    # The Google Gemma 4 assistant inject (0.9.13 Fix 3) exposes an
+    # optional ``return_hidden=True`` kwarg on ``mtp_forward`` that
+    # returns ``post_projection(h)`` alongside the drafter's logits.
+    # Chaining THIS hidden into the next iteration's ``hidden_last``
+    # slot (per Google's ``draft_block``) is the ONLY way to produce
+    # a non-degenerate K>=2 chain on a shared-K/V drafter — target
+    # cache doesn't advance across chain calls, so a target-hidden-
+    # frozen cascade produces d_1 == d_2 == d_3 at temp=0.
+    #
+    # Qwen 3.5's MTP head has its own advancing KVCache, so the
+    # target-hidden-frozen cascade still produces distinct drafts and
+    # the capability flag stays off for backwards compat.
+    # ------------------------------------------------------------------
+    try:
+        _mtp_supports_hidden = "return_hidden" in _inspect.signature(
+            model.mtp_forward
+        ).parameters
+    except (TypeError, ValueError):  # pragma: no cover — non-introspectable
+        _mtp_supports_hidden = False
 
     y = prompt.astype(mx.uint32)
     prev_tokens: mx.array | None = None
@@ -387,8 +412,18 @@ def mtp_generate_step(
                 prev,
             )
 
-    def _step_mtp(hidden_last, main_tok, prev, *, cache_commit=None):
-        """Run MTP head and return (draft_tok, draft_lp, draft_accept_lp, xtc_draw)."""
+    def _step_mtp(hidden_last, main_tok, prev, *, cache_commit=None, want_hidden=False):
+        """Run MTP head and return draft state.
+
+        Returns ``(draft_tok, draft_lp, draft_accept_lp, xtc_draw, drafter_hidden_or_None)``.
+        ``drafter_hidden_or_None`` is populated only when ``want_hidden=True``
+        AND the injected ``mtp_forward`` accepts ``return_hidden`` — the
+        caller is responsible for guarding on ``model_supports_hidden``
+        before setting the flag. For the Gemma 4 Google-assistant path
+        this is the drafter's ``post_projection(h)`` (``(B, N,
+        backbone_hidden)``) at the last predicted position, ready to
+        chain into the next iteration's ``hidden_last`` slot.
+        """
         if cache_commit is not None:
             align_h, align_tok = cache_commit
             hidden_last = mx.concatenate([align_h, hidden_last], axis=1)
@@ -397,8 +432,18 @@ def mtp_generate_step(
             )
         else:
             next_ids = main_tok.reshape(1, 1)
+        drafter_hidden_last = None
         with mx.stream(generation_stream):
-            mtp_logits = model.mtp_forward(hidden_last, next_ids, mtp_cache)
+            if want_hidden:
+                mtp_logits, mtp_hidden = model.mtp_forward(
+                    hidden_last, next_ids, mtp_cache, return_hidden=True
+                )
+                # Keep only the LAST predicted-position hidden — that's
+                # what feeds the next chain iteration. Shape
+                # ``(B, 1, backbone_hidden)``.
+                drafter_hidden_last = mtp_hidden[:, -1:, :]
+            else:
+                mtp_logits = model.mtp_forward(hidden_last, next_ids, mtp_cache)
             quantize_cache_fn(mtp_cache)
             mtp_logits = mtp_logits[:, -1, :].squeeze(0)
             if logits_processors:
@@ -413,26 +458,38 @@ def mtp_generate_step(
             draft_tok, draft_lp, draft_accept_lp = _process_and_sample(
                 tokens_for_proc, mtp_logits, xtc_draw
             )
-        return draft_tok, draft_lp, draft_accept_lp, xtc_draw
+        return draft_tok, draft_lp, draft_accept_lp, xtc_draw, drafter_hidden_last
 
     def _step_mtp_chain(
         hidden_last, main_tok, prev, K, *, cache_commit=None
     ):
         """Generate ``K`` sequential drafts by cascading MTP calls.
 
-        The Qwen 3.5 MTP head fuses ``(backbone_hidden, embed(next_tok))``
-        to predict the next-next token. For chain-of-K we do NOT have
-        the backbone hidden at the intermediate draft positions
-        (that's what the target-side verify forward will compute), so
-        we cascade using the ``hidden_at_main`` context throughout,
-        varying only ``next_token_ids`` as the freshly-sampled drafts.
-        The MTP cache attends over previously-drafted positions, so the
-        head does see its own prior drafts as context; only the
-        backbone-side positional refinement is missing. This is the
-        standard cascade approximation — target verify is still exact,
-        so the lossless contract holds; the accept rate is the only
-        thing that suffers from the approximation, and the controller
-        will detect that via EV and back off if needed.
+        Two cascade shapes are supported, selected by the injected
+        ``mtp_forward`` surface:
+
+        1. **Drafter-hidden cascade (preferred)**. When ``mtp_forward``
+           accepts ``return_hidden=True`` (Gemma 4 Google-assistant
+           inject, ``0.9.13`` Fix 3), the drafter's own
+           ``post_projection(h)`` is fed into the next iteration's
+           ``hidden_last`` slot. This mirrors Google's
+           ``Gemma4AssistantDraftModel.draft_block`` in
+           ``mlx_vlm/speculative/drafters/gemma4_assistant/gemma4_assistant.py``:
+           each successive iteration sees a fresh drafter-hidden
+           context instead of reusing target's frozen hidden, and each
+           successive iteration's token IS shaped by the prior
+           iteration's own reasoning. This is what makes chain-of-K
+           produce a NON-DEGENERATE chain on Google's assistant (where
+           K/V is shared with target and does NOT advance across
+           chain calls, so a target-hidden-frozen cascade would
+           produce d_1 == d_2 == d_3 at temp=0).
+        2. **Target-hidden cascade (fallback, K=1 baseline for Qwen 3.5
+           and any pre-Fix-3 inject)**. The Qwen 3.5 MTP head has its
+           own KVCache that advances across chain calls, so cascading
+           on target's hidden with the MTP cache doing the position
+           refinement still produces distinct drafts; kept as-is for
+           Qwen 3.5 which does not implement ``return_hidden`` on the
+           MTP path yet.
 
         Args:
             hidden_last: [B, 1, H] backbone hidden state at the last
@@ -455,10 +512,15 @@ def mtp_generate_step(
         draft_accept_lps: list = []
         xtc_draws: list = []
         prev_tok = main_tok
+        cur_hidden = hidden_last
         cur_commit = cache_commit
         for _k in range(K):
-            d_tok, d_lp, d_alp, d_xtc = _step_mtp(
-                hidden_last, prev_tok, prev, cache_commit=cur_commit
+            d_tok, d_lp, d_alp, d_xtc, d_hidden = _step_mtp(
+                cur_hidden,
+                prev_tok,
+                prev,
+                cache_commit=cur_commit,
+                want_hidden=_mtp_supports_hidden and K >= 2,
             )
             # Materialize before chaining — the next iteration needs
             # ``prev_tok.item()`` inside ``_step_mtp`` (via reshape,
@@ -469,6 +531,14 @@ def mtp_generate_step(
             draft_accept_lps.append(d_alp)
             xtc_draws.append(d_xtc)
             prev_tok = d_tok
+            # Drafter-hidden cascade: swap in the drafter's own
+            # ``post_projection(h)`` for the next iteration's hidden
+            # slot when available. Falls back to holding
+            # ``hidden_last`` constant on injects that don't expose
+            # ``return_hidden`` (Qwen 3.5 today).
+            if d_hidden is not None:
+                mx.eval(d_hidden)
+                cur_hidden = d_hidden
             cur_commit = None
         return draft_toks, draft_lps, draft_accept_lps, xtc_draws
 
