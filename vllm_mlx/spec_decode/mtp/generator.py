@@ -311,21 +311,44 @@ def mtp_generate_step(
             if hasattr(c, "rollback_state"):
                 c.rollback_state = None
 
-    def _rollback_draft():
-        """Restore caches to the state after the confirmed token.
+    def _rollback_draft(n_to_drop: int = 1):
+        """Restore caches by dropping the last ``n_to_drop`` draft tokens.
 
         SSM layers (ArraysCache): restore the conv/ssm snapshot saved
-        by GatedDeltaNet after the confirmed token.
-        Attention layers (KVCache): trim the draft-token entry.
+        by GatedDeltaNet at the confirmed boundary. The snapshot is
+        taken at a SINGLE offset (``n_confirmed`` positions from end),
+        so ``n_to_drop`` MUST match that offset — chain-of-K with
+        partial accept is not representable in the current one-snapshot
+        model. The generator prevents this by clamping ``max_k`` to 1
+        when any SSM cache is present (see ``_has_ssm_cache`` at
+        decode-loop start); callers that reach this path with
+        ``n_to_drop > 1`` on an SSM cache trip an assertion because a
+        silent partial-rollback would corrupt the SSM state and break
+        the lossless contract.
+
+        Attention layers (KVCache): trim the last ``n_to_drop`` draft
+        entries.
         """
         for c in model_cache:
             if hasattr(c, "rollback_state") and c.rollback_state is not None:
+                # SSM path: single-snapshot rollback, only n_to_drop==1
+                # is representable in the current on-disk snapshot slot.
+                # The controller-side clamp keeps chain-of-K away from
+                # this branch; assert here as a defense in depth in case
+                # a caller wires K>=2 without adjusting the SSM cache.
+                if n_to_drop != 1:
+                    raise AssertionError(
+                        f"_rollback_draft(n_to_drop={n_to_drop}) on SSM "
+                        "cache: only single-token rollback is supported. "
+                        "Chain-of-K on SSM-hybrid targets is not wired "
+                        "yet — the generator should have clamped max_k=1."
+                    )
                 conv_snap, ssm_snap = c.rollback_state
                 c[0] = conv_snap
                 c[1] = ssm_snap
                 c.rollback_state = None
             elif c.is_trimmable():
-                c.trim(1)
+                c.trim(n_to_drop)
 
     def _step_backbone(yy, prev, n_predict=1, n_confirmed=0, xtc_draw=None):
         """Run backbone on ``yy`` and return (tokens, logprobs, accept_lps, hidden, prev)."""
@@ -392,6 +415,63 @@ def mtp_generate_step(
             )
         return draft_tok, draft_lp, draft_accept_lp, xtc_draw
 
+    def _step_mtp_chain(
+        hidden_last, main_tok, prev, K, *, cache_commit=None
+    ):
+        """Generate ``K`` sequential drafts by cascading MTP calls.
+
+        The Qwen 3.5 MTP head fuses ``(backbone_hidden, embed(next_tok))``
+        to predict the next-next token. For chain-of-K we do NOT have
+        the backbone hidden at the intermediate draft positions
+        (that's what the target-side verify forward will compute), so
+        we cascade using the ``hidden_at_main`` context throughout,
+        varying only ``next_token_ids`` as the freshly-sampled drafts.
+        The MTP cache attends over previously-drafted positions, so the
+        head does see its own prior drafts as context; only the
+        backbone-side positional refinement is missing. This is the
+        standard cascade approximation — target verify is still exact,
+        so the lossless contract holds; the accept rate is the only
+        thing that suffers from the approximation, and the controller
+        will detect that via EV and back off if needed.
+
+        Args:
+            hidden_last: [B, 1, H] backbone hidden state at the last
+                confirmed position (main_tok's position).
+            main_tok: the last confirmed backbone token (drives d_1).
+            prev: rolling ``prev_tokens`` tensor for logits_processors,
+                or None.
+            K: chain length. MUST be >= 1; caller is responsible for
+                skipping when the controller parked at K=0.
+            cache_commit: optional first-call cache-commit tuple
+                (see ``_step_mtp``). Only applied on the FIRST call in
+                the chain — subsequent chain calls carry ``None``.
+
+        Returns:
+            Tuple of four Python lists, each of length ``K``:
+            ``(draft_toks, draft_lps, draft_accept_lps, xtc_draws)``.
+        """
+        draft_toks: list = []
+        draft_lps: list = []
+        draft_accept_lps: list = []
+        xtc_draws: list = []
+        prev_tok = main_tok
+        cur_commit = cache_commit
+        for _k in range(K):
+            d_tok, d_lp, d_alp, d_xtc = _step_mtp(
+                hidden_last, prev_tok, prev, cache_commit=cur_commit
+            )
+            # Materialize before chaining — the next iteration needs
+            # ``prev_tok.item()`` inside ``_step_mtp`` (via reshape,
+            # not .item(), but the MLX graph needs the value pinned).
+            mx.eval(d_tok)
+            draft_toks.append(d_tok)
+            draft_lps.append(d_lp)
+            draft_accept_lps.append(d_alp)
+            xtc_draws.append(d_xtc)
+            prev_tok = d_tok
+            cur_commit = None
+        return draft_toks, draft_lps, draft_accept_lps, xtc_draws
+
     def _prefill(yy, embeddings):
         # Leave exactly 1 token for _step_backbone so the decode loop
         # starts clean.
@@ -422,7 +502,12 @@ def mtp_generate_step(
 
     ntoks = 0
     last_cache_block = 0
-    draft_tok = draft_lp = draft_accept_lp = draft_xtc_draw = None
+    # 0.9.13 PR-B Fix 3: state generalized from a scalar ``draft_tok``
+    # to a list of pending drafts. ``pending_drafts`` is None when the
+    # controller parked (K=0) or on the bootstrap primary-only step;
+    # otherwise it's a list of ``(tok, lp, accept_lp, xtc_draw)``
+    # tuples of length K, one per chained MTP draft.
+    pending_drafts: list | None = None
 
     # ------------------------------------------------------------------
     # 0.9.13 PR-B: Ollama-style EV draft-K controller.
@@ -434,18 +519,41 @@ def mtp_generate_step(
     # When ``disable_auto_k=True``, the pre-PR-B chain-of-1 behavior
     # is preserved for A/B benching.
     #
-    # HACK-mode cap: the current body only implements K∈{0,1}. The
-    # controller may internally probe higher depths for cost seeding,
-    # but ``max_k_effective = min(max_k, 1)`` clamps its output. When
-    # chain-of-K verify lands (K≥2), lift this to ``max_k`` directly.
+    # 0.9.13 PR-B Fix 3: K≥2 chain-of-K lifted. The verify path now
+    # accepts K sequential drafts with a single ``(K+1)``-position
+    # backbone forward, per Ollama's ``speculate.go::accept`` batching.
+    # The SSM-hybrid (ArraysCache) rollback is not compatible with the
+    # per-position snapshot Ollama uses, so any model whose cache list
+    # contains an SSM slot is clamped to K=1 at loop-start below —
+    # chain-of-K on SSM targets needs the ``PrepareSnapshots([offsets])``
+    # per-position machinery, which is a separate work item.
     # ------------------------------------------------------------------
-    max_k_effective = 1 if not disable_auto_k else 1
+    # SSM detection: patched ArraysCache carries a ``rollback_state``
+    # class attribute (see ``cache_patch.py``); KVCache does not. This
+    # is the cheapest, most stable class-level signal for the SSM path
+    # available without importing the two cache classes here.
+    _has_ssm_cache = any(hasattr(c, "rollback_state") for c in model_cache)
     if not disable_auto_k:
-        max_k_effective = min(max(0, max_k), 1)
+        # Chain-of-K on SSM targets not implemented; clamp to K=1 with
+        # a startup log (once per generator instance is cheap enough
+        # given ``mtp_generate_step`` is called per-request).
+        _max_k_hw = 1 if _has_ssm_cache else max(0, max_k)
+        if _has_ssm_cache and max_k > 1:
+            logger.info(
+                "[MTP-chain-of-K] SSM cache detected in model_cache — "
+                "clamping max_k from %d to 1 (chain-of-K on SSM-hybrid "
+                "targets needs per-position snapshots not yet wired). "
+                "Set --mtp-max-k=1 to silence this log.",
+                max_k,
+            )
+        max_k_effective = _max_k_hw
         _controller: DepthController | None = get_or_create_controller(
             model_id or "__default__", max_k=max_k_effective
         )
     else:
+        # ``disable_auto_k`` keeps the pre-0.9.13 fixed-K=1 A/B-bench
+        # behavior — no controller, no chain-of-K, verbatim chain-of-1.
+        max_k_effective = 1
         _controller = None
 
     # next_k: the K the controller wants for the UPCOMING round. Determines
@@ -462,7 +570,7 @@ def mtp_generate_step(
 
     while ntoks < max_tokens:
         round_start_perf = time.perf_counter()
-        if draft_tok is None:
+        if pending_drafts is None:
             # -------------------------------------------------------
             # Round K=0 (either bootstrap or a park). Plain backbone
             # forward emits ONE committed token.
@@ -485,123 +593,213 @@ def mtp_generate_step(
 
             hidden_at_main = hidden[:, -1:, :]
             if next_k >= 1:
-                # Generate the first draft for the next round's verify.
-                draft_tok, draft_lp, draft_accept_lp, draft_xtc_draw = _step_mtp(
-                    hidden_at_main, main_tok, prev_tokens
+                # Chain-of-K: generate ``next_k`` drafts cascaded via
+                # MTP. next_k==1 is the plain single-draft path.
+                d_toks, d_lps, d_alps, d_xtcs = _step_mtp_chain(
+                    hidden_at_main, main_tok, prev_tokens, next_k
                 )
-                mx.eval(draft_tok)
+                pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
             else:
-                # Parking again: no draft. Next round enters this same
-                # branch with ``draft_tok is None`` and pays no drafter
-                # cost — the whole point of park.
-                draft_tok = None
+                # Parking again: no draft. Next round enters this
+                # branch with ``pending_drafts is None`` and pays no
+                # drafter cost — the whole point of park.
+                pending_drafts = None
             y = mx.array([main_tok.item()], mx.uint32)
         else:
             # -------------------------------------------------------
-            # Round K=1 (verify path). Backbone forward over
-            # [y, draft_tok] with n_predict=2, n_confirmed=1.
+            # Verify path with K = len(pending_drafts) drafts.
+            #
+            # K=1: single verify + bonus (matches pre-Fix-3 chain-of-1).
+            # K>=2: batched (K+1)-position backbone forward, sequential
+            # accept-reject per Ollama's ``speculate.go::accept``. The
+            # SSM path is clamped at loop-start so K>=2 only reaches
+            # this branch on pure-attention targets (KVCache.trim() is
+            # the only rollback needed).
             # -------------------------------------------------------
-            y_with_draft = mx.concatenate([y, mx.array([draft_tok.item()], mx.uint32)])
-            toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
-                y_with_draft,
-                prev_tokens,
-                n_predict=2,
-                n_confirmed=1,
-                xtc_draw=draft_xtc_draw,
+            k_len = len(pending_drafts)
+            draft_toks_arr = [rec[0] for rec in pending_drafts]
+            draft_lps_arr = [rec[1] for rec in pending_drafts]
+            draft_alps_arr = [rec[2] for rec in pending_drafts]
+            first_xtc_draw = pending_drafts[0][3]
+
+            # Assemble [y, d_1, ..., d_K] for the batched target forward.
+            drafts_arr = mx.array(
+                [d.item() for d in draft_toks_arr], mx.uint32
             )
+            y_with_drafts = mx.concatenate([y, drafts_arr])
+
+            toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
+                y_with_drafts,
+                prev_tokens,
+                n_predict=k_len + 1,
+                # n_confirmed = k_len only matters on SSM targets (which
+                # are clamped to k_len=1 above). Passing k_len keeps the
+                # semantics uniform: "the last k_len positions are
+                # drafts, snapshot before them".
+                n_confirmed=k_len,
+                xtc_draw=first_xtc_draw,
+            )
+            # One shared uniform for all positions' probabilistic
+            # accept tests. Ollama uses a per-position Bernoulli draw;
+            # at greedy temp=0 the draw is ignored (accept iff argmax
+            # match), so this only matters for temp>0 where the same
+            # ``u`` biases all positions the same way — closer to
+            # Ollama's per-position draw than reusing the sampler
+            # chain's XTC cell would be.
             u = mx.random.uniform()
-            mx.eval(toks, draft_tok, u)
+            mx.eval(toks, u)
 
-            verify_pred, bonus_tok = toks[0], toks[1]
-            verify_lp, bonus_lp = lps[0], lps[1]
-            verify_accept_lp = accept_lps[0]
-            draft_tok_id = draft_tok.item()
+            # Bump attempts by K (one per draft position considered).
+            for _ in range(k_len):
+                accept_counter.record_attempt()
 
-            # Bump attempts BEFORE deciding accept/reject so the
-            # counter is consistent under a midway exception.
-            accept_counter.record_attempt()
+            # Sequential accept-reject: walk drafts left-to-right,
+            # stopping at the first reject.
+            accepts: list[bool] = []
+            accepted_count = 0
+            for i in range(k_len):
+                verify_pred_i = toks[i]
+                verify_accept_lp_i = accept_lps[i]
+                d_tok_i = draft_toks_arr[i]
+                d_alp_i = draft_alps_arr[i]
+                d_tok_id_i = d_tok_i.item()
 
-            if _is_greedy:
-                accept = verify_pred.item() == draft_tok_id
-            else:
-                # Probabilistic acceptance: min(1, p_target/p_draft).
-                log_accept = (
-                    verify_accept_lp[draft_tok_id] - draft_accept_lp[draft_tok_id]
-                ).item()
-                accept = log_accept >= 0 or u.item() < math.exp(log_accept)
+                if _is_greedy:
+                    accept_i = verify_pred_i.item() == d_tok_id_i
+                else:
+                    log_accept = (
+                        verify_accept_lp_i[d_tok_id_i]
+                        - d_alp_i[d_tok_id_i]
+                    ).item()
+                    accept_i = log_accept >= 0 or u.item() < math.exp(
+                        log_accept
+                    )
+
+                accepts.append(bool(accept_i))
+                if accept_i:
+                    accepted_count += 1
+                else:
+                    break
 
             round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
-            _record_round(1, round_wall_ms, [bool(accept)])
+            _record_round(k_len, round_wall_ms, accepts)
 
-            hidden_at_confirmed = hidden[:, 0:1, :]
-            hidden_at_draft = hidden[:, 1:2, :]
-
-            if accept:
-                _clear_rollback()
+            # Emit the accepted drafts.
+            for i in range(accepted_count):
                 accept_counter.record_accept(tokens_saved=1)
                 ntoks += 1
-                yield draft_tok_id, draft_lp, True
+                yield draft_toks_arr[i].item(), draft_lps_arr[i], True
                 if ntoks >= max_tokens:
                     return
+
+            if accepted_count == k_len:
+                # All K drafts accepted → emit the bonus token
+                # (target's prediction one past the last draft).
+                _clear_rollback()
+                bonus_tok_id = toks[k_len].item()
                 ntoks += 1
-                yield bonus_tok.item(), bonus_lp, False
+                yield bonus_tok_id, lps[k_len], False
                 if ntoks >= max_tokens:
                     return
-                # Decide K for the next round BEFORE generating the
-                # next draft (so a park decision skips drafter cost).
-                next_k = _controller.pick_k() if _controller is not None else 1
-                if next_k >= 1:
-                    # Next draft: cache-commit aligns the cache for the
-                    # accepted draft token and generates the next draft
-                    # in the same batched forward.
-                    draft_tok, draft_lp, draft_accept_lp, draft_xtc_draw = _step_mtp(
-                        hidden_at_draft,
-                        bonus_tok,
-                        prev_tokens,
-                        cache_commit=(hidden_at_confirmed, draft_tok),
-                    )
-                    mx.eval(draft_tok)
-                else:
-                    draft_tok = None
-                y = mx.array([bonus_tok.item()], mx.uint32)
+                last_committed_tok_id = bonus_tok_id
+                last_committed_hidden = hidden[:, k_len : k_len + 1, :]
+                y = mx.array([bonus_tok_id], mx.uint32)
             else:
-                _rollback_draft()
+                # Reject at position ``accepted_count``. Emit target's
+                # own prediction there as the residual, and drop the
+                # remaining (k_len - accepted_count) unaccepted drafts
+                # from the caches.
+                n_to_drop = k_len - accepted_count
+                _rollback_draft(n_to_drop)
                 accept_counter.record_reject()
                 if logits_processors and prev_tokens is not None:
-                    prev_tokens = prev_tokens[:-1]  # discard rejected
+                    # Discard the ``n_to_drop`` rejected positions
+                    # from prev_tokens (they were appended by
+                    # _step_backbone during the batched verify).
+                    prev_tokens = prev_tokens[:-n_to_drop]
+
+                # Also trim mtp_cache by the same n_to_drop — those
+                # positions were appended by _step_mtp_chain and
+                # correspond to the rejected drafts. The MTP KV
+                # cache is per-layer KVCache (see qwen3_5_inject
+                # make_mtp_cache / gemma4_inject) — always trimmable.
+                for mc in mtp_cache:
+                    if mc.is_trimmable():
+                        mc.trim(n_to_drop)
+
+                verify_pred = toks[accepted_count]
                 verify_tok_id = verify_pred.item()
                 if not _is_greedy:
                     # Residual-distribution sample on reject so the
                     # output marginal still equals the target distro.
+                    verify_accept_lp = accept_lps[accepted_count]
+                    d_alp = draft_alps_arr[accepted_count]
                     p_target = mx.exp(verify_accept_lp)
-                    p_draft = mx.exp(draft_accept_lp)
+                    p_draft = mx.exp(d_alp)
                     residual = mx.maximum(p_target - p_draft, 0.0)
                     z = residual.sum(keepdims=True)
                     dist = mx.where(z > 0, residual, p_target)
                     verify_tok_id = mx.random.categorical(
                         mx.log(dist).reshape(1, -1)
                     ).item()
+
                 ntoks += 1
-                yield verify_tok_id, verify_lp, False
+                yield verify_tok_id, lps[accepted_count], False
                 if ntoks >= max_tokens:
                     return
-                # Decide K for the next round BEFORE generating the
-                # next draft. On reject the controller often sees a
-                # negative EV(1) signal (this round paid for the
-                # target forward but got 0 accepts), so parking is
-                # the common next-step decision on prose.
-                next_k = _controller.pick_k() if _controller is not None else 1
-                if next_k >= 1:
-                    # Next draft from MTP at y's hidden state.
-                    draft_tok, draft_lp, draft_accept_lp, draft_xtc_draw = _step_mtp(
-                        hidden_at_confirmed,
-                        mx.array([verify_tok_id], mx.uint32),
-                        prev_tokens,
-                    )
-                    mx.eval(draft_tok)
-                else:
-                    draft_tok = None
+                last_committed_tok_id = verify_tok_id
+                # hidden at position ``accepted_count`` is the state
+                # AFTER the last accepted draft (or after y when
+                # accepted_count=0) — this is what MTP conditions on
+                # for the next draft chain.
+                last_committed_hidden = hidden[
+                    :, accepted_count : accepted_count + 1, :
+                ]
                 y = mx.array([verify_tok_id], mx.uint32)
+
+            # Decide K for the next round BEFORE generating the
+            # next chain (a park decision skips drafter cost).
+            next_k = _controller.pick_k() if _controller is not None else 1
+            if next_k >= 1:
+                # Chain-carry: on all-accept the mtp_cache must
+                # advance by one extra position for the just-accepted
+                # LAST draft so the head's attention sees it before
+                # predicting the next round's first draft. The old
+                # K=1 code did this via ``cache_commit`` on the
+                # single _step_mtp call, which batched
+                # ``(align_h=hidden_at_last_accepted_pre, align_tok=
+                # accepted_draft, next_id=bonus_tok)`` into one
+                # mtp_forward with 2 positions. We replicate here
+                # only when this round was all-accept — on partial
+                # accept the reject path already trims mtp_cache to
+                # ``accepted_count`` positions and the residual
+                # doesn't need a carry (its own hidden is what the
+                # first chain call conditions on).
+                if accepted_count == k_len:
+                    # Position of last accepted draft is at index
+                    # ``accepted_count - 1`` in the k+1-length hidden.
+                    # For k_len=1 all-accept, this is hidden[:, 0:1].
+                    align_h = hidden[
+                        :, accepted_count - 1 : accepted_count, :
+                    ]
+                    align_tok = draft_toks_arr[accepted_count - 1]
+                    cache_commit = (align_h, align_tok)
+                else:
+                    cache_commit = None
+                last_committed_tok = mx.array(
+                    [last_committed_tok_id], mx.uint32
+                )
+                d_toks, d_lps, d_alps, d_xtcs = _step_mtp_chain(
+                    last_committed_hidden,
+                    last_committed_tok,
+                    prev_tokens,
+                    next_k,
+                    cache_commit=cache_commit,
+                )
+                pending_drafts = list(zip(d_toks, d_lps, d_alps, d_xtcs))
+            else:
+                pending_drafts = None
+
         block = ntoks // _CACHE_CLEAR_INTERVAL
         if block > last_cache_block:
             mx.clear_cache()
