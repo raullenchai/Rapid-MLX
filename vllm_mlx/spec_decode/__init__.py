@@ -28,6 +28,10 @@ Currently bundled:
   :func:`vllm_mlx.positioned_kv_cache.positioned_update_and_fetch`
   HELPER (NOT the subclass — the subclass breaks
   ``mlx_lm.save_prompt_cache``).
+* :mod:`vllm_mlx.spec_decode.config` and
+  :mod:`vllm_mlx.spec_decode.registry` — vLLM-style
+  ``--speculative-config`` parsing plus the small method registry used
+  to migrate DFlash / MTP / SuffixDecoding behind one frontend surface.
 
 Each backend exposes a thin public API the CLI / scheduler can call to
 choose between ``--spec-decode none|mtp|dflash`` at boot — the model-side
@@ -37,4 +41,4 @@ sub-package.
 
 from __future__ import annotations
 
-__all__ = ["dflash", "mtp"]
+__all__ = ["config", "dflash", "mtp", "registry"]

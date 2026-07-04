@@ -763,7 +763,7 @@ Run your own: `bash evals/run_all_models.sh` runs the full quality suite (tool c
 | **TurboQuant K8V4 KV codec** | K is 8-bit + V is 4-bit after Walsh-Hadamard rotation + Lloyd-Max quantization — compresses KV to ~1/2.4 (~58% savings), lossless across the verified matrix. **Default-on for 9 verified Qwen3.5/3.6 aliases** (see below); `--kv-cache-turboquant none` to force off. |
 | **Smart cloud routing** | Large-context requests auto-route to a cloud LLM (`--cloud-model openai/gpt-5 --cloud-threshold 20000`) when local prefill would be slow. |
 | **Multimodal** | Vision, audio (STT/TTS with bundled Silero VAD silence pre-trim), video understanding, text embeddings — all through the standard OpenAI endpoints. |
-| **Speculative decoding** | DFlash (block-diffusion drafter, `--enable-dflash`), MTP (multi-token prediction head, `--enable-mtp`), SuffixDecoding (drafter-free n-gram, `--suffix-decoding`). Opt-in per alias — see below. |
+| **Speculative decoding** | DFlash (block-diffusion drafter, `--enable-dflash`), MTP (multi-token prediction head, `--enable-mtp`), SuffixDecoding (drafter-free n-gram, `--suffix-decoding`). `--speculative-config` is the vLLM-style frontend reserved for backend migration. Opt-in per alias — see below. |
 | **Structured output, logprobs, continuous batching, KV quantization** | Standard, no flags or with one flag each. |
 | **3300+ tests** | Across reasoning, tool parsing, streaming, agent harnesses, and engine integration. |
 
@@ -831,6 +831,7 @@ Mutex: DFlash cannot combine with MTP or SuffixDecoding (single-user path). MTP 
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (default) or `hash` | `radix` |
 | `--pflash` | PFlash sparse prefill: `auto` / `always` / `off` | `auto` (on for verified aliases) |
 | `--enable-dflash` | DFlash speculative decoding (single-user; `qwen3.5-27b-8bit` / `qwen3.6-27b-8bit`) | off |
+| `--speculative-config` | vLLM-style speculative decoding JSON frontend; existing backends keep legacy flags until migrated | off |
 | `--suffix-decoding` | Drafter-free n-gram speculative decoding (BatchedEngine path) | off |
 | `--enable-mtp` | MTP head speculative decoding (requires MTP-trained model) | off |
 | `--gpu-memory-utilization` | Fraction of device memory to use (0.0-1.0) | `0.90` |

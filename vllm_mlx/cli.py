@@ -1551,6 +1551,26 @@ def _build_benchmark_context(target_tokens: int) -> str:
     return (block * repeats).strip()
 
 
+def _normalize_speculative_config_or_exit(args):
+    """Parse ``--speculative-config`` and reject methods not yet migrated."""
+    import sys
+
+    from .spec_decode.config import (
+        SpeculativeConfigError,
+        parse_speculative_config,
+        require_migrated_speculative_config,
+    )
+
+    try:
+        config = parse_speculative_config(getattr(args, "speculative_config", None))
+        if config is not None:
+            require_migrated_speculative_config(config)
+    except SpeculativeConfigError as exc:
+        print(f"error: {exc}", file=sys.stderr)
+        sys.exit(2)
+    args._speculative_config = config
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -1637,6 +1657,8 @@ def serve_command(args):
 
     if is_audio_model_alias(getattr(args, "model", None)):
         require_audio_or_exit(args.model)
+
+    _normalize_speculative_config_or_exit(args)
 
     # 0.9.2 dogfood (parallels the [embeddings]/[vision]/[audio] guards
     # immediately above): ``--enable-dflash`` and the equivalent
@@ -6249,6 +6271,17 @@ Examples:
         "(see ``rapid-mlx info <alias>``). Loads the drafter from the "
         "alias's ``dflash_draft_model`` field. Install with "
         "``pip install 'rapid-mlx[dflash]'``.",
+    )
+    serve_parser.add_argument(
+        "--speculative-config",
+        dest="speculative_config",
+        default=None,
+        help=(
+            "vLLM-style speculative decoding JSON config. This frontend "
+            "parses method/model/num_speculative_tokens now; existing "
+            "DFlash, MTP, and SuffixDecoding backends keep their legacy "
+            "flags until they migrate to this surface."
+        ),
     )
     serve_parser.add_argument(
         "--num-draft-tokens",
