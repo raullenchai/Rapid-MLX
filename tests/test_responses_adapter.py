@@ -141,14 +141,26 @@ class TestNormalizeResponsesToolTypes:
         assert [t.get("type") for t in tools] == ["function", "function", "function"]
         assert [t["name"] for t in tools] == ["shell", "spawn_agent", "close_agent"]
 
-    def test_drops_hosted_tools(self):
+    def test_drops_hosted_tools_when_codex_namespace_present(self):
+        """Hosted tools are dropped ONLY when the request carries a
+        ``namespace`` entry (Codex's fingerprint). Codex 0.137's real
+        shape has 8 function + 1 namespace + 1 web_search; the namespace
+        triggers the drop-hosted step so web_search / file_search are
+        removed without 400-ing the whole request.
+        """
         tools = [
             {"type": "function", "name": "shell"},
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "tools": [{"type": "function", "name": "spawn_agent"}],
+            },
             {"type": "web_search"},
             {"type": "file_search"},
         ]
         normalize_responses_tool_types(tools)
-        assert [t.get("type") for t in tools] == ["function"]
+        assert [t.get("type") for t in tools] == ["function", "function"]
+        assert [t["name"] for t in tools] == ["shell", "spawn_agent"]
 
     def test_codex_shape_passes_validation(self):
         tools = [
@@ -175,16 +187,43 @@ class TestNormalizeResponsesToolTypes:
 
     def test_hosted_only_preserves_f13_400_path(self):
         """F13 trade-off: hosted-only requests must NOT silent-drop —
-        the direct-user case (no function tools present, caller genuinely
+        the direct-user case (no namespace fingerprint, caller genuinely
         asked for a hosted tool that will never run) still falls through
         to ``validate_responses_tool_types`` which raises 400. Silent-drop
-        is only enabled when the request also carries function/namespace
-        tools (Codex's ambient hosted-noise case).
+        only fires when the request carries a ``namespace`` entry (Codex
+        fingerprint).
         """
         # Hosted-only — must remain intact so validate raises 400.
         tools = [{"type": "web_search"}, {"type": "file_search"}]
         normalize_responses_tool_types(tools)
         assert [t.get("type") for t in tools] == ["web_search", "file_search"]
+        # And validate does raise the 400 shape.
+        with pytest.raises(Exception) as exc_info:
+            validate_responses_tool_types(tools)
+        assert "unsupported_tool_type" in str(exc_info.value)
+
+    def test_mixed_direct_user_hosted_preserved_for_f13(self):
+        """F13 trade-off round 2: a direct-user request with function AND
+        hosted tools but NO namespace fingerprint (e.g. ``[function,
+        web_search]``) must ALSO preserve the hosted entry so validate
+        400s. The user genuinely asked for web_search alongside their
+        function; silently dropping it would revive the exact pre-F13
+        confusion (200 with tool that never runs). Only the presence of
+        a namespace group tells us the request is Codex-shaped ambient
+        noise vs a direct user request.
+        """
+        tools = [
+            {"type": "function", "name": "shell"},
+            {"type": "web_search"},
+        ]
+        normalize_responses_tool_types(tools)
+        # No namespace → no drop → both entries preserved.
+        assert [t.get("type") for t in tools] == ["function", "web_search"]
+        # Validate raises 400 on web_search.
+        with pytest.raises(Exception) as exc_info:
+            validate_responses_tool_types(tools)
+        assert "unsupported_tool_type" in str(exc_info.value)
+        assert "web_search" in str(exc_info.value)
 
     def test_namespace_flatten_triggers_hosted_drop(self):
         """A namespace containing function tools counts as "has function"
@@ -223,26 +262,31 @@ class TestNormalizeResponsesToolTypes:
             # Malformed namespace passes through untouched; validate
             # will 400 on the ``namespace`` type.
             assert any(t.get("type") == "namespace" for t in tools)
+            # Explicitly prove the controlled 400 path fires.
+            with pytest.raises(Exception) as exc_info:
+                validate_responses_tool_types(tools)
+            assert "unsupported_tool_type" in str(exc_info.value)
 
     def test_empty_namespace_with_hosted_does_not_silently_collapse(self):
         """Codex review round-2 case: an empty ``namespace`` (``tools=[]``)
-        paired with a hosted tool must NOT normalize to ``[]``. The empty
-        namespace is preserved for validation (it 400s on ``type:namespace``),
-        and the hosted tool is preserved because no real function survives
-        flattening — so ``post_flatten_has_function`` stays False and the
-        drop-hosted step is disabled. Both are preserved for validate to
-        400 cleanly instead of silently accepting a zero-tool request.
+        paired with a hosted tool must NOT normalize to ``[]``. Under the
+        namespace-fingerprint gate the hosted tool IS dropped (namespace
+        is present, so codex_fingerprint=True), but the empty namespace
+        is preserved for validation and 400s on ``type:namespace``. Zero
+        silent-success.
         """
         tools = [
             {"type": "namespace", "name": "x", "tools": []},
             {"type": "web_search"},
         ]
         normalize_responses_tool_types(tools)
-        # Empty namespace preserved for validate → validate will 400 on
-        # `type:namespace`. Hosted tool also preserved (no function to
-        # anchor the drop). Zero silent-drop.
+        # Namespace fingerprint present → web_search dropped.
+        # Empty namespace preserved for validate → 400 on `namespace`.
         assert any(t.get("type") == "namespace" for t in tools)
-        assert any(t.get("type") == "web_search" for t in tools)
+        # Validate raises 400 on the namespace (not silent success).
+        with pytest.raises(Exception) as exc_info:
+            validate_responses_tool_types(tools)
+        assert "unsupported_tool_type" in str(exc_info.value)
 
     def test_namespace_with_nondict_children_falls_through(self):
         """Codex review round-2 case: ``{"type":"namespace","tools":["bad"]}``
