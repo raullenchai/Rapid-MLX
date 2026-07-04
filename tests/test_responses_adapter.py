@@ -173,6 +173,57 @@ class TestNormalizeResponsesToolTypes:
         normalize_responses_tool_types(tools)
         assert [t["type"] for t in tools] == ["function", "computer_20251022"]
 
+    def test_hosted_only_preserves_f13_400_path(self):
+        """F13 trade-off: hosted-only requests must NOT silent-drop —
+        the direct-user case (no function tools present, caller genuinely
+        asked for a hosted tool that will never run) still falls through
+        to ``validate_responses_tool_types`` which raises 400. Silent-drop
+        is only enabled when the request also carries function/namespace
+        tools (Codex's ambient hosted-noise case).
+        """
+        # Hosted-only — must remain intact so validate raises 400.
+        tools = [{"type": "web_search"}, {"type": "file_search"}]
+        normalize_responses_tool_types(tools)
+        assert [t.get("type") for t in tools] == ["web_search", "file_search"]
+
+    def test_namespace_flatten_triggers_hosted_drop(self):
+        """A namespace containing function tools counts as "has function"
+        for the drop-hosted gate — so ``[namespace, web_search]`` drops the
+        web_search after flattening the namespace's function children.
+        """
+        tools = [
+            {
+                "type": "namespace",
+                "name": "multi_agent_v1",
+                "tools": [{"type": "function", "name": "spawn_agent"}],
+            },
+            {"type": "web_search"},
+        ]
+        normalize_responses_tool_types(tools)
+        assert [t.get("type") for t in tools] == ["function"]
+        assert tools[0]["name"] == "spawn_agent"
+
+    def test_malformed_namespace_falls_through_to_validate(self):
+        """Malformed ``namespace`` entries with a non-list ``tools`` field
+        (e.g. ``"tools": 1``, ``"tools": {"..."}``, missing ``tools``) MUST
+        NOT raise TypeError — they fall through untouched so
+        ``validate_responses_tool_types`` returns a controlled 400 instead
+        of leaking a server error. Codex adversarial review flagged the
+        original ``for sub in t.get("tools") or []`` as unsafe.
+        """
+        for bad in [
+            {"type": "namespace", "name": "x", "tools": 1},
+            {"type": "namespace", "name": "x", "tools": "not-a-list"},
+            {"type": "namespace", "name": "x", "tools": {"k": "v"}},
+            {"type": "namespace", "name": "x"},  # missing tools
+        ]:
+            tools = [{"type": "function", "name": "f"}, dict(bad)]
+            # Must not raise TypeError.
+            normalize_responses_tool_types(tools)
+            # Malformed namespace passes through untouched; validate
+            # will 400 on the ``namespace`` type.
+            assert any(t.get("type") == "namespace" for t in tools)
+
 
 # ---------------------------------------------------------------------------
 # Tool-choice

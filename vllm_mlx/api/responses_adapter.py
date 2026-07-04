@@ -140,11 +140,23 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
     we can't serve, so the allowlist gate in
     :func:`validate_responses_tool_types` accepts the request instead of
     400-ing on ``type:"namespace"``.
+
+    F13 trade-off: the drop-hosted step is gated on the request also
+    carrying at least one function or namespace tool. If the caller sent
+    a HOSTED-ONLY tools array (e.g. ``[{"type":"web_search"}]`` — the
+    Yuki F13 case where the user directly asked for the hosted tool),
+    the drop step is skipped and the hosted entry falls through to
+    ``validate_responses_tool_types`` which still returns 400 with the
+    supported-types list. That preserves F13's "don't silently accept a
+    tool that will never run" contract for the direct-user case while
+    letting agent-layer noise from Codex through.
     """
     if not tools:
         return
     # Hosted tool types the local engine cannot run; Codex includes some
-    # of these by default. Drop them rather than 400 the whole request.
+    # of these by default. Drop them rather than 400 the whole request —
+    # BUT only when the request also carries function/namespace tools
+    # (see F13 trade-off in the docstring).
     _drop_hosted = {
         "web_search",
         "web_search_preview",
@@ -152,14 +164,37 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
         "code_interpreter",
         "image_generation",
     }
+
+    def _is_function_or_namespace(entry: object) -> bool:
+        if not isinstance(entry, dict):
+            return False
+        raw = entry.get("type")
+        if raw == "namespace":
+            return True
+        return _canonicalize_tool_type(raw) == "function"
+
+    drop_hosted_enabled = any(_is_function_or_namespace(t) for t in tools)
+
     flattened: list = []
     for t in tools:
         if isinstance(t, dict) and t.get("type") == "namespace":
-            for sub in t.get("tools") or []:
+            sub_tools = t.get("tools")
+            # Guard against malformed input: `tools` MUST be a list —
+            # anything else (int, dict, str, None) is a caller bug that
+            # should fall through to validate_responses_tool_types and
+            # 400 there instead of raising TypeError here.
+            if not isinstance(sub_tools, list):
+                flattened.append(t)
+                continue
+            for sub in sub_tools:
                 if isinstance(sub, dict):
                     flattened.append(sub)
             continue
-        if isinstance(t, dict) and _canonicalize_tool_type(t.get("type")) in _drop_hosted:
+        if (
+            drop_hosted_enabled
+            and isinstance(t, dict)
+            and _canonicalize_tool_type(t.get("type")) in _drop_hosted
+        ):
             continue
         flattened.append(t)
     tools[:] = flattened
