@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from vllm_mlx.model_aliases import AliasProfile
@@ -92,3 +94,37 @@ def test_qwen3_5_9b_4bit_alias_fails_with_4bit_reason() -> None:
     with pytest.raises(DDTreeUnavailable) as excinfo:
         check(profile, alias="qwen3.5-9b-4bit")
     assert "4-bit" in str(excinfo.value)
+
+
+def test_runtime_patches_rope_parameters_without_copying_weights(
+    tmp_path, monkeypatch
+) -> None:
+    from vllm_mlx.speculative.ddtree import runtime
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "config.json").write_text(
+        """
+        {
+          "model_type": "qwen3",
+          "rope_parameters": {
+            "rope_theta": 10000000,
+            "rope_type": "default"
+          }
+        }
+        """
+    )
+    (source / "model.safetensors").write_bytes(b"fake")
+    cache = tmp_path / "patched"
+    monkeypatch.setenv("RAPID_MLX_DDTREE_PATCH_CACHE", str(cache))
+
+    patched = runtime._prepare_draft_model_for_dtree(str(source))
+    patched_path = Path(patched)
+
+    assert patched_path != source
+    patched_cfg = patched_path / "config.json"
+    assert patched_cfg.exists()
+    assert '"rope_theta": 10000000' in patched_cfg.read_text()
+    weight = patched_path / "model.safetensors"
+    assert weight.is_symlink()
+    assert weight.resolve() == (source / "model.safetensors").resolve()

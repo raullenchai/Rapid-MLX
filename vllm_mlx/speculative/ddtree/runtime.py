@@ -71,12 +71,13 @@ def load_runtime(
 def _prepare_draft_model_for_dtree(draft_model: str) -> str:
     """Return a dtree-mlx-compatible draft path.
 
-    Public Qwen3.5 DFlash draft repos use the newer transformers 5
-    ``rope_parameters.rope_theta`` config shape. Current ``dtree-mlx`` expects
-    the older top-level ``rope_theta`` field, so materialize a small local
-    mirror with a patched config and symlinked weights when needed.
+    The public Qwen3.5 DFlash draft repos use the newer transformers 5
+    ``rope_parameters.rope_theta`` config shape. Current ``dtree-mlx``
+    expects the older top-level ``rope_theta`` field, so the raw HF repo
+    fails at load time before generation starts. Materialize a small local
+    mirror with a patched config and symlinked weights, then pass that path
+    to ``dtree-mlx``.
     """
-
     path = _resolve_model_path(draft_model)
     cfg_path = path / "config.json"
     if not cfg_path.exists():
