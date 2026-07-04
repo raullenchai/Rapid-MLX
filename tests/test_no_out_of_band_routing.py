@@ -137,6 +137,10 @@ ALLOWED_RAPID_MLX_ENV_VARS: frozenset[str] = frozenset(
         # Override the per-user config dir used to remember "seen-tips"
         # banner state (chat REPL first-launch tip gating).
         "RAPID_MLX_CONFIG_HOME",
+        # Override where DDTree writes its patched draft-config mirror.
+        # This is a cache placement/testing knob; model routing and DDTree
+        # enablement still come from explicit CLI flags and alias metadata.
+        "RAPID_MLX_DDTREE_PATCH_CACHE",
         # Set by ``rapid-mlx chat`` on the spawned ``serve`` subprocess
         # so the child's B2 download gate no-ops (parent already gated).
         # Pure UX flag — never read by the engine or scheduler.
