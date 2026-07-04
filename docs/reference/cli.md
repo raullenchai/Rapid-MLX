@@ -89,6 +89,9 @@ rapid-mlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser h
 # DFlash speculative decoding (single-user, single supported alias)
 rapid-mlx serve qwen3.5-27b-8bit --enable-dflash --port 8000
 
+# DDTree speculative decoding (experimental, single-user)
+rapid-mlx serve qwen3.5-9b-8bit --enable-ddtree --port 8000
+
 # API key authentication
 rapid-mlx serve qwen3.5-9b-4bit --api-key your-secret-key
 

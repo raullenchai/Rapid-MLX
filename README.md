@@ -723,6 +723,7 @@ Qwen3.5 uses Gated DeltaNet (75% RNN) + full attention (25% KV). Other engines r
 | **TurboQuant K8V4 codec** | K 8-bit + V 4-bit after Walsh-Hadamard + Lloyd-Max (~1/2.4 compression, lossless across verified matrix) | Default-on for 9 verified Qwen3.5/3.6 aliases; `--kv-cache-turboquant k8v4\|v4\|none` |
 | **KV cache quantization** | Quantize prefix cache entries to reduce memory | All models with `--kv-cache-quantization` |
 | **DFlash speculative decoding** | Block-diffusion drafter, parallel draft + verify (single-user) | `qwen3.5-27b-8bit`, `qwen3.6-27b-8bit` with `--enable-dflash` |
+| **DDTree speculative decoding** | DFlash draft-tree verification over multiple branches | `qwen3.5-9b-8bit` (experimental, single-user) |
 | **MTP speculative decoding** | Multi-token prediction head shipped with the model | MTP-trained checkpoints with `--enable-mtp` |
 | **SuffixDecoding** | Drafter-free, statistical n-gram lookup speculative decoding | All BatchedEngine models with `--suffix-decoding` |
 | **Prefill chunking** | Configurable step size for large-prompt throughput | All models |
@@ -763,14 +764,14 @@ Run your own: `bash evals/run_all_models.sh` runs the full quality suite (tool c
 | **TurboQuant K8V4 KV codec** | K is 8-bit + V is 4-bit after Walsh-Hadamard rotation + Lloyd-Max quantization — compresses KV to ~1/2.4 (~58% savings), lossless across the verified matrix. **Default-on for 9 verified Qwen3.5/3.6 aliases** (see below); `--kv-cache-turboquant none` to force off. |
 | **Smart cloud routing** | Large-context requests auto-route to a cloud LLM (`--cloud-model openai/gpt-5 --cloud-threshold 20000`) when local prefill would be slow. |
 | **Multimodal** | Vision, audio (STT/TTS with bundled Silero VAD silence pre-trim), video understanding, text embeddings — all through the standard OpenAI endpoints. |
-| **Speculative decoding** | DFlash (block-diffusion drafter, `--enable-dflash`), MTP (multi-token prediction head, `--enable-mtp`), SuffixDecoding (drafter-free n-gram, `--suffix-decoding`). Opt-in per alias — see below. |
+| **Speculative decoding** | DFlash (block-diffusion drafter, `--enable-dflash`), DDTree (DFlash draft tree, `--enable-ddtree`), MTP (multi-token prediction head, `--enable-mtp`), SuffixDecoding (drafter-free n-gram, `--suffix-decoding`). Opt-in per alias — see below. |
 | **Structured output, logprobs, continuous batching, KV quantization** | Standard, no flags or with one flag each. |
 | **3300+ tests** | Across reasoning, tool parsing, streaming, agent harnesses, and engine integration. |
 
 **K8V4 default-on aliases** (9 as of 0.9.9): `qwen3.5-9b-4bit`, `qwen3.5-9b-8bit`, `qwen3.5-27b-4bit`, `qwen3.5-27b-8bit`, `qwen3.5-35b-6bit`, `qwen3.6-35b-4bit`, `qwen3.6-35b-6bit`, `qwen3.6-35b-8bit`, `qwen3.6-35b-dwq`. Radix prefix cache is independent and saves additional bytes proportional to inter-request prefix overlap — the two are orthogonal.
 
 <details>
-<summary><strong>Speculative decoding — DFlash, MTP, SuffixDecoding</strong></summary>
+<summary><strong>Speculative decoding — DFlash, DDTree, MTP, SuffixDecoding</strong></summary>
 
 Three drafters ship in-tree. All are **opt-in** per alias — `rapid-mlx info <alias>` shows what's eligible on the model you're serving.
 
@@ -792,6 +793,16 @@ Workload sensitivity: coding / math / summarization typically see **1.5–2.7×*
 **MTP** (Multi-Token Prediction) — draft head baked into the model. Opt in with `--enable-mtp` on MTP-trained checkpoints. Auto-tune of `--mtp-num-draft-tokens` per workload is roadmapped for the 0.9.1x line.
 
 **SuffixDecoding** — drafter-free, statistical n-gram lookup over the running suffix. Opt in with `--suffix-decoding`; works on any BatchedEngine alias.
+
+**DDTree** (experimental) — builds a tree from one DFlash draft pass, then verifies multiple likely continuations. The first rapid-mlx integration is intentionally opt-in and single-user, using the external `dtree-mlx` runtime:
+
+```bash
+pip install 'dtree-mlx @ git+https://github.com/DrHB/dtree-mlx.git'
+rapid-mlx info qwen3.5-9b-8bit
+rapid-mlx serve qwen3.5-9b-8bit --enable-ddtree
+```
+
+MVP limitations mirror DFlash mode: no continuous batching, tools, MCP, embeddings, logprobs, or structured output. The alias records the experimental draft model candidate and defaults (`z-lab/Qwen3.5-9B-DFlash`, 16 speculative tokens, tree budget 24), but DDTree never turns on unless `--enable-ddtree` is passed.
 
 Mutex: DFlash cannot combine with MTP or SuffixDecoding (single-user path). MTP and SuffixDecoding cannot combine with each other (both consume the drafter slot).
 
@@ -831,6 +842,7 @@ Mutex: DFlash cannot combine with MTP or SuffixDecoding (single-user path). MTP 
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (default) or `hash` | `radix` |
 | `--pflash` | PFlash sparse prefill: `auto` / `always` / `off` | `auto` (on for verified aliases) |
 | `--enable-dflash` | DFlash speculative decoding (single-user; `qwen3.5-27b-8bit` / `qwen3.6-27b-8bit`) | off |
+| `--enable-ddtree` | Experimental DDTree speculative decoding (single-user; `qwen3.5-9b-8bit`) | off |
 | `--suffix-decoding` | Drafter-free n-gram speculative decoding (BatchedEngine path) | off |
 | `--enable-mtp` | MTP head speculative decoding (requires MTP-trained model) | off |
 | `--gpu-memory-utilization` | Fraction of device memory to use (0.0-1.0) | `0.90` |
@@ -1034,6 +1046,7 @@ harness/                 # Regression baselines + thresholds
 | Technique | Expected Gain | Status |
 |-----------|---------------|--------|
 | [DFlash](https://arxiv.org/abs/2602.06036) — block-diffusion drafter, single-user | 1.3–2× decode (workload-dependent) | Shipping, opt-in (`--enable-dflash`, `[dflash]` extra; qwen3.5-27b-8bit, qwen3.6-27b-8bit) |
+| [DDTree](https://arxiv.org/abs/2604.12989) — DFlash draft-tree verification, single-user | TBD on rapid-mlx 9B gate | Experimental (`--enable-ddtree`) |
 | [SuffixDecoding](https://arxiv.org/abs/2411.04975) — drafter-free n-gram speculative | 1.1–1.5× decode | Shipping (`--suffix-decoding`, per-model tier sweep ongoing) |
 | MTP — Multi-Token Prediction head | 1.4–1.7× decode | Shipping, opt-in (`--enable-mtp`, MTP-trained checkpoints); per-workload auto-tune of `--mtp-num-draft-tokens` landing in the 0.9.1x line |
 | [EAGLE-3](https://arxiv.org/abs/2503.01840) — feature-level draft on Metal | 3–6.5× decode | Not started |

@@ -1233,6 +1233,7 @@ def test_alias_profile_str_fields_are_explicitly_listed():
             "reasoning_parser",  # parser key, see PARSER_REGISTRY
             "suffix_decoding_tier",  # one of VALID_SUFFIX_TIERS — non-routing data
             "dflash_draft_model",  # HF path for the spec-decode drafter
+            "ddtree_draft_model",  # HF path for the DDTree/DFlash drafter
             # Deprecated v0.7.2 PR #555 in-house diffusion loop knob,
             # kept for one release window so programmatic readers don't
             # AttributeError; not consumed by any code path. Removed in

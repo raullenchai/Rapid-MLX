@@ -59,6 +59,10 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
         "suffix_bench_speedup",
         "supports_dflash",
         "dflash_draft_model",
+        "supports_ddtree",
+        "ddtree_draft_model",
+        "ddtree_speculative_tokens",
+        "ddtree_tree_budget",
         "recommended_sampling",
         "pflash_tier",
         "turboquant_tier",
@@ -508,6 +512,75 @@ def test_negative_control_dflash_missing_drafter_is_caught() -> None:
         _coerce(
             "fake-alias",
             {"hf_path": "fake/Model", "supports_dflash": True},
+        )
+
+
+# =============================================================================
+# DDTree speculative-decoding contract (issue #879)
+# =============================================================================
+
+
+@pytest.mark.parametrize("alias", _alias_ids())
+def test_ddtree_requires_drafter_and_params(alias: str) -> None:
+    profile = list_profiles()[alias]
+    if profile.supports_ddtree:
+        assert profile.ddtree_draft_model, (
+            f"{alias}: supports_ddtree=True but ddtree_draft_model is empty"
+        )
+        assert "/" in profile.ddtree_draft_model, (
+            f"{alias}: ddtree_draft_model={profile.ddtree_draft_model!r} "
+            f"must be 'org/repo' format"
+        )
+        assert profile.ddtree_speculative_tokens is not None, (
+            f"{alias}: supports_ddtree=True but ddtree_speculative_tokens is empty"
+        )
+        assert profile.ddtree_tree_budget is not None, (
+            f"{alias}: supports_ddtree=True but ddtree_tree_budget is empty"
+        )
+
+
+@pytest.mark.parametrize("alias", _alias_ids())
+def test_ddtree_excludes_moe_architectures(alias: str) -> None:
+    profile = list_profiles()[alias]
+    if profile.is_moe:
+        assert not profile.supports_ddtree, (
+            f"{alias}: is_moe=True but supports_ddtree=True — DDTree verifier "
+            "support is not validated on MoE aliases."
+        )
+
+
+@pytest.mark.parametrize("alias", _alias_ids())
+def test_ddtree_excludes_4bit_precision_until_benched(alias: str) -> None:
+    profile = list_profiles()[alias]
+    if not profile.supports_ddtree:
+        return
+    hf_lc = profile.hf_path.lower()
+    is_4bit = "-4bit" in hf_lc or "mxfp4" in hf_lc or "nvfp4" in hf_lc
+    assert not is_4bit, (
+        f"{alias}: supports_ddtree=True but hf_path={profile.hf_path!r} "
+        "looks like a 4-bit quantized variant. Bench and update the gate "
+        "before enabling DDTree on 4-bit."
+    )
+
+
+def test_ddtree_eligible_aliases_have_dflash_drafter() -> None:
+    for alias, profile in list_profiles().items():
+        if not profile.supports_ddtree:
+            continue
+        d = profile.ddtree_draft_model or ""
+        assert d.startswith("z-lab/") and re.search(r"(?:^|-)DFlash(?:$|-)", d), (
+            f"{alias}: ddtree_draft_model={d!r} must point at a z-lab "
+            "DFlash drafter unless the DDTree runtime contract changes."
+        )
+
+
+def test_negative_control_ddtree_missing_drafter_is_caught() -> None:
+    from vllm_mlx.model_aliases import _coerce
+
+    with pytest.raises(ValueError, match="ddtree_draft_model"):
+        _coerce(
+            "fake-alias",
+            {"hf_path": "fake/Model", "supports_ddtree": True},
         )
 
 

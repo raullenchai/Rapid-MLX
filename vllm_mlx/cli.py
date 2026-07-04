@@ -1463,6 +1463,67 @@ def _build_benchmark_context(target_tokens: int) -> str:
     return (block * repeats).strip()
 
 
+def _preflight_ddtree_or_exit(args):
+    """Validate DDTree flag/alias/runtime gates and cache the profile."""
+    import sys
+
+    if getattr(args, "enable_dflash", False) or (
+        getattr(args, "spec_decode", "none") == "dflash"
+    ):
+        print(
+            "\n  Error: --enable-ddtree cannot combine with --enable-dflash "
+            "or --spec-decode dflash. Pick one block-diffusion "
+            "speculative-decoding server.\n"
+        )
+        sys.exit(1)
+    if getattr(args, "suffix_decoding", False) or getattr(args, "enable_mtp", False):
+        print(
+            "\n  Error: --enable-ddtree cannot combine with --suffix-decoding "
+            "or --enable-mtp. DDTree runs a dedicated single-user server "
+            "that bypasses BatchedEngine; other spec-decode methods only "
+            "apply to the BatchedEngine path.\n"
+        )
+        sys.exit(1)
+    if getattr(args, "no_spec_decode", False):
+        print(
+            "error: --enable-ddtree and --no-spec-decode are mutually "
+            "exclusive — DDTree is a speculative-decode mode.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    from .model_aliases import resolve_profile
+    from .speculative.ddtree import DDTreeUnavailable, check
+    from .speculative.ddtree.eligibility import have_runtime
+
+    alias_name = getattr(args, "_original_alias", None) or args.model
+    profile = resolve_profile(alias_name)
+    if profile is None:
+        print(
+            f"\n  Error: --enable-ddtree requires a known alias, got "
+            f"{alias_name!r}. DDTree eligibility is recorded per-alias "
+            f"in aliases.json; ad-hoc HuggingFace paths can't be "
+            f"validated. Try ``rapid-mlx info qwen3.5-9b-8bit``.\n"
+        )
+        sys.exit(1)
+    try:
+        check(profile, alias=alias_name)
+    except DDTreeUnavailable as e:
+        print(f"\n  Error: {e}\n")
+        sys.exit(1)
+    if not have_runtime():
+        print(
+            "\n  Error: --enable-ddtree requires the experimental dtree-mlx "
+            "runtime. Install with: ``pip install 'dtree-mlx @ "
+            "git+https://github.com/DrHB/dtree-mlx.git'``.\n"
+        )
+        sys.exit(1)
+
+    args._ddtree_alias_name = alias_name
+    args._ddtree_profile = profile
+    return alias_name, profile
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -1549,6 +1610,15 @@ def serve_command(args):
 
     if is_audio_model_alias(getattr(args, "model", None)):
         require_audio_or_exit(args.model)
+
+    # DDTree has an external experimental runtime and its validated target
+    # can be multi-GB. Fail the cheap flag/alias/runtime gates before the
+    # version prompt and before any model prefetch so a missing dtree-mlx
+    # install doesn't start a large download first. This runs before the
+    # DFlash runtime probe so --enable-ddtree + --enable-dflash surfaces
+    # the mutual-exclusion error instead of an optional-dependency hint.
+    if getattr(args, "enable_ddtree", False):
+        _preflight_ddtree_or_exit(args)
 
     # 0.9.2 dogfood (parallels the [embeddings]/[vision]/[audio] guards
     # immediately above): ``--enable-dflash`` and the equivalent
@@ -2031,10 +2101,11 @@ def serve_command(args):
             file=sys.stderr,
         )
 
-    # DFlash mutual-exclusion gate fires BEFORE the startup banner so
+    # DFlash / DDTree mutual-exclusion gates fire BEFORE the startup banner so
     # the user sees a clean error instead of an optimistic "Features:
-    # dflash" line immediately followed by an exit. The deeper SchedulerConfig
-    # mutex (suffix vs. mtp) stays below since it doesn't involve DFlash.
+    # dflash" / "ddtree" line immediately followed by an exit. The deeper
+    # SchedulerConfig mutex (suffix vs. mtp) stays below since it doesn't
+    # involve the dedicated single-user servers.
     if args.enable_dflash and (args.suffix_decoding or args.enable_mtp):
         print(
             "\n  Error: --enable-dflash cannot combine with --suffix-decoding "
@@ -2114,6 +2185,38 @@ def serve_command(args):
                 "\n    --enable-dflash if you need them.\n"
             )
 
+    # DDTree eligibility gate mirrors DFlash: cheap alias/runtime checks
+    # before the startup banner and before any model load.
+    if args.enable_ddtree:
+        _GPU_MEM_DEFAULT = 0.90
+        _ddtree_ignored: list[str] = []
+        if getattr(args, "enable_prefix_cache", False):
+            _ddtree_ignored.append("--enable-prefix-cache")
+        if getattr(args, "kv_cache_quantization", None):
+            _ddtree_ignored.append("--kv-cache-quantization")
+        _gpu_mem = getattr(args, "gpu_memory_utilization", _GPU_MEM_DEFAULT)
+        if _gpu_mem is not None and abs(_gpu_mem - _GPU_MEM_DEFAULT) > 1e-6:
+            _ddtree_ignored.append("--gpu-memory-utilization")
+        if getattr(args, "enable_auto_tool_choice", False):
+            _ddtree_ignored.append("--enable-auto-tool-choice")
+        if getattr(args, "tool_call_parser", None):
+            _ddtree_ignored.append("--tool-call-parser")
+        if getattr(args, "reasoning_parser", None):
+            _ddtree_ignored.append("--reasoning-parser")
+        if getattr(args, "embedding_model", None):
+            _ddtree_ignored.append("--embedding-model")
+        if getattr(args, "mcp_config", None):
+            _ddtree_ignored.append("--mcp-config")
+        if _ddtree_ignored:
+            print(
+                "\n  ⚠ The following flags are ignored under --enable-ddtree"
+                "\n    (DDTree uses a dedicated experimental single-user "
+                "server that bypasses BatchedEngine):"
+                f"\n      {', '.join(_ddtree_ignored)}"
+                "\n    Drop them from your serve command, or run without"
+                "\n    --enable-ddtree if you need them.\n"
+            )
+
     # Startup summary
     print()
     print("  🐆 Rapid-MLX")
@@ -2150,6 +2253,8 @@ def serve_command(args):
         features.append(f"cors: {', '.join(cors_origins)}")
     if args.enable_dflash:
         features.append("dflash: single-user")
+    if args.enable_ddtree:
+        features.append("ddtree: experimental single-user")
     if features:
         print(f"  Features: {', '.join(features)}")
     print(f"  Model: {args.model}")
@@ -2580,6 +2685,37 @@ def serve_command(args):
             port=args.port,
             served_model_name=args.served_model_name or _alias_name,
             default_max_tokens=effective_max_tokens,
+            cors_origins=cors_origins,
+            uvicorn_log_level=uvicorn_log_level,
+            no_thinking=args.no_thinking,
+        )
+        return
+
+    # DDTree fork: same blast-radius boundary as DFlash. It is a
+    # speculative-decode mode, but the MVP runs through the external
+    # dtree-mlx runtime rather than BatchedEngine.
+    if args.enable_ddtree:
+        from .speculative.ddtree.server import run_ddtree_server
+
+        _alias_name = getattr(args, "_ddtree_alias_name", None)
+        _profile = getattr(args, "_ddtree_profile", None)
+        if _alias_name is None or _profile is None:
+            _alias_name, _profile = _preflight_ddtree_or_exit(args)
+        assert _profile is not None and _profile.supports_ddtree, (
+            f"DDTree profile invariant violated for {_alias_name!r}"
+        )
+        assert _profile.ddtree_draft_model is not None
+        assert _profile.ddtree_speculative_tokens is not None
+        assert _profile.ddtree_tree_budget is not None
+        run_ddtree_server(
+            main_model_repo=_profile.hf_path,
+            drafter_repo=_profile.ddtree_draft_model,
+            speculative_tokens=_profile.ddtree_speculative_tokens,
+            tree_budget=_profile.ddtree_tree_budget,
+            host=args.host,
+            port=args.port,
+            served_model_name=args.served_model_name or _alias_name,
+            default_max_tokens=args.max_tokens,
             cors_origins=cors_origins,
             uvicorn_log_level=uvicorn_log_level,
             no_thinking=args.no_thinking,
@@ -3610,7 +3746,7 @@ def models_command(args):
     # floor — never shrink below it so short rows still feel padded.
     # Other widths sized to fit values currently in aliases.json:
     # tool 16 (qwen3_coder_xml + 1 pad), reasoning 12 (deepseek_r1 + 1),
-    # spec 10 ("✗ hybrid"), tier 11, dflash 7.
+    # spec 10 ("✗ hybrid"), tier 11, dflash 7, ddtree 7.
     alias_width = max(24, max((len(a) for a in profiles), default=0) + 2)
     cols = (
         ("Alias", alias_width),
@@ -3619,6 +3755,7 @@ def models_command(args):
         ("Spec-Decode", 10),
         ("Suffix Tier", 11),
         ("DFlash", 7),
+        ("DDTree", 7),
     )
     width = sum(w for _, w in cols) + len(cols) - 1
     sep = "  " + "─" * width
@@ -3645,9 +3782,10 @@ def models_command(args):
         # mlx-vlm 0.5.0+ is installed) — that's a runtime concern; the
         # registry column is pure declarative state.
         dflash = "✓" if p.supports_dflash else "—"
+        ddtree = "✓" if p.supports_ddtree else "—"
         row = (
             f"  {alias:<{alias_width}} {tools:<16} {reasoning:<12} "
-            f"{spec:<10} {tier:<11} {dflash:<7}"
+            f"{spec:<10} {tier:<11} {dflash:<7} {ddtree:<7}"
         )
         print(row)
 
@@ -5373,6 +5511,7 @@ def info_command(args):
     profile = resolve_profile(original_alias)
     if profile is not None:
         _print_dflash_status(original_alias, profile)
+        _print_ddtree_status(original_alias, profile)
 
     if cfg is None:
         print("  No pattern matched — runtime probe will run when the model loads.")
@@ -5444,6 +5583,84 @@ def _print_dflash_status(alias: str, profile) -> None:
     print()
     if eligible:
         print(f"  Start with: rapid-mlx serve {alias} --enable-dflash")
+        print()
+
+
+def _print_ddtree_status(alias: str, profile) -> None:
+    """Render DDTree status for ``rapid-mlx info <alias>``."""
+    from vllm_mlx.speculative.ddtree.eligibility import have_runtime, report
+    from vllm_mlx.speculative.dflash.eligibility import _looks_like_4bit
+
+    r = report(profile, alias=alias)
+    inner = 60
+    sep = "─" * inner
+
+    def _row(text: str) -> str:
+        return f"│ {text:<{inner}} │"
+
+    def _yes(ok: bool, msg_ok: str, msg_no: str) -> str:
+        return ("✓ " + msg_ok) if ok else ("✗ " + msg_no)
+
+    rows = [
+        (
+            "Declared support",
+            _yes(profile.supports_ddtree, "yes (supports_ddtree=true)", "no"),
+        ),
+        ("Not MoE", _yes(not profile.is_moe, "yes (dense)", "no (MoE)")),
+        (
+            "Precision ≥8-bit",
+            _yes(
+                not _looks_like_4bit(profile.hf_path),
+                "yes",
+                "no (4-bit/mxfp4/nvfp4)",
+            ),
+        ),
+        (
+            "Drafter declared",
+            _yes(
+                bool(profile.ddtree_draft_model),
+                profile.ddtree_draft_model or "yes",
+                "no (ddtree_draft_model unset)",
+            ),
+        ),
+        (
+            "Spec tokens",
+            _yes(
+                profile.ddtree_speculative_tokens is not None,
+                str(profile.ddtree_speculative_tokens),
+                "missing",
+            ),
+        ),
+        (
+            "Tree budget",
+            _yes(
+                profile.ddtree_tree_budget is not None,
+                str(profile.ddtree_tree_budget),
+                "missing",
+            ),
+        ),
+        (
+            "dtree-mlx runtime",
+            _yes(
+                have_runtime(),
+                "installed",
+                "missing/import-broken",
+            ),
+        ),
+    ]
+
+    eligible = not r.reasons and have_runtime()
+    summary = "✓ eligible" if eligible else "✗ ineligible"
+    top = "┌" + "─" * (inner + 2) + "┐"
+    bot = "└" + "─" * (inner + 2) + "┘"
+    body = [top, _row(f"DDTree eligibility: {summary}"), _row(sep)]
+    for k, v in rows:
+        body.append(_row(f"{k:<18}: {v}"))
+    body.append(bot)
+    print("\n".join(body))
+    print()
+    if eligible:
+        print(f"  Start with: rapid-mlx serve {alias} --enable-ddtree")
         print()
 
 
@@ -6089,6 +6306,15 @@ Examples:
         "``pip install 'rapid-mlx[dflash]'``.",
     )
     serve_parser.add_argument(
+        "--enable-ddtree",
+        action="store_true",
+        default=False,
+        help="Enable experimental DDTree speculative decoding (DFlash draft "
+        "tree verification, single-user serial mode). Requires a "
+        "DDTree-eligible alias (see ``rapid-mlx info <alias>``) and the "
+        "external dtree-mlx runtime.",
+    )
+    serve_parser.add_argument(
         "--num-draft-tokens",
         type=int,
         default=4,
@@ -6502,7 +6728,7 @@ Examples:
         default=False,
         help=(
             "Force-disable speculative-decode eligibility (suffix / MTP / "
-            "DFlash) even when AliasProfile says the model supports it. "
+            "DFlash / DDTree) even when AliasProfile says the model supports it. "
             "Mutually exclusive with --force-spec-decode."
         ),
     )
