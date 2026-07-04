@@ -48,7 +48,9 @@ def detect_model(base_url: str) -> str:
     return r.json()["data"][0]["id"]
 
 
-def stream_request(base_url: str, model: str, messages: list, max_tokens: int = 100, tools=None) -> dict:
+def stream_request(
+    base_url: str, model: str, messages: list, max_tokens: int = 100, tools=None
+) -> dict:
     """Stream a request and measure TTFT + decode TPS.
 
     Uses server-reported usage.completion_tokens for TPS calculation,
@@ -69,7 +71,9 @@ def stream_request(base_url: str, model: str, messages: list, max_tokens: int = 
     content = ""
     usage = {}
 
-    with httpx.stream("POST", f"{base_url}/chat/completions", json=payload, timeout=120) as resp:
+    with httpx.stream(
+        "POST", f"{base_url}/chat/completions", json=payload, timeout=120
+    ) as resp:
         for line in resp.iter_lines():
             if not line.startswith("data: ") or line == "data: [DONE]":
                 continue
@@ -91,7 +95,11 @@ def stream_request(base_url: str, model: str, messages: list, max_tokens: int = 
     decode_time = elapsed - ttft
     # Use server-reported completion_tokens (accurate across both engines)
     completion_tokens = usage.get("completion_tokens", 0)
-    tps = completion_tokens / decode_time if decode_time > 0 and completion_tokens > 0 else 0
+    tps = (
+        completion_tokens / decode_time
+        if decode_time > 0 and completion_tokens > 0
+        else 0
+    )
 
     return {
         "ttft_ms": round(ttft * 1000, 1),
@@ -101,7 +109,9 @@ def stream_request(base_url: str, model: str, messages: list, max_tokens: int = 
     }
 
 
-def non_stream_request(base_url: str, model: str, messages: list, max_tokens: int = 100, tools=None) -> dict:
+def non_stream_request(
+    base_url: str, model: str, messages: list, max_tokens: int = 100, tools=None
+) -> dict:
     """Non-streaming request, measure total latency."""
     payload = {
         "model": model,
@@ -136,35 +146,60 @@ def run_suite(base_url: str, model: str) -> dict:
     # --- 1. Short decode (streaming) ---
     print("  [1/6] Short decode (100 tokens, streaming)...")
     runs = []
-    for prompt in ["Write a haiku about the ocean.", "Explain what a variable is.", "List 5 fruits."]:
-        r = stream_request(base_url, model, [{"role": "user", "content": prompt}], max_tokens=100)
+    for prompt in [
+        "Write a haiku about the ocean.",
+        "Explain what a variable is.",
+        "List 5 fruits.",
+    ]:
+        r = stream_request(
+            base_url, model, [{"role": "user", "content": prompt}], max_tokens=100
+        )
         runs.append(r)
     results["short_decode"] = {
         "avg_ttft_ms": round(sum(r["ttft_ms"] for r in runs) / len(runs), 1),
         "avg_tps": round(sum(r["decode_tps"] for r in runs) / len(runs), 1),
         "runs": runs,
     }
-    print(f"        TTFT: {results['short_decode']['avg_ttft_ms']}ms, {results['short_decode']['avg_tps']} tok/s")
+    print(
+        f"        TTFT: {results['short_decode']['avg_ttft_ms']}ms, {results['short_decode']['avg_tps']} tok/s"
+    )
 
     # --- 2. Long decode (streaming) ---
     print("  [2/6] Long decode (512 tokens, streaming)...")
     r = stream_request(
-        base_url, model,
-        [{"role": "user", "content": "Write a detailed essay about the history of computing from Babbage to modern GPUs."}],
+        base_url,
+        model,
+        [
+            {
+                "role": "user",
+                "content": "Write a detailed essay about the history of computing from Babbage to modern GPUs.",
+            }
+        ],
         max_tokens=512,
     )
     results["long_decode"] = r
-    print(f"        TTFT: {r['ttft_ms']}ms, {r['decode_tps']} tok/s, {r['tokens']} tokens")
+    print(
+        f"        TTFT: {r['ttft_ms']}ms, {r['decode_tps']} tok/s, {r['tokens']} tokens"
+    )
 
     # --- 3. Cached TTFT (same system prompt, 3 requests) ---
     print("  [3/6] Cached TTFT (same system prompt, 3 turns)...")
     system = "You are a Python expert. Give concise answers."
     runs = []
-    for q in ["What is a list comprehension?", "Explain decorators.", "What are generators?"]:
-        r = stream_request(base_url, model, [
-            {"role": "system", "content": system},
-            {"role": "user", "content": q},
-        ], max_tokens=80)
+    for q in [
+        "What is a list comprehension?",
+        "Explain decorators.",
+        "What are generators?",
+    ]:
+        r = stream_request(
+            base_url,
+            model,
+            [
+                {"role": "system", "content": system},
+                {"role": "user", "content": q},
+            ],
+            max_tokens=80,
+        )
         runs.append(r)
     results["cached_ttft"] = {
         "first_ttft_ms": runs[0]["ttft_ms"],
@@ -172,7 +207,9 @@ def run_suite(base_url: str, model: str) -> dict:
         "avg_tps": round(sum(r["decode_tps"] for r in runs) / len(runs), 1),
         "runs": runs,
     }
-    print(f"        First: {results['cached_ttft']['first_ttft_ms']}ms, Cached: {results['cached_ttft']['cached_ttft_ms']}ms")
+    print(
+        f"        First: {results['cached_ttft']['first_ttft_ms']}ms, Cached: {results['cached_ttft']['cached_ttft_ms']}ms"
+    )
 
     # --- 4. Multi-turn (4 turns, non-streaming) ---
     print("  [4/6] Multi-turn (4 turns)...")
@@ -197,14 +234,22 @@ def run_suite(base_url: str, model: str) -> dict:
     print("  [5/6] Tool call (3 calls)...")
     runs = []
     for prompt in ["Weather in Paris?", "Search for *.py", "Weather in Tokyo?"]:
-        r = non_stream_request(base_url, model, [{"role": "user", "content": prompt}], max_tokens=200, tools=TOOLS)
+        r = non_stream_request(
+            base_url,
+            model,
+            [{"role": "user", "content": prompt}],
+            max_tokens=200,
+            tools=TOOLS,
+        )
         runs.append(r)
     results["tool_call"] = {
         "avg_latency_ms": round(sum(r["latency_ms"] for r in runs) / len(runs), 1),
         "success_rate": sum(1 for r in runs if r["has_tool_calls"]) / len(runs),
         "runs": runs,
     }
-    print(f"        Avg: {results['tool_call']['avg_latency_ms']}ms, {results['tool_call']['success_rate']:.0%} success")
+    print(
+        f"        Avg: {results['tool_call']['avg_latency_ms']}ms, {results['tool_call']['success_rate']:.0%} success"
+    )
 
     # --- 6. Streaming tool call ---
     print("  [6/6] Streaming tool call...")
@@ -217,7 +262,9 @@ def run_suite(base_url: str, model: str) -> dict:
         "stream": True,
     }
     tool_chunks = 0
-    with httpx.stream("POST", f"{base_url}/chat/completions", json=payload, timeout=60) as resp:
+    with httpx.stream(
+        "POST", f"{base_url}/chat/completions", json=payload, timeout=60
+    ) as resp:
         for line in resp.iter_lines():
             if not line.startswith("data: ") or line == "data: [DONE]":
                 continue

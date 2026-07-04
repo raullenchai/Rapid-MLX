@@ -41,10 +41,24 @@ def _quantize_weight(w, group_size, bits):
 
 def main():
     parser = argparse.ArgumentParser(description="Extract MTP weights from HF model")
-    parser.add_argument("--hf-model", required=True, help="HuggingFace model ID (e.g. Qwen/Qwen3.5-27B)")
-    parser.add_argument("--mlx-model", required=True, help="Path to quantized MLX model directory")
-    parser.add_argument("--bits", type=int, default=None, help="Override quantization bits (default: from MLX model config)")
-    parser.add_argument("--group-size", type=int, default=None, help="Override group size (default: from MLX model config)")
+    parser.add_argument(
+        "--hf-model", required=True, help="HuggingFace model ID (e.g. Qwen/Qwen3.5-27B)"
+    )
+    parser.add_argument(
+        "--mlx-model", required=True, help="Path to quantized MLX model directory"
+    )
+    parser.add_argument(
+        "--bits",
+        type=int,
+        default=None,
+        help="Override quantization bits (default: from MLX model config)",
+    )
+    parser.add_argument(
+        "--group-size",
+        type=int,
+        default=None,
+        help="Override group size (default: from MLX model config)",
+    )
     args = parser.parse_args()
 
     mlx_dir = Path(args.mlx_model)
@@ -172,7 +186,7 @@ def main():
             logger.info(f"Updated config: mtp_num_hidden_layers={mtp_layers}")
 
     logger.info("\nDone! MTP weights extracted and quantized.")
-    logger.info(f"Start server with: --enable-mtp")
+    logger.info("Start server with: --enable-mtp")
 
 
 if __name__ == "__main__":

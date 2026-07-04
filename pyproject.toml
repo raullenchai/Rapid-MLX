@@ -380,6 +380,10 @@ ignore = [
 # renaming would lose readability across many tests.
 "tests/test_param_validation_r5e.py" = ["N803"]
 "tests/test_param_validation_r7b.py" = ["N803"]
+# Chain-of-K MTP uses ``K`` as chain length (Ollama speculate.go, Google
+# mlx-vlm draft_block); N803 lowercase rule incompatible with the
+# speculative-decode literature convention.
+"vllm_mlx/spec_decode/mtp/generator.py" = ["N803"]
 
 [tool.mypy]
 python_version = "3.10"

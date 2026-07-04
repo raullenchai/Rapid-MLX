@@ -131,9 +131,7 @@ def stream_request(
                     chunk = json.loads(payload)
                     delta = chunk["choices"][0]["delta"]
                     content = delta.get("content")
-                    reasoning = delta.get("reasoning_content") or delta.get(
-                        "reasoning"
-                    )
+                    reasoning = delta.get("reasoning_content") or delta.get("reasoning")
                     tc = delta.get("tool_calls")
                     if content or reasoning:
                         if first_token_time is None:
@@ -160,9 +158,7 @@ def stream_request(
     if tool_call_time and not first_token_time:
         ttft = (tool_call_time - start) * 1000
     # Content TTFT: time to first content token (excluding reasoning)
-    content_ttft = (
-        (first_content_time - start) * 1000 if first_content_time else ttft
-    )
+    content_ttft = (first_content_time - start) * 1000 if first_content_time else ttft
     decode_time = end - (first_token_time or tool_call_time or start)
     tps = (token_count - 1) / decode_time if decode_time > 0 and token_count > 1 else 0
     # Content-only TPS (vLLM-style: excludes reasoning tokens)
@@ -278,9 +274,7 @@ def run_suite(n_runs=3, verbose=True):
     for i in range(n_runs):
         r = stream_request(msgs, max_tokens=200, enable_thinking=False)
         nothink_tps.append(r["tps"])
-        log(
-            f"  Run {i + 1}: {r['tps']:.1f} tok/s | Tokens: {r['tokens']}"
-        )
+        log(f"  Run {i + 1}: {r['tps']:.1f} tok/s | Tokens: {r['tokens']}")
     results["nothink_decode_tps"] = statistics.mean(nothink_tps)
 
     # Composite score: weighted combination (higher = better)

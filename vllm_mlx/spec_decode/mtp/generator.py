@@ -38,7 +38,6 @@ adjustments.
 from __future__ import annotations
 
 import logging
-import math
 import time
 from collections.abc import Callable, Generator
 from functools import partial
@@ -274,9 +273,9 @@ def mtp_generate_step(
     # the capability flag stays off for backwards compat.
     # ------------------------------------------------------------------
     try:
-        _mtp_supports_hidden = "return_hidden" in _inspect.signature(
-            model.mtp_forward
-        ).parameters
+        _mtp_supports_hidden = (
+            "return_hidden" in _inspect.signature(model.mtp_forward).parameters
+        )
     except (TypeError, ValueError):  # pragma: no cover — non-introspectable
         _mtp_supports_hidden = False
 
@@ -471,9 +470,7 @@ def mtp_generate_step(
             )
         return draft_tok, draft_lp, draft_accept_lp, xtc_draw, drafter_hidden_last
 
-    def _step_mtp_chain(
-        hidden_last, main_tok, prev, K, *, cache_commit=None
-    ):
+    def _step_mtp_chain(hidden_last, main_tok, prev, K, *, cache_commit=None):
         """Generate ``K`` sequential drafts by cascading MTP calls.
 
         Two cascade shapes are supported, selected by the injected
@@ -718,9 +715,11 @@ def mtp_generate_step(
             # Stacking on device (rather than materializing each draft
             # via ``.item()``) keeps the whole graph lazy up to the
             # single ``mx.eval`` below.
-            drafts_arr = mx.stack(
-                [d.reshape(-1) for d in draft_toks_arr]
-            ).reshape(-1).astype(mx.uint32)
+            drafts_arr = (
+                mx.stack([d.reshape(-1) for d in draft_toks_arr])
+                .reshape(-1)
+                .astype(mx.uint32)
+            )
             y_with_drafts = mx.concatenate([y, drafts_arr])
 
             toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
@@ -755,9 +754,7 @@ def mtp_generate_step(
                 # iff it matches the draft; residual == verify == toks[i]
                 # (residual distribution at greedy is a point mass on
                 # target's argmax, which coincides with target argmax).
-                accept_mask_arr = (
-                    toks[:k_len].astype(mx.int32) == drafts_i32
-                )
+                accept_mask_arr = toks[:k_len].astype(mx.int32) == drafts_i32
                 residual_toks_arr = toks[:k_len]
                 bonus_tok_arr = toks[k_len]
             else:
@@ -767,9 +764,7 @@ def mtp_generate_step(
                 d_alps_stack = mx.stack(draft_alps_arr)  # (K, V)
                 idx = drafts_i32.reshape(-1, 1)  # (K, 1)
                 v_at = mx.take_along_axis(v_alps, idx, axis=1).squeeze(-1)
-                d_at = mx.take_along_axis(
-                    d_alps_stack, idx, axis=1
-                ).squeeze(-1)
+                d_at = mx.take_along_axis(d_alps_stack, idx, axis=1).squeeze(-1)
                 log_accept = v_at - d_at  # (K,)
                 accept_mask_arr = (log_accept >= 0) | (u < mx.exp(log_accept))
 
@@ -789,9 +784,7 @@ def mtp_generate_step(
                 bonus_tok_arr = toks[k_len]
 
             # ------- SINGLE SYNC -------
-            mx.eval(
-                toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u
-            )
+            mx.eval(toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u)
 
             # ------- Host-side read (all values already resident) -------
             accept_flags = accept_mask_arr.tolist()
@@ -928,16 +921,12 @@ def mtp_generate_step(
                     # Position of last accepted draft is at index
                     # ``accepted_count - 1`` in the k+1-length hidden.
                     # For k_len=1 all-accept, this is hidden[:, 0:1].
-                    align_h = hidden[
-                        :, accepted_count - 1 : accepted_count, :
-                    ]
+                    align_h = hidden[:, accepted_count - 1 : accepted_count, :]
                     align_tok = draft_toks_arr[accepted_count - 1]
                     cache_commit = (align_h, align_tok)
                 else:
                     cache_commit = None
-                last_committed_tok = mx.array(
-                    [last_committed_tok_id], mx.uint32
-                )
+                last_committed_tok = mx.array([last_committed_tok_id], mx.uint32)
                 d_toks, d_lps, d_alps, d_xtcs = _step_mtp_chain(
                     last_committed_hidden,
                     last_committed_tok,

@@ -3347,9 +3347,7 @@ class Scheduler:
                     uid_to_request_id=self.uid_to_request_id,
                     # 0.9.13 PR-B: EV depth controller knobs.
                     max_k=getattr(self.config, "mtp_max_k", 3),
-                    disable_auto_k=getattr(
-                        self.config, "mtp_disable_auto_k", False
-                    ),
+                    disable_auto_k=getattr(self.config, "mtp_disable_auto_k", False),
                     controller_key=getattr(self, "_model_name", None)
                     or getattr(self.model_config, "name", None)
                     if getattr(self, "model_config", None) is not None

@@ -41,7 +41,11 @@ def generate_github_issue(config):
 
     issue_refs = ""
     if related_issues:
-        issue_refs = "**Related issues**: " + ", ".join(f"#{i.lstrip('#')}" for i in related_issues) + "\n\n"
+        issue_refs = (
+            "**Related issues**: "
+            + ", ".join(f"#{i.lstrip('#')}" for i in related_issues)
+            + "\n\n"
+        )
 
     model_table = ""
     if models:
@@ -72,7 +76,7 @@ Then configure {agent} to point to `http://localhost:8000/v1`.
 
 {model_table}## Integration test suite
 
-We built a comprehensive test suite for {agent}: [`tests/integrations/test_{config['name']}.py`](https://github.com/raullenchai/Rapid-MLX/blob/main/tests/integrations/test_{config['name']}.py)
+We built a comprehensive test suite for {agent}: [`tests/integrations/test_{config["name"]}.py`](https://github.com/raullenchai/Rapid-MLX/blob/main/tests/integrations/test_{config["name"]}.py)
 
 {f"Results: **{test_results}**" if test_results else ""}
 
@@ -137,7 +141,11 @@ def generate_tweet(config):
     twitter_handles = config.get("twitter_handles", [])
 
     model_highlight = models[0] if models else "local models"
-    handles = " ".join(f"@{h.lstrip('@')}" for h in twitter_handles) if twitter_handles else ""
+    handles = (
+        " ".join(f"@{h.lstrip('@')}" for h in twitter_handles)
+        if twitter_handles
+        else ""
+    )
 
     return f"""{agent} + {model_highlight}, fully local on Mac
 
@@ -147,7 +155,7 @@ pip install rapid-mlx && rapid-mlx serve <model>
 
 {handles}
 
-#LocalLLM #{config['name'].title().replace('-','')}
+#LocalLLM #{config["name"].title().replace("-", "")}
 
 [attach demo video]
 """
@@ -195,35 +203,46 @@ rapid-mlx serve <MODEL>
 
 Then point {agent} at `http://localhost:8000/v1`.
 
-Full integration test suite: [`tests/integrations/test_{config['name']}.py`](https://github.com/raullenchai/Rapid-MLX/blob/main/tests/integrations/test_{config['name']}.py)
+Full integration test suite: [`tests/integrations/test_{config["name"]}.py`](https://github.com/raullenchai/Rapid-MLX/blob/main/tests/integrations/test_{config["name"]}.py)
 """
 
 
 def interactive_config():
     """Interactively build a promo config."""
     print("📣 Agent Promotion Content Generator")
-    print("="*50)
+    print("=" * 50)
 
     config = {}
     config["name"] = input("Agent name (lowercase): ").strip()
-    config["display_name"] = input(f"Display name [{config['name'].title()}]: ").strip() or config["name"].title()
+    config["display_name"] = (
+        input(f"Display name [{config['name'].title()}]: ").strip()
+        or config["name"].title()
+    )
     config["repo"] = input("Their GitHub repo (owner/name): ").strip()
 
     pp = input("Pain points we solve (comma-separated, or empty): ").strip()
-    config["pain_points"] = [p.strip() for p in pp.split(",") if p.strip()] if pp else []
+    config["pain_points"] = (
+        [p.strip() for p in pp.split(",") if p.strip()] if pp else []
+    )
 
     config["unique_edge"] = input("Our unique advantage: ").strip()
 
     models = input("Models tested (comma-separated, or empty): ").strip()
-    config["models"] = [m.strip() for m in models.split(",") if m.strip()] if models else []
+    config["models"] = (
+        [m.strip() for m in models.split(",") if m.strip()] if models else []
+    )
 
     config["test_results"] = input("Test results (e.g. '20/20 on Gemma 4'): ").strip()
 
     issues = input("Related issues in their repo (comma-separated, or empty): ").strip()
-    config["related_issues"] = [i.strip() for i in issues.split(",") if i.strip()] if issues else []
+    config["related_issues"] = (
+        [i.strip() for i in issues.split(",") if i.strip()] if issues else []
+    )
 
     handles = input("Twitter handles to tag (comma-separated, or empty): ").strip()
-    config["twitter_handles"] = [h.strip() for h in handles.split(",") if h.strip()] if handles else []
+    config["twitter_handles"] = (
+        [h.strip() for h in handles.split(",") if h.strip()] if handles else []
+    )
 
     return config
 
@@ -239,9 +258,14 @@ def main():
     parser.add_argument("--test-results", help="Test results summary")
     parser.add_argument("--issues", help="Related issues (comma-separated)")
     parser.add_argument("--twitter-handles", help="Twitter handles to tag")
-    parser.add_argument("--format", choices=["all", "github", "reddit", "tweet", "discord", "issue-reply"],
-                        default="all")
-    parser.add_argument("--output-dir", "-o", help="Output directory for generated files")
+    parser.add_argument(
+        "--format",
+        choices=["all", "github", "reddit", "tweet", "discord", "issue-reply"],
+        default="all",
+    )
+    parser.add_argument(
+        "--output-dir", "-o", help="Output directory for generated files"
+    )
     args = parser.parse_args()
 
     if args.agent:
@@ -249,12 +273,20 @@ def main():
             "name": args.agent,
             "display_name": args.display_name or args.agent.title(),
             "repo": args.repo or "",
-            "pain_points": [p.strip() for p in args.pain_points.split(",")] if args.pain_points else [],
+            "pain_points": [p.strip() for p in args.pain_points.split(",")]
+            if args.pain_points
+            else [],
             "unique_edge": args.unique_edge or "",
-            "models": [m.strip() for m in args.models.split(",")] if args.models else [],
+            "models": [m.strip() for m in args.models.split(",")]
+            if args.models
+            else [],
             "test_results": args.test_results or "",
-            "related_issues": [i.strip() for i in args.issues.split(",")] if args.issues else [],
-            "twitter_handles": [h.strip() for h in args.twitter_handles.split(",")] if args.twitter_handles else [],
+            "related_issues": [i.strip() for i in args.issues.split(",")]
+            if args.issues
+            else [],
+            "twitter_handles": [h.strip() for h in args.twitter_handles.split(",")]
+            if args.twitter_handles
+            else [],
         }
     else:
         config = interactive_config()
@@ -277,9 +309,9 @@ def main():
         label, gen_fn = generators[fmt]
         content = gen_fn(config)
 
-        print(f"\n{'='*70}")
+        print(f"\n{'=' * 70}")
         print(f"  {label}")
-        print(f"{'='*70}")
+        print(f"{'=' * 70}")
         print(content)
 
         if output_dir:

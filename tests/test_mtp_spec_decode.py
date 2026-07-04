@@ -716,10 +716,7 @@ def test_metrics_renders_zero_ratio_when_no_attempts():
     # No model_alias / model_name / model_path → "unknown" (stable
     # residual — never a transient empty string).
     assert 'family="unknown"' in body
-    assert (
-        'rapid_mlx_spec_decode_accept_ratio{family="unknown",method="mtp"} 0'
-        in body
-    )
+    assert 'rapid_mlx_spec_decode_accept_ratio{family="unknown",method="mtp"} 0' in body
 
 
 def test_metrics_family_falls_back_to_gemma4_on_model_name():
@@ -771,7 +768,7 @@ def test_metrics_includes_park_and_k_chosen_counters():
     )
     # K-chosen histogram emits a zero-valued K=0 line even before any
     # rounds have run.
-    assert 'rapid_mlx_spec_decode_k_chosen_total' in body
+    assert "rapid_mlx_spec_decode_k_chosen_total" in body
     assert 'k="0"' in body
     assert (
         'rapid_mlx_spec_decode_k_chosen_rounds_total{family="gemma-4-12b-4bit",method="mtp"} 0'
@@ -867,9 +864,7 @@ def test_starvation_probe_forces_undersampled_k_at_max_k_cap():
         f"starve_interval={ctrl._round_probe_interval}"
     )
     # And K=3 must NOT be 100% of post-bootstrap picks.
-    non_three_count = sum(
-        c for k, c in ctrl.k_histogram.items() if k != 3
-    )
+    non_three_count = sum(c for k, c in ctrl.k_histogram.items() if k != 3)
     assert non_three_count > 0, (
         f"K=3 dominates all rounds: histogram={ctrl.k_histogram}"
     )
@@ -907,14 +902,10 @@ def test_starvation_probe_argmin_over_rolling_window():
         ctrl.record(k, 15.0 + 3.0 * k, [True] * k)
 
     starves_after = ctrl.starvation_probe_count
-    assert starves_after > starves_before, (
-        f"Expected probe to fire; picks={picks}"
-    )
+    assert starves_after > starves_before, f"Expected probe to fire; picks={picks}"
     # The first probe must pick a K < 3 (any of 0/1/2 — window is all
     # K=3, so argmin over {0,1,2,3} is 0 with shallow tie-break).
-    assert any(p < 3 for p in picks), (
-        f"Probe never picked a shallow K: picks={picks}"
-    )
+    assert any(p < 3 for p in picks), f"Probe never picked a shallow K: picks={picks}"
 
 
 def test_starvation_probe_interval_doubles_and_caps():
@@ -976,6 +967,7 @@ def test_starvation_probe_no_double_pick_when_probe_matches_current_depth():
     from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
         STARVATION_PROBE_INTERVAL,
     )
+
     assert prev_interval == STARVATION_PROBE_INTERVAL
 
 

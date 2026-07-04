@@ -25,26 +25,64 @@ import httpx
 
 # Agents we've already listed (skip these)
 KNOWN_AGENTS = {
-    "openclaude", "open-claude", "goose", "claw-code", "claude-code",
-    "hermes-agent", "hermes", "aider", "cursor", "cline", "continue",
-    "copilot", "opencode", "pydantic-ai", "pydanticai", "langchain",
-    "smolagents", "librechat", "open-webui", "openwebui",
+    "openclaude",
+    "open-claude",
+    "goose",
+    "claw-code",
+    "claude-code",
+    "hermes-agent",
+    "hermes",
+    "aider",
+    "cursor",
+    "cline",
+    "continue",
+    "copilot",
+    "opencode",
+    "pydantic-ai",
+    "pydanticai",
+    "langchain",
+    "smolagents",
+    "librechat",
+    "open-webui",
+    "openwebui",
 }
 
 # Keywords that signal an AI coding agent
 AGENT_KEYWORDS = [
-    "ai agent", "coding agent", "ai coding", "code assistant",
-    "terminal ai", "cli ai", "ai cli", "openai compatible",
-    "openai api", "local llm", "ollama", "ai terminal",
-    "ai ide", "ai editor", "agentic", "tool calling",
-    "code generation", "ai pair", "ai programmer",
+    "ai agent",
+    "coding agent",
+    "ai coding",
+    "code assistant",
+    "terminal ai",
+    "cli ai",
+    "ai cli",
+    "openai compatible",
+    "openai api",
+    "local llm",
+    "ollama",
+    "ai terminal",
+    "ai ide",
+    "ai editor",
+    "agentic",
+    "tool calling",
+    "code generation",
+    "ai pair",
+    "ai programmer",
 ]
 
 # Keywords that signal OpenAI API compatibility (our integration path)
 COMPAT_KEYWORDS = [
-    "openai", "base_url", "OPENAI_BASE_URL", "openai-compatible",
-    "ollama", "lm studio", "local model", "self-hosted",
-    "/v1/chat/completions", "openai_api_key", "api_key",
+    "openai",
+    "base_url",
+    "OPENAI_BASE_URL",
+    "openai-compatible",
+    "ollama",
+    "lm studio",
+    "local model",
+    "self-hosted",
+    "/v1/chat/completions",
+    "openai_api_key",
+    "api_key",
 ]
 
 
@@ -56,9 +94,12 @@ def fetch_github_trending(language=None, since="daily"):
     url += f"?since={since}"
 
     try:
-        resp = httpx.get(url, timeout=15, follow_redirects=True, headers={
-            "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"
-        })
+        resp = httpx.get(
+            url,
+            timeout=15,
+            follow_redirects=True,
+            headers={"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)"},
+        )
         resp.raise_for_status()
     except Exception as e:
         print(f"⚠️  GitHub trending fetch failed: {e}", file=sys.stderr)
@@ -88,10 +129,15 @@ def fetch_github_search(query, sort="stars", per_page=30):
         "per_page": per_page,
     }
     try:
-        resp = httpx.get(url, params=params, timeout=15, headers={
-            "Accept": "application/vnd.github.v3+json",
-            "User-Agent": "rapid-mlx-agent-discovery",
-        })
+        resp = httpx.get(
+            url,
+            params=params,
+            timeout=15,
+            headers={
+                "Accept": "application/vnd.github.v3+json",
+                "User-Agent": "rapid-mlx-agent-discovery",
+            },
+        )
         resp.raise_for_status()
         return resp.json().get("items", [])
     except Exception as e:
@@ -120,13 +166,15 @@ def fetch_hn_front_page(num_stories=30):
             )
             item = r.json()
             if item and item.get("type") == "story":
-                stories.append({
-                    "id": sid,
-                    "title": item.get("title", ""),
-                    "url": item.get("url", ""),
-                    "score": item.get("score", 0),
-                    "time": item.get("time", 0),
-                })
+                stories.append(
+                    {
+                        "id": sid,
+                        "title": item.get("title", ""),
+                        "url": item.get("url", ""),
+                        "score": item.get("score", 0),
+                        "time": item.get("time", 0),
+                    }
+                )
         except Exception:
             continue
 
@@ -288,16 +336,18 @@ def scan_github(verbose=True):
         compat = check_openai_compat(repo)
         score = score_candidate(name, info, compat)
 
-        results.append({
-            "repo": repo,
-            "stars": info["stars"],
-            "description": desc,
-            "language": info.get("language", ""),
-            "pushed": info.get("pushed", ""),
-            "compat_signals": compat,
-            "score": score,
-            "source": meta["source"],
-        })
+        results.append(
+            {
+                "repo": repo,
+                "stars": info["stars"],
+                "description": desc,
+                "language": info.get("language", ""),
+                "pushed": info.get("pushed", ""),
+                "compat_signals": compat,
+                "score": score,
+                "source": meta["source"],
+            }
+        )
         time.sleep(0.5)  # Rate limit
 
     return sorted(results, key=lambda x: x["score"], reverse=True)
@@ -316,11 +366,22 @@ def scan_hn(verbose=True):
         url = story.get("url", "")
 
         # Check if title mentions AI agents
-        if not any(kw in title for kw in [
-            "agent", "ai coding", "code assistant", "ai cli",
-            "terminal ai", "local llm", "coding tool", "ai ide",
-            "copilot", "ai pair", "ai programmer",
-        ]):
+        if not any(
+            kw in title
+            for kw in [
+                "agent",
+                "ai coding",
+                "code assistant",
+                "ai cli",
+                "terminal ai",
+                "local llm",
+                "coding tool",
+                "ai ide",
+                "copilot",
+                "ai pair",
+                "ai programmer",
+            ]
+        ):
             continue
 
         # Extract GitHub repo if URL points to one
@@ -332,27 +393,29 @@ def scan_hn(verbose=True):
                 if "/" in repo_path and repo_path.count("/") == 1:
                     github_repo = repo_path
 
-        results.append({
-            "title": story["title"],
-            "url": url,
-            "score": story["score"],
-            "hn_id": story["id"],
-            "github_repo": github_repo,
-            "hn_url": f"https://news.ycombinator.com/item?id={story['id']}",
-        })
+        results.append(
+            {
+                "title": story["title"],
+                "url": url,
+                "score": story["score"],
+                "hn_id": story["id"],
+                "github_repo": github_repo,
+                "hn_url": f"https://news.ycombinator.com/item?id={story['id']}",
+            }
+        )
 
     return sorted(results, key=lambda x: x["score"], reverse=True)
 
 
 def print_report(github_results, hn_results):
     """Print a human-readable report."""
-    print(f"\n{'='*70}")
+    print(f"\n{'=' * 70}")
     print(f"  Agent Discovery Report — {datetime.now().strftime('%Y-%m-%d %H:%M')}")
-    print(f"{'='*70}")
+    print(f"{'=' * 70}")
 
     if github_results:
         print(f"\n📦 GitHub Candidates ({len(github_results)} found)")
-        print(f"{'─'*70}")
+        print(f"{'─' * 70}")
         for r in github_results[:15]:
             stars = f"⭐{r['stars']:,}"
             compat = " 🔌" if r["compat_signals"] else ""
@@ -368,7 +431,7 @@ def print_report(github_results, hn_results):
 
     if hn_results:
         print(f"\n📰 Hacker News Mentions ({len(hn_results)} found)")
-        print(f"{'─'*70}")
+        print(f"{'─' * 70}")
         for r in hn_results[:10]:
             print(f"  🔥 {r['score']:>4} pts  {r['title']}")
             if r["github_repo"]:
@@ -382,7 +445,7 @@ def print_report(github_results, hn_results):
     hot = [r for r in github_results if r["score"] >= 30]
     if hot:
         print(f"\n🚨 ACTION REQUIRED — {len(hot)} high-priority candidates:")
-        print(f"{'─'*70}")
+        print(f"{'─' * 70}")
         for r in hot[:5]:
             print(f"  → {r['repo']} (⭐{r['stars']:,}, score={r['score']})")
             if r["compat_signals"]:
@@ -412,11 +475,16 @@ def main():
         hn_results = scan_hn(verbose=not args.json)
 
     if args.json:
-        print(json.dumps({
-            "timestamp": datetime.now().isoformat(),
-            "github": github_results,
-            "hn": hn_results,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "github": github_results,
+                    "hn": hn_results,
+                },
+                indent=2,
+            )
+        )
     else:
         print_report(github_results, hn_results)
 

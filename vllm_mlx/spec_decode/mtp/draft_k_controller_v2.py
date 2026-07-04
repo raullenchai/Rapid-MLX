@@ -420,7 +420,9 @@ class DepthController:
             self._probe_since = 0
             self._last_selected = sel
         elif self._probed:
-            self._probe_interval = min(self._probe_interval * 2, DEPTH_PROBE_INTERVAL_MAX)
+            self._probe_interval = min(
+                self._probe_interval * 2, DEPTH_PROBE_INTERVAL_MAX
+            )
         self._probed = False
 
         self._probe_since += 1
@@ -663,8 +665,7 @@ def get_or_create_controller(
             ctrl = DepthController(max_k=max_k)
             _controllers[model_id] = ctrl
             logger.info(
-                "[MTP-controller] created DepthController for model_id=%r "
-                "max_k=%d",
+                "[MTP-controller] created DepthController for model_id=%r max_k=%d",
                 model_id,
                 max_k,
             )

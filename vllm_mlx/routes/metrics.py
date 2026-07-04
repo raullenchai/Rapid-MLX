@@ -594,7 +594,7 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
         "# HELP rapid_mlx_spec_decode_k_chosen_total MTP rounds by "
         "controller-selected draft depth K (0=park, 1=chain-of-1, "
         "2+=chain-of-K). Emitted as a per-K counter so a dashboard "
-        "can compute K-share as k_chosen{k=\"N\"} / sum(k_chosen)."
+        'can compute K-share as k_chosen{k="N"} / sum(k_chosen).'
     )
     out.append("# TYPE rapid_mlx_spec_decode_k_chosen_total counter")
     for k_val in sorted(k_hist.keys()):
@@ -604,8 +604,7 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             for name, val in k_labels.items()
         )
         out.append(
-            f"rapid_mlx_spec_decode_k_chosen_total{{{label_str}}} "
-            f"{int(k_hist[k_val])}"
+            f"rapid_mlx_spec_decode_k_chosen_total{{{label_str}}} {int(k_hist[k_val])}"
         )
     if not k_hist:
         # Emit a zero-valued K=0 row so the metric is discoverable in
@@ -616,9 +615,7 @@ def _render_spec_decode_mtp_counters(cfg: Any) -> list[str]:
             f'{name}="{_escape_label_value(str(val))}"'
             for name, val in k_labels.items()
         )
-        out.append(
-            f"rapid_mlx_spec_decode_k_chosen_total{{{label_str}}} 0"
-        )
+        out.append(f"rapid_mlx_spec_decode_k_chosen_total{{{label_str}}} 0")
 
     out.extend(
         _fmt_metric(

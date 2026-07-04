@@ -17,6 +17,7 @@ Exits non-zero if any tokens.bin disagrees with index.json on the
 second-cycle load (save_uuid mismatch OR length-prefix drift) — the
 exact failure mode Talia observed on probe-5 cycle 1 of dogfood r12.
 """
+
 from __future__ import annotations
 
 import argparse

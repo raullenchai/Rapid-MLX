@@ -26,11 +26,21 @@ import httpx
 
 # Hermes-scale tool definitions (simulating 20 tools)
 AGENT_TOOLS = [
-    {"type": "function", "function": {"name": f"tool_{i}", "description": f"Tool {i} for testing",
-     "parameters": {"type": "object", "properties": {
-         "arg1": {"type": "string", "description": "First argument"},
-         "arg2": {"type": "integer", "description": "Second argument"},
-     }, "required": ["arg1"]}}}
+    {
+        "type": "function",
+        "function": {
+            "name": f"tool_{i}",
+            "description": f"Tool {i} for testing",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "arg1": {"type": "string", "description": "First argument"},
+                    "arg2": {"type": "integer", "description": "Second argument"},
+                },
+                "required": ["arg1"],
+            },
+        },
+    }
     for i in range(20)
 ]
 
@@ -91,8 +101,9 @@ class SoakTestRunner:
         elapsed = self.elapsed()
         print(f"  [{elapsed:6.1f}s] {msg}")
 
-    async def stream_request(self, messages: list, max_tokens: int = 100,
-                              tools=None, timeout: float = 60) -> dict:
+    async def stream_request(
+        self, messages: list, max_tokens: int = 100, tools=None, timeout: float = 60
+    ) -> dict:
         """Make a streaming request and validate SSE output."""
         payload = {
             "model": "default",
@@ -114,37 +125,40 @@ class SoakTestRunner:
         content_text = ""
         finish_reason = None
 
-        async with httpx.AsyncClient(timeout=timeout) as client, \
-                client.stream("POST", f"{self.base_url}/chat/completions",
-                              json=payload) as resp:
-                async for line in resp.aiter_lines():
-                    if not line.startswith("data: "):
-                        continue
-                    if line == "data: [DONE]":
-                        has_done = True
-                        continue
+        async with (
+            httpx.AsyncClient(timeout=timeout) as client,
+            client.stream(
+                "POST", f"{self.base_url}/chat/completions", json=payload
+            ) as resp,
+        ):
+            async for line in resp.aiter_lines():
+                if not line.startswith("data: "):
+                    continue
+                if line == "data: [DONE]":
+                    has_done = True
+                    continue
 
-                    data = json.loads(line[6:])
-                    chunks += 1
+                data = json.loads(line[6:])
+                chunks += 1
 
-                    if not data.get("choices"):
-                        if data.get("usage"):
-                            has_usage = True
-                        continue
+                if not data.get("choices"):
+                    if data.get("usage"):
+                        has_usage = True
+                    continue
 
-                    delta = data["choices"][0].get("delta", {})
-                    if "role" in delta:
-                        has_role = True
-                    # Count both content and reasoning_content (OutputRouter models)
-                    text = delta.get("content") or delta.get("reasoning_content") or ""
-                    if text:
-                        has_content = True
-                        content_text += text
-                    if delta.get("tool_calls"):
-                        has_tool_calls = True
-                    if data["choices"][0].get("finish_reason"):
-                        has_finish = True
-                        finish_reason = data["choices"][0]["finish_reason"]
+                delta = data["choices"][0].get("delta", {})
+                if "role" in delta:
+                    has_role = True
+                # Count both content and reasoning_content (OutputRouter models)
+                text = delta.get("content") or delta.get("reasoning_content") or ""
+                if text:
+                    has_content = True
+                    content_text += text
+                if delta.get("tool_calls"):
+                    has_tool_calls = True
+                if data["choices"][0].get("finish_reason"):
+                    has_finish = True
+                    finish_reason = data["choices"][0]["finish_reason"]
 
         self.stats["total_chunks"] += chunks
         self.stats["max_chunks_per_request"] = max(
@@ -165,8 +179,9 @@ class SoakTestRunner:
             "finish_reason": finish_reason,
         }
 
-    async def nonstream_request(self, messages: list, max_tokens: int = 100,
-                                 tools=None) -> dict:
+    async def nonstream_request(
+        self, messages: list, max_tokens: int = 100, tools=None
+    ) -> dict:
         """Make a non-streaming request."""
         payload = {
             "model": "default",
@@ -195,7 +210,10 @@ class SoakTestRunner:
         """Simulate a 10-turn agent session with tool calls."""
         self.log("Multi-turn agent session (10 turns)...")
         messages = [
-            {"role": "system", "content": "You are a helpful assistant. Use tools when appropriate."},
+            {
+                "role": "system",
+                "content": "You are a helpful assistant. Use tools when appropriate.",
+            },
         ]
 
         for turn in range(10):
@@ -206,18 +224,27 @@ class SoakTestRunner:
                 # Tool call turn
                 prompt = random.choice(TOOL_PROMPTS)
                 messages.append({"role": "user", "content": prompt})
-                result = await self.stream_request(messages, max_tokens=200, tools=AGENT_TOOLS)
+                result = await self.stream_request(
+                    messages, max_tokens=200, tools=AGENT_TOOLS
+                )
                 self.stats["tool_requests"] += 1
 
                 # Simulate tool response
-                messages.append({"role": "assistant", "content": result["content"] or "Using tool..."})
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": result["content"] or "Using tool...",
+                    }
+                )
                 messages.append({"role": "user", "content": "What was the result?"})
             else:
                 # Chat turn
                 prompt = random.choice(CHAT_PROMPTS)
                 messages.append({"role": "user", "content": prompt})
                 result = await self.stream_request(messages, max_tokens=150)
-                messages.append({"role": "assistant", "content": result["content"] or "..."})
+                messages.append(
+                    {"role": "assistant", "content": result["content"] or "..."}
+                )
 
             # Validate SSE structure
             if not result["has_role"]:
@@ -235,7 +262,12 @@ class SoakTestRunner:
         self.log("Concurrent agents (4 parallel streams)...")
 
         async def single_session(session_id: int):
-            msgs = [{"role": "user", "content": f"Session {session_id}: {random.choice(CHAT_PROMPTS)}"}]
+            msgs = [
+                {
+                    "role": "user",
+                    "content": f"Session {session_id}: {random.choice(CHAT_PROMPTS)}",
+                }
+            ]
             result = await self.stream_request(msgs, max_tokens=200)
             return result
 
@@ -250,7 +282,9 @@ class SoakTestRunner:
                 self.stats["error_details"].append(f"Concurrent session {i}: {r}")
             elif not r["has_done"]:
                 self.stats["errors"] += 1
-                self.stats["error_details"].append(f"Concurrent session {i}: missing [DONE]")
+                self.stats["error_details"].append(
+                    f"Concurrent session {i}: missing [DONE]"
+                )
 
         self.log("  All 4 completed")
 
@@ -308,9 +342,12 @@ class SoakTestRunner:
             )
 
         results = await asyncio.gather(
-            stream_chat(), stream_chat(),
-            nonstream_chat(), nonstream_chat(),
-            tool_call(), tool_call(),
+            stream_chat(),
+            stream_chat(),
+            nonstream_chat(),
+            nonstream_chat(),
+            tool_call(),
+            tool_call(),
             return_exceptions=True,
         )
 
@@ -329,21 +366,29 @@ class SoakTestRunner:
             if self.remaining() <= 0:
                 break
             try:
-                async with httpx.AsyncClient(timeout=5) as client, \
-                        client.stream(
-                            "POST", f"{self.base_url}/chat/completions",
-                            json={
-                                "model": "default",
-                                "messages": [{"role": "user", "content": "Write a long essay about AI"}],
-                                "max_tokens": 500,
-                                "stream": True,
-                            },
-                        ) as resp:
-                        count = 0
-                        async for line in resp.aiter_lines():
-                            count += 1
-                            if count >= 5:
-                                break  # disconnect after 5 chunks
+                async with (
+                    httpx.AsyncClient(timeout=5) as client,
+                    client.stream(
+                        "POST",
+                        f"{self.base_url}/chat/completions",
+                        json={
+                            "model": "default",
+                            "messages": [
+                                {
+                                    "role": "user",
+                                    "content": "Write a long essay about AI",
+                                }
+                            ],
+                            "max_tokens": 500,
+                            "stream": True,
+                        },
+                    ) as resp,
+                ):
+                    count = 0
+                    async for line in resp.aiter_lines():
+                        count += 1
+                        if count >= 5:
+                            break  # disconnect after 5 chunks
                 self.stats["disconnects"] += 1
             except Exception:
                 pass
@@ -419,8 +464,12 @@ class SoakTestRunner:
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("--url", default="http://localhost:8000/v1")
-    parser.add_argument("--duration", type=int, default=600,
-                        help="Test duration in seconds (default: 600 = 10 min)")
+    parser.add_argument(
+        "--duration",
+        type=int,
+        default=600,
+        help="Test duration in seconds (default: 600 = 10 min)",
+    )
     args = parser.parse_args()
 
     success = asyncio.run(SoakTestRunner(args.url, args.duration).run())

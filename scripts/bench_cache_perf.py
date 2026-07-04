@@ -9,6 +9,7 @@ Sends identical requests to measure:
 
 Outputs TSV-compatible metrics for perfup-results.tsv.
 """
+
 import json
 import statistics
 import time
@@ -22,20 +23,28 @@ USER_MSG = "/no_think Explain how a CPU works in detail. Write at least 500 word
 MULTI_TURN = [
     {"role": "system", "content": SYSTEM_MSG},
     {"role": "user", "content": "/no_think What is a binary search tree?"},
-    {"role": "assistant", "content": "A binary search tree (BST) is a data structure where each node has at most two children."},
-    {"role": "user", "content": "/no_think Now implement one in Python with insert and search."},
+    {
+        "role": "assistant",
+        "content": "A binary search tree (BST) is a data structure where each node has at most two children.",
+    },
+    {
+        "role": "user",
+        "content": "/no_think Now implement one in Python with insert and search.",
+    },
 ]
 
 
 def stream_request(messages, max_tokens=500):
     """Send streaming request, return (ttft_ms, decode_tps, total_tokens)."""
-    body = json.dumps({
-        "model": "any",
-        "messages": messages,
-        "max_tokens": max_tokens,
-        "stream": True,
-        "temperature": 0.0,
-    }).encode()
+    body = json.dumps(
+        {
+            "model": "any",
+            "messages": messages,
+            "max_tokens": max_tokens,
+            "stream": True,
+            "temperature": 0.0,
+        }
+    ).encode()
 
     req = urllib.request.Request(BASE_URL, data=body, headers=HEADERS, method="POST")
     start = time.perf_counter()
@@ -94,7 +103,7 @@ def run_benchmark(n_runs=3):
         ttft, tps, tokens = stream_request(messages_simple)
         cached_ttfts.append(ttft)
         cached_tps_list.append(tps)
-        print(f"  Run {i+1}: TTFT={ttft:.0f}ms | Decode={tps:.1f} tok/s")
+        print(f"  Run {i + 1}: TTFT={ttft:.0f}ms | Decode={tps:.1f} tok/s")
 
     # 3. Multi-turn cached TTFT (prefix match)
     print(f"\n[3/4] Multi-turn TTFT (prefix cache hit, x{n_runs})...")
@@ -104,7 +113,7 @@ def run_benchmark(n_runs=3):
     for i in range(n_runs):
         ttft, tps, tokens = stream_request(MULTI_TURN, max_tokens=100)
         mt_ttfts.append(ttft)
-        print(f"  Run {i+1}: TTFT={ttft:.0f}ms")
+        print(f"  Run {i + 1}: TTFT={ttft:.0f}ms")
 
     # 4. Summary
     avg_cached = statistics.mean(cached_ttfts)
@@ -117,12 +126,12 @@ def run_benchmark(n_runs=3):
     print(f"  Cold TTFT:       {cold_ttft:.0f} ms")
     print(f"  Cached TTFT:     {avg_cached:.0f} ms (avg of {n_runs})")
     print(f"  Multi-turn TTFT: {avg_mt:.0f} ms (avg of {n_runs})")
-    print(f"  Cache speedup:   {cold_ttft/avg_cached:.1f}x")
+    print(f"  Cache speedup:   {cold_ttft / avg_cached:.1f}x")
     print(f"  Decode TPS:      {avg_tps:.1f} tok/s")
     print(f"  Baseline TPS:    {baseline_tps:.1f} tok/s")
 
     # TSV output for perfup-results.tsv
-    print(f"\n# TSV: decode_tps\tcached_ttft_ms\tcold_ttft_ms\tmt_ttft_ms")
+    print("\n# TSV: decode_tps\tcached_ttft_ms\tcold_ttft_ms\tmt_ttft_ms")
     print(f"METRIC\t{avg_tps:.1f}\t{avg_cached:.0f}\t{cold_ttft:.0f}\t{avg_mt:.0f}")
 
     return {

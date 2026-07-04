@@ -223,7 +223,13 @@ def main():
         ],
         max_tokens=800,
     )
-    print_result(r, lambda r: "def merge" in (r["content"] or "").lower() or "def merge" in (r["reasoning"] or "").lower())
+    print_result(
+        r,
+        lambda r: (
+            "def merge" in (r["content"] or "").lower()
+            or "def merge" in (r["reasoning"] or "").lower()
+        ),
+    )
     results.append(r)
 
     r = run_task(
@@ -250,7 +256,13 @@ Explain the bug and provide the corrected code.""",
         ],
         max_tokens=800,
     )
-    print_result(r, lambda r: "left = mid + 1" in (r["content"] or "") or "mid + 1" in (r["content"] or ""))
+    print_result(
+        r,
+        lambda r: (
+            "left = mid + 1" in (r["content"] or "")
+            or "mid + 1" in (r["content"] or "")
+        ),
+    )
     results.append(r)
 
     r = run_task(
@@ -265,7 +277,13 @@ Explain the bug and provide the corrected code.""",
         ],
         max_tokens=1200,
     )
-    print_result(r, lambda r: "class" in (r["content"] or "").lower() and "token" in (r["content"] or "").lower())
+    print_result(
+        r,
+        lambda r: (
+            "class" in (r["content"] or "").lower()
+            and "token" in (r["content"] or "").lower()
+        ),
+    )
     results.append(r)
 
     # === 3. Creative Writing ===
@@ -273,7 +291,12 @@ Explain the bug and provide the corrected code.""",
 
     r = run_task(
         "Haiku about programming",
-        [{"role": "user", "content": "Write 3 haiku about programming. Each should be exactly 5-7-5 syllables."}],
+        [
+            {
+                "role": "user",
+                "content": "Write 3 haiku about programming. Each should be exactly 5-7-5 syllables.",
+            }
+        ],
         max_tokens=300,
         temperature=0.8,
     )
@@ -305,7 +328,9 @@ Explain the bug and provide the corrected code.""",
     )
     print_result(
         r,
-        lambda r: any(tc["function"]["name"] == "get_weather" for tc in (r["tool_calls"] or [])),
+        lambda r: any(
+            tc["function"]["name"] == "get_weather" for tc in (r["tool_calls"] or [])
+        ),
     )
     results.append(r)
 
@@ -316,7 +341,9 @@ Explain the bug and provide the corrected code.""",
     )
     print_result(
         r,
-        lambda r: any(tc["function"]["name"] == "web_search" for tc in (r["tool_calls"] or [])),
+        lambda r: any(
+            tc["function"]["name"] == "web_search" for tc in (r["tool_calls"] or [])
+        ),
     )
     results.append(r)
 
@@ -333,7 +360,9 @@ Explain the bug and provide the corrected code.""",
     )
     print_result(
         r,
-        lambda r: any(tc["function"]["name"] == "run_python" for tc in (r["tool_calls"] or [])),
+        lambda r: any(
+            tc["function"]["name"] == "run_python" for tc in (r["tool_calls"] or [])
+        ),
     )
     results.append(r)
 
@@ -356,7 +385,12 @@ Explain the bug and provide the corrected code.""",
         ],
         max_tokens=800,
     )
-    print_result(r, lambda r: "def " in (r["content"] or "") and "time" in (r["content"] or "").lower())
+    print_result(
+        r,
+        lambda r: (
+            "def " in (r["content"] or "") and "time" in (r["content"] or "").lower()
+        ),
+    )
     results.append(r)
 
     r = run_task(
@@ -387,13 +421,18 @@ Explain the bug and provide the corrected code.""",
                 "role": "assistant",
                 "content": "Tokyo is currently 22°C with partly cloudy skies and 65% humidity.",
             },
-            {"role": "user", "content": "Now check London and tell me which city is warmer."},
+            {
+                "role": "user",
+                "content": "Now check London and tell me which city is warmer.",
+            },
         ],
         tools=BENCHMARK_TOOLS,
     )
     print_result(
         r,
-        lambda r: any(tc["function"]["name"] == "get_weather" for tc in (r["tool_calls"] or [])),
+        lambda r: any(
+            tc["function"]["name"] == "get_weather" for tc in (r["tool_calls"] or [])
+        ),
     )
     results.append(r)
 
@@ -421,7 +460,9 @@ Explain the bug and provide the corrected code.""",
                 "elapsed": r["elapsed"],
                 "tps": r["tps"],
                 "completion_tokens": r["completion_tokens"],
-                "tool_calls": [tc["function"]["name"] for tc in (r["tool_calls"] or [])],
+                "tool_calls": [
+                    tc["function"]["name"] for tc in (r["tool_calls"] or [])
+                ],
                 "has_reasoning": bool(r["reasoning"]),
             }
             for r in results

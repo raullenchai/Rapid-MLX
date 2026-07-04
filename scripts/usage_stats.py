@@ -25,7 +25,9 @@ def gh_api(path: str) -> dict | list | None:
     try:
         result = subprocess.run(
             ["gh", "api", path],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if result.returncode == 0:
             return json.loads(result.stdout)
@@ -84,7 +86,9 @@ def get_pypi_stats() -> dict:
         # Recent stats (flat dict: {"data": {"last_day": N, ...}})
         proc = subprocess.run(
             ["pypistats", "recent", PYPI_PACKAGE, "--json"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if proc.returncode == 0:
             data = json.loads(proc.stdout).get("data", {})
@@ -96,7 +100,9 @@ def get_pypi_stats() -> dict:
         # System breakdown (list of dicts)
         proc = subprocess.run(
             ["pypistats", "system", PYPI_PACKAGE, "--json"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if proc.returncode == 0:
             data = json.loads(proc.stdout).get("data", [])
@@ -110,7 +116,9 @@ def get_pypi_stats() -> dict:
         # Python version breakdown (list of dicts)
         proc = subprocess.run(
             ["pypistats", "python_minor", PYPI_PACKAGE, "--json"],
-            capture_output=True, text=True, timeout=15,
+            capture_output=True,
+            text=True,
+            timeout=15,
         )
         if proc.returncode == 0:
             data = json.loads(proc.stdout).get("data", [])
@@ -132,13 +140,13 @@ def get_pypi_stats() -> dict:
 def print_report(github: dict, traffic: dict, pypi: dict):
     """Print a human-readable report."""
     now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
     print(f"  Rapid-MLX Usage Stats — {now}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
     # GitHub
     print(f"\n  GitHub ({REPO})")
-    print(f"  {'─'*50}")
+    print(f"  {'─' * 50}")
     if github:
         print(f"  Stars:        {github.get('stars', '?'):>6,}")
         print(f"  Forks:        {github.get('forks', '?'):>6,}")
@@ -148,24 +156,32 @@ def print_report(github: dict, traffic: dict, pypi: dict):
     # Traffic (14-day window)
     if traffic:
         print("\n  GitHub Traffic (last 14 days)")
-        print(f"  {'─'*50}")
-        print(f"  Page Views:   {traffic.get('views_14d', '?'):>6,}  ({traffic.get('unique_visitors_14d', '?')} unique)")
-        print(f"  Git Clones:   {traffic.get('clones_14d', '?'):>6,}  ({traffic.get('unique_cloners_14d', '?')} unique)")
+        print(f"  {'─' * 50}")
+        print(
+            f"  Page Views:   {traffic.get('views_14d', '?'):>6,}  ({traffic.get('unique_visitors_14d', '?')} unique)"
+        )
+        print(
+            f"  Git Clones:   {traffic.get('clones_14d', '?'):>6,}  ({traffic.get('unique_cloners_14d', '?')} unique)"
+        )
 
         if traffic.get("top_referrers"):
             print("\n  Top Referrers:")
             for ref in traffic["top_referrers"][:5]:
-                print(f"    {ref['source']:30s} {ref['count']:>5} views ({ref['unique']} unique)")
+                print(
+                    f"    {ref['source']:30s} {ref['count']:>5} views ({ref['unique']} unique)"
+                )
 
         if traffic.get("clone_daily"):
             print("\n  Daily Clones:")
             for day in traffic["clone_daily"][-7:]:  # last 7 days
                 bar = "█" * min(day["count"] // 5, 40)
-                print(f"    {day['date']}  {day['count']:>4} ({day['unique']:>3} unique) {bar}")
+                print(
+                    f"    {day['date']}  {day['count']:>4} ({day['unique']:>3} unique) {bar}"
+                )
 
     # PyPI
     print(f"\n  PyPI ({PYPI_PACKAGE})")
-    print(f"  {'─'*50}")
+    print(f"  {'─' * 50}")
     if "error" in pypi:
         print(f"  Error: {pypi['error']}")
     else:
@@ -175,14 +191,18 @@ def print_report(github: dict, traffic: dict, pypi: dict):
 
         if pypi.get("pypi_by_system"):
             print("\n  By OS:")
-            for os_name, count in sorted(pypi["pypi_by_system"].items(), key=lambda x: -x[1]):
+            for os_name, count in sorted(
+                pypi["pypi_by_system"].items(), key=lambda x: -x[1]
+            ):
                 if os_name == "null" or os_name == "unknown":
                     continue
                 print(f"    {os_name:15s} {count:>6,}")
 
         if pypi.get("pypi_by_python"):
             print("\n  By Python Version:")
-            for ver, count in sorted(pypi["pypi_by_python"].items(), key=lambda x: -x[1]):
+            for ver, count in sorted(
+                pypi["pypi_by_python"].items(), key=lambda x: -x[1]
+            ):
                 if ver == "null" or ver == "unknown":
                     continue
                 print(f"    {ver:15s} {count:>6,}")
@@ -193,7 +213,7 @@ def print_report(github: dict, traffic: dict, pypi: dict):
         + traffic.get("unique_cloners_14d", 0)
         + pypi.get("pypi_last_month", 0)
     )
-    print(f"\n  {'─'*50}")
+    print(f"\n  {'─' * 50}")
     print(f"  Combined Reach Score: {total_reach:,}")
     print("  (stars + unique cloners + monthly PyPI downloads)")
 
@@ -233,10 +253,12 @@ def save_snapshot(github: dict, traffic: dict, pypi: dict, filepath: str):
 def main():
     parser = argparse.ArgumentParser(description="Rapid-MLX usage statistics")
     parser.add_argument("--json", action="store_true", help="JSON output")
-    parser.add_argument("--save", action="store_true",
-                        help="Append snapshot to docs/usage-stats.md")
-    parser.add_argument("--output", default="docs/usage-stats.md",
-                        help="Output file for --save")
+    parser.add_argument(
+        "--save", action="store_true", help="Append snapshot to docs/usage-stats.md"
+    )
+    parser.add_argument(
+        "--output", default="docs/usage-stats.md", help="Output file for --save"
+    )
     args = parser.parse_args()
 
     github = get_github_stats()
@@ -244,12 +266,17 @@ def main():
     pypi = get_pypi_stats()
 
     if args.json:
-        print(json.dumps({
-            "timestamp": datetime.now().isoformat(),
-            "github": github,
-            "traffic": traffic,
-            "pypi": pypi,
-        }, indent=2))
+        print(
+            json.dumps(
+                {
+                    "timestamp": datetime.now().isoformat(),
+                    "github": github,
+                    "traffic": traffic,
+                    "pypi": pypi,
+                },
+                indent=2,
+            )
+        )
     else:
         print_report(github, traffic, pypi)
 

@@ -1400,7 +1400,7 @@ def _extract_answer_letter(text: str) -> str | None:
 def check_general_response(response: str, checks: dict) -> tuple[bool, str]:
     """Check a general response against its checks. Returns (pass, reason)."""
     text = _strip_thinking(response).strip()
-    lines = [l.strip() for l in text.split("\n") if l.strip()]
+    lines = [line.strip() for line in text.split("\n") if line.strip()]
 
     if "min_length" in checks and len(text) < checks["min_length"]:
         return False, f"too short ({len(text)} < {checks['min_length']})"
@@ -1461,7 +1461,7 @@ def check_general_response(response: str, checks: dict) -> tuple[bool, str]:
 
     # Check numbered items (e.g. "1. ..." or "1) ...")
     if "min_items" in checks or "max_items" in checks:
-        numbered = [l for l in lines if re.match(r"^\d+[.)]\s", l)]
+        numbered = [line for line in lines if re.match(r"^\d+[.)]\s", line)]
         count = len(numbered)
         if "min_items" in checks and count < checks["min_items"]:
             return False, f"too few items ({count} < {checks['min_items']})"

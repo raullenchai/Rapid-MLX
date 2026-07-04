@@ -79,7 +79,12 @@ USER_PROMPTS = [
 ]
 
 
-def send_chat(port: int, user_msg: str, max_tokens: int = 5, system_prompt: str = SYSTEM_PROMPT_SHORT) -> dict:
+def send_chat(
+    port: int,
+    user_msg: str,
+    max_tokens: int = 5,
+    system_prompt: str = SYSTEM_PROMPT_SHORT,
+) -> dict:
     """Send a chat request and return timing info."""
     url = f"http://localhost:{port}/v1/chat/completions"
     payload = {
@@ -146,14 +151,18 @@ def run_benchmark(port: int, rounds: int, system_prompt: str, label: str):
         prompt = USER_PROMPTS[(i + 1) % len(USER_PROMPTS)]
         result = send_chat(port, prompt, system_prompt=system_prompt)
         warm_ttfts.append(result["ttft"])
-        print(f"  Round {i+1}: TTFT={result['ttft']:.3f}s  |  Response: {result['text'][:50]}")
+        print(
+            f"  Round {i + 1}: TTFT={result['ttft']:.3f}s  |  Response: {result['text'][:50]}"
+        )
 
     # Rounds 3+ are snapshot-restored (rounds 1-2 build the snapshot)
     restored_ttfts = warm_ttfts[2:] if len(warm_ttfts) > 2 else warm_ttfts
     avg_warm = sum(warm_ttfts) / len(warm_ttfts)
-    avg_restored = sum(restored_ttfts) / len(restored_ttfts) if restored_ttfts else avg_warm
+    avg_restored = (
+        sum(restored_ttfts) / len(restored_ttfts) if restored_ttfts else avg_warm
+    )
 
-    print(f"\n  --- Results ---")
+    print("\n  --- Results ---")
     print(f"  Cold TTFT (no snapshot):       {cold['ttft']:.3f}s")
     print(f"  Avg warm TTFT (all rounds):    {avg_warm:.3f}s")
     print(f"  Avg restored TTFT (rounds 3+): {avg_restored:.3f}s")
@@ -174,7 +183,9 @@ def run_benchmark(port: int, rounds: int, system_prompt: str, label: str):
 def main():
     parser = argparse.ArgumentParser(description="Benchmark DeltaNet snapshot TTFT")
     parser.add_argument("--port", type=int, default=8000)
-    parser.add_argument("--rounds", type=int, default=5, help="Number of repeated requests")
+    parser.add_argument(
+        "--rounds", type=int, default=5, help="Number of repeated requests"
+    )
     args = parser.parse_args()
 
     print("=" * 60)
@@ -182,19 +193,37 @@ def main():
     print("=" * 60)
 
     results = []
-    results.append(run_benchmark(args.port, args.rounds, SYSTEM_PROMPT_SHORT, "Short system prompt (~60 tokens)"))
+    results.append(
+        run_benchmark(
+            args.port,
+            args.rounds,
+            SYSTEM_PROMPT_SHORT,
+            "Short system prompt (~60 tokens)",
+        )
+    )
 
     # Reset snapshot by sending a completely different prompt first
     send_chat(args.port, "reset", system_prompt="reset")
 
-    results.append(run_benchmark(args.port, args.rounds, SYSTEM_PROMPT_LONG, "Long system prompt (~500 tokens, with tools)"))
+    results.append(
+        run_benchmark(
+            args.port,
+            args.rounds,
+            SYSTEM_PROMPT_LONG,
+            "Long system prompt (~500 tokens, with tools)",
+        )
+    )
 
     print("\n" + "=" * 60)
     print("  SUMMARY")
     print("=" * 60)
     for r in results:
-        speedup = r["cold_ttft"] / r["avg_restored_ttft"] if r["avg_restored_ttft"] > 0 else 0
-        print(f"  {r['label']}: {r['cold_ttft']:.3f}s -> {r['avg_restored_ttft']:.3f}s ({speedup:.2f}x)")
+        speedup = (
+            r["cold_ttft"] / r["avg_restored_ttft"] if r["avg_restored_ttft"] > 0 else 0
+        )
+        print(
+            f"  {r['label']}: {r['cold_ttft']:.3f}s -> {r['avg_restored_ttft']:.3f}s ({speedup:.2f}x)"
+        )
     print()
 
 

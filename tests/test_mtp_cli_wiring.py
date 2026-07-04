@@ -1201,16 +1201,14 @@ def test_start_llm_calls_apply_mtp_dispatch():
 
     monkeypatch = _MonkeypatchScope()
     try:
-        monkeypatch.setattr(
-            _tokenizer_mod, "load_model_with_fallback", _fake_load
-        )
+        monkeypatch.setattr(_tokenizer_mod, "load_model_with_fallback", _fake_load)
 
         # 3. Monkey-patch _apply_mtp_dispatch on the batched module.
         #    Record args, then raise a sentinel to short-circuit the
         #    rest of _start_llm (Metal limits, AsyncEngineCore, etc.).
         dispatch_calls: list[dict] = []
 
-        class _ScopedTestSentinel(RuntimeError):
+        class _ScopedTestSentinelError(RuntimeError):
             """Sentinel — signals the test's monkey-patched dispatch
             helper fired. Distinct type so an unrelated RuntimeError
             elsewhere in _start_llm does NOT satisfy the assertion.
@@ -1227,7 +1225,7 @@ def test_start_llm_calls_apply_mtp_dispatch():
                     "executor": executor,
                 }
             )
-            raise _ScopedTestSentinel("apply_mtp_dispatch invoked")
+            raise _ScopedTestSentinelError("apply_mtp_dispatch invoked")
 
         monkeypatch.setattr(
             _batched, "_apply_mtp_dispatch", _recording_apply_mtp_dispatch
@@ -1237,7 +1235,7 @@ def test_start_llm_calls_apply_mtp_dispatch():
         #    fires, avoiding the Metal / AsyncEngineCore setup.
         try:
             asyncio.run(engine._start_llm())
-        except _ScopedTestSentinel:
+        except _ScopedTestSentinelError:
             pass  # expected — the recorder tripped the sentinel
 
     finally:
@@ -2079,7 +2077,9 @@ def test_install_mtp_vendored_stop_iteration_disables_uid_before_raise(monkeypat
     )
 
 
-def test_install_mtp_vendored_non_greedy_mid_stream_falls_back_to_orig_step(monkeypatch):
+def test_install_mtp_vendored_non_greedy_mid_stream_falls_back_to_orig_step(
+    monkeypatch,
+):
     """Codex round-L BLOCKING #3 regression guard.
 
     Prior round-H revision raised ``RuntimeError`` when sampling

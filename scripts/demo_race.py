@@ -18,7 +18,9 @@ import time
 import aiohttp
 
 # ── Config ───────────────────────────────────────────────────────────
-PROMPT = "Write a Python function to find the longest palindromic substring. Be concise."
+PROMPT = (
+    "Write a Python function to find the longest palindromic substring. Be concise."
+)
 MAX_TOKENS = 200
 
 ENGINES = [
@@ -63,9 +65,10 @@ def print_at(row, col, text, max_width=None):
     if max_width:
         # Truncate visible characters (strip ANSI for counting)
         import re
-        visible = re.sub(r'\033\[[0-9;]*m', '', text)
+
+        visible = re.sub(r"\033\[[0-9;]*m", "", text)
         if len(visible) > max_width:
-            text = text[:max_width - 1] + "…"
+            text = text[: max_width - 1] + "…"
     print(text, end="", flush=True)
 
 
@@ -73,7 +76,7 @@ def draw_header():
     clear_screen()
     title = f"{BOLD}{WHITE}  ⚡ Rapid-MLX vs Ollama — Same Model, Same Prompt{RESET}"
     print_at(1, 1, title)
-    print_at(2, 1, f"{DIM}  Model: Qwen3.5-9B · Prompt: \"{PROMPT[:50]}…\"{RESET}")
+    print_at(2, 1, f'{DIM}  Model: Qwen3.5-9B · Prompt: "{PROMPT[:50]}…"{RESET}')
     print_at(3, 1, f"  {'─' * COL_WIDTH}{DIVIDER}{'─' * COL_WIDTH}")
 
     # Column headers
@@ -152,7 +155,11 @@ class StreamState:
         for i, line in enumerate(display_lines):
             row = self.start_row + i
             move_to(row, self.col_start)
-            print(f"{self.color}{line}{RESET}" + " " * (COL_WIDTH - len(line)), end="", flush=True)
+            print(
+                f"{self.color}{line}{RESET}" + " " * (COL_WIDTH - len(line)),
+                end="",
+                flush=True,
+            )
 
         # Clear remaining rows
         for i in range(len(display_lines), max_rows):
@@ -162,7 +169,9 @@ class StreamState:
 
         # Status line
         status_row = self.start_row + max_rows + 1
-        tok_s = self.tokens / self.elapsed if self.elapsed > 0.1 and self.tokens > 3 else 0
+        tok_s = (
+            self.tokens / self.elapsed if self.elapsed > 0.1 and self.tokens > 3 else 0
+        )
         ttft_str = f"{self.ttft:.2f}s" if self.ttft else "..."
 
         if self.done:
@@ -267,11 +276,16 @@ async def run_race():
 
     # Final summary
     summary_row = 27
-    move_to(summary_row, 1, )
+    move_to(
+        summary_row,
+        1,
+    )
     print(f"  {'─' * COL_WIDTH}{DIVIDER}{'─' * COL_WIDTH}")
 
     left_tps = state_left.tokens / state_left.elapsed if state_left.elapsed > 0 else 0
-    right_tps = state_right.tokens / state_right.elapsed if state_right.elapsed > 0 else 0
+    right_tps = (
+        state_right.tokens / state_right.elapsed if state_right.elapsed > 0 else 0
+    )
 
     if left_tps > 0 and right_tps > 0:
         speedup = left_tps / right_tps
@@ -345,7 +359,7 @@ async def main():
             if not isinstance(r, Exception):
                 await r.read()
                 r.close()
-    print(f"  ✓ Both engines warmed up")
+    print("  ✓ Both engines warmed up")
 
     print(f"\n{BOLD}Starting race in 2 seconds...{RESET}")
     await asyncio.sleep(2)

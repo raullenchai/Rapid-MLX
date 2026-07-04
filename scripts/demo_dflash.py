@@ -61,8 +61,14 @@ def print_at(row, col, text):
 
 def draw_chrome():
     clear_screen()
-    print_at(1, 1, f"{BOLD}{WHITE}  ⚡ Qwen3.5-27B-8bit · same prompt · DFlash on/off{RESET}")
-    print_at(2, 1, f"{DIM}  Block-diffusion drafter via mlx-vlm · z-lab/Qwen3.5-27B-DFlash{RESET}")
+    print_at(
+        1, 1, f"{BOLD}{WHITE}  ⚡ Qwen3.5-27B-8bit · same prompt · DFlash on/off{RESET}"
+    )
+    print_at(
+        2,
+        1,
+        f"{DIM}  Block-diffusion drafter via mlx-vlm · z-lab/Qwen3.5-27B-DFlash{RESET}",
+    )
     print_at(3, 1, f"  {'─' * COL_WIDTH}{DIVIDER}{'─' * COL_WIDTH}")
     print_at(4, 3, f"{GRAY}{BOLD}Baseline (autoregressive){RESET}")
     print_at(4, COL_WIDTH + 5, f"{ORANGE}{BOLD}DFlash speculative decoding{RESET}")
@@ -106,14 +112,20 @@ class Panel:
         for i, line in enumerate(display_lines):
             row = self.start_row + i
             move_to(row, self.col_start)
-            print(f"{self.color}{line}{RESET}" + " " * (COL_WIDTH - len(line)), end="", flush=True)
+            print(
+                f"{self.color}{line}{RESET}" + " " * (COL_WIDTH - len(line)),
+                end="",
+                flush=True,
+            )
         for i in range(len(display_lines), max_rows):
             row = self.start_row + i
             move_to(row, self.col_start)
             print(" " * COL_WIDTH, end="")
 
         status_row = self.start_row + max_rows + 1
-        tok_s = self.tokens / self.elapsed if self.elapsed > 0.1 and self.tokens > 3 else 0
+        tok_s = (
+            self.tokens / self.elapsed if self.elapsed > 0.1 and self.tokens > 3 else 0
+        )
         ttft_str = f"{self.ttft:.2f}s" if self.ttft else "..."
         color = GREEN if self.done else self.color
         weight = BOLD if self.done else ""
