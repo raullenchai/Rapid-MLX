@@ -166,6 +166,7 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # decode (registered pair); these just enable the implementation.
         "--enable-mtp",
         "--enable-dflash",
+        "--enable-ddtree",
         # Task #292: ``--enable-audio`` is a route-mounting UX knob, not a
         # binary auto-detection. The audio-mode boot path auto-mounts
         # ``/v1/audio/*`` from the registry hit; this flag is the
@@ -2552,6 +2553,22 @@ def test_dflash_branch_rejects_no_spec_decode():
     assert no_spec_idx < dflash_idx, (
         "no_spec_decode mutex check must come BEFORE run_dflash_server() "
         "call so the override actually rejects DFlash startup."
+    )
+
+
+def test_ddtree_branch_rejects_no_spec_decode():
+    """--enable-ddtree + --no-spec-decode must be a mutex error."""
+    source = (_pkg_root() / "cli.py").read_text()
+    no_spec_idx = source.find("--enable-ddtree and --no-spec-decode")
+    ddtree_idx = source.find("run_ddtree_server(")
+    assert no_spec_idx != -1, (
+        "cli.py must reference no_spec_decode in the DDTree branch — "
+        "DDTree is a spec-decode path and must honor --no-spec-decode."
+    )
+    assert ddtree_idx != -1
+    assert no_spec_idx < ddtree_idx, (
+        "no_spec_decode mutex check must come BEFORE run_ddtree_server() "
+        "call so the override actually rejects DDTree startup."
     )
 
 

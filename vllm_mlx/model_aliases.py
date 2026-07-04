@@ -71,10 +71,11 @@ VALID_PFLASH_TIERS: frozenset[str] = frozenset({"unknown", "verified"})
 VALID_TURBOQUANT_TIERS: frozenset[str] = frozenset({"unknown", "k8v4_verified"})
 
 
-# Canonical name for the DFlash speculative-decoding drafter kind. Kept
-# as a module constant so eligibility checks, CLI flag handlers, and
-# alias validation all reference the same string.
+# Canonical names for block-diffusion speculative-decoding drafter kinds.
+# Kept as module constants so eligibility checks, CLI flag handlers, and
+# alias validation all reference the same strings.
 DFLASH_KIND: str = "dflash"
+DDTREE_KIND: str = "ddtree"
 
 _aliases: dict[str, "AliasProfile"] | None = None
 # Reverse index: hf_path → first alias that references it. Built once
@@ -210,6 +211,15 @@ class AliasProfile:
     pflash_tier: str = "unknown"
     # TurboQuant K8V4 default-on tier. See ``VALID_TURBOQUANT_TIERS``.
     turboquant_tier: str = "unknown"
+    # DDTree speculative-decoding eligibility (#879). Appended at the
+    # tail to preserve AliasProfile's positional-construction ABI.
+    # This is intentionally separate from DFlash even though it uses the
+    # same DFlash draft weights: DDTree verifies a tree of candidate
+    # continuations and needs model-family specific verifier support.
+    supports_ddtree: bool = False
+    ddtree_draft_model: str | None = None
+    ddtree_speculative_tokens: int | None = None
+    ddtree_tree_budget: int | None = None
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
@@ -258,6 +268,10 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "suffix_bench_speedup",
             "supports_dflash",
             "dflash_draft_model",
+            "supports_ddtree",
+            "ddtree_draft_model",
+            "ddtree_speculative_tokens",
+            "ddtree_tree_budget",
             "recommended_sampling",
             "pflash_tier",
             "turboquant_tier",
@@ -384,6 +398,36 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"alias {alias!r}: dflash_draft_model must be a string, "
             f"got {type(dflash_draft_model).__name__}"
         )
+    supports_ddtree = _strict_bool("supports_ddtree", False)
+    ddtree_draft_model = value.get("ddtree_draft_model")
+    if supports_ddtree and not ddtree_draft_model:
+        raise ValueError(
+            f"alias {alias!r}: supports_ddtree=true requires "
+            f"ddtree_draft_model to be set"
+        )
+    if ddtree_draft_model is not None and not isinstance(ddtree_draft_model, str):
+        raise ValueError(
+            f"alias {alias!r}: ddtree_draft_model must be a string, "
+            f"got {type(ddtree_draft_model).__name__}"
+        )
+
+    def _optional_positive_int(key: str) -> int | None:
+        raw = value.get(key)
+        if raw is None:
+            return None
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            raise ValueError(
+                f"alias {alias!r}: {key} must be a positive integer, "
+                f"got {type(raw).__name__}={raw!r}"
+            )
+        if raw <= 0:
+            raise ValueError(
+                f"alias {alias!r}: {key} must be a positive integer, got {raw}"
+            )
+        return raw
+
+    ddtree_speculative_tokens = _optional_positive_int("ddtree_speculative_tokens")
+    ddtree_tree_budget = _optional_positive_int("ddtree_tree_budget")
     raw_sampling = value.get("recommended_sampling")
     recommended_sampling: tuple[tuple[str, float], ...] | None
     if raw_sampling is None:
@@ -467,6 +511,11 @@ def _coerce(alias: str, value: object) -> AliasProfile:
                 f"alias {alias!r}: supports_dflash must be false when "
                 f"modality={modality!r} (DFlash is AR-only)"
             )
+        if supports_ddtree:
+            raise ValueError(
+                f"alias {alias!r}: supports_ddtree must be false when "
+                f"modality={modality!r} (DDTree is AR-only)"
+            )
 
     return AliasProfile(
         hf_path=hf_path,
@@ -482,6 +531,10 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         suffix_bench_speedup=speedup,
         supports_dflash=supports_dflash,
         dflash_draft_model=dflash_draft_model,
+        supports_ddtree=supports_ddtree,
+        ddtree_draft_model=ddtree_draft_model,
+        ddtree_speculative_tokens=ddtree_speculative_tokens,
+        ddtree_tree_budget=ddtree_tree_budget,
         recommended_sampling=recommended_sampling,
         # Deprecated v0.7.2 PR #555 knobs — explicitly threaded through
         # so an operator who customized ``aliases.json`` with non-default

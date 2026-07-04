@@ -25,6 +25,20 @@ def test_parse_speculative_config_accepts_vllm_common_keys() -> None:
     assert cfg.method == "mtp"
     assert cfg.model == "local/draft"
     assert cfg.num_speculative_tokens == 4
+    assert cfg.tree_budget is None
+
+
+def test_parse_ddtree_speculative_config_accepts_method_keys() -> None:
+    cfg = parse_speculative_config(
+        '{"method":"ddtree","model":"local/draft",'
+        '"num_speculative_tokens":8,"tree_budget":24}'
+    )
+
+    assert cfg is not None
+    assert cfg.method == "ddtree"
+    assert cfg.model == "local/draft"
+    assert cfg.num_speculative_tokens == 8
+    assert cfg.tree_budget == 24
 
 
 def test_parse_speculative_config_normalizes_registered_alias() -> None:
@@ -45,6 +59,9 @@ def test_parse_speculative_config_normalizes_registered_alias() -> None:
         ('{"method":"mtp","num_speculative_tokens":true}', "positive integer"),
         ('{"method":"mtp","model":""}', "non-empty string"),
         ('{"method":"mtp","tree_budget":24}', "unsupported speculative-config"),
+        ('{"method":"ddtree","tree_budget":0}', "positive integer"),
+        ('{"method":"ddtree","tree_budget":true}', "positive integer"),
+        ('{"method":"ddtree","unknown":1}', "unsupported speculative-config"),
         ('{"method":"unknown"}', "unsupported speculative decoding method"),
     ],
 )
@@ -61,10 +78,18 @@ def test_require_migrated_speculative_config_rejects_unwired_method() -> None:
         require_migrated_speculative_config(cfg)
 
 
+def test_require_migrated_speculative_config_accepts_ddtree() -> None:
+    cfg = parse_speculative_config('{"method":"ddtree"}')
+    assert cfg is not None
+
+    require_migrated_speculative_config(cfg)
+
+
 def test_spec_decoder_registry_lists_existing_backends() -> None:
     methods = {plugin.method for plugin in iter_spec_decoders()}
 
-    assert {"dflash", "mtp", "suffix"}.issubset(methods)
+    assert {"ddtree", "dflash", "mtp", "suffix"}.issubset(methods)
+    assert get_spec_decoder("ddtree").config_enabled is True
     assert get_spec_decoder("ngram") == get_spec_decoder("suffix")
 
 

@@ -25,6 +25,7 @@ class SpeculativeConfig:
     method: str
     model: str | None = None
     num_speculative_tokens: int | None = None
+    tree_budget: int | None = None
     raw: dict[str, Any] | None = None
 
 
@@ -35,6 +36,10 @@ _COMMON_KEYS = frozenset(
         "num_speculative_tokens",
     }
 )
+
+_METHOD_KEYS = {
+    "ddtree": frozenset({"tree_budget"}),
+}
 
 
 def _positive_int(value: Any, key: str) -> int | None:
@@ -86,7 +91,8 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         )
     method = plugin.method
 
-    unknown = sorted(set(payload) - _COMMON_KEYS)
+    allowed_keys = _COMMON_KEYS | _METHOD_KEYS.get(method, frozenset())
+    unknown = sorted(set(payload) - allowed_keys)
     if unknown:
         joined = ", ".join(unknown)
         raise SpeculativeConfigError(
@@ -99,8 +105,15 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
         num_speculative_tokens=_positive_int(
             payload.get("num_speculative_tokens"), "num_speculative_tokens"
         ),
+        tree_budget=_positive_int(payload.get("tree_budget"), "tree_budget"),
         raw=dict(payload),
     )
+
+
+def legacy_ddtree_config() -> SpeculativeConfig:
+    """Return the compatibility config represented by ``--enable-ddtree``."""
+
+    return SpeculativeConfig(method="ddtree", raw={"method": "ddtree"})
 
 
 def require_migrated_speculative_config(config: SpeculativeConfig) -> None:
@@ -121,6 +134,7 @@ def require_migrated_speculative_config(config: SpeculativeConfig) -> None:
 __all__ = [
     "SpeculativeConfig",
     "SpeculativeConfigError",
+    "legacy_ddtree_config",
     "parse_speculative_config",
     "require_migrated_speculative_config",
 ]

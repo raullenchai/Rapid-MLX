@@ -66,6 +66,13 @@ def iter_spec_decoders() -> tuple[SpecDecoderPlugin, ...]:
 
 register_spec_decoder(
     SpecDecoderPlugin(
+        method="ddtree",
+        description="DDTree / DFlash draft-tree verifier",
+        config_enabled=True,
+    )
+)
+register_spec_decoder(
+    SpecDecoderPlugin(
         method="dflash",
         description="Block-diffusion drafter via the existing single-user bridge",
         legacy_hint="use --enable-dflash or --spec-decode dflash",
