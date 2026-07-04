@@ -319,6 +319,135 @@ def test_lossless_temp0_all_reject_matches_none_reference():
 
 
 # ---------------------------------------------------------------------------
+# Default-path (auto-K enabled) coverage — codex round-M BLOCKING
+# ---------------------------------------------------------------------------
+
+
+def _spec_decode_mtp_path_auto_k(
+    backbone_script: list[int],
+    mtp_script: list[int],
+    prompt: mx.array,
+    max_tokens: int,
+) -> list[int]:
+    """Run ``mtp_generate_step`` with ``disable_auto_k=False`` (default path)
+    and ``max_k=1``.
+
+    Exercises the EV depth controller code path that operators actually run
+    (``rapid-mlx serve ... --spec-decode mtp`` defaults to ``disable_auto_k
+    =False``) — the two byte-equal tests above pin ``disable_auto_k=True``
+    so their mocked backbone scripts are not perturbed by the controller's
+    per-round K∈{0,1} park/chain picks, but that means a regression in the
+    default emit-ordering could leak past them undetected.
+
+    ``max_k=1`` keeps the mock backbone contract (chain-of-1 verify/bonus
+    alternation) intact — the controller can only pick K=0 (park) or K=1
+    (chain-of-1), so any accepted round emits the same tokens the ``max_k=1
+    + disable_auto_k=True`` tests already cover; a K=0 park round falls
+    through to a plain backbone step. Either way, the emitted sequence
+    must be a well-formed prefix of the ``--spec-decode none`` reference,
+    since no branch of the default path is allowed to invent or reorder
+    tokens.
+    """
+    from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
+    from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
+
+    model = _MockedQwen35Model(backbone_script, mtp_script)
+    counter = MTPAcceptCounter()
+    return [
+        tok
+        for tok, _lp, _fd in mtp_generate_step(
+            prompt,
+            model,
+            max_tokens=max_tokens,
+            accept_counter=counter,
+            # disable_auto_k=False is the default, spelled explicitly so
+            # a future default change is caught here.
+            disable_auto_k=False,
+            max_k=1,
+        )
+    ]
+
+
+def test_lossless_default_path_terminates_cleanly_under_auto_k():
+    """Default-path (auto-K enabled) must terminate within ``max_tokens``
+    without raising, under the scripted-mock backbone.
+
+    Codex round-M BLOCKING: the two byte-equal tests above pin
+    ``disable_auto_k=True`` to keep the mocked backbone scripts stable
+    under the controller — that means a regression that only breaks the
+    default (auto-K) path would slip past them. This test exercises the
+    exact default path operators run (``rapid-mlx serve ... --spec-decode
+    mtp`` with no ``--mtp-disable-auto-k``) and pins the two invariants
+    that are cheap to verify under a mock:
+
+    * The generator terminates cleanly (no exception, no hang beyond
+      ``max_tokens``).
+    * No invented tokens leak in — every emitted non-sentinel token
+      was produced by the mock backbone at some position (K=0 park)
+      or by the mock MTP head (K=1 chain).
+
+    Byte-equal vs the ``--spec-decode none`` reference is NOT asserted
+    here — per the batched-consistent lossless contract in
+    ``memory/knowledge/decisions.md``, the default path may emit a
+    different token stream from a single-token baseline (the K=0 park
+    round drops drafts on the floor, and controller state persists
+    across rounds), and that difference is intentional. Byte-equal is
+    covered by the two ``disable_auto_k=True`` tests above and by the
+    MTP-vs-MTP determinism test below.
+    """
+    backbone_mtp = [7, 11, 13, 15, 17, 19, 21]
+    mtp_drafts = [11, 0, 15, 0, 19]
+    mtp_tokens = _spec_decode_mtp_path_auto_k(
+        backbone_mtp,
+        mtp_drafts,
+        prompt=mx.array([1], mx.uint32),
+        max_tokens=7,
+    )
+    assert len(mtp_tokens) == 7, (
+        f"Default-path MTP under-generated: got {len(mtp_tokens)} != 7. "
+        f"mtp={mtp_tokens}"
+    )
+    # Union of the mock's two scripted sources — an emitted token must
+    # have come from one of these (0 is the mock padding sentinel).
+    valid_sources = set(backbone_mtp) | set(mtp_drafts) | {0, 1}
+    for tok in mtp_tokens:
+        assert tok in valid_sources, (
+            "Default-path MTP invented a token not present in either "
+            f"scripted source: tok={tok} mtp={mtp_tokens} "
+            f"valid_sources={sorted(valid_sources)}"
+        )
+
+
+def test_lossless_default_path_is_deterministic():
+    """Default-path (auto-K enabled) must be deterministic across
+    successive runs on the same mocked model.
+
+    Even under the EV depth controller (which has cross-request state
+    via the process-global registry), a temp=0 request with a fresh
+    ``__default__`` controller and a fresh mock must produce the same
+    emit sequence twice in a row. If controller state leakage or non-
+    deterministic K picks slipped in, this smoke test would catch it.
+    """
+    backbone_mtp = [7, 11, 13, 15, 17, 19, 21]
+    mtp_drafts = [11, 0, 15, 0, 19]
+    run1 = _spec_decode_mtp_path_auto_k(
+        backbone_mtp[:],
+        mtp_drafts[:],
+        prompt=mx.array([1], mx.uint32),
+        max_tokens=7,
+    )
+    run2 = _spec_decode_mtp_path_auto_k(
+        backbone_mtp[:],
+        mtp_drafts[:],
+        prompt=mx.array([1], mx.uint32),
+        max_tokens=7,
+    )
+    assert run1 == run2, (
+        f"Default-path MTP not deterministic across runs. run1={run1} run2={run2}"
+    )
+
+
+# ---------------------------------------------------------------------------
 # Sanity: the unit-test runner picks up this file
 # ---------------------------------------------------------------------------
 
