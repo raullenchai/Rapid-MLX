@@ -141,22 +141,32 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
     :func:`validate_responses_tool_types` accepts the request instead of
     400-ing on ``type:"namespace"``.
 
-    F13 trade-off: the drop-hosted step is gated on the request also
-    carrying at least one function or namespace tool. If the caller sent
-    a HOSTED-ONLY tools array (e.g. ``[{"type":"web_search"}]`` — the
-    Yuki F13 case where the user directly asked for the hosted tool),
-    the drop step is skipped and the hosted entry falls through to
-    ``validate_responses_tool_types`` which still returns 400 with the
-    supported-types list. That preserves F13's "don't silently accept a
-    tool that will never run" contract for the direct-user case while
-    letting agent-layer noise from Codex through.
+    F13 trade-off: the drop-hosted step is gated on the POST-FLATTEN tool
+    list actually containing at least one function-typed entry. If the
+    caller sent a HOSTED-ONLY tools array (e.g. ``[{"type":"web_search"}]``
+    — the Yuki F13 case where the user directly asked for the hosted
+    tool), the drop step is skipped and the hosted entry falls through
+    to ``validate_responses_tool_types`` which still returns 400. That
+    preserves F13's "don't silently accept a tool that will never run"
+    contract for the direct-user case while letting agent-layer noise
+    from Codex through.
+
+    Namespace shape gating: a ``namespace`` entry is flattened into its
+    function children ONLY when ``tools`` is a NON-EMPTY LIST and EVERY
+    child is a dict. Empty / non-list / mixed-child shapes are left in
+    place so the allowlist gate returns a controlled 400 instead of
+    silently collapsing to an empty tools array. This avoids two edge
+    holes: (a) ``{"type":"namespace","tools":[]}`` + hosted → tools=[]
+    after normalize (silent zero-tool 200), and (b)
+    ``{"type":"namespace","tools":["bad-string"]}`` → non-dict children
+    silently discarded instead of surfacing the bad shape.
     """
     if not tools:
         return
     # Hosted tool types the local engine cannot run; Codex includes some
     # of these by default. Drop them rather than 400 the whole request —
-    # BUT only when the request also carries function/namespace tools
-    # (see F13 trade-off in the docstring).
+    # BUT only when the POST-FLATTEN list contains a function tool (see
+    # F13 trade-off in the docstring).
     _drop_hosted = {
         "web_search",
         "web_search_preview",
@@ -165,38 +175,42 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
         "image_generation",
     }
 
-    def _is_function_or_namespace(entry: object) -> bool:
-        if not isinstance(entry, dict):
-            return False
-        raw = entry.get("type")
-        if raw == "namespace":
-            return True
-        return _canonicalize_tool_type(raw) == "function"
-
-    drop_hosted_enabled = any(_is_function_or_namespace(t) for t in tools)
-
+    # Pass 1 — flatten namespaces. Preserve malformed / empty shapes so
+    # validate can 400 them instead of silently discarding.
     flattened: list = []
     for t in tools:
         if isinstance(t, dict) and t.get("type") == "namespace":
             sub_tools = t.get("tools")
-            # Guard against malformed input: `tools` MUST be a list —
-            # anything else (int, dict, str, None) is a caller bug that
-            # should fall through to validate_responses_tool_types and
-            # 400 there instead of raising TypeError here.
-            if not isinstance(sub_tools, list):
-                flattened.append(t)
+            if (
+                isinstance(sub_tools, list)
+                and sub_tools
+                and all(isinstance(sub, dict) for sub in sub_tools)
+            ):
+                flattened.extend(sub_tools)
                 continue
-            for sub in sub_tools:
-                if isinstance(sub, dict):
-                    flattened.append(sub)
-            continue
-        if (
-            drop_hosted_enabled
-            and isinstance(t, dict)
-            and _canonicalize_tool_type(t.get("type")) in _drop_hosted
-        ):
+            # Malformed / empty namespace → leave for validate.
+            flattened.append(t)
             continue
         flattened.append(t)
+
+    # Pass 2 — decide hosted-drop against the POST-FLATTEN list. Only a
+    # real function tool (canonicalized) counts; a namespace that stayed
+    # in place because it was malformed does NOT count, so hosted noise
+    # accompanying a broken namespace still falls through to 400.
+    post_flatten_has_function = any(
+        isinstance(t, dict) and _canonicalize_tool_type(t.get("type")) == "function"
+        for t in flattened
+    )
+    if post_flatten_has_function:
+        flattened = [
+            t
+            for t in flattened
+            if not (
+                isinstance(t, dict)
+                and _canonicalize_tool_type(t.get("type")) in _drop_hosted
+            )
+        ]
+
     tools[:] = flattened
     for t in tools:
         if not isinstance(t, dict):

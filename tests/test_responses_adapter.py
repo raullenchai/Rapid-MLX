@@ -224,6 +224,44 @@ class TestNormalizeResponsesToolTypes:
             # will 400 on the ``namespace`` type.
             assert any(t.get("type") == "namespace" for t in tools)
 
+    def test_empty_namespace_with_hosted_does_not_silently_collapse(self):
+        """Codex review round-2 case: an empty ``namespace`` (``tools=[]``)
+        paired with a hosted tool must NOT normalize to ``[]``. The empty
+        namespace is preserved for validation (it 400s on ``type:namespace``),
+        and the hosted tool is preserved because no real function survives
+        flattening — so ``post_flatten_has_function`` stays False and the
+        drop-hosted step is disabled. Both are preserved for validate to
+        400 cleanly instead of silently accepting a zero-tool request.
+        """
+        tools = [
+            {"type": "namespace", "name": "x", "tools": []},
+            {"type": "web_search"},
+        ]
+        normalize_responses_tool_types(tools)
+        # Empty namespace preserved for validate → validate will 400 on
+        # `type:namespace`. Hosted tool also preserved (no function to
+        # anchor the drop). Zero silent-drop.
+        assert any(t.get("type") == "namespace" for t in tools)
+        assert any(t.get("type") == "web_search" for t in tools)
+
+    def test_namespace_with_nondict_children_falls_through(self):
+        """Codex review round-2 case: ``{"type":"namespace","tools":["bad"]}``
+        must NOT silently discard the non-dict child — the whole namespace
+        entry is preserved so validate can 400 it. Otherwise a caller with
+        a typo (list of strings instead of list of dicts) would see their
+        namespace erased and get an ambiguous downstream error.
+        """
+        tools = [
+            {"type": "function", "name": "f"},
+            {"type": "namespace", "name": "x", "tools": ["bad-string-child"]},
+        ]
+        normalize_responses_tool_types(tools)
+        # Namespace with non-dict children preserved for validate. No
+        # silent flatten.
+        types = [t.get("type") for t in tools]
+        assert "namespace" in types
+        assert "function" in types
+
 
 # ---------------------------------------------------------------------------
 # Tool-choice
