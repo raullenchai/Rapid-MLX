@@ -1983,6 +1983,13 @@ def _install_mtp_vendored(
                     model_id=controller_key or f"mtp-model-{id(model)}",
                     max_k=max_k,
                     disable_auto_k=disable_auto_k,
+                    # 0.9.13 PR-C: EOS holdout — feed the
+                    # BatchGenerator's assembled stop set to the
+                    # controller so positions past EOS are not
+                    # logged as (nonexistent) rejections. Emitted
+                    # tokens are unchanged; only the acceptance
+                    # model's training window shrinks.
+                    stop_tokens=getattr(batch_gen, "stop_tokens", None),
                 )
             except Exception as e:  # noqa: BLE001
                 logger.warning(

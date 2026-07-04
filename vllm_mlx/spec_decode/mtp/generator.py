@@ -197,6 +197,17 @@ def mtp_generate_step(
     model_id: str | None = None,
     max_k: int = 1,
     disable_auto_k: bool = False,
+    # 0.9.13 PR-C EOS holdout. When an accepted draft is a stop token
+    # (Gemma 4 ``<end_of_turn>``, tokenizer ``eos_token_id``, or any
+    # id in the request's assembled stop set), positions past that
+    # index would never have been reached in real decode. Ollama's
+    # ``speculate.go:456-472`` caps ``observed`` at the EOS position
+    # so the acceptance-rate EWMA does not learn a spurious "position
+    # N+1 rate = 0" from a hypothetical rejection that would never
+    # have been performed. Emitted token stream is unchanged (the
+    # caller still stops at EOS on its side); only the controller's
+    # training window shrinks. ``None`` disables the holdout.
+    stop_tokens: set[int] | None = None,
 ) -> Generator[tuple[int, mx.array, bool], None, None]:
     """Generator that uses the model's native MTP head for spec decode.
 
@@ -679,7 +690,18 @@ def mtp_generate_step(
             # -------------------------------------------------------
             # Verify path with K = len(pending_drafts) drafts.
             #
-            # K=1: single verify + bonus (matches pre-Fix-3 chain-of-1).
+            # 0.9.13 PR-C: single-sync verify. Ollama's
+            # ``speculate.go:428-439`` pre-samples the residual at
+            # EVERY draft position and the bonus at position K, then
+            # batches them into ONE ``mx.eval`` alongside the accept
+            # mask. The prior implementation issued two host syncs
+            # (verify tokens first, then residual on the reject path);
+            # merging them cuts one host round-trip per verify round
+            # and — for K≥2 — replaces a per-position Python accept
+            # loop with a single vectorized comparison.
+            #
+            # K=1: single verify + bonus (byte-equal to pre-PR-C at
+            # greedy temp=0 because residual == verify-argmax there).
             # K>=2: batched (K+1)-position backbone forward, sequential
             # accept-reject per Ollama's ``speculate.go::accept``. The
             # SSM path is clamped at loop-start so K>=2 only reaches
@@ -693,9 +715,12 @@ def mtp_generate_step(
             first_xtc_draw = pending_drafts[0][3]
 
             # Assemble [y, d_1, ..., d_K] for the batched target forward.
-            drafts_arr = mx.array(
-                [d.item() for d in draft_toks_arr], mx.uint32
-            )
+            # Stacking on device (rather than materializing each draft
+            # via ``.item()``) keeps the whole graph lazy up to the
+            # single ``mx.eval`` below.
+            drafts_arr = mx.stack(
+                [d.reshape(-1) for d in draft_toks_arr]
+            ).reshape(-1).astype(mx.uint32)
             y_with_drafts = mx.concatenate([y, drafts_arr])
 
             toks, lps, accept_lps, hidden, prev_tokens = _step_backbone(
@@ -709,6 +734,7 @@ def mtp_generate_step(
                 n_confirmed=k_len,
                 xtc_draw=first_xtc_draw,
             )
+
             # One shared uniform for all positions' probabilistic
             # accept tests. Ollama uses a per-position Bernoulli draw;
             # at greedy temp=0 the draw is ignored (accept iff argmax
@@ -717,68 +743,135 @@ def mtp_generate_step(
             # Ollama's per-position draw than reusing the sampler
             # chain's XTC cell would be.
             u = mx.random.uniform()
-            mx.eval(toks, u)
+            drafts_i32 = drafts_arr.astype(mx.int32)
+
+            # --------------------------------------------------------
+            # Pre-compute accept-mask, residual-at-every-position, and
+            # bonus-at-position-K on device. Single ``mx.eval`` below
+            # materializes all four at once. Ollama's speculate.go:428-439.
+            # --------------------------------------------------------
+            if _is_greedy:
+                # ``toks[i]`` IS target's argmax at position i. Accept
+                # iff it matches the draft; residual == verify == toks[i]
+                # (residual distribution at greedy is a point mass on
+                # target's argmax, which coincides with target argmax).
+                accept_mask_arr = (
+                    toks[:k_len].astype(mx.int32) == drafts_i32
+                )
+                residual_toks_arr = toks[:k_len]
+                bonus_tok_arr = toks[k_len]
+            else:
+                # Vectorized per-position log-accept over the K draft
+                # positions with a shared draw ``u``.
+                v_alps = accept_lps[:k_len]  # (K, V)
+                d_alps_stack = mx.stack(draft_alps_arr)  # (K, V)
+                idx = drafts_i32.reshape(-1, 1)  # (K, 1)
+                v_at = mx.take_along_axis(v_alps, idx, axis=1).squeeze(-1)
+                d_at = mx.take_along_axis(
+                    d_alps_stack, idx, axis=1
+                ).squeeze(-1)
+                log_accept = v_at - d_at  # (K,)
+                accept_mask_arr = (log_accept >= 0) | (u < mx.exp(log_accept))
+
+                # Residual distribution at every position — sampled
+                # up-front so a reject at position i doesn't cost a
+                # second eval. Formula matches the prior per-reject code:
+                # ``max(p_target - p_draft, 0)``, falling back to
+                # ``p_target`` if the max clamp zeroed everything.
+                p_target = mx.exp(v_alps)  # (K, V)
+                p_draft = mx.exp(d_alps_stack)  # (K, V)
+                residual = mx.maximum(p_target - p_draft, 0.0)  # (K, V)
+                z = residual.sum(axis=-1, keepdims=True)  # (K, 1)
+                dist = mx.where(z > 0, residual, p_target)  # (K, V)
+                residual_toks_arr = mx.random.categorical(mx.log(dist))
+                # Bonus already sampled per-position inside _step_backbone
+                # for temp>0 (categorical over target distro at position K).
+                bonus_tok_arr = toks[k_len]
+
+            # ------- SINGLE SYNC -------
+            mx.eval(
+                toks, accept_mask_arr, residual_toks_arr, bonus_tok_arr, u
+            )
+
+            # ------- Host-side read (all values already resident) -------
+            accept_flags = accept_mask_arr.tolist()
+            residual_ids = residual_toks_arr.tolist()
+            bonus_id = int(bonus_tok_arr.item())
+            draft_ids = drafts_arr.tolist()
 
             # Bump attempts by K (one per draft position considered).
             for _ in range(k_len):
                 accept_counter.record_attempt()
 
-            # Sequential accept-reject: walk drafts left-to-right,
-            # stopping at the first reject.
+            # Sequential accept-reject walk (host-only; no MLX ops).
             accepts: list[bool] = []
             accepted_count = 0
             for i in range(k_len):
-                verify_pred_i = toks[i]
-                verify_accept_lp_i = accept_lps[i]
-                d_tok_i = draft_toks_arr[i]
-                d_alp_i = draft_alps_arr[i]
-                d_tok_id_i = d_tok_i.item()
-
-                if _is_greedy:
-                    accept_i = verify_pred_i.item() == d_tok_id_i
-                else:
-                    log_accept = (
-                        verify_accept_lp_i[d_tok_id_i]
-                        - d_alp_i[d_tok_id_i]
-                    ).item()
-                    accept_i = log_accept >= 0 or u.item() < math.exp(
-                        log_accept
-                    )
-
-                accepts.append(bool(accept_i))
-                if accept_i:
+                ok = bool(accept_flags[i])
+                accepts.append(ok)
+                if ok:
                     accepted_count += 1
                 else:
                     break
 
-            round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
-            _record_round(k_len, round_wall_ms, accepts)
+            # -------- 0.9.13 PR-C: EOS holdout --------
+            # When an accepted draft is a stop token, positions past it
+            # would never be reached in real decode. Ollama's
+            # ``speculate.go:456-472`` sets ``observed = i + 1`` and
+            # ``keep = i`` at the EOS, so the acceptance-rate EWMA
+            # never sees the (nonexistent) positions past the natural
+            # terminator. We use the same idea: truncate ``accepts``
+            # to the EOS index+1 for the record call; cap
+            # ``accepted_count`` so we stop emitting at (and including)
+            # EOS instead of continuing to a bonus or residual.
+            eos_cut = False
+            accepts_for_record = accepts
+            if stop_tokens:
+                for j in range(accepted_count):
+                    if int(draft_ids[j]) in stop_tokens:
+                        eos_cut = True
+                        accepts_for_record = accepts[: j + 1]
+                        accepted_count = j + 1
+                        break
 
-            # Emit the accepted drafts.
+            round_wall_ms = (time.perf_counter() - round_start_perf) * 1000.0
+            _record_round(k_len, round_wall_ms, accepts_for_record)
+
+            # Emit the accepted drafts (capped at EOS position when set).
             for i in range(accepted_count):
                 accept_counter.record_accept(tokens_saved=1)
                 ntoks += 1
-                yield draft_toks_arr[i].item(), draft_lps_arr[i], True
+                yield int(draft_ids[i]), draft_lps_arr[i], True
                 if ntoks >= max_tokens:
                     return
+
+            if eos_cut:
+                # Emitted EOS via an accepted draft. Caller will detect
+                # the stop token and terminate; skip bonus / residual /
+                # drafter-chain setup entirely. The cache is left with
+                # the un-emitted drafts past EOS still committed to it,
+                # but the request terminates here so the cache is
+                # discarded by the scheduler at request boundary.
+                return
 
             if accepted_count == k_len:
                 # All K drafts accepted → emit the bonus token
                 # (target's prediction one past the last draft).
                 _clear_rollback()
-                bonus_tok_id = toks[k_len].item()
                 ntoks += 1
-                yield bonus_tok_id, lps[k_len], False
+                yield bonus_id, lps[k_len], False
                 if ntoks >= max_tokens:
                     return
-                last_committed_tok_id = bonus_tok_id
+                last_committed_tok_id = bonus_id
                 last_committed_hidden = hidden[:, k_len : k_len + 1, :]
-                y = mx.array([bonus_tok_id], mx.uint32)
+                y = mx.array([bonus_id], mx.uint32)
             else:
                 # Reject at position ``accepted_count``. Emit target's
-                # own prediction there as the residual, and drop the
-                # remaining (k_len - accepted_count) unaccepted drafts
-                # from the caches.
+                # pre-sampled residual there (byte-equal to the prior
+                # ``verify_pred.item()`` on greedy since residual ==
+                # target argmax at temp=0), and drop the remaining
+                # (k_len - accepted_count) unaccepted drafts from the
+                # caches.
                 n_to_drop = k_len - accepted_count
                 _rollback_draft(n_to_drop)
                 accept_counter.record_reject()
@@ -797,21 +890,7 @@ def mtp_generate_step(
                     if mc.is_trimmable():
                         mc.trim(n_to_drop)
 
-                verify_pred = toks[accepted_count]
-                verify_tok_id = verify_pred.item()
-                if not _is_greedy:
-                    # Residual-distribution sample on reject so the
-                    # output marginal still equals the target distro.
-                    verify_accept_lp = accept_lps[accepted_count]
-                    d_alp = draft_alps_arr[accepted_count]
-                    p_target = mx.exp(verify_accept_lp)
-                    p_draft = mx.exp(d_alp)
-                    residual = mx.maximum(p_target - p_draft, 0.0)
-                    z = residual.sum(keepdims=True)
-                    dist = mx.where(z > 0, residual, p_target)
-                    verify_tok_id = mx.random.categorical(
-                        mx.log(dist).reshape(1, -1)
-                    ).item()
+                verify_tok_id = int(residual_ids[accepted_count])
 
                 ntoks += 1
                 yield verify_tok_id, lps[accepted_count], False
