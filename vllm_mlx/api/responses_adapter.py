@@ -155,13 +155,19 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
 
     Namespace shape gating: a ``namespace`` entry is flattened into its
     function children ONLY when ``tools`` is a NON-EMPTY LIST and EVERY
-    child is a dict. Empty / non-list / mixed-child shapes are left in
+    child is a dict whose canonical ``type`` is ``function``. Empty /
+    non-list / mixed-child / non-function-child shapes are left in
     place so the allowlist gate returns a controlled 400 instead of
-    silently collapsing to an empty tools array. This avoids two edge
-    holes: (a) ``{"type":"namespace","tools":[]}`` + hosted → tools=[]
-    after normalize (silent zero-tool 200), and (b)
+    silently collapsing to an empty tools array. This avoids three
+    edge holes: (a) ``{"type":"namespace","tools":[]}`` + hosted →
+    tools=[] after normalize (silent zero-tool 200), (b)
     ``{"type":"namespace","tools":["bad-string"]}`` → non-dict children
-    silently discarded instead of surfacing the bad shape.
+    silently discarded instead of surfacing the bad shape, and (c)
+    ``{"type":"namespace","tools":[{"type":"web_search"}]}`` → hosted
+    child flattens out and then the codex-fingerprint drop-hosted step
+    removes it too, so the invalid request becomes an empty success.
+    Codex's real ``multi_agent_v1`` group only ever contains function
+    tools, so this stricter contract matches its actual wire format.
     """
     if not tools:
         return
@@ -186,8 +192,12 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
         isinstance(t, dict) and t.get("type") == "namespace" for t in tools
     )
 
-    # Pass 1 — flatten namespaces. Preserve malformed / empty shapes so
-    # validate can 400 them instead of silently discarding.
+    # Pass 1 — flatten namespaces. Preserve malformed / empty / mixed-
+    # child shapes so validate can 400 them instead of silently
+    # discarding. Only flatten a namespace when EVERY child is a dict
+    # with canonical ``type == "function"`` — otherwise a hosted-typed
+    # child would silently flow through the drop-hosted step below and
+    # collapse the tools list.
     flattened: list = []
     for t in tools:
         if isinstance(t, dict) and t.get("type") == "namespace":
@@ -195,11 +205,16 @@ def normalize_responses_tool_types(tools: list[dict] | None) -> None:
             if (
                 isinstance(sub_tools, list)
                 and sub_tools
-                and all(isinstance(sub, dict) for sub in sub_tools)
+                and all(
+                    isinstance(sub, dict)
+                    and _canonicalize_tool_type(sub.get("type")) == "function"
+                    for sub in sub_tools
+                )
             ):
                 flattened.extend(sub_tools)
                 continue
-            # Malformed / empty namespace → leave for validate.
+            # Malformed / empty / non-function-child namespace → leave
+            # for validate.
             flattened.append(t)
             continue
         flattened.append(t)

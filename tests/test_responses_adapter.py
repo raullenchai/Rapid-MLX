@@ -306,6 +306,54 @@ class TestNormalizeResponsesToolTypes:
         assert "namespace" in types
         assert "function" in types
 
+    def test_namespace_with_hosted_child_falls_through(self):
+        """Codex review round-4 case: ``{"type":"namespace","tools":
+        [{"type":"web_search"}]}`` must NOT be flattened. If the namespace
+        contains a hosted-typed child, the child would flow into the
+        codex-fingerprint drop-hosted pass and get removed silently, so
+        an invalid request (hosted tool wrapped in namespace) would
+        become an empty success. Fix: only flatten when EVERY child is
+        canonical ``type:function``; anything else preserves the
+        namespace for validate 400.
+        """
+        tools = [
+            {
+                "type": "namespace",
+                "name": "x",
+                "tools": [{"type": "web_search"}],
+            },
+        ]
+        normalize_responses_tool_types(tools)
+        # Namespace with a hosted-typed child preserved for validate.
+        # No silent flatten-then-drop.
+        assert [t.get("type") for t in tools] == ["namespace"]
+        with pytest.raises(Exception) as exc_info:
+            validate_responses_tool_types(tools)
+        assert "unsupported_tool_type" in str(exc_info.value)
+
+    def test_namespace_with_mixed_children_falls_through(self):
+        """Round-4 companion case: a namespace with one function child
+        and one hosted child (mixed) must ALSO fall through. Otherwise
+        the function child would flatten out and the hosted child would
+        be silently dropped by the fingerprint step. Only all-function
+        namespaces get flattened.
+        """
+        tools = [
+            {
+                "type": "namespace",
+                "name": "x",
+                "tools": [
+                    {"type": "function", "name": "f"},
+                    {"type": "file_search"},
+                ],
+            },
+        ]
+        normalize_responses_tool_types(tools)
+        assert [t.get("type") for t in tools] == ["namespace"]
+        with pytest.raises(Exception) as exc_info:
+            validate_responses_tool_types(tools)
+        assert "unsupported_tool_type" in str(exc_info.value)
+
 
 # ---------------------------------------------------------------------------
 # Tool-choice
