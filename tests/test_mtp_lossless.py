@@ -166,7 +166,14 @@ def _spec_decode_mtp_path(
     prompt: mx.array,
     max_tokens: int,
 ) -> list[int]:
-    """Run ``mtp_generate_step`` over a fresh mocked model."""
+    """Run ``mtp_generate_step`` over a fresh mocked model.
+
+    Pins ``disable_auto_k=True`` so the mocked backbone scripts (written
+    for chain-of-1 verify/bonus alternation) are not perturbed by the
+    0.9.13 EV depth controller's cross-test global state or its per-round
+    K∈{0,1} park/chain picks. The lossless emit-ordering contract this
+    file tests is orthogonal to the controller's K choice.
+    """
     from vllm_mlx.spec_decode.mtp.accept_counter import MTPAcceptCounter
     from vllm_mlx.spec_decode.mtp.generator import mtp_generate_step
 
@@ -179,6 +186,8 @@ def _spec_decode_mtp_path(
             model,
             max_tokens=max_tokens,
             accept_counter=counter,
+            disable_auto_k=True,
+            max_k=1,
         )
     ]
 
