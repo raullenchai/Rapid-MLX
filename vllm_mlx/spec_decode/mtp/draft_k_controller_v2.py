@@ -38,6 +38,7 @@ from __future__ import annotations
 import bisect
 import logging
 import threading
+from collections import deque
 
 logger = logging.getLogger(__name__)
 
@@ -96,6 +97,16 @@ DEFAULT_MAX_K = 3
 # right on prose. On coding/JSON where K=1 wins, the extra 3 rounds
 # per depth cost <100ms of setup — negligible against the tok/s gain.
 COST_SEED_MIN_SAMPLES = 4
+
+# Base cadence for the 0.9.13 starvation probe. Distinct from
+# ``DEPTH_PROBE_INTERVAL`` (which paces the outward probe over
+# [sel, sel+1]) because the starvation probe covers the FULL
+# [0, min(frontier+1, max_k)] band. Kept at the same base as the
+# outward probe (``4``) to match Ollama's tested cadence for cost-
+# refresh probes; doubles up to ``DEPTH_PROBE_INTERVAL_MAX`` on
+# every fire (fast throughput recovery once the cost EWMAs
+# converge), resets to base on any EV-pick shift.
+STARVATION_PROBE_INTERVAL = 4
 
 
 # ---------------------------------------------------------------------------
@@ -332,6 +343,40 @@ class DepthController:
         # implemented range (HACK-mode K∈{0,1}) and to enforce
         # ``--mtp-max-k``.
         self.max_k = max(0, max_k)
+        # ------------------------------------------------------------------
+        # 0.9.13 starvation-probe schedule (fix for K-lock at the max_k cap).
+        # ------------------------------------------------------------------
+        # Ollama's built-in outward probe (``_probe_since`` / ``_probe_interval``)
+        # picks ``min(sel + 1, frontier + 1, max_k)`` — when ``sel == max_k``
+        # and ``frontier >= max_k`` the probe clamps to ``sel`` and never
+        # fires. That is exactly the pathology parent measured on Gemma 4
+        # 12B 4bit: 92.7% of rounds locked at K=3 after bootstrap, with
+        # stale K=1 / K=2 cost estimates. Because cost is only refreshed
+        # for the K actually drafted, once the controller stops picking
+        # K∈{1,2} their cost EWMAs freeze at bootstrap values while K=3's
+        # keeps updating — the EV comparator's cost slope goes stale and
+        # can never flip back even if K=1 is now genuinely faster.
+        #
+        # Fix: a second, unconditional periodic probe that force-samples
+        # the least-recently-visited K in ``[0, min(frontier+1, max_k)]``.
+        # Interval starts at ``STARVATION_PROBE_INTERVAL=4`` (same base
+        # as the outward probe — Ollama's tested cadence) and doubles
+        # up to ``DEPTH_PROBE_INTERVAL_MAX=512`` on every probe (the
+        # exponential backoff for cost-refresh probes); it resets to
+        # the base whenever the underlying EV pick changes, giving the
+        # new selection a full interval to settle before we perturb it.
+        self._round_probe_counter = 0
+        self._round_probe_interval = STARVATION_PROBE_INTERVAL
+        # Last EV pick observed by the starvation probe (separate from
+        # ``_last_selected`` above, which tracks the outward-probe cadence).
+        self._round_probe_last_sel = 0
+        # Rolling window of the K's actually consumed by the target
+        # forward. Bounded at ``DEPTH_PROBE_INTERVAL_MAX`` so the memory
+        # footprint stays fixed regardless of run length; the argmin
+        # scan reads only the last ``_round_probe_interval`` entries.
+        self._recent_k_used: deque[int] = deque(maxlen=DEPTH_PROBE_INTERVAL_MAX)
+        # Diagnostics on starvation probes.
+        self.starvation_probe_count = 0
         # Diagnostics.
         self.park_count = 0
         self.round_count = 0
@@ -361,7 +406,13 @@ class DepthController:
         depth is recorded in ``self.scheduled`` for the next request's
         open to consume.
 
-        Mirrors Go ``depthController.next`` (`speculate_depth.go:58-88`).
+        Mirrors Go ``depthController.next`` (`speculate_depth.go:58-88`)
+        with one 0.9.13 addition: an unconditional starvation-probe pass
+        after the outward probe / EV pick that periodically force-samples
+        the least-recently-visited K, so a max_k-clamped controller can
+        still refresh stale K∈[0, frontier] cost estimates. See
+        ``_apply_starvation_probe`` and the ``_round_probe_*`` state
+        docstring in ``__init__`` for the rationale.
         """
         sel = self._selected()
         if sel != self._last_selected:
@@ -374,28 +425,116 @@ class DepthController:
 
         self._probe_since += 1
         depth: int
+        outward_probe_fired = False
         if self._probe_since >= self._probe_interval:
             self._probe_since = 0
             probe = min(sel + 1, self.frontier() + 1, self.max_k)
             if probe != sel:
                 self._probed = True
                 depth = probe
-                self.scheduled = depth
-                return depth
+                outward_probe_fired = True
 
-        # Seed a clean cost sample for every depth in [0, frontier+1]
-        # before judging by EV. Without this the controller stays at
-        # the one depth it can sit at without a transition (depth 0)
-        # and never learns that drafting pays on a deep-optimum model.
-        seed = self._cost_seed_depth()
-        if seed >= 0:
-            depth = seed
-        else:
-            depth = sel
+        if not outward_probe_fired:
+            # Seed a clean cost sample for every depth in [0, frontier+1]
+            # before judging by EV. Without this the controller stays at
+            # the one depth it can sit at without a transition (depth 0)
+            # and never learns that drafting pays on a deep-optimum model.
+            seed = self._cost_seed_depth()
+            if seed >= 0:
+                depth = seed
+            else:
+                depth = sel
+            # Enforce the hard cap.
+            depth = min(depth, self.max_k)
 
-        # Enforce the hard cap.
-        depth = min(depth, self.max_k)
+        # 0.9.13 starvation probe (applies after the outward probe / EV
+        # pick / bootstrap seed). See ``_apply_starvation_probe`` for
+        # rationale; safe to run every round because it is a no-op until
+        # its own counter overflows the interval.
+        depth = self._apply_starvation_probe(sel, depth)
+
         self.scheduled = depth
+        return depth
+
+    def _apply_starvation_probe(self, sel: int, depth: int) -> int:
+        """Periodic override that force-samples the least-recently-visited
+        K in ``[0, min(frontier+1, max_k)]``.
+
+        This is the 0.9.13 K-lock fix. Ollama's outward probe reaches
+        ``sel + 1``, which is a no-op at the ``max_k`` ceiling — leaving
+        the cost EWMAs for shallower K's frozen at bootstrap values
+        while K=max_k's EWMA keeps refreshing. The EV comparator then
+        never re-elects a shallower K even if it would now genuinely
+        win. This pass fires on a periodic cadence (base 4 rounds,
+        doubles up to 512, resets to base whenever the EV pick changes)
+        and overrides ``depth`` with the K having fewest recent
+        observations in the frontier-bounded window.
+
+        Ties break shallow (prefer K=0 then K=1 then K=2 ...) so the
+        cheaper K's get their cost refreshed first.
+
+        Args:
+            sel: the current EV pick (``self._selected()``) — used to
+                reset the interval when the EV optimum shifts.
+            depth: the depth already chosen by the outward probe / EV
+                pick / bootstrap seed. Returned unchanged when the
+                starvation probe is not firing this round.
+
+        Returns:
+            Overridden depth if the starvation probe fires and picks a
+            different K than ``depth``; else ``depth`` unchanged.
+        """
+        # Reset the cadence whenever the EV pick shifts — the new
+        # selection deserves a full interval of undisturbed operation
+        # before we perturb it with another probe.
+        if sel != self._round_probe_last_sel:
+            self._round_probe_interval = STARVATION_PROBE_INTERVAL
+            self._round_probe_counter = 0
+            self._round_probe_last_sel = sel
+
+        self._round_probe_counter += 1
+        if self._round_probe_counter < self._round_probe_interval:
+            return depth
+
+        # Probe cadence has elapsed — reset counter and pick the K in
+        # ``[0, min(frontier+1, max_k)]`` with the fewest samples in the
+        # most recent ``_round_probe_interval`` rounds.
+        self._round_probe_counter = 0
+        limit = min(self.frontier() + 1, self.max_k)
+        if limit <= 0:
+            # No range to explore beyond K=0; nothing to probe.
+            self._round_probe_interval = min(
+                self._round_probe_interval * 2, DEPTH_PROBE_INTERVAL_MAX
+            )
+            return depth
+
+        window_size = self._round_probe_interval
+        # Slice the last ``window_size`` entries. ``deque`` doesn't
+        # slice, so materialize the tail into a list.
+        if len(self._recent_k_used) > 0:
+            if len(self._recent_k_used) <= window_size:
+                window = list(self._recent_k_used)
+            else:
+                window = list(self._recent_k_used)[-window_size:]
+        else:
+            window = []
+
+        counts: dict[int, int] = {n: 0 for n in range(0, limit + 1)}
+        for k in window:
+            if k in counts:
+                counts[k] += 1
+
+        # Argmin over counts, tie-break by lowest K (cheap first).
+        probe_k = min(counts.keys(), key=lambda n: (counts[n], n))
+        # Only override if the probe would pick a genuinely different K.
+        # Even when probe_k == depth we still consume this probe slot
+        # (interval doubles) so the cadence doesn't wedge on a no-op.
+        self._round_probe_interval = min(
+            self._round_probe_interval * 2, DEPTH_PROBE_INTERVAL_MAX
+        )
+        if probe_k != depth:
+            self.starvation_probe_count += 1
+            return probe_k
         return depth
 
     def record(
@@ -422,6 +561,9 @@ class DepthController:
         if k_used == 0:
             self.park_count += 1
         self.k_histogram[k_used] = self.k_histogram.get(k_used, 0) + 1
+        # Track the K just consumed in the starvation-probe rolling window.
+        # The deque is bounded so no eviction bookkeeping is required.
+        self._recent_k_used.append(k_used)
         if wall_ms > 0.0:
             self.cost.observe(k_used, wall_ms)
         if accepts:
@@ -484,7 +626,9 @@ class DepthController:
             f"max_k={self.max_k} rounds={self.round_count} "
             f"parks={self.park_count} "
             f"cost=[{self.cost.sample_string()}] "
-            f"probe_interval={self._probe_interval}"
+            f"probe_interval={self._probe_interval} "
+            f"starve_interval={self._round_probe_interval} "
+            f"starve_probes={self.starvation_probe_count}"
         )
 
 

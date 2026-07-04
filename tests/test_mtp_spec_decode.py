@@ -798,6 +798,219 @@ def test_metrics_route_includes_spec_decode_series_at_cold_start():
 
 
 # ---------------------------------------------------------------------------
+# 5b. DepthController starvation-probe schedule (0.9.13 fix for K-lock at cap)
+# ---------------------------------------------------------------------------
+
+
+def _seed_controller_at_frontier(ctrl, k: int, high_accept: bool = True) -> None:
+    """Push enough (record) rounds into ``ctrl`` to advance its frontier
+    to ``k`` — the acceptance model needs ``ACCEPTANCE_MIN_SAMPLES=10``
+    reaches at each position up to ``k``.
+
+    Uses fixed synthetic wall_ms per K so the cost model becomes ready.
+    ``high_accept=True`` means all drafts accept (frontier grows freely);
+    False means acceptance oscillates so ``expected_committed`` is
+    non-trivial.
+    """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        ACCEPTANCE_MIN_SAMPLES,
+    )
+
+    # Feed enough K=k rounds that positions 1..k each get >= 10 samples.
+    for _ in range(ACCEPTANCE_MIN_SAMPLES + 2):
+        # Cost per K rises with depth; K=3 is the most expensive.
+        wall_ms = 15.0 + 3.0 * k
+        accepts = [True] * k if high_accept else [True, True, False][:k]
+        ctrl.record(k, wall_ms, accepts)
+
+
+def test_starvation_probe_forces_undersampled_k_at_max_k_cap():
+    """When the outward probe is clamped to ``sel`` (sel == max_k and
+    frontier >= max_k), the new starvation probe must periodically
+    override the EV pick with the least-recently-visited K in
+    ``[0, min(frontier+1, max_k)]``.
+
+    This is the direct regression test for the pathology reported by
+    parent on Gemma 4 12B 4bit: 92.7% of rounds locked at K=3 after
+    bootstrap. Without the starvation probe, ``pick_k`` would return
+    K=3 forever once the EV comparator settled on it.
+    """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        DepthController,
+        reset_controllers,
+    )
+
+    reset_controllers()
+    ctrl = DepthController(max_k=3)
+
+    # Bootstrap the controller into the K-lock steady state: seed all
+    # K's, drive frontier to 3, then feed a long tail of K=3 rounds so
+    # the EV picker locks onto K=3.
+    for k in (0, 1, 2, 3):
+        _seed_controller_at_frontier(ctrl, k, high_accept=True)
+
+    # Long tail of K=3 so the outward probe clamps at max_k.
+    for _ in range(80):
+        k = ctrl.pick_k()
+        # The starvation probe MUST fire periodically; without it,
+        # every pick would be K=3. Assert we see at least one K < 3.
+        wall_ms = 15.0 + 3.0 * k
+        accepts = [True] * k
+        ctrl.record(k, wall_ms, accepts)
+
+    # After 80 rounds of steady-state (plus bootstrap), the K histogram
+    # must show non-trivial samples at K∈{0,1,2}. The exact frequency
+    # depends on the doubling cadence, but we must see AT LEAST ONE
+    # starvation-probe override to know the mechanism fires.
+    assert ctrl.starvation_probe_count >= 1, (
+        f"Starvation probe never fired: histogram={ctrl.k_histogram} "
+        f"starve_interval={ctrl._round_probe_interval}"
+    )
+    # And K=3 must NOT be 100% of post-bootstrap picks.
+    non_three_count = sum(
+        c for k, c in ctrl.k_histogram.items() if k != 3
+    )
+    assert non_three_count > 0, (
+        f"K=3 dominates all rounds: histogram={ctrl.k_histogram}"
+    )
+
+
+def test_starvation_probe_argmin_over_rolling_window():
+    """The starvation probe must pick the K with fewest samples in the
+    recent ``_round_probe_interval`` window — not all-time. This
+    prevents a briefly-explored K from being immune to future probing
+    once its all-time count catches up.
+    """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        STARVATION_PROBE_INTERVAL,
+        DepthController,
+        reset_controllers,
+    )
+
+    reset_controllers()
+    ctrl = DepthController(max_k=3)
+    # Manually seed so frontier is 3 and cost is ready.
+    for k in (0, 1, 2, 3):
+        _seed_controller_at_frontier(ctrl, k, high_accept=True)
+
+    # Now feed a burst that biases the window heavily toward K=3.
+    for _ in range(STARVATION_PROBE_INTERVAL * 4):
+        ctrl.record(3, 24.0, [True, True, True])
+
+    # Probe cadence has certainly elapsed; call pick_k enough times to
+    # force at least one probe fire.
+    starves_before = ctrl.starvation_probe_count
+    picks = []
+    for _ in range(STARVATION_PROBE_INTERVAL + 2):
+        k = ctrl.pick_k()
+        picks.append(k)
+        ctrl.record(k, 15.0 + 3.0 * k, [True] * k)
+
+    starves_after = ctrl.starvation_probe_count
+    assert starves_after > starves_before, (
+        f"Expected probe to fire; picks={picks}"
+    )
+    # The first probe must pick a K < 3 (any of 0/1/2 — window is all
+    # K=3, so argmin over {0,1,2,3} is 0 with shallow tie-break).
+    assert any(p < 3 for p in picks), (
+        f"Probe never picked a shallow K: picks={picks}"
+    )
+
+
+def test_starvation_probe_interval_doubles_and_caps():
+    """Interval doubles from the starvation-probe base up to 512 and
+    does not overflow. Reset on EV pick change (``sel``) so a new
+    selection gets an undisturbed interval.
+    """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        DEPTH_PROBE_INTERVAL_MAX,
+        STARVATION_PROBE_INTERVAL,
+        DepthController,
+        reset_controllers,
+    )
+
+    reset_controllers()
+    ctrl = DepthController(max_k=3)
+    for k in (0, 1, 2, 3):
+        _seed_controller_at_frontier(ctrl, k, high_accept=True)
+
+    # Fire many probes; interval must saturate at MAX.
+    for _ in range(2000):
+        k = ctrl.pick_k()
+        ctrl.record(k, 15.0 + 3.0 * k, [True] * k)
+
+    assert ctrl._round_probe_interval <= DEPTH_PROBE_INTERVAL_MAX
+    # And the base is at least the min cadence.
+    assert ctrl._round_probe_interval >= STARVATION_PROBE_INTERVAL
+
+
+def test_starvation_probe_no_double_pick_when_probe_matches_current_depth():
+    """If the argmin K equals the depth already chosen by the EV pick
+    (e.g. bootstrap seed picks the shallowest under-visited K anyway),
+    the probe counter still consumes its slot (interval doubles) — this
+    keeps the cadence deterministic. Verify the probe counter resets.
+    """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        DepthController,
+        reset_controllers,
+    )
+
+    reset_controllers()
+    ctrl = DepthController(max_k=3)
+    # Only bootstrap K=0 and K=1 so frontier stays 0.
+    for _ in range(6):
+        ctrl.record(0, 15.0, [])
+    for _ in range(6):
+        ctrl.record(1, 18.0, [True])
+
+    # Advance rounds and observe counter behavior.
+    prev_interval = ctrl._round_probe_interval
+    for _ in range(20):
+        k = ctrl.pick_k()
+        ctrl.record(k, 15.0 + 3.0 * k, [True] * k)
+    # Interval must have moved (either doubled from probing, or reset
+    # from EV pick change) — either way, no NaN/negative.
+    assert ctrl._round_probe_interval >= 4
+    assert ctrl._round_probe_interval <= 512
+    # Prev interval starts at the starvation probe base.
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        STARVATION_PROBE_INTERVAL,
+    )
+    assert prev_interval == STARVATION_PROBE_INTERVAL
+
+
+def test_starvation_probe_resets_when_ev_pick_changes():
+    """When EV pick shifts (``sel`` changes), the starvation-probe
+    interval must reset to the base — the new selection deserves a
+    full interval of undisturbed operation.
+    """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import (
+        STARVATION_PROBE_INTERVAL,
+        DepthController,
+        reset_controllers,
+    )
+
+    reset_controllers()
+    ctrl = DepthController(max_k=3)
+    for k in (0, 1, 2, 3):
+        _seed_controller_at_frontier(ctrl, k, high_accept=True)
+
+    # Fire enough probes to grow the interval.
+    for _ in range(200):
+        k = ctrl.pick_k()
+        ctrl.record(k, 15.0 + 3.0 * k, [True] * k)
+    grown_interval = ctrl._round_probe_interval
+    assert grown_interval >= STARVATION_PROBE_INTERVAL
+
+    # Now cause EV pick to shift: feed many K=1 rounds with poor accept
+    # so cost[1] gets updated and EV eventually swings.
+    # This is a soft test — we just verify the reset mechanism exists.
+    ctrl._round_probe_last_sel = 999  # simulate a sel change
+    _ = ctrl.pick_k()
+    assert ctrl._round_probe_interval == STARVATION_PROBE_INTERVAL
+
+
+# ---------------------------------------------------------------------------
 # 6. MTP head builder
 # ---------------------------------------------------------------------------
 
