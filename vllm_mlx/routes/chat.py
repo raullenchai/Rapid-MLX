@@ -96,6 +96,7 @@ from ..service.helpers import (
     enable_thinking_warning_header,
     enforce_context_length_for_messages,
     get_engine,
+    maybe_apply_reasoning_effort,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
     repair_messages_fit_context,
@@ -1927,6 +1928,20 @@ async def _create_chat_completion_impl(
             )
         if json_instruction:
             messages = _inject_json_instruction(messages, json_instruction)
+
+    # #448 — translate the OpenAI ``reasoning_effort`` knob into rapid-mlx's
+    # native controls. MUST run BEFORE the tool auto-disable below so a
+    # ``reasoning_effort="none"`` request registers its enable_thinking
+    # preference first (the tool auto-disable then no-ops on it) and a
+    # graded value lands its ``reasoning_max_tokens`` cap from one source.
+    if maybe_apply_reasoning_effort(request):
+        logger.info(
+            "#448 reasoning_effort=%s translated on /v1/chat/completions "
+            "(none→enable_thinking=False; minimal/low/medium/high→"
+            "reasoning_max_tokens tier). Explicit client enable_thinking / "
+            "reasoning_max_tokens always wins.",
+            request.reasoning_effort,
+        )
 
     # R12-T1F (0.8.16 operator dogfood) — auto-disable thinking when
     # ``tools`` is non-empty and the client did NOT pin a thinking

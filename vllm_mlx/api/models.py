@@ -489,6 +489,23 @@ _VALID_REASONING_EFFORTS: tuple[str, ...] = (
     "high",
 )
 
+#: Route-layer translation of the graded OpenAI ``reasoning_effort`` values
+#: into a concrete ``reasoning_max_tokens`` cap, applied by
+#: ``service.helpers.maybe_apply_reasoning_effort`` (issue #448). ``none`` is
+#: intentionally absent — it maps to ``enable_thinking=False`` (suppress the
+#: ``<think>`` segment entirely), NOT to a cap. The graded magnitudes reuse
+#: the Anthropic surface's ``ANTHROPIC_EFFORT_TO_REASONING_MAX_TOKENS`` tiers
+#: (low=512, medium=2048, high=8192) so the same effort name yields the same
+#: reasoning budget regardless of which API dialect it arrived on; ``minimal``
+#: (OpenAI-only, gpt-5 era) sits one tier below ``low``. Module-scoped so
+#: tests import + assert against the same table the helper uses.
+OPENAI_REASONING_EFFORT_TO_MAX_TOKENS: dict[str, int] = {
+    "minimal": 256,
+    "low": 512,
+    "medium": 2048,
+    "high": 8192,
+}
+
 
 def _validate_reasoning_effort(v):
     """Pin ``reasoning_effort`` to the OpenAI-spec closed set.
@@ -1576,11 +1593,15 @@ class ChatCompletionRequest(BaseModel):
     # Validated against ``_VALID_REASONING_EFFORTS`` via the
     # ``_validate_reasoning_effort_field`` validator below so int / list
     # / null / case-variant / garbage strings produce a clean 400.
-    # Today the value is accepted-but-not-yet-translated at the engine
-    # layer (a follow-up wires ``"none"`` through to ``enable_thinking
-    # =False`` and ``low/medium/high`` to ``reasoning_max_tokens``
-    # tiers); the schema-layer validation is the hard surface so SDK
-    # clients see the contract round-trip.
+    # The value is translated at the route layer by
+    # ``service.helpers.maybe_apply_reasoning_effort`` (issue #448):
+    # ``"none"`` → ``chat_template_kwargs.enable_thinking=False`` (suppress
+    # the ``<think>`` segment) and ``minimal/low/medium/high`` →
+    # ``reasoning_max_tokens`` via ``OPENAI_REASONING_EFFORT_TO_MAX_TOKENS``.
+    # An explicit ``enable_thinking`` / ``reasoning_max_tokens`` the client
+    # already set always wins over the effort translation. The schema-layer
+    # validation stays the hard surface so SDK clients see the contract
+    # round-trip even for surfaces that do not run the translation.
     reasoning_effort: str | None = None
     # Number of completions (only n=1 supported). F-155: the route used
     # to reject ``n > 1`` only, so ``n=0`` / ``n=-1`` slipped through

@@ -81,6 +81,7 @@ from ..service.helpers import (
     _apply_reasoning_cutoff_notice,
     _build_usage,
     _check_admission_or_503,
+    _client_signalled_reasoning_intent,
     _disconnect_guard,
     _effective_enable_thinking,
     _extract_thinking_from_request,
@@ -96,6 +97,7 @@ from ..service.helpers import (
     build_extended_sampling_kwargs,
     enforce_context_length_for_messages,
     get_engine,
+    maybe_apply_reasoning_effort,
     maybe_auto_disable_thinking_for_casual_chat,
     maybe_auto_disable_thinking_for_tools,
     repair_messages_fit_context,
@@ -534,7 +536,18 @@ async def create_response(request: Request):
             # below, ``engine.chat`` / ``generate_with_schema``,
             # ``_finalize_content_and_reasoning``) sees the same
             # resolved choice.
-            if _extract_thinking_from_request(openai_request) is None:
+            # #448 codex #1009 r3 MAJOR: also step aside when the client
+            # signalled explicit reasoning intent (reasoning_effort /
+            # reasoning_max_tokens / native reasoning.effort — all collapsed
+            # onto ``openai_request`` by the adapter). Symmetric with the
+            # tool + casual gates: a client asking for reasoning has opted
+            # into the budget risk, and the ``reasoning_max_tokens`` cap
+            # keeps it bounded. Without this, a strict-json request with
+            # ``reasoning_effort="high"`` got thinking force-disabled before
+            # ``maybe_apply_reasoning_effort`` set its (now-moot) cap.
+            if _extract_thinking_from_request(
+                openai_request
+            ) is None and not _client_signalled_reasoning_intent(openai_request):
                 existing_ctk = openai_request.chat_template_kwargs or {}
                 # Merge rather than replace so any non-thinking keys
                 # the client passed survive (forward-compat).
@@ -560,6 +573,21 @@ async def create_response(request: Request):
                     "inside <think>. Set chat_template_kwargs."
                     "enable_thinking=true to opt back in."
                 )
+
+        # #448 — translate the OpenAI ``reasoning_effort`` knob into
+        # rapid-mlx's native controls. MUST run BEFORE the tool auto-
+        # disable below so a ``reasoning_effort="none"`` request registers
+        # its enable_thinking preference first (the tool auto-disable then
+        # no-ops on it) and a graded value lands its reasoning_max_tokens
+        # cap from one source. Explicit client knobs always win.
+        if maybe_apply_reasoning_effort(openai_request):
+            logger.info(
+                "#448 reasoning_effort=%s translated on /v1/responses "
+                "(none→enable_thinking=False; minimal/low/medium/high→"
+                "reasoning_max_tokens tier). Explicit client enable_thinking "
+                "/ reasoning_max_tokens always wins.",
+                openai_request.reasoning_effort,
+            )
 
         # R12-T1F (0.8.16 operator dogfood) — auto-disable thinking
         # when ``tools`` is non-empty and the client did NOT pin a

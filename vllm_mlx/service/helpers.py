@@ -36,6 +36,7 @@ from ..api.constants import (  # noqa: F401
     RESCUE_TAIL_LENGTH,
 )
 from ..api.models import (
+    OPENAI_REASONING_EFFORT_TO_MAX_TOKENS,
     CompletionTokensDetails,
     FunctionCall,
     PromptTokensDetails,
@@ -1823,6 +1824,14 @@ def maybe_auto_disable_thinking_for_tools(request) -> bool:
         return False
     if _extract_thinking_from_request(request) is not None:
         return False
+    # Explicit reasoning intent (``reasoning_effort`` / ``reasoning_max_tokens``
+    # / native ``reasoning={"effort": ...}``) is a client "I want reasoning"
+    # signal — symmetric with the casual-chat gate. Forcing thinking off here
+    # would make ``reasoning_effort="high"`` a no-op on tool calls (codex
+    # #1009 r1 MAJOR); the request's own ``reasoning_max_tokens`` cap keeps
+    # the tool-call token budget bounded, so keep the model's reasoning.
+    if _client_signalled_reasoning_intent(request):
+        return False
     existing_ctk = getattr(request, "chat_template_kwargs", None) or {}
     # Merge rather than replace so any non-thinking keys the client
     # passed (forward-compat, e.g. future kwargs the chat template
@@ -1834,6 +1843,123 @@ def maybe_auto_disable_thinking_for_tools(request) -> bool:
     # ``enable_thinking_warning_header`` does NOT fire spuriously on
     # non-qwen3 parsers — the server injected the flag, not the client.
     _mark_thinking_auto_disabled(request)
+    return True
+
+
+def _client_signalled_reasoning_intent(*sources) -> bool:
+    """True iff any source carries an explicit reasoning-intent signal:
+    ``reasoning_max_tokens``, top-level ``reasoning_effort``, or the native
+    Responses ``reasoning={"effort": <non-null>}`` dict.
+
+    Single source of truth shared by the tool + casual-chat auto-disable
+    gates so "the client asked for reasoning" is detected identically across
+    surfaces. ``getattr`` with default ``None`` keeps it tolerant of shapes
+    that don't declare every field (SimpleNamespace shims, future surfaces).
+    ``None`` sources are skipped so callers can splat an optional
+    ``extra_signals`` without a guard.
+    """
+    for src in sources:
+        if src is None:
+            continue
+        if getattr(src, "reasoning_max_tokens", None) is not None:
+            return True
+        if getattr(src, "reasoning_effort", None) is not None:
+            return True
+        # ``reasoning`` is the native Responses-API shape. Gate on a
+        # NON-NULL ``effort`` only: ``reasoning={"effort": null}`` and
+        # ``reasoning={"summary": "auto"}`` are not reasoning-intent signals
+        # (codex r1 MEDIUM #3 on the casual gate). Defensive isinstance so a
+        # malformed payload that survived schema validation cannot crash.
+        reasoning = getattr(src, "reasoning", None)
+        if isinstance(reasoning, dict) and reasoning.get("effort") is not None:
+            return True
+    return False
+
+
+def maybe_apply_reasoning_effort(request) -> bool:
+    """Translate the OpenAI ``reasoning_effort`` knob into rapid-mlx's
+    native reasoning controls at the route layer (issue #448).
+
+    The schema layer (``_validate_reasoning_effort_field`` on
+    ``ChatCompletionRequest`` / ``ResponsesRequest``) only *validates*
+    ``reasoning_effort`` against the OpenAI-spec closed set
+    (``none / minimal / low / medium / high``) — it deliberately does NOT
+    translate, so garbage 400s at parse time without the schema depending
+    on engine internals. This helper is that translation, run once per
+    request from the chat / responses routes:
+
+      * ``reasoning_effort="none"`` → merge
+        ``chat_template_kwargs={"enable_thinking": False}`` so a hybrid-
+        thinking model (qwen3, glm4, deepseek_r1, …) stops emitting a
+        ``<think>`` segment. This is the load-bearing fix for #448: an
+        agent built against the OpenAI spec that passed
+        ``reasoning_effort="none"`` for concise answers previously got
+        reasoning anyway, blew ``max_tokens`` mid-think, and had
+        ``REASONING_CUTOFF_SENTINEL`` injected into ``content`` — corrupting
+        the field it re-feeds verbatim into the next turn. Suppressing the
+        reasoning at the source means the truncation scenario never arises.
+      * ``reasoning_effort in {minimal, low, medium, high}`` → set
+        ``request.reasoning_max_tokens`` to the matching tier from
+        ``OPENAI_REASONING_EFFORT_TO_MAX_TOKENS`` (a subtractive cap on how
+        long the model may think before answering).
+
+    Precedence — for each path the client's explicit, more-specific native
+    knob on the SAME dimension wins (mirrors
+    ``maybe_auto_disable_thinking_for_tools``):
+
+      * ``none`` controls the on/off dimension, so it yields to an explicit
+        ``enable_thinking`` preference (top-level field or
+        ``chat_template_kwargs``) — ``enable_thinking=true`` alongside
+        ``reasoning_effort="none"`` is contradictory and the native field
+        wins. A ``reasoning_max_tokens`` cap is orthogonal to ``none``:
+        thinking-off makes the cap moot, so ``none`` still applies (it does
+        NOT yield to a cap).
+      * the graded path controls the budget dimension, so it yields to an
+        explicit ``reasoning_max_tokens`` cap and does not touch
+        ``enable_thinking``.
+
+    MUST run BEFORE ``maybe_auto_disable_thinking_for_tools`` so a
+    ``reasoning_effort="none"`` request registers its ``enable_thinking``
+    preference first and the tool auto-disable then no-ops on it — one
+    resolved source of truth for the engine kwarg.
+
+    Returns ``True`` iff a translation was applied (for the route's
+    structured log line); ``False`` when ``reasoning_effort`` is unset or
+    the client's explicit knob took precedence.
+    """
+    effort = getattr(request, "reasoning_effort", None)
+    if not effort:
+        return False
+
+    if effort == "none":
+        # Only inject when the client did not pin thinking explicitly —
+        # the native ``enable_thinking`` field/kwarg wins a conflict.
+        if _extract_thinking_from_request(request) is not None:
+            return False
+        ctk = getattr(request, "chat_template_kwargs", None)
+        merged_ctk = dict(ctk) if isinstance(ctk, dict) else {}
+        merged_ctk["enable_thinking"] = False
+        request.chat_template_kwargs = merged_ctk
+        # The flag was server-injected (client set ``reasoning_effort``,
+        # not ``chat_template_kwargs.enable_thinking``), so suppress the
+        # L-05 warning header the same way the auto-disable family does.
+        _mark_thinking_auto_disabled(request)
+        return True
+
+    # Graded effort (minimal/low/medium/high) → ``reasoning_max_tokens``
+    # tier (a subtractive cap on how long the model may think), unless the
+    # client already set an explicit cap (which wins). Graded effort does
+    # NOT force ``enable_thinking`` on — it is itself a reasoning-intent
+    # signal that the tool / casual-chat auto-disable gates recognize (via
+    # ``_client_signalled_reasoning_intent``) and step aside for, so a
+    # thinking-capable model keeps its template-default reasoning instead
+    # of being silently turned off on tool calls (codex #1009 r1 MAJOR).
+    if getattr(request, "reasoning_max_tokens", None) is not None:
+        return False
+    cap = OPENAI_REASONING_EFFORT_TO_MAX_TOKENS.get(effort)
+    if cap is None:
+        return False
+    request.reasoning_max_tokens = cap
     return True
 
 
@@ -1980,31 +2106,17 @@ def maybe_auto_disable_thinking_for_casual_chat(request, *, extra_signals=None) 
     # ``reasoning={"effort":"low"}`` on the ResponsesRequest
     # short-circuits the gate even though the field never gets
     # forwarded onto the materialized ChatCompletionRequest.
-    sources = [request]
-    if extra_signals is not None and extra_signals is not request:
-        sources.append(extra_signals)
-    for src in sources:
-        if getattr(src, "reasoning_max_tokens", None) is not None:
-            return False
-        if getattr(src, "reasoning_effort", None) is not None:
-            return False
-        # ``reasoning`` is the native Responses-API shape
-        # (``{"effort": "low|medium|high", ...}``). Codex r1 MEDIUM #3:
-        # gate specifically on a NON-NULL ``effort`` rather than "any
-        # non-empty dict". The Responses spec allows
-        # ``reasoning={"effort": null}`` (the schema's
-        # ``_validate_reasoning_dict_effort`` explicitly lets ``None``
-        # through) and ``reasoning={"summary": "auto"}`` (summary is a
-        # SDK convenience flag, NOT a reasoning-intent signal). Pre-fix
-        # both shapes were treated as opt-in and skipped the auto-
-        # disable, leaving the default-thinking-ON budget-burn intact.
-        # Now only an explicit non-null ``effort`` counts as
-        # "client wants reasoning". Defensive ``isinstance(dict)`` so a
-        # malformed payload that survived schema validation does not
-        # silently lose the gate.
-        reasoning = getattr(src, "reasoning", None)
-        if isinstance(reasoning, dict) and reasoning.get("effort") is not None:
-            return False
+    # Explicit reasoning intent through any of the documented signals
+    # (``reasoning_max_tokens`` / top-level ``reasoning_effort`` / native
+    # ``reasoning={"effort": <non-null>}``). ``extra_signals`` (the optional
+    # secondary request shape) is consulted for the SAME field set so a
+    # /v1/responses caller that pinned ``reasoning={"effort":"low"}`` on the
+    # ResponsesRequest short-circuits the gate even though the field never
+    # gets forwarded onto the materialized ChatCompletionRequest. Detection
+    # is shared with the tool gate via ``_client_signalled_reasoning_intent``
+    # so both surfaces agree on what "client wants reasoning" means.
+    if _client_signalled_reasoning_intent(request, extra_signals):
+        return False
     existing_ctk = getattr(request, "chat_template_kwargs", None) or {}
     # Merge rather than replace so any non-thinking keys the client
     # passed (forward-compat, e.g. future kwargs the chat template

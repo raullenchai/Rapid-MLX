@@ -301,6 +301,32 @@ def _submitted_tool_names(tools: list[dict] | None) -> set[str]:
     return names
 
 
+def _resolve_reasoning_effort(request: ResponsesRequest) -> str | None:
+    """Collapse the two Responses-spec effort surfaces into the single
+    chat-shape ``reasoning_effort`` string that
+    ``service.helpers.maybe_apply_reasoning_effort`` reads (#448).
+
+    Precedence (first wins):
+      1. top-level ``reasoning_effort`` (chat-completions shape some SDKs
+         reuse on this surface — closed-set validated at the schema layer).
+      2. native ``reasoning={"effort": ...}`` dict (the canonical Responses
+         shape). Only a non-null string counts; ``{"effort": null}`` /
+         ``{"summary": "auto"}`` carry no effort signal.
+      3. ``None`` — no effort signalled.
+
+    Both surfaces already passed the ResponsesRequest ``_validate_reasoning_
+    effort_*`` validators, so no re-validation is needed here.
+    """
+    if request.reasoning_effort is not None:
+        return request.reasoning_effort
+    reasoning = request.reasoning
+    if isinstance(reasoning, dict):
+        effort = reasoning.get("effort")
+        if isinstance(effort, str) and effort:
+            return effort
+    return None
+
+
 def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
     """
     Convert a Responses-API request to an OpenAI Chat Completions request.
@@ -388,6 +414,15 @@ def responses_to_openai(request: ResponsesRequest) -> ChatCompletionRequest:
         # path used by /v1/chat/completions and /v1/messages applies on
         # /v1/responses (upstream vLLM PR #20859 backport).
         reasoning_max_tokens=request.reasoning_max_tokens,
+        # #448 — forward ``reasoning_effort`` so the route-layer
+        # ``maybe_apply_reasoning_effort`` translation fires on
+        # /v1/responses too. The Responses spec expresses effort two
+        # ways (top-level ``reasoning_effort`` OR nested
+        # ``reasoning={"effort": ...}``); ``_resolve_reasoning_effort``
+        # collapses them to the single chat-shape field the helper reads.
+        # Without this the materialized ChatCompletionRequest carried
+        # None and the translation silently no-op'd on this surface.
+        reasoning_effort=_resolve_reasoning_effort(request),
         # H-11: forward the per-request seed so the Responses surface
         # honours determinism the same way /v1/chat/completions does.
         # Without this, the seed declared on ResponsesRequest would
