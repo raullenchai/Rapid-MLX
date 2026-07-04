@@ -1054,7 +1054,7 @@ harness/                 # Regression baselines + thresholds
 | Technique | Expected Gain | Status |
 |-----------|---------------|--------|
 | [DFlash](https://arxiv.org/abs/2602.06036) — block-diffusion drafter, single-user | 1.3–2× decode (workload-dependent) | Shipping, opt-in (`--enable-dflash`, `[dflash]` extra; qwen3.5-27b-8bit, qwen3.6-27b-8bit) |
-| [DDTree](https://arxiv.org/abs/2604.12989) — DFlash draft-tree verification, single-user | TBD on rapid-mlx 9B gate | Experimental (`--enable-ddtree`) |
+| [DDTree](https://arxiv.org/abs/2604.12989) — DFlash draft-tree verification, single-user | TBD on rapid-mlx 9B gate | Experimental (`--speculative-config '{"method":"ddtree"}'`; `--enable-ddtree` compatibility shorthand) |
 | [SuffixDecoding](https://arxiv.org/abs/2411.04975) — drafter-free n-gram speculative | 1.1–1.5× decode | Shipping (`--suffix-decoding`, per-model tier sweep ongoing) |
 | MTP — Multi-Token Prediction head | 1.4–1.7× decode | Shipping, opt-in (`--enable-mtp`, MTP-trained checkpoints); per-workload auto-tune of `--mtp-num-draft-tokens` landing in the 0.9.1x line |
 | [EAGLE-3](https://arxiv.org/abs/2503.01840) — feature-level draft on Metal | 3–6.5× decode | Not started |

@@ -3,8 +3,9 @@
 
 DDTree builds a draft tree from DFlash draft-model logits and verifies
 multiple candidate continuations per target-model pass. The MVP keeps it
-behind an explicit ``--enable-ddtree`` flag and a dedicated single-user
-server, using the external ``dtree_mlx`` package as the runtime boundary.
+behind explicit ``--speculative-config {"method":"ddtree"}`` opt-in and a
+dedicated single-user server, using the external ``dtree_mlx`` package as the
+runtime boundary.
 """
 
 from .eligibility import DDTreeUnavailable, check

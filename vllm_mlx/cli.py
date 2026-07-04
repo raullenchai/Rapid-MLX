@@ -6536,7 +6536,7 @@ Examples:
         help=(
             "vLLM-style speculative decoding JSON config. This frontend "
             "parses method/model/num_speculative_tokens now. DDTree is "
-            "available with '{\"method\":\"ddtree\"}'; existing DFlash, "
+            'available with \'{"method":"ddtree"}\'; existing DFlash, '
             "MTP, and SuffixDecoding backends keep their legacy flags "
             "until they migrate to this surface."
         ),
