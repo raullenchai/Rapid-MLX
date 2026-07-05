@@ -304,6 +304,87 @@ def test_build_app_healthz_works_while_runtime_loads() -> None:
     assert r.json()["ready"] is True
 
 
+def test_build_app_honors_api_key_and_model_name() -> None:
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.config import reset_config
+    from vllm_mlx.speculative.ddtree.server import _build_app
+
+    reset_config()
+    try:
+        app = _build_app(
+            runtime=_fake_runtime(),
+            served_model_name="qwen3.5-9b-8bit",
+            default_max_tokens=64,
+            cors_origins=["*"],
+            api_key="secret",
+        )
+        client = TestClient(app)
+
+        r = client.post(
+            "/v1/chat/completions",
+            json={
+                "model": "qwen3.5-9b-8bit",
+                "messages": [{"role": "user", "content": "2+2?"}],
+            },
+        )
+        assert r.status_code == 401
+
+        r = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer secret"},
+            json={
+                "model": "other-model",
+                "messages": [{"role": "user", "content": "2+2?"}],
+            },
+        )
+        assert r.status_code == 404
+        assert "other-model" in r.json()["error"]["message"]
+
+        r = client.post(
+            "/v1/chat/completions",
+            headers={"Authorization": "Bearer secret"},
+            json={
+                "model": "qwen3.5-9b-8bit",
+                "messages": [{"role": "user", "content": "2+2?"}],
+            },
+        )
+        assert r.status_code == 200
+    finally:
+        reset_config()
+
+
+def test_build_app_runtime_load_failure_is_sanitized() -> None:
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.ddtree.server import _build_app
+
+    future: concurrent.futures.Future = concurrent.futures.Future()
+    future.set_exception(RuntimeError("secret local path /tmp/model-cache"))
+    app = _build_app(
+        runtime_future=future,
+        served_model_name="qwen3.5-9b-8bit",
+        default_max_tokens=64,
+        cors_origins=["*"],
+    )
+    client = TestClient(app)
+
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.json()["status"] == "error"
+    assert "secret local path" not in r.text
+
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5-9b-8bit",
+            "messages": [{"role": "user", "content": "2+2?"}],
+        },
+    )
+    assert r.status_code == 500
+    assert "secret local path" not in r.text
+
+
 def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
     from fastapi.testclient import TestClient
 

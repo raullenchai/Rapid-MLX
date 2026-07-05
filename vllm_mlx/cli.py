@@ -2931,6 +2931,7 @@ def serve_command(args):
             cors_origins=cors_origins,
             uvicorn_log_level=uvicorn_log_level,
             no_thinking=args.no_thinking,
+            api_key=server._api_key,
         )
         return
 

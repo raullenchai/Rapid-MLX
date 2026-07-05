@@ -18,7 +18,7 @@ import time
 import uuid
 from typing import Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 
 from vllm_mlx.api.models import (
@@ -30,11 +30,13 @@ from vllm_mlx.api.models import (
     ModelsResponse,
     Usage,
 )
+from vllm_mlx.config import get_config
 
 from .eligibility import DDTreeUnavailable, have_runtime
 from .runtime import DDTreeRuntime, load_runtime
 
 logger = logging.getLogger(__name__)
+_LOAD_FAILURE_DETAIL = "DDTree runtime failed to load; check server logs."
 
 _ddtree_lock = asyncio.Lock()
 _ddtree_executor = concurrent.futures.ThreadPoolExecutor(
@@ -59,6 +61,7 @@ def _build_app(
     default_max_tokens: int,
     cors_origins: list[str],
     no_thinking: bool = False,
+    api_key: str | None = None,
     drafter_repo: str | None = None,
     speculative_tokens: int | None = None,
     tree_budget: int | None = None,
@@ -66,8 +69,14 @@ def _build_app(
     if runtime is None and runtime_future is None:
         raise ValueError("DDTree app requires runtime or runtime_future")
 
-    app = FastAPI(title="Rapid-MLX (DDTree)")
+    get_config().api_key = api_key
+    from ...middleware.auth import verify_api_key
     from ...middleware.exception_handlers import install_exception_handlers
+
+    app = FastAPI(
+        title="Rapid-MLX (DDTree)",
+        dependencies=[Depends(verify_api_key)],
+    )
 
     install_exception_handlers(app)
     if cors_origins:
@@ -92,9 +101,13 @@ def _build_app(
             )
         exc = runtime_future.exception()
         if exc is not None:
+            logger.error(
+                "DDTree runtime failed to load.",
+                exc_info=(type(exc), exc, exc.__traceback__),
+            )
             raise HTTPException(
                 status_code=500,
-                detail=f"DDTree runtime failed to load: {exc}",
+                detail=_LOAD_FAILURE_DETAIL,
             )
         return runtime_future.result()
 
@@ -111,7 +124,7 @@ def _build_app(
                     ready_runtime = runtime_future.result()
                 else:
                     status = "error"
-                    error = str(exc)
+                    error = _LOAD_FAILURE_DETAIL
             else:
                 status = "loading"
         return {
@@ -150,6 +163,7 @@ def _build_app(
     @app.post("/v1/chat/completions")
     async def create_chat_completion(request: ChatCompletionRequest):
         _validate_request(request)
+        _validate_model_name(request.model, served_model_name=served_model_name)
         ready_runtime = get_ready_runtime()
         prompt = _render_prompt(ready_runtime, request, no_thinking=no_thinking)
         max_tokens = (
@@ -305,6 +319,21 @@ def _validate_request(request: ChatCompletionRequest) -> None:
             detail=(
                 "custom stop sequences are not supported in DDTree mode; "
                 "the model's EOS/chat-template stops still apply."
+            ),
+        )
+
+
+def _validate_model_name(request_model: str | None, *, served_model_name: str) -> None:
+    if request_model is None:
+        return
+    if request_model == "":
+        raise HTTPException(status_code=400, detail="model must not be empty")
+    if request_model != served_model_name:
+        raise HTTPException(
+            status_code=404,
+            detail=(
+                f"The model `{request_model}` does not exist. "
+                f"Available: {served_model_name}"
             ),
         )
 
@@ -468,6 +497,7 @@ def run_ddtree_server(
     cors_origins: list[str],
     uvicorn_log_level: str,
     no_thinking: bool = False,
+    api_key: str | None = None,
 ) -> None:
     if not have_runtime():
         raise RuntimeError(
@@ -503,6 +533,7 @@ def run_ddtree_server(
         default_max_tokens=default_max_tokens,
         cors_origins=cors_origins,
         no_thinking=no_thinking,
+        api_key=api_key,
         drafter_repo=drafter_repo,
         speculative_tokens=speculative_tokens,
         tree_budget=tree_budget,
