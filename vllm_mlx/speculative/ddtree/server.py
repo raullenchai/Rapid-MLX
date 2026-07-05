@@ -13,16 +13,13 @@ import asyncio
 import atexit
 import concurrent.futures
 import functools
-import json
 import logging
 import time
 import uuid
-from collections.abc import AsyncIterator
 from typing import Any
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import StreamingResponse
 
 from vllm_mlx.api.models import (
     AssistantMessage,
@@ -43,11 +40,15 @@ _ddtree_lock = asyncio.Lock()
 _ddtree_executor = concurrent.futures.ThreadPoolExecutor(
     max_workers=1, thread_name_prefix="ddtree-worker"
 )
+_ddtree_loader_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=1, thread_name_prefix="ddtree-loader"
+)
 
 
 @atexit.register
 def _shutdown_ddtree_executor() -> None:
     _ddtree_executor.shutdown(wait=False, cancel_futures=True)
+    _ddtree_loader_executor.shutdown(wait=False, cancel_futures=True)
 
 
 def _build_app(
@@ -156,18 +157,6 @@ def _build_app(
         )
         temperature = request.temperature if request.temperature is not None else 0.0
 
-        if request.stream:
-            return StreamingResponse(
-                _stream_completion(
-                    runtime=ready_runtime,
-                    prompt=prompt,
-                    served_model_name=served_model_name,
-                    max_tokens=max_tokens,
-                    temperature=temperature,
-                ),
-                media_type="text/event-stream",
-            )
-
         return await _non_stream_completion(
             runtime=ready_runtime,
             prompt=prompt,
@@ -182,6 +171,19 @@ def _build_app(
 def _validate_request(request: ChatCompletionRequest) -> None:
     if not request.messages:
         raise HTTPException(status_code=400, detail="messages must not be empty")
+    if request.stream:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "stream=true is not supported in DDTree mode yet; use "
+                "non-streaming requests or restart without --enable-ddtree."
+            ),
+        )
+    if request.stream_options is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="stream_options is not supported in DDTree mode.",
+        )
     for message in request.messages:
         content = message.content
         if not isinstance(content, list):
@@ -215,6 +217,16 @@ def _validate_request(request: ChatCompletionRequest) -> None:
                 "--enable-ddtree."
             ),
         )
+    if request.top_logprobs is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="top_logprobs is not supported in DDTree mode.",
+        )
+    if request.logit_bias:
+        raise HTTPException(
+            status_code=400,
+            detail="logit_bias is not supported in DDTree mode.",
+        )
     if request.response_format is not None:
         raise HTTPException(
             status_code=400,
@@ -227,6 +239,65 @@ def _validate_request(request: ChatCompletionRequest) -> None:
         raise HTTPException(
             status_code=400,
             detail="top_p is not supported in DDTree mode; use top_p=1.",
+        )
+    if request.top_k is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="top_k is not supported in DDTree mode.",
+        )
+    if request.min_p is not None and request.min_p != 0.0:
+        raise HTTPException(
+            status_code=400,
+            detail="min_p is not supported in DDTree mode; use min_p=0.",
+        )
+    if request.repetition_penalty is not None and request.repetition_penalty != 1.0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "repetition_penalty is not supported in DDTree mode; "
+                "use repetition_penalty=1."
+            ),
+        )
+    if request.presence_penalty is not None and request.presence_penalty != 0.0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "presence_penalty is not supported in DDTree mode; "
+                "use presence_penalty=0."
+            ),
+        )
+    if request.frequency_penalty is not None and request.frequency_penalty != 0.0:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "frequency_penalty is not supported in DDTree mode; "
+                "use frequency_penalty=0."
+            ),
+        )
+    if request.seed is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="seed is not supported in DDTree mode.",
+        )
+    if request.parallel_tool_calls is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="parallel_tool_calls is not supported in DDTree mode.",
+        )
+    if request.reasoning_max_tokens is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="reasoning_max_tokens is not supported in DDTree mode.",
+        )
+    if request.reasoning_effort is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="reasoning_effort is not supported in DDTree mode.",
+        )
+    if request.video_fps is not None or request.video_max_frames is not None:
+        raise HTTPException(
+            status_code=400,
+            detail="video parameters are not supported in DDTree mode.",
         )
     if request.stop is not None:
         raise HTTPException(
@@ -341,79 +412,6 @@ def _finish_reason(result, max_tokens: int) -> str:
     return "length" if completion_tokens >= max_tokens else "stop"
 
 
-async def _stream_completion(
-    *,
-    runtime: DDTreeRuntime,
-    prompt: str,
-    served_model_name: str,
-    max_tokens: int,
-    temperature: float,
-) -> AsyncIterator[bytes]:
-    completion_id = f"chatcmpl-{uuid.uuid4().hex[:24]}"
-    created = int(time.time())
-    first = {
-        "id": completion_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": served_model_name,
-        "choices": [
-            {"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}
-        ],
-    }
-    yield f"data: {json.dumps(first)}\n\n".encode()
-
-    async with _ddtree_lock:
-        loop = asyncio.get_running_loop()
-        result = await loop.run_in_executor(
-            _ddtree_executor,
-            functools.partial(
-                _run_generate,
-                runtime,
-                prompt=prompt,
-                max_tokens=max_tokens,
-                temperature=temperature,
-            ),
-        )
-
-    if getattr(result, "text", ""):
-        piece = {
-            "id": completion_id,
-            "object": "chat.completion.chunk",
-            "created": created,
-            "model": served_model_name,
-            "choices": [
-                {
-                    "index": 0,
-                    "delta": {"content": result.text},
-                    "finish_reason": None,
-                }
-            ],
-        }
-        yield f"data: {json.dumps(piece)}\n\n".encode()
-
-    prompt_tokens, completion_tokens = _usage_from_result(result)
-    final = {
-        "id": completion_id,
-        "object": "chat.completion.chunk",
-        "created": created,
-        "model": served_model_name,
-        "choices": [
-            {
-                "index": 0,
-                "delta": {},
-                "finish_reason": _finish_reason(result, max_tokens),
-            }
-        ],
-        "usage": {
-            "prompt_tokens": prompt_tokens,
-            "completion_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-        },
-    }
-    yield f"data: {json.dumps(final)}\n\n".encode()
-    yield b"data: [DONE]\n\n"
-
-
 async def _non_stream_completion(
     *,
     runtime: DDTreeRuntime,
@@ -497,7 +495,7 @@ def run_ddtree_server(
         )
 
     logger.info("DDTree: loading runtime for %s", main_model_repo)
-    runtime_future = _ddtree_executor.submit(_load_all)
+    runtime_future = _ddtree_loader_executor.submit(_load_all)
 
     app = _build_app(
         runtime_future=runtime_future,

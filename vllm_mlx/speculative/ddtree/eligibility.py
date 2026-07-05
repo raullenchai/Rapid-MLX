@@ -71,16 +71,11 @@ def report(profile: AliasProfile, alias: str | None = None) -> EligibilityReport
 
 
 def eligible_aliases() -> list[str]:
-    try:
-        from vllm_mlx.model_aliases import list_profiles
+    from vllm_mlx.model_aliases import list_profiles
 
-        return sorted(
-            name
-            for name, profile in list_profiles().items()
-            if not report(profile).reasons
-        )
-    except Exception:  # noqa: BLE001
-        return []
+    return sorted(
+        name for name, profile in list_profiles().items() if not report(profile).reasons
+    )
 
 
 def check(profile: AliasProfile, alias: str | None = None) -> None:

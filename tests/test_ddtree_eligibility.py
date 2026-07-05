@@ -163,6 +163,20 @@ def test_runtime_replaces_stale_ddtree_patch_dir(tmp_path, monkeypatch) -> None:
     ).resolve()
 
 
+def test_eligible_aliases_surfaces_alias_registry_errors(monkeypatch) -> None:
+    import pytest
+
+    from vllm_mlx.speculative.ddtree import eligibility
+
+    def boom():
+        raise RuntimeError("alias registry broken")
+
+    monkeypatch.setattr("vllm_mlx.model_aliases.list_profiles", boom)
+
+    with pytest.raises(RuntimeError, match="alias registry broken"):
+        eligibility.eligible_aliases()
+
+
 def test_runtime_patches_qwen35_split_prefill() -> None:
     import mlx.core as mx
 

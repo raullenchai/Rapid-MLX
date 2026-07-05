@@ -2558,18 +2558,25 @@ def test_dflash_branch_rejects_no_spec_decode():
 
 def test_ddtree_branch_rejects_no_spec_decode():
     """--enable-ddtree + --no-spec-decode must be a mutex error."""
-    source = (_pkg_root() / "cli.py").read_text()
-    no_spec_idx = source.find("--enable-ddtree and --no-spec-decode")
-    ddtree_idx = source.find("run_ddtree_server(")
-    assert no_spec_idx != -1, (
-        "cli.py must reference no_spec_decode in the DDTree branch — "
-        "DDTree is a spec-decode path and must honor --no-spec-decode."
+    from types import SimpleNamespace
+
+    from vllm_mlx.cli import _preflight_ddtree_or_exit
+
+    args = SimpleNamespace(
+        model="qwen3.5-9b-8bit",
+        _original_alias=None,
+        _speculative_config=None,
+        enable_ddtree=True,
+        enable_dflash=False,
+        spec_decode="none",
+        suffix_decoding=False,
+        enable_mtp=False,
+        no_spec_decode=True,
     )
-    assert ddtree_idx != -1
-    assert no_spec_idx < ddtree_idx, (
-        "no_spec_decode mutex check must come BEFORE run_ddtree_server() "
-        "call so the override actually rejects DDTree startup."
-    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_ddtree_or_exit(args)
+    assert excinfo.value.code == 2
 
 
 def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):

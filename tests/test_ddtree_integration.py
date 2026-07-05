@@ -330,16 +330,31 @@ def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
     assert r.status_code == 400
     assert "tool calling" in r.json()["error"]["message"].lower()
 
-    r = client.post(
-        "/v1/chat/completions",
-        json={
+    unsupported_cases = [
+        ({"stream": True}, "stream=true"),
+        ({"stream_options": {"include_usage": True}}, "stream_options"),
+        ({"top_p": 0.9}, "top_p"),
+        ({"top_k": 8}, "top_k"),
+        ({"min_p": 0.1}, "min_p"),
+        ({"frequency_penalty": 0.5}, "frequency_penalty"),
+        ({"presence_penalty": 0.5}, "presence_penalty"),
+        ({"repetition_penalty": 1.1}, "repetition_penalty"),
+        ({"seed": 42}, "seed"),
+        ({"logit_bias": {"1": 1.0}}, "logit_bias"),
+        ({"top_logprobs": 1}, "top_logprobs"),
+        ({"reasoning_max_tokens": 8}, "reasoning_max_tokens"),
+        ({"reasoning_effort": "low"}, "reasoning_effort"),
+        ({"video_fps": 1.0}, "video parameters"),
+    ]
+    for extra, expected in unsupported_cases:
+        payload = {
             "model": "qwen3.5-9b-8bit",
             "messages": [{"role": "user", "content": "hi"}],
-            "top_p": 0.9,
-        },
-    )
-    assert r.status_code == 400
-    assert "top_p" in r.json()["error"]["message"]
+        }
+        payload.update(extra)
+        r = client.post("/v1/chat/completions", json=payload)
+        assert r.status_code == 400, extra
+        assert expected in r.json()["error"]["message"]
 
     r = client.post(
         "/v1/chat/completions",
@@ -361,3 +376,41 @@ def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
     )
     assert r.status_code == 400
     assert "non-text" in r.json()["error"]["message"].lower()
+
+
+def test_run_ddtree_server_loads_runtime_on_separate_executor(monkeypatch) -> None:
+    from vllm_mlx.speculative.ddtree import server
+
+    class RecordingExecutor:
+        def __init__(self) -> None:
+            self.submitted = []
+            self.future: concurrent.futures.Future = concurrent.futures.Future()
+
+        def submit(self, fn, *args, **kwargs):
+            self.submitted.append((fn, args, kwargs))
+            return self.future
+
+    loader = RecordingExecutor()
+    generator = RecordingExecutor()
+    uvicorn_run = MagicMock()
+    monkeypatch.setattr(server, "have_runtime", lambda: True)
+    monkeypatch.setattr(server, "_ddtree_loader_executor", loader)
+    monkeypatch.setattr(server, "_ddtree_executor", generator)
+    monkeypatch.setattr("uvicorn.run", uvicorn_run)
+
+    server.run_ddtree_server(
+        main_model_repo="mlx-community/Qwen3.5-9B-8bit",
+        drafter_repo="z-lab/Qwen3.5-9B-DFlash",
+        speculative_tokens=16,
+        tree_budget=24,
+        host="127.0.0.1",
+        port=59999,
+        served_model_name="qwen3.5-9b-8bit",
+        default_max_tokens=64,
+        cors_origins=[],
+        uvicorn_log_level="warning",
+    )
+
+    assert len(loader.submitted) == 1
+    assert generator.submitted == []
+    uvicorn_run.assert_called_once()
