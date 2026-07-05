@@ -128,3 +128,66 @@ def test_runtime_patches_rope_parameters_without_copying_weights(
     weight = patched_path / "model.safetensors"
     assert weight.is_symlink()
     assert weight.resolve() == (source / "model.safetensors").resolve()
+
+
+def test_runtime_patches_qwen35_split_prefill() -> None:
+    import mlx.core as mx
+
+    from vllm_mlx.speculative.ddtree import runtime
+
+    class Cache:
+        offset = 0
+        keys = None
+        values = None
+
+        def __init__(self):
+            self.items = [None, None]
+
+        def __getitem__(self, idx):
+            return self.items[idx]
+
+    class Target:
+        adapter = type("Adapter", (), {"family": "qwen3_5"})()
+
+        def __init__(self):
+            self.calls = []
+
+        def forward_with_hidden_states(
+            self, inputs, cache, layer_ids, return_rollback_records=False
+        ):
+            del cache, layer_ids
+            self.calls.append((inputs.tolist(), return_rollback_records))
+            seq_len = int(inputs.shape[1])
+            logits = mx.zeros((1, seq_len, 3))
+            hidden = mx.ones((1, seq_len, 2)) * seq_len
+            return logits, hidden
+
+    target = Target()
+    generator = type("Generator", (), {"target": target})()
+    cache = [Cache()]
+
+    runtime._install_qwen35_split_prefill_patch(generator)
+    logits, hidden = target.forward_with_hidden_states(
+        mx.array([[1, 2, 3]], dtype=mx.uint32),
+        cache,
+        [0],
+    )
+
+    assert target._rapid_mlx_split_prefill_patch is True
+    assert target.calls == [([[1, 2]], False), ([[3]], False)]
+    assert logits.shape == (1, 1, 3)
+    assert hidden.tolist() == [[[2, 2], [2, 2], [1, 1]]]
+
+    target.calls.clear()
+    cache[0].offset = 1
+    target.forward_with_hidden_states(mx.array([[4, 5]], dtype=mx.uint32), cache, [0])
+    assert target.calls == [([[4, 5]], False)]
+
+    target.calls.clear()
+    target.forward_with_hidden_states(
+        mx.array([[6, 7]], dtype=mx.uint32),
+        [Cache()],
+        [0],
+        return_rollback_records=True,
+    )
+    assert target.calls == [([[6, 7]], True)]

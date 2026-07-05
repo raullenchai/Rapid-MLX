@@ -59,6 +59,7 @@ def load_runtime(
         draft_model=resolved_drafter_repo,
         draft_attention_mask="auto",
     )
+    _install_qwen35_split_prefill_patch(generator)
     return DDTreeRuntime(
         generator=generator,
         main_model_repo=main_model_repo,
@@ -66,6 +67,77 @@ def load_runtime(
         speculative_tokens=speculative_tokens,
         tree_budget=tree_budget,
     )
+
+
+def _install_qwen35_split_prefill_patch(generator: Any) -> None:
+    """Match MLX-LM prompt prefill semantics for dtree-mlx Qwen3.5 targets.
+
+    ``mlx_lm.generate_step`` processes all prompt tokens except the final one
+    into cache first, then samples the first generated token from a separate
+    one-token call. Current ``dtree-mlx`` Qwen3.5 DFlash/DDTree paths prefill
+    the whole prompt in one call, which is not numerically equivalent for the
+    hybrid GatedDeltaNet target and can change greedy outputs. Keep the patch
+    local to the optional runtime boundary until upstream exposes the behavior.
+    """
+
+    target = getattr(generator, "target", None)
+    adapter = getattr(target, "adapter", None)
+    if getattr(adapter, "family", None) != "qwen3_5":
+        return
+    if getattr(target, "_rapid_mlx_split_prefill_patch", False):
+        return
+    original = getattr(target, "forward_with_hidden_states", None)
+    if original is None:
+        return
+
+    import mlx.core as mx
+
+    def cache_is_empty(cache: Any) -> bool:
+        if not isinstance(cache, (list, tuple)):
+            return False
+        for layer_cache in cache:
+            if int(getattr(layer_cache, "offset", 0) or 0) > 0:
+                return False
+            if getattr(layer_cache, "keys", None) is not None:
+                return False
+            if getattr(layer_cache, "values", None) is not None:
+                return False
+            try:
+                if layer_cache[0] is not None or layer_cache[1] is not None:
+                    return False
+            except (TypeError, IndexError, KeyError, AttributeError):
+                pass
+        return True
+
+    def forward_with_split_prefill(
+        inputs,
+        cache,
+        layer_ids,
+        return_rollback_records: bool = False,
+    ):
+        if (
+            not return_rollback_records
+            and getattr(inputs, "ndim", None) == 2
+            and int(inputs.shape[0]) == 1
+            and int(inputs.shape[1]) > 1
+            and cache_is_empty(cache)
+        ):
+            prefix_inputs = inputs[:, :-1]
+            last_input = inputs[:, -1:]
+            _prefix_logits, prefix_hidden = original(
+                prefix_inputs,
+                cache,
+                layer_ids,
+                False,
+            )
+            last_logits, last_hidden = original(last_input, cache, layer_ids, False)
+            mx.eval(last_logits, prefix_hidden, last_hidden)
+            return last_logits, mx.concatenate([prefix_hidden, last_hidden], axis=1)
+
+        return original(inputs, cache, layer_ids, return_rollback_records)
+
+    target.forward_with_hidden_states = forward_with_split_prefill
+    target._rapid_mlx_split_prefill_patch = True
 
 
 def _prepare_draft_model_for_dtree(draft_model: str) -> str:
