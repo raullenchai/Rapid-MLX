@@ -126,14 +126,15 @@ def _install_qwen35_split_prefill_patch(generator: Any) -> None:
         ):
             prefix_inputs = inputs[:, :-1]
             last_input = inputs[:, -1:]
-            _prefix_logits, prefix_hidden = original(
+            prefix_logits, prefix_hidden = original(
                 prefix_inputs,
                 cache,
                 layer_ids,
                 False,
             )
+            mx.eval(prefix_logits, prefix_hidden)
             last_logits, last_hidden = original(last_input, cache, layer_ids, False)
-            mx.eval(last_logits, prefix_hidden, last_hidden)
+            mx.eval(last_logits, last_hidden)
             return last_logits, mx.concatenate([prefix_hidden, last_hidden], axis=1)
 
         return original(inputs, cache, layer_ids, return_rollback_records)
@@ -177,14 +178,14 @@ def _prepare_draft_model_for_dtree(draft_model: str) -> str:
     patched.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=f".{patched.name}.tmp-", dir=patched.parent))
     completed = False
-    for child in path.iterdir():
-        dst = tmp / child.name
-        if child.name == "config.json":
-            continue
-        target = child.resolve()
-        dst.symlink_to(target, target_is_directory=target.is_dir())
-    (tmp / "config.json").write_text(json.dumps(patched_cfg, indent=2) + "\n")
     try:
+        for child in path.iterdir():
+            dst = tmp / child.name
+            if child.name == "config.json":
+                continue
+            target = child.resolve()
+            dst.symlink_to(target, target_is_directory=target.is_dir())
+        (tmp / "config.json").write_text(json.dumps(patched_cfg, indent=2) + "\n")
         _remove_path(patched)
         tmp.replace(patched)
         completed = True

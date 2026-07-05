@@ -69,7 +69,8 @@ def _build_app(
     if runtime is None and runtime_future is None:
         raise ValueError("DDTree app requires runtime or runtime_future")
 
-    get_config().api_key = api_key
+    if api_key is not None:
+        get_config().api_key = api_key
     from ...middleware.auth import verify_api_key
     from ...middleware.exception_handlers import install_exception_handlers
 

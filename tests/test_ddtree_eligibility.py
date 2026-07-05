@@ -163,6 +163,43 @@ def test_runtime_replaces_stale_ddtree_patch_dir(tmp_path, monkeypatch) -> None:
     ).resolve()
 
 
+def test_runtime_cleans_temp_patch_dir_on_write_failure(tmp_path, monkeypatch) -> None:
+    import pytest
+
+    from vllm_mlx.speculative.ddtree import runtime
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "config.json").write_text(
+        """
+        {
+          "model_type": "qwen3",
+          "rope_parameters": {
+            "rope_theta": 10000000,
+            "rope_type": "default"
+          }
+        }
+        """
+    )
+    (source / "model.safetensors").write_bytes(b"fake")
+    cache = tmp_path / "patched"
+    monkeypatch.setenv("RAPID_MLX_DDTREE_PATCH_CACHE", str(cache))
+
+    original_write_text = Path.write_text
+
+    def fail_config_write(path, *args, **kwargs):
+        if path.name == "config.json" and path.parent.name.startswith("."):
+            raise OSError("disk full")
+        return original_write_text(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "write_text", fail_config_write)
+
+    with pytest.raises(OSError, match="disk full"):
+        runtime._prepare_draft_model_for_dtree(str(source))
+
+    assert not list(cache.glob(".*.tmp-*"))
+
+
 def test_eligible_aliases_surfaces_alias_registry_errors(monkeypatch) -> None:
     import pytest
 

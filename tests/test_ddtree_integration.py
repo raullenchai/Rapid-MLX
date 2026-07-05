@@ -315,7 +315,7 @@ def test_build_app_healthz_works_while_runtime_loads() -> None:
 def test_build_app_honors_api_key_and_model_name() -> None:
     from fastapi.testclient import TestClient
 
-    from vllm_mlx.config import reset_config
+    from vllm_mlx.config import get_config, reset_config
     from vllm_mlx.speculative.ddtree.server import _build_app
 
     reset_config()
@@ -357,6 +357,24 @@ def test_build_app_honors_api_key_and_model_name() -> None:
                 "messages": [{"role": "user", "content": "2+2?"}],
             },
         )
+        assert r.status_code == 200
+    finally:
+        reset_config()
+
+    reset_config()
+    try:
+        get_config().api_key = "env-secret"
+        app = _build_app(
+            runtime=_fake_runtime(),
+            served_model_name="qwen3.5-9b-8bit",
+            default_max_tokens=64,
+            cors_origins=["*"],
+        )
+        client = TestClient(app)
+
+        r = client.get("/healthz")
+        assert r.status_code == 401
+        r = client.get("/healthz", headers={"Authorization": "Bearer env-secret"})
         assert r.status_code == 200
     finally:
         reset_config()
