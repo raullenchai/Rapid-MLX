@@ -1559,6 +1559,7 @@ def _normalize_speculative_config_or_exit(args):
         SpeculativeConfigError,
         legacy_ddtree_config,
         legacy_dflash_config,
+        legacy_mtp_config,
         parse_speculative_config,
         require_migrated_speculative_config,
     )
@@ -1575,6 +1576,8 @@ def _normalize_speculative_config_or_exit(args):
             conflicts.append(f"--spec-decode {spec_decode}")
         if (getattr(args, "dflash_drafter_path", "") or "").strip():
             conflicts.append("--dflash-drafter-path")
+        if (getattr(args, "mtp_sidecar", None) or "").strip():
+            conflicts.append("--mtp-sidecar")
         if conflicts:
             joined = ", ".join(conflicts)
             print(
@@ -1600,6 +1603,11 @@ def _normalize_speculative_config_or_exit(args):
             config = legacy_dflash_config(
                 (getattr(args, "dflash_drafter_path", "") or "").strip() or None
             )
+        elif getattr(args, "spec_decode", "none") == "mtp":
+            config = legacy_mtp_config(
+                model=(getattr(args, "mtp_sidecar", None) or "").strip() or None,
+                num_speculative_tokens=getattr(args, "mtp_max_k", None),
+            )
     args._speculative_config = config
     if config is None:
         return
@@ -1611,6 +1619,12 @@ def _normalize_speculative_config_or_exit(args):
         if legacy_spec_decode_dflash:
             args._legacy_spec_decode_dflash = True
             args.spec_decode = "none"
+    elif config.method == "mtp":
+        args.spec_decode = "mtp"
+        if config.model:
+            args.mtp_sidecar = config.model
+        if config.num_speculative_tokens is not None:
+            args.mtp_max_k = config.num_speculative_tokens
 
 
 def _resolve_dflash_drafter_repo(args, profile) -> str:
@@ -2514,7 +2528,9 @@ def serve_command(args):
             "\n    For DFlash speculative decoding, use "
             """--speculative-config '{"method":"dflash"}' """
             "(requires a DFlash-eligible alias). "
-            "For MTP, use --enable-mtp (requires a model with MTP head).\n"
+            "For MTP, use "
+            """--speculative-config '{"method":"mtp"}' """
+            "(requires a model with MTP head).\n"
         )
     if getattr(args, "specprefill", False):
         print("\n  ⚠ --specprefill is deprecated and has no effect.\n")
@@ -6620,9 +6636,10 @@ Examples:
         help=(
             "vLLM-style speculative decoding JSON config. This frontend "
             "parses method/model/num_speculative_tokens now. DFlash is "
-            'available with \'{"method":"dflash"}\' and DDTree with '
-            '\'{"method":"ddtree"}\'; MTP and SuffixDecoding keep their '
-            "legacy flags until they migrate to this surface."
+            'available with \'{"method":"dflash"}\', DDTree with '
+            '\'{"method":"ddtree"}\', and MTP with '
+            '\'{"method":"mtp"}\'. SuffixDecoding keeps its legacy flag '
+            "until it migrates to this surface."
         ),
     )
     serve_parser.add_argument(

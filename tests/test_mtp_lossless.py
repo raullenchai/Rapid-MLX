@@ -101,9 +101,11 @@ def _reset_mtp_module_state():
         reset_global_counter_for_tests,
     )
     from vllm_mlx.spec_decode.mtp.cache_patch import _unpatch_for_tests
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import reset_controllers
 
     _unpatch_for_tests()
     reset_global_counter_for_tests()
+    reset_controllers()
     # See the matching fixture in ``test_mtp_spec_decode.py`` for the
     # cross-thread stream reasoning. ``mlx_lm.generate.generation_stream``
     # may have been re-bound by a preceding sweep test's worker-thread
@@ -119,6 +121,7 @@ def _reset_mtp_module_state():
     yield
     _unpatch_for_tests()
     reset_global_counter_for_tests()
+    reset_controllers()
     sys.modules["mlx_lm.generate"].generation_stream = mx.default_stream(
         mx.default_device()
     )
@@ -428,6 +431,8 @@ def test_lossless_default_path_is_deterministic():
     emit sequence twice in a row. If controller state leakage or non-
     deterministic K picks slipped in, this smoke test would catch it.
     """
+    from vllm_mlx.spec_decode.mtp.draft_k_controller_v2 import reset_controllers
+
     backbone_mtp = [7, 11, 13, 15, 17, 19, 21]
     mtp_drafts = [11, 0, 15, 0, 19]
     run1 = _spec_decode_mtp_path_auto_k(
@@ -436,6 +441,7 @@ def test_lossless_default_path_is_deterministic():
         prompt=mx.array([1], mx.uint32),
         max_tokens=7,
     )
+    reset_controllers()
     run2 = _spec_decode_mtp_path_auto_k(
         backbone_mtp[:],
         mtp_drafts[:],

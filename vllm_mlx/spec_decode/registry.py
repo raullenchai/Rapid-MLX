@@ -83,6 +83,7 @@ register_spec_decoder(
     SpecDecoderPlugin(
         method="mtp",
         description="Model-side multi-token prediction head",
+        config_enabled=True,
         legacy_hint="use --spec-decode mtp",
     )
 )

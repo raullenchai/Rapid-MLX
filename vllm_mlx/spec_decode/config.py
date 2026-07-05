@@ -126,6 +126,28 @@ def legacy_dflash_config(model: str | None = None) -> SpeculativeConfig:
     return SpeculativeConfig(method="dflash", model=drafter, raw=raw)
 
 
+def legacy_mtp_config(
+    *,
+    model: str | None = None,
+    num_speculative_tokens: int | None = None,
+) -> SpeculativeConfig:
+    """Return the compatibility config represented by MTP legacy flags."""
+
+    raw: dict[str, Any] = {"method": "mtp"}
+    sidecar = _optional_string(model, "model")
+    if sidecar is not None:
+        raw["model"] = sidecar
+    tokens = _positive_int(num_speculative_tokens, "num_speculative_tokens")
+    if tokens is not None:
+        raw["num_speculative_tokens"] = tokens
+    return SpeculativeConfig(
+        method="mtp",
+        model=sidecar,
+        num_speculative_tokens=tokens,
+        raw=raw,
+    )
+
+
 def require_migrated_speculative_config(config: SpeculativeConfig) -> None:
     """Fail until ``config.method`` is wired to a backend runner."""
 
@@ -146,6 +168,7 @@ __all__ = [
     "SpeculativeConfigError",
     "legacy_ddtree_config",
     "legacy_dflash_config",
+    "legacy_mtp_config",
     "parse_speculative_config",
     "require_migrated_speculative_config",
 ]

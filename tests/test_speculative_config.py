@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from types import SimpleNamespace
 
 import pytest
 
@@ -87,12 +88,11 @@ def test_parse_speculative_config_rejects_bad_payloads(raw: str, match: str) -> 
         parse_speculative_config(raw)
 
 
-def test_require_migrated_speculative_config_rejects_unwired_method() -> None:
+def test_require_migrated_speculative_config_accepts_mtp() -> None:
     cfg = parse_speculative_config('{"method":"mtp"}')
     assert cfg is not None
 
-    with pytest.raises(SpeculativeConfigError, match="not wired yet"):
-        require_migrated_speculative_config(cfg)
+    require_migrated_speculative_config(cfg)
 
 
 def test_require_migrated_speculative_config_accepts_ddtree() -> None:
@@ -115,6 +115,7 @@ def test_spec_decoder_registry_lists_existing_backends() -> None:
     assert {"ddtree", "dflash", "mtp", "suffix"}.issubset(methods)
     assert get_spec_decoder("ddtree").config_enabled is True
     assert get_spec_decoder("dflash").config_enabled is True
+    assert get_spec_decoder("mtp").config_enabled is True
     assert get_spec_decoder("ngram") == get_spec_decoder("suffix")
 
 
@@ -130,23 +131,70 @@ def test_serve_help_exposes_speculative_config() -> None:
     assert "--speculative-config" in proc.stdout
 
 
-def test_serve_rejects_unwired_speculative_config_before_model_load() -> None:
-    proc = subprocess.run(
-        [
-            sys.executable,
-            "-m",
-            "vllm_mlx.cli",
-            "serve",
-            "qwen3.5-9b-8bit",
-            "--speculative-config",
-            '{"method":"mtp"}',
-        ],
-        capture_output=True,
-        text=True,
-        timeout=30,
+def _spec_config_args(**overrides):
+    data = {
+        "speculative_config": None,
+        "enable_ddtree": False,
+        "enable_dflash": False,
+        "spec_decode": "none",
+        "dflash_drafter_path": "",
+        "mtp_sidecar": None,
+        "mtp_num_draft_tokens": 1,
+        "mtp_max_k": 3,
+    }
+    data.update(overrides)
+    return SimpleNamespace(**data)
+
+
+def test_speculative_config_mtp_normalizes_to_legacy_spec_decode() -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        speculative_config=(
+            '{"method":"mtp","model":"google/gemma-4-12B-it-assistant",'
+            '"num_speculative_tokens":2}'
+        )
     )
 
-    assert proc.returncode == 2
-    assert "not wired yet" in proc.stderr
-    assert "use --spec-decode mtp" in proc.stderr
-    assert "Fetching" not in proc.stderr
+    _normalize_speculative_config_or_exit(args)
+
+    assert args.spec_decode == "mtp"
+    assert args.mtp_sidecar == "google/gemma-4-12B-it-assistant"
+    assert args.mtp_max_k == 2
+    assert args._speculative_config.method == "mtp"
+    assert args._speculative_config.model == "google/gemma-4-12B-it-assistant"
+    assert args._speculative_config.num_speculative_tokens == 2
+
+
+def test_spec_decode_mtp_legacy_flag_is_speculative_config_shorthand() -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        spec_decode="mtp",
+        mtp_sidecar="google/gemma-4-12B-it-assistant",
+        mtp_max_k=2,
+    )
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args.spec_decode == "mtp"
+    assert args._speculative_config.method == "mtp"
+    assert args._speculative_config.model == "google/gemma-4-12B-it-assistant"
+    assert args._speculative_config.num_speculative_tokens == 2
+
+
+def test_speculative_config_mtp_rejects_legacy_sidecar_flag(capsys) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        speculative_config='{"method":"mtp"}',
+        mtp_sidecar="google/gemma-4-12B-it-assistant",
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "mutually exclusive" in captured.err
+    assert "--mtp-sidecar" in captured.err
