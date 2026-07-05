@@ -16,6 +16,7 @@ from vllm_mlx.model_aliases import AliasProfile
 from vllm_mlx.speculative.dflash.eligibility import _looks_like_4bit
 
 logger = logging.getLogger(__name__)
+_runtime_probe_error: str | None = None
 
 
 class DDTreeUnavailable(RuntimeError):  # noqa: N818
@@ -102,10 +103,17 @@ def check(profile: AliasProfile, alias: str | None = None) -> None:
 
 
 def have_runtime() -> bool:
+    global _runtime_probe_error
     try:
         from dtree_mlx.api import DFlashGenerator  # noqa: F401
 
+        _runtime_probe_error = None
         return True
     except Exception as exc:  # noqa: BLE001
-        logger.debug("DDTree runtime probe failed: %s", exc)
+        _runtime_probe_error = f"{type(exc).__name__}: {exc}"[:240]
+        logger.debug("DDTree runtime probe failed: %s", _runtime_probe_error)
         return False
+
+
+def runtime_probe_error() -> str | None:
+    return _runtime_probe_error

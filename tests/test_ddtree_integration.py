@@ -440,6 +440,7 @@ def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
     unsupported_cases = [
         ({"stream": True}, "stream=true"),
         ({"stream_options": {"include_usage": True}}, "stream_options"),
+        ({"temperature": 0.7}, "temperature"),
         ({"top_p": 0.9}, "top_p"),
         ({"top_k": 8}, "top_k"),
         ({"min_p": 0.1}, "min_p"),

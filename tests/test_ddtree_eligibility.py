@@ -156,11 +156,12 @@ def test_runtime_replaces_stale_ddtree_patch_dir(tmp_path, monkeypatch) -> None:
     patched = runtime._prepare_draft_model_for_dtree(str(source))
     patched_path = Path(patched)
 
-    assert patched_path == stale
+    assert patched_path != stale
     assert (patched_path / "model.safetensors").is_symlink()
     assert (patched_path / "model.safetensors").resolve() == (
         source / "model.safetensors"
     ).resolve()
+    assert (stale / "model.safetensors").is_dir()
 
 
 def test_runtime_cleans_temp_patch_dir_on_write_failure(tmp_path, monkeypatch) -> None:

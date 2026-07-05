@@ -14,6 +14,7 @@ import logging
 import os
 import shutil
 import tempfile
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -175,6 +176,8 @@ def _prepare_draft_model_for_dtree(draft_model: str) -> str:
         patched_cfg["rope_scaling"] = rope_parameters["rope_scaling"]
 
     patched = _patched_draft_dir(path)
+    if _patched_dir_is_usable(patched, path, patched_cfg):
+        return str(patched)
     patched.parent.mkdir(parents=True, exist_ok=True)
     tmp = Path(tempfile.mkdtemp(prefix=f".{patched.name}.tmp-", dir=patched.parent))
     completed = False
@@ -186,8 +189,15 @@ def _prepare_draft_model_for_dtree(draft_model: str) -> str:
             target = child.resolve()
             dst.symlink_to(target, target_is_directory=target.is_dir())
         (tmp / "config.json").write_text(json.dumps(patched_cfg, indent=2) + "\n")
-        _remove_path(patched)
-        tmp.replace(patched)
+        try:
+            tmp.replace(patched)
+        except OSError:
+            if _patched_dir_is_usable(patched, path, patched_cfg):
+                completed = True
+                _remove_path(tmp)
+                return str(patched)
+            patched = patched.with_name(f"{patched.name}-{uuid.uuid4().hex[:8]}")
+            tmp.replace(patched)
         completed = True
     finally:
         if not completed:
@@ -198,6 +208,24 @@ def _prepare_draft_model_for_dtree(draft_model: str) -> str:
         patched,
     )
     return str(patched)
+
+
+def _patched_dir_is_usable(patched: Path, source: Path, patched_cfg: dict) -> bool:
+    cfg_path = patched / "config.json"
+    if not cfg_path.is_file():
+        return False
+    try:
+        if json.loads(cfg_path.read_text()) != patched_cfg:
+            return False
+    except (OSError, json.JSONDecodeError):
+        return False
+    for child in source.iterdir():
+        if child.name == "config.json":
+            continue
+        dst = patched / child.name
+        if not dst.is_symlink() or dst.resolve() != child.resolve():
+            return False
+    return True
 
 
 def _remove_path(path: Path) -> None:

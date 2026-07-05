@@ -1622,7 +1622,7 @@ def _preflight_ddtree_or_exit(args):
 
     from .model_aliases import resolve_profile
     from .speculative.ddtree import DDTreeUnavailable, check
-    from .speculative.ddtree.eligibility import have_runtime
+    from .speculative.ddtree.eligibility import have_runtime, runtime_probe_error
 
     alias_name = getattr(args, "_original_alias", None) or args.model
     profile = resolve_profile(alias_name)
@@ -1640,10 +1640,12 @@ def _preflight_ddtree_or_exit(args):
         print(f"\n  Error: {e}\n")
         sys.exit(1)
     if not have_runtime():
+        probe_error = runtime_probe_error()
+        detail = f" Probe failure: {probe_error}." if probe_error else ""
         print(
             "\n  Error: --enable-ddtree requires the experimental dtree-mlx "
             "runtime. Install with: ``pip install 'dtree-mlx @ "
-            "git+https://github.com/DrHB/dtree-mlx.git'``.\n"
+            f"git+https://github.com/DrHB/dtree-mlx.git'``.{detail}\n"
         )
         sys.exit(1)
 

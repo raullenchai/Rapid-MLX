@@ -199,6 +199,11 @@ def _validate_request(request: ChatCompletionRequest) -> None:
             status_code=400,
             detail="stream_options is not supported in DDTree mode.",
         )
+    if request.temperature is not None and request.temperature != 0.0:
+        raise HTTPException(
+            status_code=400,
+            detail="temperature is not supported in DDTree mode; use temperature=0.",
+        )
     for message in request.messages:
         content = message.content
         if not isinstance(content, list):
