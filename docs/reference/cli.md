@@ -87,7 +87,7 @@ rapid-mlx serve deepseek-r1-8b-4bit --reasoning-parser deepseek_r1
 rapid-mlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser hermes
 
 # DFlash speculative decoding (single-user, single supported alias)
-rapid-mlx serve qwen3.5-27b-8bit --enable-dflash --port 8000
+rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}' --port 8000
 
 # DDTree speculative decoding (experimental, single-user)
 rapid-mlx serve qwen3.5-9b-8bit --speculative-config '{"method":"ddtree"}' --port 8000

@@ -1558,18 +1558,32 @@ def _normalize_speculative_config_or_exit(args):
     from .spec_decode.config import (
         SpeculativeConfigError,
         legacy_ddtree_config,
+        legacy_dflash_config,
         parse_speculative_config,
         require_migrated_speculative_config,
     )
 
     raw_config = getattr(args, "speculative_config", None)
-    if raw_config is not None and getattr(args, "enable_ddtree", False):
-        print(
-            "error: --speculative-config and --enable-ddtree are mutually "
-            "exclusive; use method='ddtree' in --speculative-config.",
-            file=sys.stderr,
-        )
-        sys.exit(2)
+    if raw_config is not None:
+        conflicts = []
+        if getattr(args, "enable_ddtree", False):
+            conflicts.append("--enable-ddtree")
+        if getattr(args, "enable_dflash", False):
+            conflicts.append("--enable-dflash")
+        spec_decode = getattr(args, "spec_decode", "none")
+        if spec_decode != "none":
+            conflicts.append(f"--spec-decode {spec_decode}")
+        if (getattr(args, "dflash_drafter_path", "") or "").strip():
+            conflicts.append("--dflash-drafter-path")
+        if conflicts:
+            joined = ", ".join(conflicts)
+            print(
+                "error: --speculative-config is mutually exclusive with "
+                f"{joined}; express speculative decoding settings inside "
+                "--speculative-config.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
     try:
         config = parse_speculative_config(raw_config)
         if config is not None:
@@ -1577,11 +1591,81 @@ def _normalize_speculative_config_or_exit(args):
     except SpeculativeConfigError as exc:
         print(f"error: {exc}", file=sys.stderr)
         sys.exit(2)
-    if config is None and getattr(args, "enable_ddtree", False):
-        config = legacy_ddtree_config()
+    if config is None:
+        if getattr(args, "enable_ddtree", False):
+            config = legacy_ddtree_config()
+        elif getattr(args, "enable_dflash", False) or (
+            getattr(args, "spec_decode", "none") == "dflash"
+        ):
+            config = legacy_dflash_config(
+                (getattr(args, "dflash_drafter_path", "") or "").strip() or None
+            )
     args._speculative_config = config
-    if config is not None and config.method == "ddtree":
+    if config is None:
+        return
+    if config.method == "ddtree":
         args.enable_ddtree = True
+    elif config.method == "dflash":
+        legacy_spec_decode_dflash = getattr(args, "spec_decode", "none") == "dflash"
+        args.enable_dflash = True
+        if legacy_spec_decode_dflash:
+            args._legacy_spec_decode_dflash = True
+            args.spec_decode = "none"
+
+
+def _resolve_dflash_drafter_repo(args, profile) -> str:
+    """Return the effective DFlash drafter repo for normalized CLI args."""
+
+    spec_config = getattr(args, "_speculative_config", None)
+    if spec_config is not None and spec_config.method == "dflash" and spec_config.model:
+        return spec_config.model
+    legacy_override = (getattr(args, "dflash_drafter_path", "") or "").strip()
+    return legacy_override or profile.dflash_draft_model
+
+
+def _preflight_dflash_mutexes_or_exit(args) -> None:
+    """Reject DFlash flag combinations before optional-runtime probes."""
+
+    if not getattr(args, "enable_dflash", False):
+        return
+
+    import sys
+
+    spec_decode = getattr(args, "spec_decode", "none")
+    if (
+        getattr(args, "suffix_decoding", False)
+        or getattr(args, "enable_mtp", False)
+        or spec_decode != "none"
+    ):
+        print(
+            "\n  Error: DFlash cannot combine with --suffix-decoding "
+            "or other spec-decode methods. DFlash runs a dedicated "
+            "single-user server that bypasses BatchedEngine; other "
+            "spec-decode methods only apply to the BatchedEngine path.\n"
+        )
+        sys.exit(1)
+    if getattr(args, "no_spec_decode", False):
+        print(
+            "error: DFlash and --no-spec-decode are mutually exclusive "
+            "— DFlash is a speculative-decode mode.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+
+def _maybe_print_legacy_dflash_redirect(args) -> None:
+    """Preserve the legacy ``--spec-decode dflash`` redirect notice."""
+
+    if not getattr(args, "_legacy_spec_decode_dflash", False):
+        return
+
+    import sys
+
+    print(
+        "Spec-decode: --spec-decode dflash routed to --enable-dflash "
+        "(mlx-vlm bridge; BatchedEngine integration deferred to 0.10).",
+        file=sys.stderr,
+    )
 
 
 def _preflight_ddtree_or_exit(args):
@@ -1757,6 +1841,8 @@ def serve_command(args):
     if getattr(args, "enable_ddtree", False):
         _preflight_ddtree_or_exit(args)
 
+    _preflight_dflash_mutexes_or_exit(args)
+
     # 0.9.2 dogfood (parallels the [embeddings]/[vision]/[audio] guards
     # immediately above): ``--enable-dflash`` and the equivalent
     # ``--spec-decode dflash`` both depend on the optional ``mlx-vlm``
@@ -1780,9 +1866,11 @@ def serve_command(args):
 
         if not have_runtime():
             print(
-                "\n  Error: --enable-dflash (and --spec-decode dflash) "
-                "requires mlx-vlm 0.5.0+ for the DFlash drafter hooks. "
-                "Install with: ``pip install 'rapid-mlx[dflash]'``.\n"
+                "\n  Error: DFlash speculative decoding "
+                '(``--speculative-config \'{"method":"dflash"}\'``, '
+                "--enable-dflash, or --spec-decode dflash) requires "
+                "mlx-vlm 0.5.0+ for the DFlash drafter hooks. Install with: "
+                "``pip install 'rapid-mlx[dflash]'``.\n"
             )
             sys.exit(1)
 
@@ -2229,14 +2317,7 @@ def serve_command(args):
     # ``spec_decode/dflash/{generator,drafter,verifier}.py`` modules
     # remain importable but inert; the ``accept_counter`` /
     # ``drafter_registry`` siblings stay active for metric scaffolding.
-    if getattr(args, "spec_decode", "none") == "dflash":
-        args.enable_dflash = True
-        args.spec_decode = "none"
-        print(
-            "Spec-decode: --spec-decode dflash routed to --enable-dflash "
-            "(mlx-vlm bridge; BatchedEngine integration deferred to 0.10).",
-            file=sys.stderr,
-        )
+    _maybe_print_legacy_dflash_redirect(args)
 
     # DFlash / DDTree mutual-exclusion gates fire BEFORE the startup banner so
     # the user sees a clean error instead of an optimistic "Features:
@@ -2245,7 +2326,7 @@ def serve_command(args):
     # involve the dedicated single-user servers.
     if args.enable_dflash and (args.suffix_decoding or args.enable_mtp):
         print(
-            "\n  Error: --enable-dflash cannot combine with --suffix-decoding "
+            "\n  Error: DFlash cannot combine with --suffix-decoding "
             "or --enable-mtp. DFlash runs a dedicated single-user server "
             "that bypasses BatchedEngine; other spec-decode methods only "
             "apply to the BatchedEngine path.\n"
@@ -2266,7 +2347,7 @@ def serve_command(args):
         _profile = resolve_profile(_alias_name)
         if _profile is None:
             print(
-                f"\n  Error: --enable-dflash requires a known alias, got "
+                f"\n  Error: DFlash requires a known alias, got "
                 f"{_alias_name!r}. DFlash eligibility is recorded per-alias "
                 f"in aliases.json; ad-hoc HuggingFace paths can't be "
                 f"validated. Try ``rapid-mlx info qwen3.5-27b-8bit``.\n"
@@ -2314,12 +2395,12 @@ def serve_command(args):
             _dflash_ignored.append("--mcp-config")
         if _dflash_ignored:
             print(
-                "\n  ⚠ The following flags are ignored under --enable-dflash"
+                "\n  ⚠ The following flags are ignored under DFlash"
                 "\n    (DFlash uses a dedicated single-user server that bypasses"
                 "\n    BatchedEngine):"
                 f"\n      {', '.join(_dflash_ignored)}"
-                "\n    Drop them from your serve command, or run without"
-                "\n    --enable-dflash if you need them.\n"
+                "\n    Drop them from your serve command, or run without DFlash"
+                "\n    if you need them.\n"
             )
 
     # DDTree eligibility gate mirrors DFlash: cheap alias/runtime checks
@@ -2430,7 +2511,8 @@ def serve_command(args):
     if getattr(args, "draft_model", None):
         print(
             "\n  ⚠ --draft-model is deprecated and has no effect."
-            "\n    For DFlash speculative decoding, use --enable-dflash "
+            "\n    For DFlash speculative decoding, use "
+            """--speculative-config '{"method":"dflash"}' """
             "(requires a DFlash-eligible alias). "
             "For MTP, use --enable-mtp (requires a model with MTP head).\n"
         )
@@ -2866,7 +2948,7 @@ def serve_command(args):
         # its dedicated server, never touching EngineCore / ModelConfig.
         if getattr(args, "no_spec_decode", False):
             print(
-                "error: --enable-dflash and --no-spec-decode are mutually "
+                "error: DFlash and --no-spec-decode are mutually "
                 "exclusive — DFlash is a speculative-decode mode.",
                 file=sys.stderr,
             )
@@ -2881,17 +2963,13 @@ def serve_command(args):
         assert _profile is not None and _profile.supports_dflash, (
             f"DFlash profile invariant violated for {_alias_name!r}"
         )
-        # ``--dflash-drafter-path`` override stays valid through both
-        # ``--enable-dflash`` and the ``--spec-decode dflash`` redirect
-        # path (#318): an operator-supplied path wins over the profile
-        # default. Empty string / missing attr falls back to the alias
-        # registry entry (validated non-None by _coerce_alias_dflash).
-        _dflash_drafter_override = (
-            getattr(args, "dflash_drafter_path", "") or ""
-        ).strip()
+        # The vLLM-style surface uses ``model`` for the drafter override.
+        # Legacy ``--dflash-drafter-path`` is normalized into
+        # ``_speculative_config.model`` above, with a direct fallback here
+        # for defensive compatibility.
         run_dflash_server(
             main_model_repo=_profile.hf_path,
-            drafter_repo=_dflash_drafter_override or _profile.dflash_draft_model,
+            drafter_repo=_resolve_dflash_drafter_repo(args, _profile),
             host=args.host,
             port=args.port,
             served_model_name=args.served_model_name or _alias_name,
@@ -5797,7 +5875,10 @@ def _print_dflash_status(alias: str, profile) -> None:
     print("\n".join(body))
     print()
     if eligible:
-        print(f"  Start with: rapid-mlx serve {alias} --enable-dflash")
+        print(
+            f"  Start with: rapid-mlx serve {alias} "
+            """--speculative-config '{"method":"dflash"}'"""
+        )
         print()
 
 
@@ -6538,10 +6619,10 @@ Examples:
         default=None,
         help=(
             "vLLM-style speculative decoding JSON config. This frontend "
-            "parses method/model/num_speculative_tokens now. DDTree is "
-            'available with \'{"method":"ddtree"}\'; existing DFlash, '
-            "MTP, and SuffixDecoding backends keep their legacy flags "
-            "until they migrate to this surface."
+            "parses method/model/num_speculative_tokens now. DFlash is "
+            'available with \'{"method":"dflash"}\' and DDTree with '
+            '\'{"method":"ddtree"}\'; MTP and SuffixDecoding keep their '
+            "legacy flags until they migrate to this surface."
         ),
     )
     serve_parser.add_argument(
@@ -6745,11 +6826,11 @@ Examples:
         dest="dflash_drafter_path",
         default="",
         help=(
-            "Override the per-alias DFlash drafter HF path. "
+            "Compatibility override for the per-alias DFlash drafter HF path; "
+            'prefer --speculative-config \'{"method":"dflash","model":...}\'. '
             "Defaults to the empty string, in which case "
             "vllm_mlx.spec_decode.dflash.drafter_registry resolves "
-            "the drafter for the loaded alias. Only consulted when "
-            "--spec-decode dflash is set; ignored otherwise."
+            "the drafter for the loaded alias."
         ),
     )
     # SuffixDecoding — drafter-free spec-decode using a suffix tree over

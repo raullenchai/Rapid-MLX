@@ -722,7 +722,7 @@ Qwen3.5 uses Gated DeltaNet (75% RNN) + full attention (25% KV). Other engines r
 | **Auto tool recovery** | Detect broken text-format tool calls, convert to structured | All 17 parser formats (incl. Gemma 4) |
 | **TurboQuant K8V4 codec** | K 8-bit + V 4-bit after Walsh-Hadamard + Lloyd-Max (~1/2.4 compression, lossless across verified matrix) | Default-on for 9 verified Qwen3.5/3.6 aliases; `--kv-cache-turboquant k8v4\|v4\|none` |
 | **KV cache quantization** | Quantize prefix cache entries to reduce memory | All models with `--kv-cache-quantization` |
-| **DFlash speculative decoding** | Block-diffusion drafter, parallel draft + verify (single-user) | `qwen3.5-27b-8bit`, `qwen3.6-27b-8bit` with `--enable-dflash` |
+| **DFlash speculative decoding** | Block-diffusion drafter, parallel draft + verify (single-user) | `qwen3.5-27b-8bit`, `qwen3.6-27b-8bit` with `--speculative-config '{"method":"dflash"}'` |
 | **DDTree speculative decoding** | DFlash draft-tree verification over multiple branches | `qwen3.5-9b-8bit` (experimental, single-user) |
 | **MTP speculative decoding** | Multi-token prediction head shipped with the model | MTP-trained checkpoints with `--enable-mtp` |
 | **SuffixDecoding** | Drafter-free, statistical n-gram lookup speculative decoding | All BatchedEngine models with `--suffix-decoding` |
@@ -764,7 +764,7 @@ Run your own: `bash evals/run_all_models.sh` runs the full quality suite (tool c
 | **TurboQuant K8V4 KV codec** | K is 8-bit + V is 4-bit after Walsh-Hadamard rotation + Lloyd-Max quantization — compresses KV to ~1/2.4 (~58% savings), lossless across the verified matrix. **Default-on for 9 verified Qwen3.5/3.6 aliases** (see below); `--kv-cache-turboquant none` to force off. |
 | **Smart cloud routing** | Large-context requests auto-route to a cloud LLM (`--cloud-model openai/gpt-5 --cloud-threshold 20000`) when local prefill would be slow. |
 | **Multimodal** | Vision, audio (STT/TTS with bundled Silero VAD silence pre-trim), video understanding, text embeddings — all through the standard OpenAI endpoints. |
-| **Speculative decoding** | DFlash (block-diffusion drafter, `--enable-dflash`), DDTree (DFlash draft tree, vLLM-style `--speculative-config '{"method":"ddtree"}'`), MTP (multi-token prediction head, `--enable-mtp`), SuffixDecoding (drafter-free n-gram, `--suffix-decoding`). Opt-in per alias — see below. |
+| **Speculative decoding** | DFlash (block-diffusion drafter, vLLM-style `--speculative-config '{"method":"dflash"}'`), DDTree (DFlash draft tree, `--speculative-config '{"method":"ddtree"}'`), MTP (multi-token prediction head, `--enable-mtp`), SuffixDecoding (drafter-free n-gram, `--suffix-decoding`). Opt-in per alias — see below. |
 | **Structured output, logprobs, continuous batching, KV quantization** | Standard, no flags or with one flag each. |
 | **3300+ tests** | Across reasoning, tool parsing, streaming, agent harnesses, and engine integration. |
 
@@ -775,7 +775,7 @@ Run your own: `bash evals/run_all_models.sh` runs the full quality suite (tool c
 
 Rapid-MLX ships in-tree speculative modes plus an experimental external DDTree integration. All are **opt-in** per alias — `rapid-mlx info <alias>` shows what's eligible on the model you're serving.
 
-**DFlash** — block-diffusion drafter (via mlx-vlm), single-user path. Opt in with `--enable-dflash`; requires `pip install 'rapid-mlx[dflash]'`.
+**DFlash** — block-diffusion drafter (via mlx-vlm), single-user path. Opt in with `--speculative-config '{"method":"dflash"}'`; requires `pip install 'rapid-mlx[dflash]'`.
 
 | Alias | Drafter | Avg speedup | Min / Max |
 |---|---|---|---|
@@ -785,10 +785,10 @@ Rapid-MLX ships in-tree speculative modes plus an experimental external DDTree i
 ```bash
 pip install 'rapid-mlx[dflash]'
 rapid-mlx info qwen3.5-27b-8bit       # check per-gate eligibility
-rapid-mlx serve qwen3.5-27b-8bit --enable-dflash
+rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}'
 ```
 
-Workload sensitivity: coding / math / summarization typically see **1.5–2.7×**; high-entropy creative writing and long-form chat can dip to **0.6–0.9×** because the drafter's training distribution diverges from open-ended generation — a known spec-decode literature pattern ([AdaEDL](https://arxiv.org/abs/2410.18351)), not a bug. DFlash mode runs a dedicated single-user server (no batched kernel yet); tool calling, MCP, and embeddings aren't available in that mode — restart without `--enable-dflash` for those.
+Workload sensitivity: coding / math / summarization typically see **1.5–2.7×**; high-entropy creative writing and long-form chat can dip to **0.6–0.9×** because the drafter's training distribution diverges from open-ended generation — a known spec-decode literature pattern ([AdaEDL](https://arxiv.org/abs/2410.18351)), not a bug. DFlash mode runs a dedicated single-user server (no batched kernel yet); tool calling, MCP, and embeddings aren't available in that mode — restart without DFlash for those.
 
 **MTP** (Multi-Token Prediction) — draft head baked into the model. Opt in with `--enable-mtp` on MTP-trained checkpoints. Auto-tune of `--mtp-num-draft-tokens` per workload is roadmapped for the 0.9.1x line.
 
@@ -809,7 +809,7 @@ rapid-mlx serve qwen3.5-9b-8bit \
   --speculative-config '{"method":"ddtree","model":"z-lab/Qwen3.5-9B-DFlash","num_speculative_tokens":16,"tree_budget":24}'
 ```
 
-`--enable-ddtree` remains as a compatibility shorthand for `--speculative-config '{"method":"ddtree"}'`; it is not enabled by default. MTP, DFlash, and SuffixDecoding keep their existing flags until they migrate behind the same config interface.
+`--enable-dflash` remains as a compatibility shorthand for `--speculative-config '{"method":"dflash"}'`, and `--dflash-drafter-path` maps to the config `model` field. `--enable-ddtree` similarly remains as a compatibility shorthand for `--speculative-config '{"method":"ddtree"}'`. Neither backend is enabled by default. MTP and SuffixDecoding keep their existing flags until they migrate behind the same config interface.
 
 Mutex: DFlash cannot combine with MTP or SuffixDecoding (single-user path). MTP and SuffixDecoding cannot combine with each other (both consume the drafter slot).
 
@@ -848,8 +848,8 @@ Mutex: DFlash cannot combine with MTP or SuffixDecoding (single-user path). MTP 
 | `--enable-prefix-cache` / `--disable-prefix-cache` | Cache common prefixes across requests | on |
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (default) or `hash` | `radix` |
 | `--pflash` | PFlash sparse prefill: `auto` / `always` / `off` | `auto` (on for verified aliases) |
-| `--enable-dflash` | DFlash speculative decoding (single-user; `qwen3.5-27b-8bit` / `qwen3.6-27b-8bit`) | off |
-| `--speculative-config` | vLLM-style speculative decoding JSON config; DDTree MVP supports `{"method":"ddtree"}` | off |
+| `--enable-dflash` | Compatibility shorthand for DFlash speculative decoding (single-user; prefer `--speculative-config '{"method":"dflash"}'`) | off |
+| `--speculative-config` | vLLM-style speculative decoding JSON config; DFlash supports `{"method":"dflash"}` and DDTree supports `{"method":"ddtree"}` | off |
 | `--enable-ddtree` | Compatibility shorthand for DDTree speculative decoding (single-user; `qwen3.5-9b-8bit`) | off |
 | `--suffix-decoding` | Drafter-free n-gram speculative decoding (BatchedEngine path) | off |
 | `--enable-mtp` | MTP head speculative decoding (requires MTP-trained model) | off |
@@ -1053,7 +1053,7 @@ harness/                 # Regression baselines + thresholds
 
 | Technique | Expected Gain | Status |
 |-----------|---------------|--------|
-| [DFlash](https://arxiv.org/abs/2602.06036) — block-diffusion drafter, single-user | 1.3–2× decode (workload-dependent) | Shipping, opt-in (`--enable-dflash`, `[dflash]` extra; qwen3.5-27b-8bit, qwen3.6-27b-8bit) |
+| [DFlash](https://arxiv.org/abs/2602.06036) — block-diffusion drafter, single-user | 1.3–2× decode (workload-dependent) | Shipping, opt-in (`--speculative-config '{"method":"dflash"}'`, `[dflash]` extra; qwen3.5-27b-8bit, qwen3.6-27b-8bit) |
 | [DDTree](https://arxiv.org/abs/2604.12989) — DFlash draft-tree verification, single-user | TBD on rapid-mlx 9B gate | Experimental (`--speculative-config '{"method":"ddtree"}'`; `--enable-ddtree` compatibility shorthand) |
 | [SuffixDecoding](https://arxiv.org/abs/2411.04975) — drafter-free n-gram speculative | 1.1–1.5× decode | Shipping (`--suffix-decoding`, per-model tier sweep ongoing) |
 | MTP — Multi-Token Prediction head | 1.4–1.7× decode | Shipping, opt-in (`--enable-mtp`, MTP-trained checkpoints); per-workload auto-tune of `--mtp-num-draft-tokens` landing in the 0.9.1x line |

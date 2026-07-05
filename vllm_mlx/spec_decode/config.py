@@ -33,12 +33,12 @@ _COMMON_KEYS = frozenset(
     {
         "method",
         "model",
-        "num_speculative_tokens",
     }
 )
 
 _METHOD_KEYS = {
-    "ddtree": frozenset({"tree_budget"}),
+    "ddtree": frozenset({"num_speculative_tokens", "tree_budget"}),
+    "mtp": frozenset({"num_speculative_tokens"}),
 }
 
 
@@ -116,6 +116,16 @@ def legacy_ddtree_config() -> SpeculativeConfig:
     return SpeculativeConfig(method="ddtree", raw={"method": "ddtree"})
 
 
+def legacy_dflash_config(model: str | None = None) -> SpeculativeConfig:
+    """Return the compatibility config represented by DFlash legacy flags."""
+
+    raw = {"method": "dflash"}
+    drafter = _optional_string(model, "model")
+    if drafter is not None:
+        raw["model"] = drafter
+    return SpeculativeConfig(method="dflash", model=drafter, raw=raw)
+
+
 def require_migrated_speculative_config(config: SpeculativeConfig) -> None:
     """Fail until ``config.method`` is wired to a backend runner."""
 
@@ -135,6 +145,7 @@ __all__ = [
     "SpeculativeConfig",
     "SpeculativeConfigError",
     "legacy_ddtree_config",
+    "legacy_dflash_config",
     "parse_speculative_config",
     "require_migrated_speculative_config",
 ]

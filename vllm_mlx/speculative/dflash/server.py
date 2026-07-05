@@ -1,8 +1,8 @@
 # SPDX-License-Identifier: Apache-2.0
 """DFlash server — dedicated single-user mode that bypasses BatchedEngine.
 
-When ``--enable-dflash`` is set, the CLI launches this server instead of
-the standard ``vllm_mlx.server.app``. It hosts a minimal OpenAI-compatible
+When DFlash is enabled, the CLI launches this server instead of the
+standard ``vllm_mlx.server.app``. It hosts a minimal OpenAI-compatible
 surface (``/healthz``, ``/v1/models``, ``/v1/chat/completions``) and routes
 generation through mlx-vlm's ``stream_generate`` with the loaded DFlash
 drafter.
@@ -25,8 +25,9 @@ v1 limitations (documented in README + ``rapid-mlx info``):
   - No prefix cache (per-request KV cache built fresh each call).
 
 These limitations are deliberate for v1 — the target user is someone
-running ``rapid-mlx serve qwen3.5-27b-8bit --enable-dflash`` to get a
-~2× speedup on code/long-form completions on a single Apple Silicon box.
+running ``rapid-mlx serve qwen3.5-27b-8bit --speculative-config
+'{"method":"dflash"}'`` to get a ~2× speedup on code/long-form
+completions on a single Apple Silicon box.
 """
 
 from __future__ import annotations
@@ -179,8 +180,7 @@ def _build_app(
                 status_code=400,
                 detail=(
                     "Tool calling is not supported in DFlash mode (v1 "
-                    "limitation). Restart without --enable-dflash to use "
-                    "tools."
+                    "limitation). Restart without DFlash to use tools."
                 ),
             )
         # Surface unsupported params explicitly rather than silently
@@ -189,17 +189,14 @@ def _build_app(
         if request.logprobs:
             raise HTTPException(
                 status_code=400,
-                detail=(
-                    "logprobs is not supported in DFlash mode. Restart "
-                    "without --enable-dflash."
-                ),
+                detail="logprobs is not supported in DFlash mode. Restart without DFlash.",
             )
         if request.response_format is not None:
             raise HTTPException(
                 status_code=400,
                 detail=(
                     "response_format (structured output) is not supported "
-                    "in DFlash mode. Restart without --enable-dflash."
+                    "in DFlash mode. Restart without DFlash."
                 ),
             )
 
@@ -310,8 +307,7 @@ def _render_prompt(
                     "DFlash server is text-only; dropped %d non-text "
                     "content part(s) of type(s) %s. The request will be "
                     "served using text parts only — switch to the standard "
-                    "server (no --enable-dflash) for full multimodal "
-                    "support.",
+                    "server without DFlash for full multimodal support.",
                     len(dropped_kinds),
                     sorted(set(dropped_kinds)),
                 )

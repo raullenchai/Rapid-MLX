@@ -75,6 +75,7 @@ register_spec_decoder(
     SpecDecoderPlugin(
         method="dflash",
         description="Block-diffusion drafter via the existing single-user bridge",
+        config_enabled=True,
         legacy_hint="use --enable-dflash or --spec-decode dflash",
     )
 )
