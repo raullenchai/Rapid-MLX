@@ -13,6 +13,7 @@ import json
 import logging
 import os
 import shutil
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -174,9 +175,7 @@ def _prepare_draft_model_for_dtree(draft_model: str) -> str:
 
     patched = _patched_draft_dir(path)
     patched.parent.mkdir(parents=True, exist_ok=True)
-    tmp = patched.with_name(f".{patched.name}.tmp-{os.getpid()}")
-    _remove_path(tmp)
-    tmp.mkdir(parents=True, exist_ok=False)
+    tmp = Path(tempfile.mkdtemp(prefix=f".{patched.name}.tmp-", dir=patched.parent))
     completed = False
     for child in path.iterdir():
         dst = tmp / child.name

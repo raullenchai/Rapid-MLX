@@ -171,18 +171,26 @@ def test_models_listing_renders_ddtree_column(capsys) -> None:
     captured = capsys.readouterr()
     assert "DDTree" in captured.out
     lines = captured.out.splitlines()
+
+    def ddtree_cell(row: str) -> str:
+        return row.split()[-1]
+
     eligible_row = next(
-        (line for line in lines if "qwen3.5-9b-8bit " in line),
+        (line for line in lines if line.strip().startswith("qwen3.5-9b-8bit ")),
         None,
     )
     assert eligible_row is not None
-    assert "✓" in eligible_row, f"DDTree column should be ✓: {eligible_row!r}"
+    assert ddtree_cell(eligible_row) == "✓", (
+        f"DDTree column should be ✓: {eligible_row!r}"
+    )
     ineligible_row = next(
-        (line for line in lines if "qwen3.5-9b-4bit " in line),
+        (line for line in lines if line.strip().startswith("qwen3.5-9b-4bit ")),
         None,
     )
     assert ineligible_row is not None
-    assert "—" in ineligible_row, f"DDTree column should be —: {ineligible_row!r}"
+    assert ddtree_cell(ineligible_row) == "—", (
+        f"DDTree column should be —: {ineligible_row!r}"
+    )
 
 
 @dataclass
@@ -423,6 +431,9 @@ def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
         ({"seed": 42}, "seed"),
         ({"logit_bias": {"1": 1.0}}, "logit_bias"),
         ({"top_logprobs": 1}, "top_logprobs"),
+        ({"tool_choice": "required"}, "tool_choice"),
+        ({"function_call": "auto"}, "tool_choice"),
+        ({"functions": [{"name": "x"}]}, "Tool calling"),
         ({"reasoning_max_tokens": 8}, "reasoning_max_tokens"),
         ({"reasoning_effort": "low"}, "reasoning_effort"),
         ({"video_fps": 1.0}, "video parameters"),

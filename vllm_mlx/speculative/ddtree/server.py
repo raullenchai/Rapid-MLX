@@ -223,6 +223,21 @@ def _validate_request(request: ChatCompletionRequest) -> None:
                 "Restart without --enable-ddtree to use tools."
             ),
         )
+    if request.tool_choice not in (None, "none"):
+        raise HTTPException(
+            status_code=400,
+            detail="tool_choice is not supported in DDTree mode; use tool_choice=none.",
+        )
+    if request.functions:
+        raise HTTPException(
+            status_code=400,
+            detail="functions is not supported in DDTree mode.",
+        )
+    if request.function_call not in (None, "none"):
+        raise HTTPException(
+            status_code=400,
+            detail="function_call is not supported in DDTree mode; use function_call=none.",
+        )
     if request.logprobs:
         raise HTTPException(
             status_code=400,

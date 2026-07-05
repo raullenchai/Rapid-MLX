@@ -773,7 +773,7 @@ Run your own: `bash evals/run_all_models.sh` runs the full quality suite (tool c
 <details>
 <summary><strong>Speculative decoding — DFlash, DDTree, MTP, SuffixDecoding</strong></summary>
 
-Three drafters ship in-tree. All are **opt-in** per alias — `rapid-mlx info <alias>` shows what's eligible on the model you're serving.
+Rapid-MLX ships in-tree speculative modes plus an experimental external DDTree integration. All are **opt-in** per alias — `rapid-mlx info <alias>` shows what's eligible on the model you're serving.
 
 **DFlash** — block-diffusion drafter (via mlx-vlm), single-user path. Opt in with `--enable-dflash`; requires `pip install 'rapid-mlx[dflash]'`.
 
