@@ -52,12 +52,19 @@ def _shutdown_ddtree_executor() -> None:
 
 def _build_app(
     *,
-    runtime: DDTreeRuntime,
+    runtime: DDTreeRuntime | None = None,
+    runtime_future: concurrent.futures.Future[DDTreeRuntime] | None = None,
     served_model_name: str,
     default_max_tokens: int,
     cors_origins: list[str],
     no_thinking: bool = False,
+    drafter_repo: str | None = None,
+    speculative_tokens: int | None = None,
+    tree_budget: int | None = None,
 ) -> FastAPI:
+    if runtime is None and runtime_future is None:
+        raise ValueError("DDTree app requires runtime or runtime_future")
+
     app = FastAPI(title="Rapid-MLX (DDTree)")
     from ...middleware.exception_handlers import install_exception_handlers
 
@@ -73,15 +80,58 @@ def _build_app(
             max_age=3600,
         )
 
+    def get_ready_runtime() -> DDTreeRuntime:
+        if runtime is not None:
+            return runtime
+        assert runtime_future is not None
+        if not runtime_future.done():
+            raise HTTPException(
+                status_code=503,
+                detail="DDTree runtime is still loading; retry shortly.",
+            )
+        exc = runtime_future.exception()
+        if exc is not None:
+            raise HTTPException(
+                status_code=500,
+                detail=f"DDTree runtime failed to load: {exc}",
+            )
+        return runtime_future.result()
+
     @app.get("/healthz")
     async def healthz() -> dict[str, Any]:
+        status = "ok"
+        ready_runtime: DDTreeRuntime | None = runtime
+        error: str | None = None
+        if ready_runtime is None:
+            assert runtime_future is not None
+            if runtime_future.done():
+                exc = runtime_future.exception()
+                if exc is None:
+                    ready_runtime = runtime_future.result()
+                else:
+                    status = "error"
+                    error = str(exc)
+            else:
+                status = "loading"
         return {
-            "status": "ok",
+            "status": status,
             "engine": "ddtree",
             "mode": "experimental-single-user-serial",
-            "drafter": runtime.drafter_repo,
-            "speculative_tokens": runtime.speculative_tokens,
-            "tree_budget": runtime.tree_budget,
+            "drafter": (
+                ready_runtime.drafter_repo
+                if ready_runtime is not None
+                else drafter_repo
+            ),
+            "speculative_tokens": (
+                ready_runtime.speculative_tokens
+                if ready_runtime is not None
+                else speculative_tokens
+            ),
+            "tree_budget": (
+                ready_runtime.tree_budget if ready_runtime is not None else tree_budget
+            ),
+            "ready": ready_runtime is not None,
+            **({"error": error} if error is not None else {}),
         }
 
     @app.get("/v1/models")
@@ -99,7 +149,8 @@ def _build_app(
     @app.post("/v1/chat/completions")
     async def create_chat_completion(request: ChatCompletionRequest):
         _validate_request(request)
-        prompt = _render_prompt(runtime, request, no_thinking=no_thinking)
+        ready_runtime = get_ready_runtime()
+        prompt = _render_prompt(ready_runtime, request, no_thinking=no_thinking)
         max_tokens = (
             request.max_tokens if request.max_tokens is not None else default_max_tokens
         )
@@ -108,7 +159,7 @@ def _build_app(
         if request.stream:
             return StreamingResponse(
                 _stream_completion(
-                    runtime=runtime,
+                    runtime=ready_runtime,
                     prompt=prompt,
                     served_model_name=served_model_name,
                     max_tokens=max_tokens,
@@ -118,7 +169,7 @@ def _build_app(
             )
 
         return await _non_stream_completion(
-            runtime=runtime,
+            runtime=ready_runtime,
             prompt=prompt,
             served_model_name=served_model_name,
             max_tokens=max_tokens,
@@ -131,6 +182,21 @@ def _build_app(
 def _validate_request(request: ChatCompletionRequest) -> None:
     if not request.messages:
         raise HTTPException(status_code=400, detail="messages must not be empty")
+    for message in request.messages:
+        content = message.content
+        if not isinstance(content, list):
+            continue
+        for part in content:
+            part_type = part.type if hasattr(part, "type") else part.get("type", "")
+            if part_type != "text":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        "Non-text chat content is not supported in DDTree mode "
+                        "(MVP limitation). Restart without --enable-ddtree to "
+                        "use multimodal inputs."
+                    ),
+                )
     if request.n is not None and request.n > 1:
         raise HTTPException(status_code=400, detail="n > 1 is not supported")
     if request.tools:
@@ -431,19 +497,23 @@ def run_ddtree_server(
         )
 
     logger.info("DDTree: loading runtime for %s", main_model_repo)
-    runtime = _ddtree_executor.submit(_load_all).result()
+    runtime_future = _ddtree_executor.submit(_load_all)
 
     app = _build_app(
-        runtime=runtime,
+        runtime_future=runtime_future,
         served_model_name=served_model_name,
         default_max_tokens=default_max_tokens,
         cors_origins=cors_origins,
         no_thinking=no_thinking,
+        drafter_repo=drafter_repo,
+        speculative_tokens=speculative_tokens,
+        tree_budget=tree_budget,
     )
 
     print()
     host_display = "localhost" if host == "0.0.0.0" else host
-    print(f"  Ready: http://{host_display}:{port}/v1  (DDTree experimental mode)")
+    print(f"  Starting: http://{host_display}:{port}/v1  (DDTree experimental mode)")
+    print(f"  Health: http://{host_display}:{port}/healthz")
     print(f"  Docs:  http://{host_display}:{port}/docs")
     print()
 

@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import concurrent.futures
 from dataclasses import dataclass
 from types import SimpleNamespace
 from unittest.mock import MagicMock
@@ -263,6 +264,46 @@ def test_build_app_healthz_models_and_completion() -> None:
     assert call.kwargs["skip_special_tokens"] is True
 
 
+def test_build_app_healthz_works_while_runtime_loads() -> None:
+    from fastapi.testclient import TestClient
+
+    from vllm_mlx.speculative.ddtree.server import _build_app
+
+    future: concurrent.futures.Future = concurrent.futures.Future()
+    app = _build_app(
+        runtime_future=future,
+        served_model_name="qwen3.5-9b-8bit",
+        default_max_tokens=64,
+        cors_origins=["*"],
+        drafter_repo="z-lab/Qwen3.5-9B-DFlash",
+        speculative_tokens=16,
+        tree_budget=24,
+    )
+    client = TestClient(app)
+
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["status"] == "loading"
+    assert body["ready"] is False
+    assert body["drafter"] == "z-lab/Qwen3.5-9B-DFlash"
+
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5-9b-8bit",
+            "messages": [{"role": "user", "content": "2+2?"}],
+        },
+    )
+    assert r.status_code == 503
+    assert "still loading" in r.json()["error"]["message"]
+
+    future.set_result(_fake_runtime())
+    r = client.get("/healthz")
+    assert r.status_code == 200
+    assert r.json()["ready"] is True
+
+
 def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
     from fastapi.testclient import TestClient
 
@@ -299,3 +340,24 @@ def test_chat_completions_rejects_unsupported_ddtree_params() -> None:
     )
     assert r.status_code == 400
     assert "top_p" in r.json()["error"]["message"]
+
+    r = client.post(
+        "/v1/chat/completions",
+        json={
+            "model": "qwen3.5-9b-8bit",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "text", "text": "describe this"},
+                        {
+                            "type": "image_url",
+                            "image_url": {"url": "data:image/png;base64,abc"},
+                        },
+                    ],
+                }
+            ],
+        },
+    )
+    assert r.status_code == 400
+    assert "non-text" in r.json()["error"]["message"].lower()

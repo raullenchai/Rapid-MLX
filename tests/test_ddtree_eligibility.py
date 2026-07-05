@@ -130,6 +130,39 @@ def test_runtime_patches_rope_parameters_without_copying_weights(
     assert weight.resolve() == (source / "model.safetensors").resolve()
 
 
+def test_runtime_replaces_stale_ddtree_patch_dir(tmp_path, monkeypatch) -> None:
+    from vllm_mlx.speculative.ddtree import runtime
+
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "config.json").write_text(
+        """
+        {
+          "model_type": "qwen3",
+          "rope_parameters": {
+            "rope_theta": 10000000,
+            "rope_type": "default"
+          }
+        }
+        """
+    )
+    (source / "model.safetensors").write_bytes(b"fake")
+    cache = tmp_path / "patched"
+    monkeypatch.setenv("RAPID_MLX_DDTREE_PATCH_CACHE", str(cache))
+    stale = runtime._patched_draft_dir(source)
+    stale.mkdir(parents=True)
+    (stale / "model.safetensors").mkdir()
+
+    patched = runtime._prepare_draft_model_for_dtree(str(source))
+    patched_path = Path(patched)
+
+    assert patched_path == stale
+    assert (patched_path / "model.safetensors").is_symlink()
+    assert (patched_path / "model.safetensors").resolve() == (
+        source / "model.safetensors"
+    ).resolve()
+
+
 def test_runtime_patches_qwen35_split_prefill() -> None:
     import mlx.core as mx
 

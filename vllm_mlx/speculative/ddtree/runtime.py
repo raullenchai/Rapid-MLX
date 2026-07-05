@@ -12,6 +12,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -172,26 +173,38 @@ def _prepare_draft_model_for_dtree(draft_model: str) -> str:
         patched_cfg["rope_scaling"] = rope_parameters["rope_scaling"]
 
     patched = _patched_draft_dir(path)
-    patched.mkdir(parents=True, exist_ok=True)
+    patched.parent.mkdir(parents=True, exist_ok=True)
+    tmp = patched.with_name(f".{patched.name}.tmp-{os.getpid()}")
+    _remove_path(tmp)
+    tmp.mkdir(parents=True, exist_ok=False)
+    completed = False
     for child in path.iterdir():
-        dst = patched / child.name
+        dst = tmp / child.name
         if child.name == "config.json":
             continue
         target = child.resolve()
-        if dst.exists() or dst.is_symlink():
-            if dst.is_symlink() and Path(os.readlink(dst)) == target:
-                continue
-            if dst.is_dir() and not dst.is_symlink():
-                continue
-            dst.unlink()
         dst.symlink_to(target, target_is_directory=target.is_dir())
-    (patched / "config.json").write_text(json.dumps(patched_cfg, indent=2) + "\n")
+    (tmp / "config.json").write_text(json.dumps(patched_cfg, indent=2) + "\n")
+    try:
+        _remove_path(patched)
+        tmp.replace(patched)
+        completed = True
+    finally:
+        if not completed:
+            _remove_path(tmp)
     logger.info(
         "DDTree: patched draft config for dtree-mlx compatibility: %s -> %s",
         draft_model,
         patched,
     )
     return str(patched)
+
+
+def _remove_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink()
+    elif path.exists():
+        shutil.rmtree(path)
 
 
 def _resolve_model_path(path_or_repo: str) -> Path:
