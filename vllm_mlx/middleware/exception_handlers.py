@@ -893,13 +893,20 @@ def _http_error_response(exc: StarletteHTTPException) -> JSONResponse:
             content=detail,
             headers=getattr(exc, "headers", None),
         )
+    code = None
+    if (
+        exc.status_code == 400
+        and isinstance(exc.detail, str)
+        and exc.detail == "There was an error parsing the body"
+    ):
+        code = "invalid_request"
     return JSONResponse(
         status_code=exc.status_code,
         content={
             "error": {
                 "message": str(exc.detail),
                 "type": _HTTP_ERROR_TYPE_MAP.get(exc.status_code, "api_error"),
-                "code": None,
+                "code": code,
                 "param": None,
             }
         },

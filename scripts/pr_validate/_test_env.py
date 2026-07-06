@@ -72,6 +72,26 @@ REQUIRED_TEST_PACKAGES: tuple[tuple[str, str, str], ...] = (
         "pytest.ini sets asyncio_mode=auto; without this every "
         "`async def test_*` fails at collection",
     ),
+    (
+        "aiohttp",
+        "aiohttp>=3.9.0",
+        "prompt-lookup bench tests import aiohttp at module load",
+    ),
+    (
+        "PIL",
+        "pillow>=10.0.0",
+        "image/aspect-ratio and Gemma MTP tests import PIL at collection/run time",
+    ),
+    (
+        "mlx_vlm",
+        "mlx-vlm>=0.6.3",
+        "Gemma 4 / DFlash / vision lock-in tests expect mlx_vlm importability",
+    ),
+    (
+        "mlx_audio",
+        "mlx-audio>=0.2.9,<0.4.4",
+        "audio route tests expect mlx-audio importability",
+    ),
 )
 
 # Canonical extras name from pyproject.toml. If you rename the extras,
@@ -147,6 +167,10 @@ def is_dep_declaration_file(path: str) -> bool:
 TRUSTED_TEST_PINS: tuple[str, ...] = (
     "pytest>=7.0.0,<9",
     "pytest-asyncio>=0.21.0,<1",
+    "aiohttp>=3.9.0,<4",
+    "pillow>=10.0.0,<13",
+    "mlx-vlm>=0.6.3,<0.7",
+    "mlx-audio>=0.2.9,<0.4.4",
 )
 
 

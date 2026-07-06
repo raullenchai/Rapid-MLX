@@ -4,12 +4,22 @@ from typing import Any, List, Optional
 import mlx.core as mx
 import mlx.nn as nn
 from mlx.nn import RMSNorm
+
+# MUST install the MLX hardware-compat shim BEFORE any `from mlx_lm.*` import.
+# `mlx_lm/__init__.py` re-exports from `mlx_lm.generate`, which captures
+# `mx.new_thread_local_stream(mx.default_device())` at module-import time; on
+# M5 single-stream GPUs that stream is unusable (#404). The shim is
+# idempotent and a no-op on hardware where the original API works.
+from ... import _mlx_compat as _mlx_compat
+
+_mlx_compat.install()
+
 from mlx_lm.models.base import (
     create_attention_mask,
     create_causal_mask,
     scaled_dot_product_attention,
-)
-from mlx_lm.models.cache import KVCache, RotatingKVCache
+)  # noqa: E402
+from mlx_lm.models.cache import KVCache, RotatingKVCache  # noqa: E402
 
 from . import LanguageModelOutput
 from .config import TextConfig

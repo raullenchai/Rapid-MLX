@@ -363,11 +363,18 @@ def test_d_deep_json_disabled_cap_passes_through(monkeypatch):
 # ============================================================
 
 
-def test_d_tool_recur_tools_depth_1000_returns_400_canonical_envelope(monkeypatch):
-    """A 1000-deep ``tools[0].function.parameters`` body MUST be
-    rejected with the canonical 400 envelope. Pre-fix this crashed
-    with HTTP 500 mentioning ``_sanitize_tools_for_template._walk``
-    — that's an unauthenticated DoS surface."""
+def test_d_tool_recur_tools_depth_above_cap_returns_400_canonical_envelope(
+    monkeypatch,
+):
+    """A ``tools[0].function.parameters`` body above the tool-schema cap
+    MUST be rejected with the canonical 400 envelope. Pre-fix this crashed
+    with HTTP 500 mentioning ``_sanitize_tools_for_template._walk`` — an
+    unauthenticated DoS surface.
+
+    Keep this payload above the default 64-level tool cap but below
+    Starlette/Python's JSON parser recursion ceiling so the per-tool
+    validator, not the generic body parser, is the gate under test.
+    """
     # Disable the whole-body depth gate so the per-tool validator is
     # the only thing standing between the payload and the chat-template
     # sanitiser. We want both gates to work independently — a defense-
@@ -384,7 +391,7 @@ def test_d_tool_recur_tools_depth_1000_returns_400_canonical_envelope(monkeypatc
     # server.
     resp = client.post(
         "/v1/chat/completions",
-        content=_chat_request_with_deep_tool_bytes(1000),
+        content=_chat_request_with_deep_tool_bytes(80),
         headers=_JSON_HEADERS,
     )
     assert resp.status_code == 400, resp.text[:400]
@@ -401,6 +408,29 @@ def test_d_tool_recur_tools_depth_1000_returns_400_canonical_envelope(monkeypatc
     assert "RAPID_MLX_MAX_TOOL_SCHEMA_DEPTH" in err["message"]
     assert "Traceback" not in resp.text
     assert "_walk" not in resp.text
+
+
+def test_d_tool_recur_parser_depth_1000_returns_invalid_request_code(monkeypatch):
+    """At extreme depths the JSON parser can reject the body before the
+    per-tool validator sees it. That is still a client 400, and the
+    OpenAI-shaped envelope should carry the canonical invalid_request code
+    instead of a null code.
+    """
+    monkeypatch.setenv("RAPID_MLX_MAX_BODY_DEPTH", "0")
+    app = _build_minimal_app(with_pydantic_chat=True)
+    client = TestClient(app, raise_server_exceptions=False)
+
+    resp = client.post(
+        "/v1/chat/completions",
+        content=_chat_request_with_deep_tool_bytes(1000),
+        headers=_JSON_HEADERS,
+    )
+    assert resp.status_code == 400, resp.text[:400]
+    err = resp.json()["error"]
+    assert err["type"] == "invalid_request_error"
+    assert err["code"] == "invalid_request"
+    assert "parsing the body" in err["message"]
+    assert "Traceback" not in resp.text
 
 
 def test_walk_tools_iter_preserves_nested_tuples():

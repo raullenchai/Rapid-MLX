@@ -209,6 +209,13 @@ test = [
     # would module-skip the entire lock-in suite and let a future
     # refactor silently drop the ``[vision]`` extra).
     'tomli>=2.0.1; python_version < "3.11"',
+    # Full-unit imports / runs optional-surface tests too. Keep these in
+    # [test] so pr_validate can rebuild a venv that actually runs
+    # ``pytest tests/`` without hand-installed local extras.
+    "aiohttp>=3.9.0",
+    "pillow>=10.0.0",
+    "mlx-vlm>=0.6.3",
+    "mlx-audio>=0.2.9,<0.4.4",
 ]
 dev = [
     # Test runtime (must mirror the `test` extras above; a unit test in
@@ -220,6 +227,10 @@ dev = [
     "pytest-asyncio>=0.21.0",
     "prometheus_client>=0.16.0",
     'tomli>=2.0.1; python_version < "3.11"',
+    "aiohttp>=3.9.0",
+    "pillow>=10.0.0",
+    "mlx-vlm>=0.6.3",
+    "mlx-audio>=0.2.9,<0.4.4",
     # Linters / typer — NOT in the `test` extras because pr_validate
     # only needs to *run* the tests; lint is its own pipeline step
     # (ruff) and runs from the host environment.
