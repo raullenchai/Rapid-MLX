@@ -3,14 +3,10 @@
 
 Historically, callers of the vendored MTP path
 (:mod:`vllm_mlx.spec_decode.mtp`) reached directly into
-:mod:`vllm_mlx.spec_decode.mtp.qwen3_5_inject`. Growing the allowlist
-to ``gemma4`` / ``gemma4_unified`` (paired with Google's official
-``google/gemma-4-*-it-assistant`` drafter checkpoints, Apache 2.0)
-means callers now need to pick the correct family-specific inject at
-runtime. The Gemma 4 drafter is a 4-layer transformer that reuses
-target K/V, structurally different from the Qwen3.5 MTP head. Instead
-of a giant ``if model_type in {...}`` inside a hot module, we keep the
-family implementations as separate modules and land the routing here.
+:mod:`vllm_mlx.spec_decode.mtp.qwen3_5_inject`. This dispatcher keeps
+family implementations behind a small registry so new architectures can
+be added only after they pass end-to-end lossless + performance
+validation.
 
 This module is intentionally the smallest possible dispatcher — no
 config mutation, no monkey-patching. It resolves the family, forwards
@@ -55,29 +51,6 @@ _MTP_INJECT_DISPATCH: dict[str, tuple[str, str]] = {
         "vllm_mlx.spec_decode.mtp.qwen3_5_inject",
         "inject_mtp_support",
     ),
-    # Gemma 4 — paired with Google's official
-    # ``google/gemma-4-*-it-assistant`` drafter checkpoints. Both the
-    # outer wrapper model_types (``gemma4`` / ``gemma4_unified``) and
-    # the inner text model_types (``gemma4_text`` /
-    # ``gemma4_unified_text``) route to the same ``gemma4_inject``
-    # module so callers that resolve model_type on the inner
-    # ``language_model.args`` still land correctly.
-    "gemma4": (
-        "vllm_mlx.spec_decode.mtp.gemma4_inject",
-        "inject_mtp_support",
-    ),
-    "gemma4_unified": (
-        "vllm_mlx.spec_decode.mtp.gemma4_inject",
-        "inject_mtp_support",
-    ),
-    "gemma4_text": (
-        "vllm_mlx.spec_decode.mtp.gemma4_inject",
-        "inject_mtp_support",
-    ),
-    "gemma4_unified_text": (
-        "vllm_mlx.spec_decode.mtp.gemma4_inject",
-        "inject_mtp_support",
-    ),
 }
 
 
@@ -91,22 +64,6 @@ _MTP_VALIDATE_DISPATCH: dict[str, tuple[str, str]] = {
     ),
     "qwen3_5_moe": (
         "vllm_mlx.spec_decode.mtp.qwen3_5_inject",
-        "validate_mtp_support",
-    ),
-    "gemma4": (
-        "vllm_mlx.spec_decode.mtp.gemma4_inject",
-        "validate_mtp_support",
-    ),
-    "gemma4_unified": (
-        "vllm_mlx.spec_decode.mtp.gemma4_inject",
-        "validate_mtp_support",
-    ),
-    "gemma4_text": (
-        "vllm_mlx.spec_decode.mtp.gemma4_inject",
-        "validate_mtp_support",
-    ),
-    "gemma4_unified_text": (
-        "vllm_mlx.spec_decode.mtp.gemma4_inject",
         "validate_mtp_support",
     ),
 }

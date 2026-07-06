@@ -68,7 +68,7 @@ flags remain compatibility shorthands.
 | `{"method":"dflash"}` | Enable the DFlash single-user bridge on validated aliases. |
 | `{"method":"ddtree"}` | Enable experimental DDTree verification on validated aliases. |
 | `{"method":"mtp"}` | Enable MTP speculative decoding for MTP-trained checkpoints. |
-| `{"method":"mtp","model":"<sidecar>"}` | Enable MTP with a validated assistant sidecar, currently for supported Gemma 4 unified targets. |
+| `{"method":"mtp","model":"<sidecar>"}` | Reserved for future validated assistant sidecars. Gemma 4 sidecar MTP is currently disabled after greedy-lossless A/B failed. |
 | `{"method":"mtp","num_speculative_tokens":3}` | Set the MTP max-K controller ceiling. |
 | `{"method":"mtp","disable_auto_k":true}` | Disable the MTP EV depth controller for fixed-K parity benches. |
 | `{"method":"suffix","num_speculative_tokens":8}` | Enable explicit SuffixDecoding for high-overlap workloads. |

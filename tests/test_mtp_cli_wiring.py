@@ -35,16 +35,14 @@ from __future__ import annotations
 # ---------------------------------------------------------------------------
 
 
-def test_detect_sidecar_promotes_gemma4_unified_with_missing_mtp_layers():
-    """Base Gemma 4 unified checkpoint (no MTP head) + sidecar → CHAIN.
+def test_detect_sidecar_does_not_promote_gemma4_unified_missing_mtp_layers():
+    """Base Gemma 4 unified checkpoint (no MTP head) + sidecar stays NONE.
 
-    The stock ``mlx-community/gemma-4-12B-it-4bit/config.json`` reports
-    ``model_type: gemma4_unified`` with no ``mtp_num_hidden_layers``
-    key. Without ``--mtp-sidecar``, detection collapses to NONE
-    (previous CHECK). With ``--mtp-sidecar``, the ~4-layer assistant
-    drafter comes from an external repo so absence of the field is
-    expected — detection MUST return CHAIN so ``--spec-decode mtp``
-    boots.
+    July 2026 A/B validation of ``mlx-community/gemma-4-12B-it-4bit`` +
+    ``google/gemma-4-12B-it-assistant`` showed greedy output divergence
+    on the server path. Until a future implementation proves lossless
+    correctness and performance end to end, sidecar mode must not
+    promote Gemma 4 into MTP eligibility.
     """
     from vllm_mlx.spec_decode.mtp import (
         MTPEligibility,
@@ -52,21 +50,18 @@ def test_detect_sidecar_promotes_gemma4_unified_with_missing_mtp_layers():
     )
 
     config = {"model_type": "gemma4_unified"}  # no mtp_num_hidden_layers
-    # Pre-PR-A shape: NONE.
     assert detect_mtp_eligibility(config) is MTPEligibility.NONE
-    # PR-A shape: sidecar promotes to CHAIN.
     assert (
-        detect_mtp_eligibility(config, has_external_sidecar=True)
-        is MTPEligibility.CHAIN
+        detect_mtp_eligibility(config, has_external_sidecar=True) is MTPEligibility.NONE
     )
 
 
-def test_detect_sidecar_promotes_gemma4_unified_with_zero_mtp_layers():
-    """Explicit ``mtp_num_hidden_layers: 0`` + sidecar → CHAIN too.
+def test_detect_sidecar_does_not_promote_gemma4_unified_zero_mtp_layers():
+    """Explicit ``mtp_num_hidden_layers: 0`` + sidecar stays NONE too.
 
     Same shape as the base 12B checkpoint after someone hand-edited
-    the config to stamp a zero on it. Sidecar-mode must still allow
-    through — the assistant weights come from the external path.
+    the config to stamp a zero on it. Sidecar-mode must still fail
+    closed for Gemma 4 until lossless validation passes.
     """
     from vllm_mlx.spec_decode.mtp import (
         MTPEligibility,
@@ -76,13 +71,12 @@ def test_detect_sidecar_promotes_gemma4_unified_with_zero_mtp_layers():
     config = {"model_type": "gemma4_unified", "mtp_num_hidden_layers": 0}
     assert detect_mtp_eligibility(config) is MTPEligibility.NONE
     assert (
-        detect_mtp_eligibility(config, has_external_sidecar=True)
-        is MTPEligibility.CHAIN
+        detect_mtp_eligibility(config, has_external_sidecar=True) is MTPEligibility.NONE
     )
 
 
 def test_detect_sidecar_no_effect_on_qwen3_5_missing_mtp():
-    """Sidecar mode is scoped to Gemma 4 unified — Qwen3.5 stays NONE.
+    """Sidecar mode does not manufacture a Qwen3.5 MTP head.
 
     Qwen3.5 / Qwen3.6 MTP is baked into the TARGET checkpoint via
     mlx-lm PR #990's sanitize() path. An operator who passes
@@ -332,18 +326,18 @@ def test_run_dispatch_mtp_inject_forwards_sidecar_path(monkeypatch):
     monkeypatch.setattr(
         _batched,
         "_resolve_hf_model_type",
-        lambda name: "gemma4_unified",
+        lambda name: "qwen3_5",
     )
 
     result = _batched._run_dispatch_mtp_inject(
         sentinel_model,
-        "mlx-community/gemma-4-12B-it-4bit",
-        "google/gemma-4-12B-it-assistant",
+        "mlx-community/Qwen3.5-4B-4bit",
+        None,
     )
     assert result == _batched._DISPATCH_ATTACHED
     assert captured["model"] is sentinel_model
-    assert captured["model_type"] == "gemma4_unified"
-    assert captured["mtp_sidecar"] == "google/gemma-4-12B-it-assistant"
+    assert captured["model_type"] == "qwen3_5"
+    assert captured["mtp_sidecar"] is None
 
 
 def test_run_dispatch_mtp_inject_returns_unresolved_when_model_type_missing(
@@ -408,14 +402,12 @@ def test_run_dispatch_mtp_inject_returns_rejected_when_injector_refuses(monkeypa
         return False  # family injector rejected
 
     monkeypatch.setattr(_mtp, "dispatch_mtp_inject", _fake_dispatch_mtp_inject)
-    monkeypatch.setattr(
-        _batched, "_resolve_hf_model_type", lambda name: "gemma4_unified"
-    )
+    monkeypatch.setattr(_batched, "_resolve_hf_model_type", lambda name: "qwen3_5")
 
     result = _batched._run_dispatch_mtp_inject(
         object(),
-        "mlx-community/gemma-4-12B-it-4bit",
-        "/nonexistent/sidecar/path",
+        "mlx-community/Qwen3.5-4B-4bit",
+        None,
     )
     assert result == _batched._DISPATCH_REJECTED, (
         "family-injector rejection MUST surface as _DISPATCH_REJECTED so "
@@ -497,12 +489,12 @@ def test_run_dispatch_mtp_inject_prefers_cli_provided_model_type(monkeypatch):
 
     result = _batched._run_dispatch_mtp_inject(
         object(),
-        "mlx-community/gemma-4-12B-it-4bit",
+        "mlx-community/Qwen3.5-4B-4bit",
         None,
-        preferred_model_type="gemma4_unified",
+        preferred_model_type="qwen3_5",
     )
     assert result == _batched._DISPATCH_ATTACHED
-    assert captured["model_type"] == "gemma4_unified"
+    assert captured["model_type"] == "qwen3_5"
     assert resolve_calls["n"] == 0, (
         "codex round-E blocker #2 regression: dispatch step re-read "
         "config.json on the executor even though the CLI already "
@@ -2678,13 +2670,13 @@ def test_apply_mtp_cli_model_type_reconciliation_promotes_eligibility_read():
 
     # Simulate the production shape: first read failed →
     # scheduler_config.mtp_model_type is None. Eligibility gate's
-    # read succeeded and returned a valid Gemma 4 config.
+    # read succeeded and returned a valid Qwen MTP config.
     sc = SchedulerConfig(
         spec_decode="mtp",
-        mtp_sidecar="/tmp/fake-sidecar",
+        mtp_sidecar=None,
         mtp_model_type=None,
     )
-    hf_cfg_eligibility = {"model_type": "gemma4_unified"}
+    hf_cfg_eligibility = {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1}
 
     _apply_mtp_cli_model_type_reconciliation(
         scheduler_config=sc,
@@ -2692,7 +2684,7 @@ def test_apply_mtp_cli_model_type_reconciliation_promotes_eligibility_read():
         logger=None,
     )
 
-    assert sc.mtp_model_type == "gemma4_unified", (
+    assert sc.mtp_model_type == "qwen3_5", (
         "codex round-I BLOCKING #3 regression: the reconciliation "
         "helper did NOT promote the eligibility read's model_type "
         f"into SchedulerConfig.mtp_model_type (got {sc.mtp_model_type!r}). "
@@ -2753,14 +2745,14 @@ def test_apply_mtp_cli_model_type_reconciliation_prefers_eligibility_on_disagree
     from vllm_mlx.scheduler import SchedulerConfig
 
     sc = SchedulerConfig(spec_decode="mtp", mtp_model_type="stale_value")
-    hf_cfg_eligibility = {"model_type": "gemma4_unified"}
+    hf_cfg_eligibility = {"model_type": "qwen3_5", "mtp_num_hidden_layers": 1}
 
     _apply_mtp_cli_model_type_reconciliation(
         scheduler_config=sc,
         hf_cfg_eligibility=hf_cfg_eligibility,
         logger=None,
     )
-    assert sc.mtp_model_type == "gemma4_unified", (
+    assert sc.mtp_model_type == "qwen3_5", (
         "reconciliation helper did NOT prefer the eligibility read "
         f"on disagreement (kept {sc.mtp_model_type!r}). This regresses "
         "the round-I contract: on skew, the eligibility gate's read "

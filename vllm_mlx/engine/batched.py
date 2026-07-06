@@ -341,10 +341,10 @@ def _decide_mtp_dispatch_action(
             "raise",
             "--spec-decode mtp was set but the family MTP "
             "injector rejected the model. See preceding "
-            "warnings for the specific failure (typical "
-            "causes: missing --mtp-sidecar for a Gemma 4 "
-            "target, sidecar path unreachable, or assistant "
-            "checkpoint model_type mismatch). Refusing to "
+            "warnings for the specific failure (typical causes: "
+            "MTP weights missing from the target checkpoint, "
+            "unsupported model_type, sidecar path unreachable, or "
+            "assistant checkpoint model_type mismatch). Refusing to "
             "boot with MTP silently disabled — pass "
             "--spec-decode none to continue without MTP.",
         )

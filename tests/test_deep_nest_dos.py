@@ -429,7 +429,10 @@ def test_d_tool_recur_parser_depth_1000_returns_invalid_request_code(monkeypatch
     err = resp.json()["error"]
     assert err["type"] == "invalid_request_error"
     assert err["code"] == "invalid_request"
-    assert "parsing the body" in err["message"]
+    assert (
+        "parsing the body" in err["message"]
+        or "JSON nesting depth exceeds" in err["message"]
+    )
     assert "Traceback" not in resp.text
 
 

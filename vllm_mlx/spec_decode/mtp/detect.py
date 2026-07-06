@@ -1,5 +1,5 @@
 # SPDX-License-Identifier: Apache-2.0
-"""Qwen3.5 / Qwen3.6 / Gemma 4 MTP architecture detection (R15 task #302).
+"""Qwen3.5 / Qwen3.6 MTP architecture detection (R15 task #302).
 
 Detection lives off the loaded ``config.json`` dict rather than the
 ``aliases.json`` schema. Reasons:
@@ -12,9 +12,7 @@ Detection lives off the loaded ``config.json`` dict rather than the
 * The ``mtp_num_hidden_layers`` value is an intrinsic property of the
   checkpoint, not of the alias. A user passing a raw HF path like
   ``Qwen/Qwen3.5-27B`` should still get MTP eligibility without us
-  having to ship an alias for every Qwen3.5 / Qwen3.6 quant. The same
-  reasoning applies to Gemma 4 checkpoints that carry an MTP sidecar
-  (community fp16-mtp variant from ``Mia-AiLab/Gemmable-4-12B-MTP-GGUF``).
+  having to ship an alias for every Qwen3.5 / Qwen3.6 quant.
 * ``model_type`` is already populated on every HF config and is the
   canonical anchor mlx-lm itself uses to route to a model class — we
   just piggyback on it.
@@ -22,9 +20,8 @@ Detection lives off the loaded ``config.json`` dict rather than the
 Eligibility is binary right now (``CHAIN`` or ``NONE``). A future
 ``TREE`` variant would land here once upstream ships a
 ``mtp_num_hidden_layers >= 2`` checkpoint, but as of vendoring date
-every released Qwen3.5 / Qwen3.6 checkpoint (and the Mia-AiLab
-Gemma 4 fp16-mtp sidecar) ships ``mtp_num_hidden_layers: 1`` — chain
-MTP only.
+every released Qwen3.5 / Qwen3.6 checkpoint ships
+``mtp_num_hidden_layers: 1`` — chain MTP only.
 """
 
 from __future__ import annotations
@@ -39,15 +36,12 @@ class MTPEligibility(str, enum.Enum):
 
     ``NONE`` — model architecture does not have an MTP head, or the
     config explicitly sets ``mtp_num_hidden_layers: 0`` (Qwen3.5 / 3.6
-    checkpoints that have been re-converted with MTP stripped, or a
-    stock Gemma 4 checkpoint without the Mia-AiLab fp16-mtp sidecar
-    layered on). The CLI must reject ``--spec-decode mtp`` in this
-    case.
+    checkpoints that have been re-converted with MTP stripped). The CLI
+    must reject ``--spec-decode mtp`` in this case.
 
     ``CHAIN`` — model has a single MTP layer (``mtp_num_hidden_layers
     == 1``). One draft token per backbone step. This is what every
-    upstream Qwen3.5 / Qwen3.6 release ships today, and it is also the
-    layout of the Mia-AiLab Gemma 4 fp16-mtp sidecar.
+    upstream Qwen3.5 / Qwen3.6 release ships today.
 
     ``TREE`` — reserved for ``mtp_num_hidden_layers >= 2``. Not in use
     yet; emits a runtime warning and is treated as ``CHAIN`` until the
@@ -62,44 +56,22 @@ class MTPEligibility(str, enum.Enum):
 # Architectures (``config.json::model_type``) whose model class ships an
 # MTP head that this engine knows how to drive.
 #
-# Two source families right now:
+# Upstream mlx-lm PR #990 Qwen3.5 / Qwen3.6:
+# - ``qwen3_5``     — dense (also the canonical model_type for the dense
+#                     Qwen3.6 release).
+# - ``qwen3_5_moe`` — MoE variant; subclasses the dense model and routes
+#                     through the same MTP path.
 #
-# 1. Upstream mlx-lm PR #990 (Qwen3.5 / Qwen3.6):
-#    - ``qwen3_5``     — dense (also the canonical model_type for the
-#                        dense Qwen3.6 release).
-#    - ``qwen3_5_moe`` — MoE variant; subclasses the dense model and
-#                        routes through the same MTP path.
-#
-# 2. Community fp16-mtp sidecar for Gemma 4 (source:
-#    ``Mia-AiLab/Gemmable-4-12B-MTP-GGUF`` — ~98 k downloads at time
-#    of writing; NOT part of upstream PR #990):
-#    - ``gemma4_unified`` — text-only unified variant
-#                            (``Gemma4UnifiedForConditional
-#                            Generation``). The 12B dense checkpoints
-#                            (``gemma-4-12B-it-4bit`` /
-#                            ``gemma-4-12B-it-8bit``) ship as unified.
-#
-# The Mia-AiLab sidecar targets 12B unified only today, and the
-# assistant-drafter path in ``gemma4_inject`` has only been verified
-# against the unified 12B target. The multimodal ``gemma4`` model_type
-# (``Gemma4ForConditionalGeneration`` — 26B-A4B / e2b / e4b lineages)
-# is INTENTIONALLY NOT on this allowlist: even though the dispatcher
-# in ``spec_decode/mtp/dispatch.py`` maps it to ``gemma4_inject``,
-# there is no verified sidecar or drafter for that lineage today and
-# advertising ``--spec-decode mtp`` eligibility for a hand-edited
-# multimodal config would let it slip past pre-boot gating into an
-# inject/generator/cache path that hasn't been exercised for that
-# architecture. Add ``gemma4`` here (and ``gemma4_text``) once a
-# multimodal-verified sidecar or assistant drafter lands.
+# Gemma 4 assistant-sidecar MTP is intentionally not advertised here. July
+# 2026 A/B validation against ``mlx-community/gemma-4-12B-it-4bit`` +
+# ``google/gemma-4-12B-it-assistant`` showed greedy output divergence under
+# the server path. Keep Gemma closed until an end-to-end lossless + perf
+# validation proves otherwise.
 _SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
     {
         # Qwen3.5 / Qwen3.6 (upstream PR #990)
         "qwen3_5",
         "qwen3_5_moe",
-        # Gemma 4 12B unified (community sidecar —
-        # Mia-AiLab/Gemmable-4-12B-MTP-GGUF — and Google's
-        # ``google/gemma-4-12b-it-assistant`` drafter).
-        "gemma4_unified",
     }
 )
 
@@ -148,22 +120,13 @@ def detect_mtp_eligibility(
             non-dict) returns ``MTPEligibility.NONE`` — used by the CLI
             so callers can pass ``model_auto_config.get_config(path)``
             output unguarded.
-        has_external_sidecar: Set by the CLI when the operator has
-            passed ``--mtp-sidecar <path>``. When ``True``, a Gemma 4
-            unified base checkpoint (which never ships MTP weights of
-            its own — ``mtp_num_hidden_layers`` is absent / 0 in the
-            stock ``config.json``) is allowed through as
-            :attr:`MTPEligibility.CHAIN`. The external sidecar carries
-            the ~4-layer assistant-drafter weights that the
-            :func:`~vllm_mlx.spec_decode.mtp.dispatch.dispatch_mtp_inject`
-            call site will load onto the target model. Only applies to
-            ``model_type == "gemma4_unified"``; Qwen3.5 / Qwen3.6
-            eligibility still requires ``mtp_num_hidden_layers >= 1``
-            in the base config because their MTP head is a compile-
-            time part of the target checkpoint, not an external
-            sidecar. Default ``False`` preserves the pre-0.9.13
-            reject-on-``mtp_num_hidden_layers == 0`` contract for
-            every non-sidecar caller.
+        has_external_sidecar: Accepted for compatibility with the
+            legacy CLI flag surface, but currently does not promote any
+            architecture. Qwen3.5 / Qwen3.6 eligibility requires
+            ``mtp_num_hidden_layers >= 1`` in the base config because
+            their MTP head is part of the target checkpoint. Gemma 4
+            sidecar promotion is disabled until it passes end-to-end
+            greedy-lossless validation.
 
     Returns:
         :class:`MTPEligibility` value. Detection is conservative — any
@@ -205,39 +168,14 @@ def _detect_mtp_eligibility_verbose(
             f"model_type {model_type!r} not in MTP allowlist",
         )
 
+    _ = has_external_sidecar
     num_mtp_layers = _safe_int(config.get("mtp_num_hidden_layers"), 0)
     if num_mtp_layers <= 0:
-        # External-sidecar path (Gemma 4 unified only): the operator
-        # has passed ``--mtp-sidecar <path>`` at the CLI, meaning the
-        # ~4-layer assistant-drafter weights live in an external repo
-        # and the ``dispatch_mtp_inject`` call site will graft them
-        # onto the target at boot. The stock base checkpoint carries
-        # no MTP head — ``mtp_num_hidden_layers`` is absent / 0 — but
-        # that is expected and MUST NOT reject.
-        #
-        # Scoped to ``gemma4_unified`` because it is the only lineage
-        # with a verified external assistant-drafter path today
-        # (``google/gemma-4-*-it-assistant``, Apache 2.0). Qwen3.5 /
-        # Qwen3.6 MTP is baked into the target checkpoint (mlx-lm
-        # PR #990 sanitize path) — an operator who passes
-        # ``--mtp-sidecar`` against a stripped Qwen3.5 config would
-        # still need to re-convert from HF, so we keep the reject.
-        if has_external_sidecar and model_type == "gemma4_unified":
-            return _DetectionResult(
-                MTPEligibility.CHAIN,
-                model_type,
-                num_mtp_layers,
-                "external sidecar supplies MTP weights (chain mode)",
-            )
         # MTP-capable model_type but MTP weights not present on this
         # checkpoint. For Qwen3.5 / Qwen3.6 this is a stripped convert —
         # operator must re-convert from HF with the PR #990 sanitize()
-        # path that preserves ``mtp.*`` weights. For Gemma 4 this is
-        # the default: the base checkpoint has no MTP head; operator
-        # must layer on the Mia-AiLab fp16-mtp sidecar. Either way,
-        # detection collapses to NONE so ``--spec-decode mtp`` is
-        # rejected loudly at boot. See task report for the conversion
-        # / sidecar SOP.
+        # path that preserves ``mtp.*`` weights. Detection collapses to
+        # NONE so ``--spec-decode mtp`` is rejected loudly at boot.
         return _DetectionResult(
             MTPEligibility.NONE,
             model_type,

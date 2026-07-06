@@ -2804,10 +2804,9 @@ def serve_command(args):
         # Qwen3.5/3.6 model + a bound DFlash drafter.
         spec_decode=getattr(args, "spec_decode", "none"),
         dflash_drafter_path=getattr(args, "dflash_drafter_path", "") or "",
-        # 0.9.13 PR-A: Gemma 4 external MTP sidecar path (see
-        # ``SchedulerConfig.mtp_sidecar`` for the routing contract).
-        # ``None`` is the "no sidecar; native-MTP path only" sentinel
-        # matching the argparse default.
+        # Future external MTP sidecar path (currently reserved; Gemma 4
+        # assistant-sidecar MTP is disabled after lossless A/B failed).
+        # ``None`` is the "no sidecar; native-MTP path only" sentinel.
         mtp_sidecar=getattr(args, "mtp_sidecar", None),
         # 0.9.13 PR-A codex round-E blocker #2: CLI-resolved
         # ``config.json::model_type`` for the dispatch step. See the
@@ -2872,12 +2871,10 @@ def serve_command(args):
     # clear error rather than discovering the mismatch when the first
     # backbone forward pass raises ``AttributeError`` mid-generation.
     #
-    # 0.9.13 PR-A: when ``--mtp-sidecar <path>`` is set, the operator
-    # is opting into the Gemma 4 external assistant-drafter route.
-    # ``detect_mtp_eligibility`` then permits a base Gemma 4 unified
-    # checkpoint (which has no baked-in MTP head — the sidecar carries
-    # the assistant weights) through as CHAIN. Qwen3.5/3.6 still needs
-    # ``mtp_num_hidden_layers >= 1`` on the base config either way.
+    # ``--mtp-sidecar <path>`` is currently a reserved compatibility
+    # surface for future assistant sidecars. It does not promote any
+    # model into eligibility; Qwen3.5/3.6 still needs
+    # ``mtp_num_hidden_layers >= 1`` on the base config.
     if getattr(args, "spec_decode", "none") == "mtp":
         from vllm_mlx.spec_decode.mtp import (
             MTPEligibility,
@@ -2898,21 +2895,18 @@ def serve_command(args):
         if eligibility is MTPEligibility.NONE:
             if has_sidecar:
                 print(
-                    "error: --spec-decode mtp --mtp-sidecar <path> requires a "
-                    "Gemma 4 unified checkpoint (model_type='gemma4_unified') "
-                    "or a Qwen3.5 / Qwen3.6 checkpoint with "
-                    "mtp_num_hidden_layers >= 1. The loaded model does not "
-                    "qualify.",
+                    "error: --spec-decode mtp currently requires a Qwen3.5 / "
+                    "Qwen3.6 checkpoint with mtp_num_hidden_layers >= 1 in "
+                    "config.json. --mtp-sidecar is reserved for future "
+                    "validated assistant sidecars and does not make this "
+                    "model eligible.",
                     file=sys.stderr,
                 )
             else:
                 print(
                     "error: --spec-decode mtp requires a Qwen3.5 / Qwen3.6 "
-                    "checkpoint with mtp_num_hidden_layers >= 1 in "
-                    "config.json, or a Gemma 4 unified checkpoint paired "
-                    "with --mtp-sidecar <path> (see "
-                    "google/gemma-4-*-it-assistant on HF). The loaded "
-                    "model does not qualify.",
+                    "checkpoint with mtp_num_hidden_layers >= 1 in config.json. "
+                    "The loaded model does not qualify.",
                     file=sys.stderr,
                 )
             sys.exit(2)
@@ -6846,27 +6840,23 @@ Examples:
             "qualify so misuse fails loud."
         ),
     )
-    # 0.9.13 PR-A: external MTP sidecar for the Gemma 4 assistant-drafter
-    # route. Combined with ``--spec-decode mtp``, allows a base Gemma 4
-    # unified checkpoint (which never ships an MTP head of its own) to
-    # graft on the ~4-layer assistant drafter from
-    # ``google/gemma-4-*-it-assistant`` (Apache 2.0). Not used by the
-    # Qwen3.5/3.6 native-MTP path — that lineage's MTP head is baked
-    # into the target checkpoint via mlx-lm PR #990's sanitize() pass,
-    # so ``--mtp-sidecar`` has no effect there.
+    # Compatibility surface for future external MTP assistant sidecars.
+    # Gemma 4 assistant-sidecar MTP is currently disabled after July 2026
+    # greedy-lossless A/B failed; Qwen3.5/3.6 native MTP does not use a
+    # sidecar because its head is baked into the target checkpoint via
+    # mlx-lm PR #990's sanitize() pass.
     serve_parser.add_argument(
         "--mtp-sidecar",
         dest="mtp_sidecar",
         default=None,
         help=(
-            "Path to a Gemma 4 MTP assistant-drafter checkpoint — either a "
-            "local safetensors directory (e.g. ~/.cache/huggingface/hub/"
-            "gemma-4-12B-it-assistant) or an HF repo id "
-            "(e.g. google/gemma-4-12B-it-assistant). Prefer "
+            "Reserved path/repo id for future validated MTP assistant "
+            "sidecars. Prefer "
             '--speculative-config \'{"method":"mtp","model":...}\' '
-            "for new usage. Only consulted when MTP spec-decode is set; "
-            "ignored for the Qwen3.5/3.6 "
-            "native-MTP path (their head is baked into the target). "
+            "for new usage. Gemma 4 assistant-sidecar MTP is currently "
+            "disabled after greedy-lossless validation failed; ignored for "
+            "the Qwen3.5/3.6 native-MTP path because their head is baked "
+            "into the target. "
             "Requires the [mtp] install extra."
         ),
     )

@@ -823,12 +823,7 @@ rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}'
 
 Workload sensitivity: coding / math / summarization typically see **1.5–2.7×**; high-entropy creative writing and long-form chat can dip to **0.6–0.9×** because the drafter's training distribution diverges from open-ended generation — a known spec-decode literature pattern ([AdaEDL](https://arxiv.org/abs/2410.18351)), not a bug. DFlash mode runs a dedicated single-user server (no batched kernel yet); tool calling, MCP, and embeddings aren't available in that mode — restart without DFlash for those.
 
-**MTP** (Multi-Token Prediction) — draft head baked into the model, or a validated assistant sidecar. Opt in with `--speculative-config '{"method":"mtp"}'` on MTP-trained checkpoints. For sidecar flows, pass the assistant path in the config `model` field. `num_speculative_tokens` maps to the existing MTP max-K controller ceiling; `disable_auto_k` pins the fixed-K=1 bench path.
-
-```bash
-rapid-mlx serve mlx-community/gemma-4-12b-it-4bit \
-  --speculative-config '{"method":"mtp","model":"google/gemma-4-12B-it-assistant","num_speculative_tokens":3}'
-```
+**MTP** (Multi-Token Prediction) — draft head baked into the model. Opt in with `--speculative-config '{"method":"mtp"}'` on MTP-trained checkpoints. `num_speculative_tokens` maps to the existing MTP max-K controller ceiling; `disable_auto_k` pins the fixed-K=1 bench path. Gemma 4 assistant-sidecar MTP is not advertised because July 2026 A/B validation found greedy output divergence; it remains disabled until a lossless implementation lands.
 
 For fixed-K parity benches:
 

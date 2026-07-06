@@ -182,19 +182,14 @@ def test_detect_eligibility_qwen3_5_stripped_checkpoint():
 
 
 # ---------------------------------------------------------------------------
-# 1b. Gemma 4 detection (community fp16-mtp sidecar path)
+# 1b. Gemma 4 detection (assistant sidecar path currently disabled)
 # ---------------------------------------------------------------------------
 # Gemma 4 ships in two ``model_type`` flavours (verified against the
 # cached mlx-community configs on 2026-07-01):
 #
 #   * ``gemma4_unified`` — text-only variant. ``Gemma4UnifiedForConditional
 #     Generation``. Used by the 12B dense checkpoints
-#     (``gemma-4-12B-it-4bit`` / ``gemma-4-12B-it-8bit``), which is the
-#     target of the Mia-AiLab fp16-mtp sidecar (``Mia-AiLab/Gemmable-4-12B
-#     -MTP-GGUF``) AND Google's ``google/gemma-4-12b-it-assistant``
-#     drafter. This is the ONLY Gemma 4 lineage on the detect allowlist
-#     right now — see the comment on ``_SUPPORTED_MODEL_TYPES`` for
-#     rationale.
+#     (``gemma-4-12B-it-4bit`` / ``gemma-4-12B-it-8bit``).
 #   * ``gemma4`` — multimodal variant. ``Gemma4ForConditionalGeneration``.
 #     Covers the effective-MoE ``gemma-4-26b-a4b-it-4bit`` and the small
 #     vision-tower e2b / e4b checkpoints. INTENTIONALLY OFF the
@@ -204,20 +199,19 @@ def test_detect_eligibility_qwen3_5_stripped_checkpoint():
 #     doesn't slip into an un-exercised inject path.
 #
 # Base checkpoints do NOT carry ``mtp_num_hidden_layers`` in their
-# ``config.json`` (verified for all four cache probes) — the sidecar
-# layers it on. We therefore test both the CHAIN path (unified, sidecar
-# applied, mtp=1) and the NONE path (unified, sidecar absent, mtp
-# missing/0), plus the explicit NONE contract for multimodal ``gemma4``
-# regardless of mtp value.
+# ``config.json`` (verified for all four cache probes). July 2026 A/B
+# validation found greedy output divergence for the Google 12B assistant
+# sidecar, so all Gemma 4 model_types must stay NONE regardless of
+# ``mtp_num_hidden_layers`` until a future implementation proves lossless.
 
 
-def test_detect_eligibility_gemma4_dense_unified_chain():
-    """Gemma 4 12B dense (``gemma4_unified``) with sidecar applied → CHAIN.
+def test_detect_eligibility_gemma4_dense_unified_stays_none_even_with_mtp_layers():
+    """Gemma 4 12B dense (``gemma4_unified``) stays NONE.
 
-    This is the Mia-AiLab primary target: ``gemma-4-12B-it-*`` reports
-    ``model_type: gemma4_unified`` at the top of ``config.json``. Once
-    the sidecar sets ``mtp_num_hidden_layers=1``, detection MUST return
-    CHAIN so ``--spec-decode mtp`` boots.
+    A hand-edited config or sidecar-derived config may stamp
+    ``mtp_num_hidden_layers=1``, but Gemma 4 MTP is not considered
+    supported until the assistant-sidecar path passes greedy-lossless
+    server A/B validation.
     """
     from vllm_mlx.spec_decode.mtp import (
         MTPEligibility,
@@ -225,7 +219,7 @@ def test_detect_eligibility_gemma4_dense_unified_chain():
     )
 
     config = {"model_type": "gemma4_unified", "mtp_num_hidden_layers": 1}
-    assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
+    assert detect_mtp_eligibility(config) is MTPEligibility.NONE
 
 
 def test_detect_eligibility_gemma4_dense_unified_stripped_none():
@@ -233,9 +227,7 @@ def test_detect_eligibility_gemma4_dense_unified_stripped_none():
 
     Base ``mlx-community/gemma-4-12b-it-4bit`` ships without an MTP
     head; ``mtp_num_hidden_layers`` is either absent or 0. Detection
-    must collapse to NONE so ``--spec-decode mtp`` is rejected at boot
-    with a clear ``sidecar missing`` hint rather than silently emitting
-    random-init draft tokens.
+    must collapse to NONE so ``--spec-decode mtp`` is rejected at boot.
     """
     from vllm_mlx.spec_decode.mtp import (
         MTPEligibility,
