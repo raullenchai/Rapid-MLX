@@ -91,6 +91,7 @@ register_spec_decoder(
     SpecDecoderPlugin(
         method="suffix",
         description="Drafter-free suffix / n-gram speculative decoding",
+        config_enabled=True,
         legacy_hint="use --suffix-decoding",
         aliases=("ngram",),
     )

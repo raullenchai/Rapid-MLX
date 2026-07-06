@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import math
 from dataclasses import dataclass
 from typing import Any
 
@@ -26,19 +27,30 @@ class SpeculativeConfig:
     model: str | None = None
     num_speculative_tokens: int | None = None
     tree_budget: int | None = None
+    max_suffix_len: int | None = None
+    min_confidence: float | None = None
+    min_draft_len: int | None = None
     raw: dict[str, Any] | None = None
 
 
 _COMMON_KEYS = frozenset(
     {
         "method",
-        "model",
     }
 )
 
 _METHOD_KEYS = {
-    "ddtree": frozenset({"num_speculative_tokens", "tree_budget"}),
-    "mtp": frozenset({"num_speculative_tokens"}),
+    "ddtree": frozenset({"model", "num_speculative_tokens", "tree_budget"}),
+    "dflash": frozenset({"model"}),
+    "mtp": frozenset({"model", "num_speculative_tokens"}),
+    "suffix": frozenset(
+        {
+            "num_speculative_tokens",
+            "max_suffix_len",
+            "min_confidence",
+            "min_draft_len",
+        }
+    ),
 }
 
 
@@ -50,6 +62,26 @@ def _positive_int(value: Any, key: str) -> int | None:
     if value <= 0:
         raise SpeculativeConfigError(f"{key} must be a positive integer")
     return value
+
+
+def _positive_float(value: Any, key: str) -> float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise SpeculativeConfigError(f"{key} must be a positive number")
+    numeric = float(value)
+    if not math.isfinite(numeric) or numeric <= 0:
+        raise SpeculativeConfigError(f"{key} must be a positive number")
+    return numeric
+
+
+def _confidence(value: Any, key: str) -> float | None:
+    numeric = _positive_float(value, key)
+    if numeric is None:
+        return None
+    if numeric > 1:
+        raise SpeculativeConfigError(f"{key} must be between 0 and 1")
+    return numeric
 
 
 def _optional_string(value: Any, key: str) -> str | None:
@@ -106,6 +138,9 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
             payload.get("num_speculative_tokens"), "num_speculative_tokens"
         ),
         tree_budget=_positive_int(payload.get("tree_budget"), "tree_budget"),
+        max_suffix_len=_positive_int(payload.get("max_suffix_len"), "max_suffix_len"),
+        min_confidence=_confidence(payload.get("min_confidence"), "min_confidence"),
+        min_draft_len=_positive_int(payload.get("min_draft_len"), "min_draft_len"),
         raw=dict(payload),
     )
 
@@ -148,6 +183,38 @@ def legacy_mtp_config(
     )
 
 
+def legacy_suffix_config(
+    *,
+    num_speculative_tokens: int | None = None,
+    max_suffix_len: int | None = None,
+    min_confidence: float | None = None,
+    min_draft_len: int | None = None,
+) -> SpeculativeConfig:
+    """Return the compatibility config represented by ``--suffix-decoding``."""
+
+    raw: dict[str, Any] = {"method": "suffix"}
+    tokens = _positive_int(num_speculative_tokens, "num_speculative_tokens")
+    if tokens is not None:
+        raw["num_speculative_tokens"] = tokens
+    suffix_len = _positive_int(max_suffix_len, "max_suffix_len")
+    if suffix_len is not None:
+        raw["max_suffix_len"] = suffix_len
+    confidence = _confidence(min_confidence, "min_confidence")
+    if confidence is not None:
+        raw["min_confidence"] = confidence
+    draft_len = _positive_int(min_draft_len, "min_draft_len")
+    if draft_len is not None:
+        raw["min_draft_len"] = draft_len
+    return SpeculativeConfig(
+        method="suffix",
+        num_speculative_tokens=tokens,
+        max_suffix_len=suffix_len,
+        min_confidence=confidence,
+        min_draft_len=draft_len,
+        raw=raw,
+    )
+
+
 def require_migrated_speculative_config(config: SpeculativeConfig) -> None:
     """Fail until ``config.method`` is wired to a backend runner."""
 
@@ -169,6 +236,7 @@ __all__ = [
     "legacy_ddtree_config",
     "legacy_dflash_config",
     "legacy_mtp_config",
+    "legacy_suffix_config",
     "parse_speculative_config",
     "require_migrated_speculative_config",
 ]

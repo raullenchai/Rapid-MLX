@@ -1560,12 +1560,33 @@ def _normalize_speculative_config_or_exit(args):
         legacy_ddtree_config,
         legacy_dflash_config,
         legacy_mtp_config,
+        legacy_suffix_config,
         parse_speculative_config,
         require_migrated_speculative_config,
     )
 
     raw_config = getattr(args, "speculative_config", None)
+    config = None
+
+    def _fill_suffix_defaults() -> None:
+        if getattr(args, "suffix_max_draft", None) is None:
+            args.suffix_max_draft = 8
+        if getattr(args, "suffix_max_suffix_len", None) is None:
+            args.suffix_max_suffix_len = 4
+        if getattr(args, "suffix_min_confidence", None) is None:
+            args.suffix_min_confidence = 0.3
+        if getattr(args, "suffix_min_draft_len", None) is None:
+            args.suffix_min_draft_len = 2
+
     if raw_config is not None:
+        try:
+            config = parse_speculative_config(raw_config)
+            if config is not None:
+                require_migrated_speculative_config(config)
+        except SpeculativeConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(2)
+        config_method = config.method if config is not None else "none"
         conflicts = []
         if getattr(args, "enable_ddtree", False):
             conflicts.append("--enable-ddtree")
@@ -1578,6 +1599,22 @@ def _normalize_speculative_config_or_exit(args):
             conflicts.append("--dflash-drafter-path")
         if (getattr(args, "mtp_sidecar", None) or "").strip():
             conflicts.append("--mtp-sidecar")
+        # DFlash has a dedicated preflight that historically reports
+        # these runtime conflicts as "cannot combine" (exit 1) before
+        # probing mlx-vlm. Preserve that user-facing contract; other
+        # methods stay on the generic config/legacy mutual-exclusion path.
+        if getattr(args, "enable_mtp", False) and config_method != "dflash":
+            conflicts.append("--enable-mtp")
+        if getattr(args, "suffix_decoding", False) and config_method != "dflash":
+            conflicts.append("--suffix-decoding")
+        if getattr(args, "suffix_max_draft", None) is not None:
+            conflicts.append("--suffix-max-draft")
+        if getattr(args, "suffix_max_suffix_len", None) is not None:
+            conflicts.append("--suffix-max-suffix-len")
+        if getattr(args, "suffix_min_confidence", None) is not None:
+            conflicts.append("--suffix-min-confidence")
+        if getattr(args, "suffix_min_draft_len", None) is not None:
+            conflicts.append("--suffix-min-draft-len")
         if conflicts:
             joined = ", ".join(conflicts)
             print(
@@ -1587,29 +1624,34 @@ def _normalize_speculative_config_or_exit(args):
                 file=sys.stderr,
             )
             sys.exit(2)
-    try:
-        config = parse_speculative_config(raw_config)
-        if config is not None:
-            require_migrated_speculative_config(config)
-    except SpeculativeConfigError as exc:
-        print(f"error: {exc}", file=sys.stderr)
-        sys.exit(2)
     if config is None:
-        if getattr(args, "enable_ddtree", False):
-            config = legacy_ddtree_config()
-        elif getattr(args, "enable_dflash", False) or (
-            getattr(args, "spec_decode", "none") == "dflash"
-        ):
-            config = legacy_dflash_config(
-                (getattr(args, "dflash_drafter_path", "") or "").strip() or None
-            )
-        elif getattr(args, "spec_decode", "none") == "mtp":
-            config = legacy_mtp_config(
-                model=(getattr(args, "mtp_sidecar", None) or "").strip() or None,
-                num_speculative_tokens=getattr(args, "mtp_max_k", None),
-            )
+        try:
+            if getattr(args, "enable_ddtree", False):
+                config = legacy_ddtree_config()
+            elif getattr(args, "enable_dflash", False) or (
+                getattr(args, "spec_decode", "none") == "dflash"
+            ):
+                config = legacy_dflash_config(
+                    (getattr(args, "dflash_drafter_path", "") or "").strip() or None
+                )
+            elif getattr(args, "spec_decode", "none") == "mtp":
+                config = legacy_mtp_config(
+                    model=(getattr(args, "mtp_sidecar", None) or "").strip() or None,
+                    num_speculative_tokens=getattr(args, "mtp_max_k", None),
+                )
+            elif getattr(args, "suffix_decoding", False):
+                config = legacy_suffix_config(
+                    num_speculative_tokens=getattr(args, "suffix_max_draft", None),
+                    max_suffix_len=getattr(args, "suffix_max_suffix_len", None),
+                    min_confidence=getattr(args, "suffix_min_confidence", None),
+                    min_draft_len=getattr(args, "suffix_min_draft_len", None),
+                )
+        except SpeculativeConfigError as exc:
+            print(f"error: {exc}", file=sys.stderr)
+            sys.exit(2)
     args._speculative_config = config
     if config is None:
+        _fill_suffix_defaults()
         return
     if config.method == "ddtree":
         args.enable_ddtree = True
@@ -1625,6 +1667,18 @@ def _normalize_speculative_config_or_exit(args):
             args.mtp_sidecar = config.model
         if config.num_speculative_tokens is not None:
             args.mtp_max_k = config.num_speculative_tokens
+    elif config.method == "suffix":
+        args.suffix_decoding = True
+        if config.num_speculative_tokens is not None:
+            args.suffix_max_draft = config.num_speculative_tokens
+        if config.max_suffix_len is not None:
+            args.suffix_max_suffix_len = config.max_suffix_len
+        if config.min_confidence is not None:
+            args.suffix_min_confidence = config.min_confidence
+        if config.min_draft_len is not None:
+            args.suffix_min_draft_len = config.min_draft_len
+
+    _fill_suffix_defaults()
 
 
 def _resolve_dflash_drafter_repo(args, profile) -> str:
@@ -6638,8 +6692,8 @@ Examples:
             "parses method/model/num_speculative_tokens now. DFlash is "
             'available with \'{"method":"dflash"}\', DDTree with '
             '\'{"method":"ddtree"}\', and MTP with '
-            '\'{"method":"mtp"}\'. SuffixDecoding keeps its legacy flag '
-            "until it migrates to this surface."
+            '\'{"method":"mtp"}\'. SuffixDecoding is available with '
+            '\'{"method":"suffix","num_speculative_tokens":8}\'.'
         ),
     )
     serve_parser.add_argument(
@@ -6865,27 +6919,27 @@ Examples:
     serve_parser.add_argument(
         "--suffix-max-draft",
         type=int,
-        default=8,
+        default=None,
         help="Max draft tokens per verify step (default: 8). "
         "Verify forward cost grows linearly with this.",
     )
     serve_parser.add_argument(
         "--suffix-max-suffix-len",
         type=int,
-        default=4,
+        default=None,
         help="Max k-gram length indexed for suffix matching (default: 4).",
     )
     serve_parser.add_argument(
         "--suffix-min-confidence",
         type=float,
-        default=0.3,
+        default=None,
         help="Vote confidence floor for draft truncation (default: 0.3). "
         "Lower → more optimistic drafts; higher → fewer but more reliable.",
     )
     serve_parser.add_argument(
         "--suffix-min-draft-len",
         type=int,
-        default=2,
+        default=None,
         help="Skip the verify forward when drafter returns fewer than "
         "this many tokens (default: 2). Protects free-form chat from "
         "verify overhead on weak 1-token drafts. Set to 1 to verify "

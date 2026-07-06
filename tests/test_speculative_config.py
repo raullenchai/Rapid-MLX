@@ -61,6 +61,20 @@ def test_parse_speculative_config_normalizes_registered_alias() -> None:
     assert cfg.method == "suffix"
 
 
+def test_parse_suffix_speculative_config_accepts_existing_knobs() -> None:
+    cfg = parse_speculative_config(
+        '{"method":"suffix","num_speculative_tokens":6,'
+        '"max_suffix_len":5,"min_confidence":0.4,"min_draft_len":3}'
+    )
+
+    assert cfg is not None
+    assert cfg.method == "suffix"
+    assert cfg.num_speculative_tokens == 6
+    assert cfg.max_suffix_len == 5
+    assert cfg.min_confidence == 0.4
+    assert cfg.min_draft_len == 3
+
+
 @pytest.mark.parametrize(
     ("raw", "match"),
     [
@@ -75,6 +89,15 @@ def test_parse_speculative_config_normalizes_registered_alias() -> None:
         ('{"method":"ddtree","tree_budget":0}', "positive integer"),
         ('{"method":"ddtree","tree_budget":true}', "positive integer"),
         ('{"method":"ddtree","unknown":1}', "unsupported speculative-config"),
+        ('{"method":"suffix","max_suffix_len":0}', "positive integer"),
+        ('{"method":"suffix","min_confidence":0}', "positive number"),
+        ('{"method":"suffix","min_confidence":true}', "positive number"),
+        ('{"method":"suffix","min_confidence":NaN}', "positive number"),
+        ('{"method":"suffix","min_confidence":Infinity}', "positive number"),
+        ('{"method":"suffix","min_confidence":1.5}', "between 0 and 1"),
+        ('{"method":"suffix","min_draft_len":0}', "positive integer"),
+        ('{"method":"suffix","model":"x"}', "unsupported speculative-config"),
+        ('{"method":"suffix","tree_budget":24}', "unsupported speculative-config"),
         (
             '{"method":"dflash","num_speculative_tokens":4}',
             "unsupported speculative-config",
@@ -109,6 +132,13 @@ def test_require_migrated_speculative_config_accepts_dflash() -> None:
     require_migrated_speculative_config(cfg)
 
 
+def test_require_migrated_speculative_config_accepts_suffix() -> None:
+    cfg = parse_speculative_config('{"method":"suffix"}')
+    assert cfg is not None
+
+    require_migrated_speculative_config(cfg)
+
+
 def test_spec_decoder_registry_lists_existing_backends() -> None:
     methods = {plugin.method for plugin in iter_spec_decoders()}
 
@@ -116,6 +146,7 @@ def test_spec_decoder_registry_lists_existing_backends() -> None:
     assert get_spec_decoder("ddtree").config_enabled is True
     assert get_spec_decoder("dflash").config_enabled is True
     assert get_spec_decoder("mtp").config_enabled is True
+    assert get_spec_decoder("suffix").config_enabled is True
     assert get_spec_decoder("ngram") == get_spec_decoder("suffix")
 
 
@@ -138,9 +169,15 @@ def _spec_config_args(**overrides):
         "enable_dflash": False,
         "spec_decode": "none",
         "dflash_drafter_path": "",
+        "enable_mtp": False,
         "mtp_sidecar": None,
         "mtp_num_draft_tokens": 1,
         "mtp_max_k": 3,
+        "suffix_decoding": False,
+        "suffix_max_draft": None,
+        "suffix_max_suffix_len": None,
+        "suffix_min_confidence": None,
+        "suffix_min_draft_len": None,
     }
     data.update(overrides)
     return SimpleNamespace(**data)
@@ -183,6 +220,20 @@ def test_spec_decode_mtp_legacy_flag_is_speculative_config_shorthand() -> None:
     assert args._speculative_config.num_speculative_tokens == 2
 
 
+def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args()
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config is None
+    assert args.suffix_max_draft == 8
+    assert args.suffix_max_suffix_len == 4
+    assert args.suffix_min_confidence == 0.3
+    assert args.suffix_min_draft_len == 2
+
+
 def test_speculative_config_mtp_rejects_legacy_sidecar_flag(capsys) -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
@@ -198,3 +249,125 @@ def test_speculative_config_mtp_rejects_legacy_sidecar_flag(capsys) -> None:
     captured = capsys.readouterr()
     assert "mutually exclusive" in captured.err
     assert "--mtp-sidecar" in captured.err
+
+
+def test_speculative_config_malformed_with_legacy_flag_reports_clean_error(
+    capsys,
+) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(speculative_config="", enable_mtp=True)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "cannot be empty" in captured.err
+    assert "AttributeError" not in captured.err
+
+
+def test_speculative_config_suffix_normalizes_to_legacy_suffix_args() -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        speculative_config=(
+            '{"method":"suffix","num_speculative_tokens":6,'
+            '"max_suffix_len":5,"min_confidence":0.4,"min_draft_len":3}'
+        )
+    )
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args.suffix_decoding is True
+    assert args.suffix_max_draft == 6
+    assert args.suffix_max_suffix_len == 5
+    assert args.suffix_min_confidence == 0.4
+    assert args.suffix_min_draft_len == 3
+    assert args._speculative_config.method == "suffix"
+
+
+def test_suffix_decoding_legacy_flag_is_speculative_config_shorthand() -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        suffix_decoding=True,
+        suffix_max_draft=6,
+        suffix_max_suffix_len=5,
+        suffix_min_confidence=0.4,
+        suffix_min_draft_len=3,
+    )
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args.suffix_decoding is True
+    assert args._speculative_config.method == "suffix"
+    assert args._speculative_config.num_speculative_tokens == 6
+    assert args._speculative_config.max_suffix_len == 5
+    assert args._speculative_config.min_confidence == 0.4
+    assert args._speculative_config.min_draft_len == 3
+
+
+def test_suffix_decoding_legacy_flag_without_knobs_fills_runtime_defaults() -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(suffix_decoding=True)
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args.suffix_max_draft == 8
+    assert args.suffix_max_suffix_len == 4
+    assert args.suffix_min_confidence == 0.3
+    assert args.suffix_min_draft_len == 2
+    assert args._speculative_config.method == "suffix"
+    assert args._speculative_config.num_speculative_tokens is None
+
+
+def test_suffix_decoding_legacy_invalid_flag_reports_clean_error(capsys) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        suffix_decoding=True,
+        suffix_max_draft=0,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "num_speculative_tokens must be a positive integer" in captured.err
+
+
+def test_speculative_config_suffix_rejects_default_valued_legacy_knob(capsys) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        speculative_config='{"method":"suffix","num_speculative_tokens":6}',
+        suffix_max_draft=8,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "mutually exclusive" in captured.err
+    assert "--suffix-max-draft" in captured.err
+
+
+def test_speculative_config_suffix_rejects_legacy_suffix_flag(capsys) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        speculative_config='{"method":"suffix"}',
+        suffix_decoding=True,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "mutually exclusive" in captured.err
+    assert "--suffix-decoding" in captured.err
