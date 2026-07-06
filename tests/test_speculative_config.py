@@ -19,15 +19,13 @@ from vllm_mlx.spec_decode.registry import get_spec_decoder, iter_spec_decoders
 
 def test_parse_speculative_config_accepts_vllm_common_keys() -> None:
     cfg = parse_speculative_config(
-        '{"method":"mtp","model":"local/draft","num_speculative_tokens":4,'
-        '"disable_auto_k":true}'
+        '{"method":"mtp","model":"local/draft","num_speculative_tokens":4}'
     )
 
     assert cfg is not None
     assert cfg.method == "mtp"
     assert cfg.model == "local/draft"
     assert cfg.num_speculative_tokens == 4
-    assert cfg.disable_auto_k is True
     assert cfg.tree_budget is None
 
 
@@ -88,7 +86,7 @@ def test_parse_suffix_speculative_config_accepts_existing_knobs() -> None:
         ('{"method":"mtp","num_speculative_tokens":true}', "positive integer"),
         ('{"method":"mtp","model":""}', "non-empty string"),
         ('{"method":"mtp","tree_budget":24}', "unsupported speculative-config"),
-        ('{"method":"mtp","disable_auto_k":1}', "boolean"),
+        ('{"method":"mtp","disable_auto_k":true}', "unsupported speculative-config"),
         ('{"method":"ddtree","tree_budget":0}', "positive integer"),
         ('{"method":"ddtree","tree_budget":true}', "positive integer"),
         ('{"method":"ddtree","unknown":1}', "unsupported speculative-config"),
@@ -114,11 +112,12 @@ def test_parse_speculative_config_rejects_bad_payloads(raw: str, match: str) -> 
         parse_speculative_config(raw)
 
 
-def test_require_migrated_speculative_config_accepts_mtp() -> None:
+def test_require_migrated_speculative_config_rejects_mtp_until_revalidated() -> None:
     cfg = parse_speculative_config('{"method":"mtp"}')
     assert cfg is not None
 
-    require_migrated_speculative_config(cfg)
+    with pytest.raises(SpeculativeConfigError, match="not wired yet"):
+        require_migrated_speculative_config(cfg)
 
 
 def test_require_migrated_speculative_config_accepts_ddtree() -> None:
@@ -148,7 +147,7 @@ def test_spec_decoder_registry_lists_existing_backends() -> None:
     assert {"ddtree", "dflash", "mtp", "suffix"}.issubset(methods)
     assert get_spec_decoder("ddtree").config_enabled is True
     assert get_spec_decoder("dflash").config_enabled is True
-    assert get_spec_decoder("mtp").config_enabled is True
+    assert get_spec_decoder("mtp").config_enabled is False
     assert get_spec_decoder("suffix").config_enabled is True
     assert get_spec_decoder("ngram") == get_spec_decoder("suffix")
 
@@ -187,29 +186,26 @@ def _spec_config_args(**overrides):
     return SimpleNamespace(**data)
 
 
-def test_speculative_config_mtp_normalizes_to_legacy_spec_decode() -> None:
+def test_speculative_config_mtp_is_not_exposed_until_revalidated(capsys) -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(
         speculative_config=(
             '{"method":"mtp","model":"google/gemma-4-12B-it-assistant",'
-            '"num_speculative_tokens":2,"disable_auto_k":true}'
+            '"num_speculative_tokens":2}'
         )
     )
 
-    _normalize_speculative_config_or_exit(args)
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
 
-    assert args.spec_decode == "mtp"
-    assert args.mtp_sidecar == "google/gemma-4-12B-it-assistant"
-    assert args.mtp_max_k == 2
-    assert args.mtp_disable_auto_k is True
-    assert args._speculative_config.method == "mtp"
-    assert args._speculative_config.model == "google/gemma-4-12B-it-assistant"
-    assert args._speculative_config.num_speculative_tokens == 2
-    assert args._speculative_config.disable_auto_k is True
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "not wired yet" in captured.err
+    assert "--spec-decode mtp" in captured.err
 
 
-def test_spec_decode_mtp_legacy_flag_is_speculative_config_shorthand() -> None:
+def test_spec_decode_mtp_legacy_flag_still_normalizes_internally() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(
@@ -226,6 +222,7 @@ def test_spec_decode_mtp_legacy_flag_is_speculative_config_shorthand() -> None:
     assert args._speculative_config.model == "google/gemma-4-12B-it-assistant"
     assert args._speculative_config.num_speculative_tokens == 2
     assert args._speculative_config.disable_auto_k is True
+    assert args._speculative_config.raw["disable_auto_k"] is True
 
 
 def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
@@ -242,7 +239,9 @@ def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
     assert args.suffix_min_draft_len == 2
 
 
-def test_speculative_config_mtp_rejects_legacy_sidecar_flag(capsys) -> None:
+def test_speculative_config_mtp_rejects_before_legacy_sidecar_conflict(
+    capsys,
+) -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(
@@ -255,25 +254,8 @@ def test_speculative_config_mtp_rejects_legacy_sidecar_flag(capsys) -> None:
 
     assert excinfo.value.code == 2
     captured = capsys.readouterr()
-    assert "mutually exclusive" in captured.err
-    assert "--mtp-sidecar" in captured.err
-
-
-def test_speculative_config_mtp_rejects_legacy_disable_auto_k_flag(capsys) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(
-        speculative_config='{"method":"mtp","disable_auto_k":false}',
-        mtp_disable_auto_k=True,
-    )
-
-    with pytest.raises(SystemExit) as excinfo:
-        _normalize_speculative_config_or_exit(args)
-
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "mutually exclusive" in captured.err
-    assert "--mtp-disable-auto-k" in captured.err
+    assert "not wired yet" in captured.err
+    assert "--spec-decode mtp" in captured.err
 
 
 def test_speculative_config_malformed_with_legacy_flag_reports_clean_error(

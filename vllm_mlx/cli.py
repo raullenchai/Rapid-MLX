@@ -1599,8 +1599,6 @@ def _normalize_speculative_config_or_exit(args):
             conflicts.append("--dflash-drafter-path")
         if (getattr(args, "mtp_sidecar", None) or "").strip():
             conflicts.append("--mtp-sidecar")
-        if getattr(args, "mtp_disable_auto_k", False):
-            conflicts.append("--mtp-disable-auto-k")
         # DFlash has a dedicated preflight that historically reports
         # these runtime conflicts as "cannot combine" (exit 1) before
         # probing mlx-vlm. Preserve that user-facing contract; other
@@ -6690,10 +6688,9 @@ Examples:
             "vLLM-style speculative decoding JSON config. This frontend "
             "parses method/model/num_speculative_tokens now. DFlash is "
             'available with \'{"method":"dflash"}\', DDTree with '
-            '\'{"method":"ddtree"}\', and MTP with '
-            '\'{"method":"mtp","model":"<optional-sidecar>",'
-            '"num_speculative_tokens":3,"disable_auto_k":false}\'. '
-            "SuffixDecoding is an explicit, "
+            '\'{"method":"ddtree"}\'. MTP remains on the legacy '
+            "--spec-decode mtp surface until real-model A/B parity is "
+            "revalidated. SuffixDecoding is an explicit, "
             "workload-specific flag for high prompt/output-overlap traffic "
             "and is available with "
             '\'{"method":"suffix","num_speculative_tokens":8}\'.'
@@ -6828,8 +6825,7 @@ Examples:
         choices=["none", "mtp", "dflash"],
         default="none",
         help=(
-            "Compatibility selector for model-side speculative decode; "
-            "prefer --speculative-config for new usage. "
+            "R15-P1 model-side speculative decode. "
             "``none`` (default) disables; ``mtp`` enables Qwen3.5/3.6 "
             "native MTP via vendored mlx-lm PR #990 — requires a "
             "checkpoint converted with the PR #990 sanitize() path "
@@ -6851,9 +6847,7 @@ Examples:
         default=None,
         help=(
             "Reserved path/repo id for future validated MTP assistant "
-            "sidecars. Prefer "
-            '--speculative-config \'{"method":"mtp","model":...}\' '
-            "for new usage. Gemma 4 assistant-sidecar MTP is currently "
+            "sidecars. Gemma 4 assistant-sidecar MTP is currently "
             "disabled after greedy-lossless validation failed; ignored for "
             "the Qwen3.5/3.6 native-MTP path because their head is baked "
             "into the target. "
@@ -6874,10 +6868,8 @@ Examples:
             "Hard ceiling on the per-round draft depth the EV controller "
             "may select (default: 3). The current generator implements "
             "K∈{0,1} (park + chain-of-1); values >1 are effectively "
-            "clamped until chain-of-K verify lands. Prefer "
-            '--speculative-config \'{"method":"mtp",'
-            '"num_speculative_tokens":3}\' for new usage. Only consulted '
-            "when MTP spec-decode is set."
+            "clamped until chain-of-K verify lands. Only consulted when "
+            "--spec-decode mtp is set."
         ),
     )
     serve_parser.add_argument(
@@ -6888,10 +6880,8 @@ Examples:
         help=(
             "Disable the EV depth controller and keep the pre-PR-B "
             "fixed-K=1 chain-of-1 MTP behavior. Used to A/B bench the "
-            "controller against the fixed-K=1 baseline. Prefer "
-            '--speculative-config \'{"method":"mtp",'
-            '"disable_auto_k":true}\' for new usage. Only consulted '
-            "when MTP spec-decode is set."
+            "controller against the fixed-K=1 baseline. Only consulted "
+            "when --spec-decode mtp is set."
         ),
     )
     # R15-P1 #313: DFlash drafter HF path override. Empty by default

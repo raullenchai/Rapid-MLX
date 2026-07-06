@@ -92,10 +92,6 @@ rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}' --po
 # DDTree speculative decoding (experimental, single-user)
 rapid-mlx serve qwen3.5-9b-8bit --speculative-config '{"method":"ddtree"}' --port 8000
 
-# MTP fixed-K parity bench mode
-rapid-mlx serve qwen3.6-27b-mtp-4bit \
-  --speculative-config '{"method":"mtp","num_speculative_tokens":1,"disable_auto_k":true}'
-
 # SuffixDecoding for explicit high-overlap workloads
 rapid-mlx serve gemma-4-12b-4bit \
   --speculative-config '{"method":"suffix","num_speculative_tokens":8}'
