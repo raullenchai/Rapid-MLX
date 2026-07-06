@@ -139,3 +139,10 @@ harness/scorecard/scorecard-*.md
 # Local agent tracker — never commit
 TODO.md
 .wrangler/
+
+# CC operating charter — local-only per raullen 2026-07-05/06
+# These files evolve locally as CC drafts / raullen edits; cross-session
+# persistence lives in ~/.claude/projects/.../memory/, not in the repo.
+workflow.md
+CLAUDE.md
+0.*-TODO.md
