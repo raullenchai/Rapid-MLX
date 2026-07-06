@@ -37,7 +37,7 @@ Ranked by: (1) Apple Silicon relevance = High, (2) expected impact on rapid-mlx,
 |------|-------|------------|-----------|---------------|--------|--------|
 | 1 | **DuoAttention** | ICLR | Retrieval vs streaming head classification; full KV for retrieval, sliding window for streaming | 2.55x memory, 2.18x decode | Medium | [On roadmap (#3)](README.md) -- not started |
 | 2 | **R-KV** | NeurIPS | Importance + non-redundancy ranking for reasoning KV caches | 100% quality at 10% cache | Medium | New |
-| 3 | **SuffixDecoding** | NeurIPS (Spotlight) | Model-free speculative decoding via suffix trees from past outputs | 5.3x speedup, zero extra memory | Medium | New |
+| 3 | **SuffixDecoding** | NeurIPS (Spotlight) | Model-free speculative decoding via suffix trees from past outputs | Workload-gated; local Gemma 4 copy/code/tool-XML gains, GPT-OSS/Qwen regressions | Medium | Explicit flag only |
 | 4 | **SWIFT** | ICLR | Self-speculative decoding by skipping intermediate layers | 1.3-1.6x, no draft model | Low | New |
 | 5 | **KVzip** | NeurIPS (Oral) / ICML | Query-agnostic KV compression via context reconstruction | 3-4x cache reduction | Medium | New |
 | 6 | **RocketKV** | ICML | Two-stage: coarse eviction + fine-grain top-k sparse attention | 400x compression, 3.7x speedup | Medium | New |
@@ -75,6 +75,10 @@ Z. Zhong et al. (CMU) | [arXiv](https://arxiv.org/abs/2411.04975) | [Project](ht
 > Model-free speculative decoding using suffix trees built from past outputs; exploits repetitive patterns in agentic workloads.
 > Expected improvement: Up to 5.3x; 2.8x faster than EAGLE-2/3 on agentic benchmarks
 > Apple Silicon relevance: High -- no draft model memory needed
+> Rapid-MLX status: exposed only as an explicit flag. Local deep benches
+> showed gains on Gemma 4 high-overlap copy/code/tool-XML traffic, but
+> regressions on GPT-OSS and Qwen3.6, so it is not a general-purpose
+> accelerator.
 
 **SWIFT: On-the-Fly Self-Speculative Decoding for LLM Inference Acceleration** -- ICLR 2025
 Heming Xia et al. | [GitHub](https://github.com/hemingkx/SWIFT)

@@ -1110,7 +1110,8 @@ def enrich_model_config(cfg: ModelConfig | None, model: Any) -> ModelConfig:
 # a user looking at the same table by eye:
 #
 #   - AGENT     — tool calling specifically wins big AND nothing regresses
-#                 (we'd tell the user "turn it on").
+#                 (we'd tell the user "try the explicit flag if your traffic
+#                 matches").
 #   - STRUCTURED — some workload wins meaningfully AND nothing meaningfully
 #                  regresses (we'd say "try it for that workload").
 #   - NEUTRAL   — within noise across the board (silent — no point
@@ -1125,7 +1126,7 @@ def classify_suffix_decoding_tier(speedup: dict[str, float]) -> str:
     Empty dict → "unknown". Single-workload dicts use the special-case
     rule that an empty ``min(others)`` is treated as +∞ (the AGENT gate
     is satisfied vacuously). See ``tests/test_suffix_decoding_tier.py``
-    for boundary cases including the real Qwen3-0.6B / Qwen3-14B numbers.
+    for boundary cases.
     """
     if not speedup:
         return "unknown"
@@ -1184,14 +1185,15 @@ def suffix_decoding_hint(cfg: "ModelConfig | None") -> str | None:
         peak = speedup.get("tool_loop") or (max(speedup.values()) if speedup else 0)
         return (
             f"SuffixDecoding: recommended for tool/agent traffic "
-            f"(tool_loop {peak:.1f}x). Pass --suffix-decoding to enable."
+            f"(tool_loop {peak:.1f}x). Explicitly pass --suffix-decoding "
+            "only if your traffic matches."
         )
     if tier == "structured":
         peak_key = max(speedup, key=speedup.get) if speedup else "structured"
         peak_val = speedup.get(peak_key, 0)
         return (
             f"SuffixDecoding: may help on {peak_key} ({peak_val:.2f}x). "
-            "Pass --suffix-decoding if your traffic matches."
+            "Explicitly pass --suffix-decoding only if your traffic matches."
         )
     if tier == "avoid":
         worst_key = min(speedup, key=speedup.get) if speedup else "some workloads"

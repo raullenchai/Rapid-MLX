@@ -2194,9 +2194,10 @@ def _install_suffix_decoding(
     """Monkey-patch BatchGenerator's GenerationBatch to add SuffixDecoding.
 
     Drafter-free spec-decode: a suffix-tree index over prompt + emitted
-    tokens predicts repeated patterns (tool calls, JSON, code edits,
-    ReAct loops) at zero drafter cost. Big wins on agent workloads
-    (3-5×); ~1× on free-form chat (regression-floor).
+    tokens predicts repeated patterns. This is workload-specific, not a
+    general accelerator: it can help long high-overlap copy/code-edit/
+    repeated tool-XML traffic, and can regress ordinary chat or model
+    families whose generated token path does not match the suffix drafts.
 
     The hot path lives in ``GenerationBatch._step`` (mlx-lm 0.31+):
 

@@ -90,7 +90,7 @@ register_spec_decoder(
 register_spec_decoder(
     SpecDecoderPlugin(
         method="suffix",
-        description="Drafter-free suffix / n-gram speculative decoding",
+        description=("Explicit suffix / n-gram speculation for high-overlap workloads"),
         config_enabled=True,
         legacy_hint="use --suffix-decoding",
         aliases=("ngram",),

@@ -6692,7 +6692,9 @@ Examples:
             "parses method/model/num_speculative_tokens now. DFlash is "
             'available with \'{"method":"dflash"}\', DDTree with '
             '\'{"method":"ddtree"}\', and MTP with '
-            '\'{"method":"mtp"}\'. SuffixDecoding is available with '
+            '\'{"method":"mtp"}\'. SuffixDecoding is an explicit, '
+            "workload-specific flag for high prompt/output-overlap traffic "
+            "and is available with "
             '\'{"method":"suffix","num_speculative_tokens":8}\'.'
         ),
     )
@@ -6905,16 +6907,20 @@ Examples:
         ),
     )
     # SuffixDecoding — drafter-free spec-decode using a suffix tree over
-    # generated tokens. Big wins on agent/tool/JSON workloads (3-5x);
-    # ~zero overhead on free-form chat. Pure-attention only.
+    # prompt/generated tokens. This is an explicit workload flag, not a
+    # general accelerator: it can help long high-overlap copy/code-edit/
+    # repeated tool-XML traffic, and can regress ordinary chat / JSONL /
+    # unsupported model families. Pure-attention only.
     serve_parser.add_argument(
         "--suffix-decoding",
         action="store_true",
         default=False,
         help="Enable SuffixDecoding spec-decode (drafter-free, statistical). "
-        "Speedup is workload-dependent: 3-5x on tool-call/JSON/code-edit, "
-        "~1x on free-form chat. Auto-disabled on hybrid models "
-        "(Qwen3.5/3.6, Granite4, Mamba/Jamba/RWKV).",
+        "Explicit opt-in only: useful for long high-overlap workloads such "
+        "as prompt-copy, code editing, and repeated tool XML on validated "
+        "models. Do not use as a general chat accelerator; GPT-OSS/Qwen "
+        "families have shown regressions in local benches. Auto-disabled "
+        "on hybrid models (Qwen3.5/3.6 A3B/A10B, Granite4, Mamba/Jamba/RWKV).",
     )
     serve_parser.add_argument(
         "--suffix-max-draft",
