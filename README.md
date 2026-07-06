@@ -823,14 +823,21 @@ rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}'
 
 Workload sensitivity: coding / math / summarization typically see **1.5–2.7×**; high-entropy creative writing and long-form chat can dip to **0.6–0.9×** because the drafter's training distribution diverges from open-ended generation — a known spec-decode literature pattern ([AdaEDL](https://arxiv.org/abs/2410.18351)), not a bug. DFlash mode runs a dedicated single-user server (no batched kernel yet); tool calling, MCP, and embeddings aren't available in that mode — restart without DFlash for those.
 
-**MTP** (Multi-Token Prediction) — draft head baked into the model. Opt in with `--speculative-config '{"method":"mtp"}'` on MTP-trained checkpoints. When using an already-supported MTP sidecar flow, pass the sidecar path in the config `model` field; it maps to the existing `--mtp-sidecar` plumbing.
+**MTP** (Multi-Token Prediction) — draft head baked into the model, or a validated assistant sidecar. Opt in with `--speculative-config '{"method":"mtp"}'` on MTP-trained checkpoints. For sidecar flows, pass the assistant path in the config `model` field. `num_speculative_tokens` maps to the existing MTP max-K controller ceiling; `disable_auto_k` pins the fixed-K=1 bench path.
 
 ```bash
 rapid-mlx serve mlx-community/gemma-4-12b-it-4bit \
-  --speculative-config '{"method":"mtp","model":"google/gemma-4-12B-it-assistant"}'
+  --speculative-config '{"method":"mtp","model":"google/gemma-4-12B-it-assistant","num_speculative_tokens":3}'
 ```
 
-**SuffixDecoding** — drafter-free, statistical n-gram lookup over the running suffix. Opt in with `--suffix-decoding`; works on any BatchedEngine alias.
+For fixed-K parity benches:
+
+```bash
+rapid-mlx serve qwen3.6-27b-mtp-4bit \
+  --speculative-config '{"method":"mtp","num_speculative_tokens":1,"disable_auto_k":true}'
+```
+
+**SuffixDecoding** — drafter-free, statistical n-gram lookup over the running suffix. Opt in explicitly with `--speculative-config '{"method":"suffix","num_speculative_tokens":8}'` only for high-overlap workloads; `--suffix-decoding` remains as a compatibility shorthand.
 
 **DDTree** (experimental) — builds a tree from one DFlash draft pass, then verifies multiple likely continuations. The first rapid-mlx integration is intentionally opt-in and single-user, using the external `dtree-mlx` runtime:
 
@@ -847,7 +854,7 @@ rapid-mlx serve qwen3.5-9b-8bit \
   --speculative-config '{"method":"ddtree","model":"z-lab/Qwen3.5-9B-DFlash","num_speculative_tokens":16,"tree_budget":24}'
 ```
 
-`--enable-dflash` remains as a compatibility shorthand for `--speculative-config '{"method":"dflash"}'`, and `--dflash-drafter-path` maps to the config `model` field. `--enable-ddtree` similarly remains as a compatibility shorthand for `--speculative-config '{"method":"ddtree"}'`. `--spec-decode mtp` remains as a compatibility shorthand for `--speculative-config '{"method":"mtp"}'`, and `--mtp-sidecar` maps to the config `model` field. None of these backends is enabled by default. SuffixDecoding keeps its existing flag until it migrates behind the same config interface.
+`--enable-dflash` remains as a compatibility shorthand for `--speculative-config '{"method":"dflash"}'`, and `--dflash-drafter-path` maps to the config `model` field. `--enable-ddtree` similarly remains as a compatibility shorthand for `--speculative-config '{"method":"ddtree"}'`. `--spec-decode mtp` remains as a compatibility shorthand for `--speculative-config '{"method":"mtp"}'`; `--mtp-sidecar` maps to `model`, `--mtp-max-k` maps to `num_speculative_tokens`, and `--mtp-disable-auto-k` maps to `disable_auto_k`. `--suffix-decoding` remains as a compatibility shorthand for `--speculative-config '{"method":"suffix"}'`. None of these backends is enabled by default.
 
 Mutex: DFlash cannot combine with MTP or SuffixDecoding (single-user path). MTP and SuffixDecoding cannot combine with each other (both consume the drafter slot).
 
@@ -887,7 +894,7 @@ Mutex: DFlash cannot combine with MTP or SuffixDecoding (single-user path). MTP 
 | `--prefix-cache-index` | Prefix-cache lookup index: `radix` (default) or `hash` | `radix` |
 | `--pflash` | PFlash sparse prefill: `auto` / `always` / `off` | `auto` (on for verified aliases) |
 | `--enable-dflash` | Compatibility shorthand for DFlash speculative decoding (single-user; prefer `--speculative-config '{"method":"dflash"}'`) | off |
-| `--speculative-config` | vLLM-style speculative decoding JSON config; supports DFlash `{"method":"dflash"}`, DDTree `{"method":"ddtree"}`, and MTP `{"method":"mtp"}` | off |
+| `--speculative-config` | vLLM-style speculative decoding JSON config; supports DFlash, DDTree, MTP, and SuffixDecoding | off |
 | `--enable-ddtree` | Compatibility shorthand for DDTree speculative decoding (single-user; `qwen3.5-9b-8bit`) | off |
 | `--suffix-decoding` | Drafter-free n-gram speculative decoding (BatchedEngine path) | off |
 | `--spec-decode mtp` | Compatibility shorthand for MTP head speculative decoding; prefer `--speculative-config '{"method":"mtp"}'` | off |

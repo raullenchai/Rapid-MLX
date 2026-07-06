@@ -27,6 +27,7 @@ class SpeculativeConfig:
     model: str | None = None
     num_speculative_tokens: int | None = None
     tree_budget: int | None = None
+    disable_auto_k: bool | None = None
     max_suffix_len: int | None = None
     min_confidence: float | None = None
     min_draft_len: int | None = None
@@ -42,7 +43,7 @@ _COMMON_KEYS = frozenset(
 _METHOD_KEYS = {
     "ddtree": frozenset({"model", "num_speculative_tokens", "tree_budget"}),
     "dflash": frozenset({"model"}),
-    "mtp": frozenset({"model", "num_speculative_tokens"}),
+    "mtp": frozenset({"model", "num_speculative_tokens", "disable_auto_k"}),
     "suffix": frozenset(
         {
             "num_speculative_tokens",
@@ -92,6 +93,14 @@ def _optional_string(value: Any, key: str) -> str | None:
     return value.strip()
 
 
+def _optional_bool(value: Any, key: str) -> bool | None:
+    if value is None:
+        return None
+    if not isinstance(value, bool):
+        raise SpeculativeConfigError(f"{key} must be a boolean")
+    return value
+
+
 def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
     """Parse the JSON value passed to ``--speculative-config``."""
 
@@ -138,6 +147,7 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
             payload.get("num_speculative_tokens"), "num_speculative_tokens"
         ),
         tree_budget=_positive_int(payload.get("tree_budget"), "tree_budget"),
+        disable_auto_k=_optional_bool(payload.get("disable_auto_k"), "disable_auto_k"),
         max_suffix_len=_positive_int(payload.get("max_suffix_len"), "max_suffix_len"),
         min_confidence=_confidence(payload.get("min_confidence"), "min_confidence"),
         min_draft_len=_positive_int(payload.get("min_draft_len"), "min_draft_len"),
@@ -165,6 +175,7 @@ def legacy_mtp_config(
     *,
     model: str | None = None,
     num_speculative_tokens: int | None = None,
+    disable_auto_k: bool | None = None,
 ) -> SpeculativeConfig:
     """Return the compatibility config represented by MTP legacy flags."""
 
@@ -175,10 +186,14 @@ def legacy_mtp_config(
     tokens = _positive_int(num_speculative_tokens, "num_speculative_tokens")
     if tokens is not None:
         raw["num_speculative_tokens"] = tokens
+    disable_auto = _optional_bool(disable_auto_k, "disable_auto_k")
+    if disable_auto is not None:
+        raw["disable_auto_k"] = disable_auto
     return SpeculativeConfig(
         method="mtp",
         model=sidecar,
         num_speculative_tokens=tokens,
+        disable_auto_k=disable_auto,
         raw=raw,
     )
 

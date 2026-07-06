@@ -1599,6 +1599,8 @@ def _normalize_speculative_config_or_exit(args):
             conflicts.append("--dflash-drafter-path")
         if (getattr(args, "mtp_sidecar", None) or "").strip():
             conflicts.append("--mtp-sidecar")
+        if getattr(args, "mtp_disable_auto_k", False):
+            conflicts.append("--mtp-disable-auto-k")
         # DFlash has a dedicated preflight that historically reports
         # these runtime conflicts as "cannot combine" (exit 1) before
         # probing mlx-vlm. Preserve that user-facing contract; other
@@ -1638,6 +1640,7 @@ def _normalize_speculative_config_or_exit(args):
                 config = legacy_mtp_config(
                     model=(getattr(args, "mtp_sidecar", None) or "").strip() or None,
                     num_speculative_tokens=getattr(args, "mtp_max_k", None),
+                    disable_auto_k=getattr(args, "mtp_disable_auto_k", False),
                 )
             elif getattr(args, "suffix_decoding", False):
                 config = legacy_suffix_config(
@@ -1667,6 +1670,8 @@ def _normalize_speculative_config_or_exit(args):
             args.mtp_sidecar = config.model
         if config.num_speculative_tokens is not None:
             args.mtp_max_k = config.num_speculative_tokens
+        if config.disable_auto_k is not None:
+            args.mtp_disable_auto_k = config.disable_auto_k
     elif config.method == "suffix":
         args.suffix_decoding = True
         if config.num_speculative_tokens is not None:
@@ -6692,7 +6697,9 @@ Examples:
             "parses method/model/num_speculative_tokens now. DFlash is "
             'available with \'{"method":"dflash"}\', DDTree with '
             '\'{"method":"ddtree"}\', and MTP with '
-            '\'{"method":"mtp"}\'. SuffixDecoding is an explicit, '
+            '\'{"method":"mtp","model":"<optional-sidecar>",'
+            '"num_speculative_tokens":3,"disable_auto_k":false}\'. '
+            "SuffixDecoding is an explicit, "
             "workload-specific flag for high prompt/output-overlap traffic "
             "and is available with "
             '\'{"method":"suffix","num_speculative_tokens":8}\'.'
@@ -6827,7 +6834,8 @@ Examples:
         choices=["none", "mtp", "dflash"],
         default="none",
         help=(
-            "R15-P1 model-side speculative decode. "
+            "Compatibility selector for model-side speculative decode; "
+            "prefer --speculative-config for new usage. "
             "``none`` (default) disables; ``mtp`` enables Qwen3.5/3.6 "
             "native MTP via vendored mlx-lm PR #990 — requires a "
             "checkpoint converted with the PR #990 sanitize() path "
@@ -6854,8 +6862,10 @@ Examples:
             "Path to a Gemma 4 MTP assistant-drafter checkpoint — either a "
             "local safetensors directory (e.g. ~/.cache/huggingface/hub/"
             "gemma-4-12B-it-assistant) or an HF repo id "
-            "(e.g. google/gemma-4-12B-it-assistant). Only consulted when "
-            "--spec-decode mtp is set; ignored for the Qwen3.5/3.6 "
+            "(e.g. google/gemma-4-12B-it-assistant). Prefer "
+            '--speculative-config \'{"method":"mtp","model":...}\' '
+            "for new usage. Only consulted when MTP spec-decode is set; "
+            "ignored for the Qwen3.5/3.6 "
             "native-MTP path (their head is baked into the target). "
             "Requires the [mtp] install extra."
         ),
@@ -6874,8 +6884,10 @@ Examples:
             "Hard ceiling on the per-round draft depth the EV controller "
             "may select (default: 3). The current generator implements "
             "K∈{0,1} (park + chain-of-1); values >1 are effectively "
-            "clamped until chain-of-K verify lands. Only consulted when "
-            "--spec-decode mtp is set."
+            "clamped until chain-of-K verify lands. Prefer "
+            '--speculative-config \'{"method":"mtp",'
+            '"num_speculative_tokens":3}\' for new usage. Only consulted '
+            "when MTP spec-decode is set."
         ),
     )
     serve_parser.add_argument(
@@ -6886,8 +6898,10 @@ Examples:
         help=(
             "Disable the EV depth controller and keep the pre-PR-B "
             "fixed-K=1 chain-of-1 MTP behavior. Used to A/B bench the "
-            "controller against the fixed-K=1 baseline. Only consulted "
-            "when --spec-decode mtp is set."
+            "controller against the fixed-K=1 baseline. Prefer "
+            '--speculative-config \'{"method":"mtp",'
+            '"disable_auto_k":true}\' for new usage. Only consulted '
+            "when MTP spec-decode is set."
         ),
     )
     # R15-P1 #313: DFlash drafter HF path override. Empty by default
