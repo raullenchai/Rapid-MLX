@@ -84,15 +84,20 @@ REQUIRED_TEST_PACKAGES: tuple[tuple[str, str, str], ...] = (
     ),
     (
         "mlx_vlm",
-        "mlx-vlm>=0.6.3",
+        "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
         "Gemma 4 / DFlash / vision lock-in tests expect mlx_vlm importability",
     ),
     (
         "mlx_audio",
-        "mlx-audio>=0.2.9,<0.4.4",
+        "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
         "audio route tests expect mlx-audio importability",
     ),
 )
+
+# MLX runtime surfaces are Apple-only. Local Apple-Silicon validation
+# should require them, but Linux CI must not treat these imports as a
+# readiness signal.
+DARWIN_ONLY_TEST_IMPORTS = frozenset({"mlx_vlm", "mlx_audio"})
 
 # Canonical extras name from pyproject.toml. If you rename the extras,
 # update this constant too (and the unit test that pins it).
@@ -169,9 +174,21 @@ TRUSTED_TEST_PINS: tuple[str, ...] = (
     "pytest-asyncio>=0.21.0,<1",
     "aiohttp>=3.9.0,<4",
     "pillow>=10.0.0,<13",
-    "mlx-vlm>=0.6.3,<0.7",
-    "mlx-audio>=0.2.9,<0.4.4",
+    "mlx-vlm>=0.6.3,<0.7; platform_system == 'Darwin'",
+    "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
 )
+
+
+def required_test_packages_for_platform(
+    platform: str | None = None,
+) -> tuple[tuple[str, str, str], ...]:
+    """Return the test-env import probes required on ``platform``."""
+    platform_name = platform or sys.platform
+    if platform_name == "darwin":
+        return REQUIRED_TEST_PACKAGES
+    return tuple(
+        pkg for pkg in REQUIRED_TEST_PACKAGES if pkg[0] not in DARWIN_ONLY_TEST_IMPORTS
+    )
 
 
 @dataclass(frozen=True)
@@ -217,7 +234,7 @@ def check_test_env(python: str | None = None) -> TestEnvStatus:
     pytest_asyncio twice could trip a "plugin already registered" warning).
     """
     interp = python or sys.executable
-    import_names = [pkg for pkg, _, _ in REQUIRED_TEST_PACKAGES]
+    import_names = [pkg for pkg, _, _ in required_test_packages_for_platform()]
     probe = "; ".join(f"import {name}" for name in import_names)
 
     proc = subprocess.run(  # noqa: S603

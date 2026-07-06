@@ -214,8 +214,8 @@ test = [
     # ``pytest tests/`` without hand-installed local extras.
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
-    "mlx-vlm>=0.6.3",
-    "mlx-audio>=0.2.9,<0.4.4",
+    "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
+    "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
 ]
 dev = [
     # Test runtime (must mirror the `test` extras above; a unit test in
@@ -229,8 +229,8 @@ dev = [
     'tomli>=2.0.1; python_version < "3.11"',
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
-    "mlx-vlm>=0.6.3",
-    "mlx-audio>=0.2.9,<0.4.4",
+    "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
+    "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
     # Linters / typer — NOT in the `test` extras because pr_validate
     # only needs to *run* the tests; lint is its own pipeline step
     # (ruff) and runs from the host environment.

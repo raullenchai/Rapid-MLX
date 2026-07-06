@@ -38,6 +38,7 @@ from scripts.pr_validate._test_env import (
     TestEnvStatus,
     auto_install_disabled,
     check_test_env,
+    required_test_packages_for_platform,
 )
 from scripts.pr_validate.context import Context
 from scripts.pr_validate.steps.test_env_check import TestEnvCheckStep
@@ -479,6 +480,22 @@ class TestRequiredPackages:
         names = {pkg for pkg, _, _ in REQUIRED_TEST_PACKAGES}
         assert "pytest" in names
         assert "pytest_asyncio" in names
+
+    def test_mlx_optional_surface_required_only_on_darwin(self):
+        """GitHub pr_validate runs on Linux, where Apple-only MLX
+        imports are not a valid test-env readiness signal. Local
+        Apple-Silicon validation still requires them."""
+        linux_names = {
+            pkg for pkg, _, _ in required_test_packages_for_platform("linux")
+        }
+        darwin_names = {
+            pkg for pkg, _, _ in required_test_packages_for_platform("darwin")
+        }
+
+        assert "mlx_vlm" not in linux_names
+        assert "mlx_audio" not in linux_names
+        assert "mlx_vlm" in darwin_names
+        assert "mlx_audio" in darwin_names
 
     def test_every_entry_has_a_pip_name_with_version(self):
         """Defensive: each entry must carry a version constraint so
