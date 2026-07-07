@@ -1555,6 +1555,7 @@ def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
     import json
     import sys
+    import warnings
 
     from .spec_decode.config import (
         SpeculativeConfigError,
@@ -1725,12 +1726,12 @@ def _normalize_speculative_config_or_exit(args):
         if getattr(args, "mtp_optimistic", False):
             if not mtp_requested:
                 reject_orphan("mtp_optimistic", "enable_mtp or spec_decode=mtp")
-            print(
-                "error: legacy speculative decoding knob mtp_optimistic is no "
-                "longer supported by the migrated MTP path.",
-                file=sys.stderr,
+            warnings.warn(
+                "legacy speculative decoding knob mtp_optimistic is deprecated "
+                "and ignored by the migrated MTP path.",
+                DeprecationWarning,
+                stacklevel=2,
             )
-            sys.exit(2)
         if mtp_requested:
             add_method("mtp", mtp_payload)
 

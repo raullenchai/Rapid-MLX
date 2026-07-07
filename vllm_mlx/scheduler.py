@@ -374,6 +374,12 @@ class SchedulerConfig:
             self.spec_decode = "mtp"
             self.mtp_max_k = max(1, int(self.mtp_num_draft_tokens))
 
+        if self.mtp_optimistic and self.spec_decode == "mtp":
+            raise ValueError(
+                "SchedulerConfig(mtp_optimistic=True) is no longer supported "
+                "by the migrated MTP path."
+            )
+
         active_methods: list[str] = []
         if self.spec_decode not in (None, "none"):
             active_methods.append(str(self.spec_decode))

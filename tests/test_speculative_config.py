@@ -142,6 +142,46 @@ def test_require_migrated_speculative_config_accepts_suffix() -> None:
     require_migrated_speculative_config(cfg)
 
 
+def test_legacy_config_helpers_warn_and_return_configs() -> None:
+    from vllm_mlx.spec_decode.config import (
+        legacy_ddtree_config,
+        legacy_dflash_config,
+        legacy_mtp_config,
+        legacy_suffix_config,
+    )
+
+    with pytest.warns(DeprecationWarning, match="legacy_ddtree_config"):
+        ddtree = legacy_ddtree_config()
+    with pytest.warns(DeprecationWarning, match="legacy_dflash_config"):
+        dflash = legacy_dflash_config("local/draft")
+    with pytest.warns(DeprecationWarning, match="legacy_mtp_config"):
+        mtp = legacy_mtp_config(
+            model="local/assistant",
+            num_speculative_tokens=2,
+            disable_auto_k=True,
+        )
+    with pytest.warns(DeprecationWarning, match="legacy_suffix_config"):
+        suffix = legacy_suffix_config(
+            num_speculative_tokens=6,
+            max_suffix_len=5,
+            min_confidence=0.4,
+            min_draft_len=3,
+        )
+
+    assert ddtree.method == "ddtree"
+    assert dflash.method == "dflash"
+    assert dflash.model == "local/draft"
+    assert mtp.method == "mtp"
+    assert mtp.model == "local/assistant"
+    assert mtp.num_speculative_tokens == 2
+    assert mtp.disable_auto_k is True
+    assert suffix.method == "suffix"
+    assert suffix.num_speculative_tokens == 6
+    assert suffix.max_suffix_len == 5
+    assert suffix.min_confidence == 0.4
+    assert suffix.min_draft_len == 3
+
+
 def test_spec_decoder_registry_lists_existing_backends() -> None:
     methods = {plugin.method for plugin in iter_spec_decoders()}
 
@@ -322,17 +362,17 @@ def test_hidden_legacy_aliases_reject_multiple_methods(capsys) -> None:
     assert "select multiple methods" in capsys.readouterr().err
 
 
-def test_hidden_legacy_mtp_optimistic_rejects_with_method_selector(capsys) -> None:
+def test_hidden_legacy_mtp_optimistic_warns_and_is_ignored() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(enable_mtp=True, mtp_optimistic=True)
 
-    with pytest.raises(SystemExit) as excinfo:
+    with pytest.warns(DeprecationWarning, match="mtp_optimistic is deprecated"):
         _normalize_speculative_config_or_exit(args)
 
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "mtp_optimistic is no longer supported" in captured.err
+    assert args._speculative_config.method == "mtp"
+    assert args.spec_decode == "mtp"
+    assert args.mtp_optimistic is False
 
 
 @pytest.mark.parametrize(
