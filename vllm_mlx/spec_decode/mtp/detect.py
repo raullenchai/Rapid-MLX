@@ -12,7 +12,10 @@ Detection lives off the loaded ``config.json`` dict rather than the
 * The ``mtp_num_hidden_layers`` value is an intrinsic property of the
   checkpoint, not of the alias. A user passing a raw HF path like
   ``Qwen/Qwen3.5-27B`` should still get MTP eligibility without us
-  having to ship an alias for every Qwen3.5 / Qwen3.6 quant.
+  having to ship an alias for every Qwen3.5 / Qwen3.6 quant. MLX
+  community Qwen3.5 / Qwen3.6 configs currently carry the value under
+  ``text_config.mtp_num_hidden_layers``; hand-converted configs may put
+  it at the root. Detection accepts both shapes.
 * ``model_type`` is already populated on every HF config and is the
   canonical anchor mlx-lm itself uses to route to a model class — we
   just piggyback on it.
@@ -62,11 +65,6 @@ class MTPEligibility(str, enum.Enum):
 # - ``qwen3_5_moe`` — MoE variant; subclasses the dense model and routes
 #                     through the same MTP path.
 #
-# Gemma 4 assistant-sidecar MTP is intentionally not advertised here. July
-# 2026 A/B validation against ``mlx-community/gemma-4-12B-it-4bit`` +
-# ``google/gemma-4-12B-it-assistant`` showed greedy output divergence under
-# the server path. Keep Gemma closed until an end-to-end lossless + perf
-# validation proves otherwise.
 _SUPPORTED_MODEL_TYPES: frozenset[str] = frozenset(
     {
         # Qwen3.5 / Qwen3.6 (upstream PR #990)
@@ -108,6 +106,18 @@ def _safe_int(value: Any, default: int = 0) -> int:
             return default
 
 
+def _mtp_num_hidden_layers(config: dict[str, Any]) -> int:
+    """Return MTP layer count from root or nested text_config metadata."""
+
+    root_layers = _safe_int(config.get("mtp_num_hidden_layers"), 0)
+    if root_layers > 0:
+        return root_layers
+    text_config = config.get("text_config")
+    if isinstance(text_config, dict):
+        return _safe_int(text_config.get("mtp_num_hidden_layers"), 0)
+    return root_layers
+
+
 def detect_mtp_eligibility(
     config: dict[str, Any] | None,
     *,
@@ -123,10 +133,10 @@ def detect_mtp_eligibility(
         has_external_sidecar: Accepted for compatibility with the
             legacy CLI flag surface, but currently does not promote any
             architecture. Qwen3.5 / Qwen3.6 eligibility requires
-            ``mtp_num_hidden_layers >= 1`` in the base config because
-            their MTP head is part of the target checkpoint. Gemma 4
-            sidecar promotion is disabled until it passes end-to-end
-            greedy-lossless validation.
+            ``mtp_num_hidden_layers >= 1`` in the base config
+            (root or ``text_config``) because their MTP head is part of
+            the target checkpoint. Gemma 4 sidecar promotion remains
+            disabled until it passes end-to-end greedy-lossless validation.
 
     Returns:
         :class:`MTPEligibility` value. Detection is conservative — any
@@ -169,7 +179,7 @@ def _detect_mtp_eligibility_verbose(
         )
 
     _ = has_external_sidecar
-    num_mtp_layers = _safe_int(config.get("mtp_num_hidden_layers"), 0)
+    num_mtp_layers = _mtp_num_hidden_layers(config)
     if num_mtp_layers <= 0:
         # MTP-capable model_type but MTP weights not present on this
         # checkpoint. For Qwen3.5 / Qwen3.6 this is a stripped convert —

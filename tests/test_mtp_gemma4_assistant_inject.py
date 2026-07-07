@@ -24,8 +24,8 @@ Coverage
    ``allow_random_init`` → False, model unmodified.
 5. **Architecture-guard** — a config whose ``model_type`` is NOT one
    of the known assistant strings is REFUSED, not silently loaded.
-6. **Dispatcher routing** — ``gemma4`` / ``gemma4_unified`` /
-   ``gemma4_text`` route to this module; ``qwen3_5`` + fake
+6. **Dispatcher routing** — Gemma 4 stays unregistered until lossless.
+   ``qwen3_5`` + fake
    ``gemma4-assistant`` sidecar → still routes to qwen3_5 (dispatcher
    is model_type-based, no fingerprint sniffing).
 """
@@ -1498,11 +1498,11 @@ def test_dispatcher_swallows_family_import_exception(monkeypatch):
 
     ok = _dispatch.dispatch_mtp_inject(
         model=object(),
-        model_type="gemma4",
+        model_type="qwen3_5",
         mtp_sidecar=None,
         allow_random_init=False,
     )
     assert ok is False, "non-ImportError at import time must land as False"
 
-    ok_v = _dispatch.dispatch_mtp_validate(model=object(), model_type="gemma4")
+    ok_v = _dispatch.dispatch_mtp_validate(model=object(), model_type="qwen3_5")
     assert ok_v is False, "non-ImportError at import time must land as False (validate)"

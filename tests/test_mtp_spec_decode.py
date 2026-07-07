@@ -134,6 +134,23 @@ def test_detect_eligibility_qwen3_5_moe_chain():
     assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
 
 
+def test_detect_eligibility_qwen3_5_accepts_text_config_mtp_layers():
+    """MLX community Qwen3.5/3.6 configs store MTP metadata in text_config."""
+    from vllm_mlx.spec_decode.mtp import (
+        MTPEligibility,
+        detect_mtp_eligibility,
+    )
+
+    config = {
+        "model_type": "qwen3_5",
+        "text_config": {
+            "model_type": "qwen3_5_text",
+            "mtp_num_hidden_layers": 1,
+        },
+    }
+    assert detect_mtp_eligibility(config) is MTPEligibility.CHAIN
+
+
 def test_detect_eligibility_qwen3_5_tree_reserved():
     """mtp_num_hidden_layers >= 2 → TREE (reserved, not implemented)."""
     from vllm_mlx.spec_decode.mtp import (
@@ -574,11 +591,11 @@ def _serve_help_stdout() -> str:
 
 
 def test_cli_spec_decode_flag_advertised_in_help():
-    """``--spec-decode {none,mtp}`` must appear in ``rapid-mlx serve --help``."""
+    """``--spec-decode`` remains only for none/dflash compatibility."""
     text = _serve_help_stdout()
     assert "--spec-decode" in text
-    # argparse renders ``--spec-decode {none,mtp}`` for the choices.
-    assert "none,mtp" in text or "mtp,none" in text
+    assert "none,dflash" in text or "dflash,none" in text
+    assert "none,mtp" not in text and "mtp,none" not in text
 
 
 def test_cli_spec_decode_flag_rejects_unknown_value():
@@ -602,6 +619,31 @@ def test_cli_spec_decode_flag_rejects_unknown_value():
     )
     assert proc.returncode != 0
     assert "spec-decode" in proc.stderr or "spec_decode" in proc.stderr
+
+
+def test_cli_spec_decode_mtp_legacy_choice_hidden_from_help():
+    """Deprecated ``--spec-decode mtp`` is accepted internally but hidden."""
+    import subprocess
+    import sys
+
+    proc = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "vllm_mlx.cli",
+            "serve",
+            "--help",
+        ],
+        capture_output=True,
+        text=True,
+        timeout=30,
+    )
+    assert proc.returncode == 0, proc.stderr
+    spec_decode_line = next(
+        line for line in proc.stdout.splitlines() if "--spec-decode" in line
+    )
+    assert "{none,dflash}" in spec_decode_line
+    assert "{none,dflash,mtp}" not in spec_decode_line
 
 
 def test_scheduler_config_default_spec_decode_is_none():

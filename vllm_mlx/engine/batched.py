@@ -100,7 +100,7 @@ def _resolve_hf_model_type(model_name: str) -> str | None:
 # into ``False`` and the caller then hard-raised on ``False``. That
 # turned a benign transient resolution failure — the CLI had already
 # vetted the config on the asyncio thread — into a boot abort in
-# offline environments that used to work under ``--spec-decode mtp``.
+# offline environments that used to work under MTP speculative config.
 # Splitting the return keeps the fail-loud contract for
 # operator-facing errors (family injector actively rejected) while
 # preserving the fail-soft contract for pipeline plumbing hiccups
@@ -147,7 +147,7 @@ def _run_dispatch_mtp_inject(
     * :data:`_DISPATCH_REJECTED` — the family injector was invoked and
       returned ``False`` (missing sidecar, loader failure, weight
       shape mismatch, etc.). Hard-fail: the operator explicitly asked
-      for ``--spec-decode mtp`` on a valid target and the injector
+      for MTP speculative config on a valid target and the injector
       couldn't attach. Caller should abort boot rather than boot with
       MTP silently disabled.
 
@@ -166,7 +166,7 @@ def _run_dispatch_mtp_inject(
     if model_type is None:
         logger.warning(
             "[MTP-vendored] could not resolve model_type for %r; skipping "
-            "dispatch_mtp_inject. --spec-decode mtp will be a no-op on "
+            "dispatch_mtp_inject. MTP speculative config will be a no-op on "
             "this boot.",
             model_name,
         )
@@ -199,7 +199,7 @@ def _run_dispatch_mtp_inject(
     logger.warning(
         "[MTP-vendored] dispatch_mtp_inject returned False for "
         "model_type=%r sidecar=%r; family injector rejected. "
-        "--spec-decode mtp will be a hard-fail at boot.",
+        "MTP speculative config will be a hard-fail at boot.",
         model_type,
         mtp_sidecar,
     )
@@ -209,8 +209,8 @@ def _run_dispatch_mtp_inject(
 # Codex round-G BLOCKING #3: hard cap on the executor-side MTP
 # dispatch call. Sidecar loads that touch HF Hub / large safetensor
 # reads can wedge on a slow network or a stuck DNS lookup; without a
-# timeout, ``rapid-mlx serve --spec-decode mtp --mtp-sidecar
-# <hf-repo>`` boot can block indefinitely. Default 600s covers slow
+# timeout, ``rapid-mlx serve --speculative-config '{"method":"mtp",
+# "model":"<hf-repo>"}'`` boot can block indefinitely. Default 600s covers slow
 # 4-16GB assistant downloads on a typical residential connection; an
 # ops override lives at ``RAPID_MLX_MTP_DISPATCH_TIMEOUT_SEC`` for
 # corp networks with mandatory proxies. Set to ``0`` to opt out of
@@ -339,29 +339,29 @@ def _decide_mtp_dispatch_action(
     if dispatch_result == _DISPATCH_REJECTED:
         return (
             "raise",
-            "--spec-decode mtp was set but the family MTP "
+            "MTP speculative-config was set but the family MTP "
             "injector rejected the model. See preceding "
             "warnings for the specific failure (typical causes: "
             "MTP weights missing from the target checkpoint, "
             "unsupported model_type, sidecar path unreachable, or "
             "assistant checkpoint model_type mismatch). Refusing to "
-            "boot with MTP silently disabled — pass "
-            "--spec-decode none to continue without MTP.",
+            "boot with MTP silently disabled — remove "
+            "--speculative-config to continue without MTP.",
         )
 
     _cli_vetted = cli_vetted_model_type is not None
     if _cli_vetted:
         return (
             "raise",
-            f"--spec-decode mtp was set and the CLI vetted "
+            f"MTP speculative-config was set and the CLI vetted "
             f"model_type={cli_vetted_model_type!r}, but the engine "
             f"could not attach the MTP protocol "
             f"(dispatch_result={dispatch_result!r}). This "
             "indicates a plumbing skew between the CLI "
             "eligibility gate and the engine's dispatch "
             "table — not an environment race. Refusing to "
-            "boot with MTP silently disabled — pass "
-            "--spec-decode none to continue without MTP, "
+            "boot with MTP silently disabled — remove "
+            "--speculative-config to continue without MTP, "
             "or file an issue with the model_type + engine "
             "version.",
         )
@@ -435,7 +435,7 @@ def _apply_mtp_dispatch(
         # tries to continue. Leave the executor untouched.
         _log_mtp_dispatch_timeout(timeout)
         raise RuntimeError(
-            "--spec-decode mtp dispatch timed out after "
+            "MTP speculative-config dispatch timed out after "
             f"{timeout:.0f}s. Typical causes: HF Hub outage on the "
             "sidecar path, corp proxy blocking huggingface.co, or "
             "a very large assistant checkpoint on a slow link. "

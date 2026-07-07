@@ -197,6 +197,14 @@ def test_dflash_speculative_config_conflicts_fail_before_runtime_probe(
         **overrides,
     )
 
+    if overrides.get("no_spec_decode"):
+        with pytest.raises(SystemExit) as excinfo:
+            _normalize_speculative_config_or_exit(args)
+        assert excinfo.value.code == code
+        captured = capsys.readouterr()
+        assert match in captured.out + captured.err
+        return
+
     _normalize_speculative_config_or_exit(args)
     with pytest.raises(SystemExit) as excinfo:
         _preflight_dflash_mutexes_or_exit(args)
@@ -207,22 +215,18 @@ def test_dflash_speculative_config_conflicts_fail_before_runtime_probe(
 
 
 def test_enable_dflash_legacy_mix_rejects_spec_decode_mtp(capsys) -> None:
-    from vllm_mlx.cli import (
-        _normalize_speculative_config_or_exit,
-        _preflight_dflash_mutexes_or_exit,
-    )
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _dflash_cli_args(enable_dflash=True, spec_decode="mtp")
 
-    _normalize_speculative_config_or_exit(args)
-    assert args.enable_dflash is True
-    assert args.spec_decode == "mtp"
     with pytest.raises(SystemExit) as excinfo:
-        _preflight_dflash_mutexes_or_exit(args)
+        _normalize_speculative_config_or_exit(args)
 
-    assert excinfo.value.code == 1
+    assert excinfo.value.code == 2
     captured = capsys.readouterr()
-    assert "cannot combine" in captured.out
+    assert "mutually exclusive" in captured.err
+    assert "--speculative-config" in captured.err
+    assert "--enable-dflash" in captured.err
 
 
 # =============================================================================

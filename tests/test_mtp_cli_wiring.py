@@ -1,25 +1,24 @@
 # SPDX-License-Identifier: Apache-2.0
-"""PR-A of 0.9.13 stack: CLI wiring for ``--spec-decode mtp --mtp-sidecar``.
+"""MTP speculative-config wiring.
 
 Coverage for the four surfaces PR-A ships:
 
 1. ``detect_mtp_eligibility(..., has_external_sidecar=True)`` — Gemma 4
-   unified base checkpoint (no baked-in MTP head) is promoted from NONE
-   to CHAIN when the CLI has resolved a sidecar path. Qwen3.5 / Qwen3.6
-   eligibility is unaffected (their MTP head is baked into the target,
-   ``--mtp-sidecar`` is a no-op for those).
+   unified base checkpoint (no baked-in MTP head) stays NONE even when
+   the CLI has resolved a config ``model`` sidecar path. Qwen3.5 /
+   Qwen3.6 eligibility is unaffected (their MTP head is baked into the
+   target; a sidecar does not manufacture a missing head).
 
-2. ``vllm_mlx.cli`` argparse — ``--mtp-sidecar PATH`` is present in the
-   serve subcommand's ``--help`` and parses without a value error.
+2. ``vllm_mlx.cli`` argparse — the legacy ``--mtp-sidecar`` flag is not
+   exposed; MTP sidecars come from ``--speculative-config`` only.
 
 3. ``SchedulerConfig.mtp_sidecar`` — round-trips as expected; default
    is ``None`` so pre-0.9.13 callers keep the old behaviour.
 
 4. Engine dispatch call site — the batched engine's ``_start_llm``
    routes through ``dispatch_mtp_inject`` with the sidecar path when
-   ``--spec-decode mtp`` + ``--mtp-sidecar`` are set. Verified via
-   a monkeypatched dispatch that captures the call args (no real model
-   load).
+   config MTP is set. Verified via a monkeypatched dispatch that
+   captures the call args (no real model load).
 
 Deliberately out of scope (deferred to PR-B / PR-C):
 
@@ -36,13 +35,12 @@ from __future__ import annotations
 
 
 def test_detect_sidecar_does_not_promote_gemma4_unified_missing_mtp_layers():
-    """Base Gemma 4 unified checkpoint (no MTP head) + sidecar stays NONE.
+    """Base Gemma 4 unified checkpoint + sidecar stays NONE.
 
-    July 2026 A/B validation of ``mlx-community/gemma-4-12B-it-4bit`` +
-    ``google/gemma-4-12B-it-assistant`` showed greedy output divergence
-    on the server path. Until a future implementation proves lossless
-    correctness and performance end to end, sidecar mode must not
-    promote Gemma 4 into MTP eligibility.
+    Local July 2026 A/B validation of ``mlx-community/gemma-4-12B-it-4bit`` +
+    ``google/gemma-4-12B-it-assistant`` still diverges from the greedy
+    no-spec server output, so sidecar mode must not promote Gemma 4 into
+    MTP eligibility until a lossless implementation lands.
     """
     from vllm_mlx.spec_decode.mtp import (
         MTPEligibility,
@@ -194,21 +192,12 @@ def _serve_help_stdout() -> str:
     return proc.stdout
 
 
-def test_cli_serve_help_advertises_mtp_sidecar():
-    """``--mtp-sidecar`` appears in ``serve --help`` output.
-
-    Codex round-N regression guard: a prior refactor moved the flag out
-    of the serve parser and into a separate ``mtp`` subcommand, silently
-    breaking the dogfood invocation ``rapid-mlx serve <model>
-    --spec-decode mtp --mtp-sidecar <path>``. Pin the surface here so
-    the same regression can't ship again without breaking this test.
-    """
+def test_cli_serve_help_hides_legacy_mtp_sidecar_flag():
+    """MTP sidecars are configured through ``--speculative-config`` only."""
     text = _serve_help_stdout()
-    assert "--mtp-sidecar" in text, (
-        "--mtp-sidecar flag missing from `rapid-mlx serve --help`. "
-        "PR-A of 0.9.13 stack ships this flag — check "
-        "vllm_mlx/cli.py::serve_parser."
-    )
+    assert "--mtp-sidecar" not in text
+    assert "--mtp-max-k" not in text
+    assert "--mtp-disable-auto-k" not in text
 
 
 # ---------------------------------------------------------------------------
@@ -283,6 +272,17 @@ def test_scheduler_config_mtp_model_type_round_trip():
         mtp_model_type="gemma4_unified",
     )
     assert cfg.mtp_model_type == "gemma4_unified"
+
+
+def test_config_vetted_mtp_support_allowlist_is_qwen_only():
+    """Alias-profile false is only bypassed for config-vetted Qwen MTP."""
+
+    from vllm_mlx.scheduler import _config_vetted_mtp_supports_spec_decode
+
+    assert _config_vetted_mtp_supports_spec_decode("qwen3_5") is True
+    assert _config_vetted_mtp_supports_spec_decode("qwen3_5_moe") is True
+    assert _config_vetted_mtp_supports_spec_decode("gemma4_unified") is False
+    assert _config_vetted_mtp_supports_spec_decode(None) is False
 
 
 # ---------------------------------------------------------------------------
@@ -1360,6 +1360,60 @@ class _StubModel:
     mtp_forward = object()
     make_mtp_cache = object()
     mtp = object()
+
+
+def test_install_mtp_vendored_uses_inner_language_model_surface(monkeypatch):
+    """Qwen3.5 loads as an outer wrapper whose MTP surfaces live on
+    ``model.language_model`` after sidecar injection.
+
+    The server installer must pass that inner object into
+    ``mtp_generate_step``. Otherwise the server starts with a successful
+    injection banner but disables MTP as a no-op during warmup.
+    """
+    from types import SimpleNamespace
+
+    import mlx.core as mx
+
+    from vllm_mlx.scheduler import _install_mtp_vendored
+    from vllm_mlx.spec_decode.mtp import generator as _gen_mod
+
+    seen: dict[str, object] = {}
+
+    class _FakeGen:
+        def __iter__(self):
+            return self
+
+        def __next__(self):
+            return (1234, mx.array([0.0]), False)
+
+        def close(self):
+            pass
+
+    inner = _StubModel()
+    outer = SimpleNamespace(language_model=inner)
+
+    def _recording_mtp_generate_step(*args, **kwargs):
+        seen["model"] = kwargs["model"]
+        return _FakeGen()
+
+    monkeypatch.setattr(_gen_mod, "mtp_generate_step", _recording_mtp_generate_step)
+
+    batch_gen, gb = _make_batch_gen_with_gb()
+    gb.uids = [42]
+    gb._next_tokens = mx.array([500], dtype=mx.uint32)
+    gb._next_logprobs = [mx.array([0.0])]
+    request_stub = SimpleNamespace(sampling_params=SimpleNamespace(temperature=0.0))
+
+    ok = _install_mtp_vendored(
+        batch_gen,
+        model=outer,
+        requests={"req-42": request_stub},
+        uid_to_request_id={42: "req-42"},
+    )
+    assert ok is True
+
+    gb._step()
+    assert seen["model"] is inner
 
 
 def _make_batch_gen_with_gb():

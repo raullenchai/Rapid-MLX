@@ -1438,11 +1438,20 @@ def _install_mtp_vendored(
         )
         return False
 
-    if not (
-        hasattr(model, "mtp_forward")
-        and hasattr(model, "make_mtp_cache")
-        and hasattr(model, "mtp")
-    ):
+    def _has_mtp_surface(candidate: Any) -> bool:
+        return (
+            hasattr(candidate, "mtp_forward")
+            and hasattr(candidate, "make_mtp_cache")
+            and hasattr(candidate, "mtp")
+        )
+
+    mtp_model = model
+    if not _has_mtp_surface(mtp_model):
+        inner = getattr(model, "language_model", None)
+        if inner is not None and _has_mtp_surface(inner):
+            mtp_model = inner
+
+    if not _has_mtp_surface(mtp_model):
         logger.warning(
             "[MTP-vendored] disabled: model lacks mtp_forward / make_mtp_cache / "
             "mtp attributes — dispatch_mtp_inject did not run or returned False. "
@@ -1975,12 +1984,12 @@ def _install_mtp_vendored(
             try:
                 gen = mtp_generate_step(
                     prompt=first_tok_arr.astype(mx.uint32),
-                    model=model,
+                    model=mtp_model,
                     max_tokens=gen_max,
                     prompt_cache=gb.prompt_cache,
                     temp=0.0,
                     # 0.9.13 PR-B: EV depth controller.
-                    model_id=controller_key or f"mtp-model-{id(model)}",
+                    model_id=controller_key or f"mtp-model-{id(mtp_model)}",
                     max_k=max_k,
                     disable_auto_k=disable_auto_k,
                     # 0.9.13 PR-C: EOS holdout — feed the
@@ -2178,6 +2187,19 @@ def _install_mtp_vendored(
         "non-greedy / logits-processors)."
     )
     return True
+
+
+def _config_vetted_mtp_supports_spec_decode(model_type: str | None) -> bool:
+    """Return True for model types that passed config-driven MTP eligibility.
+
+    Some older alias profiles still carry ``supports_spec_decode=False`` even
+    when the checkpoint config advertises a Qwen MTP head. The CLI promotes the
+    eligibility gate's model_type into SchedulerConfig only after
+    ``detect_mtp_eligibility`` accepts the config; keep the scheduler override
+    narrowly tied to the model families this MTP runtime supports.
+    """
+
+    return model_type in {"qwen3_5", "qwen3_5_moe"}
 
 
 def _install_suffix_decoding(
@@ -3332,13 +3354,19 @@ class Scheduler:
         # (``feat/mtp-ev-controller-0.9.13``); batched residual+bonus
         # sync lands in PR-C (``feat/mtp-batched-sync-0.9.14``).
         if getattr(self.config, "spec_decode", "none") == "mtp":
+            mtp_model_type = getattr(self.config, "mtp_model_type", None)
+            config_vetted_mtp = _config_vetted_mtp_supports_spec_decode(mtp_model_type)
             if (
                 getattr(self, "model_config", None) is not None
                 and not self.model_config.supports_spec_decode
+                and not config_vetted_mtp
             ):
                 logger.warning(
-                    "[MTP-vendored] --spec-decode mtp requested but profile "
-                    "says supports_spec_decode=False. MTP will be disabled."
+                    "[MTP-vendored] MTP speculative-config requested but "
+                    "profile says supports_spec_decode=False and "
+                    "model_type=%r is not in the config-vetted MTP allowlist. "
+                    "MTP will be disabled.",
+                    mtp_model_type,
                 )
             else:
                 _install_mtp_vendored(

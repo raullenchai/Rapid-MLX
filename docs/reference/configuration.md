@@ -79,11 +79,10 @@ Legacy mapping:
 |-------------|------------------|
 | `--enable-dflash` | `--speculative-config '{"method":"dflash"}'` |
 | `--enable-ddtree` | `--speculative-config '{"method":"ddtree"}'` |
-| `--spec-decode mtp` | `--speculative-config '{"method":"mtp"}'` |
-| `--mtp-sidecar <path>` | `{"method":"mtp","model":"<path>"}` |
-| `--mtp-max-k N` | `{"method":"mtp","num_speculative_tokens":N}` |
-| `--mtp-disable-auto-k` | `{"method":"mtp","disable_auto_k":true}` |
 | `--suffix-decoding` | `--speculative-config '{"method":"suffix"}'` |
+
+MTP's old `--spec-decode mtp` shorthand is deprecated and hidden from help;
+use `--speculative-config '{"method":"mtp"}'`.
 
 ### MCP Options
 

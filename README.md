@@ -849,7 +849,7 @@ rapid-mlx serve qwen3.5-9b-8bit \
   --speculative-config '{"method":"ddtree","model":"z-lab/Qwen3.5-9B-DFlash","num_speculative_tokens":16,"tree_budget":24}'
 ```
 
-`--enable-dflash` remains as a compatibility shorthand for `--speculative-config '{"method":"dflash"}'`, and `--dflash-drafter-path` maps to the config `model` field. `--enable-ddtree` similarly remains as a compatibility shorthand for `--speculative-config '{"method":"ddtree"}'`. `--spec-decode mtp` remains as a compatibility shorthand for `--speculative-config '{"method":"mtp"}'`; `--mtp-sidecar` maps to `model`, `--mtp-max-k` maps to `num_speculative_tokens`, and `--mtp-disable-auto-k` maps to `disable_auto_k`. `--suffix-decoding` remains as a compatibility shorthand for `--speculative-config '{"method":"suffix"}'`. None of these backends is enabled by default.
+`--enable-dflash` remains as a compatibility shorthand for `--speculative-config '{"method":"dflash"}'`, and `--dflash-drafter-path` maps to the config `model` field. `--enable-ddtree` similarly remains as a compatibility shorthand for `--speculative-config '{"method":"ddtree"}'`. For MTP, `--speculative-config '{"method":"mtp"}'` is the preferred public path; the old `--spec-decode mtp` shorthand remains accepted as a hidden deprecated compatibility path. `--suffix-decoding` remains as a compatibility shorthand for `--speculative-config '{"method":"suffix"}'`. None of these backends is enabled by default.
 
 Mutex: DFlash cannot combine with MTP or SuffixDecoding (single-user path). MTP and SuffixDecoding cannot combine with each other (both consume the drafter slot).
 
@@ -892,7 +892,6 @@ Mutex: DFlash cannot combine with MTP or SuffixDecoding (single-user path). MTP 
 | `--speculative-config` | vLLM-style speculative decoding JSON config; supports DFlash, DDTree, MTP, and SuffixDecoding | off |
 | `--enable-ddtree` | Compatibility shorthand for DDTree speculative decoding (single-user; `qwen3.5-9b-8bit`) | off |
 | `--suffix-decoding` | Drafter-free n-gram speculative decoding (BatchedEngine path) | off |
-| `--spec-decode mtp` | Compatibility shorthand for MTP head speculative decoding; prefer `--speculative-config '{"method":"mtp"}'` | off |
 | `--gpu-memory-utilization` | Fraction of device memory to use (0.0-1.0) | `0.90` |
 
 **Cloud routing**
@@ -1096,7 +1095,7 @@ harness/                 # Regression baselines + thresholds
 | [DFlash](https://arxiv.org/abs/2602.06036) — block-diffusion drafter, single-user | 1.3–2× decode (workload-dependent) | Shipping, opt-in (`--speculative-config '{"method":"dflash"}'`, `[dflash]` extra; qwen3.5-27b-8bit, qwen3.6-27b-8bit) |
 | [DDTree](https://arxiv.org/abs/2604.12989) — DFlash draft-tree verification, single-user | TBD on rapid-mlx 9B gate | Experimental (`--speculative-config '{"method":"ddtree"}'`; `--enable-ddtree` compatibility shorthand) |
 | [SuffixDecoding](https://arxiv.org/abs/2411.04975) — drafter-free n-gram speculative | 1.1–1.5× decode | Shipping (`--suffix-decoding`, per-model tier sweep ongoing) |
-| MTP — Multi-Token Prediction head | 1.4–1.7× decode | Shipping for existing MTP-eligible checkpoints, opt-in (`--speculative-config '{"method":"mtp"}'`; `--spec-decode mtp` compatibility shorthand) |
+| MTP — Multi-Token Prediction head | Workload-dependent decode gain | Shipping for existing MTP-eligible checkpoints, opt-in (`--speculative-config '{"method":"mtp"}'`) |
 | [EAGLE-3](https://arxiv.org/abs/2503.01840) — feature-level draft on Metal | 3–6.5× decode | Not started |
 | [ReDrafter](https://arxiv.org/abs/2403.09919) — Apple's RNN draft head | 1.4–1.5× decode | Not started |
 

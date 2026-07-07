@@ -21,8 +21,8 @@ Adding a new architecture
 2. Add the ``model_type`` string(s) to :data:`_MTP_INJECT_DISPATCH`
    below, mapping to the module path + entry function name.
 3. Add the ``model_type`` to ``detect._SUPPORTED_MODEL_TYPES`` so the
-   CLI can advertise ``--spec-decode mtp`` for that architecture at
-   parse time.
+   CLI can accept ``--speculative-config '{"method":"mtp"}'`` for that
+   architecture at parse time.
 
 All three steps are strictly additive — existing architectures keep
 their current call sites.

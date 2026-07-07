@@ -209,7 +209,7 @@ def test_speculative_config_mtp_normalizes_to_legacy_spec_decode() -> None:
     assert args._speculative_config.disable_auto_k is True
 
 
-def test_spec_decode_mtp_legacy_flag_still_normalizes_internally() -> None:
+def test_spec_decode_mtp_legacy_flag_normalizes_internally(capsys) -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(
@@ -221,15 +221,34 @@ def test_spec_decode_mtp_legacy_flag_still_normalizes_internally() -> None:
 
     _normalize_speculative_config_or_exit(args)
 
+    captured = capsys.readouterr()
+    assert "--spec-decode mtp is deprecated" in captured.err
+    assert "--speculative-config" in captured.err
     assert args.spec_decode == "mtp"
+    assert args.mtp_sidecar == "google/gemma-4-12B-it-assistant"
+    assert args.mtp_max_k == 2
+    assert args.mtp_disable_auto_k is True
     assert args._speculative_config.method == "mtp"
     assert args._speculative_config.model == "google/gemma-4-12B-it-assistant"
     assert args._speculative_config.num_speculative_tokens == 2
     assert args._speculative_config.disable_auto_k is True
-    assert args._speculative_config.raw["disable_auto_k"] is True
 
 
-def test_speculative_config_mtp_matches_legacy_runtime_args() -> None:
+def test_spec_decode_mtp_legacy_blank_sidecar_normalizes_to_none(capsys) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(spec_decode="mtp", mtp_sidecar="   ")
+
+    _normalize_speculative_config_or_exit(args)
+
+    captured = capsys.readouterr()
+    assert "--spec-decode mtp is deprecated" in captured.err
+    assert args.mtp_sidecar is None
+    assert args._speculative_config.method == "mtp"
+    assert args._speculative_config.model is None
+
+
+def test_speculative_config_mtp_populates_runtime_args() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     config_args = _spec_config_args(
@@ -238,31 +257,16 @@ def test_speculative_config_mtp_matches_legacy_runtime_args() -> None:
             '"num_speculative_tokens":2,"disable_auto_k":true}'
         )
     )
-    legacy_args = _spec_config_args(
-        spec_decode="mtp",
-        mtp_sidecar="google/gemma-4-12B-it-assistant",
-        mtp_max_k=2,
-        mtp_disable_auto_k=True,
-    )
 
     _normalize_speculative_config_or_exit(config_args)
-    _normalize_speculative_config_or_exit(legacy_args)
 
-    runtime_fields = (
-        "spec_decode",
-        "mtp_sidecar",
-        "mtp_max_k",
-        "mtp_disable_auto_k",
-        "suffix_decoding",
-        "suffix_max_draft",
-        "suffix_max_suffix_len",
-        "suffix_min_confidence",
-        "suffix_min_draft_len",
-        "enable_dflash",
-        "enable_ddtree",
-    )
-    for field in runtime_fields:
-        assert getattr(config_args, field) == getattr(legacy_args, field), field
+    assert config_args.spec_decode == "mtp"
+    assert config_args.mtp_sidecar == "google/gemma-4-12B-it-assistant"
+    assert config_args.mtp_max_k == 2
+    assert config_args.mtp_disable_auto_k is True
+    assert config_args.suffix_decoding is False
+    assert config_args.enable_dflash is False
+    assert config_args.enable_ddtree is False
 
 
 def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
@@ -345,6 +349,49 @@ def test_speculative_config_malformed_with_legacy_flag_reports_clean_error(
     captured = capsys.readouterr()
     assert "cannot be empty" in captured.err
     assert "AttributeError" not in captured.err
+
+
+def test_speculative_config_rejects_no_spec_decode(capsys) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(
+        speculative_config='{"method":"mtp"}',
+        no_spec_decode=True,
+    )
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "mutually exclusive" in captured.err
+    assert "--no-spec-decode" in captured.err
+
+
+@pytest.mark.parametrize(
+    "overrides, expected",
+    [
+        ({"enable_dflash": True}, "--enable-dflash"),
+        ({"enable_ddtree": True}, "--enable-ddtree"),
+        ({"spec_decode": "dflash"}, "--spec-decode dflash"),
+        ({"spec_decode": "mtp"}, "--spec-decode mtp"),
+        ({"suffix_decoding": True}, "--suffix-decoding"),
+    ],
+)
+def test_no_spec_decode_rejects_legacy_spec_shorthands(
+    overrides, expected, capsys
+) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(no_spec_decode=True, **overrides)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "--no-spec-decode" in captured.err
+    assert expected in captured.err
 
 
 def test_speculative_config_suffix_normalizes_to_legacy_suffix_args() -> None:

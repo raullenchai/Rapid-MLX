@@ -84,10 +84,7 @@ register_spec_decoder(
         method="mtp",
         description="Model-side multi-token prediction head",
         config_enabled=True,
-        legacy_hint=(
-            'prefer --speculative-config \'{"method":"mtp"}\'; '
-            "legacy --spec-decode mtp remains supported"
-        ),
+        legacy_hint='use --speculative-config \'{"method":"mtp"}\'',
     )
 )
 register_spec_decoder(
