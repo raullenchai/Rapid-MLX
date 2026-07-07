@@ -9,8 +9,7 @@ surfaces, :func:`vllm_mlx.spec_decode.mtp.generator.mtp_generate_step`
 can't drive the model.
 
 This module mirrors the pattern from
-:mod:`vllm_mlx.patches.qwen3_next_mtp` (the existing Qwen3-Next
-runtime injection used by ``--enable-mtp``):
+:mod:`vllm_mlx.patches.qwen3_next_mtp` (the Qwen3-Next runtime injection):
 
 1. Construct the MTP module that PR #990 adds to ``TextModel`` —
    delegated to :func:`vllm_mlx.spec_decode.mtp.head.build_mtp_module`.

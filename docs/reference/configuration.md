@@ -60,8 +60,8 @@
 
 ### Speculative Decoding Options
 
-Prefer `--speculative-config` for new speculative decoding usage. Legacy
-flags remain compatibility shorthands.
+Use `--speculative-config` for speculative decoding usage. Legacy
+spec-decoder flags have been removed.
 
 | Config | Description |
 |--------|-------------|
@@ -72,17 +72,6 @@ flags remain compatibility shorthands.
 | `{"method":"mtp","num_speculative_tokens":3}` | Set the MTP max-K controller ceiling. |
 | `{"method":"mtp","disable_auto_k":true}` | Disable the MTP EV depth controller for fixed-K parity benches. |
 | `{"method":"suffix","num_speculative_tokens":8}` | Enable explicit SuffixDecoding for high-overlap workloads. |
-
-Legacy mapping:
-
-| Legacy flag | Preferred config |
-|-------------|------------------|
-| `--enable-dflash` | `--speculative-config '{"method":"dflash"}'` |
-| `--enable-ddtree` | `--speculative-config '{"method":"ddtree"}'` |
-| `--suffix-decoding` | `--speculative-config '{"method":"suffix"}'` |
-
-MTP's old `--spec-decode mtp` shorthand is deprecated and hidden from help;
-use `--speculative-config '{"method":"mtp"}'`.
 
 ### MCP Options
 

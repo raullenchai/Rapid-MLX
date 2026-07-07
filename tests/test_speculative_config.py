@@ -172,9 +172,7 @@ def _spec_config_args(**overrides):
         "enable_dflash": False,
         "spec_decode": "none",
         "dflash_drafter_path": "",
-        "enable_mtp": False,
         "mtp_sidecar": None,
-        "mtp_num_draft_tokens": 1,
         "mtp_max_k": None,
         "mtp_disable_auto_k": False,
         "suffix_decoding": False,
@@ -209,45 +207,6 @@ def test_speculative_config_mtp_normalizes_to_legacy_spec_decode() -> None:
     assert args._speculative_config.disable_auto_k is True
 
 
-def test_spec_decode_mtp_legacy_flag_normalizes_internally(capsys) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(
-        spec_decode="mtp",
-        mtp_sidecar="google/gemma-4-12B-it-assistant",
-        mtp_max_k=2,
-        mtp_disable_auto_k=True,
-    )
-
-    _normalize_speculative_config_or_exit(args)
-
-    captured = capsys.readouterr()
-    assert "--spec-decode mtp is deprecated" in captured.err
-    assert "--speculative-config" in captured.err
-    assert args.spec_decode == "mtp"
-    assert args.mtp_sidecar == "google/gemma-4-12B-it-assistant"
-    assert args.mtp_max_k == 2
-    assert args.mtp_disable_auto_k is True
-    assert args._speculative_config.method == "mtp"
-    assert args._speculative_config.model == "google/gemma-4-12B-it-assistant"
-    assert args._speculative_config.num_speculative_tokens == 2
-    assert args._speculative_config.disable_auto_k is True
-
-
-def test_spec_decode_mtp_legacy_blank_sidecar_normalizes_to_none(capsys) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(spec_decode="mtp", mtp_sidecar="   ")
-
-    _normalize_speculative_config_or_exit(args)
-
-    captured = capsys.readouterr()
-    assert "--spec-decode mtp is deprecated" in captured.err
-    assert args.mtp_sidecar is None
-    assert args._speculative_config.method == "mtp"
-    assert args._speculative_config.model is None
-
-
 def test_speculative_config_mtp_populates_runtime_args() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
@@ -269,6 +228,18 @@ def test_speculative_config_mtp_populates_runtime_args() -> None:
     assert config_args.enable_ddtree is False
 
 
+def test_speculative_config_mtp_without_token_count_keeps_default_max_k() -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(speculative_config='{"method":"mtp"}')
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args.spec_decode == "mtp"
+    assert args.mtp_max_k == 3
+    assert args.mtp_disable_auto_k is False
+
+
 def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
@@ -284,63 +255,29 @@ def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
     assert args.suffix_min_draft_len == 2
 
 
-def test_speculative_config_mtp_rejects_legacy_sidecar_flag(capsys) -> None:
+def test_no_speculative_config_preserves_programmatic_runtime_fields() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(
-        speculative_config='{"method":"mtp"}',
-        mtp_sidecar="google/gemma-4-12B-it-assistant",
+        enable_dflash=True,
+        dflash_drafter_path="local/draft",
+        suffix_decoding=True,
+        suffix_max_draft=6,
     )
 
-    with pytest.raises(SystemExit) as excinfo:
-        _normalize_speculative_config_or_exit(args)
+    _normalize_speculative_config_or_exit(args)
 
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "mutually exclusive" in captured.err
-    assert "--mtp-sidecar" in captured.err
+    assert args._speculative_config is None
+    assert args.enable_dflash is True
+    assert args.dflash_drafter_path == "local/draft"
+    assert args.suffix_decoding is True
+    assert args.suffix_max_draft == 6
 
 
-def test_speculative_config_mtp_rejects_legacy_max_k_flag(capsys) -> None:
+def test_speculative_config_malformed_reports_clean_error(capsys) -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
-    args = _spec_config_args(
-        speculative_config='{"method":"mtp","num_speculative_tokens":1}',
-        mtp_max_k=2,
-    )
-
-    with pytest.raises(SystemExit) as excinfo:
-        _normalize_speculative_config_or_exit(args)
-
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "mutually exclusive" in captured.err
-    assert "--mtp-max-k" in captured.err
-
-
-def test_speculative_config_mtp_rejects_legacy_disable_auto_k_flag(capsys) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(
-        speculative_config='{"method":"mtp","disable_auto_k":false}',
-        mtp_disable_auto_k=True,
-    )
-
-    with pytest.raises(SystemExit) as excinfo:
-        _normalize_speculative_config_or_exit(args)
-
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "mutually exclusive" in captured.err
-    assert "--mtp-disable-auto-k" in captured.err
-
-
-def test_speculative_config_malformed_with_legacy_flag_reports_clean_error(
-    capsys,
-) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(speculative_config="", enable_mtp=True)
+    args = _spec_config_args(speculative_config="")
 
     with pytest.raises(SystemExit) as excinfo:
         _normalize_speculative_config_or_exit(args)
@@ -368,32 +305,6 @@ def test_speculative_config_rejects_no_spec_decode(capsys) -> None:
     assert "--no-spec-decode" in captured.err
 
 
-@pytest.mark.parametrize(
-    "overrides, expected",
-    [
-        ({"enable_dflash": True}, "--enable-dflash"),
-        ({"enable_ddtree": True}, "--enable-ddtree"),
-        ({"spec_decode": "dflash"}, "--spec-decode dflash"),
-        ({"spec_decode": "mtp"}, "--spec-decode mtp"),
-        ({"suffix_decoding": True}, "--suffix-decoding"),
-    ],
-)
-def test_no_spec_decode_rejects_legacy_spec_shorthands(
-    overrides, expected, capsys
-) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(no_spec_decode=True, **overrides)
-
-    with pytest.raises(SystemExit) as excinfo:
-        _normalize_speculative_config_or_exit(args)
-
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "--no-spec-decode" in captured.err
-    assert expected in captured.err
-
-
 def test_speculative_config_suffix_normalizes_to_legacy_suffix_args() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
@@ -412,89 +323,3 @@ def test_speculative_config_suffix_normalizes_to_legacy_suffix_args() -> None:
     assert args.suffix_min_confidence == 0.4
     assert args.suffix_min_draft_len == 3
     assert args._speculative_config.method == "suffix"
-
-
-def test_suffix_decoding_legacy_flag_is_speculative_config_shorthand() -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(
-        suffix_decoding=True,
-        suffix_max_draft=6,
-        suffix_max_suffix_len=5,
-        suffix_min_confidence=0.4,
-        suffix_min_draft_len=3,
-    )
-
-    _normalize_speculative_config_or_exit(args)
-
-    assert args.suffix_decoding is True
-    assert args._speculative_config.method == "suffix"
-    assert args._speculative_config.num_speculative_tokens == 6
-    assert args._speculative_config.max_suffix_len == 5
-    assert args._speculative_config.min_confidence == 0.4
-    assert args._speculative_config.min_draft_len == 3
-
-
-def test_suffix_decoding_legacy_flag_without_knobs_fills_runtime_defaults() -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(suffix_decoding=True)
-
-    _normalize_speculative_config_or_exit(args)
-
-    assert args.suffix_max_draft == 8
-    assert args.suffix_max_suffix_len == 4
-    assert args.suffix_min_confidence == 0.3
-    assert args.suffix_min_draft_len == 2
-    assert args._speculative_config.method == "suffix"
-    assert args._speculative_config.num_speculative_tokens is None
-
-
-def test_suffix_decoding_legacy_invalid_flag_reports_clean_error(capsys) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(
-        suffix_decoding=True,
-        suffix_max_draft=0,
-    )
-
-    with pytest.raises(SystemExit) as excinfo:
-        _normalize_speculative_config_or_exit(args)
-
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "num_speculative_tokens must be a positive integer" in captured.err
-
-
-def test_speculative_config_suffix_rejects_default_valued_legacy_knob(capsys) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(
-        speculative_config='{"method":"suffix","num_speculative_tokens":6}',
-        suffix_max_draft=8,
-    )
-
-    with pytest.raises(SystemExit) as excinfo:
-        _normalize_speculative_config_or_exit(args)
-
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "mutually exclusive" in captured.err
-    assert "--suffix-max-draft" in captured.err
-
-
-def test_speculative_config_suffix_rejects_legacy_suffix_flag(capsys) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _spec_config_args(
-        speculative_config='{"method":"suffix"}',
-        suffix_decoding=True,
-    )
-
-    with pytest.raises(SystemExit) as excinfo:
-        _normalize_speculative_config_or_exit(args)
-
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "mutually exclusive" in captured.err
-    assert "--suffix-decoding" in captured.err

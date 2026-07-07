@@ -37,8 +37,7 @@ router = APIRouter()
 # Two flags drive the gate:
 #
 # * ``ServerConfig.enable_audio_lane`` — operator opt-in via the
-#   ``--enable-audio`` CLI flag. Mirrors the ``--enable-mtp`` /
-#   ``--enable-dflash`` pattern in ``vllm_mlx.cli``.
+#   ``--enable-audio`` CLI flag.
 # * The loaded model alias / HF id matches an entry in
 #   :mod:`vllm_mlx.audio.registry` — every audio-mode boot path (Bo
 #   R10-C1 ``_serve_audio_mode``) already resolves through the registry,

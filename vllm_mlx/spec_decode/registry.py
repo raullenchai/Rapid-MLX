@@ -19,7 +19,6 @@ class SpecDecoderPlugin:
     method: str
     description: str
     config_enabled: bool = False
-    legacy_hint: str | None = None
     aliases: tuple[str, ...] = ()
 
 
@@ -36,7 +35,6 @@ def register_spec_decoder(plugin: SpecDecoderPlugin) -> None:
         method=method,
         description=plugin.description,
         config_enabled=plugin.config_enabled,
-        legacy_hint=plugin.legacy_hint,
         aliases=tuple(alias.strip().lower() for alias in plugin.aliases if alias),
     )
     for name in (normalized.method, *normalized.aliases):
@@ -76,7 +74,6 @@ register_spec_decoder(
         method="dflash",
         description="Block-diffusion drafter via the existing single-user bridge",
         config_enabled=True,
-        legacy_hint="use --enable-dflash or --spec-decode dflash",
     )
 )
 register_spec_decoder(
@@ -84,7 +81,6 @@ register_spec_decoder(
         method="mtp",
         description="Model-side multi-token prediction head",
         config_enabled=True,
-        legacy_hint='use --speculative-config \'{"method":"mtp"}\'',
     )
 )
 register_spec_decoder(
@@ -92,7 +88,6 @@ register_spec_decoder(
         method="suffix",
         description=("Explicit suffix / n-gram speculation for high-overlap workloads"),
         config_enabled=True,
-        legacy_hint="use --suffix-decoding",
         aliases=("ngram",),
     )
 )

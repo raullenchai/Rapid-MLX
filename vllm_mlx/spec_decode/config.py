@@ -155,81 +155,6 @@ def parse_speculative_config(value: str | None) -> SpeculativeConfig | None:
     )
 
 
-def legacy_ddtree_config() -> SpeculativeConfig:
-    """Return the compatibility config represented by ``--enable-ddtree``."""
-
-    return SpeculativeConfig(method="ddtree", raw={"method": "ddtree"})
-
-
-def legacy_dflash_config(model: str | None = None) -> SpeculativeConfig:
-    """Return the compatibility config represented by DFlash legacy flags."""
-
-    raw = {"method": "dflash"}
-    drafter = _optional_string(model, "model")
-    if drafter is not None:
-        raw["model"] = drafter
-    return SpeculativeConfig(method="dflash", model=drafter, raw=raw)
-
-
-def legacy_mtp_config(
-    *,
-    model: str | None = None,
-    num_speculative_tokens: int | None = None,
-    disable_auto_k: bool | None = None,
-) -> SpeculativeConfig:
-    """Return the compatibility config represented by MTP legacy flags."""
-
-    raw: dict[str, Any] = {"method": "mtp"}
-    sidecar = _optional_string(model, "model")
-    if sidecar is not None:
-        raw["model"] = sidecar
-    tokens = _positive_int(num_speculative_tokens, "num_speculative_tokens")
-    if tokens is not None:
-        raw["num_speculative_tokens"] = tokens
-    disable_auto = _optional_bool(disable_auto_k, "disable_auto_k")
-    if disable_auto is not None:
-        raw["disable_auto_k"] = disable_auto
-    return SpeculativeConfig(
-        method="mtp",
-        model=sidecar,
-        num_speculative_tokens=tokens,
-        disable_auto_k=disable_auto,
-        raw=raw,
-    )
-
-
-def legacy_suffix_config(
-    *,
-    num_speculative_tokens: int | None = None,
-    max_suffix_len: int | None = None,
-    min_confidence: float | None = None,
-    min_draft_len: int | None = None,
-) -> SpeculativeConfig:
-    """Return the compatibility config represented by ``--suffix-decoding``."""
-
-    raw: dict[str, Any] = {"method": "suffix"}
-    tokens = _positive_int(num_speculative_tokens, "num_speculative_tokens")
-    if tokens is not None:
-        raw["num_speculative_tokens"] = tokens
-    suffix_len = _positive_int(max_suffix_len, "max_suffix_len")
-    if suffix_len is not None:
-        raw["max_suffix_len"] = suffix_len
-    confidence = _confidence(min_confidence, "min_confidence")
-    if confidence is not None:
-        raw["min_confidence"] = confidence
-    draft_len = _positive_int(min_draft_len, "min_draft_len")
-    if draft_len is not None:
-        raw["min_draft_len"] = draft_len
-    return SpeculativeConfig(
-        method="suffix",
-        num_speculative_tokens=tokens,
-        max_suffix_len=suffix_len,
-        min_confidence=confidence,
-        min_draft_len=draft_len,
-        raw=raw,
-    )
-
-
 def require_migrated_speculative_config(config: SpeculativeConfig) -> None:
     """Fail until ``config.method`` is wired to a backend runner."""
 
@@ -239,19 +164,14 @@ def require_migrated_speculative_config(config: SpeculativeConfig) -> None:
             f"unsupported speculative decoding method {config.method!r}"
         )
     if not plugin.config_enabled:
-        hint = f"; {plugin.legacy_hint}" if plugin.legacy_hint else ""
         raise SpeculativeConfigError(
-            f"--speculative-config method {plugin.method!r} is not wired yet{hint}."
+            f"--speculative-config method {plugin.method!r} is not wired yet."
         )
 
 
 __all__ = [
     "SpeculativeConfig",
     "SpeculativeConfigError",
-    "legacy_ddtree_config",
-    "legacy_dflash_config",
-    "legacy_mtp_config",
-    "legacy_suffix_config",
     "parse_speculative_config",
     "require_migrated_speculative_config",
 ]

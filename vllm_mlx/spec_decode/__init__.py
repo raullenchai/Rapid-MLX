@@ -33,10 +33,9 @@ Currently bundled:
   ``--speculative-config`` parsing plus the small method registry used
   to migrate DFlash / MTP / SuffixDecoding behind one frontend surface.
 
-Each backend exposes a thin public API the CLI / scheduler can call to
-choose between ``--spec-decode none|mtp|dflash`` at boot — the model-side
-patches that make a particular family eligible stay private to the
-sub-package.
+Each backend exposes a thin public API the CLI / scheduler can call after
+parsing ``--speculative-config`` at boot. The model-side patches that make
+a particular family eligible stay private to the sub-package.
 """
 
 from __future__ import annotations

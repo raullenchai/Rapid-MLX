@@ -590,16 +590,16 @@ def _serve_help_stdout() -> str:
     return proc.stdout
 
 
-def test_cli_spec_decode_flag_advertised_in_help():
-    """``--spec-decode`` remains only for none/dflash compatibility."""
+def test_cli_speculative_config_advertised_in_help():
+    """MTP is exposed through ``--speculative-config`` only."""
     text = _serve_help_stdout()
-    assert "--spec-decode" in text
-    assert "none,dflash" in text or "dflash,none" in text
-    assert "none,mtp" not in text and "mtp,none" not in text
+    assert "--speculative-config" in text
+    assert "--spec-decode" not in text
+    assert '"method":"mtp"' in text
 
 
-def test_cli_spec_decode_flag_rejects_unknown_value():
-    """``--spec-decode eagle`` is rejected by argparse choices."""
+def test_cli_spec_decode_flag_is_removed():
+    """The old ``--spec-decode`` flag is no longer accepted."""
     import subprocess
     import sys
 
@@ -611,18 +611,19 @@ def test_cli_spec_decode_flag_rejects_unknown_value():
             "serve",
             "qwen3.5-4b-4bit",
             "--spec-decode",
-            "eagle",
+            "mtp",
         ],
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert proc.returncode != 0
-    assert "spec-decode" in proc.stderr or "spec_decode" in proc.stderr
+    assert "unrecognized arguments" in proc.stderr
+    assert "--spec-decode" in proc.stderr
 
 
-def test_cli_spec_decode_mtp_legacy_choice_hidden_from_help():
-    """Deprecated ``--spec-decode mtp`` is accepted internally but hidden."""
+def test_cli_spec_decode_mtp_legacy_choice_absent_from_help():
+    """Deprecated ``--spec-decode mtp`` is absent, not merely hidden."""
     import subprocess
     import sys
 
@@ -639,11 +640,7 @@ def test_cli_spec_decode_mtp_legacy_choice_hidden_from_help():
         timeout=30,
     )
     assert proc.returncode == 0, proc.stderr
-    spec_decode_line = next(
-        line for line in proc.stdout.splitlines() if "--spec-decode" in line
-    )
-    assert "{none,dflash}" in spec_decode_line
-    assert "{none,dflash,mtp}" not in spec_decode_line
+    assert "--spec-decode" not in proc.stdout
 
 
 def test_scheduler_config_default_spec_decode_is_none():
@@ -659,6 +656,21 @@ def test_scheduler_config_spec_decode_round_trip():
 
     cfg = SchedulerConfig(spec_decode="mtp")
     assert cfg.spec_decode == "mtp"
+
+
+def test_scheduler_config_accepts_deprecated_mtp_kwargs_as_noops():
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    cfg = SchedulerConfig(
+        enable_mtp=True,
+        mtp_num_draft_tokens=2,
+        mtp_optimistic=True,
+    )
+
+    assert cfg.spec_decode == "none"
+    assert cfg.enable_mtp is True
+    assert cfg.mtp_num_draft_tokens == 2
+    assert cfg.mtp_optimistic is True
 
 
 # ---------------------------------------------------------------------------

@@ -185,8 +185,7 @@ class ServerConfig:
     # wave caught the 500 / misleading-404 leak. The audio-mode boot
     # path (:func:`vllm_mlx.cli._serve_audio_mode`) sets this to True
     # automatically; the text-mode boot path leaves it False unless the
-    # operator explicitly passes ``--enable-audio`` (mirrors the
-    # ``--enable-mtp`` / ``--enable-dflash`` precedent).
+    # operator explicitly passes ``--enable-audio``.
     #
     # The routes/audio module also flips True implicitly when the
     # loaded model alias / HF id resolves through the audio registry,

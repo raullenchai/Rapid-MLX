@@ -1,7 +1,7 @@
 # SPDX-License-Identifier: Apache-2.0
 """DDTree server — experimental single-user mode.
 
-This mirrors the DFlash single-user boundary: ``--enable-ddtree`` bypasses
+This mirrors the DFlash single-user boundary: DDTree mode bypasses
 BatchedEngine and routes generation through the optional external
 ``dtree_mlx`` runtime. The MVP prioritizes a clean end-to-end validation
 surface over breadth of OpenAI features.
@@ -191,7 +191,8 @@ def _validate_request(request: ChatCompletionRequest) -> None:
             status_code=400,
             detail=(
                 "stream=true is not supported in DDTree mode yet; use "
-                "non-streaming requests or restart without --enable-ddtree."
+                "non-streaming requests or remove the method=ddtree "
+                "speculative config."
             ),
         )
     if request.stream_options is not None:
@@ -215,8 +216,8 @@ def _validate_request(request: ChatCompletionRequest) -> None:
                     status_code=400,
                     detail=(
                         "Non-text chat content is not supported in DDTree mode "
-                        "(MVP limitation). Restart without --enable-ddtree to "
-                        "use multimodal inputs."
+                        "(MVP limitation). Remove the method=ddtree speculative "
+                        "config to use multimodal inputs."
                     ),
                 )
     if request.n is not None and request.n > 1:
@@ -226,7 +227,7 @@ def _validate_request(request: ChatCompletionRequest) -> None:
             status_code=400,
             detail=(
                 "Tool calling is not supported in DDTree mode (MVP limitation). "
-                "Restart without --enable-ddtree to use tools."
+                "Remove the method=ddtree speculative config to use tools."
             ),
         )
     if request.tool_choice not in (None, "none"):
@@ -248,8 +249,8 @@ def _validate_request(request: ChatCompletionRequest) -> None:
         raise HTTPException(
             status_code=400,
             detail=(
-                "logprobs is not supported in DDTree mode. Restart without "
-                "--enable-ddtree."
+                "logprobs is not supported in DDTree mode. Remove the "
+                "method=ddtree speculative config."
             ),
         )
     if request.top_logprobs is not None:
@@ -267,7 +268,7 @@ def _validate_request(request: ChatCompletionRequest) -> None:
             status_code=400,
             detail=(
                 "response_format (structured output) is not supported in "
-                "DDTree mode. Restart without --enable-ddtree."
+                "DDTree mode. Remove the method=ddtree speculative config."
             ),
         )
     if request.top_p is not None and request.top_p != 1.0:

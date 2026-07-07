@@ -1151,28 +1151,6 @@ class BatchedEngine(BaseEngine):
             tokenizer_config=tokenizer_config,
         ).result()
 
-        # Validate legacy Qwen3-Next MTP support if enabled. Only meaningful
-        # when the model was loaded from a checkpoint that carries a baked-in
-        # MTP head (``model-mtp.safetensors`` + Qwen3-Next arch). For the
-        # ``--spec-decode mtp`` external-assistant path (Gemma 4, Qwen3.5),
-        # ``dispatch_mtp_inject`` runs downstream and attaches ``model.mtp``
-        # at that point — so a pre-dispatch legacy validate is guaranteed to
-        # fail on those model families and emits a misleading warning right
-        # before dispatch actually succeeds. Skip the legacy validate when
-        # the new-arch dispatcher will run instead (Phase 1 cleanup).
-        sc = self._scheduler_config
-        _new_arch_mtp = sc is not None and getattr(sc, "spec_decode", "none") == "mtp"
-        if sc is not None and sc.enable_mtp and not _new_arch_mtp:
-            from ..patches.qwen3_next_mtp import validate_mtp_support
-
-            if validate_mtp_support(self._model):
-                logger.info("[MTP] Model validated for MTP speculative decoding")
-            else:
-                logger.warning(
-                    "[MTP] MTP validation failed — --enable-mtp will be ignored. "
-                    "See warnings above for details."
-                )
-
         # 0.9.13 PR-A: new-arch MTP inject dispatcher (Gemma 4 external
         # assistant / Qwen3.5 baked-in MTP). Runs BEFORE the scheduler is
         # built so ``_install_mtp_vendored`` in scheduler.py sees the
@@ -1191,6 +1169,8 @@ class BatchedEngine(BaseEngine):
         # ``model_type`` not in the dispatch table, so an operator who
         # forgot the CLI gate still gets a clean skip rather than a
         # traceback.
+        sc = self._scheduler_config
+        _new_arch_mtp = sc is not None and getattr(sc, "spec_decode", "none") == "mtp"
         if _new_arch_mtp:
             # Codex round-G NIT #4 + BLOCKING #3: entire dispatch
             # gate now lives in :func:`_apply_mtp_dispatch` so tests

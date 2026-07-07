@@ -1,6 +1,6 @@
 # SuffixDecoding eligibility — explicit workload flag
 
-> **Default**: `--suffix-decoding` is **OFF** and must stay opt-in.
+> **Default**: `--speculative-config '{"method":"suffix"}'` is **OFF** and must stay opt-in.
 > SuffixDecoding is a workload-specific optimization, not a general model
 > accelerator. It helps only when the request generates long, repetitive
 > continuations with high prompt/output n-gram overlap.
@@ -11,8 +11,6 @@
 > rapid-mlx serve gemma-4-12b-4bit \
 >   --speculative-config '{"method":"suffix","num_speculative_tokens":8}'
 > ```
->
-> The legacy `--suffix-decoding` flag is still accepted for compatibility.
 
 ## When To Use It
 
@@ -58,7 +56,7 @@ it is not recommended for GPT-OSS, Qwen3.6, or general chat.
 | **AGENT** | `tool_loop ≥ 1.8x` AND `min(others) ≥ 0.95x` | Explicit flag hint | Try only for agent/tool-heavy traffic matching the bench. |
 | **STRUCTURED** | `max ≥ 1.5x` AND `min ≥ 0.90x` | Explicit flag hint | Try only for the winning structured workload. |
 | **NEUTRAL** | `min ≥ 0.95x` AND `max ≥ 1.0x` | (silent) | Leave OFF; it neither helps nor hurts. |
-| **AVOID** | any workload `< 0.85x` | `⚠️ SuffixDecoding is known to regress this model — avoid --suffix-decoding` | Leave OFF. It will measurably slow chat/tool/etc. |
+| **AVOID** | any workload `< 0.85x` | `⚠️ SuffixDecoding is known to regress this model — avoid --speculative-config '{"method":"suffix"}'` | Leave OFF. It will measurably slow chat/tool/etc. |
 | **UNKNOWN** | not benched | (silent) | Leave OFF, or run the bench (below) and update the profile. |
 
 The hint is informational only — there is no auto-enable. The actual
@@ -66,7 +64,7 @@ workload mix at *your* startup is unknown, so the user owns the flag.
 
 ## Why this matters
 
-`--suffix-decoding` exploits repetition in the prompt and generated token
+SuffixDecoding exploits repetition in the prompt and generated token
 stream. It wins only when many drafted tokens are accepted. When the
 prompt/output overlap is weak, the verify forwards become pure overhead
 and the request slows down.
@@ -91,7 +89,7 @@ python3.12 scripts/bench_suffix_decoding_integrated.py \
 ```
 
 This runs four workloads (chat, json_array, tool_loop, code_edit) at
-N=3 runs each, in vanilla and `--suffix-decoding ON` modes, takes the
+N=3 runs each, in vanilla and SuffixDecoding ON modes, takes the
 median, and computes the tier. Wall-clock ~10–20 min per model on M3
 Ultra; longer on slower hardware.
 

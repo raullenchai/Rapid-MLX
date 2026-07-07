@@ -101,8 +101,7 @@ class ModelConfig:
     # Mirrors ``AliasProfile.turboquant_tier``; see VALID_TURBOQUANT_TIERS.
     turboquant_tier: str = "unknown"
 
-    # DFlash block-diffusion speculative decoding eligibility (#264, 0.9.0
-    # operator-shipped via ``--enable-dflash`` for ``qwen3.5-27b-8bit``).
+    # DFlash block-diffusion speculative decoding eligibility (#264).
     # Mirrors ``AliasProfile.supports_dflash`` so ``rapid-mlx info`` can
     # call out the DFlash opt-in path in the ``Spec decode`` row instead
     # of mis-leading the user with ``(no MTP/drafter trained)`` when an
@@ -1185,22 +1184,24 @@ def suffix_decoding_hint(cfg: "ModelConfig | None") -> str | None:
         peak = speedup.get("tool_loop") or (max(speedup.values()) if speedup else 0)
         return (
             f"SuffixDecoding: recommended for tool/agent traffic "
-            f"(tool_loop {peak:.1f}x). Explicitly pass --suffix-decoding "
-            "only if your traffic matches."
+            f"(tool_loop {peak:.1f}x). Explicitly pass "
+            '--speculative-config \'{"method":"suffix"}\' only if your '
+            "traffic matches."
         )
     if tier == "structured":
         peak_key = max(speedup, key=speedup.get) if speedup else "structured"
         peak_val = speedup.get(peak_key, 0)
         return (
             f"SuffixDecoding: may help on {peak_key} ({peak_val:.2f}x). "
-            "Explicitly pass --suffix-decoding only if your traffic matches."
+            'Explicitly pass --speculative-config \'{"method":"suffix"}\' '
+            "only if your traffic matches."
         )
     if tier == "avoid":
         worst_key = min(speedup, key=speedup.get) if speedup else "some workloads"
         worst_val = speedup.get(worst_key, 0)
         return (
             f"SuffixDecoding: NOT recommended for this model — {worst_key} "
-            f"regresses to {worst_val:.2f}x. Leave --suffix-decoding off."
+            f"regresses to {worst_val:.2f}x. Leave SuffixDecoding off."
         )
     return None
 
@@ -1253,8 +1254,7 @@ def _suffix_tier_cell(cfg: "ModelConfig", max_width: int | None = None) -> str:
                 "tool_loop" if "tool_loop" in speedup else max(speedup, key=speedup.get)
             )
             text = (
-                f"agent ({peak_key} {speedup[peak_key]:.2f}x"
-                " — recommend --suffix-decoding)"
+                f"agent ({peak_key} {speedup[peak_key]:.2f}x — recommend suffix config)"
             )
         elif tier == "structured" and speedup:
             peak_key = max(speedup, key=speedup.get)
@@ -1378,7 +1378,7 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             # ``(no MTP/drafter trained)`` — half-true but actively
             # misleading because the DFlash drafter IS registered.
             # Surface the actionable opt-in instead.
-            spec = "✗ MTP off — try --enable-dflash"
+            spec = '✗ use config {"method":"dflash"}'
         else:
             # 0.9.0 dogfood: non-hybrid + spec-off was rendering
             # ``hybrid arch`` next to ``Architecture: pure attention``.

@@ -9,7 +9,7 @@ from types import SimpleNamespace
 from unittest.mock import MagicMock
 
 
-def test_serve_parser_exposes_enable_ddtree() -> None:
+def test_serve_parser_exposes_ddtree_speculative_config() -> None:
     import subprocess
     import sys
 
@@ -20,9 +20,8 @@ def test_serve_parser_exposes_enable_ddtree() -> None:
         timeout=30,
     )
     assert out.returncode == 0, out.stderr
-    assert "--enable-ddtree" in out.stdout
     assert "--speculative-config" in out.stdout
-    assert "dtree-mlx" in out.stdout
+    assert "--enable-ddtree" not in out.stdout
 
 
 def _ddtree_cli_args(**overrides):
@@ -34,7 +33,6 @@ def _ddtree_cli_args(**overrides):
         "enable_dflash": False,
         "spec_decode": "none",
         "suffix_decoding": False,
-        "enable_mtp": False,
         "no_spec_decode": False,
     }
     data.update(overrides)
@@ -62,6 +60,7 @@ def test_speculative_config_ddtree_preflight_uses_config_overrides(
 
     _normalize_speculative_config_or_exit(args)
     assert args.enable_ddtree is True
+    assert args.spec_decode == "none"
     alias, profile = _preflight_ddtree_or_exit(args)
 
     assert alias == "qwen3.5-9b-8bit"
@@ -91,45 +90,6 @@ def test_speculative_config_ddtree_preflight_falls_back_to_alias_defaults(
     assert args._ddtree_drafter_repo == "z-lab/Qwen3.5-9B-DFlash"
     assert args._ddtree_speculative_tokens == 16
     assert args._ddtree_tree_budget == 24
-
-
-def test_enable_ddtree_legacy_flag_is_speculative_config_shorthand(
-    monkeypatch,
-) -> None:
-    from vllm_mlx.cli import (
-        _normalize_speculative_config_or_exit,
-        _preflight_ddtree_or_exit,
-    )
-
-    monkeypatch.setattr(
-        "vllm_mlx.speculative.ddtree.eligibility.have_runtime",
-        lambda: True,
-    )
-    args = _ddtree_cli_args(enable_ddtree=True)
-
-    _normalize_speculative_config_or_exit(args)
-    _preflight_ddtree_or_exit(args)
-
-    assert args._speculative_config.method == "ddtree"
-    assert args._ddtree_drafter_repo == "z-lab/Qwen3.5-9B-DFlash"
-
-
-def test_enable_ddtree_conflicts_with_explicit_speculative_config(capsys) -> None:
-    import pytest
-
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _ddtree_cli_args(
-        enable_ddtree=True,
-        speculative_config='{"method":"ddtree"}',
-    )
-
-    with pytest.raises(SystemExit) as excinfo:
-        _normalize_speculative_config_or_exit(args)
-
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "mutually exclusive" in captured.err
 
 
 def test_info_renders_ddtree_block_for_eligible_alias(capsys, monkeypatch) -> None:

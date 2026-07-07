@@ -22,15 +22,14 @@ Eligibility ladder
 
 * :attr:`DFlashEligibility.NONE` — model architecture not supported, or
   no drafter is bound for this alias. CLI must reject
-  ``--spec-decode dflash`` here.
+  ``--speculative-config '{"method":"dflash"}'`` here.
 * :attr:`DFlashEligibility.READY` — Qwen3.5 / Qwen3.6 + a drafter is
   bound. The CLI proceeds; the generator loads the drafter lazily.
 
 The contract is deliberately binary today. A future ``EAGER_FALLBACK``
 state could land for cases where the drafter binding is missing but
-the operator passed ``--dflash-drafter-path`` on the CLI to override —
-the runtime check sits at CLI parse time (cli.py) so this module's
-binary contract stays clean.
+the operator passed a config ``model`` override. The runtime check sits
+at CLI parse time (cli.py) so this module's binary contract stays clean.
 """
 
 from __future__ import annotations
@@ -45,8 +44,7 @@ class DFlashEligibility(str, enum.Enum):
 
     * ``NONE`` — model architecture is not on the Qwen3.5 / 3.6
       allowlist, the config dict is malformed, or no drafter is bound
-      for the alias. The CLI rejects ``--spec-decode dflash`` in this
-      case.
+      for the alias. The CLI rejects DFlash speculative config in this case.
     * ``READY`` — model is Qwen3.5 / 3.6 AND a drafter HF path is
       bound for the alias (either via the side-registry or via the
       CLI override). The generator can load the drafter.
@@ -96,16 +94,16 @@ def detect_dflash_eligibility(
         alias: Optional alias name; the side-registry is consulted for
             a default drafter binding. Pass ``None`` when the model was
             loaded by raw HF path (no alias resolved).
-        drafter_override: Optional CLI ``--dflash-drafter-path`` value
-            that bypasses the side-registry lookup. A non-empty string
-            here ALWAYS satisfies the drafter-binding gate, even if the
-            alias has no registered drafter.
+        drafter_override: Optional config ``model`` override that bypasses
+            the side-registry lookup. A non-empty string here ALWAYS
+            satisfies the drafter-binding gate, even if the alias has no
+            registered drafter.
 
     Returns:
         :class:`DFlashEligibility`. Detection is conservative — any
         ambiguity (unsupported ``model_type``, missing drafter binding,
         structurally-broken config) collapses to ``NONE`` so
-        ``--spec-decode dflash`` on an ineligible config rejects at
+        DFlash speculative config on an ineligible config rejects at
         boot rather than silently emitting wrong tokens.
     """
     result = _detect_dflash_eligibility_verbose(
@@ -167,7 +165,7 @@ def _detect_dflash_eligibility_verbose(
                 "no drafter bound for alias "
                 f"{alias!r} (register via "
                 "vllm_mlx.spec_decode.dflash.register_dflash_drafter or "
-                "pass --dflash-drafter-path on the CLI)"
+                "pass a --speculative-config model override)"
             ),
         )
 

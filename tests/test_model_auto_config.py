@@ -816,7 +816,7 @@ class TestVisibility:
         assert cfg.supports_spec_decode is False
         assert cfg.supports_dflash is True
         table = format_profile_table("mlx-community/Qwen3.5-27B-8bit", cfg)
-        assert "✗ MTP off — try --enable-dflash" in table
+        assert '✗ use config {"method":"dflash"}' in table
         assert "no MTP/drafter trained" not in table
         assert "hybrid arch" not in table
 

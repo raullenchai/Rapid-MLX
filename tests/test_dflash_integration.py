@@ -37,13 +37,13 @@ _skip_without_mlx_vlm = pytest.mark.skipif(
 )
 
 # =============================================================================
-# CLI flag plumbing — argparse adds --enable-dflash + the eligibility check
+# CLI flag plumbing — argparse exposes --speculative-config and the eligibility check
 # fires before the model load when an ineligible alias is passed.
 # =============================================================================
 
 
-def test_serve_parser_exposes_enable_dflash() -> None:
-    """``--enable-dflash`` is a real flag (not argparse.SUPPRESSed)."""
+def test_serve_parser_exposes_speculative_config() -> None:
+    """DFlash is exposed through the shared speculative-config surface."""
     # serve flags are inlined in main(); easier to assert on --help than
     # to re-build the parser. Coarser but reliable.
     import subprocess
@@ -56,7 +56,9 @@ def test_serve_parser_exposes_enable_dflash() -> None:
         timeout=30,
     )
     assert out.returncode == 0, out.stderr
-    assert "--enable-dflash" in out.stdout, "serve --help should list --enable-dflash"
+    assert "--speculative-config" in out.stdout
+    assert "--enable-dflash" not in out.stdout
+    assert "--spec-decode" not in out.stdout
     # Help text mentions the install path so users know how to enable
     # the feature when it's missing.
     assert "[dflash]" in out.stdout, (
@@ -73,7 +75,6 @@ def _dflash_cli_args(**overrides):
         "enable_dflash": False,
         "spec_decode": "none",
         "suffix_decoding": False,
-        "enable_mtp": False,
         "no_spec_decode": False,
         "dflash_drafter_path": "",
     }
@@ -84,6 +85,7 @@ def _dflash_cli_args(**overrides):
 def test_speculative_config_dflash_normalizes_to_legacy_server_flag() -> None:
     from vllm_mlx.cli import (
         _normalize_speculative_config_or_exit,
+        _preflight_dflash_mutexes_or_exit,
         _resolve_dflash_drafter_repo,
     )
 
@@ -95,77 +97,21 @@ def test_speculative_config_dflash_normalizes_to_legacy_server_flag() -> None:
 
     assert args.enable_dflash is True
     assert args.spec_decode == "none"
+    _preflight_dflash_mutexes_or_exit(args)
     assert args._speculative_config.method == "dflash"
     assert args._speculative_config.model == "z-lab/Qwen3.5-27B-DFlash"
     profile = SimpleNamespace(dflash_draft_model="z-lab/default")
     assert _resolve_dflash_drafter_repo(args, profile) == "z-lab/Qwen3.5-27B-DFlash"
 
 
-def test_enable_dflash_legacy_flag_is_speculative_config_shorthand() -> None:
+def test_dflash_speculative_config_rejects_no_spec_decode(capsys) -> None:
     from vllm_mlx.cli import (
         _normalize_speculative_config_or_exit,
-        _resolve_dflash_drafter_repo,
     )
-
-    args = _dflash_cli_args(
-        enable_dflash=True,
-        dflash_drafter_path="local/dflash-drafter",
-    )
-
-    _normalize_speculative_config_or_exit(args)
-
-    assert args.enable_dflash is True
-    assert args.spec_decode == "none"
-    assert args._speculative_config.method == "dflash"
-    assert args._speculative_config.model == "local/dflash-drafter"
-    profile = SimpleNamespace(dflash_draft_model="z-lab/default")
-    assert _resolve_dflash_drafter_repo(args, profile) == "local/dflash-drafter"
-
-
-def test_spec_decode_dflash_legacy_flag_is_speculative_config_shorthand() -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _dflash_cli_args(spec_decode="dflash")
-
-    _normalize_speculative_config_or_exit(args)
-
-    assert args.enable_dflash is True
-    assert args.spec_decode == "none"
-    assert args._legacy_spec_decode_dflash is True
-    assert args._speculative_config.method == "dflash"
-    assert args._speculative_config.model is None
-
-
-def test_spec_decode_dflash_legacy_redirect_notice_is_preserved(capsys) -> None:
-    from vllm_mlx.cli import (
-        _maybe_print_legacy_dflash_redirect,
-        _normalize_speculative_config_or_exit,
-    )
-
-    args = _dflash_cli_args(spec_decode="dflash")
-
-    _normalize_speculative_config_or_exit(args)
-    _maybe_print_legacy_dflash_redirect(args)
-
-    captured = capsys.readouterr()
-    assert "--spec-decode dflash routed to --enable-dflash" in captured.err
-
-
-@pytest.mark.parametrize(
-    "overrides",
-    [
-        {"enable_dflash": True},
-        {"spec_decode": "dflash"},
-        {"spec_decode": "mtp"},
-        {"dflash_drafter_path": "local/drafter"},
-    ],
-)
-def test_speculative_config_rejects_legacy_spec_decode_flags(overrides, capsys) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _dflash_cli_args(
         speculative_config='{"method":"dflash"}',
-        **overrides,
+        no_spec_decode=True,
     )
 
     with pytest.raises(SystemExit) as excinfo:
@@ -174,59 +120,6 @@ def test_speculative_config_rejects_legacy_spec_decode_flags(overrides, capsys) 
     assert excinfo.value.code == 2
     captured = capsys.readouterr()
     assert "mutually exclusive" in captured.err
-
-
-@pytest.mark.parametrize(
-    ("overrides", "code", "match"),
-    [
-        ({"enable_mtp": True}, 1, "cannot combine"),
-        ({"suffix_decoding": True}, 1, "cannot combine"),
-        ({"no_spec_decode": True}, 2, "mutually exclusive"),
-    ],
-)
-def test_dflash_speculative_config_conflicts_fail_before_runtime_probe(
-    overrides, code, match, capsys
-) -> None:
-    from vllm_mlx.cli import (
-        _normalize_speculative_config_or_exit,
-        _preflight_dflash_mutexes_or_exit,
-    )
-
-    args = _dflash_cli_args(
-        speculative_config='{"method":"dflash"}',
-        **overrides,
-    )
-
-    if overrides.get("no_spec_decode"):
-        with pytest.raises(SystemExit) as excinfo:
-            _normalize_speculative_config_or_exit(args)
-        assert excinfo.value.code == code
-        captured = capsys.readouterr()
-        assert match in captured.out + captured.err
-        return
-
-    _normalize_speculative_config_or_exit(args)
-    with pytest.raises(SystemExit) as excinfo:
-        _preflight_dflash_mutexes_or_exit(args)
-
-    assert excinfo.value.code == code
-    captured = capsys.readouterr()
-    assert match in captured.out + captured.err
-
-
-def test_enable_dflash_legacy_mix_rejects_spec_decode_mtp(capsys) -> None:
-    from vllm_mlx.cli import _normalize_speculative_config_or_exit
-
-    args = _dflash_cli_args(enable_dflash=True, spec_decode="mtp")
-
-    with pytest.raises(SystemExit) as excinfo:
-        _normalize_speculative_config_or_exit(args)
-
-    assert excinfo.value.code == 2
-    captured = capsys.readouterr()
-    assert "mutually exclusive" in captured.err
-    assert "--speculative-config" in captured.err
-    assert "--enable-dflash" in captured.err
 
 
 # =============================================================================

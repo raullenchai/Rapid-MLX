@@ -116,12 +116,12 @@ vision = [
 # (issue #264). Adds ~1-4 GB at runtime (drafter weights) and depends on
 # mlx-vlm's spec-decode runtime. Text-only — does NOT pull torch/cv2 like
 # the vision extras do. Only enable if you serve a DFlash-eligible alias
-# (e.g. qwen3.5-27b-8bit) with --enable-dflash.
+# (e.g. qwen3.5-27b-8bit) with --speculative-config '{"method":"dflash"}'.
 dflash = [
     "mlx-vlm>=0.6.3",
 ]
 # MTP (Multi-Token Prediction) speculative decoding — Gemma 4 external
-# assistant path (``--spec-decode mtp --mtp-sidecar <path>``). The
+# assistant path via ``--speculative-config '{"method":"mtp","model":"<path>"}'``.
 # assistant-drafter loader in
 # ``vllm_mlx/spec_decode/mtp/gemma4_inject.py`` transitively pulls
 # ``mlx_lm.utils`` → ``transformers`` which reaches for PIL when a

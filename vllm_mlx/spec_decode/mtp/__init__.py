@@ -56,7 +56,7 @@ acceptance/rejection loop calls ``cache.trim(1)`` (attention layers) and
 ``cache.rollback_state`` (GatedDeltaNet layers), both of which the
 :func:`positioned_update_and_fetch` helper from R15 #301 will
 transparently delegate to on the monotonic-decode fast path. A future
-``--spec-decode mtp-tree`` could plug into the same scaffolding once
+``--speculative-config '{"method":"mtp-tree"}'`` could plug into the same scaffolding once
 upstream ships ``mtp_num_hidden_layers >= 2`` checkpoints.
 """
 

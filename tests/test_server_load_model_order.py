@@ -127,6 +127,28 @@ def test_load_model_infers_programmatic_max_tokens_explicit(monkeypatch):
     assert cfg.default_max_tokens_is_explicit is False
 
 
+def test_load_model_mtp_kwarg_translates_to_scheduler_config(monkeypatch):
+    from vllm_mlx import server
+
+    monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
+    monkeypatch.setattr(server, "_engine", None, raising=False)
+    monkeypatch.setattr(server, "_enable_auto_tool_choice", False, raising=False)
+    monkeypatch.setattr(server, "_tool_call_parser", None, raising=False)
+    monkeypatch.setattr(server, "_reasoning_parser_name", None, raising=False)
+    monkeypatch.setattr(server, "_reasoning_parser", None, raising=False)
+    monkeypatch.setattr(server, "_tool_parser_instance", None, raising=False)
+    monkeypatch.setattr(server, "_mcp_manager", None, raising=False)
+    monkeypatch.setattr(server, "_enable_tool_logits_bias", False, raising=False)
+    monkeypatch.setattr(server, "_model_alias", None, raising=False)
+
+    with pytest.warns(DeprecationWarning, match="load_model\\(mtp=True\\)"):
+        server.load_model("mlx-community/Qwen3.5-9B-4bit", mtp=True)
+
+    assert server._engine is not None
+    cfg = server._engine.kwargs["scheduler_config"]
+    assert cfg.spec_decode == "mtp"
+
+
 def test_detect_native_tool_support_requires_synced_config(monkeypatch):
     """Contract test for the ordering invariant: detection short-circuits
     to False when cfg has not been synced yet, so callers MUST run

@@ -40,7 +40,7 @@ class MTPEligibility(str, enum.Enum):
     ``NONE`` — model architecture does not have an MTP head, or the
     config explicitly sets ``mtp_num_hidden_layers: 0`` (Qwen3.5 / 3.6
     checkpoints that have been re-converted with MTP stripped). The CLI
-    must reject ``--spec-decode mtp`` in this case.
+    must reject ``--speculative-config '{"method":"mtp"}'`` in this case.
 
     ``CHAIN`` — model has a single MTP layer (``mtp_num_hidden_layers
     == 1``). One draft token per backbone step. This is what every
@@ -142,7 +142,7 @@ def detect_mtp_eligibility(
         :class:`MTPEligibility` value. Detection is conservative — any
         ambiguity (unsupported ``model_type``, ``mtp_num_hidden_layers``
         absent or zero, structurally-broken config) collapses to
-        ``NONE`` so ``--spec-decode mtp`` on an ineligible model is
+        ``NONE`` so MTP speculative config on an ineligible model is
         rejected at boot rather than silently emitting wrong tokens.
     """
     result = _detect_mtp_eligibility_verbose(
@@ -185,7 +185,7 @@ def _detect_mtp_eligibility_verbose(
         # checkpoint. For Qwen3.5 / Qwen3.6 this is a stripped convert —
         # operator must re-convert from HF with the PR #990 sanitize()
         # path that preserves ``mtp.*`` weights. Detection collapses to
-        # NONE so ``--spec-decode mtp`` is rejected loudly at boot.
+        # NONE so MTP speculative config is rejected loudly at boot.
         return _DetectionResult(
             MTPEligibility.NONE,
             model_type,

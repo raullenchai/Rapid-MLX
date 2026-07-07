@@ -1,8 +1,9 @@
 # SPDX-License-Identifier: Apache-2.0
 """DFlash eligibility checks — gate the feature behind validated combos.
 
-This is the single chokepoint between user intent (``--enable-dflash`` on
-the CLI) and the runtime hook. Failures here surface as actionable error
+This is the single chokepoint between user intent
+(``--speculative-config '{"method":"dflash"}'`` on the CLI) and the runtime hook.
+Failures here surface as actionable error
 messages at server-start, never as silent regressions at request time.
 
 Gates derived from PoC bench data (see issue #264):

@@ -161,18 +161,11 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         "--enable-auto-tool-choice",
         # Performance opt-in for jump-forward decoding bias.
         "--enable-tool-logits-bias",
-        # Feature flags for speculative-decode backends. The routing
-        # decision (which one is eligible) is gated by --force/no-spec-
-        # decode (registered pair); these just enable the implementation.
-        "--enable-mtp",
-        "--enable-dflash",
-        "--enable-ddtree",
         # Task #292: ``--enable-audio`` is a route-mounting UX knob, not a
         # binary auto-detection. The audio-mode boot path auto-mounts
         # ``/v1/audio/*`` from the registry hit; this flag is the
         # text-mode-with-audio escape hatch (side-car deployments).
         "--enable-audio",
-        "--enable-suffix-decoding",
         "--enable-kv-cache-quantization",
         "--enable-kv-cache-turboquant",
         "--enable-prefix-cache",
@@ -2483,11 +2476,8 @@ def test_engine_core_rejects_conflicting_routing_overrides(monkeypatch, flags):
         _make_engine_core_for_override_test(monkeypatch, cfg)
 
 
-def test_mtp_install_respects_supports_spec_decode():
-    """Regression for codex R1 PR #407: MTP installer in scheduler.py
-    must check ``self.model_config.supports_spec_decode`` (gated by
-    --no-spec-decode). Pre-fix the gate only covered SuffixDecoding
-    and DFlash, so --no-spec-decode silently let MTP run anyway."""
+def test_mtp_spec_config_install_respects_supports_spec_decode():
+    """The MTP speculative-config install must honor --no-spec-decode."""
     import ast
     import importlib.resources
     import pathlib
@@ -2498,31 +2488,24 @@ def test_mtp_install_respects_supports_spec_decode():
     source = (pkg_root / "scheduler.py").read_text()
     tree = ast.parse(source)
 
-    # Find the block guarded by ``if self.config.enable_mtp:`` and
-    # confirm it references ``supports_spec_decode`` somewhere within
-    # its body. Coarse but catches the regression we care about
-    # without coupling to the exact branch structure.
+    # Find the block guarded by ``self.config.spec_decode == "mtp"`` and
+    # confirm it references ``supports_spec_decode`` somewhere within its
+    # body. Coarse but catches the regression without coupling to the
+    # exact branch structure.
     found = False
     for node in ast.walk(tree):
         if not isinstance(node, ast.If):
             continue
-        # Match `if self.config.enable_mtp:` (Attribute chain).
-        test = node.test
-        if (
-            isinstance(test, ast.Attribute)
-            and test.attr == "enable_mtp"
-            and isinstance(test.value, ast.Attribute)
-            and test.value.attr == "config"
-        ):
+        test_src = ast.unparse(node.test)
+        if "spec_decode" in test_src and "mtp" in test_src:
             body_src = ast.unparse(ast.Module(body=node.body, type_ignores=[]))
             if "supports_spec_decode" in body_src:
                 found = True
                 break
     assert found, (
-        "scheduler.py's `if self.config.enable_mtp:` block must reference "
+        'scheduler.py\'s `spec_decode == "mtp"` block must reference '
         "`supports_spec_decode` so --no-spec-decode (SOP §10) gates MTP "
-        "the same way it gates SuffixDecoding/DFlash. Codex caught this "
-        "as a silent override-no-op on PR #407 R1."
+        "the same way it gates SuffixDecoding/DFlash."
     )
 
 
@@ -2570,7 +2553,6 @@ def test_ddtree_branch_rejects_no_spec_decode():
         enable_dflash=False,
         spec_decode="none",
         suffix_decoding=False,
-        enable_mtp=False,
         no_spec_decode=True,
     )
 

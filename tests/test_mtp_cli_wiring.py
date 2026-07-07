@@ -1169,10 +1169,6 @@ def test_start_llm_calls_apply_mtp_dispatch():
     engine._scheduler_config = SchedulerConfig(
         spec_decode="mtp",
         mtp_model_type="gemma4_unified",
-        # enable_mtp is the legacy Qwen3-Next-baked-in flag; must
-        # stay False so we don't route into the pre-dispatch
-        # legacy validate branch that runs when both flags are set.
-        enable_mtp=False,
     )
     engine._gpu_memory_utilization = 0.90
     engine._is_mllm = False

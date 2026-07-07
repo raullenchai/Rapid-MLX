@@ -1192,7 +1192,10 @@ def load_model(
             back-compat with external callers; if provided it is translated
             into ``scheduler_config.prefill_step_size`` and a DeprecationWarning
             is emitted. Will be removed in a future release.
-        mtp: Enable native MTP speculative decoding
+        mtp: DEPRECATED no-op. The public MTP runtime now goes through
+            ``scheduler_config.spec_decode == "mtp"`` after CLI
+            ``--speculative-config`` normalization. Kept to avoid breaking
+            external ``load_model(..., mtp=False)`` callers.
         force_text: Keyword-only. Force loading as text-only LLM even when
             auto-detection would route as MLLM. Escape hatch for incomplete
             vision-tower checkpoints (#393) and text-only forks of multimodal
@@ -1211,6 +1214,22 @@ def load_model(
         max_tokens = 32768
     if max_tokens_is_explicit is None:
         max_tokens_is_explicit = max_tokens_was_supplied
+
+    if mtp:
+        import warnings
+
+        from .scheduler import SchedulerConfig
+
+        warnings.warn(
+            "load_model(mtp=True) is deprecated; pass "
+            "SchedulerConfig(spec_decode='mtp') instead.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
+        if scheduler_config is None:
+            scheduler_config = SchedulerConfig(spec_decode="mtp")
+        elif getattr(scheduler_config, "spec_decode", "none") == "none":
+            scheduler_config.spec_decode = "mtp"
 
     if prefill_step_size is not None:
         import warnings
@@ -1621,9 +1640,7 @@ def register_audio_routes_if_enabled() -> bool:
       :func:`vllm_mlx.cli._serve_audio_mode` always populates
       ``_model_name`` / ``_model_alias`` with a registry-known id), OR
     * The operator passed ``--enable-audio`` on a text-mode boot
-      (``_enable_audio_lane`` is True). This mirrors the
-      ``--enable-mtp`` / ``--enable-dflash`` precedent in
-      :mod:`vllm_mlx.cli`.
+      (``_enable_audio_lane`` is True).
 
     Returns True when the router was attached on this call, False
     otherwise. Idempotent: called from ``load_model`` (text path),

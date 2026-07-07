@@ -70,7 +70,7 @@ def load_runtime(drafter_repo: str, kind: str = "dflash") -> DFlashRuntime:
 
     The mlx-vlm import is deferred to call time so installing rapid-mlx
     without the ``[dflash]`` extras leaves the CLI / unit tests working;
-    only users who actually pass ``--enable-dflash`` ever touch the
+    only users who actually enable DFlash ever touch the
     mlx-vlm code path.
     """
     if not have_runtime():

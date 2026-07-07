@@ -11,7 +11,7 @@ Three concrete pieces live in this module:
 1. :class:`BlockDiffusionDrafter` — the per-block ``Protocol`` consumed
    by :mod:`vllm_mlx.spec_decode.dflash.generator` and ...verifier.
    This per-block contract is the **0.10 interface** — the standardized
-   ``--spec-decode dflash`` integration that pairs with rapid-mlx's own
+   DFlash integration that pairs with rapid-mlx's own
    generator/verifier. It is NOT what mlx-vlm 0.6.3's DFlash drafter
    actually exposes (see #3 below); the rapid-mlx generator/verifier
    pair around this Protocol remains scaffolding until the BatchedEngine

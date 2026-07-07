@@ -1552,21 +1552,32 @@ def _build_benchmark_context(target_tokens: int) -> str:
 
 
 def _normalize_speculative_config_or_exit(args):
-    """Parse ``--speculative-config`` and map method shorthands to flags."""
+    """Parse ``--speculative-config`` and map methods to runtime fields."""
     import sys
 
     from .spec_decode.config import (
         SpeculativeConfigError,
-        legacy_ddtree_config,
-        legacy_dflash_config,
-        legacy_mtp_config,
-        legacy_suffix_config,
         parse_speculative_config,
         require_migrated_speculative_config,
     )
 
     raw_config = getattr(args, "speculative_config", None)
     config = None
+
+    def _fill_runtime_defaults(*, overwrite: bool) -> None:
+        defaults = {
+            "enable_ddtree": False,
+            "enable_dflash": False,
+            "spec_decode": "none",
+            "dflash_drafter_path": "",
+            "mtp_sidecar": None,
+            "mtp_max_k": 3,
+            "mtp_disable_auto_k": False,
+            "suffix_decoding": False,
+        }
+        for name, value in defaults.items():
+            if overwrite or not hasattr(args, name) or getattr(args, name) is None:
+                setattr(args, name, value)
 
     def _fill_suffix_defaults() -> None:
         if getattr(args, "suffix_max_draft", None) is None:
@@ -1578,13 +1589,11 @@ def _normalize_speculative_config_or_exit(args):
         if getattr(args, "suffix_min_draft_len", None) is None:
             args.suffix_min_draft_len = 2
 
-    def _fill_mtp_defaults() -> None:
-        if not hasattr(args, "mtp_sidecar"):
-            args.mtp_sidecar = None
-        if getattr(args, "mtp_max_k", None) is None:
-            args.mtp_max_k = 3
-        if not hasattr(args, "mtp_disable_auto_k"):
-            args.mtp_disable_auto_k = False
+    if raw_config is None:
+        _fill_runtime_defaults(overwrite=False)
+        args._speculative_config = None
+        _fill_suffix_defaults()
+        return
 
     if raw_config is not None:
         try:
@@ -1594,137 +1603,22 @@ def _normalize_speculative_config_or_exit(args):
         except SpeculativeConfigError as exc:
             print(f"error: {exc}", file=sys.stderr)
             sys.exit(2)
-        config_method = config.method if config is not None else "none"
-        conflicts = []
-        if getattr(args, "enable_ddtree", False):
-            conflicts.append("--enable-ddtree")
-        if getattr(args, "enable_dflash", False):
-            conflicts.append("--enable-dflash")
-        spec_decode = getattr(args, "spec_decode", "none")
-        if spec_decode != "none":
-            conflicts.append(f"--spec-decode {spec_decode}")
-        if (getattr(args, "dflash_drafter_path", "") or "").strip():
-            conflicts.append("--dflash-drafter-path")
-        if (getattr(args, "mtp_sidecar", None) or "").strip():
-            conflicts.append("--mtp-sidecar")
-        if getattr(args, "mtp_max_k", None) is not None:
-            conflicts.append("--mtp-max-k")
-        if getattr(args, "mtp_disable_auto_k", False):
-            conflicts.append("--mtp-disable-auto-k")
-        # DFlash has a dedicated preflight that historically reports
-        # these runtime conflicts as "cannot combine" (exit 1) before
-        # probing mlx-vlm. Preserve that user-facing contract; other
-        # methods stay on the generic config/legacy mutual-exclusion path.
-        if getattr(args, "enable_mtp", False) and config_method != "dflash":
-            conflicts.append("--enable-mtp")
-        if getattr(args, "suffix_decoding", False) and config_method != "dflash":
-            conflicts.append("--suffix-decoding")
         if getattr(args, "no_spec_decode", False):
-            conflicts.append("--no-spec-decode")
-        if getattr(args, "suffix_max_draft", None) is not None:
-            conflicts.append("--suffix-max-draft")
-        if getattr(args, "suffix_max_suffix_len", None) is not None:
-            conflicts.append("--suffix-max-suffix-len")
-        if getattr(args, "suffix_min_confidence", None) is not None:
-            conflicts.append("--suffix-min-confidence")
-        if getattr(args, "suffix_min_draft_len", None) is not None:
-            conflicts.append("--suffix-min-draft-len")
-        if conflicts:
-            joined = ", ".join(conflicts)
             print(
                 "error: --speculative-config is mutually exclusive with "
-                f"{joined}; express speculative decoding settings inside "
-                "--speculative-config.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-    if raw_config is None and getattr(args, "no_spec_decode", False):
-        conflicts = []
-        if getattr(args, "enable_ddtree", False):
-            conflicts.append("--enable-ddtree")
-        if getattr(args, "enable_dflash", False):
-            conflicts.append("--enable-dflash")
-        spec_decode = getattr(args, "spec_decode", "none")
-        if spec_decode != "none":
-            conflicts.append(f"--spec-decode {spec_decode}")
-        if getattr(args, "enable_mtp", False):
-            conflicts.append("--enable-mtp")
-        if getattr(args, "suffix_decoding", False):
-            conflicts.append("--suffix-decoding")
-        if conflicts:
-            joined = ", ".join(conflicts)
-            print(
-                f"error: --no-spec-decode is mutually exclusive with {joined}.",
+                "--no-spec-decode.",
                 file=sys.stderr,
             )
             sys.exit(2)
 
-    if raw_config is None and getattr(args, "spec_decode", "none") == "mtp":
-        conflicts = []
-        if getattr(args, "enable_ddtree", False):
-            conflicts.append("--enable-ddtree")
-        if getattr(args, "enable_dflash", False):
-            conflicts.append("--enable-dflash")
-        if getattr(args, "enable_mtp", False):
-            conflicts.append("--enable-mtp")
-        if getattr(args, "suffix_decoding", False):
-            conflicts.append("--suffix-decoding")
-        if conflicts:
-            joined = ", ".join(conflicts)
-            print(
-                "error: --spec-decode mtp is mutually exclusive with "
-                f"{joined}; express speculative decoding settings inside "
-                "--speculative-config.",
-                file=sys.stderr,
-            )
-            sys.exit(2)
-
-    if config is None:
-        if getattr(args, "spec_decode", "none") == "mtp":
-            print(
-                "warning: --spec-decode mtp is deprecated; use "
-                '--speculative-config \'{"method":"mtp"}\' instead.',
-                file=sys.stderr,
-            )
-            config = legacy_mtp_config(
-                model=(getattr(args, "mtp_sidecar", "") or "").strip() or None,
-                num_speculative_tokens=getattr(args, "mtp_max_k", None),
-                disable_auto_k=getattr(args, "mtp_disable_auto_k", None),
-            )
-        try:
-            if config is not None:
-                pass
-            elif getattr(args, "enable_ddtree", False):
-                config = legacy_ddtree_config()
-            elif getattr(args, "enable_dflash", False) or (
-                getattr(args, "spec_decode", "none") == "dflash"
-            ):
-                config = legacy_dflash_config(
-                    (getattr(args, "dflash_drafter_path", "") or "").strip() or None
-                )
-            elif getattr(args, "suffix_decoding", False):
-                config = legacy_suffix_config(
-                    num_speculative_tokens=getattr(args, "suffix_max_draft", None),
-                    max_suffix_len=getattr(args, "suffix_max_suffix_len", None),
-                    min_confidence=getattr(args, "suffix_min_confidence", None),
-                    min_draft_len=getattr(args, "suffix_min_draft_len", None),
-                )
-        except SpeculativeConfigError as exc:
-            print(f"error: {exc}", file=sys.stderr)
-            sys.exit(2)
+    _fill_runtime_defaults(overwrite=True)
     args._speculative_config = config
-    if config is None:
-        _fill_mtp_defaults()
-        _fill_suffix_defaults()
-        return
     if config.method == "ddtree":
         args.enable_ddtree = True
     elif config.method == "dflash":
-        legacy_spec_decode_dflash = getattr(args, "spec_decode", "none") == "dflash"
         args.enable_dflash = True
-        if legacy_spec_decode_dflash:
-            args._legacy_spec_decode_dflash = True
-            args.spec_decode = "none"
+        if config.model:
+            args.dflash_drafter_path = config.model
     elif config.method == "mtp":
         args.spec_decode = "mtp"
         args.mtp_sidecar = config.model
@@ -1743,7 +1637,6 @@ def _normalize_speculative_config_or_exit(args):
         if config.min_draft_len is not None:
             args.suffix_min_draft_len = config.min_draft_len
 
-    _fill_mtp_defaults()
     _fill_suffix_defaults()
 
 
@@ -1753,8 +1646,7 @@ def _resolve_dflash_drafter_repo(args, profile) -> str:
     spec_config = getattr(args, "_speculative_config", None)
     if spec_config is not None and spec_config.method == "dflash" and spec_config.model:
         return spec_config.model
-    legacy_override = (getattr(args, "dflash_drafter_path", "") or "").strip()
-    return legacy_override or profile.dflash_draft_model
+    return profile.dflash_draft_model
 
 
 def _preflight_dflash_mutexes_or_exit(args) -> None:
@@ -1765,17 +1657,15 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
 
     import sys
 
-    spec_decode = getattr(args, "spec_decode", "none")
     if (
         getattr(args, "suffix_decoding", False)
-        or getattr(args, "enable_mtp", False)
-        or spec_decode != "none"
+        or getattr(args, "spec_decode", "none") != "none"
     ):
         print(
-            "\n  Error: DFlash cannot combine with --suffix-decoding "
-            "or other spec-decode methods. DFlash runs a dedicated "
-            "single-user server that bypasses BatchedEngine; other "
-            "spec-decode methods only apply to the BatchedEngine path.\n"
+            "\n  Error: DFlash cannot combine with other spec-decode methods. "
+            "DFlash runs a dedicated single-user server that bypasses "
+            "BatchedEngine; other spec-decode methods only apply to the "
+            "BatchedEngine path.\n"
         )
         sys.exit(1)
     if getattr(args, "no_spec_decode", False):
@@ -1787,52 +1677,38 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
         sys.exit(2)
 
 
-def _maybe_print_legacy_dflash_redirect(args) -> None:
-    """Preserve the legacy ``--spec-decode dflash`` redirect notice."""
-
-    if not getattr(args, "_legacy_spec_decode_dflash", False):
-        return
-
-    import sys
-
-    print(
-        "Spec-decode: --spec-decode dflash routed to --enable-dflash "
-        "(mlx-vlm bridge; BatchedEngine integration deferred to 0.10).",
-        file=sys.stderr,
-    )
-
-
 def _preflight_ddtree_or_exit(args):
     """Validate DDTree flag/alias/runtime gates and cache the profile."""
     import sys
 
-    from .spec_decode.config import legacy_ddtree_config
-
     spec_config = getattr(args, "_speculative_config", None)
-    if spec_config is None and getattr(args, "enable_ddtree", False):
-        spec_config = legacy_ddtree_config()
-        args._speculative_config = spec_config
-
-    if getattr(args, "enable_dflash", False) or (
-        getattr(args, "spec_decode", "none") == "dflash"
-    ):
+    if spec_config is None or spec_config.method != "ddtree":
         print(
-            "\n  Error: --enable-ddtree cannot combine with --enable-dflash "
-            "or --spec-decode dflash. Pick one block-diffusion "
-            "speculative-decoding server.\n"
+            'error: DDTree requires --speculative-config \'{"method":"ddtree"}\'.',
+            file=sys.stderr,
+        )
+        sys.exit(2)
+
+    if getattr(args, "enable_dflash", False):
+        print(
+            "\n  Error: DDTree cannot combine with DFlash. Pick one "
+            "block-diffusion speculative-decoding server.\n"
         )
         sys.exit(1)
-    if getattr(args, "suffix_decoding", False) or getattr(args, "enable_mtp", False):
+    if (
+        getattr(args, "suffix_decoding", False)
+        or getattr(args, "spec_decode", "none") != "none"
+    ):
         print(
-            "\n  Error: --enable-ddtree cannot combine with --suffix-decoding "
-            "or --enable-mtp. DDTree runs a dedicated single-user server "
-            "that bypasses BatchedEngine; other spec-decode methods only "
-            "apply to the BatchedEngine path.\n"
+            "\n  Error: DDTree cannot combine with other spec-decode methods. "
+            "DDTree runs a dedicated single-user server that bypasses "
+            "BatchedEngine; other spec-decode methods only apply to the "
+            "BatchedEngine path.\n"
         )
         sys.exit(1)
     if getattr(args, "no_spec_decode", False):
         print(
-            "error: --enable-ddtree and --no-spec-decode are mutually "
+            "error: DDTree and --no-spec-decode are mutually "
             "exclusive — DDTree is a speculative-decode mode.",
             file=sys.stderr,
         )
@@ -1846,7 +1722,7 @@ def _preflight_ddtree_or_exit(args):
     profile = resolve_profile(alias_name)
     if profile is None:
         print(
-            f"\n  Error: --enable-ddtree requires a known alias, got "
+            f"\n  Error: DDTree requires a known alias, got "
             f"{alias_name!r}. DDTree eligibility is recorded per-alias "
             f"in aliases.json; ad-hoc HuggingFace paths can't be "
             f"validated. Try ``rapid-mlx info qwen3.5-9b-8bit``.\n"
@@ -1861,7 +1737,7 @@ def _preflight_ddtree_or_exit(args):
         probe_error = runtime_probe_error()
         detail = f" Probe failure: {probe_error}." if probe_error else ""
         print(
-            "\n  Error: --enable-ddtree requires the experimental dtree-mlx "
+            "\n  Error: DDTree requires the experimental dtree-mlx "
             "runtime. Install with: ``pip install 'dtree-mlx @ "
             f"git+https://github.com/DrHB/dtree-mlx.git'``.{detail}\n"
         )
@@ -1967,21 +1843,18 @@ def serve_command(args):
     _normalize_speculative_config_or_exit(args)
 
     # DDTree has an external experimental runtime and its validated target
-    # can be multi-GB. Fail the cheap flag/alias/runtime gates before the
+    # can be multi-GB. Fail the cheap config/alias/runtime gates before the
     # version prompt and before any model prefetch so a missing dtree-mlx
-    # install doesn't start a large download first. This runs before the
-    # DFlash runtime probe so --enable-ddtree + --enable-dflash surfaces
-    # the mutual-exclusion error instead of an optional-dependency hint.
+    # install doesn't start a large download first.
     if getattr(args, "enable_ddtree", False):
         _preflight_ddtree_or_exit(args)
 
-    _preflight_dflash_mutexes_or_exit(args)
+    if getattr(args, "enable_dflash", False):
+        _preflight_dflash_mutexes_or_exit(args)
 
-    # 0.9.2 dogfood (parallels the [embeddings]/[vision]/[audio] guards
-    # immediately above): ``--enable-dflash`` and the equivalent
-    # ``--spec-decode dflash`` both depend on the optional ``mlx-vlm``
-    # bridge that ships in the ``[dflash]`` extra. Pre-0.9.3 the missing-
-    # runtime error only surfaced ~50 lines into serve_command, AFTER:
+    # DFlash depends on the optional ``mlx-vlm`` bridge that ships in
+    # the ``[dflash]`` extra. Pre-0.9.3 the missing-runtime error only
+    # surfaced ~50 lines into serve_command, AFTER:
     #   - alias profile resolved (logged twice via pflash)
     #   - tool/reasoning parsers auto-configured
     #   - CORS allow-origin warning printed
@@ -1992,17 +1865,14 @@ def serve_command(args):
     # as the other extras so the error lands FIRST. ``importlib.util.
     # find_spec("mlx_vlm")`` doesn't trigger a load — safe to run on the
     # hot CLI path.
-    _wants_dflash = getattr(args, "enable_dflash", False) or (
-        getattr(args, "spec_decode", "none") == "dflash"
-    )
+    _wants_dflash = getattr(args, "enable_dflash", False)
     if _wants_dflash:
         from .speculative.dflash.eligibility import have_runtime
 
         if not have_runtime():
             print(
                 "\n  Error: DFlash speculative decoding "
-                '(``--speculative-config \'{"method":"dflash"}\'``, '
-                "--enable-dflash, or --spec-decode dflash) requires "
+                '(``--speculative-config \'{"method":"dflash"}\'``) requires '
                 "mlx-vlm 0.5.0+ for the DFlash drafter hooks. Install with: "
                 "``pip install 'rapid-mlx[dflash]'``.\n"
             )
@@ -2435,35 +2305,17 @@ def serve_command(args):
     else:
         server._reasoning_parser = None
 
-    # R15-P1 #313 follow-up (#318): ``--spec-decode dflash`` routes to
-    # the prod path. The originally vendored BatchedEngine adapter at
-    # ``vllm_mlx/spec_decode/dflash/drafter.py:275`` called
-    # ``drafter.draft_block(prefix_tokens, current_position)`` with 2 args,
-    # but mlx-vlm 0.5.0's ``DFlashDraftModel.draft_block`` requires 6 args:
-    # ``(last_bonus, hidden, cache, block_size, sampler, token_dtype)``.
-    # The BatchedEngine adapter never wired the verifier→drafter hidden-
-    # state + cache + sampler thread, so the new --spec-decode dflash
-    # flag was 100% broken at first request — never validated end-to-end.
-    # The OLD ``--enable-dflash`` flag (``vllm_mlx/speculative/dflash/`` +
-    # mlx-vlm's ``_dflash_rounds``) IS the prod-tested path. We unify the
-    # CLI surface by routing ``--spec-decode dflash`` to
-    # ``--enable-dflash`` so users hit the working bridge. The
-    # ``spec_decode/dflash/{generator,drafter,verifier}.py`` modules
-    # remain importable but inert; the ``accept_counter`` /
-    # ``drafter_registry`` siblings stay active for metric scaffolding.
-    _maybe_print_legacy_dflash_redirect(args)
-
     # DFlash / DDTree mutual-exclusion gates fire BEFORE the startup banner so
     # the user sees a clean error instead of an optimistic "Features:
     # dflash" / "ddtree" line immediately followed by an exit. The deeper
     # SchedulerConfig mutex (suffix vs. mtp) stays below since it doesn't
     # involve the dedicated single-user servers.
-    if args.enable_dflash and (args.suffix_decoding or args.enable_mtp):
+    if args.enable_dflash and args.suffix_decoding:
         print(
-            "\n  Error: DFlash cannot combine with --suffix-decoding "
-            "or --enable-mtp. DFlash runs a dedicated single-user server "
-            "that bypasses BatchedEngine; other spec-decode methods only "
-            "apply to the BatchedEngine path.\n"
+            "\n  Error: DFlash cannot combine with other spec-decode methods. "
+            "DFlash runs a dedicated single-user server that bypasses "
+            "BatchedEngine; other spec-decode methods only apply to the "
+            "BatchedEngine path.\n"
         )
         sys.exit(1)
 
@@ -2561,12 +2413,12 @@ def serve_command(args):
             _ddtree_ignored.append("--mcp-config")
         if _ddtree_ignored:
             print(
-                "\n  ⚠ The following flags are ignored under --enable-ddtree"
+                "\n  ⚠ The following flags are ignored under DDTree mode"
                 "\n    (DDTree uses a dedicated experimental single-user "
                 "server that bypasses BatchedEngine):"
                 f"\n      {', '.join(_ddtree_ignored)}"
                 "\n    Drop them from your serve command, or run without"
-                "\n    --enable-ddtree if you need them.\n"
+                "\n    DDTree if you need them.\n"
             )
 
     # Startup summary
@@ -2797,16 +2649,6 @@ def serve_command(args):
         except Exception:
             pass
 
-    # Mutual exclusion: only one spec-decode method may wrap _step at a time.
-    # (The DFlash-vs-{suffix,mtp} check is upstream, before the banner.)
-    if args.suffix_decoding and args.enable_mtp:
-        print(
-            "\n  Error: --suffix-decoding and --enable-mtp are mutually "
-            "exclusive (both monkey-patch the BatchGenerator step). "
-            "Pick one.\n"
-        )
-        sys.exit(1)
-
     # Build scheduler config
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
 
@@ -2815,10 +2657,10 @@ def serve_command(args):
     # so the engine's model-load-executor dispatch step does not need
     # to re-read ``config.json`` (offline HF cache races vs. the CLI's
     # own read were being collapsed into a silent MTP no-op). Only
-    # runs when the operator explicitly asked for ``--spec-decode
-    # mtp``; for the "none" path the field stays None and the engine
-    # takes the pre-0.9.13 fallback branch that best-effort re-reads
-    # the config on the executor.
+    # runs when the operator explicitly asked for MTP through
+    # ``--speculative-config``; for the "none" path the field stays
+    # None and the engine takes the pre-0.9.13 fallback branch that
+    # best-effort re-reads the config on the executor.
     _cli_mtp_model_type: str | None = None
     if getattr(args, "spec_decode", "none") == "mtp":
         try:
@@ -2854,13 +2696,7 @@ def serve_command(args):
         # accepted but never used. See #400 and the CLI ↔ Config fidelity
         # audit at scripts/audit_cli_config_fidelity.py.
         prefill_step_size=args.prefill_step_size,
-        # MTP
-        enable_mtp=args.enable_mtp,
-        mtp_num_draft_tokens=args.mtp_num_draft_tokens,
-        mtp_optimistic=args.mtp_optimistic,
-        # Speculative decoding selection. ``mtp`` is set internally by
-        # --speculative-config only; legacy --spec-decode remains limited
-        # to none/dflash.
+        # Speculative decoding selection.
         spec_decode=getattr(args, "spec_decode", "none"),
         dflash_drafter_path=getattr(args, "dflash_drafter_path", "") or "",
         # Optional external MTP sidecar path. ``None`` is the "no
@@ -2921,8 +2757,11 @@ def serve_command(args):
     print("Mode: Continuous batching (for multiple concurrent users)")
     if args.chunked_prefill_tokens > 0:
         print(f"Chunked prefill: {args.chunked_prefill_tokens} tokens per step")
-    if args.enable_mtp:
-        print(f"MTP: enabled, draft_tokens={args.mtp_num_draft_tokens}")
+    if getattr(args, "spec_decode", "none") == "mtp":
+        print(
+            "MTP: enabled via --speculative-config, "
+            f"max_k={getattr(args, 'mtp_max_k', 3)}"
+        )
     # Native Qwen3.5/3.6 MTP via vendored mlx-lm PR #990. The
     # config-only entrypoint is ``--speculative-config '{"method":"mtp"}'``.
     # Boot-time eligibility check fires here so misuse bounces with a clear
@@ -2986,11 +2825,11 @@ def serve_command(args):
         )
         print(f"Spec-decode: mtp ({eligibility.value}){sidecar_note}")
 
-    # ``--spec-decode dflash`` is normalized to ``--enable-dflash`` near
-    # the top of serve_command (#318 redirect); by the time we reach
-    # here, args.spec_decode is "none" for dflash callers. The
-    # speculative.dflash gate at the start of serve_command runs the
-    # actual eligibility + drafter-binding checks via the prod bridge.
+    # DFlash is normalized from ``--speculative-config`` near the top of
+    # serve_command. By the time we reach here, args.spec_decode is
+    # "none" for dflash callers. The speculative.dflash gate at the
+    # start of serve_command runs the actual eligibility +
+    # drafter-binding checks via the prod bridge.
     if args.suffix_decoding:
         print(
             f"SuffixDecoding: enabled, max_draft={args.suffix_max_draft}, "
@@ -3061,7 +2900,7 @@ def serve_command(args):
     # would push unified memory past the kernel-panic threshold (issue #324).
     _check_memory_capacity(args.model)
 
-    # DFlash fork: when --enable-dflash is set, skip BatchedEngine entirely
+    # DFlash fork: when method=dflash is set, skip BatchedEngine entirely
     # and run the dedicated DFlash server. The eligibility check above has
     # already validated the alias, so by here we have a known-good profile.
     if args.enable_dflash:
@@ -3087,9 +2926,6 @@ def serve_command(args):
             f"DFlash profile invariant violated for {_alias_name!r}"
         )
         # The vLLM-style surface uses ``model`` for the drafter override.
-        # Legacy ``--dflash-drafter-path`` is normalized into
-        # ``_speculative_config.model`` above, with a direct fallback here
-        # for defensive compatibility.
         run_dflash_server(
             main_model_repo=_profile.hf_path,
             drafter_repo=_resolve_dflash_drafter_repo(args, _profile),
@@ -3187,7 +3023,6 @@ def serve_command(args):
             cloud_api_base=args.cloud_api_base,
             cloud_api_key=args.cloud_api_key,
             served_model_name=args.served_model_name,
-            mtp=args.enable_mtp,
             force_hybrid=getattr(args, "force_hybrid", False),
             no_hybrid=getattr(args, "no_hybrid", False),
             force_spec_decode=getattr(args, "force_spec_decode", False),
@@ -5965,8 +5800,8 @@ def _print_dflash_status(alias: str, profile) -> None:
     """Render a 3-row DFlash status block for ``rapid-mlx info <alias>``.
 
     Shows each gate (declared support / not MoE / not 4-bit / drafter
-    present) so a user who tried ``--enable-dflash`` and got a vague
-    error can see exactly which gate they're tripping.
+    present) so a user who tried DFlash and got a vague error can see
+    exactly which gate they're tripping.
     """
     from vllm_mlx.speculative.dflash.eligibility import (
         _looks_like_4bit,
@@ -6739,38 +6574,15 @@ Examples:
         default=None,
         help=argparse.SUPPRESS,
     )
-    # DFlash — block-diffusion drafter speculative decoding (z-lab / mlx-vlm).
-    # Currently single-user serial mode; runs a dedicated DFlash server that
-    # bypasses BatchedEngine. Eligible aliases declare ``supports_dflash=true``
-    # in aliases.json (dense, ≥8-bit, drafter available — qwen3.5-27b-8bit
-    # is the only validated one today). PoC: 1.83–2.18× on Qwen3.5-27B-8bit.
-    serve_parser.add_argument(
-        "--enable-dflash",
-        action="store_true",
-        default=False,
-        help="Enable DFlash speculative decoding (block-diffusion drafter, "
-        "single-user serial mode). Requires a DFlash-eligible alias "
-        "(see ``rapid-mlx info <alias>``). Loads the drafter from the "
-        "alias's ``dflash_draft_model`` field. Install with "
-        "``pip install 'rapid-mlx[dflash]'``.",
-    )
-    serve_parser.add_argument(
-        "--enable-ddtree",
-        action="store_true",
-        default=False,
-        help="Enable experimental DDTree speculative decoding (DFlash draft "
-        "tree verification, single-user serial mode). Requires a "
-        "DDTree-eligible alias (see ``rapid-mlx info <alias>``) and the "
-        "external dtree-mlx runtime.",
-    )
     serve_parser.add_argument(
         "--speculative-config",
         dest="speculative_config",
         default=None,
         help=(
             "vLLM-style speculative decoding JSON config. This frontend "
-            "parses method/model/num_speculative_tokens now. DFlash is "
-            'available with \'{"method":"dflash"}\', DDTree with '
+            "parses method/model/num_speculative_tokens now. DFlash "
+            "requires the rapid-mlx[dflash] extra and is available with "
+            '\'{"method":"dflash"}\', DDTree with '
             '\'{"method":"ddtree"}\', and MTP with '
             '\'{"method":"mtp","num_speculative_tokens":3,'
             '"disable_auto_k":false}\'. SuffixDecoding is an explicit, '
@@ -6850,8 +6662,7 @@ Examples:
     # enables the routes via the registry hit — this flag is the
     # escape hatch for operators who want the audio router mounted
     # alongside a text engine (e.g. side-car deployments that proxy the
-    # audio paths to a separate process). Mirrors the ``--enable-mtp``
-    # / ``--enable-dflash`` pattern so the surface stays consistent.
+    # audio paths to a separate process).
     serve_parser.add_argument(
         "--enable-audio",
         action="store_true",
@@ -6861,128 +6672,6 @@ Examples:
         "requests to a separate process. Audio-capable models "
         "(kokoro / whisper / parakeet / chatterbox / vibevoice / voxcpm) "
         "auto-mount the routes — this flag is only needed on text-mode boots.",
-    )
-    # MTP (Multi-Token Prediction)
-    serve_parser.add_argument(
-        "--enable-mtp",
-        action="store_true",
-        default=False,
-        help="Enable MTP (Multi-Token Prediction) for models with built-in MTP heads. "
-        "Uses cache snapshot/restore for speculative generation.",
-    )
-    serve_parser.add_argument(
-        "--mtp-num-draft-tokens",
-        type=int,
-        default=1,
-        help="Number of draft tokens per MTP step (default: 1)",
-    )
-    serve_parser.add_argument(
-        "--mtp-optimistic",
-        action="store_true",
-        default=False,
-        help="Skip MTP acceptance check for maximum speed. "
-        "~5-10%% wrong tokens. Best for chat, not for code.",
-    )
-    serve_parser.add_argument(
-        "--mtp-sidecar",
-        dest="mtp_sidecar",
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--mtp-max-k",
-        dest="mtp_max_k",
-        type=int,
-        default=None,
-        help=argparse.SUPPRESS,
-    )
-    serve_parser.add_argument(
-        "--mtp-disable-auto-k",
-        dest="mtp_disable_auto_k",
-        action="store_true",
-        default=False,
-        help=argparse.SUPPRESS,
-    )
-    # Compatibility selector kept for older public shorthands.
-    # ``mtp`` is accepted as a deprecated hidden choice and normalized to
-    # ``--speculative-config '{"method":"mtp"}'``. Keep help focused on
-    # the non-deprecated values via ``metavar``.
-    serve_parser.add_argument(
-        "--spec-decode",
-        dest="spec_decode",
-        choices=["none", "dflash", "mtp"],
-        metavar="{none,dflash}",
-        default="none",
-        help=(
-            "Compatibility selector for model-side speculative decode; "
-            "prefer --speculative-config for new usage. "
-            "``none`` (default) disables; ``dflash`` enables the "
-            "block-diffusion drafter from arxiv 2410.04097 (R15-P1 "
-            "#313) for Qwen3.5/3.6 with a bound drafter (default "
-            "block size 16). DFlash validates its model/drafter pair "
-            "at boot so misuse fails loud."
-        ),
-    )
-    # R15-P1 #313: DFlash drafter HF path override. Empty by default
-    # so the side-registry's per-alias binding wins; an operator who
-    # wants to swap the default drafter for a fine-tuned variant can
-    # pass this without editing the registry.
-    serve_parser.add_argument(
-        "--dflash-drafter-path",
-        dest="dflash_drafter_path",
-        default="",
-        help=(
-            "Compatibility override for the per-alias DFlash drafter HF path; "
-            'prefer --speculative-config \'{"method":"dflash","model":...}\'. '
-            "Defaults to the empty string, in which case "
-            "vllm_mlx.spec_decode.dflash.drafter_registry resolves "
-            "the drafter for the loaded alias."
-        ),
-    )
-    # SuffixDecoding — drafter-free spec-decode using a suffix tree over
-    # prompt/generated tokens. This is an explicit workload flag, not a
-    # general accelerator: it can help long high-overlap copy/code-edit/
-    # repeated tool-XML traffic, and can regress ordinary chat / JSONL /
-    # unsupported model families. Pure-attention only.
-    serve_parser.add_argument(
-        "--suffix-decoding",
-        action="store_true",
-        default=False,
-        help="Enable SuffixDecoding spec-decode (drafter-free, statistical). "
-        "Explicit opt-in only: useful for long high-overlap workloads such "
-        "as prompt-copy, code editing, and repeated tool XML on validated "
-        "models. Do not use as a general chat accelerator; GPT-OSS/Qwen "
-        "families have shown regressions in local benches. Auto-disabled "
-        "on hybrid models (Qwen3.5/3.6 A3B/A10B, Granite4, Mamba/Jamba/RWKV).",
-    )
-    serve_parser.add_argument(
-        "--suffix-max-draft",
-        type=int,
-        default=None,
-        help="Max draft tokens per verify step (default: 8). "
-        "Verify forward cost grows linearly with this.",
-    )
-    serve_parser.add_argument(
-        "--suffix-max-suffix-len",
-        type=int,
-        default=None,
-        help="Max k-gram length indexed for suffix matching (default: 4).",
-    )
-    serve_parser.add_argument(
-        "--suffix-min-confidence",
-        type=float,
-        default=None,
-        help="Vote confidence floor for draft truncation (default: 0.3). "
-        "Lower → more optimistic drafts; higher → fewer but more reliable.",
-    )
-    serve_parser.add_argument(
-        "--suffix-min-draft-len",
-        type=int,
-        default=None,
-        help="Skip the verify forward when drafter returns fewer than "
-        "this many tokens (default: 2). Protects free-form chat from "
-        "verify overhead on weak 1-token drafts. Set to 1 to verify "
-        "every draft (more aggressive; can regress chat).",
     )
     # Prefill step size
     serve_parser.add_argument(
