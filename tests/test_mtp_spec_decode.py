@@ -658,6 +658,13 @@ def test_scheduler_config_spec_decode_round_trip():
     assert cfg.spec_decode == "mtp"
 
 
+def test_scheduler_config_rejects_unknown_spec_decode():
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="spec_decode='typo'.*not supported"):
+        SchedulerConfig(spec_decode="typo")
+
+
 def test_scheduler_config_translates_deprecated_mtp_kwargs():
     from vllm_mlx.scheduler import SchedulerConfig
 
@@ -665,27 +672,21 @@ def test_scheduler_config_translates_deprecated_mtp_kwargs():
         cfg = SchedulerConfig(
             enable_mtp=True,
             mtp_num_draft_tokens=2,
+            mtp_optimistic=True,
         )
 
     assert cfg.spec_decode == "mtp"
     assert cfg.enable_mtp is True
     assert cfg.mtp_num_draft_tokens == 2
-    assert cfg.mtp_optimistic is False
+    assert cfg.mtp_optimistic is True
     assert cfg.mtp_max_k == 2
 
 
-@pytest.mark.parametrize(
-    "kwargs",
-    [
-        {"enable_mtp": True, "mtp_optimistic": True},
-        {"spec_decode": "mtp", "mtp_optimistic": True},
-    ],
-)
-def test_scheduler_config_rejects_unsupported_mtp_optimistic(kwargs):
+def test_scheduler_config_rejects_unsupported_migrated_mtp_optimistic():
     from vllm_mlx.scheduler import SchedulerConfig
 
     with pytest.raises(ValueError, match="mtp_optimistic=True.*no longer supported"):
-        SchedulerConfig(**kwargs)
+        SchedulerConfig(spec_decode="mtp", mtp_optimistic=True)
 
 
 def test_scheduler_config_rejects_deprecated_mtp_with_other_spec_decode():

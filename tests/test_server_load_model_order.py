@@ -147,16 +147,20 @@ def test_load_model_mtp_kwarg_translates_to_scheduler_config(monkeypatch):
     assert server._engine is not None
     cfg = server._engine.kwargs["scheduler_config"]
     assert cfg.spec_decode == "mtp"
+    assert cfg.enable_mtp is True
 
 
 def test_load_model_mtp_kwarg_rejects_conflicting_spec_decode():
     from vllm_mlx import server
     from vllm_mlx.scheduler import SchedulerConfig
 
+    cfg = SchedulerConfig()
+    cfg.spec_decode = "suffix"
+
     with pytest.raises(ValueError, match="mtp=True.*spec_decode='suffix'"):
         server.load_model(
             "mlx-community/Qwen3.5-9B-4bit",
-            scheduler_config=SchedulerConfig(spec_decode="suffix"),
+            scheduler_config=cfg,
             mtp=True,
         )
 
@@ -185,16 +189,32 @@ def test_load_model_mtp_kwarg_rejects_conflicting_dflash_config():
         )
 
 
-def test_load_model_mtp_kwarg_rejects_unsupported_optimistic_config():
+def test_load_model_mtp_kwarg_preserves_legacy_optimistic_config(monkeypatch):
     from vllm_mlx import server
     from vllm_mlx.scheduler import SchedulerConfig
 
-    with pytest.raises(ValueError, match="mtp_optimistic=True"):
+    monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
+    monkeypatch.setattr(server, "_engine", None, raising=False)
+    monkeypatch.setattr(server, "_enable_auto_tool_choice", False, raising=False)
+    monkeypatch.setattr(server, "_tool_call_parser", None, raising=False)
+    monkeypatch.setattr(server, "_reasoning_parser_name", None, raising=False)
+    monkeypatch.setattr(server, "_reasoning_parser", None, raising=False)
+    monkeypatch.setattr(server, "_tool_parser_instance", None, raising=False)
+    monkeypatch.setattr(server, "_mcp_manager", None, raising=False)
+    monkeypatch.setattr(server, "_enable_tool_logits_bias", False, raising=False)
+    monkeypatch.setattr(server, "_model_alias", None, raising=False)
+
+    with pytest.warns(DeprecationWarning, match="load_model\\(mtp=True\\)"):
         server.load_model(
             "mlx-community/Qwen3.5-9B-4bit",
             scheduler_config=SchedulerConfig(mtp_optimistic=True),
             mtp=True,
         )
+
+    cfg = server._engine.kwargs["scheduler_config"]
+    assert cfg.enable_mtp is True
+    assert cfg.spec_decode == "mtp"
+    assert cfg.mtp_optimistic is True
 
 
 def test_detect_native_tool_support_requires_synced_config(monkeypatch):

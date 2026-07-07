@@ -1726,9 +1726,17 @@ def _normalize_speculative_config_or_exit(args):
         if getattr(args, "mtp_optimistic", False):
             if not mtp_requested:
                 reject_orphan("mtp_optimistic", "enable_mtp or spec_decode=mtp")
+            if not getattr(args, "enable_mtp", False):
+                print(
+                    "error: legacy speculative decoding knob mtp_optimistic "
+                    "requires enable_mtp; migrated MTP does not support "
+                    "optimistic mode.",
+                    file=sys.stderr,
+                )
+                sys.exit(2)
             warnings.warn(
                 "legacy speculative decoding knob mtp_optimistic is deprecated "
-                "and ignored by the migrated MTP path.",
+                "and only supported by the legacy enable_mtp path.",
                 DeprecationWarning,
                 stacklevel=2,
             )
@@ -1768,6 +1776,9 @@ def _normalize_speculative_config_or_exit(args):
     legacy_payload = None
     legacy_enable_mtp_requested = raw_config is None and getattr(
         args, "enable_mtp", False
+    )
+    legacy_mtp_optimistic_requested = raw_config is None and getattr(
+        args, "mtp_optimistic", False
     )
     if raw_config_was_explicit:
         legacy_fields = _legacy_speculative_fields()
@@ -1827,6 +1838,10 @@ def _normalize_speculative_config_or_exit(args):
         args.spec_decode = "mtp"
         if legacy_enable_mtp_requested:
             args.enable_mtp = True
+            if config.num_speculative_tokens is not None:
+                args.mtp_num_draft_tokens = config.num_speculative_tokens
+            if legacy_mtp_optimistic_requested:
+                args.mtp_optimistic = True
         args.mtp_sidecar = config.model
         if config.num_speculative_tokens is not None:
             args.mtp_max_k = config.num_speculative_tokens
