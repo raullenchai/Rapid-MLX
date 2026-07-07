@@ -471,10 +471,18 @@ def _server_in_repo(
             cwd=str(repo_root),
             env=_repo_python_env(repo_root, isolate_existing=isolate_pythonpath),
         )
-        if not _wait_for_server(BENCH_PORT, SERVER_BOOT_TIMEOUT_S):
+        ready, reason = _wait_for_server(
+            BENCH_PORT,
+            SERVER_BOOT_TIMEOUT_S,
+            proc=proc,
+            expected_model=choice.model_id,
+        )
+        if not ready:
             raise _ServerStartError(
-                f"server did not respond on :{BENCH_PORT} within "
-                f"{SERVER_BOOT_TIMEOUT_S}s — see {log_path}"
+                f"server did not become ready for {choice.model_id} on "
+                f":{BENCH_PORT} within {SERVER_BOOT_TIMEOUT_S}s"
+                + (f" ({reason})" if reason else "")
+                + f" — see {log_path}"
             )
         yield str(log_path)
     finally:
@@ -518,32 +526,69 @@ def _port_in_use(port: int) -> bool:
         s.close()
 
 
-def _wait_for_server(port: int, timeout_s: int) -> bool:
+def _wait_for_server(
+    port: int,
+    timeout_s: int,
+    *,
+    proc: subprocess.Popen | None = None,
+    expected_model: str | None = None,
+) -> tuple[bool, str | None]:
     """Poll /health/ready until 200 or timeout. Each attempt tolerates
     connection refused (still booting) and 503 (engine loading +
     warmup + prefix-cache load still in progress).
 
     /health/ready returns 200 only after lifespan has finished
     engine.start() + warmup + load_from_disk + MCP init. Polling it
-    (instead of /v1/models) means the first stress/bench request
-    isn't racing the cold-start work — what previously looked like a
-    "request timeout" was actually warmup latency leaking past the
-    moment the FastAPI app started accepting connections.
+    Once health is ready, require /v1/models to advertise the model we
+    just launched. A fixed validation port can otherwise be polluted by a
+    stale or racing server and turn the stress result into a false signal.
     """
     import urllib.error
     import urllib.request
 
     deadline = time.monotonic() + timeout_s
-    url = f"http://127.0.0.1:{port}/health/ready"
+    health_url = f"http://127.0.0.1:{port}/health/ready"
+    models_url = f"http://127.0.0.1:{port}/v1/models"
+    last_reason: str | None = None
     while time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            return False, f"server process exited {proc.returncode}"
         try:
-            with urllib.request.urlopen(url, timeout=2) as resp:  # noqa: S310
+            with urllib.request.urlopen(health_url, timeout=2) as resp:  # noqa: S310
                 if resp.status == 200:
-                    return True
-        except (urllib.error.URLError, OSError):
+                    if expected_model is None:
+                        return True, None
+                    try:
+                        with urllib.request.urlopen(  # noqa: S310
+                            models_url, timeout=2
+                        ) as models_resp:
+                            if models_resp.status != 200:
+                                last_reason = (
+                                    f"/v1/models returned HTTP {models_resp.status}"
+                                )
+                                continue
+                            payload = json.loads(
+                                models_resp.read().decode("utf-8") or "{}"
+                            )
+                    except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
+                        last_reason = f"/v1/models probe failed: {type(e).__name__}"
+                        continue
+                    ids = {
+                        item.get("id")
+                        for item in payload.get("data", [])
+                        if isinstance(item, dict) and isinstance(item.get("id"), str)
+                    }
+                    if expected_model in ids:
+                        return True, None
+                    sample = ", ".join(sorted(ids)[:3]) or "<none>"
+                    last_reason = (
+                        f"/v1/models advertised {sample}, not {expected_model}"
+                    )
+        except (urllib.error.URLError, OSError) as e:
+            last_reason = f"/health/ready probe failed: {type(e).__name__}"
             pass
         time.sleep(2)
-    return False
+    return False, last_reason
 
 
 def _wait_for_port_free(port: int, timeout: int = 10) -> bool:

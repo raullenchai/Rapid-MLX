@@ -868,6 +868,77 @@ class TestStressPreexistingClassification:
 
         assert env["PYTHONPATH"] == str(tmp_path)
 
+    def test_wait_for_server_requires_expected_model(self, monkeypatch):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        class FakeProc:
+            returncode = None
+
+            def poll(self):
+                return None
+
+        class FakeResponse:
+            status = 200
+
+            def __init__(self, payload: bytes = b"{}"):
+                self._payload = payload
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            def read(self):
+                return self._payload
+
+        model_payloads = iter(
+            [
+                b'{"data":[{"id":"stale/model"}]}',
+                b'{"data":[{"id":"toy/model"}]}',
+            ]
+        )
+        calls = []
+
+        def fake_urlopen(url, timeout):
+            calls.append(url)
+            if url.endswith("/health/ready"):
+                return FakeResponse()
+            return FakeResponse(next(model_payloads))
+
+        monkeypatch.setattr(step_mod.time, "sleep", lambda _seconds: None)
+        monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+        ready, reason = step_mod._wait_for_server(
+            8451,
+            5,
+            proc=FakeProc(),
+            expected_model="toy/model",
+        )
+
+        assert ready is True
+        assert reason is None
+        assert calls.count("http://127.0.0.1:8451/v1/models") == 2
+
+    def test_wait_for_server_fails_when_child_exits(self):
+        from scripts.pr_validate.steps import stress_e2e_bench as step_mod
+
+        class ExitedProc:
+            returncode = 2
+
+            def poll(self):
+                return self.returncode
+
+        ready, reason = step_mod._wait_for_server(
+            8451,
+            5,
+            proc=ExitedProc(),
+            expected_model="toy/model",
+        )
+
+        assert ready is False
+        assert reason == "server process exited 2"
+
     def test_run_stress_uses_isolated_pythonpath_for_base_worktree(
         self, tmp_path, monkeypatch
     ):
