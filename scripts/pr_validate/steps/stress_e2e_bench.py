@@ -566,12 +566,14 @@ def _wait_for_server(
                                 last_reason = (
                                     f"/v1/models returned HTTP {models_resp.status}"
                                 )
+                                time.sleep(2)
                                 continue
                             payload = json.loads(
                                 models_resp.read().decode("utf-8") or "{}"
                             )
                     except (urllib.error.URLError, OSError, json.JSONDecodeError) as e:
                         last_reason = f"/v1/models probe failed: {type(e).__name__}"
+                        time.sleep(2)
                         continue
                     ids = {
                         item.get("id")

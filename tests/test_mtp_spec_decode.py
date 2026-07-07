@@ -682,6 +682,47 @@ def test_scheduler_config_rejects_deprecated_mtp_with_other_spec_decode():
         SchedulerConfig(enable_mtp=True, spec_decode="suffix")
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        (
+            {"enable_mtp": True, "enable_suffix_decoding": True},
+            "multiple speculative decoding methods.*mtp, suffix",
+        ),
+        (
+            {"enable_mtp": True, "dflash_drafter_path": "local/draft"},
+            "dflash_drafter_path=.*conflicts with spec_decode='mtp'",
+        ),
+    ],
+)
+def test_scheduler_config_rejects_deprecated_mtp_with_other_backends(kwargs, match):
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.warns(DeprecationWarning, match="enable_mtp=True"):
+        with pytest.raises(ValueError, match=match):
+            SchedulerConfig(**kwargs)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "match"),
+    [
+        (
+            {"spec_decode": "dflash", "enable_suffix_decoding": True},
+            "multiple speculative decoding methods.*dflash, suffix",
+        ),
+        (
+            {"enable_suffix_decoding": True, "dflash_drafter_path": "local/draft"},
+            "dflash_drafter_path=.*conflicts",
+        ),
+    ],
+)
+def test_scheduler_config_rejects_multiple_spec_decode_backends(kwargs, match):
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match=match):
+        SchedulerConfig(**kwargs)
+
+
 # ---------------------------------------------------------------------------
 # 5. Metrics rendering
 # ---------------------------------------------------------------------------

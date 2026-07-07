@@ -906,7 +906,10 @@ class TestStressPreexistingClassification:
                 return FakeResponse()
             return FakeResponse(next(model_payloads))
 
-        monkeypatch.setattr(step_mod.time, "sleep", lambda _seconds: None)
+        sleeps = []
+        monkeypatch.setattr(
+            step_mod.time, "sleep", lambda seconds: sleeps.append(seconds)
+        )
         monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
 
         ready, reason = step_mod._wait_for_server(
@@ -919,6 +922,7 @@ class TestStressPreexistingClassification:
         assert ready is True
         assert reason is None
         assert calls.count("http://127.0.0.1:8451/v1/models") == 2
+        assert sleeps == [2]
 
     def test_wait_for_server_fails_when_child_exits(self):
         from scripts.pr_validate.steps import stress_e2e_bench as step_mod

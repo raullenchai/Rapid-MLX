@@ -172,6 +172,8 @@ def _spec_config_args(**overrides):
         "enable_dflash": False,
         "spec_decode": "none",
         "dflash_drafter_path": "",
+        "mtp_num_draft_tokens": 1,
+        "mtp_optimistic": False,
         "mtp_sidecar": None,
         "mtp_max_k": None,
         "mtp_disable_auto_k": False,
@@ -346,7 +348,45 @@ def test_hidden_legacy_tuning_knobs_require_method_selector(
         ({"enable_mtp": True}, "enable_mtp"),
         ({"mtp_sidecar": "local/assistant"}, "mtp_sidecar"),
         ({"mtp_max_k": 2}, "mtp_max_k"),
+        ({"mtp_num_draft_tokens": 2}, "mtp_num_draft_tokens"),
         ({"mtp_disable_auto_k": True}, "mtp_disable_auto_k"),
+        ({"mtp_optimistic": True}, "mtp_optimistic"),
+        ({"suffix_decoding": True}, "suffix_decoding"),
+        ({"suffix_max_draft": 6}, "suffix_max_draft"),
+        ({"suffix_max_suffix_len": 5}, "suffix_max_suffix_len"),
+        ({"suffix_min_confidence": 0.4}, "suffix_min_confidence"),
+        ({"suffix_min_draft_len": 3}, "suffix_min_draft_len"),
+    ],
+)
+def test_speculative_config_rejects_legacy_alias_conflicts(
+    overrides, conflict, capsys
+) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(speculative_config='{"method":"mtp"}', **overrides)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "--speculative-config is mutually exclusive" in captured.err
+    assert conflict in captured.err
+
+
+@pytest.mark.parametrize(
+    ("overrides", "conflict"),
+    [
+        ({"enable_ddtree": True}, "enable_ddtree"),
+        ({"enable_dflash": True}, "enable_dflash"),
+        ({"spec_decode": "mtp"}, "spec_decode=mtp"),
+        ({"dflash_drafter_path": "local/draft"}, "dflash_drafter_path"),
+        ({"enable_mtp": True}, "enable_mtp"),
+        ({"mtp_sidecar": "local/assistant"}, "mtp_sidecar"),
+        ({"mtp_max_k": 2}, "mtp_max_k"),
+        ({"mtp_num_draft_tokens": 2}, "mtp_num_draft_tokens"),
+        ({"mtp_disable_auto_k": True}, "mtp_disable_auto_k"),
+        ({"mtp_optimistic": True}, "mtp_optimistic"),
         ({"suffix_decoding": True}, "suffix_decoding"),
         ({"suffix_max_draft": 6}, "suffix_max_draft"),
         ({"suffix_max_suffix_len": 5}, "suffix_max_suffix_len"),

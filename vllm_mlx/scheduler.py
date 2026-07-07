@@ -374,6 +374,27 @@ class SchedulerConfig:
             self.spec_decode = "mtp"
             self.mtp_max_k = max(1, int(self.mtp_num_draft_tokens))
 
+        active_methods: list[str] = []
+        if self.spec_decode not in (None, "none"):
+            active_methods.append(str(self.spec_decode))
+        if self.enable_suffix_decoding:
+            active_methods.append("suffix")
+        if len(set(active_methods)) > 1:
+            raise ValueError(
+                "SchedulerConfig selects multiple speculative decoding "
+                f"methods ({', '.join(active_methods)}); pass only one "
+                "speculative decoding method."
+            )
+        if (self.dflash_drafter_path or "").strip() and (
+            self.enable_suffix_decoding
+            or self.spec_decode not in (None, "none", "dflash")
+        ):
+            raise ValueError(
+                "SchedulerConfig(dflash_drafter_path=...) conflicts with "
+                f"spec_decode={self.spec_decode!r}; pass only one "
+                "speculative decoding method."
+            )
+
         # PFlashConfig is dataclass(frozen=True), so .validate() returns
         # a new instance; reassign so the SchedulerConfig holds the
         # validated copy. Done in __post_init__ to keep callers from

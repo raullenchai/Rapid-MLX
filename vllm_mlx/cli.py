@@ -1563,6 +1563,7 @@ def _normalize_speculative_config_or_exit(args):
     )
 
     raw_config = getattr(args, "speculative_config", None)
+    raw_config_was_explicit = raw_config is not None
     config = None
 
     def _fill_runtime_defaults(*, overwrite: bool) -> None:
@@ -1602,8 +1603,12 @@ def _normalize_speculative_config_or_exit(args):
             conflicts.append("mtp_sidecar")
         if getattr(args, "mtp_max_k", None) is not None:
             conflicts.append("mtp_max_k")
+        if getattr(args, "mtp_num_draft_tokens", 1) != 1:
+            conflicts.append("mtp_num_draft_tokens")
         if getattr(args, "mtp_disable_auto_k", False):
             conflicts.append("mtp_disable_auto_k")
+        if getattr(args, "mtp_optimistic", False):
+            conflicts.append("mtp_optimistic")
         if getattr(args, "suffix_decoding", False):
             conflicts.append("suffix_decoding")
         if getattr(args, "suffix_max_draft", None) is not None:
@@ -1622,6 +1627,41 @@ def _normalize_speculative_config_or_exit(args):
             file=sys.stderr,
         )
         sys.exit(2)
+
+    def _legacy_speculative_fields() -> list[str]:
+        fields = []
+        if getattr(args, "enable_ddtree", False):
+            fields.append("enable_ddtree")
+        if getattr(args, "enable_dflash", False):
+            fields.append("enable_dflash")
+        spec_decode = getattr(args, "spec_decode", "none")
+        if spec_decode not in (None, "none"):
+            fields.append(f"spec_decode={spec_decode}")
+        if (getattr(args, "dflash_drafter_path", "") or "").strip():
+            fields.append("dflash_drafter_path")
+        if getattr(args, "enable_mtp", False):
+            fields.append("enable_mtp")
+        if (getattr(args, "mtp_sidecar", None) or "").strip():
+            fields.append("mtp_sidecar")
+        if getattr(args, "mtp_max_k", None) is not None:
+            fields.append("mtp_max_k")
+        if getattr(args, "mtp_num_draft_tokens", 1) != 1:
+            fields.append("mtp_num_draft_tokens")
+        if getattr(args, "mtp_disable_auto_k", False):
+            fields.append("mtp_disable_auto_k")
+        if getattr(args, "mtp_optimistic", False):
+            fields.append("mtp_optimistic")
+        if getattr(args, "suffix_decoding", False):
+            fields.append("suffix_decoding")
+        if getattr(args, "suffix_max_draft", None) is not None:
+            fields.append("suffix_max_draft")
+        if getattr(args, "suffix_max_suffix_len", None) is not None:
+            fields.append("suffix_max_suffix_len")
+        if getattr(args, "suffix_min_confidence", None) is not None:
+            fields.append("suffix_min_confidence")
+        if getattr(args, "suffix_min_draft_len", None) is not None:
+            fields.append("suffix_min_draft_len")
+        return fields
 
     def _fill_suffix_defaults() -> None:
         if getattr(args, "suffix_max_draft", None) is None:
@@ -1719,6 +1759,17 @@ def _normalize_speculative_config_or_exit(args):
         return methods[0][1]
 
     legacy_payload = None
+    if raw_config_was_explicit:
+        legacy_fields = _legacy_speculative_fields()
+        if legacy_fields:
+            joined = ", ".join(legacy_fields)
+            print(
+                "error: --speculative-config is mutually exclusive with "
+                f"legacy speculative decoding aliases: {joined}.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
     if raw_config is None:
         _reject_no_spec_decode_runtime_conflicts()
         legacy_payload = _legacy_speculative_config_payload()
