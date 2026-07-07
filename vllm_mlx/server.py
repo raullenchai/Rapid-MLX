@@ -1259,7 +1259,10 @@ def load_model(
             scheduler_config = SchedulerConfig(enable_mtp=True)
         elif existing_spec_decode == "none":
             scheduler_config.enable_mtp = True
-            scheduler_config.__post_init__()
+            scheduler_config.spec_decode = "mtp"
+            scheduler_config.mtp_max_k = max(
+                1, int(getattr(scheduler_config, "mtp_num_draft_tokens", 1))
+            )
 
     if prefill_step_size is not None:
         import warnings

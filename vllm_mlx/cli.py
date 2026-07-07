@@ -1889,6 +1889,18 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
 
     import sys
 
+    spec_config = getattr(args, "_speculative_config", None)
+    if spec_config is not None and getattr(spec_config, "method", None) == "dflash":
+        if getattr(args, "suffix_decoding", False):
+            print(
+                "\n  Error: DFlash cannot combine with other spec-decode methods. "
+                "DFlash runs a dedicated single-user server that bypasses "
+                "BatchedEngine; other spec-decode methods only apply to the "
+                "BatchedEngine path.\n"
+            )
+            sys.exit(1)
+        return
+
     if (
         getattr(args, "suffix_decoding", False)
         or getattr(args, "enable_mtp", False)

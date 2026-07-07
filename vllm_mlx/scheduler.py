@@ -3369,7 +3369,10 @@ class Scheduler:
         # Legacy ``enable_mtp`` compatibility path. This preserves the
         # pre-migration public API for model.mtp-only checkpoints while
         # ``spec_decode='mtp'`` below uses the migrated vendored runtime.
-        if getattr(self.config, "enable_mtp", False):
+        if (
+            getattr(self.config, "enable_mtp", False)
+            and getattr(self.config, "spec_decode", "none") != "mtp"
+        ):
             if (
                 getattr(self, "model_config", None) is not None
                 and not self.model_config.supports_spec_decode
