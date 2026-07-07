@@ -1570,6 +1570,9 @@ def _normalize_speculative_config_or_exit(args):
             "enable_dflash": False,
             "spec_decode": "none",
             "dflash_drafter_path": "",
+            "enable_mtp": False,
+            "mtp_num_draft_tokens": 1,
+            "mtp_optimistic": False,
             "mtp_sidecar": None,
             "mtp_max_k": 1,
             "mtp_disable_auto_k": False,
@@ -1584,32 +1587,32 @@ def _normalize_speculative_config_or_exit(args):
             return
         conflicts = []
         if getattr(args, "enable_ddtree", False):
-            conflicts.append("--enable-ddtree")
+            conflicts.append("enable_ddtree")
         if getattr(args, "enable_dflash", False):
-            conflicts.append("--enable-dflash")
+            conflicts.append("enable_dflash")
         spec_decode = getattr(args, "spec_decode", "none")
         if spec_decode not in (None, "none"):
-            conflicts.append(f"--spec-decode {spec_decode}")
+            conflicts.append(f"spec_decode={spec_decode}")
         if (getattr(args, "dflash_drafter_path", "") or "").strip():
-            conflicts.append("--dflash-drafter-path")
+            conflicts.append("dflash_drafter_path")
         if getattr(args, "enable_mtp", False):
-            conflicts.append("--enable-mtp")
+            conflicts.append("enable_mtp")
         if (getattr(args, "mtp_sidecar", None) or "").strip():
-            conflicts.append("--mtp-sidecar")
+            conflicts.append("mtp_sidecar")
         if getattr(args, "mtp_max_k", None) is not None:
-            conflicts.append("--mtp-max-k")
+            conflicts.append("mtp_max_k")
         if getattr(args, "mtp_disable_auto_k", False):
-            conflicts.append("--mtp-disable-auto-k")
+            conflicts.append("mtp_disable_auto_k")
         if getattr(args, "suffix_decoding", False):
-            conflicts.append("--suffix-decoding")
+            conflicts.append("suffix_decoding")
         if getattr(args, "suffix_max_draft", None) is not None:
-            conflicts.append("--suffix-max-draft")
+            conflicts.append("suffix_max_draft")
         if getattr(args, "suffix_max_suffix_len", None) is not None:
-            conflicts.append("--suffix-max-suffix-len")
+            conflicts.append("suffix_max_suffix_len")
         if getattr(args, "suffix_min_confidence", None) is not None:
-            conflicts.append("--suffix-min-confidence")
+            conflicts.append("suffix_min_confidence")
         if getattr(args, "suffix_min_draft_len", None) is not None:
-            conflicts.append("--suffix-min-draft-len")
+            conflicts.append("suffix_min_draft_len")
         if not conflicts:
             return
         joined = ", ".join(conflicts)
@@ -2738,6 +2741,9 @@ def serve_command(args):
         # audit at scripts/audit_cli_config_fidelity.py.
         prefill_step_size=args.prefill_step_size,
         # Speculative decoding selection.
+        enable_mtp=getattr(args, "enable_mtp", False),
+        mtp_num_draft_tokens=getattr(args, "mtp_num_draft_tokens", 1),
+        mtp_optimistic=getattr(args, "mtp_optimistic", False),
         spec_decode=getattr(args, "spec_decode", "none"),
         dflash_drafter_path=getattr(args, "dflash_drafter_path", "") or "",
         # Optional external MTP sidecar path. ``None`` is the "no

@@ -149,6 +149,18 @@ def test_load_model_mtp_kwarg_translates_to_scheduler_config(monkeypatch):
     assert cfg.spec_decode == "mtp"
 
 
+def test_load_model_mtp_kwarg_rejects_conflicting_spec_decode():
+    from vllm_mlx import server
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="mtp=True.*spec_decode='suffix'"):
+        server.load_model(
+            "mlx-community/Qwen3.5-9B-4bit",
+            scheduler_config=SchedulerConfig(spec_decode="suffix"),
+            mtp=True,
+        )
+
+
 def test_detect_native_tool_support_requires_synced_config(monkeypatch):
     """Contract test for the ordering invariant: detection short-circuits
     to False when cfg has not been synced yet, so callers MUST run

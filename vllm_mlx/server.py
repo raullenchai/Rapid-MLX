@@ -1221,6 +1221,17 @@ def load_model(
 
         from .scheduler import SchedulerConfig
 
+        existing_spec_decode = (
+            getattr(scheduler_config, "spec_decode", "none")
+            if scheduler_config is not None
+            else "none"
+        )
+        if existing_spec_decode not in ("none", "mtp"):
+            raise ValueError(
+                "load_model(mtp=True) conflicts with "
+                f"scheduler_config.spec_decode={existing_spec_decode!r}; "
+                "pass only one speculative decoding method."
+            )
         warnings.warn(
             "load_model(mtp=True) is deprecated; pass "
             "SchedulerConfig(spec_decode='mtp') instead.",
@@ -1229,7 +1240,7 @@ def load_model(
         )
         if scheduler_config is None:
             scheduler_config = SchedulerConfig(spec_decode="mtp")
-        elif getattr(scheduler_config, "spec_decode", "none") == "none":
+        elif existing_spec_decode == "none":
             scheduler_config.spec_decode = "mtp"
 
     if prefill_step_size is not None:
