@@ -60,14 +60,17 @@
 
 ### Speculative Decoding Options
 
-Prefer `--speculative-config` for DFlash, DDTree, and SuffixDecoding usage.
-MTP remains on the legacy `--spec-decode mtp` surface until real-model A/B
-parity is revalidated for the shared interface.
+Prefer `--speculative-config` for new speculative decoding usage. Legacy
+flags remain compatibility shorthands.
 
 | Config | Description |
 |--------|-------------|
 | `{"method":"dflash"}` | Enable the DFlash single-user bridge on validated aliases. |
 | `{"method":"ddtree"}` | Enable experimental DDTree verification on validated aliases. |
+| `{"method":"mtp"}` | Enable MTP speculative decoding for checkpoints accepted by the existing MTP eligibility gate. |
+| `{"method":"mtp","model":"<sidecar>"}` | Reserved for future validated assistant sidecars. Gemma 4 sidecar MTP is currently disabled after greedy-lossless A/B failed. |
+| `{"method":"mtp","num_speculative_tokens":3}` | Set the MTP max-K controller ceiling. |
+| `{"method":"mtp","disable_auto_k":true}` | Disable the MTP EV depth controller for fixed-K parity benches. |
 | `{"method":"suffix","num_speculative_tokens":8}` | Enable explicit SuffixDecoding for high-overlap workloads. |
 
 Legacy mapping:
@@ -76,6 +79,10 @@ Legacy mapping:
 |-------------|------------------|
 | `--enable-dflash` | `--speculative-config '{"method":"dflash"}'` |
 | `--enable-ddtree` | `--speculative-config '{"method":"ddtree"}'` |
+| `--spec-decode mtp` | `--speculative-config '{"method":"mtp"}'` |
+| `--mtp-sidecar <path>` | `{"method":"mtp","model":"<path>"}` |
+| `--mtp-max-k N` | `{"method":"mtp","num_speculative_tokens":N}` |
+| `--mtp-disable-auto-k` | `{"method":"mtp","disable_auto_k":true}` |
 | `--suffix-decoding` | `--speculative-config '{"method":"suffix"}'` |
 
 ### MCP Options

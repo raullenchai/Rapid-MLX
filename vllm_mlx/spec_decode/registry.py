@@ -83,10 +83,10 @@ register_spec_decoder(
     SpecDecoderPlugin(
         method="mtp",
         description="Model-side multi-token prediction head",
-        config_enabled=False,
+        config_enabled=True,
         legacy_hint=(
-            "MTP is available only through the legacy --spec-decode mtp "
-            "surface until real-model A/B parity is revalidated"
+            'prefer --speculative-config \'{"method":"mtp"}\'; '
+            "legacy --spec-decode mtp remains supported"
         ),
     )
 )
