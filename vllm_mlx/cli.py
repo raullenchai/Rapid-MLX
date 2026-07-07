@@ -1766,6 +1766,9 @@ def _normalize_speculative_config_or_exit(args):
         return methods[0][1]
 
     legacy_payload = None
+    legacy_enable_mtp_requested = raw_config is None and getattr(
+        args, "enable_mtp", False
+    )
     if raw_config_was_explicit:
         legacy_fields = _legacy_speculative_fields()
         if legacy_fields:
@@ -1822,6 +1825,8 @@ def _normalize_speculative_config_or_exit(args):
             args.dflash_drafter_path = config.model
     elif config.method == "mtp":
         args.spec_decode = "mtp"
+        if legacy_enable_mtp_requested:
+            args.enable_mtp = True
         args.mtp_sidecar = config.model
         if config.num_speculative_tokens is not None:
             args.mtp_max_k = config.num_speculative_tokens

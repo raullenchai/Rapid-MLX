@@ -29,6 +29,8 @@ Deliberately out of scope (deferred to PR-B / PR-C):
 
 from __future__ import annotations
 
+import pytest
+
 # ---------------------------------------------------------------------------
 # 1. detect_mtp_eligibility(has_external_sidecar=...) contract
 # ---------------------------------------------------------------------------
@@ -1358,6 +1360,12 @@ class _StubModel:
     mtp = object()
 
 
+class _LegacyOnlyMTPModel:
+    """Legacy MTP shape with ``model.mtp`` but no migrated protocol."""
+
+    mtp = object()
+
+
 def test_install_mtp_vendored_uses_inner_language_model_surface(monkeypatch):
     """Qwen3.5 loads as an outer wrapper whose MTP surfaces live on
     ``model.language_model`` after sidecar injection.
@@ -1410,6 +1418,19 @@ def test_install_mtp_vendored_uses_inner_language_model_surface(monkeypatch):
 
     gb._step()
     assert seen["model"] is inner
+
+
+def test_install_mtp_vendored_rejects_legacy_enable_mtp_model_mtp_only():
+    from vllm_mlx.scheduler import _install_mtp_vendored
+
+    batch_gen, _gb = _make_batch_gen_with_gb()
+
+    with pytest.raises(RuntimeError, match="Legacy model.mtp-only MTP"):
+        _install_mtp_vendored(
+            batch_gen,
+            model=_LegacyOnlyMTPModel(),
+            legacy_enable_mtp=True,
+        )
 
 
 def _make_batch_gen_with_gb():

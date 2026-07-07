@@ -350,6 +350,18 @@ def test_hidden_legacy_aliases_normalize_to_speculative_config(
     assert args._speculative_config.method == method
 
 
+def test_hidden_legacy_enable_mtp_preserves_compat_marker() -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(enable_mtp=True)
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config.method == "mtp"
+    assert args.spec_decode == "mtp"
+    assert args.enable_mtp is True
+
+
 def test_hidden_legacy_aliases_reject_multiple_methods(capsys) -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 

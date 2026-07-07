@@ -969,6 +969,7 @@ def _install_mtp_vendored(
     max_k: int = 3,
     disable_auto_k: bool = False,
     controller_key: str | None = None,
+    legacy_enable_mtp: bool = False,
 ) -> bool:
     """Install the vendored PR #990 ``mtp_generate_step`` hot loop into
     ``GenerationBatch._step``.
@@ -1042,6 +1043,14 @@ def _install_mtp_vendored(
             mtp_model = inner
 
     if not _has_mtp_surface(mtp_model):
+        if legacy_enable_mtp:
+            raise RuntimeError(
+                "SchedulerConfig(enable_mtp=True) requires an MTP model "
+                "exposing mtp_forward and make_mtp_cache. Legacy model.mtp-only "
+                "MTP is not supported by the migrated MTP path; use "
+                "SchedulerConfig(spec_decode='mtp') with a supported Qwen3.5/3.6 "
+                "checkpoint or disable MTP."
+            )
         logger.warning(
             "[MTP-vendored] disabled: model lacks mtp_forward / make_mtp_cache / "
             "mtp attributes — dispatch_mtp_inject did not run or returned False. "
@@ -2948,6 +2957,7 @@ class Scheduler:
                     or getattr(self.model_config, "name", None)
                     if getattr(self, "model_config", None) is not None
                     else None,
+                    legacy_enable_mtp=getattr(self.config, "enable_mtp", False),
                 )
 
         # Install SuffixDecoding (drafter-free spec-decode).
