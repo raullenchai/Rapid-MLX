@@ -89,7 +89,21 @@ set -euo pipefail
 # workstation that also runs the operator's rapid-mlx production
 # services.
 OPENHANDS_IMAGE="ghcr.io/all-hands-ai/openhands:0.9.0@sha256:d4b028e3b1f7ad6fdb1bba3579362c8298bb791b222e73a8355fd980bb987f1a"
-OPENHANDS_RUNTIME_IMAGE="ghcr.io/all-hands-ai/runtime:od_v0.9.0_image_nikolaik___python-nodejs_tag_python3.11-nodejs22@sha256:784f7161295b87d3af26332dbbad5bcdd643641e87ed0038ed0c7f4b47c9472d"
+# Runtime image: TAG PIN ONLY, no ``@sha256:...`` digest suffix. OpenHands
+# 0.8.3 (which ships inside the 0.9.0 app image) parses this ref in
+# ``runtime_build.py:188`` with ``base_image.split(':')`` — a straight
+# split on the ``:`` character, which chokes on a three-way
+# ``repo:tag@sha256:hex`` form with ``ValueError: too many values to
+# unpack (expected 2)`` before any LLM call happens. All four family
+# cells hit this on a cold-cache Docker path; the pilot ran with images
+# pre-cached and didn't trigger. The ``:``-split has been refactored out
+# on OpenHands ``main`` so no upstream ask; we just keep the tag pin for
+# reproducibility (multi-arch manifest — both linux/arm64 and
+# linux/amd64 — reachable via ``docker buildx imagetools inspect`` when
+# a future bump is needed). The app-image digest above is fine because
+# that reference doesn't go through the ``base_image.split(':')`` path
+# — only the runtime image does.
+OPENHANDS_RUNTIME_IMAGE="ghcr.io/all-hands-ai/runtime:od_v0.9.0_image_nikolaik___python-nodejs_tag_python3.11-nodejs22"
 
 TIMEOUT=600
 MAX_ITERATIONS=10

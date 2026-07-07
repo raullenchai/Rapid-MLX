@@ -202,16 +202,21 @@ execution, so the LLM's output never touches the host process (codex
 CodeActAgent parses `<execute_ipython>` / `<execute_bash>` text-action
 tags from plain-text LLM output, NOT via OpenAI tool_calls, so
 R1-Distill drives it successfully (same pattern as Aider). ONE family
-still `XFAIL`s: gpt-oss + OpenHands hits a rapid-mlx harmony-parser
-stop-sequence scoping bug — the parser applies user-supplied
-`stop=['</execute_ipython>', ...]` against the raw token stream across
-BOTH channels, so the model's analysis-channel CoT (which mentions
-`</execute_ipython>` while reasoning about the action) triggers a
-premature stop before the final channel emits any visible content.
-Root-caused empirically inside the OpenHands container (G8, see
-`conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON` block) — fix belongs in
-`vllm_mlx` harmony parser (restrict user-supplied stops to
-final-channel content), tracked as a follow-up server-side issue.
+still `XFAIL`s: gpt-oss + OpenHands. The rapid-mlx wire-level bug PR
+#1051 fixed (harmony parser channel-scoping of user-supplied `stop=...`
+so analysis-channel CoT can no longer trigger a premature stop) has
+landed on `main` (commit `e7e4668a`, v0.10.3) and is pinned at the unit
+level by `tests/test_harmony_stop_final_channel_only.py`. What still
+blocks end-to-end is a format mismatch: gpt-oss's native harmony output
+format (analysis + final channels, plain markdown code in the final
+channel) does not emit the `<execute_bash>` / `<execute_ipython>`
+text-action XML tags that CodeActAgent parses. OpenHands treats the
+reply as an empty `MessageAction` → prompts for user input → EOFError
+on non-interactive stdin → 300 s wall-clock timeout, `add.py` never
+rewritten. This is an upstream OpenHands parser gap, not a rapid-mlx
+bug (see `conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON` block); filed
+as an informational note in OpenHands issue
+[#15167](https://github.com/All-Hands-AI/OpenHands/issues/15167).
 
 DeepSeek family Tier-1 rep was **swapped** from
 `deepseek-v4-flash-8bit` (~155 GB, single-node-infeasible on M3 Ultra
@@ -228,7 +233,7 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 | Qwen 3.6 | `qwen3.6-35b-8bit` (MoE, 3 B active) | ~15 s | 11.32 s + ~3 s aider + ~32 s openhands | 14 PASS / 0 XFAIL |
 | Gemma 4 | `gemma-4-31b-4bit` (dense) | ~10 s | 17.45 s + ~7 s aider + ~48 s openhands | 14 PASS / 0 XFAIL |
 | DeepSeek | `deepseek-r1-32b-4bit` (R1-distilled Qwen 32B, dense) | ~18 s | 191.29 s + ~22 s aider + ~72 s openhands | 5 PASS / 9 XFAIL (9 arch-XFAIL R1-Distill tool-call gap; OpenHands passes because it parses text-action tags, not tool_calls) |
-| gpt-oss | `gpt-oss-120b-mxfp4-q8` (MoE) | ~15 s | 14.61 s + ~3 s aider + XFAIL openhands | 13 PASS / 1 XFAIL (OpenHands XFAIL — rapid-mlx harmony stop-sequence scoping bug, root-caused, follow-up server fix) |
+| gpt-oss | `gpt-oss-120b-mxfp4-q8` (MoE) | ~15 s | 14.61 s + ~3 s aider + XFAIL openhands | 13 PASS / 1 XFAIL (OpenHands XFAIL — gpt-oss harmony format vs CodeActAgent text-action parser mismatch, upstream OpenHands [#15167](https://github.com/All-Hands-AI/OpenHands/issues/15167); rapid-mlx wire-level harmony parser bug fixed in #1051) |
 
 > **Aider row added post-pilot 2026-07-07.** The pilot times above are the
 > 12-cell subset (aider was structural XFAIL). Re-running with the real
@@ -252,8 +257,12 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 > `edit_file_by_replace` → finish), Gemma-4-31B-4bit 47.87 s, DeepSeek
 > R1-Distill-32B-4bit 72.08 s (long analysis-channel CoT before the
 > edit action but still one-shot), gpt-oss-20B-MXFP4-Q8 **XFAIL** at
-> 615 s (harness timeout — see the paragraph above and
-> `conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON`).
+> the harness 300 s wall-clock timeout — reason is the harmony-format
+> vs CodeActAgent text-action-parser mismatch documented in the
+> paragraph above and pinned in
+> `conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON`, not a rapid-mlx bug.
+> Empirical rerun of the other three families under the harness digest
+> fix (this PR) deferred to CI.
 
 | Agent | Qwen 3.6 | Gemma 4 | DeepSeek | gpt-oss |
 |---|---|---|---|---|
@@ -261,7 +270,7 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 | claude-code | ✅ | ✅ | ✅ | ✅ |
 | opencode | ✅ | ✅ | XFAIL (arch) | ✅ |
 | qwen-code | ✅ | ✅ | XFAIL (arch) | ✅ |
-| openhands | ✅ | ✅ | ✅ | XFAIL (server) |
+| openhands | ✅ | ✅ | ✅ | XFAIL (format) |
 | hermes-agent | ✅ | ✅ | XFAIL (arch) | ✅ |
 | aider | ✅ | ✅ | ✅ | ✅ |
 | kilo-code | ✅ | ✅ | XFAIL (arch) | ✅ |
@@ -280,16 +289,21 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 Legend: ✅ passing (real inference · real tool call · semantic assertion;
 or for aider / openhands: real bash-CLI drive · real file rewrite)
 · **XFAIL (arch)** = R1-Distill architectural tool-emission gap (see next
-paragraph and issue #1041) · **XFAIL (server)** = rapid-mlx server-side
-harmony stop-sequence scoping bug that surfaces only under OpenHands'
-CodeActAgent `stop=['</execute_ipython>', ...]` argument (root-caused,
-see `conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON`)
+paragraph and issue #1041) · **XFAIL (format)** = gpt-oss native harmony
+output format (analysis + final channels, plain markdown code in the
+final channel) does not emit `<execute_bash>` / `<execute_ipython>`
+text-action XML tags that OpenHands' CodeActAgent parses; upstream
+OpenHands parser gap tracked at
+[All-Hands-AI/OpenHands#15167](https://github.com/All-Hands-AI/OpenHands/issues/15167).
+The rapid-mlx wire-level harmony bug that used to underlie this cell is
+fixed in PR #1051 (see `conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON`).
 
 **Totals across all 4 families**: 56 cells run → **46 PASS · 10 XFAIL · 0 FAIL**
 (9 XFAIL are the R1-Distill architectural tool-emission cells listed in
 `conftest.py::_DEEPSEEK_R1_TOOLCALL_XFAIL_NODEIDS`; 1 XFAIL is the
-gpt-oss+OpenHands cell — rapid-mlx harmony stop-sequence scoping bug,
-tracked as a follow-up server-side issue).
+gpt-oss+OpenHands cell — gpt-oss harmony format vs CodeActAgent
+text-action parser mismatch, tracked upstream at
+[All-Hands-AI/OpenHands#15167](https://github.com/All-Hands-AI/OpenHands/issues/15167)).
 
 **DeepSeek family — architectural tool-emission gap.** The 9 DeepSeek
 tool-call cells (7 agents + LangChain + PydanticAI) are marked

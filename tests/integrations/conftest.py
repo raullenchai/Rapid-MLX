@@ -335,35 +335,88 @@ _DEEPSEEK_R1_XFAIL_REASON = (
 
 
 # --------------------------------------------------------------------------- #
-# Note (2026-07-07): gpt-oss + OpenHands used to strict-xfail here with the
-# stop-sequence root cause from PR #1048 (analysis-channel CoT mentions
-# ``</execute_ipython>`` verbatim → premature stop). The fix landed in this
-# PR (channel-scoped user stops in the harmony scheduler path; see
-# ``vllm_mlx/reasoning/harmony_stop.py``), so the xfail is removed and
-# ``TestOpenHands[gptoss]`` now runs live like the other three Tier-1 reps.
-# Empirical PASS is documented in the PR body's family-by-family section
-# and pinned by ``tests/test_harmony_stop_final_channel_only.py`` at the
-# unit-level.
+# Family-specific strict-xfail: gpt-oss × OpenHands (harmony format mismatch)
+# --------------------------------------------------------------------------- #
+#
+# Note (2026-07-07 revised): gpt-oss + OpenHands remains strict-xfail'd, but
+# the ROOT CAUSE has changed. PR #1051 (channel-scoped user stops in the
+# harmony scheduler path; see ``vllm_mlx/reasoning/harmony_stop.py``) fixed
+# the rapid-mlx-side wire bug — a wire-level probe against the running
+# server with ``stop=["</execute_bash>", "</execute_ipython>"]`` now returns
+# non-empty ``content`` and ``finish_reason=stop`` instead of the pre-fix
+# empty-content premature stop. That fix is pinned at the unit level by
+# ``tests/test_harmony_stop_final_channel_only.py``.
+#
+# End-to-end still XFAILs because gpt-oss's native harmony output format
+# (analysis + final channels, plain markdown code in the final channel)
+# does not emit the ``<execute_bash>…</execute_bash>`` /
+# ``<execute_ipython>…</execute_ipython>`` text-action XML tags that
+# OpenHands' CodeActAgent parses. CodeActAgent treats the reply as an
+# empty ``MessageAction`` → prompts "Request user input >>" → EOFError on
+# the non-interactive stdin → 300 s wall-clock timeout, ``add.py`` never
+# rewritten. This is an upstream OpenHands CodeActAgent parser gap
+# (harmony format not yet supported), not a rapid-mlx bug. Filed as an
+# informational note in
+# https://github.com/All-Hands-AI/OpenHands/issues/15167.
+#
+# If a future OpenHands release DOES add harmony-format parsing (or if a
+# CodeActAgent variant learns to project harmony's final-channel markdown
+# fences into text-action tags), this strict-xfail will XPASS and force
+# the marker to be removed.
+
+_GPTOSS_OPENHANDS_XFAIL_NODEID = "test_agents_matrix.py::TestOpenHands"
+_GPTOSS_OPENHANDS_XFAIL_FAMILY = "gptoss"  # matches the parametrize id
+_GPTOSS_OPENHANDS_XFAIL_REASON = (
+    "gpt-oss's native harmony output format (analysis + final channels, "
+    "plain markdown code in the final channel) does not emit the "
+    "<execute_bash>/<execute_ipython> text-action XML tags that OpenHands' "
+    "CodeActAgent parses. The rapid-mlx-side wire-level fix from PR #1051 "
+    "is confirmed via ``tests/test_harmony_stop_final_channel_only.py`` "
+    "(harmony parser now channel-scopes user stops), but the end-to-end "
+    "harness still times out at 300 s because CodeActAgent treats the "
+    "final-channel markdown reply as an empty MessageAction and blocks on "
+    "user input. Requires upstream OpenHands harmony parser support; "
+    "tracked at https://github.com/All-Hands-AI/OpenHands/issues/15167."
+)
 
 
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
-    """Apply strict-xfail to the DeepSeek tool_call cells."""
+    """Apply strict-xfail markers to family-specific cells.
+
+    Two independent xfail sets are applied here:
+
+    * The 9 DeepSeek R1-Distill tool-call cells (block above), driven by
+      the R1 architectural tool-emission gap.
+    * The single gpt-oss × OpenHands cell (block just above), driven by
+      the harmony ↔ CodeActAgent text-action format mismatch documented
+      upstream.
+    """
     del config  # unused — items already carry the config context.
     for item in items:
-        # DeepSeek R1-Distill tool-call gap (block above).
-        if "[deepseek]" not in item.nodeid:
-            continue
-        for prefix in _DEEPSEEK_R1_TOOLCALL_XFAIL_NODEIDS:
-            if prefix in item.nodeid:
-                item.add_marker(
-                    pytest.mark.xfail(
-                        reason=_DEEPSEEK_R1_XFAIL_REASON,
-                        strict=True,
+        # DeepSeek R1-Distill tool-call gap.
+        if "[deepseek]" in item.nodeid:
+            for prefix in _DEEPSEEK_R1_TOOLCALL_XFAIL_NODEIDS:
+                if prefix in item.nodeid:
+                    item.add_marker(
+                        pytest.mark.xfail(
+                            reason=_DEEPSEEK_R1_XFAIL_REASON,
+                            strict=True,
+                        )
                     )
+                    break
+        # gpt-oss × OpenHands harmony-format mismatch.
+        if (
+            _GPTOSS_OPENHANDS_XFAIL_NODEID in item.nodeid
+            and f"[{_GPTOSS_OPENHANDS_XFAIL_FAMILY}]" in item.nodeid
+        ):
+            item.add_marker(
+                pytest.mark.xfail(
+                    reason=_GPTOSS_OPENHANDS_XFAIL_REASON,
+                    strict=True,
                 )
-                break
+            )
 
 
 @pytest.fixture(autouse=True)
