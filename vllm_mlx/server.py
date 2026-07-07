@@ -1249,6 +1249,14 @@ def load_model(
                 "scheduler_config.dflash_drafter_path; pass only one "
                 "speculative decoding method."
             )
+        if scheduler_config is not None and getattr(
+            scheduler_config, "mtp_optimistic", False
+        ):
+            raise ValueError(
+                "load_model(mtp=True) conflicts with "
+                "scheduler_config.mtp_optimistic=True; the migrated MTP path "
+                "does not support optimistic mode."
+            )
         warnings.warn(
             "load_model(mtp=True) is deprecated; pass "
             "SchedulerConfig(spec_decode='mtp') instead.",
