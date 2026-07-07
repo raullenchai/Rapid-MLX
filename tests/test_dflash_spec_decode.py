@@ -1019,8 +1019,8 @@ def test_cli_dflash_drafter_path_flag_removed():
     assert "--dflash-drafter-path" not in text
 
 
-def test_cli_spec_decode_flag_is_removed():
-    """The old ``--spec-decode`` flag is no longer accepted."""
+def test_cli_spec_decode_flag_is_hidden_but_recognized():
+    """The old ``--spec-decode`` alias is hidden, but parser-compatible."""
     import subprocess
     import sys
 
@@ -1032,14 +1032,14 @@ def test_cli_spec_decode_flag_is_removed():
             "serve",
             "qwen3.5-4b-4bit",
             "--spec-decode",
-            "dflash",
+            "eagle",
         ],
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert proc.returncode != 0
-    assert "unrecognized arguments" in proc.stderr
+    assert "invalid choice" in proc.stderr
     assert "--spec-decode" in proc.stderr
 
 

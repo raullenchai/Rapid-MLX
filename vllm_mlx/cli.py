@@ -1639,15 +1639,23 @@ def _normalize_speculative_config_or_exit(args):
         def add_method(method: str, payload: dict) -> None:
             methods.append((method, payload))
 
+        def reject_orphan(knob: str, selector: str) -> None:
+            print(
+                f"error: legacy speculative decoding knob {knob} requires {selector}.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+
         spec_decode = getattr(args, "spec_decode", "none")
         dflash_model = (getattr(args, "dflash_drafter_path", "") or "").strip()
         if getattr(args, "enable_ddtree", False):
             add_method("ddtree", {"method": "ddtree"})
-        if (
-            getattr(args, "enable_dflash", False)
-            or spec_decode == "dflash"
-            or dflash_model
-        ):
+        dflash_requested = (
+            getattr(args, "enable_dflash", False) or spec_decode == "dflash"
+        )
+        if dflash_model and not dflash_requested:
+            reject_orphan("dflash_drafter_path", "enable_dflash or spec_decode=dflash")
+        if dflash_requested:
             payload = {"method": "dflash"}
             if dflash_model:
                 payload["model"] = dflash_model
@@ -1657,21 +1665,26 @@ def _normalize_speculative_config_or_exit(args):
         mtp_requested = getattr(args, "enable_mtp", False) or spec_decode == "mtp"
         sidecar = (getattr(args, "mtp_sidecar", None) or "").strip()
         if sidecar:
+            if not mtp_requested:
+                reject_orphan("mtp_sidecar", "enable_mtp or spec_decode=mtp")
             mtp_payload["model"] = sidecar
-            mtp_requested = True
         mtp_max_k = getattr(args, "mtp_max_k", None)
         if mtp_max_k is not None:
+            if not mtp_requested:
+                reject_orphan("mtp_max_k", "enable_mtp or spec_decode=mtp")
             mtp_payload["num_speculative_tokens"] = mtp_max_k
-            mtp_requested = True
         mtp_num_draft_tokens = getattr(args, "mtp_num_draft_tokens", 1)
         if mtp_num_draft_tokens != 1:
+            if not mtp_requested:
+                reject_orphan("mtp_num_draft_tokens", "enable_mtp or spec_decode=mtp")
             mtp_payload["num_speculative_tokens"] = mtp_num_draft_tokens
-            mtp_requested = True
         if getattr(args, "mtp_disable_auto_k", False):
+            if not mtp_requested:
+                reject_orphan("mtp_disable_auto_k", "enable_mtp or spec_decode=mtp")
             mtp_payload["disable_auto_k"] = True
-            mtp_requested = True
         if getattr(args, "mtp_optimistic", False):
-            mtp_requested = True
+            if not mtp_requested:
+                reject_orphan("mtp_optimistic", "enable_mtp or spec_decode=mtp")
         if mtp_requested:
             add_method("mtp", mtp_payload)
 
@@ -1686,8 +1699,9 @@ def _normalize_speculative_config_or_exit(args):
         for attr, key in suffix_fields:
             value = getattr(args, attr, None)
             if value is not None:
+                if not suffix_requested:
+                    reject_orphan(attr, "suffix_decoding")
                 suffix_payload[key] = value
-                suffix_requested = True
         if suffix_requested:
             add_method("suffix", suffix_payload)
 

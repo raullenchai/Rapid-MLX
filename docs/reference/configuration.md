@@ -61,7 +61,8 @@
 ### Speculative Decoding Options
 
 Use `--speculative-config` for speculative decoding usage. Legacy
-spec-decoder flags have been removed.
+spec-decoder flags are hidden deprecated compatibility aliases that normalize
+into the same config path.
 
 | Config | Description |
 |--------|-------------|
