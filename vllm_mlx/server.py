@@ -1251,7 +1251,7 @@ def load_model(
             )
         warnings.warn(
             "load_model(mtp=True) is deprecated; pass "
-            "SchedulerConfig(enable_mtp=True) instead.",
+            "SchedulerConfig(spec_decode='mtp') instead.",
             DeprecationWarning,
             stacklevel=2,
         )

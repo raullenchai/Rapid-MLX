@@ -1880,6 +1880,7 @@ def _preflight_dflash_mutexes_or_exit(args) -> None:
 
     if (
         getattr(args, "suffix_decoding", False)
+        or getattr(args, "enable_mtp", False)
         or getattr(args, "spec_decode", "none") != "none"
     ):
         print(

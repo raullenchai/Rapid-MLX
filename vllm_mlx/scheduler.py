@@ -3398,7 +3398,7 @@ class Scheduler:
         # K=1 chain-of-1 only for PR-A. Auto-K controller lands in PR-B
         # (``feat/mtp-ev-controller-0.9.13``); batched residual+bonus
         # sync lands in PR-C (``feat/mtp-batched-sync-0.9.14``).
-        elif getattr(self.config, "spec_decode", "none") == "mtp":
+        if getattr(self.config, "spec_decode", "none") == "mtp":
             mtp_model_type = getattr(self.config, "mtp_model_type", None)
             config_vetted_mtp = _config_vetted_mtp_supports_spec_decode(mtp_model_type)
             if (

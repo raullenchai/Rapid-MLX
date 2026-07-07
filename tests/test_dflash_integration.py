@@ -73,6 +73,7 @@ def _dflash_cli_args(**overrides):
         "speculative_config": None,
         "enable_ddtree": False,
         "enable_dflash": False,
+        "enable_mtp": False,
         "spec_decode": "none",
         "suffix_decoding": False,
         "no_spec_decode": False,
@@ -102,6 +103,18 @@ def test_speculative_config_dflash_normalizes_to_legacy_server_flag() -> None:
     assert args._speculative_config.model == "z-lab/Qwen3.5-27B-DFlash"
     profile = SimpleNamespace(dflash_draft_model="z-lab/default")
     assert _resolve_dflash_drafter_repo(args, profile) == "z-lab/Qwen3.5-27B-DFlash"
+
+
+def test_dflash_preflight_rejects_legacy_mtp_alias(capsys) -> None:
+    from vllm_mlx.cli import _preflight_dflash_mutexes_or_exit
+
+    args = _dflash_cli_args(enable_dflash=True, enable_mtp=True)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _preflight_dflash_mutexes_or_exit(args)
+
+    assert excinfo.value.code == 1
+    assert "DFlash cannot combine" in capsys.readouterr().out
 
 
 def test_dflash_speculative_config_rejects_no_spec_decode(capsys) -> None:
