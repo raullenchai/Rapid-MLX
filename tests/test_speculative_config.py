@@ -228,7 +228,7 @@ def test_speculative_config_mtp_populates_runtime_args() -> None:
     assert config_args.enable_ddtree is False
 
 
-def test_speculative_config_mtp_without_token_count_keeps_default_max_k() -> None:
+def test_speculative_config_mtp_without_token_count_keeps_legacy_one_token() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(speculative_config='{"method":"mtp"}')
@@ -236,7 +236,7 @@ def test_speculative_config_mtp_without_token_count_keeps_default_max_k() -> Non
     _normalize_speculative_config_or_exit(args)
 
     assert args.spec_decode == "mtp"
-    assert args.mtp_max_k == 3
+    assert args.mtp_max_k == 1
     assert args.mtp_disable_auto_k is False
 
 
@@ -248,7 +248,7 @@ def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
     _normalize_speculative_config_or_exit(args)
 
     assert args._speculative_config is None
-    assert args.mtp_max_k == 3
+    assert args.mtp_max_k == 1
     assert args.suffix_max_draft == 8
     assert args.suffix_max_suffix_len == 4
     assert args.suffix_min_confidence == 0.3
@@ -272,6 +272,40 @@ def test_no_speculative_config_preserves_programmatic_runtime_fields() -> None:
     assert args.dflash_drafter_path == "local/draft"
     assert args.suffix_decoding is True
     assert args.suffix_max_draft == 6
+
+
+@pytest.mark.parametrize(
+    ("overrides", "conflict"),
+    [
+        ({"enable_ddtree": True}, "--enable-ddtree"),
+        ({"enable_dflash": True}, "--enable-dflash"),
+        ({"spec_decode": "mtp"}, "--spec-decode mtp"),
+        ({"dflash_drafter_path": "local/draft"}, "--dflash-drafter-path"),
+        ({"enable_mtp": True}, "--enable-mtp"),
+        ({"mtp_sidecar": "local/assistant"}, "--mtp-sidecar"),
+        ({"mtp_max_k": 2}, "--mtp-max-k"),
+        ({"mtp_disable_auto_k": True}, "--mtp-disable-auto-k"),
+        ({"suffix_decoding": True}, "--suffix-decoding"),
+        ({"suffix_max_draft": 6}, "--suffix-max-draft"),
+        ({"suffix_max_suffix_len": 5}, "--suffix-max-suffix-len"),
+        ({"suffix_min_confidence": 0.4}, "--suffix-min-confidence"),
+        ({"suffix_min_draft_len": 3}, "--suffix-min-draft-len"),
+    ],
+)
+def test_no_spec_decode_rejects_programmatic_runtime_fields(
+    overrides, conflict, capsys
+) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(no_spec_decode=True, **overrides)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "--no-spec-decode is mutually exclusive" in captured.err
+    assert conflict in captured.err
 
 
 def test_speculative_config_malformed_reports_clean_error(capsys) -> None:

@@ -1192,10 +1192,11 @@ def load_model(
             back-compat with external callers; if provided it is translated
             into ``scheduler_config.prefill_step_size`` and a DeprecationWarning
             is emitted. Will be removed in a future release.
-        mtp: DEPRECATED no-op. The public MTP runtime now goes through
-            ``scheduler_config.spec_decode == "mtp"`` after CLI
-            ``--speculative-config`` normalization. Kept to avoid breaking
-            external ``load_model(..., mtp=False)`` callers.
+        mtp: DEPRECATED compatibility alias. ``mtp=True`` is translated to
+            ``scheduler_config.spec_decode == "mtp"`` so older
+            ``load_model(..., mtp=True)`` callers still opt into MTP while the
+            public runtime moves to ``--speculative-config`` /
+            ``SchedulerConfig(spec_decode="mtp")``.
         force_text: Keyword-only. Force loading as text-only LLM even when
             auto-detection would route as MLLM. Escape hatch for incomplete
             vision-tower checkpoints (#393) and text-only forks of multimodal

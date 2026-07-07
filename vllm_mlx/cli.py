@@ -1571,13 +1571,53 @@ def _normalize_speculative_config_or_exit(args):
             "spec_decode": "none",
             "dflash_drafter_path": "",
             "mtp_sidecar": None,
-            "mtp_max_k": 3,
+            "mtp_max_k": 1,
             "mtp_disable_auto_k": False,
             "suffix_decoding": False,
         }
         for name, value in defaults.items():
             if overwrite or not hasattr(args, name) or getattr(args, name) is None:
                 setattr(args, name, value)
+
+    def _reject_no_spec_decode_runtime_conflicts() -> None:
+        if not getattr(args, "no_spec_decode", False):
+            return
+        conflicts = []
+        if getattr(args, "enable_ddtree", False):
+            conflicts.append("--enable-ddtree")
+        if getattr(args, "enable_dflash", False):
+            conflicts.append("--enable-dflash")
+        spec_decode = getattr(args, "spec_decode", "none")
+        if spec_decode not in (None, "none"):
+            conflicts.append(f"--spec-decode {spec_decode}")
+        if (getattr(args, "dflash_drafter_path", "") or "").strip():
+            conflicts.append("--dflash-drafter-path")
+        if getattr(args, "enable_mtp", False):
+            conflicts.append("--enable-mtp")
+        if (getattr(args, "mtp_sidecar", None) or "").strip():
+            conflicts.append("--mtp-sidecar")
+        if getattr(args, "mtp_max_k", None) is not None:
+            conflicts.append("--mtp-max-k")
+        if getattr(args, "mtp_disable_auto_k", False):
+            conflicts.append("--mtp-disable-auto-k")
+        if getattr(args, "suffix_decoding", False):
+            conflicts.append("--suffix-decoding")
+        if getattr(args, "suffix_max_draft", None) is not None:
+            conflicts.append("--suffix-max-draft")
+        if getattr(args, "suffix_max_suffix_len", None) is not None:
+            conflicts.append("--suffix-max-suffix-len")
+        if getattr(args, "suffix_min_confidence", None) is not None:
+            conflicts.append("--suffix-min-confidence")
+        if getattr(args, "suffix_min_draft_len", None) is not None:
+            conflicts.append("--suffix-min-draft-len")
+        if not conflicts:
+            return
+        joined = ", ".join(conflicts)
+        print(
+            f"error: --no-spec-decode is mutually exclusive with {joined}.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
 
     def _fill_suffix_defaults() -> None:
         if getattr(args, "suffix_max_draft", None) is None:
@@ -1590,6 +1630,7 @@ def _normalize_speculative_config_or_exit(args):
             args.suffix_min_draft_len = 2
 
     if raw_config is None:
+        _reject_no_spec_decode_runtime_conflicts()
         _fill_runtime_defaults(overwrite=False)
         args._speculative_config = None
         _fill_suffix_defaults()
