@@ -89,20 +89,45 @@ set -euo pipefail
 # workstation that also runs the operator's rapid-mlx production
 # services.
 OPENHANDS_IMAGE="ghcr.io/all-hands-ai/openhands:0.9.0@sha256:d4b028e3b1f7ad6fdb1bba3579362c8298bb791b222e73a8355fd980bb987f1a"
-# Runtime image: TAG PIN ONLY, no ``@sha256:...`` digest suffix. OpenHands
-# 0.8.3 (which ships inside the 0.9.0 app image) parses this ref in
-# ``runtime_build.py:188`` with ``base_image.split(':')`` — a straight
-# split on the ``:`` character, which chokes on a three-way
-# ``repo:tag@sha256:hex`` form with ``ValueError: too many values to
-# unpack (expected 2)`` before any LLM call happens. All four family
-# cells hit this on a cold-cache Docker path; the pilot ran with images
-# pre-cached and didn't trigger. The ``:``-split has been refactored out
-# on OpenHands ``main`` so no upstream ask; we just keep the tag pin for
-# reproducibility (multi-arch manifest — both linux/arm64 and
-# linux/amd64 — reachable via ``docker buildx imagetools inspect`` when
-# a future bump is needed). The app-image digest above is fine because
-# that reference doesn't go through the ``base_image.split(':')`` path
-# — only the runtime image does.
+# Runtime image — two-ref pattern to preserve supply-chain integrity while
+# also working around an OpenHands 0.8.3 parser choke:
+#
+#   * ``OPENHANDS_RUNTIME_IMAGE_PULL`` — the ``repo:tag@sha256:hex`` form
+#     used ONLY at ``docker pull`` time. This is what makes the mount of
+#     ``/var/run/docker.sock`` safe: the daemon verifies the pulled
+#     manifest against ``sha256:784f...472d`` before allowing local use,
+#     so a moved / compromised tag can't hand host-daemon control to a
+#     swapped image. Regenerate with
+#     ``docker buildx imagetools inspect <ref> | awk '/^Digest:/ {print $2}'``
+#     when bumping to a newer OpenHands release.
+#
+#   * ``OPENHANDS_RUNTIME_IMAGE`` — the ``repo:tag``-only form that we
+#     pass to OpenHands via ``SANDBOX_CONTAINER_IMAGE``. OpenHands 0.8.3
+#     (which ships inside the 0.9.0 app image) parses this ref in
+#     ``runtime_build.py:188`` with ``base_image.split(':')`` — a straight
+#     split on ``:``, which raises ``ValueError: too many values to unpack
+#     (expected 2)`` on the three-way ``repo:tag@sha256:hex`` form BEFORE
+#     any LLM call happens (all four family cells hit this on cold-cache
+#     Docker paths; the 2026-07-06 pilot ran with images pre-cached and
+#     didn't trigger). The ``:``-split has been refactored out on
+#     OpenHands ``main`` so no upstream ask; we just need the ref we pass
+#     to be splittable in exactly two pieces.
+#
+# The pull section below runs ``docker pull "$OPENHANDS_RUNTIME_IMAGE_PULL"``
+# (digest-verified) and then ``docker tag "$OPENHANDS_RUNTIME_IMAGE_PULL"
+# "$OPENHANDS_RUNTIME_IMAGE"``, so the two-colon alias points at the
+# byte-identical content the digest verified. If the operator already had
+# a locally-built ``repo:tag`` of this ref with a different digest, the
+# ``docker tag`` step overrides it with our verified copy — which is what
+# we want. The app image doesn't need this dance because OpenHands never
+# feeds its own image ref through ``base_image.split(':')`` — only the
+# runtime image does.
+#
+# Codex #1048 round-6 finding #2 (BLOCKING, still in force under this
+# two-ref pattern): keep this lane restricted to isolated Docker hosts —
+# do NOT run the harness on a workstation that also runs the operator's
+# rapid-mlx production services.
+OPENHANDS_RUNTIME_IMAGE_PULL="ghcr.io/all-hands-ai/runtime:od_v0.9.0_image_nikolaik___python-nodejs_tag_python3.11-nodejs22@sha256:784f7161295b87d3af26332dbbad5bcdd643641e87ed0038ed0c7f4b47c9472d"
 OPENHANDS_RUNTIME_IMAGE="ghcr.io/all-hands-ai/runtime:od_v0.9.0_image_nikolaik___python-nodejs_tag_python3.11-nodejs22"
 
 TIMEOUT=600
@@ -372,7 +397,10 @@ LITELLM_MODEL="openai/${MODEL}"
 # an OpenHands runtime error (exit 2). ``docker pull`` with ``--quiet``
 # is idempotent and prints only the digest on success; with ``2>&1`` we
 # fold pull chatter (progress lines) into the harness log for diagnostics.
-for img in "$OPENHANDS_IMAGE" "$OPENHANDS_RUNTIME_IMAGE"; do
+# The runtime pull ref is digest-pinned (integrity), and after pull we
+# re-tag to the plain ``repo:tag`` alias that OpenHands' ``base_image.split(':')``
+# parser can handle — see the two-ref explanation up top.
+for img in "$OPENHANDS_IMAGE" "$OPENHANDS_RUNTIME_IMAGE_PULL"; do
     if ! docker image inspect "$img" >/dev/null 2>&1; then
         echo "[test_openhands.sh] pulling missing image: $img"
         if ! docker pull "$img" 2>&1 | tail -5 >&2; then
@@ -382,10 +410,21 @@ for img in "$OPENHANDS_IMAGE" "$OPENHANDS_RUNTIME_IMAGE"; do
     fi
 done
 
+# Re-tag the digest-verified runtime image to the plain ``repo:tag`` alias
+# OpenHands passes through ``base_image.split(':')``. ``docker tag`` is
+# atomic and content-addressed — the alias points at the byte-identical
+# manifest we just verified against ``sha256:784f...472d``. Idempotent:
+# safe to re-run on warm caches.
+if ! docker tag "$OPENHANDS_RUNTIME_IMAGE_PULL" "$OPENHANDS_RUNTIME_IMAGE" 2>&1 | tail -5 >&2; then
+    echo "ERROR: docker tag $OPENHANDS_RUNTIME_IMAGE_PULL -> $OPENHANDS_RUNTIME_IMAGE failed" >&2
+    exit 1
+fi
+
 echo "[test_openhands.sh] model=$MODEL host-base-url=$BASE_URL container-base-url=$CONTAINER_BASE_URL"
 echo "[test_openhands.sh] litellm-model=$LITELLM_MODEL timeout=${TIMEOUT}s max-iter=${MAX_ITERATIONS}"
 echo "[test_openhands.sh] openhands-image=$OPENHANDS_IMAGE"
-echo "[test_openhands.sh] runtime-image=$OPENHANDS_RUNTIME_IMAGE"
+echo "[test_openhands.sh] runtime-image-pull=$OPENHANDS_RUNTIME_IMAGE_PULL"
+echo "[test_openhands.sh] runtime-image=$OPENHANDS_RUNTIME_IMAGE (local alias for base_image.split(':'))"
 echo "[test_openhands.sh] scratch workdir=$WORKDIR openhands-state=$OPENHANDS_STATE"
 echo "[test_openhands.sh] container-name=$CONTAINER_NAME"
 echo "[test_openhands.sh] BEFORE add.py:"
