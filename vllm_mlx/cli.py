@@ -1725,6 +1725,12 @@ def _normalize_speculative_config_or_exit(args):
         if getattr(args, "mtp_optimistic", False):
             if not mtp_requested:
                 reject_orphan("mtp_optimistic", "enable_mtp or spec_decode=mtp")
+            print(
+                "error: legacy speculative decoding knob mtp_optimistic is no "
+                "longer supported by the migrated MTP path.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         if mtp_requested:
             add_method("mtp", mtp_payload)
 
@@ -1798,6 +1804,12 @@ def _normalize_speculative_config_or_exit(args):
                 file=sys.stderr,
             )
             sys.exit(2)
+
+    if config is None:
+        _fill_runtime_defaults(overwrite=True)
+        args._speculative_config = None
+        _fill_suffix_defaults()
+        return
 
     _fill_runtime_defaults(overwrite=True)
     args._speculative_config = config

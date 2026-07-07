@@ -698,9 +698,11 @@ def test_scheduler_config_rejects_deprecated_mtp_with_other_spec_decode():
 def test_scheduler_config_rejects_deprecated_mtp_with_other_backends(kwargs, match):
     from vllm_mlx.scheduler import SchedulerConfig
 
-    with pytest.warns(DeprecationWarning, match="enable_mtp=True"):
-        with pytest.raises(ValueError, match=match):
-            SchedulerConfig(**kwargs)
+    with (
+        pytest.warns(DeprecationWarning, match="enable_mtp=True"),
+        pytest.raises(ValueError, match=match),
+    ):
+        SchedulerConfig(**kwargs)
 
 
 @pytest.mark.parametrize(

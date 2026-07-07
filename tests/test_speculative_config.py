@@ -242,6 +242,21 @@ def test_speculative_config_mtp_without_token_count_keeps_legacy_one_token() -> 
     assert args.mtp_disable_auto_k is False
 
 
+def test_speculative_config_parse_none_cleanly_disables(monkeypatch) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+    from vllm_mlx.spec_decode import config as config_mod
+
+    monkeypatch.setattr(config_mod, "parse_speculative_config", lambda _raw: None)
+    args = _spec_config_args(speculative_config='{"method":"mtp"}')
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config is None
+    assert args.spec_decode == "none"
+    assert args.enable_mtp is False
+    assert args.mtp_max_k == 1
+
+
 def test_no_speculative_config_fills_suffix_runtime_defaults() -> None:
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
@@ -305,6 +320,19 @@ def test_hidden_legacy_aliases_reject_multiple_methods(capsys) -> None:
 
     assert excinfo.value.code == 2
     assert "select multiple methods" in capsys.readouterr().err
+
+
+def test_hidden_legacy_mtp_optimistic_rejects_with_method_selector(capsys) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(enable_mtp=True, mtp_optimistic=True)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "mtp_optimistic is no longer supported" in captured.err
 
 
 @pytest.mark.parametrize(
