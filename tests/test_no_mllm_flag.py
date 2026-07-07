@@ -166,6 +166,12 @@ NON_ROUTING_FLAGS_ALLOWLIST: frozenset[str] = frozenset(
         # ``/v1/audio/*`` from the registry hit; this flag is the
         # text-mode-with-audio escape hatch (side-car deployments).
         "--enable-audio",
+        # Hidden deprecated speculative-decoding compatibility aliases.
+        # They normalize into --speculative-config and are intentionally not
+        # auto-routing profile overrides.
+        "--enable-dflash",
+        "--enable-ddtree",
+        "--enable-mtp",
         "--enable-kv-cache-quantization",
         "--enable-kv-cache-turboquant",
         "--enable-prefix-cache",

@@ -598,8 +598,8 @@ def test_cli_speculative_config_advertised_in_help():
     assert '"method":"mtp"' in text
 
 
-def test_cli_spec_decode_flag_is_removed():
-    """The old ``--spec-decode`` flag is no longer accepted."""
+def test_cli_spec_decode_flag_is_hidden_but_recognized():
+    """The old ``--spec-decode`` alias is hidden, but parser-compatible."""
     import subprocess
     import sys
 
@@ -611,14 +611,14 @@ def test_cli_spec_decode_flag_is_removed():
             "serve",
             "qwen3.5-4b-4bit",
             "--spec-decode",
-            "mtp",
+            "eagle",
         ],
         capture_output=True,
         text=True,
         timeout=60,
     )
     assert proc.returncode != 0
-    assert "unrecognized arguments" in proc.stderr
+    assert "invalid choice" in proc.stderr
     assert "--spec-decode" in proc.stderr
 
 
@@ -658,19 +658,28 @@ def test_scheduler_config_spec_decode_round_trip():
     assert cfg.spec_decode == "mtp"
 
 
-def test_scheduler_config_accepts_deprecated_mtp_kwargs_as_noops():
+def test_scheduler_config_translates_deprecated_mtp_kwargs():
     from vllm_mlx.scheduler import SchedulerConfig
 
-    cfg = SchedulerConfig(
-        enable_mtp=True,
-        mtp_num_draft_tokens=2,
-        mtp_optimistic=True,
-    )
+    with pytest.warns(DeprecationWarning, match="enable_mtp=True"):
+        cfg = SchedulerConfig(
+            enable_mtp=True,
+            mtp_num_draft_tokens=2,
+            mtp_optimistic=True,
+        )
 
-    assert cfg.spec_decode == "none"
+    assert cfg.spec_decode == "mtp"
     assert cfg.enable_mtp is True
     assert cfg.mtp_num_draft_tokens == 2
     assert cfg.mtp_optimistic is True
+    assert cfg.mtp_max_k == 2
+
+
+def test_scheduler_config_rejects_deprecated_mtp_with_other_spec_decode():
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="enable_mtp=True.*spec_decode='suffix'"):
+        SchedulerConfig(enable_mtp=True, spec_decode="suffix")
 
 
 # ---------------------------------------------------------------------------

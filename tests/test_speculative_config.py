@@ -261,17 +261,48 @@ def test_no_speculative_config_preserves_programmatic_runtime_fields() -> None:
     args = _spec_config_args(
         enable_dflash=True,
         dflash_drafter_path="local/draft",
-        suffix_decoding=True,
-        suffix_max_draft=6,
     )
 
     _normalize_speculative_config_or_exit(args)
 
-    assert args._speculative_config is None
+    assert args._speculative_config.method == "dflash"
     assert args.enable_dflash is True
     assert args.dflash_drafter_path == "local/draft"
-    assert args.suffix_decoding is True
-    assert args.suffix_max_draft == 6
+
+
+@pytest.mark.parametrize(
+    ("overrides", "method"),
+    [
+        ({"enable_dflash": True}, "dflash"),
+        ({"enable_ddtree": True}, "ddtree"),
+        ({"spec_decode": "mtp"}, "mtp"),
+        ({"enable_mtp": True}, "mtp"),
+        ({"suffix_decoding": True}, "suffix"),
+    ],
+)
+def test_hidden_legacy_aliases_normalize_to_speculative_config(
+    overrides, method
+) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(**overrides)
+
+    _normalize_speculative_config_or_exit(args)
+
+    assert args._speculative_config is not None
+    assert args._speculative_config.method == method
+
+
+def test_hidden_legacy_aliases_reject_multiple_methods(capsys) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(enable_dflash=True, suffix_decoding=True)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    assert "select multiple methods" in capsys.readouterr().err
 
 
 @pytest.mark.parametrize(

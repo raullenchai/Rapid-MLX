@@ -161,6 +161,30 @@ def test_load_model_mtp_kwarg_rejects_conflicting_spec_decode():
         )
 
 
+def test_load_model_mtp_kwarg_rejects_conflicting_suffix_config():
+    from vllm_mlx import server
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="enable_suffix_decoding=True"):
+        server.load_model(
+            "mlx-community/Qwen3.5-9B-4bit",
+            scheduler_config=SchedulerConfig(enable_suffix_decoding=True),
+            mtp=True,
+        )
+
+
+def test_load_model_mtp_kwarg_rejects_conflicting_dflash_config():
+    from vllm_mlx import server
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="dflash_drafter_path"):
+        server.load_model(
+            "mlx-community/Qwen3.5-9B-4bit",
+            scheduler_config=SchedulerConfig(dflash_drafter_path="local/draft"),
+            mtp=True,
+        )
+
+
 def test_detect_native_tool_support_requires_synced_config(monkeypatch):
     """Contract test for the ordering invariant: detection short-circuits
     to False when cfg has not been synced yet, so callers MUST run

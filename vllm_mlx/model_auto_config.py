@@ -1378,7 +1378,7 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             # ``(no MTP/drafter trained)`` — half-true but actively
             # misleading because the DFlash drafter IS registered.
             # Surface the actionable opt-in instead.
-            spec = '✗ use config {"method":"dflash"}'
+            spec = '✗ try --speculative-config {"method":"dflash"}'
         else:
             # 0.9.0 dogfood: non-hybrid + spec-off was rendering
             # ``hybrid arch`` next to ``Architecture: pure attention``.

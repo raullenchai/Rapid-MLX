@@ -215,9 +215,9 @@ class SchedulerConfig:
     # the common speculative-config frontend.
     # Validated at SchedulerConfig construction in cli.py.
     spec_decode: str = "none"
-    # Deprecated no-op compatibility fields for external callers that
-    # constructed SchedulerConfig(enable_mtp=...) before the unified
-    # speculative-config migration. The scheduler no longer reads them.
+    # Deprecated compatibility fields for external callers that constructed
+    # SchedulerConfig(enable_mtp=...) before the unified speculative-config
+    # migration. __post_init__ translates enable_mtp=True into spec_decode="mtp".
     enable_mtp: bool = False
     mtp_num_draft_tokens: int = 1
     mtp_optimistic: bool = False
@@ -356,6 +356,24 @@ class SchedulerConfig:
     mtp_disable_auto_k: bool = False
 
     def __post_init__(self) -> None:
+        if self.enable_mtp:
+            import warnings
+
+            if self.spec_decode not in ("none", "mtp"):
+                raise ValueError(
+                    "SchedulerConfig(enable_mtp=True) conflicts with "
+                    f"spec_decode={self.spec_decode!r}; pass only one "
+                    "speculative decoding method."
+                )
+            warnings.warn(
+                "SchedulerConfig(enable_mtp=True) is deprecated; pass "
+                "SchedulerConfig(spec_decode='mtp') instead.",
+                DeprecationWarning,
+                stacklevel=2,
+            )
+            self.spec_decode = "mtp"
+            self.mtp_max_k = max(1, int(self.mtp_num_draft_tokens))
+
         # PFlashConfig is dataclass(frozen=True), so .validate() returns
         # a new instance; reassign so the SchedulerConfig holds the
         # validated copy. Done in __post_init__ to keep callers from

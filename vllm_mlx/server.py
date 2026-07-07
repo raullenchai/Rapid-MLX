@@ -1232,6 +1232,23 @@ def load_model(
                 f"scheduler_config.spec_decode={existing_spec_decode!r}; "
                 "pass only one speculative decoding method."
             )
+        if scheduler_config is not None and getattr(
+            scheduler_config, "enable_suffix_decoding", False
+        ):
+            raise ValueError(
+                "load_model(mtp=True) conflicts with "
+                "scheduler_config.enable_suffix_decoding=True; pass only one "
+                "speculative decoding method."
+            )
+        if (
+            scheduler_config is not None
+            and (getattr(scheduler_config, "dflash_drafter_path", "") or "").strip()
+        ):
+            raise ValueError(
+                "load_model(mtp=True) conflicts with "
+                "scheduler_config.dflash_drafter_path; pass only one "
+                "speculative decoding method."
+            )
         warnings.warn(
             "load_model(mtp=True) is deprecated; pass "
             "SchedulerConfig(spec_decode='mtp') instead.",

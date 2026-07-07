@@ -1553,6 +1553,7 @@ def _build_benchmark_context(target_tokens: int) -> str:
 
 def _normalize_speculative_config_or_exit(args):
     """Parse ``--speculative-config`` and map methods to runtime fields."""
+    import json
     import sys
 
     from .spec_decode.config import (
@@ -1632,8 +1633,86 @@ def _normalize_speculative_config_or_exit(args):
         if getattr(args, "suffix_min_draft_len", None) is None:
             args.suffix_min_draft_len = 2
 
+    def _legacy_speculative_config_payload() -> dict | None:
+        methods: list[tuple[str, dict]] = []
+
+        def add_method(method: str, payload: dict) -> None:
+            methods.append((method, payload))
+
+        spec_decode = getattr(args, "spec_decode", "none")
+        dflash_model = (getattr(args, "dflash_drafter_path", "") or "").strip()
+        if getattr(args, "enable_ddtree", False):
+            add_method("ddtree", {"method": "ddtree"})
+        if (
+            getattr(args, "enable_dflash", False)
+            or spec_decode == "dflash"
+            or dflash_model
+        ):
+            payload = {"method": "dflash"}
+            if dflash_model:
+                payload["model"] = dflash_model
+            add_method("dflash", payload)
+
+        mtp_payload = {"method": "mtp"}
+        mtp_requested = getattr(args, "enable_mtp", False) or spec_decode == "mtp"
+        sidecar = (getattr(args, "mtp_sidecar", None) or "").strip()
+        if sidecar:
+            mtp_payload["model"] = sidecar
+            mtp_requested = True
+        mtp_max_k = getattr(args, "mtp_max_k", None)
+        if mtp_max_k is not None:
+            mtp_payload["num_speculative_tokens"] = mtp_max_k
+            mtp_requested = True
+        mtp_num_draft_tokens = getattr(args, "mtp_num_draft_tokens", 1)
+        if mtp_num_draft_tokens != 1:
+            mtp_payload["num_speculative_tokens"] = mtp_num_draft_tokens
+            mtp_requested = True
+        if getattr(args, "mtp_disable_auto_k", False):
+            mtp_payload["disable_auto_k"] = True
+            mtp_requested = True
+        if getattr(args, "mtp_optimistic", False):
+            mtp_requested = True
+        if mtp_requested:
+            add_method("mtp", mtp_payload)
+
+        suffix_payload = {"method": "suffix"}
+        suffix_requested = getattr(args, "suffix_decoding", False)
+        suffix_fields = (
+            ("suffix_max_draft", "num_speculative_tokens"),
+            ("suffix_max_suffix_len", "max_suffix_len"),
+            ("suffix_min_confidence", "min_confidence"),
+            ("suffix_min_draft_len", "min_draft_len"),
+        )
+        for attr, key in suffix_fields:
+            value = getattr(args, attr, None)
+            if value is not None:
+                suffix_payload[key] = value
+                suffix_requested = True
+        if suffix_requested:
+            add_method("suffix", suffix_payload)
+
+        if not methods:
+            return None
+        distinct = {method for method, _payload in methods}
+        if len(distinct) > 1:
+            joined = ", ".join(method for method, _payload in methods)
+            print(
+                "error: legacy speculative decoding aliases select multiple "
+                f"methods ({joined}); use one --speculative-config payload.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
+        return methods[0][1]
+
+    legacy_payload = None
     if raw_config is None:
         _reject_no_spec_decode_runtime_conflicts()
+        legacy_payload = _legacy_speculative_config_payload()
+        if legacy_payload is not None:
+            raw_config = json.dumps(legacy_payload, separators=(",", ":"))
+            args.speculative_config = raw_config
+
+    if raw_config is None:
         _fill_runtime_defaults(overwrite=False)
         args._speculative_config = None
         _fill_suffix_defaults()
@@ -6637,6 +6716,99 @@ Examples:
             "and is available with "
             '\'{"method":"suffix","num_speculative_tokens":8}\'.'
         ),
+    )
+    # Hidden deprecated aliases. They are intentionally absent from help;
+    # normalization folds them into the same SpeculativeConfig path as
+    # --speculative-config so old commands do not revive old implementations.
+    serve_parser.add_argument(
+        "--enable-dflash",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--enable-ddtree",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--spec-decode",
+        dest="spec_decode",
+        choices=["none", "dflash", "mtp"],
+        default="none",
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--dflash-drafter-path",
+        default="",
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--enable-mtp",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--mtp-num-draft-tokens",
+        type=int,
+        default=1,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--mtp-optimistic",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--mtp-sidecar",
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--mtp-max-k",
+        dest="mtp_max_k",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--mtp-disable-auto-k",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--suffix-decoding",
+        action="store_true",
+        default=False,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--suffix-max-draft",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--suffix-max-suffix-len",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--suffix-min-confidence",
+        type=float,
+        default=None,
+        help=argparse.SUPPRESS,
+    )
+    serve_parser.add_argument(
+        "--suffix-min-draft-len",
+        type=int,
+        default=None,
+        help=argparse.SUPPRESS,
     )
     serve_parser.add_argument(
         "--num-draft-tokens",
