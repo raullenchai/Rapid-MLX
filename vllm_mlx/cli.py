@@ -1715,6 +1715,17 @@ def _normalize_speculative_config_or_exit(args):
                 reject_orphan("mtp_max_k", "enable_mtp or spec_decode=mtp")
             mtp_payload["num_speculative_tokens"] = mtp_max_k
         mtp_num_draft_tokens = getattr(args, "mtp_num_draft_tokens", 1)
+        if (
+            mtp_max_k is not None
+            and mtp_num_draft_tokens != 1
+            and mtp_max_k != mtp_num_draft_tokens
+        ):
+            print(
+                "error: legacy MTP aliases mtp_max_k and mtp_num_draft_tokens "
+                "conflict; pass only one token-count value.",
+                file=sys.stderr,
+            )
+            sys.exit(2)
         if mtp_num_draft_tokens != 1:
             if not mtp_requested:
                 reject_orphan("mtp_num_draft_tokens", "enable_mtp or spec_decode=mtp")
@@ -2985,7 +2996,7 @@ def serve_command(args):
     if getattr(args, "spec_decode", "none") == "mtp":
         print(
             "MTP: enabled via --speculative-config, "
-            f"max_k={getattr(args, 'mtp_max_k', 3)}"
+            f"max_k={getattr(args, 'mtp_max_k', 1)}"
         )
     # Native Qwen3.5/3.6 MTP via vendored mlx-lm PR #990. The
     # config-only entrypoint is ``--speculative-config '{"method":"mtp"}'``.

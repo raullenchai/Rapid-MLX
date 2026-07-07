@@ -658,6 +658,15 @@ def test_scheduler_config_spec_decode_round_trip():
     assert cfg.spec_decode == "mtp"
 
 
+def test_scheduler_config_spec_decode_suffix_translates_to_suffix_flag():
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    cfg = SchedulerConfig(spec_decode="suffix")
+
+    assert cfg.spec_decode == "none"
+    assert cfg.enable_suffix_decoding is True
+
+
 def test_scheduler_config_rejects_unknown_spec_decode():
     from vllm_mlx.scheduler import SchedulerConfig
 

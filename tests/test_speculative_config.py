@@ -403,6 +403,19 @@ def test_hidden_legacy_mtp_optimistic_rejects_migrated_mtp(capsys) -> None:
     assert "migrated MTP does not support optimistic mode" in captured.err
 
 
+def test_hidden_legacy_mtp_token_count_aliases_reject_conflict(capsys) -> None:
+    from vllm_mlx.cli import _normalize_speculative_config_or_exit
+
+    args = _spec_config_args(enable_mtp=True, mtp_max_k=2, mtp_num_draft_tokens=3)
+
+    with pytest.raises(SystemExit) as excinfo:
+        _normalize_speculative_config_or_exit(args)
+
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "mtp_max_k and mtp_num_draft_tokens conflict" in captured.err
+
+
 @pytest.mark.parametrize(
     ("overrides", "knob"),
     [

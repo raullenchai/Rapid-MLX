@@ -374,10 +374,14 @@ class SchedulerConfig:
             self.spec_decode = "mtp"
             self.mtp_max_k = max(1, int(self.mtp_num_draft_tokens))
 
+        if self.spec_decode == "suffix":
+            self.enable_suffix_decoding = True
+            self.spec_decode = "none"
+
         if self.spec_decode not in (None, "none", "mtp", "dflash"):
             raise ValueError(
                 f"SchedulerConfig(spec_decode={self.spec_decode!r}) is not "
-                "supported; expected one of 'none', 'mtp', or 'dflash'."
+                "supported; expected one of 'none', 'mtp', 'dflash', or 'suffix'."
             )
 
         if self.mtp_optimistic and self.spec_decode == "mtp" and not self.enable_mtp:
