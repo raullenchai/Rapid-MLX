@@ -1249,6 +1249,18 @@ def load_model(
                 "scheduler_config.dflash_drafter_path; pass only one "
                 "speculative decoding method."
             )
+        if scheduler_config is not None and getattr(
+            scheduler_config, "mtp_optimistic", False
+        ):
+            # Unified spec-decode interface (PR #1050): the vendored MTP
+            # installer does not honour ``mtp_optimistic``. Direct mutation
+            # of scheduler_config below would bypass ``__post_init__``, so
+            # enforce the same reject rule here to avoid silent drift.
+            raise ValueError(
+                "load_model(mtp=True) cannot be combined with "
+                "scheduler_config.mtp_optimistic=True — mtp_optimistic "
+                "is not supported under the unified spec-decode interface."
+            )
         warnings.warn(
             "load_model(mtp=True) is deprecated; pass "
             "SchedulerConfig(spec_decode='mtp') instead.",

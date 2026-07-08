@@ -384,10 +384,17 @@ class SchedulerConfig:
                 "supported; expected one of 'none', 'mtp', 'dflash', or 'suffix'."
             )
 
-        if self.mtp_optimistic and self.spec_decode == "mtp" and not self.enable_mtp:
+        if self.mtp_optimistic and self.spec_decode == "mtp":
+            # Unified spec-decode interface (PR #1050) always routes MTP
+            # through the vendored ``mtp_generate_step`` hot loop, which
+            # does not honour the pre-migration ``mtp_optimistic`` knob.
+            # Silently ignoring it was a UX drift (codex R2); hard-reject
+            # so callers cannot mistakenly believe optimistic MTP is live.
             raise ValueError(
-                "SchedulerConfig(mtp_optimistic=True) is no longer supported "
-                "by the migrated MTP path."
+                "SchedulerConfig(mtp_optimistic=True) is not supported "
+                "under the unified spec-decode interface — the vendored "
+                "MTP installer does not implement optimistic mode. "
+                "Remove the flag."
             )
 
         active_methods: list[str] = []

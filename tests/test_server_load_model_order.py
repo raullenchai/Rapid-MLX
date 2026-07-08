@@ -189,32 +189,27 @@ def test_load_model_mtp_kwarg_rejects_conflicting_dflash_config():
         )
 
 
-def test_load_model_mtp_kwarg_preserves_legacy_optimistic_config(monkeypatch):
+def test_load_model_mtp_kwarg_rejects_legacy_optimistic_config():
+    """PR #1050 hard-reject: server.load_model(mtp=True) with a
+    scheduler_config carrying ``mtp_optimistic=True`` must fail because
+    the direct mutation of ``spec_decode='mtp'`` below would bypass
+    ``__post_init__`` and silently drop the flag under the vendored path."""
     from vllm_mlx import server
     from vllm_mlx.scheduler import SchedulerConfig
 
-    monkeypatch.setattr(server, "BatchedEngine", _StubEngine)
-    monkeypatch.setattr(server, "_engine", None, raising=False)
-    monkeypatch.setattr(server, "_enable_auto_tool_choice", False, raising=False)
-    monkeypatch.setattr(server, "_tool_call_parser", None, raising=False)
-    monkeypatch.setattr(server, "_reasoning_parser_name", None, raising=False)
-    monkeypatch.setattr(server, "_reasoning_parser", None, raising=False)
-    monkeypatch.setattr(server, "_tool_parser_instance", None, raising=False)
-    monkeypatch.setattr(server, "_mcp_manager", None, raising=False)
-    monkeypatch.setattr(server, "_enable_tool_logits_bias", False, raising=False)
-    monkeypatch.setattr(server, "_model_alias", None, raising=False)
+    # SchedulerConfig(mtp_optimistic=True) alone (spec_decode="none") is
+    # legal — the reject is triggered only once mtp=True elevates the
+    # config into the unified spec-decode interface path.
+    cfg = SchedulerConfig(mtp_optimistic=True)
 
-    with pytest.warns(DeprecationWarning, match="load_model\\(mtp=True\\)"):
+    with pytest.raises(
+        ValueError, match="mtp_optimistic.*not supported under the unified"
+    ):
         server.load_model(
             "mlx-community/Qwen3.5-9B-4bit",
-            scheduler_config=SchedulerConfig(mtp_optimistic=True),
+            scheduler_config=cfg,
             mtp=True,
         )
-
-    cfg = server._engine.kwargs["scheduler_config"]
-    assert cfg.enable_mtp is True
-    assert cfg.spec_decode == "mtp"
-    assert cfg.mtp_optimistic is True
 
 
 def test_detect_native_tool_support_requires_synced_config(monkeypatch):

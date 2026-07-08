@@ -681,21 +681,31 @@ def test_scheduler_config_translates_deprecated_mtp_kwargs():
         cfg = SchedulerConfig(
             enable_mtp=True,
             mtp_num_draft_tokens=2,
-            mtp_optimistic=True,
         )
 
     assert cfg.spec_decode == "mtp"
     assert cfg.enable_mtp is True
     assert cfg.mtp_num_draft_tokens == 2
-    assert cfg.mtp_optimistic is True
     assert cfg.mtp_max_k == 2
 
 
 def test_scheduler_config_rejects_unsupported_migrated_mtp_optimistic():
+    """PR #1050 hard-reject: mtp_optimistic under unified interface."""
     from vllm_mlx.scheduler import SchedulerConfig
 
-    with pytest.raises(ValueError, match="mtp_optimistic=True.*no longer supported"):
+    with pytest.raises(ValueError, match="mtp_optimistic=True.*not supported"):
         SchedulerConfig(spec_decode="mtp", mtp_optimistic=True)
+
+
+def test_scheduler_config_rejects_legacy_enable_mtp_with_optimistic():
+    """PR #1050 hard-reject: legacy ``enable_mtp=True`` path also rejects
+    ``mtp_optimistic=True`` because __post_init__ normalizes it to
+    ``spec_decode='mtp'`` and the vendored installer ignores optimistic.
+    """
+    from vllm_mlx.scheduler import SchedulerConfig
+
+    with pytest.raises(ValueError, match="mtp_optimistic=True.*not supported"):
+        SchedulerConfig(enable_mtp=True, mtp_optimistic=True)
 
 
 def test_scheduler_config_rejects_deprecated_mtp_with_other_spec_decode():

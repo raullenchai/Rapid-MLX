@@ -376,21 +376,24 @@ def test_hidden_legacy_aliases_reject_multiple_methods(capsys) -> None:
     assert "select multiple methods" in capsys.readouterr().err
 
 
-def test_hidden_legacy_mtp_optimistic_warns_and_is_preserved() -> None:
+def test_hidden_legacy_mtp_optimistic_rejects_enable_mtp(capsys) -> None:
+    """PR #1050 hard-reject: ``--enable-mtp --mtp-optimistic`` is no longer
+    accepted (previously silently ignored under the vendored installer)."""
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(enable_mtp=True, mtp_optimistic=True)
 
-    with pytest.warns(DeprecationWarning, match="mtp_optimistic is deprecated"):
+    with pytest.raises(SystemExit) as excinfo:
         _normalize_speculative_config_or_exit(args)
 
-    assert args._speculative_config.method == "mtp"
-    assert args.spec_decode == "mtp"
-    assert args.enable_mtp is True
-    assert args.mtp_optimistic is True
+    assert excinfo.value.code == 2
+    captured = capsys.readouterr()
+    assert "mtp_optimistic" in captured.err
+    assert "not supported under the unified spec-decode" in captured.err
 
 
 def test_hidden_legacy_mtp_optimistic_rejects_migrated_mtp(capsys) -> None:
+    """PR #1050 hard-reject: ``--spec-decode=mtp --mtp-optimistic`` fails."""
     from vllm_mlx.cli import _normalize_speculative_config_or_exit
 
     args = _spec_config_args(spec_decode="mtp", mtp_optimistic=True)
@@ -400,7 +403,8 @@ def test_hidden_legacy_mtp_optimistic_rejects_migrated_mtp(capsys) -> None:
 
     assert excinfo.value.code == 2
     captured = capsys.readouterr()
-    assert "migrated MTP does not support optimistic mode" in captured.err
+    assert "mtp_optimistic" in captured.err
+    assert "not supported under the unified spec-decode" in captured.err
 
 
 def test_hidden_legacy_mtp_token_count_aliases_reject_conflict(capsys) -> None:
