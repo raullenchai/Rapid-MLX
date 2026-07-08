@@ -48,7 +48,7 @@ from dataclasses import dataclass
 # EXCEEDS its threshold, we want a hard signal; this is much looser
 # than a "perf regression" check would be.
 THRESHOLDS_US_PER_CALL: dict[str, float] = {
-    "hermes": 60.0,  # measured ~5.5 μs on M3, ~30 μs on ubuntu-latest
+    "hermes": 80.0,  # measured ~5.5 μs on M3, ~30 μs on ubuntu-latest; bumped 60→80 after 65.85 μs p100 flake observed 2026-07-07 (aligns with glm47 which has "similar shape")
     "minimax": 120.0,  # complex regex, larger budget
     "glm47": 80.0,  # similar shape to hermes
     "harmony": 160.0,  # multi-channel protocol, heavier
