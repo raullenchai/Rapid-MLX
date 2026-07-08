@@ -14,7 +14,8 @@ module provides:
   - validate_mtp_support(): checks whether a loaded model has working MTP
 
 The actual MTP scheduling logic lives in:
-  - vllm_mlx/scheduler.py  (_install_mtp, _mtp_step, _mtp_next)
+  - vllm_mlx/scheduler.py  (_install_mtp_vendored, driving the vendored
+    mtp_generate_step hot loop from vllm_mlx/spec_decode/mtp/)
 """
 
 import logging
