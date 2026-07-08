@@ -23,6 +23,7 @@ generation. The fix sets the headers on every SSE
 from __future__ import annotations
 
 import asyncio
+import json
 import time
 
 import pytest
@@ -146,6 +147,48 @@ def test_disconnect_guard_emits_keepalive_when_generator_stalls():
     # Real data eventually arrives too.
     assert "data: first\n\n" in chunks
     assert "data: [DONE]\n\n" in chunks
+
+
+def test_disconnect_guard_custom_keepalive_factory_emits_parsed_sse_event():
+    """Issue #1057: some Responses clients reset idle timers only on
+    parsed SSE events, not comment frames. The guard must let routes
+    replace ``: keepalive`` with a real event while preserving both the
+    post-first-chunk heartbeat and the long-stall cadence.
+    """
+    from vllm_mlx.service.helpers import _disconnect_guard
+
+    async def _role_then_slow_generator():
+        yield 'event: response.created\ndata: {"type":"response.created"}\n\n'
+        await asyncio.sleep(0.25)
+        yield 'event: response.completed\ndata: {"type":"response.completed"}\n\n'
+
+    class _FakeRequest:
+        async def is_disconnected(self) -> bool:
+            return False
+
+    def _heartbeat() -> str:
+        return 'event: response.in_progress\ndata: {"type":"response.in_progress"}\n\n'
+
+    async def _run():
+        out = []
+        async for chunk in _disconnect_guard(
+            _role_then_slow_generator(),
+            _FakeRequest(),
+            keepalive_seconds=0.1,
+            keepalive_factory=_heartbeat,
+        ):
+            out.append(chunk)
+        return out
+
+    chunks = asyncio.run(_run())
+    heartbeat_events = [c for c in chunks if c.startswith("event: response.in_progress")]
+    assert len(heartbeat_events) >= 2, chunks
+    assert not any(c.startswith(": keepalive") for c in chunks), chunks
+    for event in heartbeat_events:
+        data_line = next(line for line in event.splitlines() if line.startswith("data:"))
+        assert json.loads(data_line.removeprefix("data:").strip()) == {
+            "type": "response.in_progress"
+        }
 
 
 def test_disconnect_guard_keepalive_can_be_disabled():

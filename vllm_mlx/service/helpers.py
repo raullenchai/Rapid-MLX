@@ -3439,6 +3439,7 @@ async def _disconnect_guard(
     engine=None,
     keepalive_seconds: float | None = None,
     request_id_holder: list | None = None,
+    keepalive_factory=None,
 ) -> AsyncIterator[str]:
     """Wrap streaming generator to abort on client disconnect.
 
@@ -3451,16 +3452,18 @@ async def _disconnect_guard(
     ``_wait_with_disconnect``.
 
     SSE keepalive (F-070): when ``keepalive_seconds > 0`` (default
-    falls through to ``ServerConfig.sse_keepalive_seconds``), emit an
-    SSE comment line (``: keepalive\\n\\n``) whenever the upstream
-    generator stalls for that many seconds without producing a chunk.
-    SSE comments start with ``:`` per the WHATWG spec, are dropped by
-    every conforming consumer (``EventSource``, OpenAI SDK), and
-    serve as TCP-level heartbeats that prevent intermediate proxies
-    (nginx ``proxy_read_timeout=60``, Cloudflare 100 s, EventSource
-    ~45 s) from tearing down the connection during long prefills. Set
-    ``keepalive_seconds=0`` or ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0``
-    to disable.
+    falls through to ``ServerConfig.sse_keepalive_seconds``), emit a
+    heartbeat frame whenever the upstream generator stalls for that
+    many seconds without producing a chunk. The default frame is an
+    SSE comment line (``: keepalive\\n\\n``): comments start with ``:``
+    per the WHATWG spec, are dropped by every conforming consumer
+    (``EventSource``, OpenAI SDK), and serve as TCP-level heartbeats
+    that prevent intermediate proxies (nginx ``proxy_read_timeout=60``,
+    Cloudflare 100 s, EventSource ~45 s) from tearing down the
+    connection during long prefills. Routes whose clients only count
+    parsed SSE events may pass ``keepalive_factory`` to emit a
+    route-specific heartbeat event instead. Set ``keepalive_seconds=0``
+    or ``RAPID_MLX_SSE_KEEPALIVE_SECONDS=0`` to disable.
 
     C-01 force-abort (Astrid r3 dogfooding): when
     ``request_id_holder`` is a mutable list AND the engine publishes
@@ -3499,6 +3502,11 @@ async def _disconnect_guard(
         except Exception:
             keepalive_seconds = 20.0
     keepalive_enabled = keepalive_seconds and keepalive_seconds > 0
+
+    def _make_keepalive() -> str:
+        if keepalive_factory is None:
+            return ": keepalive\n\n"
+        return keepalive_factory()
 
     logger.info(
         f"[disconnect_guard] START poll_interval={poll_interval}s "
@@ -3611,7 +3619,7 @@ async def _disconnect_guard(
                         f"[disconnect_guard] emitting keepalive "
                         f"#{keepalive_count}, elapsed={_elapsed()}"
                     )
-                yield ": keepalive\n\n"
+                yield _make_keepalive()
                 continue
             try:
                 chunk = anext_task.result()
@@ -3704,7 +3712,7 @@ async def _disconnect_guard(
                     f"[disconnect_guard] post-first-chunk keepalive "
                     f"(R15 #291), elapsed={_elapsed()}"
                 )
-                yield ": keepalive\n\n"
+                yield _make_keepalive()
             # Loop top will re-create the anext_task now that the
             # consumer has pulled this chunk. Do NOT eagerly schedule
             # the next ``__anext__`` here — see the docstring at loop

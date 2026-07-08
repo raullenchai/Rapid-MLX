@@ -695,6 +695,7 @@ async def create_response(request: Request):
             # reads it and force-calls scheduler.abort_request on
             # client disconnect.
             _resp_rid_holder: list[str | None] = [None]
+            _resp_heartbeat_state: dict[str, object] = {}
             return StreamingResponse(
                 _disconnect_guard(
                     _stream_responses(
@@ -702,10 +703,14 @@ async def create_response(request: Request):
                         openai_request,
                         responses_request,
                         request_id_holder=_resp_rid_holder,
+                        heartbeat_state=_resp_heartbeat_state,
                     ),
                     request,
                     engine=engine,
                     request_id_holder=_resp_rid_holder,
+                    keepalive_factory=lambda: _responses_keepalive_sse(
+                        _resp_heartbeat_state
+                    ),
                 ),
                 media_type="text/event-stream",
                 # ``SSE_RESPONSE_HEADERS`` (Cache-Control no-cache/no-transform +
@@ -1458,6 +1463,25 @@ def _sse(event: str, data: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
+def _responses_keepalive_sse(state: dict[str, object]) -> str:
+    """Emit a parsed Responses SSE heartbeat for clients that ignore comments.
+
+    Codex's idle watchdog observes parsed SSE events, so ``: keepalive`` comment
+    frames can keep proxies alive while Codex still considers the stream idle.
+    Reusing ``response.in_progress`` keeps the frame in the Responses event
+    vocabulary and lets SDK consumers treat it as a harmless lifecycle refresh.
+    """
+    data: dict[str, object] = {"type": "response.in_progress"}
+    response = state.get("response")
+    if isinstance(response, dict):
+        data["response"] = response
+    seq = state.get("sequence_number")
+    if isinstance(seq, list) and seq:
+        data["sequence_number"] = seq[0]
+        seq[0] += 1
+    return _sse("response.in_progress", data)
+
+
 async def _emit_function_call_item(tc, output_index: int) -> AsyncIterator[str]:
     """Stream the SSE event triplet for a single ``function_call`` item.
 
@@ -1563,6 +1587,7 @@ async def _stream_responses(
     responses_request: ResponsesRequest,
     *,
     request_id_holder: list | None = None,
+    heartbeat_state: dict[str, object] | None = None,
 ) -> AsyncIterator[str]:
     """Stream a Responses-API SSE event sequence Codex CLI can parse.
 
@@ -1604,6 +1629,8 @@ async def _stream_responses(
     # at 0, incremented per yielded event. Wrap ``_sse`` via a helper so
     # the bookkeeping stays in one place.
     _seq = [0]
+    if heartbeat_state is not None:
+        heartbeat_state["sequence_number"] = _seq
 
     def _emit(event: str, data: dict) -> str:
         data["sequence_number"] = _seq[0]
@@ -1627,6 +1654,8 @@ async def _stream_responses(
         "tool_choice": responses_request.tool_choice or "auto",
         "tools": responses_request.tools or [],
     }
+    if heartbeat_state is not None:
+        heartbeat_state["response"] = _initial_response_payload
     yield _emit(
         "response.created",
         {

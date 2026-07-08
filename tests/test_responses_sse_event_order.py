@@ -201,6 +201,30 @@ def _stream_payload(**overrides):
 
 
 class TestResponsesStreamEventOrder:
+    def test_responses_keepalive_event_uses_in_progress_envelope(self):
+        """Issue #1057: Responses keepalives must be parsed SSE events, not
+        comment frames, so Codex's event-level idle watchdog observes them.
+        """
+        from vllm_mlx.routes.responses import _responses_keepalive_sse
+
+        response = {
+            "id": "resp_test",
+            "object": "response",
+            "created_at": 123,
+            "status": "in_progress",
+            "model": "test-model",
+            "output": [],
+        }
+        state = {"response": response, "sequence_number": [7]}
+
+        event_name, payload = _parse_sse(_responses_keepalive_sse(state))[0]
+
+        assert event_name == "response.in_progress"
+        assert payload["type"] == "response.in_progress"
+        assert payload["response"] == response
+        assert payload["sequence_number"] == 7
+        assert state["sequence_number"] == [8]
+
     def test_response_in_progress_event_between_created_and_first_item(
         self, responses_client
     ):
