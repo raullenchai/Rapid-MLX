@@ -181,11 +181,15 @@ def test_disconnect_guard_custom_keepalive_factory_emits_parsed_sse_event():
         return out
 
     chunks = asyncio.run(_run())
-    heartbeat_events = [c for c in chunks if c.startswith("event: response.in_progress")]
+    heartbeat_events = [
+        c for c in chunks if c.startswith("event: response.in_progress")
+    ]
     assert len(heartbeat_events) >= 2, chunks
     assert not any(c.startswith(": keepalive") for c in chunks), chunks
     for event in heartbeat_events:
-        data_line = next(line for line in event.splitlines() if line.startswith("data:"))
+        data_line = next(
+            line for line in event.splitlines() if line.startswith("data:")
+        )
         assert json.loads(data_line.removeprefix("data:").strip()) == {
             "type": "response.in_progress"
         }
