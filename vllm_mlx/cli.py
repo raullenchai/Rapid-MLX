@@ -1601,7 +1601,11 @@ def _normalize_speculative_config_or_exit(args):
             conflicts.append("enable_mtp")
         if (getattr(args, "mtp_sidecar", None) or "").strip():
             conflicts.append("mtp_sidecar")
-        if getattr(args, "mtp_max_k", None) is not None:
+        # Idempotency guard: after ``_fill_runtime_defaults(overwrite=True)``
+        # a disabled config normalizes to ``mtp_max_k=1``. Only flag the
+        # value as a ``--no-spec-decode`` conflict when it diverges from
+        # that disabled default (i.e., an explicit non-default was passed).
+        if getattr(args, "mtp_max_k", None) not in (None, 1):
             conflicts.append("mtp_max_k")
         if getattr(args, "mtp_num_draft_tokens", 1) != 1:
             conflicts.append("mtp_num_draft_tokens")

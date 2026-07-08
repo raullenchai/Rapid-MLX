@@ -663,7 +663,11 @@ def test_scheduler_config_spec_decode_suffix_translates_to_suffix_flag():
 
     cfg = SchedulerConfig(spec_decode="suffix")
 
-    assert cfg.spec_decode == "none"
+    # PR #1050 codex R3: keep ``spec_decode`` as the canonical selector so
+    # callers reading the value observe what they passed in; also flip the
+    # legacy ``enable_suffix_decoding`` flag for downstream code that still
+    # reads it.
+    assert cfg.spec_decode == "suffix"
     assert cfg.enable_suffix_decoding is True
 
 

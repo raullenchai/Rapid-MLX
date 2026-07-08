@@ -375,10 +375,14 @@ class SchedulerConfig:
             self.mtp_max_k = max(1, int(self.mtp_num_draft_tokens))
 
         if self.spec_decode == "suffix":
+            # Enable the drafter-free suffix path implicitly (matches the
+            # public docs' promise for ``spec_decode='suffix'``), but keep
+            # ``spec_decode='suffix'`` as the canonical selector so callers
+            # reading the value back observe what they passed in
+            # (codex R3: silent rewrite to ``'none'`` was UX drift).
             self.enable_suffix_decoding = True
-            self.spec_decode = "none"
 
-        if self.spec_decode not in (None, "none", "mtp", "dflash"):
+        if self.spec_decode not in (None, "none", "mtp", "dflash", "suffix"):
             raise ValueError(
                 f"SchedulerConfig(spec_decode={self.spec_decode!r}) is not "
                 "supported; expected one of 'none', 'mtp', 'dflash', or 'suffix'."
