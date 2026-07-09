@@ -591,13 +591,24 @@ def _register_vendored_archs() -> None:
         except Exception as e:
             logger.debug(f"deepseek_v4 vendored module unavailable: {e}")
 
+    if "mlx_lm.models.hy_v3" not in sys.modules:
+        try:
+            from ..models import hy_v3 as _hy_v3
+
+            # Tencent Hunyuan 3 (295B/21B active MoE) — vendored from
+            # ml-explore/mlx-lm PR #1211 (open, unreviewed since 2026-04-27).
+            # Delete when mlx-lm 0.32+ merges the upstream PR.
+            sys.modules.setdefault("mlx_lm.models.hy_v3", _hy_v3)
+        except Exception as e:
+            logger.debug(f"hy_v3 vendored module unavailable: {e}")
+
 
 # model_types served by vllm_mlx.models.* shims. transformers' AutoConfig /
 # PreTrainedConfig won't recognize these, and mlx-lm's load() internally
 # uses AutoTokenizer (which routes through AutoConfig). We must skip that
 # path entirely for these models and use the lower-level load_model() +
 # direct tokenizer.json load instead.
-_VENDORED_MODEL_TYPES = {"deepseek_v4"}
+_VENDORED_MODEL_TYPES = {"deepseek_v4", "hy_v3"}
 
 
 def _is_vendored_arch_model(model_name: str) -> bool:
