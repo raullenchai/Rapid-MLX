@@ -592,15 +592,30 @@ def _register_vendored_archs() -> None:
             logger.debug(f"deepseek_v4 vendored module unavailable: {e}")
 
     if "mlx_lm.models.hy_v3" not in sys.modules:
-        try:
-            from ..models import hy_v3 as _hy_v3
+        # If mlx-lm ever ships native ``hy_v3`` support (upstream PR #1211
+        # merges into 0.32+), defer to their copy so we don't shadow real
+        # upstream bug fixes with a stale vendor. ``find_spec`` returns
+        # ``None`` when the sub-module doesn't exist, which is the current
+        # state on mlx-lm 0.31.3 → we fall through to our vendored install.
+        import importlib.util as _importlib_util
 
-            # Tencent Hunyuan 3 (295B/21B active MoE) — vendored from
-            # ml-explore/mlx-lm PR #1211 (open, unreviewed since 2026-04-27).
-            # Delete when mlx-lm 0.32+ merges the upstream PR.
-            sys.modules.setdefault("mlx_lm.models.hy_v3", _hy_v3)
-        except Exception as e:
-            logger.debug(f"hy_v3 vendored module unavailable: {e}")
+        _native_spec = None
+        try:
+            _native_spec = _importlib_util.find_spec("mlx_lm.models.hy_v3")
+        except (ImportError, ValueError):
+            _native_spec = None
+
+        if _native_spec is None:
+            try:
+                from ..models import hy_v3 as _hy_v3
+
+                # Tencent Hunyuan 3 (295B/21B active MoE) — vendored from
+                # ml-explore/mlx-lm PR #1211 (open, unreviewed since 2026-04-27).
+                # Auto-defers to native support once mlx-lm 0.32+ merges the
+                # upstream PR; delete this vendor block after that.
+                sys.modules.setdefault("mlx_lm.models.hy_v3", _hy_v3)
+            except Exception as e:
+                logger.debug(f"hy_v3 vendored module unavailable: {e}")
 
 
 # model_types served by vllm_mlx.models.* shims. transformers' AutoConfig /
