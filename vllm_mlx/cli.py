@@ -1180,6 +1180,70 @@ def _apply_mtp_cli_model_type_reconciliation(
     scheduler_config.mtp_model_type = _eligibility_model_type
 
 
+def _check_alias_min_memory(user_typed: str) -> None:
+    """Alias-level unified-memory guard — warn if the user's Mac is
+    smaller than the alias's declared ``min_memory_gb`` floor.
+
+    codex #1069 round 3 [NIT #3]: fires alongside (and before) the
+    generic model-size / pressure check in ``_check_memory_capacity``.
+    That check reads live weights + free RAM, so it can only warn AFTER
+    the download completes (or from the HF file-size API, which lags).
+    This one fires up front from the alias profile so a user on a 128
+    GB Max sees the actionable pointer BEFORE the 166 GB
+    ``hy3-preview-4bit`` download starts.
+
+    Best-effort: warns loudly (never aborts) so an operator with a
+    borderline machine, headless setup, or unusual memory allocator
+    can still opt in. Silent no-op when:
+      - The alias has no ``min_memory_gb`` metadata (every model we
+        ship under 100 GB weights).
+      - The user typed an HF path directly instead of an alias.
+      - psutil is unavailable / raises.
+    """
+    try:
+        from .model_aliases import resolve_profile
+
+        profile = resolve_profile(user_typed)
+    except Exception:
+        return
+    if profile is None:
+        return
+    floor_gb = getattr(profile, "min_memory_gb", None)
+    if floor_gb is None or floor_gb <= 0:
+        return
+
+    try:
+        import psutil
+
+        total_ram_gb = psutil.virtual_memory().total / (1024**3)
+    except Exception:
+        return
+    if total_ram_gb <= 0:
+        return
+    if total_ram_gb >= floor_gb:
+        return  # Machine is big enough — silent.
+
+    is_tty = sys.stdout.isatty() and "NO_COLOR" not in os.environ
+    YELLOW = "\x1b[33m" if is_tty else ""
+    BOLD = "\x1b[1m" if is_tty else ""
+    RESET = "\x1b[0m" if is_tty else ""
+    print(
+        f"\n{YELLOW}{BOLD}⚠  Ultra-only alias '{user_typed}' declares a "
+        f"{floor_gb:.0f} GB unified-memory floor, but this Mac reports "
+        f"{total_ram_gb:.1f} GB.{RESET}"
+    )
+    print(
+        f"{YELLOW}   The model weights are large enough to OOM the Metal "
+        "allocator (or kernel-panic on macOS < 15.2, issue #324) before "
+        f"the first token generates.{RESET}"
+    )
+    print(
+        f"{YELLOW}   Recommended: pick a Tier-1 alias sized for this "
+        "machine (`rapid-mlx models` for the full list). "
+        f"Proceeding anyway…{RESET}\n"
+    )
+
+
 def _check_memory_capacity(model_name: str) -> None:
     """Pre-flight memory check — warn loudly if loading this model is
     likely to push unified memory past the danger threshold.
@@ -3143,6 +3207,12 @@ def serve_command(args):
         # the requested host AND 127.0.0.1 when the requested host is
         # a wildcard alias.
         _port_preflight_or_die(args.host, args.port, model=args.model)
+
+    # Alias-level unified-memory floor (codex #1069 round 3 [NIT #3]).
+    # Fires BEFORE _check_disk_space so the user sees the actionable
+    # "your Mac is too small for this Ultra-only alias" hint before we
+    # start a 166 GB download.
+    _check_alias_min_memory(args.model)
 
     # Check disk space before downloading model
     _check_disk_space(args.model, force=getattr(args, "force_disk_check", False))

@@ -551,11 +551,13 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser="qwen3",
         ),
     ),
-    # Note: Tencent Hy3 / Hunyuan 3 (295B params, ~150GB at 4-bit) is
-    # the #1 model by OpenRouter token volume but only runs on 192GB+
-    # Macs — too few users have the hardware to justify the validation
-    # burden. Will revisit if mlx-community ships a smaller distilled
-    # variant.
+    # Tencent Hy3 / Hunyuan 3 (295B/21B active MoE, 166 GB at 4-bit) is
+    # served via the vendored ``vllm_mlx/models/hy_v3.py`` shim (PR
+    # #1069) — Ultra-only launch, gated by the ``min_memory_gb: 192``
+    # metadata on the ``hy3-preview-4bit`` alias. Tool + reasoning
+    # parsers land in the PR-2 follow-up; parsers stay ``None`` here
+    # so the auto-config resolver treats HY3 as an unknown family
+    # until PR-2 wires the defensive tag-parser.
     # Pure recurrent / linear-attention families (Mamba, Jamba, RWKV).
     # Tool/reasoning parsers unknown → leave defaults; capability flags
     # block batched-verify-style optimizations.

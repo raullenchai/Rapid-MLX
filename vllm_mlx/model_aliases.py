@@ -220,6 +220,19 @@ class AliasProfile:
     ddtree_draft_model: str | None = None
     ddtree_speculative_tokens: int | None = None
     ddtree_tree_budget: int | None = None
+    # codex round 3 [NIT #3]: minimum unified-memory floor (in GB) for
+    # aliases that are unfit for smaller machines. ``None`` means "no
+    # hardware gate" — the default for every text/vision model we ship
+    # under 100 GB weights. Populated for the flagship-tier Ultra-only
+    # entries (currently ``hy3-preview-4bit`` at 166 GB weights + ~156
+    # GB peak RSS per the pre-vendor memory profile — needs 192 GB+ M3
+    # Ultra). Enforced as a boot-time WARNING (not a hard block) in
+    # ``vllm_mlx/cli.py`` so a user who bought a 128 GB Max still sees
+    # the actionable pointer before the download starts instead of an
+    # opaque OOM 90 minutes later. Appended at the tail to preserve
+    # AliasProfile's positional-construction ABI (see the ``modality``
+    # comment block above for the rationale).
+    min_memory_gb: float | None = None
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:
@@ -272,6 +285,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             "ddtree_draft_model",
             "ddtree_speculative_tokens",
             "ddtree_tree_budget",
+            "min_memory_gb",
             "recommended_sampling",
             "pflash_tier",
             "turboquant_tier",
@@ -428,6 +442,28 @@ def _coerce(alias: str, value: object) -> AliasProfile:
 
     ddtree_speculative_tokens = _optional_positive_int("ddtree_speculative_tokens")
     ddtree_tree_budget = _optional_positive_int("ddtree_tree_budget")
+
+    # ``min_memory_gb`` (codex #1069 round 3 [NIT #3]) — accepted as a
+    # positive number (int or float). ``None`` = no hardware gate;
+    # rejected on non-numeric / zero / negative so a typo fails at load
+    # time instead of silently disabling the guard for an Ultra-only
+    # alias.
+    raw_min_mem = value.get("min_memory_gb")
+    min_memory_gb: float | None
+    if raw_min_mem is None:
+        min_memory_gb = None
+    elif isinstance(raw_min_mem, bool) or not isinstance(raw_min_mem, (int, float)):
+        raise ValueError(
+            f"alias {alias!r}: min_memory_gb must be a positive number, "
+            f"got {type(raw_min_mem).__name__}={raw_min_mem!r}"
+        )
+    elif raw_min_mem <= 0:
+        raise ValueError(
+            f"alias {alias!r}: min_memory_gb must be a positive number, "
+            f"got {raw_min_mem}"
+        )
+    else:
+        min_memory_gb = float(raw_min_mem)
     raw_sampling = value.get("recommended_sampling")
     recommended_sampling: tuple[tuple[str, float], ...] | None
     if raw_sampling is None:
@@ -548,6 +584,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         diffusion_sc_every=value.get("diffusion_sc_every", 1),
         pflash_tier=pflash_tier,
         turboquant_tier=turboquant_tier,
+        min_memory_gb=min_memory_gb,
     )
 
 

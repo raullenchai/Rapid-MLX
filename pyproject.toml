@@ -56,15 +56,19 @@ dependencies = [
     # 5.12.1). Drop the cap once mlx-lm registers real tokenizer classes.
     # Mirrors the rapid-desktop sidecar pin (PR #498).
     #
-    # 0.11.0 tightened floor to ==5.7.0 as the canonical validated version
-    # for the vendored ``hy_v3`` (Tencent Hunyuan 3) model_type — see
-    # ``vllm_mlx/models/hy_v3.py`` module docstring. Phase 0 audit for the
-    # HY3 vendor drop verified 5.7.0 boots cleanly under ``mlx_lm.generate``
-    # AND ``rapid-mlx serve`` for all four existing Tier-1 families
-    # (Qwen 3.6, Gemma 4, gpt-oss, DeepSeek R1). Widen back to a range once
-    # mlx-lm 0.32+ ships native ``hy_v3`` support and the vendor drop can
-    # be deleted.
-    "transformers==5.7.0",  # HY3 vendor pin — see comment block above
+    # HY3 vendor note (2026-07-09): the 0.11.0 Hy3 vendor drop
+    # (``vllm_mlx/models/hy_v3.py``) was validated end-to-end against
+    # ``transformers==5.7.0`` — that release is treated as the *canonical
+    # reference version* for the vendored model_type. The public floor
+    # stays at 5.0.0 so we don't force a downgrade / resolver conflict
+    # on users whose environments already sit at 5.8-5.12 for another
+    # dependency — the vendored HY3 tokenizer path in
+    # ``vllm_mlx/utils/tokenizer.py`` bypasses ``AutoTokenizer`` entirely
+    # (via ``_VENDORED_MODEL_TYPES``), so the transformers minor is not
+    # in the HY3 hot path. If a future transformers release above 5.7
+    # introduces an HY3-specific regression, we tighten the floor with a
+    # dedicated bump PR + Phase-0 re-audit rather than pinning here.
+    "transformers>=5.0.0,<5.13",
     "tokenizers>=0.19.0",
     "huggingface-hub>=0.23.0",
     "numpy>=1.24.0",

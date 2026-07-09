@@ -1143,7 +1143,8 @@
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,
-    "supports_spec_decode": false
+    "supports_spec_decode": false,
+    "min_memory_gb": 192
   },
   "qwen3-vl-8b-4bit": {
     "hf_path": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
