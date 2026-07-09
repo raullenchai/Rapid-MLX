@@ -1,0 +1,134 @@
+{
+  "schema_version": 2,
+  "submission_id": "92592822946c",
+  "submitted_at": "2026-07-09T07:38:02+00:00",
+  "hardware": {
+    "chip": "Apple M2 Max",
+    "ram_gb": 32,
+    "cpu_cores": 12,
+    "gpu_cores": 38
+  },
+  "software": {
+    "macos": "26.5.2",
+    "rapid_mlx": "0.10.5",
+    "mlx": "0.32.0",
+    "python": "3.13.13"
+  },
+  "model": {
+    "alias": "gpt-oss-20b-mxfp4-q8",
+    "hf_path": "mlx-community/gpt-oss-20b-MXFP4-Q8"
+  },
+  "config": {
+    "rounds": 5,
+    "warmup_rounds": 1,
+    "sampling": "greedy",
+    "buckets_spec": {
+      "short": {
+        "prompt_tokens": 512,
+        "max_tokens": 128
+      },
+      "long": {
+        "prompt_tokens": 2048,
+        "max_tokens": 512
+      }
+    },
+    "prompt_hash": "3414e7611df5cfbc"
+  },
+  "buckets": {
+    "short": {
+      "decode_tps": {
+        "median": 86.02819429237304,
+        "min": 85.93344015278367,
+        "max": 86.17436134337915,
+        "stddev": 0.07761622780715476
+      },
+      "prefill_tps": {
+        "median": 599.1820259647302,
+        "min": 596.2582538257468,
+        "max": 600.2146504061365,
+        "stddev": 1.3595395247553577
+      },
+      "ttft_ms": {
+        "median": 881.2013330170885,
+        "min": 879.6852919913363,
+        "max": 885.5223330028821,
+        "stddev": 2.0069330063517525
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 86.17436134337915,
+          "prefill_tps": 596.2582538257468,
+          "ttft_ms": 885.5223330028821
+        },
+        {
+          "decode_tps": 86.01892721271321,
+          "prefill_tps": 599.1820259647302,
+          "ttft_ms": 881.2013330170885
+        },
+        {
+          "decode_tps": 86.05178971964932,
+          "prefill_tps": 599.0521531452908,
+          "ttft_ms": 881.3923749839887
+        },
+        {
+          "decode_tps": 85.93344015278367,
+          "prefill_tps": 600.2146504061365,
+          "ttft_ms": 879.6852919913363
+        },
+        {
+          "decode_tps": 86.02819429237304,
+          "prefill_tps": 599.5650598315918,
+          "ttft_ms": 880.6383750052191
+        }
+      ]
+    },
+    "long": {
+      "decode_tps": {
+        "median": 80.08705666811433,
+        "min": 79.9972400169234,
+        "max": 80.42793220343249,
+        "stddev": 0.16415744143833264
+      },
+      "prefill_tps": {
+        "median": 655.8510033648988,
+        "min": 648.8761694426519,
+        "max": 656.6248209063216,
+        "stddev": 3.1168223520062908
+      },
+      "ttft_ms": {
+        "median": 3237.015708000399,
+        "min": 3233.2009579986334,
+        "max": 3271.8107090040576,
+        "stddev": 15.523477819433595
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 80.08705666811433,
+          "prefill_tps": 648.8761694426519,
+          "ttft_ms": 3271.8107090040576
+        },
+        {
+          "decode_tps": 80.26342004576937,
+          "prefill_tps": 656.2560760196228,
+          "ttft_ms": 3235.0176670006476
+        },
+        {
+          "decode_tps": 79.9972400169234,
+          "prefill_tps": 651.3279397052343,
+          "ttft_ms": 3259.494750003796
+        },
+        {
+          "decode_tps": 80.42793220343249,
+          "prefill_tps": 655.8510033648988,
+          "ttft_ms": 3237.015708000399
+        },
+        {
+          "decode_tps": 80.01698155159244,
+          "prefill_tps": 656.6248209063216,
+          "ttft_ms": 3233.2009579986334
+        }
+      ]
+    }
+  },
+  "peak_ram_mb": 12354
+}
