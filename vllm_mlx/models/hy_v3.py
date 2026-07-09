@@ -39,6 +39,17 @@ future sync diffs stay clean):**
 - ``parse_tool_call`` defensive guard on missing ``<tool_sep>``
   (PhilipJohnBasile review 2026-07-09) — irrelevant here; the tool parser
   lives in PR-2 of this vendor initiative.
+
+**Vendor deltas vs upstream (CC-VENDOR-DELTA — grep for that marker to
+find the exact lines; delete when syncing back):**
+- ``quant_predicate`` widened to accept both ``mlp.router.gate`` (module
+  path — what ``nn.quantize`` actually passes) and
+  ``mlp.router.gate.weight`` (weight-key form, defensive alias). Codex
+  Round-1 review flagged the single-suffix form as potentially missing
+  weight-key callers; empirically ``nn.quantize`` only ever passes the
+  module path (verified by ``nn.quantize`` source in mlx 0.32 and a
+  spy-predicate on a real HY3 config), so both branches route to the
+  same 8-bit override.
 """
 
 # Copyright © 2026 Apple Inc.
@@ -430,7 +441,20 @@ class Model(nn.Module):
     @property
     def quant_predicate(self):
         def predicate(path, _):
-            if path.endswith("mlp.router.gate"):
+            # ``nn.quantize`` invokes this with the MODULE path (e.g.
+            # ``model.layers.5.mlp.router.gate``), not the weight key, so
+            # the bare ``mlp.router.gate`` suffix match is what fires in
+            # practice. The additional ``.gate.weight`` suffix is a
+            # defensive belt-and-braces alias in case a caller (e.g. a
+            # future weight-key-driven quantization path) passes a
+            # ``...gate.weight`` key: the semantics are identical, this
+            # branch just widens the accept-list.
+            # CC-VENDOR-DELTA vs upstream mlx-lm PR #1211 head b7635e9c:
+            # one added ``or path.endswith("mlp.router.gate.weight")``
+            # clause (documented in module docstring). Delete on sync.
+            if path.endswith("mlp.router.gate") or path.endswith(
+                "mlp.router.gate.weight"
+            ):
                 return {"group_size": 64, "bits": 8}
             return True
 
