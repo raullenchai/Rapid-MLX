@@ -55,7 +55,16 @@ dependencies = [
     # time. 5.5.0-5.12.x import cleanly (a fresh resolve currently lands
     # 5.12.1). Drop the cap once mlx-lm registers real tokenizer classes.
     # Mirrors the rapid-desktop sidecar pin (PR #498).
-    "transformers>=5.0.0,<5.13",  # floor: mlx-lm 0.30.5+ requires transformers 5.0 (rc3 bug fixed in stable)
+    #
+    # 0.11.0 tightened floor to ==5.7.0 as the canonical validated version
+    # for the vendored ``hy_v3`` (Tencent Hunyuan 3) model_type — see
+    # ``vllm_mlx/models/hy_v3.py`` module docstring. Phase 0 audit for the
+    # HY3 vendor drop verified 5.7.0 boots cleanly under ``mlx_lm.generate``
+    # AND ``rapid-mlx serve`` for all four existing Tier-1 families
+    # (Qwen 3.6, Gemma 4, gpt-oss, DeepSeek R1). Widen back to a range once
+    # mlx-lm 0.32+ ships native ``hy_v3`` support and the vendor drop can
+    # be deleted.
+    "transformers==5.7.0",  # HY3 vendor pin — see comment block above
     "tokenizers>=0.19.0",
     "huggingface-hub>=0.23.0",
     "numpy>=1.24.0",
@@ -359,6 +368,7 @@ line-length = 88
 exclude = [
     "vllm_mlx/models/deepseek_v4.py",
     "vllm_mlx/models/gemma4_vendored/*.py",
+    "vllm_mlx/models/hy_v3.py",
 ]
 
 [tool.ruff.lint]
@@ -398,6 +408,12 @@ ignore = [
 # lint quiet on the copy so upstream diffs stay clean. Sync policy
 # and rationale in vllm_mlx/models/gemma4_vendored/__init__.py.
 "vllm_mlx/models/gemma4_vendored/*.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
+# Vendored from ml-explore/mlx-lm PR #1211 (kernelpool, add-hy3-preview,
+# b7635e9c) for Tencent Hunyuan 3 (295B/21B active MoE) as part of the
+# 0.11.0 vendor drop. PR is open with zero maintainer reviews since
+# 2026-04-27. Keep lint quiet on the copy so upstream sync diffs stay
+# clean. Sync policy in vllm_mlx/models/hy_v3.py module docstring.
+"vllm_mlx/models/hy_v3.py" = ["UP", "B", "SIM", "N", "F", "I", "E"]
 # Tensor-shape parameter names (B, H, N, D) follow ML literature
 # convention; N803 lowercase rule is incompatible.
 "scripts/bench_attention.py" = ["N803"]
