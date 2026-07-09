@@ -1137,6 +1137,14 @@
       "code_edit": 0.679
     }
   },
+  "hy3-preview-4bit": {
+    "hf_path": "mlx-community/Hy3-preview-4bit",
+    "tool_call_parser": null,
+    "reasoning_parser": null,
+    "is_hybrid": false,
+    "is_moe": true,
+    "supports_spec_decode": false
+  },
   "qwen3-vl-8b-4bit": {
     "hf_path": "mlx-community/Qwen3-VL-8B-Instruct-4bit",
     "tool_call_parser": "hermes",
