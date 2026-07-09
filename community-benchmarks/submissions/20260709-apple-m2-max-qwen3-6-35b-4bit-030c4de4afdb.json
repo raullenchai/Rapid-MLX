@@ -1,0 +1,136 @@
+{
+  "schema_version": 2,
+  "submission_id": "030c4de4afdb",
+  "submitted_at": "2026-07-09T07:45:27+00:00",
+  "hardware": {
+    "chip": "Apple M2 Max",
+    "ram_gb": 64,
+    "cpu_cores": 12,
+    "gpu_cores": 30
+  },
+  "software": {
+    "macos": "26.6",
+    "rapid_mlx": "0.10.3",
+    "mlx": "0.32.0",
+    "python": "3.12.13"
+  },
+  "model": {
+    "alias": "qwen3.6-35b-4bit",
+    "hf_path": "mlx-community/Qwen3.6-35B-A3B-4bit"
+  },
+  "config": {
+    "rounds": 5,
+    "warmup_rounds": 1,
+    "sampling": "greedy",
+    "buckets_spec": {
+      "short": {
+        "prompt_tokens": 512,
+        "max_tokens": 128
+      },
+      "long": {
+        "prompt_tokens": 2048,
+        "max_tokens": 512
+      }
+    },
+    "prompt_hash": "3414e7611df5cfbc"
+  },
+  "buckets": {
+    "short": {
+      "decode_tps": {
+        "median": 79.74748304861815,
+        "min": 78.20351741876917,
+        "max": 80.6106222907828,
+        "stddev": 0.9291764288695897
+      },
+      "prefill_tps": {
+        "median": 516.0794936061274,
+        "min": 394.6227060777612,
+        "max": 520.5410610773762,
+        "stddev": 48.96774072725688
+      },
+      "ttft_ms": {
+        "median": 1036.6619999986142,
+        "min": 1027.7767500083428,
+        "max": 1355.7253339968156,
+        "stddev": 128.36216400695903
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 78.59416695119369,
+          "prefill_tps": 517.5228857332777,
+          "ttft_ms": 1033.7707080179825
+        },
+        {
+          "decode_tps": 80.2236175600994,
+          "prefill_tps": 520.5410610773762,
+          "ttft_ms": 1027.7767500083428
+        },
+        {
+          "decode_tps": 80.6106222907828,
+          "prefill_tps": 516.0794936061274,
+          "ttft_ms": 1036.6619999986142
+        },
+        {
+          "decode_tps": 78.20351741876917,
+          "prefill_tps": 513.4953907210995,
+          "ttft_ms": 1041.8788749957457
+        },
+        {
+          "decode_tps": 79.74748304861815,
+          "prefill_tps": 394.6227060777612,
+          "ttft_ms": 1355.7253339968156
+        }
+      ]
+    },
+    "long": {
+      "decode_tps": {
+        "median": 69.15381036906716,
+        "min": 68.45605227764773,
+        "max": 70.772369317974,
+        "stddev": 0.9617009562760699
+      },
+      "prefill_tps": {
+        "median": 517.8507197848937,
+        "min": 503.5471518028427,
+        "max": 531.2944169451733,
+        "stddev": 9.785654742929205
+      },
+      "ttft_ms": {
+        "median": 4155.637749994639,
+        "min": 4050.4848749842495,
+        "max": 4273.68120799656,
+        "stddev": 78.74057877406607
+      },
+      "rounds_raw": [
+        {
+          "decode_tps": 70.59675615915619,
+          "prefill_tps": 531.2944169451733,
+          "ttft_ms": 4050.4848749842495
+        },
+        {
+          "decode_tps": 70.772369317974,
+          "prefill_tps": 523.8634042017462,
+          "ttft_ms": 4107.941082998877
+        },
+        {
+          "decode_tps": 68.72465131141432,
+          "prefill_tps": 517.8507197848937,
+          "ttft_ms": 4155.637749994639
+        },
+        {
+          "decode_tps": 69.15381036906716,
+          "prefill_tps": 503.5471518028427,
+          "ttft_ms": 4273.68120799656
+        },
+        {
+          "decode_tps": 68.45605227764773,
+          "prefill_tps": 510.1977514571542,
+          "ttft_ms": 4217.97233299003
+        }
+      ]
+    }
+  },
+  "notes": "M2 Max 64GB Hermes desk 2026-07-09",
+  "peak_ram_mb": 20455,
+  "tier": "speed"
+}
