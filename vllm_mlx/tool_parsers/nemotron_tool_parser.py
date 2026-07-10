@@ -146,22 +146,21 @@ class NemotronToolParser(ToolParser):
                 content=cleaned_text if cleaned_text else None,
             )
         else:
-            # Diagnostic: a genuine ``<tool_call>`` WRAPPER was present but
-            # nothing parsed out — i.e. an as-yet-unhandled degraded-wire
-            # variant worth capturing. We deliberately do NOT warn on a bare
-            # unmatched ``<function=`` with no wrapper: that is far more likely
-            # ordinary assistant prose mentioning an XML-ish example than a real
-            # tool call, so warning on it would be noise. Emit only a STRUCTURAL
-            # SUMMARY, never the raw payload — this path can carry user prompts,
-            # tool arguments, or credentials.
-            if "<tool_call>" in model_output:
-                function_tag_count = model_output.count("<function=")
-                logger.warning(
-                    "nemotron tool parser: <tool_call> marker present but no "
-                    "tool call extracted (possible unhandled variant); "
-                    "%d <function= tags, 0 parseable",
-                    function_tag_count,
-                )
+            # Diagnostic: a tool-call marker was present but nothing parsed
+            # out — i.e. an as-yet-unhandled wire variant. Emit only a
+            # STRUCTURAL SUMMARY of the shape, never the raw payload: this is
+            # the normal degraded-wire path, and model_output can carry user
+            # prompts, tool arguments, or credentials. The counts below are
+            # enough to triage the unhandled variant without leaking content.
+            has_tool_call_marker = "<tool_call>" in model_output
+            function_tag_count = model_output.count("<function=")
+            logger.warning(
+                "nemotron tool parser: tool-call marker present but no tool "
+                "call extracted (possible unhandled variant); "
+                "<tool_call> present=%s, %d <function= tags, 0 parseable",
+                has_tool_call_marker,
+                function_tag_count,
+            )
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=model_output
             )
@@ -177,99 +176,33 @@ class NemotronToolParser(ToolParser):
         """
         return text.count("</function>") + text.count("</tool_call>")
 
-    # Markup tokens the content scanner recognises. ``<function=`` opens a tool
-    # body (suppress until ``</function>``); the wrapper/close tags are stripped
-    # from the content stream. A ``<`` that matches none of these — even
-    # partially — is ordinary prose (e.g. ``"2 < 3"``) and streams through.
-    _CONTENT_OPEN_CALL = "<function="
-    _CONTENT_STRIP_TAGS = ("<tool_call>", "</tool_call>", "</function>")
-    _CONTENT_HOLD_TOKENS = ("<function=", "<tool_call>", "</tool_call>", "</function>")
-    _CONTENT_CLOSE_CALL = "</function>"
+    @staticmethod
+    def _clean_trailing_content(current_text: str) -> str | None:
+        """The plain-content tail of ``current_text``, or ``None`` if none.
 
-    def __init__(self, tokenizer=None):
-        super().__init__(tokenizer)
-        # Incremental content-channel scanner state (see _advance_content).
-        self._c_cursor = 0
-        self._c_inside_call = False
-        # Chars already emitted on the streaming content channel this request
-        # (used by flush_held_content to release a held-but-never-closed tail).
-        self._content_emitted_len = 0
-        # Count of tool calls ALREADY emitted on the streaming tool_calls
-        # channel this request. Updated only from emitted calls (never from the
-        # raw close-tag count), so malformed close tags can't shift indices.
-        self._stream_calls_emitted = 0
+        "Tail" = everything after the last COMPLETE tool-call close tag
+        (``</function>`` / ``</tool_call>``). It is content-safe only if it
+        contains no ``<`` at all — the moment a ``<`` appears we are (possibly)
+        building the next call and must suppress, so no tag (complete or a
+        partial fragment like ``"<fun"`` / ``"</fun"``) can ever leak into
+        user-visible content.
 
-    def reset(self) -> None:
-        super().reset()
-        self._c_cursor = 0
-        self._c_inside_call = False
-        self._content_emitted_len = 0
-        self._stream_calls_emitted = 0
-
-    def _advance_content(self, current_text: str) -> str:
-        """Return assistant-content chars newly emittable since the last call.
-
-        A single forward scan over the accumulated ``current_text`` using a
-        persistent cursor (so the whole response is scanned O(n) total, not
-        O(n^2) per token). Rules:
-
-          * ``<function=..>..</function>`` bodies are suppressed (they are the
-            ``tool_calls`` channel, never content).
-          * bare ``<tool_call>`` / ``</tool_call>`` wrapper tags and any stray
-            ``</function>`` are stripped.
-          * a trailing ``<`` that is a partial prefix of one of those tokens
-            (``"<fun"``, ``"</too"``, a lone ``"<"``) is HELD until the next
-            delta resolves it, so no partial markup ever leaks as content.
-          * every other ``<`` (``"2 < 3"``) is ordinary prose and streams.
-
-        The caller (:meth:`extract_tool_calls_streaming`) restarts the scan
-        whenever the cursor is ahead of the stream, so ``current_text`` is
-        always an extension of what was already consumed here.
+        Returns:
+          * ``None``  — still inside markup (no call closed yet, or a new
+            ``<`` has started after the last close): suppress.
+          * ``""``    — a call has closed and nothing (yet) follows it.
+          * ``str``   — the safe trailing content after the last close.
         """
-        n = len(current_text)
-        out: list[str] = []
-        i = self._c_cursor
-        hold = max(len(t) for t in self._CONTENT_HOLD_TOKENS) - 1
-        while i < n:
-            if self._c_inside_call:
-                close = current_text.find(self._CONTENT_CLOSE_CALL, i)
-                if close == -1:
-                    # Not closed yet; suppress everything but keep a small tail
-                    # unconsumed in case the close tag is split across deltas.
-                    i = max(i, n - hold)
-                    break
-                i = close + len(self._CONTENT_CLOSE_CALL)
-                self._c_inside_call = False
-                continue
-
-            lt = current_text.find("<", i)
-            if lt == -1:
-                out.append(current_text[i:n])
-                i = n
-                break
-            if lt > i:
-                out.append(current_text[i:lt])
-            rest = current_text[lt:]
-            if rest.startswith(self._CONTENT_OPEN_CALL):
-                self._c_inside_call = True
-                i = lt + len(self._CONTENT_OPEN_CALL)
-                continue
-            stripped = next(
-                (t for t in self._CONTENT_STRIP_TAGS if rest.startswith(t)), None
-            )
-            if stripped is not None:
-                i = lt + len(stripped)
-                continue
-            if any(tok.startswith(rest) for tok in self._CONTENT_HOLD_TOKENS):
-                # Ambiguous partial tag at the tail → hold, decide next delta.
-                i = lt
-                break
-            # A "<" that cannot be any tool tag → it is content.
-            out.append("<")
-            i = lt + 1
-
-        self._c_cursor = i
-        return "".join(out)
+        end = 0
+        for tag in ("</function>", "</tool_call>"):
+            idx = current_text.rfind(tag)
+            if idx != -1:
+                end = max(end, idx + len(tag))
+        if end == 0:
+            # No close tag yet → we are still inside the (first) call's markup.
+            return None
+        tail = current_text[end:]
+        return None if "<" in tail else tail
 
     def extract_tool_calls_streaming(
         self,
@@ -284,17 +217,9 @@ class NemotronToolParser(ToolParser):
         """
         Extract tool calls from streaming Nemotron model output.
         """
-        # Guard the incremental content scanner against a parser reused for a
-        # new/independent stream without reset(): within one stream the cursor
-        # is always <= len(previous_text) (it was set while scanning that very
-        # text). If it is ahead, previous_text belongs to a different (shorter)
-        # stream — including a fresh stream where previous_text == "" — so
-        # restart the scan to avoid skipping the new stream's leading content.
-        if self._c_cursor > len(previous_text):
-            self._c_cursor = 0
-            self._c_inside_call = False
+        if "<tool_call>" not in current_text and "<function=" not in current_text:
+            return {"content": delta_text}
 
-        # --- tool_calls channel ------------------------------------------
         # Trigger from the COMPLETION STATE of current_text, NOT from a close
         # tag appearing inside a single delta_text. We fire only when a NEW
         # close tag finished in this delta — i.e. the close-tag count in
@@ -309,68 +234,60 @@ class NemotronToolParser(ToolParser):
         # trailing deltas after a call has closed (avoiding O(n^2) re-parsing
         # and repeated fail-open WARNINGs on a trailing unparseable marker).
         #
-        # extract_tool_calls re-parses current_text and returns ALL complete,
-        # PARSEABLE calls; we de-dupe against how many we have ALREADY emitted
-        # (self._stream_calls_emitted, advanced only by emitted calls — never by
-        # the raw close-tag count) so each completed call is emitted exactly
-        # once, indices stay contiguous, and a malformed earlier close tag
-        # (close-count bump with no parseable call) can't shift later indices.
-        tool_calls_payload: list[dict[str, Any]] | None = None
+        # extract_tool_calls re-parses current_text and returns ALL complete
+        # calls; we de-dupe against the number already streamed (tracked in
+        # current_tool_id, which reset() zeroes per request) so each completed
+        # call is emitted exactly once even when </function> and </tool_call>
+        # arrive in separate deltas (each bumps the count → one re-parse each,
+        # but the second finds nothing new to emit).
         if self._close_tag_count(current_text) > self._close_tag_count(previous_text):
             result = self.extract_tool_calls(current_text)
+            # Trailing assistant text that arrived in THIS SAME delta, after the
+            # close tag (e.g. the tokenizer emits "</function> done" as one
+            # chunk). It is new (everything past the just-closed tag) and, being
+            # content-safe per _clean_trailing_content, must not be dropped — we
+            # ride it out on the same delta via the combined content+tool_calls
+            # return the postprocessor already supports.
+            tail = self._clean_trailing_content(current_text)
             if result.tools_called:
-                already_emitted = self._stream_calls_emitted
+                already_emitted = self.current_tool_id + 1
                 total = len(result.tool_calls)
                 if total > already_emitted:
                     new_calls = result.tool_calls[already_emitted:]
-                    self._stream_calls_emitted += len(new_calls)
-                    tool_calls_payload = [
-                        {
-                            "index": already_emitted + i,
-                            "id": tc["id"],
-                            "type": "function",
-                            "function": {
-                                "name": tc["name"],
-                                "arguments": tc["arguments"],
-                            },
-                        }
-                        for i, tc in enumerate(new_calls)
-                    ]
+                    self.current_tool_id = total - 1
+                    out: dict[str, Any] = {
+                        "tool_calls": [
+                            {
+                                "index": already_emitted + i,
+                                "id": tc["id"],
+                                "type": "function",
+                                "function": {
+                                    "name": tc["name"],
+                                    "arguments": tc["arguments"],
+                                },
+                            }
+                            for i, tc in enumerate(new_calls)
+                        ]
+                    }
+                    if tail:
+                        out["content"] = tail
+                    return out
+            # Close tag but no NEW call to emit (e.g. the second of </function>
+            # + </tool_call> for a call already streamed). Still surface any
+            # trailing content that rode in on this delta.
+            if tail:
+                return {"content": tail}
+            return None
 
-        # --- content channel ---------------------------------------------
-        # Assistant prose outside tool markup — before, between, and after
-        # calls — must stream through instead of being dropped. _advance_content
-        # scans incrementally (O(n) total), holds in-flight openers so no
-        # partial markup ("<fun") leaks, keeps genuine "<" prose ("2 < 3"), and
-        # never re-emits. Trailing prose in the SAME delta as a close tag rides
-        # out alongside tool_calls via the combined return the postprocessor
-        # already supports.
-        new_content = self._advance_content(current_text)
-        self._content_emitted_len += len(new_content)
+        # No new call closed in this delta. If we are past all tool-call markup
+        # (a call has closed and no new "<" has started since), the delta is
+        # trailing assistant content and must pass through instead of being
+        # silently dropped. _clean_trailing_content being non-None guarantees no
+        # partial or complete tag can leak, so we never emit "<function=",
+        # "</function>", or a fragment like "</fun" as user-visible content. We
+        # emit only delta_text (the new chars), never the whole tail, so
+        # already-streamed trailing content is not re-sent.
+        if self._clean_trailing_content(current_text) is not None:
+            return {"content": delta_text}
 
-        out: dict[str, Any] = {}
-        if tool_calls_payload is not None:
-            out["tool_calls"] = tool_calls_payload
-        if new_content:
-            out["content"] = new_content
-        return out or None
-
-    def flush_held_content(self, full_text: str) -> str:
-        """Release content the streaming scanner suppressed but that was, in
-        hindsight, ordinary prose.
-
-        The postprocessor calls this in ``finalize()`` only when NO tool call
-        fired. In that case an unclosed ``<function=..`` the scanner optimist-
-        ically entered suppression on never became a real call, so — matching
-        the non-streaming fail-open in ``extract_tool_calls`` — its text is
-        plain content. We return the fail-open content that was not yet emitted;
-        an empty string when a real call did parse (nothing to release) or when
-        everything was already streamed.
-        """
-        info = self.extract_tool_calls(full_text)
-        if info.tools_called:
-            return ""
-        full_content = info.content or ""
-        if self._content_emitted_len >= len(full_content):
-            return ""  # everything already streamed
-        return full_content[self._content_emitted_len :]
+        return None
