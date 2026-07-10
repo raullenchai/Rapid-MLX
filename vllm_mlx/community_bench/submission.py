@@ -360,7 +360,7 @@ def _github_repo_is_upstream_fork(repo: Path, repo_path: str) -> bool:
             "api",
             f"repos/{repo_path}",
             "--jq",
-            "[.fork, .parent.full_name] | @tsv",
+            "[.fork, .source.full_name, .parent.full_name] | @tsv",
         ],
         capture_output=True,
         text=True,
@@ -369,8 +369,13 @@ def _github_repo_is_upstream_fork(repo: Path, repo_path: str) -> bool:
     )
     if result.returncode != 0:
         return False
-    fork, _, parent = result.stdout.strip().partition("\t")
-    return fork == "true" and parent.lower() == UPSTREAM_OWNER_REPO
+    fields = result.stdout.strip().split("\t")
+    if len(fields) != 3 or fields[0] != "true":
+        return False
+    source, parent = fields[1], fields[2]
+    return (
+        source.lower() == UPSTREAM_OWNER_REPO or parent.lower() == UPSTREAM_OWNER_REPO
+    )
 
 
 def _find_fork_remote(repo: Path, owner: str) -> str | None:
@@ -525,8 +530,8 @@ def _make_pr_via_gh(
     stdout,
     origin_owner: str,
     upstream_remote: str,
-) -> tuple[bool, set[str]]:
-    """Branch + commit + push + ``gh pr create``. Returns (success, completed_steps).
+) -> tuple[bool, set[str], str | None]:
+    """Return ``(success, completed_steps, selected_head_owner)``.
 
     ``completed_steps`` is the set of step labels that succeeded
     before any failure (or all of them on success). The caller uses
@@ -550,7 +555,7 @@ def _make_pr_via_gh(
             "manual instructions below.",
             file=stdout,
         )
-        return False, set()
+        return False, set(), None
 
     # Decide where the branch can be pushed before any git mutation. Repository
     # names are not identity: GitHub permits forks to be renamed, so validate
@@ -564,7 +569,7 @@ def _make_pr_via_gh(
             "    stderr:  origin has no unique safe GitHub push target",
             file=stdout,
         )
-        return False, set()
+        return False, set(), None
     head_owner, origin_path = origin_target
 
     origin_is_upstream = origin_path == UPSTREAM_OWNER_REPO
@@ -578,7 +583,7 @@ def _make_pr_via_gh(
                 f"\n  Step failed: identify_github_user\n    stderr:  {login_error}",
                 file=stdout,
             )
-            return False, set()
+            return False, set(), head_owner
         head_owner = login
         if login.lower() == upstream_owner:
             upstream_ok, _ = _remote_is_safe_github(
@@ -590,7 +595,7 @@ def _make_pr_via_gh(
                     "    stderr:  no safe canonical upstream push remote",
                     file=stdout,
                 )
-                return False, set()
+                return False, set(), head_owner
             push_remote = upstream_remote
         else:
             push_remote, fork_error = _ensure_fork_remote(repo, login, stdout=stdout)
@@ -599,7 +604,7 @@ def _make_pr_via_gh(
                     f"\n  Step failed: prepare_fork\n    stderr:  {fork_error}",
                     file=stdout,
                 )
-                return False, set()
+                return False, set(), head_owner
 
     # Branch from the upstream's default branch tip, not whatever
     # commit the user happens to have checked out. Without this, a
@@ -699,11 +704,11 @@ def _make_pr_via_gh(
                 f"    stderr:  {result.stderr.strip() or '(empty)'}",
                 file=stdout,
             )
-            return False, completed
+            return False, completed, head_owner
         completed.add(label)
         if result.stdout.strip():
             print(f"  {label}: {result.stdout.strip()}", file=stdout)
-    return True, completed
+    return True, completed, head_owner
 
 
 def _pr_body(payload: dict) -> str:
@@ -736,11 +741,13 @@ def _find_contributor_push_target(
 ) -> tuple[str, str] | None:
     """Return ``(remote, owner)`` for a safe non-upstream fork target.
 
-    ``origin`` remains usable in the no-gh recovery path because it is the
-    checkout's explicit push destination. Dedicated remotes are reused only
-    when GitHub can verify their fork parent; otherwise recovery creates a new
-    collision-free remote instead of guessing.
+    Remotes are reused only when GitHub can verify their fork source. Without
+    metadata, recovery creates a new collision-free fork remote instead of
+    guessing that an arbitrary GitHub repository belongs to the fork network.
     """
+    if not verify_fork:
+        return None
+
     upstream_owner = UPSTREAM_OWNER_REPO.split("/", 1)[0]
     origin_safe, origin_push_owner = _origin_is_safe_github(repo)
     origin_target = _safe_github_push_target(repo, "origin")
@@ -749,7 +756,7 @@ def _find_contributor_push_target(
         and origin_push_owner
         and origin_push_owner != upstream_owner
         and origin_target is not None
-        and (not verify_fork or _github_repo_is_upstream_fork(repo, origin_target[1]))
+        and _github_repo_is_upstream_fork(repo, origin_target[1])
     ):
         return "origin", origin_push_owner
 
@@ -764,8 +771,6 @@ def _find_contributor_push_target(
         )
     )
     for name in dedicated:
-        if not verify_fork:
-            continue
         host, path = remotes.get(name, (None, None))
         if host != "github.com" or not path or "/" not in path:
             continue
@@ -785,6 +790,7 @@ def _print_manual_fallback(
     *,
     stdout,
     completed: set[str] | None = None,
+    selected_head_owner: str | None = None,
 ) -> None:
     """Tell the user exactly which commands to run to finish the PR.
 
@@ -884,7 +890,9 @@ def _print_manual_fallback(
     # fallback instead. If gh is available (this branch only hits when
     # git steps failed mid-sequence), surface gh as the resume command.
     if gh_available:
-        if contributor_target is not None:
+        if "push" in done and selected_head_owner is not None:
+            head_arg = shlex.quote(f"{selected_head_owner}:{branch}")
+        elif contributor_target is not None:
             _, head_owner = contributor_target
             head_arg = shlex.quote(f"{head_owner}:{branch}")
         elif "push" in done:
@@ -916,7 +924,16 @@ def _print_manual_fallback(
         # branch ref carrying ``#``, ``?``, or ``%`` would split the URL.
         # (Codex PR #600 round-2 BLOCKING.)
         branch_quoted = urllib.parse.quote(branch, safe="/")
-        if contributor_target is not None:
+        upstream_owner = UPSTREAM_OWNER_REPO.split("/", 1)[0]
+        if "push" in done and selected_head_owner is not None:
+            if selected_head_owner.lower() != upstream_owner:
+                head_ref = (
+                    f"{urllib.parse.quote(selected_head_owner, safe='')}:"
+                    f"{branch_quoted}"
+                )
+            else:
+                head_ref = branch_quoted
+        elif contributor_target is not None:
             _, head_owner = contributor_target
             head_ref = f"{urllib.parse.quote(head_owner, safe='')}:{branch_quoted}"
         else:
@@ -1062,7 +1079,7 @@ def submit_interactive(
         _print_thanks(payload, stdout=out)
         return 0
 
-    pr_ok, completed_steps = _make_pr_via_gh(
+    pr_ok, completed_steps, selected_head_owner = _make_pr_via_gh(
         repo,
         submission_path,
         payload,
@@ -1079,6 +1096,7 @@ def submit_interactive(
             payload,
             stdout=out,
             completed=completed_steps,
+            selected_head_owner=selected_head_owner,
         )
 
     _print_thanks(payload, stdout=out)
