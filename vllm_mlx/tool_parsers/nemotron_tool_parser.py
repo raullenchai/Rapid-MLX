@@ -177,18 +177,21 @@ class NemotronToolParser(ToolParser):
         return text.count("</function>") + text.count("</tool_call>")
 
     @staticmethod
-    def _in_clean_tail(current_text: str) -> bool:
-        """True if the tail of ``current_text`` is plain assistant content.
+    def _clean_trailing_content(current_text: str) -> str | None:
+        """The plain-content tail of ``current_text``, or ``None`` if none.
 
         "Tail" = everything after the last COMPLETE tool-call close tag
-        (``</function>`` / ``</tool_call>``). If that tail contains no ``<`` at
-        all, then no new tag — not even a partial one like ``"<fun"`` — has
-        started, so the tail is safe to stream through as content. The moment a
-        ``<`` appears we are (possibly) building the next call and must buffer
-        instead, so a fragment can never leak into user-visible content.
+        (``</function>`` / ``</tool_call>``). It is content-safe only if it
+        contains no ``<`` at all — the moment a ``<`` appears we are (possibly)
+        building the next call and must suppress, so no tag (complete or a
+        partial fragment like ``"<fun"`` / ``"</fun"``) can ever leak into
+        user-visible content.
 
-        Returns False when no call has closed yet (the whole text is still
-        inside the first call's markup).
+        Returns:
+          * ``None``  — still inside markup (no call closed yet, or a new
+            ``<`` has started after the last close): suppress.
+          * ``""``    — a call has closed and nothing (yet) follows it.
+          * ``str``   — the safe trailing content after the last close.
         """
         end = 0
         for tag in ("</function>", "</tool_call>"):
@@ -197,8 +200,9 @@ class NemotronToolParser(ToolParser):
                 end = max(end, idx + len(tag))
         if end == 0:
             # No close tag yet → we are still inside the (first) call's markup.
-            return False
-        return "<" not in current_text[end:]
+            return None
+        tail = current_text[end:]
+        return None if "<" in tail else tail
 
     def extract_tool_calls_streaming(
         self,
@@ -238,13 +242,20 @@ class NemotronToolParser(ToolParser):
         # but the second finds nothing new to emit).
         if self._close_tag_count(current_text) > self._close_tag_count(previous_text):
             result = self.extract_tool_calls(current_text)
+            # Trailing assistant text that arrived in THIS SAME delta, after the
+            # close tag (e.g. the tokenizer emits "</function> done" as one
+            # chunk). It is new (everything past the just-closed tag) and, being
+            # content-safe per _clean_trailing_content, must not be dropped — we
+            # ride it out on the same delta via the combined content+tool_calls
+            # return the postprocessor already supports.
+            tail = self._clean_trailing_content(current_text)
             if result.tools_called:
                 already_emitted = self.current_tool_id + 1
                 total = len(result.tool_calls)
                 if total > already_emitted:
                     new_calls = result.tool_calls[already_emitted:]
                     self.current_tool_id = total - 1
-                    return {
+                    out: dict[str, Any] = {
                         "tool_calls": [
                             {
                                 "index": already_emitted + i,
@@ -258,17 +269,25 @@ class NemotronToolParser(ToolParser):
                             for i, tc in enumerate(new_calls)
                         ]
                     }
-            # This delta carried a close tag (markup). Never stream its text as
-            # content — trailing assistant text arrives in later, clean deltas.
+                    if tail:
+                        out["content"] = tail
+                    return out
+            # Close tag but no NEW call to emit (e.g. the second of </function>
+            # + </tool_call> for a call already streamed). Still surface any
+            # trailing content that rode in on this delta.
+            if tail:
+                return {"content": tail}
             return None
 
         # No new call closed in this delta. If we are past all tool-call markup
         # (a call has closed and no new "<" has started since), the delta is
         # trailing assistant content and must pass through instead of being
-        # silently dropped. _in_clean_tail guarantees no partial or complete
-        # tag can leak, so we never emit "<function=", "</function>", or a
-        # fragment like "</fun" as user-visible content.
-        if self._in_clean_tail(current_text):
+        # silently dropped. _clean_trailing_content being non-None guarantees no
+        # partial or complete tag can leak, so we never emit "<function=",
+        # "</function>", or a fragment like "</fun" as user-visible content. We
+        # emit only delta_text (the new chars), never the whole tail, so
+        # already-streamed trailing content is not re-sent.
+        if self._clean_trailing_content(current_text) is not None:
             return {"content": delta_text}
 
         return None

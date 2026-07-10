@@ -295,6 +295,26 @@ def test_streaming_bare_call_then_trailing_prose(parser):
     assert "</function>" not in trailing_content
 
 
+def test_streaming_close_tag_and_trailing_prose_same_delta(parser):
+    """The tokenizer can emit the close tag AND trailing prose in ONE delta
+    ("</function> done"). The call must be emitted and the trailing prose must
+    ride out on the same delta (combined content+tool_calls), never dropped."""
+    chunks = [
+        "<function=get_weather><parameter=city>Paris</parameter>",
+        "</function> done",
+    ]
+    deltas = _stream(parser, chunks)
+    tool_deltas = [d for d in deltas if d and "tool_calls" in d]
+    assert len(tool_deltas) == 1
+    combined = tool_deltas[0]
+    assert combined["tool_calls"][0]["function"]["name"] == "get_weather"
+    # Trailing prose preserved on the same delta, with no markup leak.
+    assert combined.get("content") == " done"
+    all_content = "".join(d["content"] for d in deltas if d and "content" in d)
+    assert all_content == " done"
+    assert "<" not in all_content and ">" not in all_content
+
+
 def test_streaming_no_markup_leak_when_close_tag_split(parser):
     """When ``</function>`` is split across deltas, the fragment that carries
     the tag ("ction>") must never surface as a content event."""
