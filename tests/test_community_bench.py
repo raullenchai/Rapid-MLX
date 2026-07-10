@@ -1010,6 +1010,53 @@ def test_find_contributor_push_target_requires_rapid_mlx_origin(tmp_path) -> Non
     )
 
 
+def test_find_contributor_push_target_prefers_origin_then_cli_remote(
+    tmp_path,
+) -> None:
+    """Recovery never selects an arbitrary collaborator's fork remote."""
+    from vllm_mlx.community_bench.submission import (
+        _find_contributor_push_target,
+    )
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    remotes = {
+        "aaa-collaborator": "https://github.com/collaborator/Rapid-MLX.git",
+        "community-bench-fork": "https://github.com/submitter/Rapid-MLX.git",
+        "origin": "https://github.com/origin-owner/Rapid-MLX.git",
+    }
+    for name, url in remotes.items():
+        subprocess.run(
+            ["git", "-C", str(tmp_path), "remote", "add", name, url],
+            check=True,
+            capture_output=True,
+        )
+
+    assert _find_contributor_push_target(tmp_path) == (
+        "origin",
+        "origin-owner",
+    )
+
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/raullenchai/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert _find_contributor_push_target(tmp_path) == (
+        "community-bench-fork",
+        "submitter",
+    )
+
+
 def test_make_pr_via_gh_branches_from_upstream_and_uses_owner_head(
     tmp_path, monkeypatch
 ) -> None:

@@ -674,7 +674,18 @@ def _find_contributor_push_target(repo: Path) -> tuple[str, str] | None:
     """Return ``(remote, owner)`` for a safe non-upstream fork."""
     upstream_owner = UPSTREAM_OWNER_REPO.split("/", 1)[0]
     remotes = _list_remotes(repo)
-    for name, (host, path) in remotes.items():
+    dedicated = sorted(
+        name
+        for name in remotes
+        if name == FORK_REMOTE_BASENAME
+        or (
+            name.startswith(f"{FORK_REMOTE_BASENAME}-")
+            and name.removeprefix(f"{FORK_REMOTE_BASENAME}-").isdigit()
+        )
+    )
+    candidate_names = ["origin", *dedicated]
+    for name in candidate_names:
+        host, path = remotes.get(name, (None, None))
         if host != "github.com" or not path or "/" not in path:
             continue
         owner, repo_name = path.split("/", 1)
