@@ -127,6 +127,16 @@ class ModelConfig:
 # the migration completes (tracked separately so PRs stay tight on a
 # single issue).
 #
+# Sentinel config: when a pattern maps to this exact object, the loop
+# delegates the final decision to the segment-scoped
+# ``_detect_mistral_family_config`` resolver (#1071). Used for the Mistral
+# family so its ORIGINAL precedence position in this list is preserved
+# (higher-priority families like DeepSeek / Qwen still win first, e.g.
+# ``DeepSeek-R1-Distill-Mistral-7B`` → deepseek), while classification
+# still happens on the model-name SEGMENT rather than the full path (so a
+# family-named parent dir / org does not steal an unrelated model).
+_MISTRAL_FAMILY_SENTINEL = ModelConfig()
+
 # Model family patterns → optimal config.
 # Order matters: first match wins. More specific patterns go first.
 _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
@@ -393,23 +403,20 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
         ),
     ),
-    # Magistral (Mistral reasoning variant) — must precede generic
-    # mistral so the reasoning_parser is set. Magistral emits standard
-    # ``<think>...</think>`` so the qwen3 reasoning parser handles it.
+    # Mistral family — Hermes-on-Mistral SFTs, Magistral, Ministral,
+    # Mistral, Devstral (#1071). This entry keeps the family at its
+    # ORIGINAL precedence (after DeepSeek/Qwen/GLM/Kimi, before Gemma/
+    # Hermes/Llama), so a compound name like ``DeepSeek-R1-Distill-Mistral``
+    # still resolves to its higher-priority family. The regex is only a
+    # cheap full-path pre-filter; the ``_MISTRAL_FAMILY_SENTINEL`` marker
+    # makes ``detect_model_config`` delegate the real decision to the
+    # model-name-SEGMENT-scoped ``_detect_mistral_family_config`` resolver.
+    # If that resolver returns ``None`` (the family token is only in a
+    # parent dir / org, not the model name), the loop simply continues —
+    # so a family-named parent directory cannot steal an unrelated model.
     (
-        re.compile(r"magistral", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="hermes",
-            reasoning_parser="qwen3",
-        ),
-    ),
-    # Mistral / Devstral / Mistral-Small-3.x (model_type=mistral3)
-    (
-        re.compile(r"mistral|devstral", re.IGNORECASE),
-        ModelConfig(
-            tool_call_parser="hermes",
-            reasoning_parser=None,
-        ),
+        re.compile(r"ministral|mistral|devstral|magistral", re.IGNORECASE),
+        _MISTRAL_FAMILY_SENTINEL,
     ),
     # Gemma 4 (native tool format)
     (
@@ -620,6 +627,78 @@ def _log_resolution_once(model_path: str, message: str) -> None:
     logger.info(message)
 
 
+def _detect_mistral_family_config(model_path: str) -> ModelConfig | None:
+    """Segment-scoped resolver for the whole Mistral family (#1071).
+
+    Classifies on the MODEL-NAME SEGMENT (via ``_extract_model_name_segment``
+    so HF cache layouts like ``models--<org>--<name>/snapshots/<sha>``
+    resolve to the canonical name), NOT the full path. This is deliberate:
+    the generic ``_MODEL_PATTERNS`` loop uses ``pattern.search(full_path)``,
+    which would mis-route a model that merely lives under a family-named
+    PARENT directory / org (``/cache/mistral/models/Llama-…``,
+    ``ministral-labs/Llama-…``). Doing the Mistral-family classification on
+    the segment avoids that collision class entirely.
+
+    Priority order (first match wins):
+
+    1. **Hermes-on-Mistral SFTs** (``Hermes-2-Pro-Mistral-7B``,
+       ``OpenHermes-2.5-Mistral-7B``) — carry ``mistral`` in the name but
+       emit ``<tool_call>`` XML, so → ``hermes``. Order-independent (both
+       ``Hermes-…-Mistral`` and ``Mistral-…-Hermes`` count).
+    2. **Magistral** (Mistral reasoning variant) — emits ``<think>…</think>``
+       so keeps ``reasoning_parser="qwen3"``; tool calls are the native
+       ``[TOOL_CALLS]`` envelope → ``mistral``.
+    3. **Ministral** — Mistral AI's small family; bare ``mistral`` does not
+       substring-match "Ministral", hence the explicit token → ``mistral``.
+    4. **Mistral / Devstral** (model_type=mistral3) — native
+       ``[TOOL_CALLS]name[ARGS]{json}`` envelope → ``mistral``.
+
+    Returns ``None`` when the segment is not a Mistral-family model, so the
+    caller falls through to the ``_MODEL_PATTERNS`` loop.
+
+    Family tokens are matched on separator/word boundaries within the
+    segment (not bare substrings) so incidental substrings like
+    ``NotMistral-7B``, ``Llama-Mistralized-70B``, or ``Administral`` do NOT
+    classify as Mistral family.
+    """
+    segment = _extract_model_name_segment(model_path).lower()
+
+    def _has_token(token: str) -> bool:
+        # Family token on BOTH-side boundaries: preceded by start-of-segment
+        # or a name separator (``-`` ``_`` ``.`` ``/`` whitespace), and
+        # followed by end-of-segment, a separator, or a digit
+        # (``mistral7b``). Prevents both leading overmatch (``notmistral``)
+        # and trailing overrun (``mistralized`` / ``administral``).
+        return (
+            re.search(rf"(?:^|[/_.\-\s]){token}(?:$|[/_.\-\s\d])", segment) is not None
+        )
+
+    # ``hermes`` is a distinctive brand that legitimately appears as a word
+    # SUFFIX (``OpenHermes``), so only its TRAILING boundary is enforced —
+    # a leading letter run is allowed. Incidental-substring risk is
+    # negligible for this token.
+    has_hermes = re.search(r"hermes(?:$|[/_.\-\s\d])", segment) is not None
+
+    has_mistral = _has_token("mistral")
+    has_ministral = _has_token("ministral")
+    has_devstral = _has_token("devstral")
+    has_magistral = _has_token("magistral")
+
+    # (1) Hermes-on-Mistral SFTs — emit <tool_call> XML, stay on hermes.
+    if has_hermes and (has_mistral or has_ministral):
+        return ModelConfig(tool_call_parser="hermes", reasoning_parser=None)
+
+    # (2) Magistral — mistral tool envelope + qwen3 reasoning wrapper.
+    if has_magistral:
+        return ModelConfig(tool_call_parser="mistral", reasoning_parser="qwen3")
+
+    # (3) Ministral, and (4) Mistral / Devstral — all native [TOOL_CALLS].
+    if has_ministral or has_mistral or has_devstral:
+        return ModelConfig(tool_call_parser="mistral", reasoning_parser=None)
+
+    return None
+
+
 def detect_model_config(model_path: str) -> ModelConfig | None:
     """Detect optimal parser config from model name/path.
 
@@ -679,16 +758,36 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
         )
 
     for pattern, config in _MODEL_PATTERNS:
-        if pattern.search(model_path):
+        if not pattern.search(model_path):
+            continue
+        # #1071: the Mistral-family entry is a full-path pre-filter that
+        # delegates to a MODEL-NAME-SEGMENT-scoped resolver. This keeps the
+        # family at its original precedence (so a compound name like
+        # ``DeepSeek-R1-Distill-Mistral`` still resolves to its
+        # higher-priority family, which matched earlier in this loop) while
+        # avoiding the parent-dir / org collision a full-path match has. If
+        # the segment isn't actually a Mistral-family model NAME, the
+        # resolver returns None and we keep scanning later patterns.
+        if config is _MISTRAL_FAMILY_SENTINEL:
+            mistral_cfg = _detect_mistral_family_config(model_path)
+            if mistral_cfg is None:
+                continue
             _log_resolution_once(
                 model_path,
-                f"Auto-detected model family '{pattern.pattern}' → "
-                f"tool_call_parser={config.tool_call_parser}, "
-                f"reasoning_parser={config.reasoning_parser}, "
-                f"is_hybrid={config.is_hybrid}, "
-                f"supports_spec_decode={config.supports_spec_decode}",
+                f"Auto-detected Mistral-family model '{model_path}' → "
+                f"tool_call_parser={mistral_cfg.tool_call_parser}, "
+                f"reasoning_parser={mistral_cfg.reasoning_parser}",
             )
-            return config
+            return mistral_cfg
+        _log_resolution_once(
+            model_path,
+            f"Auto-detected model family '{pattern.pattern}' → "
+            f"tool_call_parser={config.tool_call_parser}, "
+            f"reasoning_parser={config.reasoning_parser}, "
+            f"is_hybrid={config.is_hybrid}, "
+            f"supports_spec_decode={config.supports_spec_decode}",
+        )
+        return config
     return None
 
 

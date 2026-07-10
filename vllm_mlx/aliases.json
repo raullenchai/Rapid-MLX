@@ -910,14 +910,14 @@
   },
   "mistral-24b-4bit": {
     "hf_path": "mlx-community/Mistral-Small-3.1-24B-Instruct-2503-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true
   },
   "devstral-24b-4bit": {
     "hf_path": "mlx-community/Devstral-Small-2507-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
@@ -1113,7 +1113,7 @@
   },
   "ministral-3b-4bit": {
     "hf_path": "mlx-community/Ministral-3-3B-Instruct-2512-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
@@ -1175,7 +1175,7 @@
   },
   "devstral-v2-24b-4bit": {
     "hf_path": "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,
     "supports_spec_decode": true,
@@ -1627,7 +1627,7 @@
   },
   "mistral-small-4-119b": {
     "hf_path": "mlx-community/Mistral-Small-4-119B-2603-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
@@ -1635,7 +1635,7 @@
   },
   "mistral-small-4-119b-4bit": {
     "hf_path": "mlx-community/Mistral-Small-4-119B-2603-4bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,
@@ -1643,7 +1643,7 @@
   },
   "mistral-small-4-119b-8bit": {
     "hf_path": "mlx-community/Mistral-Small-4-119B-2603-8bit",
-    "tool_call_parser": "hermes",
+    "tool_call_parser": "mistral",
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": false,

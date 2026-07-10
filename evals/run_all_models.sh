@@ -35,10 +35,10 @@ declare -a MODELS=(
   "Qwen3.5-122B-A10B-8bit|/Users/raullenstudio/.lmstudio/models/mlx-community/Qwen3.5-122B-A10B-8bit|hermes|8bit"
   "Qwen3.5-4B-4bit|/Users/raullenstudio/.lmstudio/models/mlx-community/Qwen3.5-4B-MLX-4bit|hermes|4bit"
   "Qwen3.5-9B-4bit|/Users/raullenstudio/.lmstudio/models/mlx-community/Qwen3.5-9B-4bit|hermes|4bit"
-  "Mistral-Small-3.2-4bit|/Users/raullenstudio/.lmstudio/models/lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-4bit|hermes|4bit"
+  "Mistral-Small-3.2-4bit|/Users/raullenstudio/.lmstudio/models/lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-4bit|mistral|4bit"
   "Qwen3.5-27B-4bit|/Users/raullenstudio/.lmstudio/models/mlx-community/Qwen3.5-27B-4bit|hermes|4bit"
   "GLM-4.5-Air-4bit|/Users/raullenstudio/.lmstudio/models/lmstudio-community/GLM-4.5-Air-MLX-4bit|glm47|4bit"
-  "Devstral-Small-2-4bit|/Users/raullenstudio/.lmstudio/models/mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit|hermes|4bit"
+  "Devstral-Small-2-4bit|/Users/raullenstudio/.lmstudio/models/mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit|mistral|4bit"
   # Not yet downloaded:
   # "Nemotron-Nano-30B-4bit|<path>|hermes|4bit"
 )

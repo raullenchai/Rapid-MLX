@@ -149,7 +149,7 @@ If you need to pin the parser manually:
 
 ```bash
 rapid-mlx serve devstral-24b-4bit \
-  --enable-auto-tool-choice --tool-call-parser hermes
+  --enable-auto-tool-choice --tool-call-parser mistral
 ```
 
 ## Next Steps

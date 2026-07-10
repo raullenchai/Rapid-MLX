@@ -1450,9 +1450,11 @@ def test_mistral_small_4_119b_family_follows_mistral_24b_precedent() -> None:
     ]
     for alias in family:
         profile = list_profiles()[alias]
-        assert profile.tool_call_parser == twentyfour.tool_call_parser == "hermes", (
+        # #1071: the whole Mistral family uses the ``mistral`` parser
+        # (Mistral-native ``[TOOL_CALLS]`` envelope), not ``hermes`` XML.
+        assert profile.tool_call_parser == twentyfour.tool_call_parser == "mistral", (
             f"{alias}: tool_call_parser must match mistral-24b-4bit "
-            f"('hermes'). Got {profile.tool_call_parser!r}."
+            f"('mistral'). Got {profile.tool_call_parser!r}."
         )
         assert profile.reasoning_parser is None, (
             f"{alias}: Mistral-Small-4 is a non-thinking variant; no "

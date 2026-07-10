@@ -101,7 +101,10 @@ class TestDetectModelConfig:
         assert config.tool_call_parser == "harmony"
         assert config.reasoning_parser == "harmony"
 
-    # Mistral / Devstral
+    # Mistral / Devstral — emit ``[TOOL_CALLS]name[ARGS]{json}`` (Mistral
+    # tekken/v7 native format), which only the ``mistral`` parser handles.
+    # Routing them to ``hermes`` leaked the raw envelope into chat content
+    # (#1071); the regex fallback must resolve to ``mistral``.
     @pytest.mark.parametrize(
         "model_path",
         [
@@ -112,7 +115,7 @@ class TestDetectModelConfig:
     def test_mistral_devstral(self, model_path):
         config = detect_model_config(model_path)
         assert config is not None
-        assert config.tool_call_parser == "hermes"
+        assert config.tool_call_parser == "mistral"
         assert config.reasoning_parser is None
 
     # Qwen3-Coder (no reasoning parser)
@@ -296,7 +299,11 @@ class TestDetectModelConfig:
         cfg = detect_model_config(model_path)
         assert cfg is not None
         # Magistral routes through its own entry, NOT generic Mistral.
-        # Critical: reasoning_parser must be set.
+        # Critical: reasoning_parser must be set. Tool calls use the
+        # Mistral-native ``[TOOL_CALLS]`` envelope, so the tool parser is
+        # ``mistral`` (NOT hermes) while the reasoning wrapper stays
+        # ``qwen3`` (#1071) — the two are orthogonal.
+        assert cfg.tool_call_parser == "mistral"
         assert cfg.reasoning_parser == "qwen3"
         assert cfg.is_hybrid is False
 
@@ -1560,3 +1567,295 @@ class TestHy3AutoDetectBoundary:
         if cfg is not None:
             assert cfg.tool_call_parser != "hy_v3"
             assert cfg.reasoning_parser != "hy_v3"
+
+
+class TestMistralFamilyToolParser:
+    """Regression guard for #1071 — the Mistral family must resolve to the
+    ``mistral`` tool-call parser, NOT ``hermes``.
+
+    Mistral / Devstral / Magistral / Mistral-Small-4 emit tool calls as the
+    Mistral-native ``[TOOL_CALLS]name[ARGS]{json}`` envelope (shared
+    tekken/v7 tokenizer). The ``hermes`` parser only understands
+    ``<tool_call>`` XML, so it parsed nothing and leaked the raw envelope
+    into ``message.content`` 6/6 of the time. The registered ``mistral``
+    parser owns that wire shape.
+
+    These assertions FAIL on the pre-#1071 code (every entry resolved to
+    ``hermes``) and pass on the fix.
+    """
+
+    # Every in-tree Mistral-family alias. Resolution goes through the
+    # alias profile (single source of truth) in ``aliases.json``. Note
+    # ``ministral-3b-4bit`` is included even though the ``mistral|devstral``
+    # regex does NOT match "Ministral" — its alias profile is the authority
+    # (#1071 codex round 1). This list is kept exhaustive; the
+    # ``test_every_mistral_family_alias_is_covered`` guard below fails if a
+    # new Mistral-family alias is added without a ``mistral`` parser.
+    _MISTRAL_ALIASES = (
+        "mistral-24b-4bit",
+        "devstral-24b-4bit",
+        "devstral-v2-24b-4bit",
+        "ministral-3b-4bit",
+        "mistral-small-4-119b",
+        "mistral-small-4-119b-4bit",
+        "mistral-small-4-119b-8bit",
+    )
+
+    @pytest.mark.parametrize("alias", _MISTRAL_ALIASES)
+    def test_alias_resolves_to_mistral_parser(self, alias):
+        cfg = detect_model_config(alias)
+        assert cfg is not None, f"{alias}: no alias profile found"
+        assert cfg.tool_call_parser == "mistral", (
+            f"{alias}: tool_call_parser must be 'mistral' (Mistral-native "
+            f"[TOOL_CALLS] envelope), got {cfg.tool_call_parser!r}. "
+            f"Routing to 'hermes' leaks the raw envelope into content."
+        )
+
+    @pytest.mark.parametrize("alias", _MISTRAL_ALIASES)
+    def test_alias_tool_parser_is_the_registered_mistral_parser(self, alias):
+        # Belt-and-suspenders: the resolved name must map to a real,
+        # registered parser class so serve time doesn't fall back silently.
+        from vllm_mlx.tool_parsers import ToolParserManager
+
+        cfg = detect_model_config(alias)
+        assert cfg is not None
+        # ``get_tool_parser`` raises KeyError on an unregistered name, so a
+        # clean return already proves the parser exists.
+        parser_cls = ToolParserManager.get_tool_parser(cfg.tool_call_parser)
+        assert parser_cls.__name__ == "MistralToolParser"
+
+    # Auto-detection path — raw HF paths / model names with no alias entry.
+    # All Mistral-family members (Mistral / Devstral / Ministral) are
+    # resolved by the segment-scoped ``_detect_mistral_family_config``
+    # pre-check (bare "mistral" does not substring-match "Ministral", and a
+    # full-path regex would steal a family-named parent dir / org — #1071).
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "mistralai/Mistral-Small-3.2-24B-Instruct-2506",
+            "mlx-community/Devstral-Small-2-24B-Instruct-2512-4bit",
+            "some-org/Mistral-Nemo-Instruct-2407",
+            "org/Devstral-Future-99B",
+            # Raw (non-aliased) Ministral path — the "ministral" token is
+            # matched on the segment, not the full path.
+            "some-org/Ministral-3-3B-Instruct-2512-8bit",
+            "mistralai/Ministral-8B-Instruct-2410",
+        ],
+    )
+    def test_auto_detect_resolves_to_mistral_parser(self, model_path):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser == "mistral"
+        assert cfg.reasoning_parser is None
+
+    # Magistral (Mistral reasoning variant) — same native tool envelope, so
+    # ``mistral`` tool parser, but it KEEPS its ``qwen3`` reasoning parser.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "mistralai/Magistral-Small-2509",
+            "mlx-community/Magistral-Small-2509-4bit",
+            "org/Magistral-Medium-2507",
+        ],
+    )
+    def test_magistral_mistral_tool_parser_keeps_qwen3_reasoning(self, model_path):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser == "mistral"
+        assert cfg.reasoning_parser == "qwen3"
+
+    # Guard against over-broadening: the fix must NOT touch other families.
+    # Every non-Mistral model keeps its own parser.
+    @pytest.mark.parametrize(
+        "model_path,expected_parser",
+        [
+            ("mlx-community/Qwen3.5-9B-4bit", "hermes"),
+            ("Qwen/Qwen3-8B", "hermes"),
+            ("some-org/Qwen3.6-30B-A3B-Instruct", "qwen3_coder_xml"),
+            ("meta-llama/Llama-3.3-70B-Instruct", "llama"),
+            ("openai/gpt-oss-20b", "harmony"),
+            ("zai-org/GLM-4.6", "glm47"),
+            ("deepseek-ai/DeepSeek-R1", "deepseek"),
+        ],
+    )
+    def test_non_mistral_families_unchanged(self, model_path, expected_parser):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser == expected_parser, (
+            f"{model_path}: the #1071 Mistral fix must not touch other "
+            f"families. Expected {expected_parser!r}, got "
+            f"{cfg.tool_call_parser!r}."
+        )
+        assert cfg.tool_call_parser != "mistral"
+
+    # Cross-family PRECEDENCE (#1071 pr_validate): a compound name that
+    # carries a Mistral token but belongs to a higher-priority family
+    # (DeepSeek / Qwen, which match earlier in ``_MODEL_PATTERNS``) must
+    # resolve to that family, NOT mistral. The Mistral-family entry keeps
+    # its original list position so these are unaffected.
+    @pytest.mark.parametrize(
+        "model_path,expected_tool",
+        [
+            ("org/DeepSeek-R1-Distill-Mistral-7B", "deepseek"),
+            ("org/DeepSeek-V3-Mistral-Merge", "deepseek_v3"),
+            ("some/Qwen3-Mistral-Merge-8B", "hermes"),
+        ],
+    )
+    def test_compound_name_keeps_higher_priority_family(
+        self, model_path, expected_tool
+    ):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser == expected_tool, (
+            f"{model_path}: a compound name belonging to a higher-priority "
+            f"family must resolve to {expected_tool!r}, not mistral. "
+            f"Got {cfg.tool_call_parser!r}."
+        )
+        assert cfg.tool_call_parser != "mistral"
+
+    # Token-boundary guard (#1071 pr_validate MINOR): an incidental
+    # substring must NOT classify as Mistral family — family tokens are
+    # matched on separator/word boundaries within the model-name segment.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "org/NotMistral-7B",
+            "org/Llama-Mistralized-70B",
+            "org/Administral-Model",
+        ],
+    )
+    def test_incidental_substring_is_not_mistral_family(self, model_path):
+        cfg = detect_model_config(model_path)
+        # Either no family match (None) or a DIFFERENT family — never mistral.
+        if cfg is not None:
+            assert cfg.tool_call_parser != "mistral", (
+                f"{model_path}: 'mistral'/'ministral' appears only as an "
+                f"incidental substring (no token boundary) and must NOT be "
+                f"classified as Mistral family. Got {cfg.tool_call_parser!r}."
+            )
+
+    # Over-broadening guard (#1071 codex round 1): repo names carry
+    # "mistral" but are Hermes SFTs emitting ``<tool_call>`` XML — they MUST
+    # stay on the ``hermes`` parser. The segment-scoped Hermes-on-Mistral
+    # check wins over the generic Mistral classification.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            "NousResearch/Hermes-2-Pro-Mistral-7B",
+            "teknium/OpenHermes-2.5-Mistral-7B",
+            "mlx-community/OpenHermes-2.5-Mistral-7B-4bit",
+            # Order-independent: "Mistral" before "Hermes" in the NAME must
+            # also be treated as a Hermes-on-Mistral SFT (#1071 codex r3).
+            "org/Mistral-Hermes-7B",
+            # HF-cache-flattened layout resolves to the model-name segment.
+            "models--NousResearch--Hermes-2-Pro-Mistral-7B/snapshots/abc1234",
+        ],
+    )
+    def test_hermes_on_mistral_stays_hermes(self, model_path):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser == "hermes", (
+            f"{model_path}: Hermes-on-Mistral fine-tunes emit <tool_call> "
+            f"XML and must stay on 'hermes', NOT be stolen by the generic "
+            f"mistral rule. Got {cfg.tool_call_parser!r}."
+        )
+
+    # Inverse of the above: a REAL Mistral/Magistral model that merely lives
+    # under a ``hermes`` parent directory or org namespace must NOT be
+    # exempted by the Hermes-on-Mistral rule — the rule is scoped to the
+    # model-name segment (#1071 codex round 2, parent-dir collision).
+    @pytest.mark.parametrize(
+        "model_path,expected_tool,expected_reasoning",
+        [
+            ("/Users/hermes/models/Mistral-Small-3.2", "mistral", None),
+            ("hermes-labs/Mistral-Small-24B", "mistral", None),
+            ("/Volumes/hermes-cache/Magistral-Small-2509", "mistral", "qwen3"),
+            # Both "hermes" AND "mistral" appear, but in a PARENT dir — the
+            # actual model name (final segment) is a plain Mistral model, so
+            # the Hermes-on-Mistral exception must NOT fire (#1071 codex r3).
+            ("/cache/Hermes-Mistral/archive/Mistral-Small-3.2", "mistral", None),
+        ],
+    )
+    def test_hermes_parent_or_org_does_not_steal_real_mistral(
+        self, model_path, expected_tool, expected_reasoning
+    ):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser == expected_tool, (
+            f"{model_path}: 'hermes' appears only in a parent dir / org, not "
+            f"the model-name segment — this is a real Mistral model and must "
+            f"resolve to {expected_tool!r}. Got {cfg.tool_call_parser!r}."
+        )
+        assert cfg.reasoning_parser == expected_reasoning
+
+    # A family-named PARENT dir / org (mistral / devstral / ministral) must
+    # NOT steal an unrelated model — the whole Mistral-family detection is
+    # segment-scoped (#1071 codex / pr_validate). A naive
+    # ``pattern.search(full_path)`` would have wrongly resolved all of these
+    # to ``mistral``; the segment classifier keeps them correct.
+    @pytest.mark.parametrize(
+        "model_path,expected_tool",
+        [
+            ("/cache/ministral/models/Llama-3.3-70B", "llama"),
+            ("ministral-labs/Llama-3.3-70B-Instruct", "llama"),
+            ("/cache/mistral/models/Llama-3.3-70B", "llama"),
+            ("mistral-labs/Llama-3.3-70B-Instruct", "llama"),
+            ("/cache/devstral/models/Llama-3.3-70B", "llama"),
+        ],
+    )
+    def test_family_named_parent_or_org_does_not_steal_unrelated_model(
+        self, model_path, expected_tool
+    ):
+        cfg = detect_model_config(model_path)
+        assert cfg is not None
+        assert cfg.tool_call_parser == expected_tool, (
+            f"{model_path}: a Mistral-family token appears only in a parent "
+            f"dir / org — the model is {expected_tool!r}, not Mistral. "
+            f"Got {cfg.tool_call_parser!r}."
+        )
+        assert cfg.tool_call_parser != "mistral"
+
+    def test_every_mistral_family_alias_is_covered(self):
+        """Exhaustive guard: any alias whose HF path's MODEL-NAME SEGMENT is
+        a native Mistral-family model (Mistral / Ministral / Devstral /
+        Magistral, excluding Hermes-on-Mistral SFTs) MUST use the ``mistral``
+        parser. Adding a new such alias with ``hermes`` re-introduces #1071
+        and fails here.
+
+        Uses ``list_profiles()`` (the loaded registry) so string-form and
+        object-form alias entries are both covered, and classifies on the
+        final path segment so a ``hermes-labs/Mistral-*`` org namespace is
+        NOT wrongly exempted. Also cross-checks the discovered set against
+        the static ``_MISTRAL_ALIASES`` list so the two never drift apart.
+        """
+        from vllm_mlx.model_aliases import list_profiles
+
+        discovered = set()
+        offenders = []
+        for name, profile in list_profiles().items():
+            hf = getattr(profile, "hf_path", None) or ""
+            # Classify on the model-name segment only (last path component),
+            # so a ``hermes`` org/parent does not exempt a real Mistral model.
+            segment = hf.rstrip("/").split("/")[-1].lower()
+            is_mistral_family = any(
+                tok in segment
+                for tok in ("mistral", "ministral", "devstral", "magistral")
+            )
+            # Exclude Hermes-on-Mistral SFTs (they emit <tool_call> XML) —
+            # only when ``hermes`` is in the SAME model-name segment.
+            if is_mistral_family and "hermes" not in segment:
+                discovered.add(name)
+                if profile.tool_call_parser != "mistral":
+                    offenders.append((name, profile.tool_call_parser))
+        assert not offenders, (
+            "Mistral-family aliases must use the 'mistral' parser (#1071). "
+            f"Offenders (alias, parser): {offenders}"
+        )
+        # The static list drives the per-alias parametrized tests above; keep
+        # it in lockstep with what the registry scan actually finds.
+        assert discovered == set(self._MISTRAL_ALIASES), (
+            "Mistral-family alias inventory drifted. "
+            f"Registry scan found {sorted(discovered)}, "
+            f"static _MISTRAL_ALIASES is {sorted(self._MISTRAL_ALIASES)}. "
+            "Update both together."
+        )

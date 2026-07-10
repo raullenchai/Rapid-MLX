@@ -83,8 +83,8 @@ rapid-mlx serve qwen3.5-9b-4bit --reasoning-parser qwen3
 # DeepSeek reasoning model
 rapid-mlx serve deepseek-r1-8b-4bit --reasoning-parser deepseek_r1
 
-# Tool calling with Mistral/Devstral
-rapid-mlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser hermes
+# Tool calling with Mistral/Devstral (parser auto-detected; pin shown for clarity)
+rapid-mlx serve devstral-24b-4bit --enable-auto-tool-choice --tool-call-parser mistral
 
 # DFlash speculative decoding (single-user, single supported alias)
 rapid-mlx serve qwen3.5-27b-8bit --speculative-config '{"method":"dflash"}' --port 8000

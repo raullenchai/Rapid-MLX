@@ -198,10 +198,11 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Architecture** | Mistral3 24B (dense, code-specialized). Based on Mistral Small 3. |
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
-| **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
-| **Load notes** | Loads directly (model_type=`mistral3`). Chat template uses `[SYSTEM_PROMPT]...[/SYSTEM_PROMPT]` and `[INST]...[/INST]` format — NO tool calling support in template. Tool calling 17% (only irrelevance/missing-params pass). Coding 90% — one of the best coding models. |
-| **Last tested** | 2026-03-04 |
+| **Parser (as tested)** | `hermes` |
+| **Recommended parser** | `mistral` (#1071) — the historical run used `hermes` and scored only 17% tool calling. See load notes. |
+| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser mistral` |
+| **Load notes** | Loads directly (model_type=`mistral3`). Emits Mistral-native `[TOOL_CALLS]name[ARGS]{json}` tool calls, so it MUST use the `mistral` parser (#1071). The 2026-03-04 run used `hermes` (see result file) and scored 17% tool calling because `hermes` only understands `<tool_call>` XML and left the raw envelope in content. Coding 90% — one of the best coding models. |
+| **Last tested** | 2026-03-04 (with `hermes`; pre-#1071) |
 | **Result file** | `devstral-small-2-4bit.json` |
 
 ### Qwen3.5-27B-4bit
@@ -240,10 +241,11 @@ Detailed configuration record for every model evaluation. **Update this file whe
 | **Architecture** | Mistral Small 3.2 24B (dense). VLM-packaged (has `language_model.` prefix weights). |
 | **Quantization** | 4bit affine |
 | **Engine** | SimpleEngine |
-| **Parser** | `hermes` |
-| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser hermes` |
-| **Load notes** | Loads via `strict=False` fallback (VLM packaging). Chat template has NO tool calling support — only user/system/assistant roles. Using `hermes` parser but model never generates `<tool_call>` tags. Tool calling 17% (only irrelevance detection passes). **Should use `mistral` parser with a model that has native tool support.** Tokenizer regex warning: `fix_mistral_regex=True` recommended. |
-| **Last tested** | 2026-03-04 |
+| **Parser (as tested)** | `hermes` |
+| **Recommended parser** | `mistral` (#1071) — the historical run used `hermes` and scored only 17% tool calling. See load notes. |
+| **Server command** | `vllm-mlx serve <path> --port 8000 --enable-auto-tool-choice --tool-call-parser mistral` |
+| **Load notes** | Loads via `strict=False` fallback (VLM packaging). The model emits Mistral-native `[TOOL_CALLS]name[ARGS]{json}` tool calls, so it MUST use the `mistral` parser (#1071). The 2026-03-04 run used `hermes` (see result file) and scored 17% tool calling because `hermes` only understands `<tool_call>` XML and left the raw envelope in content. Tokenizer regex warning: `fix_mistral_regex=True` recommended. |
+| **Last tested** | 2026-03-04 (with `hermes`; pre-#1071) |
 | **Result file** | `mistral-small-3.2-4bit.json` |
 
 ---

@@ -15,7 +15,7 @@ mkdir -p "$RESULTS_DIR"
 # Model configs: "short_name|model_path|tool_parser|reasoning_parser"
 MODELS=(
   "phi4-mini-14b|/Users/raullenstudio/.lmstudio/models/lmstudio-community/Phi-4-mini-reasoning-MLX-4bit|hermes|"
-  "mistral-small-24b|/Users/raullenstudio/.lmstudio/models/lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-4bit|hermes|"
+  "mistral-small-24b|/Users/raullenstudio/.lmstudio/models/lmstudio-community/Mistral-Small-3.2-24B-Instruct-2506-MLX-4bit|mistral|"
   "gemma3-12b-4bit|/Users/raullenstudio/.lmstudio/models/mlx-community/gemma-3-12b-it-qat-4bit|hermes|"
   "gpt-oss-20b-mxfp4-q8|/Users/raullenstudio/.lmstudio/models/mlx-community/gpt-oss-20b-MXFP4-Q8|seed_oss|"
   "glm47-9b|/Users/raullenstudio/.lmstudio/models/mlx-community/GLM-4.7-4bit|glm47|"
