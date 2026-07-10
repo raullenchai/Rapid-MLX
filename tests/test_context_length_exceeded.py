@@ -17,12 +17,19 @@ chat route is covered by ``test_chat_route_*`` smoke runs.
 
 from __future__ import annotations
 
+import importlib.util
+
 import pytest
 
 # Helpers under test depend on the engine contract (``_model.args.*``,
 # ``tokenizer.encode``) — both surfaces exist regardless of mlx-lm
 # availability, so this file runs everywhere. The chat route import
 # itself transitively pulls in mlx, so we don't import it here.
+
+_requires_mlx = pytest.mark.skipif(
+    importlib.util.find_spec("mlx") is None,
+    reason="service.helpers transitively requires Apple MLX",
+)
 
 
 class _StubArgs:
@@ -114,6 +121,122 @@ def test_max_context_from_tokenizer_when_model_silent():
     tok = _StubTokenizer(model_max_length=4096)
     eng = _StubEngine(tokenizer=tok)
     assert get_model_max_context(eng) == 4096
+
+
+@_requires_mlx
+def test_max_context_from_local_config_when_mlx_lm_args_drop_field(tmp_path):
+    """mlx-lm GPT-OSS drops ``max_position_embeddings`` from ModelArgs and
+    its tokenizer reports the HF 1e30 sentinel. The local checkpoint config
+    must still enforce the real 128k window instead of the permissive 4M
+    fallback."""
+    import json
+
+    from vllm_mlx.service.helpers import get_model_max_context
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "model_type": "gpt_oss",
+                "max_position_embeddings": 131072,
+            }
+        )
+    )
+    tok = _StubTokenizer(model_max_length=int(1e30))
+    tok.name_or_path = str(tmp_path)
+    eng = _StubEngine(model=_StubModel(args=_StubArgs()), tokenizer=tok)
+
+    assert get_model_max_context(eng) == 131072
+
+
+@_requires_mlx
+def test_local_config_context_rejects_observed_gpt_oss_codex_budget(tmp_path):
+    """Dogfood regression: 116650 prompt + implicit 32768 completion must
+    fail before the ten-minute prefill on a 131072-token GPT-OSS model."""
+    import json
+
+    from fastapi import HTTPException
+
+    from vllm_mlx.service.helpers import enforce_context_length
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"max_position_embeddings": 131072})
+    )
+    tok = _StubTokenizer(model_max_length=int(1e30))
+    tok.name_or_path = str(tmp_path)
+    eng = _StubEngine(model=_StubModel(args=_StubArgs()), tokenizer=tok)
+
+    with pytest.raises(HTTPException) as excinfo:
+        enforce_context_length(eng, prompt_tokens=116650, max_tokens=32768)
+
+    error = excinfo.value.detail["error"]
+    assert error["code"] == "context_length_exceeded"
+    assert "149418" in error["message"]
+    assert "131072" in error["message"]
+
+
+@_requires_mlx
+def test_malformed_local_config_falls_through_to_tokenizer(tmp_path):
+    """A corrupt sidecar must not turn an otherwise valid request into 500."""
+    from vllm_mlx.service.helpers import get_model_max_context
+
+    (tmp_path / "config.json").write_bytes(b"\xff\xfe")
+    tok = _StubTokenizer(model_max_length=4096)
+    tok.name_or_path = str(tmp_path)
+    eng = _StubEngine(tokenizer=tok)
+
+    assert get_model_max_context(eng) == 4096
+
+
+@_requires_mlx
+def test_oversized_local_config_falls_through_to_tokenizer(tmp_path):
+    """An unbounded sidecar must not be parsed in the request path."""
+    import json
+
+    from vllm_mlx.service.helpers import get_model_max_context
+
+    (tmp_path / "config.json").write_text(
+        json.dumps(
+            {
+                "padding": "x" * (1024 * 1024),
+                "max_position_embeddings": 131072,
+            }
+        )
+    )
+    tok = _StubTokenizer(model_max_length=4096)
+    tok.name_or_path = str(tmp_path)
+    eng = _StubEngine(tokenizer=tok)
+
+    assert get_model_max_context(eng) == 4096
+
+
+@_requires_mlx
+def test_local_config_is_read_once_per_model_path(tmp_path, monkeypatch):
+    """Context resolution is hot-path code, so sidecar I/O must be cached."""
+    import json
+
+    import vllm_mlx.service.helpers as helpers
+
+    (tmp_path / "config.json").write_text(
+        json.dumps({"max_position_embeddings": 131072})
+    )
+    tok = _StubTokenizer(model_max_length=int(1e30))
+    tok.name_or_path = str(tmp_path)
+    eng = _StubEngine(tokenizer=tok)
+
+    real_reader = helpers._try_read_config_json
+    reads = 0
+
+    def counting_reader(model_path):
+        nonlocal reads
+        reads += 1
+        return real_reader(model_path)
+
+    helpers._read_local_context_config.cache_clear()
+    monkeypatch.setattr(helpers, "_try_read_config_json", counting_reader)
+
+    assert helpers.get_model_max_context(eng) == 131072
+    assert helpers.get_model_max_context(eng) == 131072
+    assert reads == 1
 
 
 def test_max_context_ignores_hf_sentinel_value():

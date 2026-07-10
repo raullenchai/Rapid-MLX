@@ -17,6 +17,7 @@ import os
 import threading
 import uuid
 from collections.abc import AsyncIterator
+from functools import lru_cache
 
 from fastapi import HTTPException
 from starlette.requests import Request
@@ -46,7 +47,11 @@ from ..api.models import (
     Usage,
 )
 from ..api.tool_calling import parse_tool_calls
-from ..api.utils import sanitize_output, strip_reasoning_channel_markup
+from ..api.utils import (
+    _try_read_config_json,
+    sanitize_output,
+    strip_reasoning_channel_markup,
+)
 from ..config import get_config
 from ..engine import BaseEngine, GenerationOutput
 from ..tool_parsers import ToolParserManager
@@ -3890,6 +3895,19 @@ async def _wait_with_disconnect(
 _FALLBACK_MAX_CONTEXT_TOKENS = 4_194_304
 
 
+@lru_cache(maxsize=128)
+def _read_local_context_config(model_path: str) -> dict | None:
+    """Return a bounded, cached local checkpoint config.
+
+    Model metadata is immutable for the lifetime of a loaded engine, while
+    context-length resolution runs on every request. Reuse the defensive
+    local-only reader from :mod:`vllm_mlx.api.utils` so malformed UTF-8,
+    invalid JSON, and oversized sidecars fall through without blocking or
+    failing admission checks.
+    """
+    return _try_read_config_json(model_path)
+
+
 def get_model_max_context(engine) -> int:
     """Return the model's max prompt-token context window for ``engine``.
 
@@ -3900,10 +3918,14 @@ def get_model_max_context(engine) -> int:
          multimodal Qwen3.5 / Gemma 4 nest the text-config inside.
       3. ``engine._model.config.max_position_embeddings`` — older
          attribute style.
-      4. ``engine.tokenizer.model_max_length`` if not the HuggingFace
+      4. Local ``config.json`` beside the loaded tokenizer. This is
+         load-bearing for mlx-lm GPT-OSS: its ``ModelArgs`` dataclass does
+         not declare ``max_position_embeddings``, so mlx-lm silently drops
+         the field even though the checkpoint's config contains it.
+      5. ``engine.tokenizer.model_max_length`` if not the HuggingFace
          "VERY_LARGE_INTEGER" sentinel (``1e30``). Some tokenizers
          report a useful cap here even when the model object doesn't.
-      5. ``_FALLBACK_MAX_CONTEXT_TOKENS`` — see module-level comment.
+      6. ``_FALLBACK_MAX_CONTEXT_TOKENS`` — see module-level comment.
 
     The function is intentionally permissive about missing fields: we'd
     rather pass through a request the model can handle than refuse a
@@ -3948,6 +3970,34 @@ def get_model_max_context(engine) -> int:
         engine, "_tokenizer", None
     )
     if tokenizer is not None:
+        # mlx-lm's GPT-OSS ModelArgs intentionally contains only fields used
+        # by the implementation and therefore drops HF's
+        # ``max_position_embeddings`` during dataclass construction. Its
+        # tokenizer also exposes the HF unknown-length sentinel (1e30), which
+        # previously made a real 131072-token model look like our 4M fallback.
+        # Read the already-local checkpoint sidecar before consulting that
+        # sentinel. No network resolution occurs here: ``name_or_path`` is the
+        # concrete directory used to load the tokenizer.
+        tokenizer_paths = [
+            getattr(tokenizer, "name_or_path", None),
+            getattr(getattr(tokenizer, "_tokenizer", None), "name_or_path", None),
+            getattr(engine, "_model_name", None),
+        ]
+        for model_path in tokenizer_paths:
+            if not isinstance(model_path, str):
+                continue
+            raw_config = _read_local_context_config(model_path)
+            if raw_config is None:
+                continue
+            sidecar_direct = _maybe_int(raw_config.get("max_position_embeddings"))
+            if sidecar_direct is not None:
+                return sidecar_direct
+            sidecar_text = raw_config.get("text_config")
+            if isinstance(sidecar_text, dict):
+                sidecar_nested = _maybe_int(sidecar_text.get("max_position_embeddings"))
+                if sidecar_nested is not None:
+                    return sidecar_nested
+
         tok_max = getattr(tokenizer, "model_max_length", None)
         if tok_max is not None:
             # HuggingFace tokenizers report 1e30 ("no cap known") which
