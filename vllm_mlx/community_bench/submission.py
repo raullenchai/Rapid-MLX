@@ -673,11 +673,8 @@ def _pr_body(payload: dict) -> str:
 def _find_contributor_push_target(repo: Path) -> tuple[str, str] | None:
     """Return ``(remote, owner)`` for a safe non-upstream fork."""
     upstream_owner = UPSTREAM_OWNER_REPO.split("/", 1)[0]
-    origin_safe, origin_owner = _origin_is_safe_github(repo)
-    if origin_safe and origin_owner and origin_owner != upstream_owner:
-        return "origin", origin_owner
-
-    for name, (host, path) in _list_remotes(repo).items():
+    remotes = _list_remotes(repo)
+    for name, (host, path) in remotes.items():
         if host != "github.com" or not path or "/" not in path:
             continue
         owner, repo_name = path.split("/", 1)

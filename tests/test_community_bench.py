@@ -966,6 +966,50 @@ def test_find_fork_remote_rejects_same_owner_different_repo_pushurl(
     assert _find_fork_remote(tmp_path, "some-contributor") is None
 
 
+def test_find_contributor_push_target_requires_rapid_mlx_origin(tmp_path) -> None:
+    """A same-owner unrelated origin is not a valid PR head repository."""
+    from vllm_mlx.community_bench.submission import (
+        _find_contributor_push_target,
+    )
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/some-contributor/not-rapid-mlx.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    assert _find_contributor_push_target(tmp_path) is None
+
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "set-url",
+            "origin",
+            "https://github.com/some-contributor/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert _find_contributor_push_target(tmp_path) == (
+        "origin",
+        "some-contributor",
+    )
+
+
 def test_make_pr_via_gh_branches_from_upstream_and_uses_owner_head(
     tmp_path, monkeypatch
 ) -> None:
@@ -1988,11 +2032,10 @@ def test_manual_fallback_without_gh_uses_fork_owner_when_origin_is_fork(
     sub_path.write_text("{}")
 
     monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
-    # Mock origin → contributor's fork on github.com.
     monkeypatch.setattr(
         sub_mod,
-        "_origin_is_safe_github",
-        lambda _repo: (True, "some-contributor"),
+        "_find_contributor_push_target",
+        lambda _repo: ("origin", "some-contributor"),
     )
     out = io.StringIO()
     sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
@@ -2140,8 +2183,8 @@ def test_manual_fallback_compare_url_quotes_owner_and_branch(
     # layer to be load-bearing regardless.
     monkeypatch.setattr(
         sub_mod,
-        "_origin_is_safe_github",
-        lambda _repo: (True, "weird?owner#name%"),
+        "_find_contributor_push_target",
+        lambda _repo: ("origin", "weird?owner#name%"),
     )
     out = io.StringIO()
     sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
