@@ -236,6 +236,25 @@ def test_streaming_dedup_across_separate_close_deltas(parser):
     assert emitted[0]["tool_calls"][0]["function"]["name"] == "get_weather"
 
 
+def test_streaming_close_tag_split_across_two_chunks(parser):
+    """The tokenizer can split ``</function>`` across deltas (``"</fun"`` then
+    ``"ction>"``). No single ``delta_text`` ever contains the whole close tag,
+    but the accumulated ``current_text`` does once both fragments arrive, so
+    the completed call must still be emitted exactly once."""
+    chunks = [
+        "<tool_call><function=get_weather><parameter=city>Paris</parameter>",
+        "</fun",
+        "ction>",
+    ]
+    deltas = _stream(parser, chunks)
+    emitted = [d for d in deltas if d and "tool_calls" in d]
+    assert len(emitted) == 1
+    tc = emitted[0]["tool_calls"][0]
+    assert tc["index"] == 0
+    assert tc["function"]["name"] == "get_weather"
+    assert json.loads(tc["function"]["arguments"]) == {"city": "Paris"}
+
+
 def test_streaming_two_sequential_calls_increment_index(parser):
     chunks = [
         "<tool_call><function=f1><parameter=a>1</parameter></function></tool_call>",

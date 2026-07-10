@@ -147,13 +147,19 @@ class NemotronToolParser(ToolParser):
             )
         else:
             # Diagnostic: a tool-call marker was present but nothing parsed
-            # out — i.e. an as-yet-unhandled wire variant. Log the raw output
-            # (truncated) so the real shape can be captured next time it hits.
+            # out — i.e. an as-yet-unhandled wire variant. Emit only a
+            # STRUCTURAL SUMMARY of the shape, never the raw payload: this is
+            # the normal degraded-wire path, and model_output can carry user
+            # prompts, tool arguments, or credentials. The counts below are
+            # enough to triage the unhandled variant without leaking content.
+            has_tool_call_marker = "<tool_call>" in model_output
+            function_tag_count = model_output.count("<function=")
             logger.warning(
                 "nemotron tool parser: tool-call marker present but no tool "
-                "call extracted (possible unhandled variant); raw model_output"
-                "[:500]=%r",
-                model_output[:500],
+                "call extracted (possible unhandled variant); "
+                "<tool_call> present=%s, %d <function= tags, 0 parseable",
+                has_tool_call_marker,
+                function_tag_count,
             )
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=model_output
@@ -175,13 +181,18 @@ class NemotronToolParser(ToolParser):
         if "<tool_call>" not in current_text and "<function=" not in current_text:
             return {"content": delta_text}
 
-        # Fire on either close tag: a truncated variant may only ever emit
-        # </function> (no </tool_call>). extract_tool_calls re-parses the full
-        # current_text and returns ALL calls, so we de-dupe against the number
-        # already streamed (tracked in current_tool_id, which reset() zeroes
-        # per request) to avoid re-emitting when </function> and </tool_call>
-        # arrive in separate deltas.
-        if "</tool_call>" in delta_text or "</function>" in delta_text:
+        # Trigger from the COMPLETION STATE of current_text, NOT from a close
+        # tag appearing inside a single delta_text. The tokenizer can split a
+        # close tag across deltas ("</fun" then "ction>"), so no single delta
+        # ever contains the whole "</function>"/"</tool_call>" — but the
+        # accumulated current_text does, once both fragments have arrived.
+        # extract_tool_calls re-parses current_text and only returns a call
+        # once its <function=..></function> body is complete; we de-dupe
+        # against the number already streamed (tracked in current_tool_id,
+        # which reset() zeroes per request) so each completed call is emitted
+        # exactly once regardless of how the close tag is chunked or whether
+        # </function> and </tool_call> land in the same delta.
+        if "</function>" in current_text or "</tool_call>" in current_text:
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
                 already_emitted = self.current_tool_id + 1
