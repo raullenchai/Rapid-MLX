@@ -926,6 +926,46 @@ def test_origin_is_safe_github_rejects_malicious_pushurl(tmp_path) -> None:
     assert owner is None
 
 
+def test_find_fork_remote_rejects_same_owner_different_repo_pushurl(
+    tmp_path,
+) -> None:
+    """A fork fetch URL cannot bless a same-owner push to another repo."""
+    from vllm_mlx.community_bench.submission import _find_fork_remote
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "community-bench-fork",
+            "https://github.com/some-contributor/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "set-url",
+            "--push",
+            "community-bench-fork",
+            "https://github.com/some-contributor/not-rapid-mlx.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    assert _find_fork_remote(tmp_path, "some-contributor") is None
+
+
 def test_make_pr_via_gh_branches_from_upstream_and_uses_owner_head(
     tmp_path, monkeypatch
 ) -> None:
@@ -1000,6 +1040,16 @@ def test_make_pr_via_gh_direct_clone_contributor_creates_fork(
 
     captured: list[list[str]] = []
     fork_added = False
+    expected_fork_cmd = [
+        "gh",
+        "repo",
+        "fork",
+        "raullenchai/Rapid-MLX",
+        "--remote",
+        "--remote-name",
+        "community-bench-fork",
+        "--clone=false",
+    ]
 
     def fake_run(cmd, **kwargs):
         nonlocal fork_added
@@ -1014,6 +1064,7 @@ def test_make_pr_via_gh_direct_clone_contributor_creates_fork(
         if cmd[:4] == ["gh", "api", "user", "--jq"]:
             result.stdout = "some-contributor\n"
         elif cmd[:3] == ["gh", "repo", "fork"]:
+            assert cmd == expected_fork_cmd
             fork_added = True
         elif cmd[:6] == [
             "git",
@@ -1070,7 +1121,7 @@ def test_make_pr_via_gh_direct_clone_contributor_creates_fork(
     )
 
     assert ok is True
-    assert any(cmd[:3] == ["gh", "repo", "fork"] for cmd in captured)
+    assert expected_fork_cmd in captured
     push = next(cmd for cmd in captured if "push" in cmd[:5])
     assert push[-2:] == ["community-bench-fork", "community-bench/abcdef012345"]
     assert not any(
@@ -1892,6 +1943,9 @@ def test_manual_fallback_without_gh_points_at_web_ui(tmp_path, monkeypatch) -> N
 
     # gh isn't installed — must NOT recommend gh pr create.
     assert "gh pr create" not in text
+    assert (
+        f"git fetch https://github.com/{sub_mod.UPSTREAM_REPO_FOR_GH}.git main" in text
+    )
     # Must surface the compare-page URL with the branch ref filled in.
     branch = f"community-bench/{payload['submission_id']}"
     assert (
@@ -2003,6 +2057,58 @@ def test_manual_fallback_without_gh_direct_clone_uses_fork_first(
     ) in text
     assert f"git push -u community-bench-fork {branch}" in text
     assert f"compare/main...YOUR_GITHUB_USERNAME:{branch}?expand=1" in text
+
+
+def test_manual_fallback_avoids_existing_fork_remote_name(
+    tmp_path, monkeypatch
+) -> None:
+    """Printed recovery commands must not overwrite an unrelated remote."""
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            f"https://github.com/{sub_mod.UPSTREAM_REPO_FOR_GH}.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "community-bench-fork",
+            "https://github.com/example/unrelated.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    payload = {
+        "submission_id": "abcdef012345",
+        "model": {"alias": "x"},
+        "hardware": {"chip": "Apple M4 Pro"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    assert "git remote add community-bench-fork-2 " in text
+    assert ("git push -u community-bench-fork-2 community-bench/abcdef012345") in text
 
 
 def test_manual_fallback_compare_url_quotes_owner_and_branch(

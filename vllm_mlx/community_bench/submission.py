@@ -291,7 +291,12 @@ def _find_upstream_remote(repo: Path) -> str | None:
     return None
 
 
-def _remote_is_safe_github(repo: Path, remote: str) -> tuple[bool, str | None]:
+def _remote_is_safe_github(
+    repo: Path,
+    remote: str,
+    *,
+    expected_path: str | None = None,
+) -> tuple[bool, str | None]:
     """Validate every URL ``git push <remote>`` would talk to.
 
     Returns ``(is_safe, owner)`` — ``owner`` is the github.com owner
@@ -307,7 +312,9 @@ def _remote_is_safe_github(repo: Path, remote: str) -> tuple[bool, str | None]:
     PR #582 round-7 BLOCKING.) ``git remote get-url --push --all``
     enumerates every push destination — we require every single one
     to resolve to ``github.com`` AND to share the same owner so the
-    ``--head owner:branch`` we generate for the PR is unambiguous.
+    ``--head owner:branch`` we generate for the PR is unambiguous. Callers
+    reusing a fork remote also pass ``expected_path`` so a same-owner
+    ``pushurl`` aimed at a different repository fails closed.
     """
     r = _run_git(repo, "remote", "get-url", "--push", "--all", remote)
     if r.returncode != 0:
@@ -319,6 +326,8 @@ def _remote_is_safe_github(repo: Path, remote: str) -> tuple[bool, str | None]:
     for url in urls:
         host, path = _parse_git_remote(url.strip())
         if host != "github.com" or not path or "/" not in path:
+            return False, None
+        if expected_path is not None and path != expected_path.lower():
             return False, None
         owners.add(path.split("/", 1)[0])
     if len(owners) != 1:
@@ -342,7 +351,7 @@ def _find_fork_remote(repo: Path, owner: str) -> str | None:
     for name, (host, path) in _list_remotes(repo).items():
         if host != "github.com" or path != expected:
             continue
-        safe, push_owner = _remote_is_safe_github(repo, name)
+        safe, push_owner = _remote_is_safe_github(repo, name, expected_path=expected)
         if safe and push_owner == owner.lower():
             return name
     return None
@@ -674,7 +683,7 @@ def _find_contributor_push_target(repo: Path) -> tuple[str, str] | None:
         owner, repo_name = path.split("/", 1)
         if owner == upstream_owner or repo_name != "rapid-mlx":
             continue
-        safe, push_owner = _remote_is_safe_github(repo, name)
+        safe, push_owner = _remote_is_safe_github(repo, name, expected_path=path)
         if safe and push_owner == owner:
             return name, owner
     return None
@@ -708,7 +717,13 @@ def _print_manual_fallback(
     done = completed or set()
     gh_available = shutil.which("gh") is not None
     contributor_target = _find_contributor_push_target(repo)
-    upstream_remote = _find_upstream_remote(repo) or "upstream"
+    upstream_remote = _find_upstream_remote(repo)
+    base_source = (
+        upstream_remote
+        if upstream_remote is not None
+        else f"https://github.com/{UPSTREAM_REPO_FOR_GH}.git"
+    )
+    manual_fork_remote = _unused_remote_name(repo)
 
     print("\n  The JSON file is on disk at:", file=stdout)
     print(f"    {submission_path}", file=stdout)
@@ -732,7 +747,7 @@ def _print_manual_fallback(
 
     if "checkout" not in done:
         if "fetch_base" not in done:
-            print(f"    git fetch {upstream_remote} main", file=stdout)
+            print(f"    git fetch {base_source} main", file=stdout)
         print(f"    git checkout -b {branch} FETCH_HEAD", file=stdout)
     if "stage" not in done:
         print(f"    git add {rel_path}", file=stdout)
@@ -760,7 +775,7 @@ def _print_manual_fallback(
             if gh_available:
                 print(
                     f"    gh repo fork {UPSTREAM_REPO_FOR_GH} --remote "
-                    f"--remote-name {FORK_REMOTE_BASENAME} --clone=false",
+                    f"--remote-name {manual_fork_remote} --clone=false",
                     file=stdout,
                 )
             else:
@@ -770,12 +785,12 @@ def _print_manual_fallback(
                 )
                 print("    # Replace YOUR_GITHUB_USERNAME below", file=stdout)
                 print(
-                    f"    git remote add {FORK_REMOTE_BASENAME} "
+                    f"    git remote add {manual_fork_remote} "
                     "https://github.com/YOUR_GITHUB_USERNAME/Rapid-MLX.git",
                     file=stdout,
                 )
             print(
-                f"    git push -u {FORK_REMOTE_BASENAME} {branch}",
+                f"    git push -u {manual_fork_remote} {branch}",
                 file=stdout,
             )
     # The PR-create step has two paths depending on whether ``gh`` is on
