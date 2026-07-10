@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import json
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -208,10 +209,11 @@ def _ask_consent(payload: dict, *, stdin=None, stdout=None) -> bool:
     print("=" * 72, file=out)
     print(
         "Nothing has left your machine yet. Pressing [y] consents to GitHub "
-        "network operations: creating or reusing your fork when `origin` "
-        "points at upstream, `git push` to a GitHub remote you can write, then "
-        "`gh pr create` against raullenchai/Rapid-MLX. They run under your "
-        "existing git/gh credentials. Press [Enter] to cancel.",
+        "network operations: `git fetch` of upstream `main`, creating or "
+        "reusing your fork when `origin` points at upstream, `git push` to a "
+        "GitHub remote you can write, then `gh pr create` against "
+        "raullenchai/Rapid-MLX. They run under your existing git/gh "
+        "credentials. Press [Enter] to cancel.",
         file=out,
     )
     out.flush()
@@ -731,12 +733,7 @@ def _print_manual_fallback(
     done = completed or set()
     gh_available = shutil.which("gh") is not None
     contributor_target = _find_contributor_push_target(repo)
-    upstream_remote = _find_upstream_remote(repo)
-    base_source = (
-        upstream_remote
-        if upstream_remote is not None
-        else f"https://github.com/{UPSTREAM_REPO_FOR_GH}.git"
-    )
+    base_source = f"https://github.com/{UPSTREAM_REPO_FOR_GH}.git"
     manual_fork_remote = _unused_remote_name(repo)
 
     print("\n  The JSON file is on disk at:", file=stdout)
@@ -766,11 +763,11 @@ def _print_manual_fallback(
     if "stage" not in done:
         print(f"    git add {rel_path}", file=stdout)
     if "commit" not in done:
-        print(
-            f"    git commit -m 'community-bench: {payload['model']['alias']} "
-            f"on {payload['hardware']['chip']}'",
-            file=stdout,
+        message = (
+            f"community-bench: {payload['model']['alias']} "
+            f"on {payload['hardware']['chip']}"
         )
+        print(f"    git commit -m {shlex.quote(message)}", file=stdout)
     if "push" not in done:
         if contributor_target is not None:
             push_remote, _ = contributor_target

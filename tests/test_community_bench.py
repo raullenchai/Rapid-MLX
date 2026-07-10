@@ -689,6 +689,7 @@ def test_ask_consent_yes() -> None:
     # should know git push runs first.
     text = stdout.getvalue()
     assert "git push" in text
+    assert "git fetch" in text
     assert "gh pr create" in text
     assert "creating or reusing your fork" in text
 
@@ -2162,7 +2163,9 @@ def test_manual_fallback_without_gh_direct_clone_uses_fork_first(
     text = out.getvalue()
 
     branch = f"community-bench/{payload['submission_id']}"
-    assert "git fetch origin main" in text
+    assert (
+        f"git fetch https://github.com/{sub_mod.UPSTREAM_REPO_FOR_GH}.git main" in text
+    )
     assert "git push -u origin" not in text
     assert f"https://github.com/{sub_mod.UPSTREAM_REPO_FOR_GH}/fork" in text
     assert (
@@ -2223,6 +2226,63 @@ def test_manual_fallback_avoids_existing_fork_remote_name(
 
     assert "git remote add community-bench-fork-2 " in text
     assert ("git push -u community-bench-fork-2 community-bench/abcdef012345") in text
+
+
+def test_manual_fallback_does_not_print_repo_controlled_shell_args(
+    tmp_path, monkeypatch
+) -> None:
+    """Recovery commands use a fixed fetch URL and quote commit metadata."""
+    import shlex
+
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    malicious_remote = "upstream;echo-PWNED"
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            malicious_remote,
+            f"https://github.com/{sub_mod.UPSTREAM_REPO_FOR_GH}.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    alias = "model'; echo PWNED; '"
+    chip = "Apple M4 Pro"
+    payload = {
+        "submission_id": "abcdef012345",
+        "model": {"alias": alias},
+        "hardware": {"chip": chip},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: None)
+
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    text = out.getvalue()
+
+    assert malicious_remote not in text
+    assert (
+        f"git fetch https://github.com/{sub_mod.UPSTREAM_REPO_FOR_GH}.git main" in text
+    )
+    commit_line = next(
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith("git commit -m ")
+    )
+    assert shlex.split(commit_line) == [
+        "git",
+        "commit",
+        "-m",
+        f"community-bench: {alias} on {chip}",
+    ]
 
 
 def test_manual_fallback_compare_url_quotes_owner_and_branch(
