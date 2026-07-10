@@ -167,6 +167,20 @@ def test_marker_present_but_unparseable_logs_and_fails_open(parser, caplog):
     assert any("no tool call extracted" in r.message for r in caplog.records)
 
 
+def test_bare_unmatched_function_in_prose_does_not_warn(parser, caplog):
+    """A bare unmatched ``<function=`` with NO ``<tool_call>`` wrapper is far
+    more likely prose than a real call, so it must fail open silently (no
+    WARNING) to avoid noise on ordinary assistant content."""
+    text = "You can call it like <function=foo> in the docs."
+    with caplog.at_level(
+        "WARNING", logger="vllm_mlx.tool_parsers.nemotron_tool_parser"
+    ):
+        result = parser.extract_tool_calls(text)
+    assert not result.tools_called
+    assert result.content == text
+    assert caplog.records == []
+
+
 # ---------------------------------------------------------------------------
 # Streaming.
 # ---------------------------------------------------------------------------

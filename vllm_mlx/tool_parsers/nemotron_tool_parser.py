@@ -146,21 +146,22 @@ class NemotronToolParser(ToolParser):
                 content=cleaned_text if cleaned_text else None,
             )
         else:
-            # Diagnostic: a tool-call marker was present but nothing parsed
-            # out — i.e. an as-yet-unhandled wire variant. Emit only a
-            # STRUCTURAL SUMMARY of the shape, never the raw payload: this is
-            # the normal degraded-wire path, and model_output can carry user
-            # prompts, tool arguments, or credentials. The counts below are
-            # enough to triage the unhandled variant without leaking content.
-            has_tool_call_marker = "<tool_call>" in model_output
-            function_tag_count = model_output.count("<function=")
-            logger.warning(
-                "nemotron tool parser: tool-call marker present but no tool "
-                "call extracted (possible unhandled variant); "
-                "<tool_call> present=%s, %d <function= tags, 0 parseable",
-                has_tool_call_marker,
-                function_tag_count,
-            )
+            # Diagnostic: a genuine ``<tool_call>`` WRAPPER was present but
+            # nothing parsed out — i.e. an as-yet-unhandled degraded-wire
+            # variant worth capturing. We deliberately do NOT warn on a bare
+            # unmatched ``<function=`` with no wrapper: that is far more likely
+            # ordinary assistant prose mentioning an XML-ish example than a real
+            # tool call, so warning on it would be noise. Emit only a STRUCTURAL
+            # SUMMARY, never the raw payload — this path can carry user prompts,
+            # tool arguments, or credentials.
+            if "<tool_call>" in model_output:
+                function_tag_count = model_output.count("<function=")
+                logger.warning(
+                    "nemotron tool parser: <tool_call> marker present but no "
+                    "tool call extracted (possible unhandled variant); "
+                    "%d <function= tags, 0 parseable",
+                    function_tag_count,
+                )
             return ExtractedToolCallInformation(
                 tools_called=False, tool_calls=[], content=model_output
             )
@@ -190,11 +191,16 @@ class NemotronToolParser(ToolParser):
         # Incremental content-channel scanner state (see _advance_content).
         self._c_cursor = 0
         self._c_inside_call = False
+        # Count of tool calls ALREADY emitted on the streaming tool_calls
+        # channel this request. Updated only from emitted calls (never from the
+        # raw close-tag count), so malformed close tags can't shift indices.
+        self._stream_calls_emitted = 0
 
     def reset(self) -> None:
         super().reset()
         self._c_cursor = 0
         self._c_inside_call = False
+        self._stream_calls_emitted = 0
 
     def _advance_content(self, current_text: str) -> str:
         """Return assistant-content chars newly emittable since the last call.
@@ -299,21 +305,21 @@ class NemotronToolParser(ToolParser):
         # trailing deltas after a call has closed (avoiding O(n^2) re-parsing
         # and repeated fail-open WARNINGs on a trailing unparseable marker).
         #
-        # extract_tool_calls re-parses current_text and returns ALL complete
-        # calls; we de-dupe against the number already streamed (tracked in
-        # current_tool_id, which reset() zeroes per request) so each completed
-        # call is emitted exactly once even when </function> and </tool_call>
-        # arrive in separate deltas (each bumps the count → one re-parse each,
-        # but the second finds nothing new to emit).
+        # extract_tool_calls re-parses current_text and returns ALL complete,
+        # PARSEABLE calls; we de-dupe against how many we have ALREADY emitted
+        # (self._stream_calls_emitted, advanced only by emitted calls — never by
+        # the raw close-tag count) so each completed call is emitted exactly
+        # once, indices stay contiguous, and a malformed earlier close tag
+        # (close-count bump with no parseable call) can't shift later indices.
         tool_calls_payload: list[dict[str, Any]] | None = None
         if self._close_tag_count(current_text) > self._close_tag_count(previous_text):
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
-                already_emitted = self.current_tool_id + 1
+                already_emitted = self._stream_calls_emitted
                 total = len(result.tool_calls)
                 if total > already_emitted:
                     new_calls = result.tool_calls[already_emitted:]
-                    self.current_tool_id = total - 1
+                    self._stream_calls_emitted += len(new_calls)
                     tool_calls_payload = [
                         {
                             "index": already_emitted + i,
