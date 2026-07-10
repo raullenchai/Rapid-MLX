@@ -212,15 +212,11 @@ class NemotronToolParser(ToolParser):
             delta resolves it, so no partial markup ever leaks as content.
           * every other ``<`` (``"2 < 3"``) is ordinary prose and streams.
 
-        Assumes ``current_text`` extends what was already consumed (the
-        streaming contract). If it is shorter (e.g. a reused parser without
-        ``reset()``), the scan restarts defensively.
+        The caller (:meth:`extract_tool_calls_streaming`) restarts the scan
+        whenever the cursor is ahead of the stream, so ``current_text`` is
+        always an extension of what was already consumed here.
         """
         n = len(current_text)
-        if self._c_cursor > n:  # desync (text shrank) → rescan from scratch
-            self._c_cursor = 0
-            self._c_inside_call = False
-
         out: list[str] = []
         i = self._c_cursor
         hold = max(len(t) for t in self._CONTENT_HOLD_TOKENS) - 1
@@ -278,6 +274,16 @@ class NemotronToolParser(ToolParser):
         """
         Extract tool calls from streaming Nemotron model output.
         """
+        # Guard the incremental content scanner against a parser reused for a
+        # new/independent stream without reset(): within one stream the cursor
+        # is always <= len(previous_text) (it was set while scanning that very
+        # text). If it is ahead, previous_text belongs to a different (shorter)
+        # stream — including a fresh stream where previous_text == "" — so
+        # restart the scan to avoid skipping the new stream's leading content.
+        if self._c_cursor > len(previous_text):
+            self._c_cursor = 0
+            self._c_inside_call = False
+
         # --- tool_calls channel ------------------------------------------
         # Trigger from the COMPLETION STATE of current_text, NOT from a close
         # tag appearing inside a single delta_text. We fire only when a NEW

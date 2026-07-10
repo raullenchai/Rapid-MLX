@@ -315,6 +315,20 @@ def test_streaming_close_tag_and_trailing_prose_same_delta(parser):
     assert "<" not in all_content and ">" not in all_content
 
 
+def test_streaming_parser_reuse_without_reset_does_not_drop_content(parser):
+    """Reusing the same parser for a second, independent stream WITHOUT calling
+    reset() must not skip the new stream's leading content (stale cursor)."""
+    # First stream: a tool call leaves the content cursor advanced.
+    _stream(
+        parser,
+        ["<function=get_weather><parameter=city>Paris</parameter></function>"],
+    )
+    # Second stream, same instance, no reset(): starts from previous_text == "".
+    deltas = _stream(parser, ["Hello ", "world"])
+    content = "".join(d["content"] for d in deltas if d and "content" in d)
+    assert content == "Hello world"
+
+
 def test_streaming_split_opener_never_leaks_as_content(parser):
     """A split opener ("<fun" then "ction=...") must never surface as content
     before the marker completes — no partial tool markup leaks."""
