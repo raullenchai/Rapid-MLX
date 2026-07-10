@@ -297,82 +297,101 @@ def _find_upstream_remote(repo: Path) -> str | None:
     return None
 
 
+def _safe_github_push_target(repo: Path, remote: str) -> tuple[str, str] | None:
+    """Return the unique ``(owner, owner/repo)`` push target for a remote.
+
+    Every effective push URL must point at the same github.com repository.
+    The full path lets GitHub metadata, rather than a mutable repository
+    name, determine whether a target is in Rapid-MLX's fork network.
+    """
+    r = _run_git(repo, "remote", "get-url", "--push", "--all", remote)
+    if r.returncode != 0:
+        return None
+    urls = [line for line in r.stdout.splitlines() if line.strip()]
+    if not urls:
+        return None
+    targets: set[str] = set()
+    for url in urls:
+        host, path = _parse_git_remote(url.strip())
+        if host != "github.com" or not path or path.count("/") != 1:
+            return None
+        owner, repo_name = path.split("/", 1)
+        if GITHUB_OWNER_RE.fullmatch(owner) is None or not repo_name:
+            return None
+        targets.add(path)
+    if len(targets) != 1:
+        return None
+    path = targets.pop()
+    return path.split("/", 1)[0], path
+
+
 def _remote_is_safe_github(
     repo: Path,
     remote: str,
     *,
     expected_path: str | None = None,
-    expected_repo: str | None = None,
 ) -> tuple[bool, str | None]:
-    """Validate every URL ``git push <remote>`` would talk to.
-
-    Returns ``(is_safe, owner)`` — ``owner`` is the github.com owner
-    of the origin remote (e.g. ``"some-contributor"``), needed to
-    construct ``--head owner:branch`` for fork PRs.
-
-    A git remote can carry separate fetch and push URLs (``url`` and
-    ``pushurl`` in ``.git/config``), and ``git push origin`` honours
-    ``pushurl``. The old check only inspected ``remote.origin.url``,
-    so a malicious or misconfigured repo with a github.com fetch URL
-    plus a ``pushurl`` pointing somewhere else would pass the gate
-    and then push the consented payload to that other host. (Codex
-    PR #582 round-7 BLOCKING.) ``git remote get-url --push --all``
-    enumerates every push destination — we require every single one
-    to resolve to ``github.com`` AND to share the same owner so the
-    ``--head owner:branch`` we generate for the PR is unambiguous. Callers
-    reusing a fork remote also pass ``expected_path`` so a same-owner
-    ``pushurl`` aimed at a different repository fails closed. ``origin``
-    instead uses ``expected_repo``: its fetch URL may be upstream while its
-    push URL is the contributor fork, but both must name Rapid-MLX.
-    """
-    r = _run_git(repo, "remote", "get-url", "--push", "--all", remote)
-    if r.returncode != 0:
+    """Validate the unique GitHub push target for ``remote``."""
+    target = _safe_github_push_target(repo, remote)
+    if target is None:
         return False, None
-    urls = [line for line in r.stdout.splitlines() if line.strip()]
-    if not urls:
+    owner, path = target
+    if expected_path is not None and path != expected_path.lower():
         return False, None
-    owners: set[str] = set()
-    for url in urls:
-        host, path = _parse_git_remote(url.strip())
-        if host != "github.com" or not path or "/" not in path:
-            return False, None
-        owner, repo_name = path.split("/", 1)
-        if GITHUB_OWNER_RE.fullmatch(owner) is None:
-            return False, None
-        if expected_path is not None and path != expected_path.lower():
-            return False, None
-        if expected_repo is not None and repo_name != expected_repo:
-            return False, None
-        owners.add(owner)
-    if len(owners) != 1:
-        return False, None
-    return True, owners.pop()
+    return True, owner
 
 
 def _origin_is_safe_github(repo: Path) -> tuple[bool, str | None]:
-    """Validate that ``origin`` fetches and pushes the same Rapid-MLX repo."""
+    """Validate origin's GitHub fetch URL and unique GitHub push target."""
     host, path = _list_remotes(repo).get("origin", (None, None))
-    if host != "github.com" or not path or "/" not in path:
+    if host != "github.com" or not path or path.count("/") != 1:
         return False, None
-    _, repo_name = path.split("/", 1)
-    if repo_name != "rapid-mlx":
+    fetch_owner, fetch_repo = path.split("/", 1)
+    if GITHUB_OWNER_RE.fullmatch(fetch_owner) is None or not fetch_repo:
         return False, None
-    return _remote_is_safe_github(repo, "origin", expected_repo="rapid-mlx")
+    return _remote_is_safe_github(repo, "origin")
+
+
+def _github_repo_is_upstream_fork(repo: Path, repo_path: str) -> bool:
+    """Return whether GitHub places ``repo_path`` in upstream's fork network."""
+    result = subprocess.run(
+        [
+            "gh",
+            "api",
+            f"repos/{repo_path}",
+            "--jq",
+            "[.fork, .parent.full_name] | @tsv",
+        ],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(repo),
+    )
+    if result.returncode != 0:
+        return False
+    fork, _, parent = result.stdout.strip().partition("\t")
+    return fork == "true" and parent.lower() == UPSTREAM_OWNER_REPO
 
 
 def _find_fork_remote(repo: Path, owner: str) -> str | None:
-    """Find a safe remote for ``owner/Rapid-MLX``.
+    """Find a safe, GitHub-verified upstream fork remote for ``owner``.
 
     Both the fetch URL and every effective push URL must point at GitHub and
     agree on the owner. This lets us reuse a contributor's existing fork
     without trusting a fetch-only URL whose ``pushurl`` was redirected.
     """
-    expected = f"{owner.lower()}/rapid-mlx"
     for name, (host, path) in _list_remotes(repo).items():
-        if host != "github.com" or path != expected:
+        if host != "github.com" or not path or "/" not in path:
             continue
-        safe, push_owner = _remote_is_safe_github(repo, name, expected_path=expected)
-        if safe and push_owner == owner.lower():
+        remote_owner, _ = path.split("/", 1)
+        if remote_owner != owner.lower():
+            continue
+        safe, push_owner = _remote_is_safe_github(repo, name, expected_path=path)
+        if (
+            safe
+            and push_owner == owner.lower()
+            and _github_repo_is_upstream_fork(repo, path)
+        ):
             return name
     return None
 
@@ -533,16 +552,26 @@ def _make_pr_via_gh(
         )
         return False, set()
 
-    # A direct clone has ``origin = raullenchai/Rapid-MLX``. That does not
-    # mean the authenticated user can push there: for a normal contributor
-    # it is read-only. Resolve the gh identity before any git mutation and
-    # route non-owner submissions through that user's fork. Existing fork
-    # checkouts already have a writable contributor-owned origin and skip
-    # this setup entirely.
+    # Decide where the branch can be pushed before any git mutation. Repository
+    # names are not identity: GitHub permits forks to be renamed, so validate
+    # non-upstream origins through their authoritative parent metadata.
     upstream_owner = UPSTREAM_OWNER_REPO.split("/", 1)[0]
     push_remote = "origin"
-    head_owner = origin_owner
-    if origin_owner.lower() == upstream_owner:
+    origin_target = _safe_github_push_target(repo, "origin")
+    if origin_target is None:
+        print(
+            "\n  Step failed: inspect_origin\n"
+            "    stderr:  origin has no unique safe GitHub push target",
+            file=stdout,
+        )
+        return False, set()
+    head_owner, origin_path = origin_target
+
+    origin_is_upstream = origin_path == UPSTREAM_OWNER_REPO
+    origin_is_fork = not origin_is_upstream and _github_repo_is_upstream_fork(
+        repo, origin_path
+    )
+    if not origin_is_fork:
         login, login_error = _github_login(repo)
         if login is None:
             print(
@@ -551,7 +580,19 @@ def _make_pr_via_gh(
             )
             return False, set()
         head_owner = login
-        if login.lower() != upstream_owner:
+        if login.lower() == upstream_owner:
+            upstream_ok, _ = _remote_is_safe_github(
+                repo, upstream_remote, expected_path=UPSTREAM_OWNER_REPO
+            )
+            if not upstream_ok:
+                print(
+                    "\n  Step failed: prepare_upstream\n"
+                    "    stderr:  no safe canonical upstream push remote",
+                    file=stdout,
+                )
+                return False, set()
+            push_remote = upstream_remote
+        else:
             push_remote, fork_error = _ensure_fork_remote(repo, login, stdout=stdout)
             if push_remote is None:
                 print(
@@ -690,11 +731,26 @@ def _pr_body(payload: dict) -> str:
     )
 
 
-def _find_contributor_push_target(repo: Path) -> tuple[str, str] | None:
-    """Return ``(remote, owner)`` for a safe non-upstream fork."""
+def _find_contributor_push_target(
+    repo: Path, *, verify_fork: bool = False
+) -> tuple[str, str] | None:
+    """Return ``(remote, owner)`` for a safe non-upstream fork target.
+
+    ``origin`` remains usable in the no-gh recovery path because it is the
+    checkout's explicit push destination. Dedicated remotes are reused only
+    when GitHub can verify their fork parent; otherwise recovery creates a new
+    collision-free remote instead of guessing.
+    """
     upstream_owner = UPSTREAM_OWNER_REPO.split("/", 1)[0]
     origin_safe, origin_push_owner = _origin_is_safe_github(repo)
-    if origin_safe and origin_push_owner and origin_push_owner != upstream_owner:
+    origin_target = _safe_github_push_target(repo, "origin")
+    if (
+        origin_safe
+        and origin_push_owner
+        and origin_push_owner != upstream_owner
+        and origin_target is not None
+        and (not verify_fork or _github_repo_is_upstream_fork(repo, origin_target[1]))
+    ):
         return "origin", origin_push_owner
 
     remotes = _list_remotes(repo)
@@ -708,14 +764,16 @@ def _find_contributor_push_target(repo: Path) -> tuple[str, str] | None:
         )
     )
     for name in dedicated:
+        if not verify_fork:
+            continue
         host, path = remotes.get(name, (None, None))
         if host != "github.com" or not path or "/" not in path:
             continue
-        owner, repo_name = path.split("/", 1)
-        if owner == upstream_owner or repo_name != "rapid-mlx":
+        owner, _ = path.split("/", 1)
+        if owner == upstream_owner:
             continue
         safe, push_owner = _remote_is_safe_github(repo, name, expected_path=path)
-        if safe and push_owner == owner:
+        if safe and push_owner == owner and _github_repo_is_upstream_fork(repo, path):
             return name, owner
     return None
 
@@ -747,7 +805,7 @@ def _print_manual_fallback(
     rel_path = submission_path.relative_to(repo).as_posix()
     done = completed or set()
     gh_available = shutil.which("gh") is not None
-    contributor_target = _find_contributor_push_target(repo)
+    contributor_target = _find_contributor_push_target(repo, verify_fork=gh_available)
     base_source = f"https://github.com/{UPSTREAM_REPO_FOR_GH}.git"
     manual_fork_remote = _unused_remote_name(repo)
 
