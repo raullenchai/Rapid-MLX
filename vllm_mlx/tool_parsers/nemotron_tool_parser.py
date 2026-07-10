@@ -191,6 +191,9 @@ class NemotronToolParser(ToolParser):
         # Incremental content-channel scanner state (see _advance_content).
         self._c_cursor = 0
         self._c_inside_call = False
+        # Chars already emitted on the streaming content channel this request
+        # (used by flush_held_content to release a held-but-never-closed tail).
+        self._content_emitted_len = 0
         # Count of tool calls ALREADY emitted on the streaming tool_calls
         # channel this request. Updated only from emitted calls (never from the
         # raw close-tag count), so malformed close tags can't shift indices.
@@ -200,6 +203,7 @@ class NemotronToolParser(ToolParser):
         super().reset()
         self._c_cursor = 0
         self._c_inside_call = False
+        self._content_emitted_len = 0
         self._stream_calls_emitted = 0
 
     def _advance_content(self, current_text: str) -> str:
@@ -342,6 +346,7 @@ class NemotronToolParser(ToolParser):
         # out alongside tool_calls via the combined return the postprocessor
         # already supports.
         new_content = self._advance_content(current_text)
+        self._content_emitted_len += len(new_content)
 
         out: dict[str, Any] = {}
         if tool_calls_payload is not None:
@@ -349,3 +354,23 @@ class NemotronToolParser(ToolParser):
         if new_content:
             out["content"] = new_content
         return out or None
+
+    def flush_held_content(self, full_text: str) -> str:
+        """Release content the streaming scanner suppressed but that was, in
+        hindsight, ordinary prose.
+
+        The postprocessor calls this in ``finalize()`` only when NO tool call
+        fired. In that case an unclosed ``<function=..`` the scanner optimist-
+        ically entered suppression on never became a real call, so — matching
+        the non-streaming fail-open in ``extract_tool_calls`` — its text is
+        plain content. We return the fail-open content that was not yet emitted;
+        an empty string when a real call did parse (nothing to release) or when
+        everything was already streamed.
+        """
+        info = self.extract_tool_calls(full_text)
+        if info.tools_called:
+            return ""
+        full_content = info.content or ""
+        if self._content_emitted_len >= len(full_content):
+            return ""  # everything already streamed
+        return full_content[self._content_emitted_len :]

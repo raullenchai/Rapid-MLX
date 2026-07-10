@@ -343,6 +343,30 @@ def test_streaming_parser_reuse_without_reset_does_not_drop_content(parser):
     assert content == "Hello world"
 
 
+def test_streaming_unclosed_function_prose_flushed_at_end(parser):
+    """A bare ``<function=..`` that never closes is prose (fail-open). The
+    scanner optimistically suppresses it mid-stream, but flush_held_content
+    releases it at stream end so streaming matches non-streaming: no content
+    is lost and no tool call is manufactured."""
+    chunks = ["Use ", "<function=foo>", " in the docs."]
+    full = "".join(chunks)
+    deltas = _stream(parser, chunks)
+    assert all("tool_calls" not in (d or {}) for d in deltas)
+    streamed = "".join(d["content"] for d in deltas if d and "content" in d)
+    held = parser.flush_held_content(full)
+    # Streaming + flush reconstructs exactly the non-streaming fail-open content.
+    assert streamed + held == full
+    assert parser.extract_tool_calls(full).content == full
+
+
+def test_flush_returns_empty_when_call_actually_parsed(parser):
+    """When a real call did parse, flush_held_content releases nothing (the
+    suppressed bytes were the tool-call body, not content)."""
+    full = "<function=get_weather><parameter=city>Paris</parameter></function>"
+    _stream(parser, [full])
+    assert parser.flush_held_content(full) == ""
+
+
 def test_streaming_split_opener_never_leaks_as_content(parser):
     """A split opener ("<fun" then "ction=...") must never surface as content
     before the marker completes — no partial tool markup leaks."""
