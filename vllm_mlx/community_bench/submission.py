@@ -336,8 +336,14 @@ def _remote_is_safe_github(
 
 
 def _origin_is_safe_github(repo: Path) -> tuple[bool, str | None]:
-    """Compatibility wrapper for validating the checkout's ``origin``."""
-    return _remote_is_safe_github(repo, "origin")
+    """Validate that ``origin`` fetches and pushes the same Rapid-MLX repo."""
+    host, path = _list_remotes(repo).get("origin", (None, None))
+    if host != "github.com" or not path or "/" not in path:
+        return False, None
+    _, repo_name = path.split("/", 1)
+    if repo_name != "rapid-mlx":
+        return False, None
+    return _remote_is_safe_github(repo, "origin", expected_path=path)
 
 
 def _find_fork_remote(repo: Path, owner: str) -> str | None:

@@ -926,6 +926,30 @@ def test_origin_is_safe_github_rejects_malicious_pushurl(tmp_path) -> None:
     assert owner is None
 
 
+def test_origin_is_safe_github_rejects_unrelated_repo(tmp_path) -> None:
+    """A GitHub origin is not enough; the repository must be Rapid-MLX."""
+    from vllm_mlx.community_bench.submission import _origin_is_safe_github
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/some-contributor/not-rapid-mlx.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    assert _origin_is_safe_github(tmp_path) == (False, None)
+
+
 def test_find_fork_remote_rejects_same_owner_different_repo_pushurl(
     tmp_path,
 ) -> None:
