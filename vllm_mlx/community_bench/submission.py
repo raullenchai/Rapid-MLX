@@ -11,15 +11,15 @@ Three responsibilities, in order:
    shown ARE the bytes that get written; we don't decorate-then-strip.
 3. **Open PR** — write the file to ``community-benchmarks/submissions/``
    in the user's local checkout, create a branch, commit, and shell out
-   to ``gh pr create``. If ``gh`` isn't installed or the user is
-   offline, fall back to printing the exact commands they need to run.
-   No silent failure — the file is always on disk before any git work,
-   so the user can always recover by running the commands themselves.
+   to ``gh pr create``. A contributor who cloned upstream directly gets
+   a fork created/reused via ``gh repo fork``; the branch is never pushed
+   to upstream unless the authenticated GitHub user owns it. If ``gh``
+   isn't installed or the user is offline, print fork-first recovery
+   commands. No silent failure — the file is always on disk before any
+   git work, so the user can always recover from the generated JSON.
 
-No network calls anywhere in this module except the one ``gh pr create``
-the user has just consented to. Imports are deferred inside functions
-so loading the module on a non-Apple-Silicon dev box (for unit testing)
-doesn't drag in MLX.
+Imports are deferred inside functions so loading the module on a
+non-Apple-Silicon dev box (for unit testing) doesn't drag in MLX.
 """
 
 from __future__ import annotations
@@ -207,11 +207,11 @@ def _ask_consent(payload: dict, *, stdin=None, stdout=None) -> bool:
     print(_pretty(payload), file=out)
     print("=" * 72, file=out)
     print(
-        "Nothing has left your machine yet. Pressing [y] consents to two "
-        "network operations: `git push` to your `origin` remote on "
-        "github.com, then `gh pr create` against raullenchai/Rapid-MLX. "
-        "Both run under your existing git/gh credentials. Press [Enter] "
-        "to cancel.",
+        "Nothing has left your machine yet. Pressing [y] consents to GitHub "
+        "network operations: creating or reusing your fork when `origin` "
+        "points at upstream, `git push` to a GitHub remote you can write, then "
+        "`gh pr create` against raullenchai/Rapid-MLX. They run under your "
+        "existing git/gh credentials. Press [Enter] to cancel.",
         file=out,
     )
     out.flush()
@@ -241,6 +241,7 @@ def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
 
 UPSTREAM_OWNER_REPO = "raullenchai/rapid-mlx"
 UPSTREAM_REPO_FOR_GH = "raullenchai/Rapid-MLX"
+FORK_REMOTE_BASENAME = "community-bench-fork"
 
 
 def _list_remotes(repo: Path) -> dict[str, tuple[str | None, str | None]]:
@@ -279,8 +280,8 @@ def _find_upstream_remote(repo: Path) -> str | None:
     which locked community contributors out: they don't have write
     access to upstream, so they fork, and their origin is the fork.
     (Codex PR #582 round-6 BLOCKING.) Returning the *name* (not just
-    a bool) lets the caller decide where to push (always origin) and
-    where to target the PR (always upstream, regardless of name).
+    a bool) lets the caller fetch the canonical base while independently
+    choosing a writable push remote (origin or a generated fork remote).
     Host check is exact-match on ``github.com`` to defeat the
     ``evilgithub.com`` spoofing surface (round-6 BLOCKING, separate).
     """
@@ -290,8 +291,8 @@ def _find_upstream_remote(repo: Path) -> str | None:
     return None
 
 
-def _origin_is_safe_github(repo: Path) -> tuple[bool, str | None]:
-    """Validate every URL ``git push origin`` would talk to.
+def _remote_is_safe_github(repo: Path, remote: str) -> tuple[bool, str | None]:
+    """Validate every URL ``git push <remote>`` would talk to.
 
     Returns ``(is_safe, owner)`` — ``owner`` is the github.com owner
     of the origin remote (e.g. ``"some-contributor"``), needed to
@@ -308,7 +309,7 @@ def _origin_is_safe_github(repo: Path) -> tuple[bool, str | None]:
     to resolve to ``github.com`` AND to share the same owner so the
     ``--head owner:branch`` we generate for the PR is unambiguous.
     """
-    r = _run_git(repo, "remote", "get-url", "--push", "--all", "origin")
+    r = _run_git(repo, "remote", "get-url", "--push", "--all", remote)
     if r.returncode != 0:
         return False, None
     urls = [line for line in r.stdout.splitlines() if line.strip()]
@@ -323,6 +324,94 @@ def _origin_is_safe_github(repo: Path) -> tuple[bool, str | None]:
     if len(owners) != 1:
         return False, None
     return True, owners.pop()
+
+
+def _origin_is_safe_github(repo: Path) -> tuple[bool, str | None]:
+    """Compatibility wrapper for validating the checkout's ``origin``."""
+    return _remote_is_safe_github(repo, "origin")
+
+
+def _find_fork_remote(repo: Path, owner: str) -> str | None:
+    """Find a safe remote for ``owner/Rapid-MLX``.
+
+    Both the fetch URL and every effective push URL must point at GitHub and
+    agree on the owner. This lets us reuse a contributor's existing fork
+    without trusting a fetch-only URL whose ``pushurl`` was redirected.
+    """
+    expected = f"{owner.lower()}/rapid-mlx"
+    for name, (host, path) in _list_remotes(repo).items():
+        if host != "github.com" or path != expected:
+            continue
+        safe, push_owner = _remote_is_safe_github(repo, name)
+        if safe and push_owner == owner.lower():
+            return name
+    return None
+
+
+def _unused_remote_name(repo: Path, base: str = FORK_REMOTE_BASENAME) -> str:
+    """Return a deterministic remote name without overwriting user config."""
+    names = set(_list_remotes(repo))
+    if base not in names:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}" in names:
+        suffix += 1
+    return f"{base}-{suffix}"
+
+
+def _github_login(repo: Path) -> tuple[str | None, str | None]:
+    """Return the authenticated GitHub login, or an actionable error."""
+    result = subprocess.run(
+        ["gh", "api", "user", "--jq", ".login"],
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(repo),
+    )
+    login = result.stdout.strip()
+    if result.returncode != 0 or not login:
+        error = result.stderr.strip() or "`gh` is not authenticated"
+        return None, error
+    return login, None
+
+
+def _ensure_fork_remote(
+    repo: Path, owner: str, *, stdout
+) -> tuple[str | None, str | None]:
+    """Create/reuse ``owner``'s fork and return its safe git remote."""
+    existing = _find_fork_remote(repo, owner)
+    if existing is not None:
+        return existing, None
+
+    remote_name = _unused_remote_name(repo)
+    cmd = [
+        "gh",
+        "repo",
+        "fork",
+        UPSTREAM_REPO_FOR_GH,
+        "--remote",
+        "--remote-name",
+        remote_name,
+        "--clone=false",
+    ]
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False,
+        cwd=str(repo),
+    )
+    if result.returncode != 0:
+        return None, result.stderr.strip() or "`gh repo fork` failed"
+    if result.stdout.strip():
+        print(f"  fork: {result.stdout.strip()}", file=stdout)
+
+    remote = _find_fork_remote(repo, owner)
+    if remote is None:
+        return None, (
+            f"fork was created but no safe git remote for {owner}/Rapid-MLX was added"
+        )
+    return remote, None
 
 
 def _parse_git_remote(url: str) -> tuple[str | None, str | None]:
@@ -415,6 +504,33 @@ def _make_pr_via_gh(
         )
         return False, set()
 
+    # A direct clone has ``origin = raullenchai/Rapid-MLX``. That does not
+    # mean the authenticated user can push there: for a normal contributor
+    # it is read-only. Resolve the gh identity before any git mutation and
+    # route non-owner submissions through that user's fork. Existing fork
+    # checkouts already have a writable contributor-owned origin and skip
+    # this setup entirely.
+    upstream_owner = UPSTREAM_OWNER_REPO.split("/", 1)[0]
+    push_remote = "origin"
+    head_owner = origin_owner
+    if origin_owner.lower() == upstream_owner:
+        login, login_error = _github_login(repo)
+        if login is None:
+            print(
+                f"\n  Step failed: identify_github_user\n    stderr:  {login_error}",
+                file=stdout,
+            )
+            return False, set()
+        head_owner = login
+        if login.lower() != upstream_owner:
+            push_remote, fork_error = _ensure_fork_remote(repo, login, stdout=stdout)
+            if push_remote is None:
+                print(
+                    f"\n  Step failed: prepare_fork\n    stderr:  {fork_error}",
+                    file=stdout,
+                )
+                return False, set()
+
     # Branch from the upstream's default branch tip, not whatever
     # commit the user happens to have checked out. Without this, a
     # contributor with a feature branch checked out (their own work)
@@ -456,7 +572,10 @@ def _make_pr_via_gh(
                 f"{payload['hardware']['chip']} ({payload['submission_id']})",
             ],
         ),
-        ("push", ["git", "-C", str(repo), "push", "-u", "origin", branch]),
+        (
+            "push",
+            ["git", "-C", str(repo), "push", "-u", push_remote, branch],
+        ),
         (
             "pr_create",
             [
@@ -479,7 +598,7 @@ def _make_pr_via_gh(
                 # maintainer's direct checkout the ``owner`` equals
                 # ``raullenchai`` so the prefix is harmless.
                 "--head",
-                f"{origin_owner}:{branch}",
+                f"{head_owner}:{branch}",
                 "--title",
                 f"community-bench: {payload['model']['alias']} on "
                 f"{payload['hardware']['chip']}",
@@ -542,6 +661,25 @@ def _pr_body(payload: dict) -> str:
     )
 
 
+def _find_contributor_push_target(repo: Path) -> tuple[str, str] | None:
+    """Return ``(remote, owner)`` for a safe non-upstream fork."""
+    upstream_owner = UPSTREAM_OWNER_REPO.split("/", 1)[0]
+    origin_safe, origin_owner = _origin_is_safe_github(repo)
+    if origin_safe and origin_owner and origin_owner != upstream_owner:
+        return "origin", origin_owner
+
+    for name, (host, path) in _list_remotes(repo).items():
+        if host != "github.com" or not path or "/" not in path:
+            continue
+        owner, repo_name = path.split("/", 1)
+        if owner == upstream_owner or repo_name != "rapid-mlx":
+            continue
+        safe, push_owner = _remote_is_safe_github(repo, name)
+        if safe and push_owner == owner:
+            return name, owner
+    return None
+
+
 def _print_manual_fallback(
     repo: Path,
     submission_path: Path,
@@ -568,6 +706,9 @@ def _print_manual_fallback(
     branch = f"community-bench/{payload['submission_id']}"
     rel_path = submission_path.relative_to(repo).as_posix()
     done = completed or set()
+    gh_available = shutil.which("gh") is not None
+    contributor_target = _find_contributor_push_target(repo)
+    upstream_remote = _find_upstream_remote(repo) or "upstream"
 
     print("\n  The JSON file is on disk at:", file=stdout)
     print(f"    {submission_path}", file=stdout)
@@ -590,7 +731,9 @@ def _print_manual_fallback(
         )
 
     if "checkout" not in done:
-        print(f"    git checkout -b {branch}", file=stdout)
+        if "fetch_base" not in done:
+            print(f"    git fetch {upstream_remote} main", file=stdout)
+        print(f"    git checkout -b {branch} FETCH_HEAD", file=stdout)
     if "stage" not in done:
         print(f"    git add {rel_path}", file=stdout)
     if "commit" not in done:
@@ -600,21 +743,62 @@ def _print_manual_fallback(
             file=stdout,
         )
     if "push" not in done:
-        print(f"    git push -u origin {branch}", file=stdout)
+        if contributor_target is not None:
+            push_remote, _ = contributor_target
+            print(f"    git push -u {push_remote} {branch}", file=stdout)
+        else:
+            print("", file=stdout)
+            print(
+                "  Your origin points at upstream (or could not be verified).",
+                file=stdout,
+            )
+            print(
+                "  Create your fork before pushing; do not push this branch "
+                "to upstream:",
+                file=stdout,
+            )
+            if gh_available:
+                print(
+                    f"    gh repo fork {UPSTREAM_REPO_FOR_GH} --remote "
+                    f"--remote-name {FORK_REMOTE_BASENAME} --clone=false",
+                    file=stdout,
+                )
+            else:
+                print(
+                    f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/fork",
+                    file=stdout,
+                )
+                print("    # Replace YOUR_GITHUB_USERNAME below", file=stdout)
+                print(
+                    f"    git remote add {FORK_REMOTE_BASENAME} "
+                    "https://github.com/YOUR_GITHUB_USERNAME/Rapid-MLX.git",
+                    file=stdout,
+                )
+            print(
+                f"    git push -u {FORK_REMOTE_BASENAME} {branch}",
+                file=stdout,
+            )
     # The PR-create step has two paths depending on whether ``gh`` is on
     # PATH. If we got here because gh is missing (the common newcomer
     # case), recommending ``gh pr create`` is useless — point them at
     # the GitHub web UI and at the "paste the file into a new issue"
     # fallback instead. If gh is available (this branch only hits when
     # git steps failed mid-sequence), surface gh as the resume command.
-    gh_available = shutil.which("gh") is not None
     if gh_available:
-        # ``--repo`` forces the PR target to upstream regardless of
-        # whether origin is a fork. The owner-prefixed ``--head`` is
-        # omitted because the contributor running it locally already
-        # has gh's fork-aware default applied.
+        if contributor_target is not None:
+            _, head_owner = contributor_target
+            head = f"{head_owner}:{branch}"
+        elif "push" in done:
+            # A state-aware recovery can reach this branch after a direct
+            # upstream push by a maintainer. Keep the same-repo form.
+            head = branch
+        else:
+            # The fork command above resolves the authenticated owner. Shell
+            # substitution keeps the printed recovery command copy/pasteable
+            # without guessing the user's GitHub login.
+            head = f'"$(gh api user --jq .login):{branch}"'
         print(
-            f"    gh pr create --repo {UPSTREAM_REPO_FOR_GH} --head {branch}",
+            f"    gh pr create --repo {UPSTREAM_REPO_FOR_GH} --head {head}",
             file=stdout,
         )
     else:
@@ -623,16 +807,6 @@ def _print_manual_fallback(
             "  Then open the PR via the GitHub web UI (no `gh` CLI needed):",
             file=stdout,
         )
-        # GitHub's "compare across forks" URL uses ``main...<owner>:<branch>``
-        # when the head branch lives on a fork — bare ``main...<branch>``
-        # only works if the branch is on the upstream repo, which most
-        # community contributors don't have write access to. Detect the
-        # origin owner so the printed URL works for the fork workflow
-        # too. (Codex PR #600 round-1 BLOCKING.) Fall back to the
-        # owner-less form when we can't parse origin (covers the
-        # ``no git remote yet`` case where the user hasn't pushed).
-        is_safe, origin_owner = _origin_is_safe_github(repo)
-        upstream_owner = UPSTREAM_REPO_FOR_GH.split("/", 1)[0]
         # Quote both halves before joining with the literal ``:`` GitHub
         # expects between owner and branch in the compare path. Owner is
         # the more constrained piece (GitHub usernames are ``[a-zA-Z0-9-]``
@@ -643,10 +817,11 @@ def _print_manual_fallback(
         # branch ref carrying ``#``, ``?``, or ``%`` would split the URL.
         # (Codex PR #600 round-2 BLOCKING.)
         branch_quoted = urllib.parse.quote(branch, safe="/")
-        if is_safe and origin_owner and origin_owner != upstream_owner:
-            head_ref = f"{urllib.parse.quote(origin_owner, safe='')}:{branch_quoted}"
+        if contributor_target is not None:
+            _, head_owner = contributor_target
+            head_ref = f"{urllib.parse.quote(head_owner, safe='')}:{branch_quoted}"
         else:
-            head_ref = branch_quoted
+            head_ref = f"YOUR_GITHUB_USERNAME:{branch_quoted}"
         print(
             f"    https://github.com/{UPSTREAM_REPO_FOR_GH}/compare/main...{head_ref}?expand=1",
             file=stdout,
