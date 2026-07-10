@@ -171,10 +171,13 @@ Family choice per matrix run:
 | gpt-oss | `gpt-oss-20b-mxfp4-q8` | Smallest gpt-oss; ~11 GB |
 | Hy3 (Hunyuan 3) | `hy3-preview-4bit` | **Ultra-only** — 295B/21B-active MoE, 166 GB weights / ~156 GB peak (`min_memory_gb: 192`). No cheap alias exists; single-node-infeasible under G11 like DeepSeek V4-Flash. All 14 Hy3 cells `xfail(strict=True)`; real inference is weekly-Golden-Path-only; always-on CI coverage is the offline `test_hy3_offline.py` (parser wire, no model boot) |
 
-## Current cell status (2026-07-06 · 0.10.2)
+## Current cell status (matrix through 0.11.0; PASS/XFAIL data from the 2026-07-06 · 0.10.2 pilot)
 
-Populated as tests land. Empty (🔲) cells will be filled by the 0.10.6 Phase
-4 plumbing per `0.10-TODO.md`.
+The PASS / XFAIL results below are from the 2026-07-06 serial pilot run on
+the 0.10.2 four-family matrix. The 0.11.0 Hy3 column is `xfail(strict=True)`
+across the board (Ultra-only — see the Hy3 note above); its always-on
+coverage is `test_hy3_offline.py`, not these live cells. Empty (🔲) cells
+will be filled by the 0.10.6 Phase 4 plumbing per `0.10-TODO.md`.
 
 ### Agent × Family matrix (11 × 5 = 55)
 

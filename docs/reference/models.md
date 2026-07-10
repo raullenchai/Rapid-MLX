@@ -31,9 +31,12 @@ Browse thousands of pre-optimized models at: **https://huggingface.co/mlx-commun
 
 ### Ultra-only: Hunyuan 3 (Hy3)
 
-> ⚠️ **Requires an M3 Ultra with 256 GB unified memory.** Do not attempt
-> on a smaller Mac — it will OOM the Metal allocator (or, on macOS < 15.2,
-> kernel-panic) before the first token generates.
+> ⚠️ **Validated only on an M3 Ultra with 256 GB unified memory.** The
+> runtime enforces a **192 GB** unified-memory floor (`min_memory_gb`) and
+> prints a loud warning below it — it does *not* check the chip
+> generation, so a 192 GB non-Ultra Mac is not blocked but is untested.
+> Do not attempt on a smaller Mac — it will OOM the Metal allocator (or,
+> on macOS < 15.2, kernel-panic) before the first token generates.
 
 Tencent's **Hunyuan 3** is a 295B-parameter Mixture-of-Experts model
 (21B active per token). Only a 4-bit quant is shipped:
