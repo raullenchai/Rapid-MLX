@@ -315,6 +315,38 @@ def test_streaming_close_tag_and_trailing_prose_same_delta(parser):
     assert "<" not in all_content and ">" not in all_content
 
 
+def test_streaming_angle_bracket_in_trailing_prose_not_dropped(parser):
+    """Genuine ``<`` in assistant prose after a call (e.g. ``"2 < 3"``) is
+    content, not a tool opener, so it must stream through and never be
+    suppressed."""
+    chunks = [
+        "<function=compare><parameter=a>2</parameter></function>",
+        " because 2 < 3",
+        " is true",
+    ]
+    deltas = _stream(parser, chunks)
+    tool_deltas = [d for d in deltas if d and "tool_calls" in d]
+    assert len(tool_deltas) == 1
+    content = "".join(d["content"] for d in deltas if d and "content" in d)
+    assert content == " because 2 < 3 is true"
+
+
+def test_streaming_prose_before_call_in_same_delta_not_dropped(parser):
+    """Prose that shares its delta with the opening marker (``"Sure "`` in
+    ``"Sure <function=..."``) still streams as content."""
+    chunks = [
+        "Sure <function=get_weather>",
+        "<parameter=city>Paris</parameter>",
+        "</function>",
+    ]
+    deltas = _stream(parser, chunks)
+    tool_deltas = [d for d in deltas if d and "tool_calls" in d]
+    assert len(tool_deltas) == 1
+    content = "".join(d["content"] for d in deltas if d and "content" in d)
+    assert content == "Sure "
+    assert "<function=" not in content
+
+
 def test_streaming_no_markup_leak_when_close_tag_split(parser):
     """When ``</function>`` is split across deltas, the fragment that carries
     the tag ("ction>") must never surface as a content event."""
