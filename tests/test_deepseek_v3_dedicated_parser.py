@@ -321,3 +321,39 @@ class TestStreaming:
 # round-trip test there avoids forcing this parser-regression file
 # to pull in the full route module — and lets parser-only CI shards
 # run without a Metal device (codex round-4 P2).
+
+
+class TestDeepSeekCoderV2CapturedWire:
+    """DeepSeek-Coder-V2-Lite emits the V3 fenced-JSON envelope. This is
+    the exact wire captured live from
+    ``mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx``.
+
+    This test documents/locks the wire SHAPE the ``deepseek_v3`` parser
+    must handle for this model — it exercises the parser directly, so it
+    is not the regression guard for the routing bug itself (that lives in
+    ``tests/test_model_auto_config.py::TestDetectModelConfig``
+    ``.test_deepseek_coder_v2_routes_to_v3_parser``, which fails on the
+    old ``tool_call_parser=null`` alias). The production leak was caused
+    solely by no parser being attached; once ``deepseek_v3`` is routed
+    (via ``aliases.json`` + ``model_auto_config.py``), this envelope
+    parses into ``tool_calls`` instead of leaking into
+    ``message.content``."""
+
+    def test_coder_v2_web_search_envelope_parses(
+        self, v3_parser: DeepSeekV3ToolParser
+    ) -> None:
+        # Verbatim shape the Coder-V2-Lite weights produced at temperature
+        # (compact single-line args form).
+        payload = (
+            f"{TC_OPEN}{C_OPEN}function{SEP}web_search\n"
+            '```json\n{"query": "current weather in Tokyo"}\n```'
+            f"{C_CLOSE}{TC_CLOSE}"
+        )
+        result = v3_parser.extract_tool_calls(payload)
+        assert result.tools_called is True
+        assert len(result.tool_calls) == 1
+        tc = result.tool_calls[0]
+        assert tc["name"] == "web_search"
+        assert json.loads(tc["arguments"]) == {"query": "current weather in Tokyo"}
+        # Clean envelope with no prefix narration → no leaked content.
+        assert result.content is None

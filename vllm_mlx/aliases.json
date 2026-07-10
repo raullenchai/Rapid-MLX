@@ -463,7 +463,7 @@
   },
   "deepseek-coder-v2-lite-16b-4bit": {
     "hf_path": "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx",
-    "tool_call_parser": null,
+    "tool_call_parser": "deepseek_v3",
     "reasoning_parser": null,
     "is_hybrid": false,
     "is_moe": true,

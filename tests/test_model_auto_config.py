@@ -6,6 +6,7 @@ import pytest
 
 from vllm_mlx.model_auto_config import (
     ModelConfig,
+    _deepseek_template_family,
     _reset_resolution_log_cache,
     detect_model_config,
     enrich_model_config,
@@ -192,6 +193,158 @@ class TestDetectModelConfig:
             assert config.reasoning_parser == "deepseek_r1"
         assert config.is_hybrid is False
         assert config.supports_spec_decode is True
+
+    # DeepSeek-Coder-V2 / V2-Lite — despite the ``V2`` version tag these
+    # checkpoints ship the DeepSeek-V3 chat template and emit the V3
+    # fenced-JSON tool-call body, so they must route to the dedicated
+    # block-wise ``deepseek_v3`` parser (its hardened owner). Before this
+    # fix the alias pinned ``tool_call_parser=null`` so NO parser was
+    # attached and the raw envelope leaked into ``content`` with
+    # ``tool_calls=null``. Live-verified against
+    # ``mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx``.
+    @pytest.mark.parametrize(
+        "model_path",
+        [
+            # Bare HF paths that hit the regex fallback (not aliased).
+            "deepseek-ai/DeepSeek-Coder-V2-Instruct",
+            "deepseek-ai/DeepSeek-Coder-V2-Lite-Instruct",
+            "mlx-community/DeepSeek-Coder-V2-Lite-Base-4bit",
+            # Alias name + alias HF path (both resolve via aliases.json).
+            "deepseek-coder-v2-lite-16b-4bit",
+            "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx",
+        ],
+    )
+    def test_deepseek_coder_v2_routes_to_v3_parser(self, model_path):
+        config = detect_model_config(model_path)
+        assert config is not None
+        assert config.tool_call_parser == "deepseek_v3", (
+            f"{model_path}: Coder-V2 emits the V3 fenced-JSON envelope and "
+            f"must route to the deepseek_v3 parser, got "
+            f"{config.tool_call_parser!r}."
+        )
+        assert config.reasoning_parser is None
+
+    def test_deepseek_coder_v2_does_not_shadow_generic_deepseek(self):
+        # The new Coder-V2 rule must NOT steal matches from the generic
+        # ``deepseek`` fallback: a non-Coder-V2 / non-V3 DeepSeek path
+        # (V2.5, plain Coder without a V2 tag) still resolves to the
+        # legacy ``deepseek`` parser. The boundary anchor also rejects
+        # ``V20``/``V2.5``/``V2Beta`` (unrelated hypothetical version tags)
+        # so they too fall through to the generic parser.
+        for path in (
+            "deepseek-ai/DeepSeek-V2.5",
+            "deepseek-ai/DeepSeek-Coder-6.7B-Instruct",
+            "deepseek-ai/deepseek-coder-33b-instruct",
+            "deepseek-ai/DeepSeek-Coder-V20-Instruct",
+            "deepseek-ai/DeepSeek-Coder-V2.5-Instruct",
+            "deepseek-ai/DeepSeek-Coder-V2Beta",
+        ):
+            cfg = detect_model_config(path)
+            assert cfg is not None
+            assert cfg.tool_call_parser == "deepseek", (
+                f"{path}: must stay on the generic deepseek parser, got "
+                f"{cfg.tool_call_parser!r}."
+            )
+
+    def test_deepseek_coder_v2_distill_does_not_route_to_v3(self):
+        # A Coder-V2 distill (Qwen2/Llama-arch SFT, NOT a V3-template
+        # checkpoint) must NOT auto-route to deepseek_v3. Detection is
+        # scoped to the extracted MODEL-NAME segment (shared with the
+        # classifier), and a ``distill`` in that segment — suffix OR prefix
+        # — deterministically resolves to the legacy ``deepseek`` parser
+        # here, matching the classifier's ``distill`` reject, so the two
+        # layers agree in every case.
+        for path in (
+            "deepseek-ai/DeepSeek-Coder-V2-Distill-Qwen-7B",
+            "org/Distill-DeepSeek-Coder-V2-Lite-Instruct",
+            "deepseek-ai/DeepSeek-Coder-V2-lite-distill",
+        ):
+            cfg = detect_model_config(path)
+            assert cfg is not None
+            assert cfg.tool_call_parser == "deepseek", (
+                f"{path}: a distill in the name must fall through to the "
+                f"generic deepseek parser, got {cfg.tool_call_parser!r}."
+            )
+            # Classifier agrees: not a V3-template checkpoint.
+            assert _deepseek_template_family(path) is None
+
+    def test_deepseek_coder_v2_parent_dir_distill_still_routes_to_v3(self):
+        # A ``distill`` token in a PARENT directory (not the model-name
+        # segment) must NOT suppress the match — routing and the classifier
+        # both scope ``distill`` to the model-name segment, so these local /
+        # HF-cache paths still resolve to deepseek_v3. This locks the
+        # routing/classifier alignment for the parent-dir case.
+        for path in (
+            "/tmp/distilled/DeepSeek-Coder-V2-Lite-Instruct",
+            "/home/user/distill-cache/DeepSeek-Coder-V2",
+            "models--mlx-community--DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx/"
+            "snapshots/abc1234",
+        ):
+            cfg = detect_model_config(path)
+            assert cfg is not None
+            assert cfg.tool_call_parser == "deepseek_v3", (
+                f"{path}: a distill token in a parent dir must not suppress "
+                f"the Coder-V2 match, got {cfg.tool_call_parser!r}."
+            )
+            assert _deepseek_template_family(path) == "v3"
+
+    def test_non_coder_v2_model_under_coder_v2_parent_dir_not_misrouted(self):
+        # A NON-Coder-V2 checkpoint stored beneath a ``…/DeepSeek-Coder-V2/``
+        # parent directory must NOT inherit the deepseek_v3 parser — the
+        # model-name SEGMENT (``qwen-model``) is what identifies the family.
+        # Routing scopes to the extracted segment (shared helper), so it
+        # agrees with the classifier (which returns None). Without segment
+        # scoping a full-path regex would misroute this Qwen checkpoint.
+        path = "/models/DeepSeek-Coder-V2/qwen-model"
+        cfg = detect_model_config(path)
+        assert cfg is not None
+        assert cfg.tool_call_parser != "deepseek_v3", (
+            f"{path}: model segment is 'qwen-model', must NOT route to "
+            f"deepseek_v3, got {cfg.tool_call_parser!r}."
+        )
+        assert _deepseek_template_family(path) is None
+
+    def test_coder_v2_distill_under_v3_parent_dir_stays_generic(self):
+        # A Coder-V2 *distill* whose parent directory carries a V3-family
+        # marker must still resolve deterministically from its own
+        # model-name segment (distill → generic ``deepseek``), NOT be
+        # hijacked to a V3-family parser by the parent dir. This keeps
+        # routing aligned with the classifier (which returns None for a
+        # distill) for these adversarial nested paths.
+        for path in (
+            "/models/DeepSeek-V3/DeepSeek-Coder-V2-Distill-Qwen-7B",
+            "/cache/DeepSeek-V3.1/DeepSeek-Coder-V2-lite-distill",
+            "/x/DeepSeek-R1-0528/Distill-DeepSeek-Coder-V2-Lite",
+        ):
+            cfg = detect_model_config(path)
+            assert cfg is not None
+            assert cfg.tool_call_parser == "deepseek", (
+                f"{path}: Coder-V2 distill must stay on the generic deepseek "
+                f"parser regardless of parent dir, got "
+                f"{cfg.tool_call_parser!r}."
+            )
+            assert _deepseek_template_family(path) is None
+
+    def test_deepseek_coder_v2_template_family_and_no_misbind_warning(self):
+        # The chat-template classifier recognises Coder-V2 as V3-lineage,
+        # so an explicit ``--tool-call-parser deepseek_v3`` is in-spec and
+        # produces NO misbind warning.
+        assert (
+            _deepseek_template_family("deepseek-ai/DeepSeek-Coder-V2-Instruct") == "v3"
+        )
+        assert (
+            _deepseek_template_family(
+                "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx"
+            )
+            == "v3"
+        )
+        assert (
+            warn_misbound_deepseek_v3_parser(
+                "mlx-community/DeepSeek-Coder-V2-Lite-Instruct-4bit-mlx",
+                "deepseek_v3",
+            )
+            is None
+        )
 
     # ---- 2026 model families ----
 

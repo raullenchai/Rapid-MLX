@@ -197,6 +197,21 @@ _MODEL_PATTERNS: list[tuple[re.Pattern, ModelConfig]] = [
             reasoning_parser=None,
         ),
     ),
+    # NOTE: DeepSeek-Coder-V2 / V2-Lite is NOT matched here. Despite the
+    # ``V2`` version tag those checkpoints ship the DeepSeek-V3 chat
+    # template and emit the V3 fenced-JSON tool-call body, so they must
+    # route to ``deepseek_v3`` — but the decision has to be scoped to the
+    # extracted MODEL-NAME segment (like ``_classify_deepseek_template_name``),
+    # not the full path, or a plain-``deepseek`` regex here would also fire
+    # on a non-Coder-V2 checkpoint stored beneath a ``…/DeepSeek-Coder-V2/``
+    # parent directory. A full-path regex in this table cannot express
+    # "canonical model-name segment only" without diverging from the
+    # classifier's segment scope (codex rounds 4-5). Coder-V2 detection is
+    # therefore handled in ``detect_model_config`` via the shared
+    # ``_is_deepseek_coder_v2_name`` helper, BEFORE this generic
+    # ``deepseek`` fallback runs. The classifier reuses the same helper, so
+    # routing and misbind-validation stay in lock-step.
+    #
     # DeepSeek (V2.5 and older) — no reasoning parser
     (
         re.compile(r"deepseek", re.IGNORECASE),
@@ -761,6 +776,53 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             supports_dflash=profile.supports_dflash,
         )
 
+    # DeepSeek-Coder-V2 / V2-Lite routing — handled here (not in the
+    # ``_MODEL_PATTERNS`` regex table) because the decision MUST be scoped
+    # to the extracted model-name SEGMENT, exactly like the misbind
+    # classifier ``_classify_deepseek_template_name``. A full-path regex in
+    # the table would also fire on a non-Coder-V2 checkpoint stored beneath
+    # a ``…/DeepSeek-Coder-V2/`` parent directory (codex round-5 finding),
+    # diverging from the classifier. Reusing ``_extract_model_name_segment``
+    # + the shared ``_is_deepseek_coder_v2_name`` helper (and the same
+    # ``distill`` reject the classifier applies) guarantees the two layers
+    # agree for every path shape — HF repo names, local dirs, and HF-cache
+    # ``models--…`` layouts. Despite the ``V2`` version tag these ship the
+    # DeepSeek-V3 chat template and emit the V3 fenced-JSON tool-call body,
+    # so they route to the dedicated hardened ``deepseek_v3`` parser (the
+    # pre-fix alias pinned ``tool_call_parser=null``, so the raw envelope
+    # leaked into ``content`` with ``tool_calls=null``). This check runs
+    # BEFORE the loop so it wins over the generic ``deepseek`` fallback.
+    #
+    # Residual model-capability limitation (out of scope for parser
+    # routing): at temperature the model sometimes invents a wrong tool
+    # name/schema — a model quality issue, not parser-fixable.
+    name_segment = _extract_model_name_segment(model_path.lower())
+    if _is_deepseek_coder_v2_name(name_segment):
+        # The Coder-V2 marker is in the canonical model-name segment, so
+        # this IS a Coder-V2 checkpoint regardless of what parent
+        # directories the path carries. Resolve the parser deterministically
+        # FROM THE SEGMENT here (rather than letting a ``distill`` variant
+        # fall through to the ``_MODEL_PATTERNS`` loop, where a
+        # ``…/DeepSeek-V3/…`` PARENT dir could hijack it to a V3-family
+        # parser and diverge from the classifier). A Coder-V2 *distill* is a
+        # Qwen2/Llama-arch SFT — NOT a V3-template checkpoint — so it takes
+        # the legacy ``deepseek`` parser, matching the classifier's
+        # ``distill`` reject. A non-distill Coder-V2 takes the hardened
+        # ``deepseek_v3`` parser.
+        if "distill" in name_segment:
+            cfg = ModelConfig(tool_call_parser="deepseek", reasoning_parser=None)
+            note = "distill SFT — legacy deepseek parser"
+        else:
+            cfg = ModelConfig(tool_call_parser="deepseek_v3", reasoning_parser=None)
+            note = "V3 chat-template lineage — deepseek_v3 parser"
+        _log_resolution_once(
+            model_path,
+            f"Auto-detected DeepSeek-Coder-V2 family for '{model_path}' → "
+            f"tool_call_parser={cfg.tool_call_parser}, "
+            f"reasoning_parser={cfg.reasoning_parser} ({note})",
+        )
+        return cfg
+
     for pattern, config in _MODEL_PATTERNS:
         if not pattern.search(model_path):
             continue
@@ -803,7 +865,10 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
 #       body = ``function<｜tool▁sep｜>NAME\n``\`json\n{…}\n``\```
 #       emitted by V3-line checkpoints whose ``chat_template.jinja`` is
 #       the V3 template — vanilla V3-0324, R1-0528 (R1 retrained on V3),
-#       and the forward-cover V4 / V5 family per the upstream V4 card.
+#       and Coder-V2 / V2-Lite (which inherit the V3 template despite the
+#       ``V2`` tag). NOT V4 / V5: an earlier "forward-cover" for those was
+#       removed (#893) — their wire shape is the legacy V2.x envelope
+#       today (see the note in ``_classify_deepseek_template_name``).
 #
 #   * ``deepseek_v31`` (DeepSeekV31ToolParser):
 #       body = ``NAME<｜tool▁sep｜>{…json…}``
@@ -885,6 +950,28 @@ def _extract_model_name_segment(path: str) -> str:
     return candidate
 
 
+# DeepSeek-Coder-V2 / V2-Lite name test — operates on an already-extracted
+# MODEL-NAME segment (see ``_extract_model_name_segment``), so both the
+# parser router (``detect_model_config``) and the misbind classifier
+# (``_classify_deepseek_template_name``) can share ONE source of truth and
+# never diverge. ``[-_]*`` matches the ``DeepSeek-Coder-V2`` /
+# ``DeepSeek_Coder_V2`` / ``DeepSeekCoderV2`` separator variants. The
+# trailing ``(?![a-z0-9.])`` boundary rejects the unrelated
+# ``V20``/``V2.5``/``V2Beta`` version tags (bare ``V2`` at end-of-segment
+# still matches). Callers apply the ``distill`` reject separately so the
+# same rule that excludes R1-Distill from the V3 sub-families also keeps a
+# hypothetical Coder-V2 distill (Qwen2/Llama-arch SFT) off ``deepseek_v3``.
+_CODER_V2_NAME_RE = re.compile(r"deepseek[-_]*coder[-_]*v2(?![a-z0-9.])")
+
+
+def _is_deepseek_coder_v2_name(name_segment: str) -> bool:
+    """True if ``name_segment`` (a lowercased model-name segment) is a
+    DeepSeek-Coder-V2 / V2-Lite checkpoint that inherits the V3 chat
+    template. ``distill`` variants are excluded by the caller (they are
+    Qwen2/Llama-arch SFTs, not V3-template checkpoints)."""
+    return _CODER_V2_NAME_RE.search(name_segment) is not None
+
+
 def _classify_deepseek_template_name(s: str) -> str | None:
     """Inner name-pattern classifier — see ``_deepseek_template_family``
     for the public contract. Pulled out so the public helper can run the
@@ -931,6 +1018,18 @@ def _classify_deepseek_template_name(s: str) -> str | None:
     # R1-0528 — the R1 retrain on the V3 chat template.
     if re.search(r"deepseek.*r1[-_]?0528", name):
         return "v3"
+    # DeepSeek-Coder-V2 / V2-Lite — the ``V2`` tag is misleading: these
+    # checkpoints inherit the DeepSeek-V3 chat template and emit the V3
+    # fenced-JSON body shape (live-verified). Classify as ``"v3"`` so an
+    # explicit ``--tool-call-parser deepseek_v3`` on this model is treated
+    # as in-spec (no false misbind warning). Uses the SAME
+    # ``_is_deepseek_coder_v2_name`` helper the parser router calls, so the
+    # two layers can never diverge. The ``distill`` early-return above
+    # already excludes any hypothetical Coder-V2 distill (Qwen2/Llama-arch
+    # SFT). The helper's boundary anchor keeps ``V2.5``/``V20``/``V2Beta``
+    # on the unrelated chat lineages that use the legacy ``deepseek`` parser.
+    if _is_deepseek_coder_v2_name(name):
+        return "v3"
     # NOTE on V4 / V5: an earlier revision of this classifier returned
     # ``"v3"`` for ``DeepSeek-V[45]*`` as a "forward-cover" — the V4
     # upstream model card mentioned the V3 chat template lineage, and
@@ -971,8 +1070,14 @@ def _deepseek_template_family(model_path: str) -> str | None:
     belongs to, by name pattern.
 
     Returns one of:
-      * ``"v3"``     — V3 chat template (vanilla V3, R1-0528, V4, V5)
-                       → emits the V3 fenced-JSON body shape
+      * ``"v3"``     — V3 chat template (vanilla V3, R1-0528, and
+                       Coder-V2 / V2-Lite, which inherit the V3 template
+                       despite the ``V2`` tag)
+                       → emits the V3 fenced-JSON body shape.
+                       NOTE: V4 / V5 are deliberately NOT classified here
+                       (see the inline note in
+                       ``_classify_deepseek_template_name``) — their wire
+                       shape is the legacy V2.x envelope today.
       * ``"v31"``    — V3.1 chat template (DeepSeek-V3.1-*)
                        → emits the V3.1 plain-JSON body shape
       * ``None``     — not a V3-template checkpoint (R1-Distill family,
