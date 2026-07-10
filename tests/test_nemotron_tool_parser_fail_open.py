@@ -315,6 +315,35 @@ def test_streaming_close_tag_and_trailing_prose_same_delta(parser):
     assert "<" not in all_content and ">" not in all_content
 
 
+def test_streaming_split_opener_never_leaks_as_content(parser):
+    """A split opener ("<fun" then "ction=...") must never surface as content
+    before the marker completes — no partial tool markup leaks."""
+    chunks = [
+        "<fun",
+        "ction=get_weather>",
+        "<parameter=city>Paris</parameter></function>",
+    ]
+    deltas = _stream(parser, chunks)
+    tool_deltas = [d for d in deltas if d and "tool_calls" in d]
+    assert len(tool_deltas) == 1
+    assert tool_deltas[0]["tool_calls"][0]["function"]["name"] == "get_weather"
+    content = "".join(d["content"] for d in deltas if d and "content" in d)
+    assert content == ""  # nothing leaked, including "<fun"
+
+
+def test_streaming_split_wrapper_opener_never_leaks(parser):
+    """Same for a split ``<tool_call>`` wrapper opener."""
+    chunks = [
+        "<tool_",
+        "call><function=get_weather><parameter=city>Paris</parameter></function></tool_call>",
+    ]
+    deltas = _stream(parser, chunks)
+    tool_deltas = [d for d in deltas if d and "tool_calls" in d]
+    assert len(tool_deltas) == 1
+    content = "".join(d["content"] for d in deltas if d and "content" in d)
+    assert content == ""
+
+
 def test_streaming_angle_bracket_in_trailing_prose_not_dropped(parser):
     """Genuine ``<`` in assistant prose after a call (e.g. ``"2 < 3"``) is
     content, not a tool opener, so it must stream through and never be
