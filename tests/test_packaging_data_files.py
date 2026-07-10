@@ -46,6 +46,9 @@ REQUIRED_DATA_FILES: list[tuple[str, str, str]] = [
     # r10-A: audio alias registry. Codex r10-B caught this missing from
     # package-data; this entry locks the fix in place.
     ("vllm_mlx", "audio/aliases.json", "audio/aliases.json"),
+    # TurboQuant compiles this source at runtime; the fused path silently
+    # falls back when an installed wheel does not contain it.
+    ("vllm_mlx", "kernels/turboquant_fused.metal", "kernels/*.metal"),
 ]
 
 

@@ -347,6 +347,7 @@ vllm_mlx = [
     "aliases.json",
     "audio/aliases.json",
     "agents/profiles/*.yaml",
+    "kernels/*.metal",
     # Integration tests bundled inside the package so `rapid-mlx agents
     # <name> --test` works on pip/brew installs (the source layout keeps
     # them at tests/integrations/, mirrored here via symlinks). Without
