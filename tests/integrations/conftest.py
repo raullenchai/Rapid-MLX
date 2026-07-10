@@ -3,15 +3,24 @@
 
 Two matrices share this harness:
 
-* ``test_agents_matrix.py`` — 11 Tier-1 agents × 4 families (Qwen 3.6,
-  Gemma 4, DeepSeek V4, gpt-oss) = 44 cells. The three commercial-CLI
+* ``test_agents_matrix.py`` — 11 Tier-1 agents × 5 families (Qwen 3.6,
+  Gemma 4, DeepSeek V4, gpt-oss, Hy3) = 55 cells. The three commercial-CLI
   cells added in the 0.10.2 pilot (copilot / droid / kimi-code) run as
   **wire-smoke via the shared OpenAI SDK helper** — driving the actual
   CLI binaries as subprocesses in <60 s is blocked by vendor OAuth /
   first-run onboarding flows (documented in the pre-flight verdict at
   the top of ``README.md``).
-* ``test_frameworks_matrix.py`` — 3 Tier-1 frameworks × 4 families =
-  12 cells.
+* ``test_frameworks_matrix.py`` — 3 Tier-1 frameworks × 5 families =
+  15 cells.
+
+The 5th family (Hy3 / Hunyuan 3, added 0.11.0) is a 295B/21B-active MoE
+whose only SKU (``hy3-preview-4bit``, 166 GB / ~156 GB peak) is Ultra-only
+and single-node-infeasible under G11 — every Hy3 cell is strict-xfail'd
+(see ``pytest_collection_modifyitems``) and the real-inference coverage
+lives in the weekly Golden Path job, NOT always-on CI. The CI-runnable
+value-add for Hy3 is the offline parser-level integration test in
+``test_hy3_offline.py``, which drives captured Hy3 wire strings through
+the ``hy_v3`` tool + reasoning parsers without booting the 166 GB model.
 
 Both matrices reuse the same server fixture, cheap-alias-per-family fixture,
 and assertion helpers. The fixtures never boot the server themselves — the
@@ -25,9 +34,11 @@ Environment overrides
 
 * ``RAPID_MLX_BASE_URL`` — where to point clients (default: localhost:8000/v1).
 * ``RAPID_MLX_AGENT_MATRIX_FAMILY`` — restrict matrix to one family
-  (``qwen36`` / ``gemma4`` / ``deepseek`` / ``gptoss``). Handy for CI
-  shards, and mandatory in Golden-Path runs so the CI job knows which
-  server alias to boot.
+  (``qwen36`` / ``gemma4`` / ``deepseek`` / ``gptoss`` / ``hy3``). Handy
+  for CI shards, and mandatory in Golden-Path runs so the CI job knows
+  which server alias to boot. ``hy3`` is Ultra-only (166 GB) and its
+  cells are strict-xfail regardless, so this shard is only meaningful in
+  the weekly Golden Path job on real hardware.
 * ``RAPID_MLX_MATRIX_STRICT`` — if ``1``, missing-server / model-mismatch
   raise instead of skipping. Off by default so a naive ``pytest`` run stays
   green.
@@ -116,6 +127,28 @@ _FAMILY_ALIASES: dict[str, FamilyAlias] = {
         family="gptoss",
         alias="gpt-oss-20b-mxfp4-q8",
         reason="smallest gpt-oss (20B MXFP4-Q8 ~11 GB); no <20B in the family",
+    ),
+    "hy3": FamilyAlias(
+        family="hy3",
+        # 0.11.0 Tier-1 5th family — Tencent Hunyuan 3, a 295B/21B-active
+        # MoE. There is NO cheap alias: the only shipped SKU is the
+        # 4-bit ``hy3-preview-4bit`` (166 GB weights, ~156 GB peak
+        # resident). Like DeepSeek V4-Flash it is single-node-infeasible
+        # on the M3 Ultra under the G11 100 GB free floor
+        # (166 GB weights + 100 GB floor > 256 GB), so every HY3 matrix
+        # cell is strict-xfail'd (see the block below) and the family is
+        # exercised only in the weekly Golden Path job on real Ultra
+        # hardware — never in always-on per-PR CI. The offline
+        # parser-level integration test (``test_hy3_offline.py``) covers
+        # the CI-runnable wire-shape layer without booting the 166 GB
+        # model.
+        alias="hy3-preview-4bit",
+        reason=(
+            "Hy3 (Hunyuan 3) 295B/21B-active MoE — 4bit-only "
+            "hy3-preview-4bit is 166 GB (~156 GB peak), Ultra-only "
+            "(min_memory_gb=192). Single-node-infeasible under G11 100 GB "
+            "floor; exercised in the weekly Golden Path job, not always-on CI"
+        ),
     ),
 }
 
@@ -245,6 +278,11 @@ def family_alias_for_active_server(
         return _FAMILY_ALIASES["gemma4"]
     if mid.startswith("gpt-oss") or "gpt-oss" in mid:
         return _FAMILY_ALIASES["gptoss"]
+    # Hy3 / Hunyuan 3 — 0.11.0 Tier-1 5th family. Only bootable in the
+    # weekly Golden Path job on real Ultra hardware (166 GB weights).
+    # Served id resolves to ``mlx-community/Hy3-preview-4bit``.
+    if mid.startswith("hy3") or "hy3" in mid or "hunyuan-3" in mid or "hunyuan3" in mid:
+        return _FAMILY_ALIASES["hy3"]
     # DeepSeek family — 0.10.2 Tier-1. Match both:
     #  * the R1-Distill-Qwen 32B 4-bit variant used as Tier-1 rep in
     #    the PR-2 pilot (served id = "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit");
@@ -380,18 +418,64 @@ _GPTOSS_OPENHANDS_XFAIL_REASON = (
 )
 
 
+# --------------------------------------------------------------------------- #
+# Family-wide strict-xfail: Hy3 (Hunyuan 3) — 166 GB single-node-infeasible
+# --------------------------------------------------------------------------- #
+#
+# Hy3 / Hunyuan 3 is a 295B/21B-active MoE and the 0.11.0 Tier-1 5th
+# family. It has NO cheap alias: the only shipped SKU is the 4-bit
+# ``hy3-preview-4bit`` (166 GB weights, ~156 GB peak resident, gated by
+# ``min_memory_gb: 192`` in ``vllm_mlx/aliases.json``). This mirrors the
+# DeepSeek V4-Flash situation EXACTLY — 166 GB weights + the G11 100 GB
+# free-disk floor = 266 GB required against a 256 GB M3 Ultra, so the
+# model is single-node-infeasible in always-on per-PR CI.
+#
+# Following the same G8 discipline as the V4-Flash precedent
+# (root-caused note in ``_FAMILY_ALIASES['deepseek'].reason`` +
+# README §"DeepSeek family — architectural tool-emission gap"): rather
+# than downgrade the 11 Hy3 cells to plain ``skip`` (G8: "root-cause
+# failures, do not hide behind skips"), every Hy3 cell is marked
+# ``xfail(strict=True)``. These are structural placeholders + a weekly
+# Golden-Path anchor + a regression guard: if a future change made the
+# always-on CI able to boot Hy3 (a smaller quant re-upload, a REAP-pruned
+# SKU, or a ≥ 320 GB Mac), the strict marker would XPASS and force a
+# revisit of the always-on-vs-weekly decision.
+#
+# The CI-runnable value-add for Hy3 is NOT here — it is the offline
+# parser-level integration test in ``test_hy3_offline.py``, which feeds
+# captured Hy3 wire strings through the ``hy_v3`` tool + reasoning parsers
+# without booting the 166 GB model. That is where the real always-on
+# coverage for the family lives.
+
+_HY3_XFAIL_FAMILY = "hy3"  # matches the parametrize id
+_HY3_XFAIL_REASON = (
+    "hy3-preview-4bit 166 GB single-node — Ultra-only "
+    "(min_memory_gb=192, ~156 GB peak), 295B/21B-active MoE. Like DeepSeek "
+    "V4-Flash it is single-node-infeasible on the M3 Ultra under the G11 "
+    "100 GB free-disk floor (166 GB + 100 GB > 256 GB). Exercised in the "
+    "weekly Golden Path job on real Ultra hardware, not always-on CI. "
+    "CI-runnable parser coverage lives in "
+    "tests/integrations/test_hy3_offline.py (offline wire → hy_v3 parsers, "
+    "no model boot)."
+)
+
+
 def pytest_collection_modifyitems(
     config: pytest.Config, items: list[pytest.Item]
 ) -> None:
     """Apply strict-xfail markers to family-specific cells.
 
-    Two independent xfail sets are applied here:
+    Three independent xfail sets are applied here:
 
     * The 9 DeepSeek R1-Distill tool-call cells (block above), driven by
       the R1 architectural tool-emission gap.
     * The single gpt-oss × OpenHands cell (block just above), driven by
       the harmony ↔ CodeActAgent text-action format mismatch documented
       upstream.
+    * ALL Hy3 cells (block just above), driven by the 166 GB
+      single-node-infeasible Ultra-only constraint — real inference is
+      weekly-Golden-Path-only; the always-on parser coverage lives in
+      ``test_hy3_offline.py``.
     """
     del config  # unused — items already carry the config context.
     for item in items:
@@ -414,6 +498,14 @@ def pytest_collection_modifyitems(
             item.add_marker(
                 pytest.mark.xfail(
                     reason=_GPTOSS_OPENHANDS_XFAIL_REASON,
+                    strict=True,
+                )
+            )
+        # Hy3 — every cell (all 11 agents + frameworks), 166 GB Ultra-only.
+        if f"[{_HY3_XFAIL_FAMILY}]" in item.nodeid:
+            item.add_marker(
+                pytest.mark.xfail(
+                    reason=_HY3_XFAIL_REASON,
                     strict=True,
                 )
             )
@@ -453,7 +545,7 @@ def _guard_family_matches_server(request: pytest.FixtureRequest) -> None:
         strict_skip_or_fail(
             f"cell {cell_family.family}: running model "
             f"{server_info['model_id']!r} doesn't map to any known family "
-            f"(qwen36 / gemma4 / deepseek / gptoss)."
+            f"(qwen36 / gemma4 / deepseek / gptoss / hy3)."
         )
         return
     if active.family != cell_family.family:

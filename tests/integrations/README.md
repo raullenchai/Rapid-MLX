@@ -7,20 +7,40 @@ Rapid-MLX server on `http://localhost:8000` and a loaded model — the fixtures
 `skip` cells when no server is reachable, so a naïve `pytest tests/` still
 comes out green.
 
-## Two matrices — 11 agents + 3 frameworks × 4 families
+## Two matrices — 11 agents + 3 frameworks × 5 families
 
 0.10.2 PR-2 pilot expanded the matrices to the 0.10.2 **Tier-1 four
 families** (added DeepSeek V4) and the finalized **top-10** commercial /
 open-source agents (three commercial-CLI cells added via docs-confirmed
-BYOK routes). Both matrices share the harness in `conftest.py`:
+BYOK routes). 0.11.0 adds **Hy3 (Tencent Hunyuan 3)** as the Tier-1 5th
+family. Both matrices share the harness in `conftest.py`:
 
-- `test_agents_matrix.py` — **11 Tier-1 agents × 4 families** (Qwen 3.6,
-  Gemma 4, DeepSeek V4, gpt-oss) = 44 cells. Each cell is a lightweight
-  smoke; deep flows live in the dedicated files below.
-- `test_frameworks_matrix.py` — **3 Tier-1 frameworks × 4 families** =
-  12 cells.
+- `test_agents_matrix.py` — **11 Tier-1 agents × 5 families** (Qwen 3.6,
+  Gemma 4, DeepSeek V4, gpt-oss, Hy3) = 55 cells. Each cell is a
+  lightweight smoke; deep flows live in the dedicated files below.
+- `test_frameworks_matrix.py` — **3 Tier-1 frameworks × 5 families** =
+  15 cells.
 
-Total: **56 cells** (up from 33 in #1030).
+Total: **70 cells** (up from 56; +14 Hy3 cells, all strict-xfail — see
+the Hy3 note below).
+
+> **Hy3 is Ultra-only and strict-xfail in always-on CI.** Hy3
+> (`hy3-preview-4bit`) is a 295B/21B-active MoE whose only SKU is 166 GB
+> (~156 GB peak, `min_memory_gb: 192`) — single-node-infeasible on the
+> M3 Ultra under the G11 100 GB free-disk floor, exactly like DeepSeek
+> V4-Flash. Rather than downgrade its 14 cells to plain `skip` (G8:
+> root-cause failures, do not hide behind skips), every Hy3 matrix cell
+> is `xfail(strict=True)` (applied in
+> `conftest.py::pytest_collection_modifyitems`,
+> reason `conftest.py::_HY3_XFAIL_REASON`). Real Hy3 inference runs only
+> in the **weekly Golden Path job on real Ultra hardware**, never in
+> per-PR CI. The always-on CI value-add for Hy3 is the offline
+> parser-level integration test **`test_hy3_offline.py`** — it drives
+> captured Hy3 wire strings through the `hy_v3` tool + reasoning parsers
+> (the parsers `hy3-preview-4bit` wires) and asserts the OpenAI-API-shape
+> contract (tool_calls array well-formed, `<think>` reasoning routed to
+> its own channel, no leak) **without booting the 166 GB model**. That
+> file runs in the normal `pytest tests/` sweep (8 tests, sub-second).
 
 > **Pilot scope note.** This pilot runs the Qwen 3.6 35B-A3B-8bit
 > family end-to-end and leaves Gemma 4 / DeepSeek V4 Flash / gpt-oss
@@ -129,7 +149,7 @@ python3 tests/integrations/test_librechat_docker.py
 | Variable | Default | Purpose |
 |---|---|---|
 | `RAPID_MLX_BASE_URL` | `http://localhost:8000/v1` | Where matrix clients point |
-| `RAPID_MLX_AGENT_MATRIX_FAMILY` | (all) | Restrict to `qwen36` / `gemma4` / `deepseek` / `gptoss` |
+| `RAPID_MLX_AGENT_MATRIX_FAMILY` | (all) | Restrict to `qwen36` / `gemma4` / `deepseek` / `gptoss` / `hy3` (`hy3` is Ultra-only, weekly Golden Path only) |
 | `RAPID_MLX_MATRIX_STRICT` | `0` | If `1`, missing-server → fail (default: skip) |
 
 ## Cheap-alias policy
@@ -149,13 +169,14 @@ Family choice per matrix run:
 | Gemma 4 | `gemma-4-12b-4bit` | Smallest text-only alias; ~7 GB at 4-bit |
 | DeepSeek | `deepseek-r1-32b-4bit` | 0.10.2 PR-2 pilot swapped from `deepseek-v4-flash-8bit` (~155 GB weights, single-node-infeasible on 256 GB M3 Ultra + G11 100 GB floor). R1-Distill-Qwen-32B-4bit at ~16 GB stays above the "no cheap-alias" bar and exercises the same `deepseek` tool-call + `deepseek_r1` reasoning parsers V4-Flash would have. **Full DeepSeek V4 Flash Tier-1 slot tracked in follow-up issue #1041** (hardware plan needed) |
 | gpt-oss | `gpt-oss-20b-mxfp4-q8` | Smallest gpt-oss; ~11 GB |
+| Hy3 (Hunyuan 3) | `hy3-preview-4bit` | **Ultra-only** — 295B/21B-active MoE, 166 GB weights / ~156 GB peak (`min_memory_gb: 192`). No cheap alias exists; single-node-infeasible under G11 like DeepSeek V4-Flash. All 14 Hy3 cells `xfail(strict=True)`; real inference is weekly-Golden-Path-only; always-on CI coverage is the offline `test_hy3_offline.py` (parser wire, no model boot) |
 
 ## Current cell status (2026-07-06 · 0.10.2)
 
 Populated as tests land. Empty (🔲) cells will be filled by the 0.10.6 Phase
 4 plumbing per `0.10-TODO.md`.
 
-### Agent × Family matrix (11 × 4 = 44)
+### Agent × Family matrix (11 × 5 = 55)
 
 Pilot execution 2026-07-06 — **serial 3-family run** against real
 inference under `RAPID_MLX_MATRIX_STRICT=1`. All PASS cells exercised
@@ -264,27 +285,27 @@ Full V4 Flash coverage tracked in follow-up issue **#1041**
 > Empirical rerun of the other three families under the harness digest
 > fix (this PR) deferred to CI.
 
-| Agent | Qwen 3.6 | Gemma 4 | DeepSeek | gpt-oss |
-|---|---|---|---|---|
-| codex-cli | ✅ | ✅ | ✅ | ✅ |
-| claude-code | ✅ | ✅ | ✅ | ✅ |
-| opencode | ✅ | ✅ | XFAIL (arch) | ✅ |
-| qwen-code | ✅ | ✅ | XFAIL (arch) | ✅ |
-| openhands | ✅ | ✅ | ✅ | XFAIL (format) |
-| hermes-agent | ✅ | ✅ | XFAIL (arch) | ✅ |
-| aider | ✅ | ✅ | ✅ | ✅ |
-| kilo-code | ✅ | ✅ | XFAIL (arch) | ✅ |
-| copilot | ✅ | ✅ | XFAIL (arch) | ✅ |
-| droid | ✅ | ✅ | XFAIL (arch) | ✅ |
-| kimi-code | ✅ | ✅ | XFAIL (arch) | ✅ |
+| Agent | Qwen 3.6 | Gemma 4 | DeepSeek | gpt-oss | Hy3 |
+|---|---|---|---|---|---|
+| codex-cli | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
+| claude-code | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
+| opencode | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+| qwen-code | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+| openhands | ✅ | ✅ | ✅ | XFAIL (format) | XFAIL (Ultra) |
+| hermes-agent | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+| aider | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
+| kilo-code | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+| copilot | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+| droid | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+| kimi-code | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
 
-### Framework × Family matrix (3 × 4 = 12)
+### Framework × Family matrix (3 × 5 = 15)
 
-| Framework | Qwen 3.6 | Gemma 4 | DeepSeek | gpt-oss |
-|---|---|---|---|---|
-| LangChain (+ LangGraph) | ✅ | ✅ | XFAIL (arch) | ✅ |
-| PydanticAI | ✅ | ✅ | XFAIL (arch) | ✅ |
-| smolagents | ✅ | ✅ | ✅ | ✅ |
+| Framework | Qwen 3.6 | Gemma 4 | DeepSeek | gpt-oss | Hy3 |
+|---|---|---|---|---|---|
+| LangChain (+ LangGraph) | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+| PydanticAI | ✅ | ✅ | XFAIL (arch) | ✅ | XFAIL (Ultra) |
+| smolagents | ✅ | ✅ | ✅ | ✅ | XFAIL (Ultra) |
 
 Legend: ✅ passing (real inference · real tool call · semantic assertion;
 or for aider / openhands: real bash-CLI drive · real file rewrite)
@@ -297,13 +318,23 @@ OpenHands parser gap tracked at
 [All-Hands-AI/OpenHands#15167](https://github.com/All-Hands-AI/OpenHands/issues/15167).
 The rapid-mlx wire-level harmony bug that used to underlie this cell is
 fixed in PR #1051 (see `conftest.py::_GPTOSS_OPENHANDS_XFAIL_REASON`).
+· **XFAIL (Ultra)** = Hy3 (`hy3-preview-4bit`) is 166 GB / ~156 GB peak,
+single-node-infeasible in per-PR CI under G11 (like DeepSeek V4-Flash);
+real inference runs weekly on M3 Ultra. Always-on parser coverage is the
+offline `test_hy3_offline.py`. See `conftest.py::_HY3_XFAIL_REASON`.
 
-**Totals across all 4 families**: 56 cells run → **46 PASS · 10 XFAIL · 0 FAIL**
-(9 XFAIL are the R1-Distill architectural tool-emission cells listed in
+**Totals across the 4 always-on families**: 56 cells run → **46 PASS ·
+10 XFAIL · 0 FAIL** (9 XFAIL are the R1-Distill architectural
+tool-emission cells listed in
 `conftest.py::_DEEPSEEK_R1_TOOLCALL_XFAIL_NODEIDS`; 1 XFAIL is the
 gpt-oss+OpenHands cell — gpt-oss harmony format vs CodeActAgent
 text-action parser mismatch, tracked upstream at
 [All-Hands-AI/OpenHands#15167](https://github.com/All-Hands-AI/OpenHands/issues/15167)).
+
+**Hy3 (5th family, 0.11.0)**: +14 cells, all `xfail(strict=True)` in
+always-on CI (Ultra-only, weekly Golden Path). The CI-runnable coverage
+is the 8-test offline `test_hy3_offline.py` (parser wire, no model boot)
+— **8 PASS** in the normal `pytest tests/` sweep.
 
 **DeepSeek family — architectural tool-emission gap.** The 9 DeepSeek
 tool-call cells (7 agents + LangChain + PydanticAI) are marked

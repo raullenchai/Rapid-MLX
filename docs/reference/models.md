@@ -18,6 +18,7 @@ Browse thousands of pre-optimized models at: **https://huggingface.co/mlx-commun
 | Phi-3 | 3.8B, 14B | 4-bit |
 | Granite 3.x, 4.x | Various | 4-bit |
 | Nemotron | 3 Nano 30B | 6-bit |
+| Hunyuan 3 (Hy3) | 295B MoE (21B active) — **Ultra-only** | 4-bit |
 
 ### Recommended Models
 
@@ -27,6 +28,44 @@ Browse thousands of pre-optimized models at: **https://huggingface.co/mlx-commun
 | Balanced | `mlx-community/Llama-3.2-3B-Instruct-4bit` | ~1.8 GB |
 | Quality | `mlx-community/Llama-3.1-8B-Instruct-4bit` | ~4.5 GB |
 | Large | `mlx-community/Qwen3-30B-A3B-4bit` | ~16 GB |
+
+### Ultra-only: Hunyuan 3 (Hy3)
+
+> ⚠️ **Requires an M3 Ultra with 256 GB unified memory.** Do not attempt
+> on a smaller Mac — it will OOM the Metal allocator (or, on macOS < 15.2,
+> kernel-panic) before the first token generates.
+
+Tencent's **Hunyuan 3** is a 295B-parameter Mixture-of-Experts model
+(21B active per token). Only a 4-bit quant is shipped:
+
+| Alias | HF path | Weights | Peak RAM | Hardware |
+|-------|---------|---------|----------|----------|
+| `hy3-preview-4bit` | `mlx-community/Hy3-preview-4bit` | ~166 GB | ~156 GB | M3 Ultra 256 GB |
+
+```bash
+rapid-mlx serve hy3-preview-4bit
+```
+
+The alias carries a `min_memory_gb: 192` floor. Before the 166 GB
+download begins, rapid-mlx checks your machine's total unified memory and
+prints a loud warning if it is below the floor:
+
+```
+⚠  Ultra-only alias 'hy3-preview-4bit' declares a 192 GB unified-memory
+   floor, but this Mac reports 128.0 GB.
+   The model weights are large enough to OOM the Metal allocator (or
+   kernel-panic on macOS < 15.2, issue #324) before the first token
+   generates.
+   Recommended: pick a Tier-1 alias sized for this machine
+   (`rapid-mlx models` for the full list). Proceeding anyway…
+```
+
+The warning never aborts (an operator with an unusual allocator setup can
+still opt in), but on any non-Ultra Mac you should pick a smaller alias
+instead — `rapid-mlx models` lists every alias with its size. Hy3's tool
+calling and reasoning are exercised in CI without booting the model via
+an offline parser-level integration test; real-inference coverage runs in
+the weekly Golden Path job on M3 Ultra hardware.
 
 ## Multimodal Models (via mlx-vlm)
 
