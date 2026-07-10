@@ -298,6 +298,7 @@ def _remote_is_safe_github(
     remote: str,
     *,
     expected_path: str | None = None,
+    expected_repo: str | None = None,
 ) -> tuple[bool, str | None]:
     """Validate every URL ``git push <remote>`` would talk to.
 
@@ -316,7 +317,9 @@ def _remote_is_safe_github(
     to resolve to ``github.com`` AND to share the same owner so the
     ``--head owner:branch`` we generate for the PR is unambiguous. Callers
     reusing a fork remote also pass ``expected_path`` so a same-owner
-    ``pushurl`` aimed at a different repository fails closed.
+    ``pushurl`` aimed at a different repository fails closed. ``origin``
+    instead uses ``expected_repo``: its fetch URL may be upstream while its
+    push URL is the contributor fork, but both must name Rapid-MLX.
     """
     r = _run_git(repo, "remote", "get-url", "--push", "--all", remote)
     if r.returncode != 0:
@@ -330,6 +333,8 @@ def _remote_is_safe_github(
         if host != "github.com" or not path or "/" not in path:
             return False, None
         if expected_path is not None and path != expected_path.lower():
+            return False, None
+        if expected_repo is not None and path.split("/", 1)[1] != expected_repo:
             return False, None
         owners.add(path.split("/", 1)[0])
     if len(owners) != 1:
@@ -345,7 +350,7 @@ def _origin_is_safe_github(repo: Path) -> tuple[bool, str | None]:
     _, repo_name = path.split("/", 1)
     if repo_name != "rapid-mlx":
         return False, None
-    return _remote_is_safe_github(repo, "origin", expected_path=path)
+    return _remote_is_safe_github(repo, "origin", expected_repo="rapid-mlx")
 
 
 def _find_fork_remote(repo: Path, owner: str) -> str | None:
@@ -681,6 +686,10 @@ def _pr_body(payload: dict) -> str:
 def _find_contributor_push_target(repo: Path) -> tuple[str, str] | None:
     """Return ``(remote, owner)`` for a safe non-upstream fork."""
     upstream_owner = UPSTREAM_OWNER_REPO.split("/", 1)[0]
+    origin_safe, origin_push_owner = _origin_is_safe_github(repo)
+    if origin_safe and origin_push_owner and origin_push_owner != upstream_owner:
+        return "origin", origin_push_owner
+
     remotes = _list_remotes(repo)
     dedicated = sorted(
         name
@@ -691,8 +700,7 @@ def _find_contributor_push_target(repo: Path) -> tuple[str, str] | None:
             and name.removeprefix(f"{FORK_REMOTE_BASENAME}-").isdigit()
         )
     )
-    candidate_names = ["origin", *dedicated]
-    for name in candidate_names:
+    for name in dedicated:
         host, path = remotes.get(name, (None, None))
         if host != "github.com" or not path or "/" not in path:
             continue

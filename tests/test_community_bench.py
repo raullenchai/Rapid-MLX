@@ -951,6 +951,69 @@ def test_origin_is_safe_github_rejects_unrelated_repo(tmp_path) -> None:
     assert _origin_is_safe_github(tmp_path) == (False, None)
 
 
+def test_origin_is_safe_github_accepts_upstream_fetch_with_fork_pushurl(
+    tmp_path,
+) -> None:
+    """The standard triangular workflow may fetch upstream and push a fork."""
+    from vllm_mlx.community_bench.submission import (
+        _find_contributor_push_target,
+        _origin_is_safe_github,
+    )
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/raullenchai/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "https://github.com/some-contributor/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    assert _origin_is_safe_github(tmp_path) == (True, "some-contributor")
+    assert _find_contributor_push_target(tmp_path) == (
+        "origin",
+        "some-contributor",
+    )
+
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "set-url",
+            "--push",
+            "origin",
+            "https://github.com/some-contributor/not-rapid-mlx.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+    assert _origin_is_safe_github(tmp_path) == (False, None)
+
+
 def test_find_fork_remote_rejects_same_owner_different_repo_pushurl(
     tmp_path,
 ) -> None:
