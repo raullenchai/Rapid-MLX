@@ -30,9 +30,12 @@ Unlike the PR-2 *unit* tests (``tests/test_hy_v3_tool_parser.py`` /
 ``tests/test_hy3_reasoning_parser.py``), which assert parser internals in
 isolation, THIS file asserts the composed *API-shape contract* a real
 agent/framework client would observe on the wire — the same contract the
-live matrix cells assert against a booted server, minus the boot. If PR-2
-changes parser behavior, the captured fixtures here may need adjustment
-at rebase time; that is expected and called out in the PR body.
+live matrix cells assert against a booted server, minus the boot. PR-2
+(#1070) is now merged; these fixtures were re-verified green against the
+merged parser at rebase time (5 codex rounds of literal-close / reasoning
+partial-close / brace-depth fixes landed after this file was first
+written, and the captured wire still round-trips byte-exact — no
+assertion change was needed).
 
 Runs in the normal ``pytest tests/`` sweep — no server, no model, no
 Docker. Pure-Python, sub-second.
@@ -41,8 +44,6 @@ Docker. Pure-Python, sub-second.
 from __future__ import annotations
 
 import json
-
-import pytest
 
 from tests.integrations.conftest import (
     assert_no_analysis_channel_leak,
@@ -101,14 +102,15 @@ _WIRE_PLAIN_CONTENT = "The answer is 42."
 def _tool_parser():
     """Construct the Hy3 tool parser the ``hy3-preview-4bit`` alias wires.
 
-    Skips (never errors) if the parser can't be imported — keeps the
-    naive ``pytest tests/`` sweep green on a checkout that predates the
-    PR-2 parser landing.
+    The ``hy_v3`` tool parser is merged (PR-2, #1070) and is now a
+    permanent part of the tree, so the import is HARD: an import-time
+    regression or an accidental deletion of the production parser must
+    FAIL this test, not silently skip it. Skipping would let the
+    always-on coverage this file promises go green on broken code — the
+    exact failure mode the offline test exists to catch.
     """
-    try:
-        from vllm_mlx.tool_parsers import HyV3ToolParser, ToolParserManager
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"hy_v3 tool parser not importable ({exc}) — cell deferred")
+    from vllm_mlx.tool_parsers import HyV3ToolParser, ToolParserManager
+
     # Resolve through the registry too, mirroring how the server wires it
     # from the alias's ``tool_call_parser="hy_v3"`` field.
     assert ToolParserManager.get_tool_parser("hy_v3") is HyV3ToolParser
@@ -116,12 +118,15 @@ def _tool_parser():
 
 
 def _reasoning_parser():
-    """Construct the Hy3 reasoning parser the alias wires (``reasoning_parser=hy_v3``)."""
-    try:
-        from vllm_mlx.reasoning import get_parser
-        from vllm_mlx.reasoning.hy3_parser import Hy3ReasoningParser
-    except Exception as exc:  # noqa: BLE001
-        pytest.skip(f"hy_v3 reasoning parser not importable ({exc}) — cell deferred")
+    """Construct the Hy3 reasoning parser the alias wires (``reasoning_parser=hy_v3``).
+
+    Hard import for the same reason as ``_tool_parser`` — the ``hy_v3``
+    reasoning parser is merged (PR-2, #1070); a missing/broken import
+    must fail, not skip.
+    """
+    from vllm_mlx.reasoning import get_parser
+    from vllm_mlx.reasoning.hy3_parser import Hy3ReasoningParser
+
     assert get_parser("hy_v3") is Hy3ReasoningParser
     return Hy3ReasoningParser()
 

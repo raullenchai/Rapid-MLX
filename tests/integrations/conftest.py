@@ -433,8 +433,9 @@ _GPTOSS_OPENHANDS_XFAIL_REASON = (
 # Following the same G8 discipline as the V4-Flash precedent
 # (root-caused note in ``_FAMILY_ALIASES['deepseek'].reason`` +
 # README §"DeepSeek family — architectural tool-emission gap"): rather
-# than downgrade the 11 Hy3 cells to plain ``skip`` (G8: "root-cause
-# failures, do not hide behind skips"), every Hy3 cell is marked
+# than downgrade the 14 Hy3 cells (11 agents + 3 frameworks) to plain
+# ``skip`` (G8: "root-cause failures, do not hide behind skips"), every
+# Hy3 cell is marked
 # ``xfail(strict=True)``. These are structural placeholders + a weekly
 # Golden-Path anchor + a regression guard: if a future change made the
 # always-on CI able to boot Hy3 (a smaller quant re-upload, a REAP-pruned
@@ -501,7 +502,11 @@ def pytest_collection_modifyitems(
                     strict=True,
                 )
             )
-        # Hy3 — every cell (all 11 agents + frameworks), 166 GB Ultra-only.
+        # Hy3 — every cell (all 14: 11 agents + 3 frameworks), 166 GB
+        # Ultra-only. The matrix parametrizes by a single ``family``
+        # argument, so every Hy3 nodeid ends in exactly ``[hy3]`` (never a
+        # combined id like ``[agent-hy3]``); the bare-token match below is
+        # the same pattern the merged DeepSeek/gpt-oss blocks use.
         if f"[{_HY3_XFAIL_FAMILY}]" in item.nodeid:
             item.add_marker(
                 pytest.mark.xfail(
