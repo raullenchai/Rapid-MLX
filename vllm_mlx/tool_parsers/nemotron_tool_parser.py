@@ -176,6 +176,30 @@ class NemotronToolParser(ToolParser):
         """
         return text.count("</function>") + text.count("</tool_call>")
 
+    @staticmethod
+    def _in_clean_tail(current_text: str) -> bool:
+        """True if the tail of ``current_text`` is plain assistant content.
+
+        "Tail" = everything after the last COMPLETE tool-call close tag
+        (``</function>`` / ``</tool_call>``). If that tail contains no ``<`` at
+        all, then no new tag — not even a partial one like ``"<fun"`` — has
+        started, so the tail is safe to stream through as content. The moment a
+        ``<`` appears we are (possibly) building the next call and must buffer
+        instead, so a fragment can never leak into user-visible content.
+
+        Returns False when no call has closed yet (the whole text is still
+        inside the first call's markup).
+        """
+        end = 0
+        for tag in ("</function>", "</tool_call>"):
+            idx = current_text.rfind(tag)
+            if idx != -1:
+                end = max(end, idx + len(tag))
+        if end == 0:
+            # No close tag yet → we are still inside the (first) call's markup.
+            return False
+        return "<" not in current_text[end:]
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
@@ -234,5 +258,17 @@ class NemotronToolParser(ToolParser):
                             for i, tc in enumerate(new_calls)
                         ]
                     }
+            # This delta carried a close tag (markup). Never stream its text as
+            # content — trailing assistant text arrives in later, clean deltas.
+            return None
+
+        # No new call closed in this delta. If we are past all tool-call markup
+        # (a call has closed and no new "<" has started since), the delta is
+        # trailing assistant content and must pass through instead of being
+        # silently dropped. _in_clean_tail guarantees no partial or complete
+        # tag can leak, so we never emit "<function=", "</function>", or a
+        # fragment like "</fun" as user-visible content.
+        if self._in_clean_tail(current_text):
+            return {"content": delta_text}
 
         return None

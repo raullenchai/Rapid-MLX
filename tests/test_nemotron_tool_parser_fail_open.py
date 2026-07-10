@@ -255,7 +255,8 @@ def test_streaming_close_tag_split_across_two_chunks(parser):
 def test_streaming_no_reemit_on_trailing_deltas_after_close(parser):
     """Once a call has closed, later deltas that add no new close tag must not
     re-emit it (the completion trigger keys on a NEW close tag, so a call is
-    emitted exactly once even as trailing tokens keep arriving)."""
+    emitted exactly once even as trailing tokens keep arriving). The trailing
+    text passes through as content events, not swallowed."""
     chunks = [
         "<tool_call><function=get_weather><parameter=city>Paris</parameter></function></tool_call>",
         " and",
@@ -263,10 +264,51 @@ def test_streaming_no_reemit_on_trailing_deltas_after_close(parser):
         " is all",
     ]
     deltas = _stream(parser, chunks)
-    emitted = [d for d in deltas if d and "tool_calls" in d]
-    assert len(emitted) == 1
-    # The trailing content deltas produce no further tool-call emissions.
+    tool_deltas = [d for d in deltas if d and "tool_calls" in d]
+    assert len(tool_deltas) == 1
+    # The trailing content deltas produce no further tool-call emissions ...
     assert all("tool_calls" not in (d or {}) for d in deltas[1:])
+    # ... and the trailing prose is streamed through as content, not dropped.
+    trailing_content = "".join(d["content"] for d in deltas[1:] if d and "content" in d)
+    assert trailing_content == " and that is all"
+
+
+def test_streaming_bare_call_then_trailing_prose(parser):
+    """A bare ``<function=..></function>`` (no wrapper) followed by trailing
+    prose: the call is emitted once and the trailing prose is streamed as
+    content (regression for the dropped-trailing-content finding)."""
+    chunks = [
+        "<function=get_weather>",
+        "<parameter=city>Paris</parameter>",
+        "</function>",
+        " Anything",
+        " else?",
+    ]
+    deltas = _stream(parser, chunks)
+    tool_deltas = [d for d in deltas if d and "tool_calls" in d]
+    assert len(tool_deltas) == 1
+    assert tool_deltas[0]["tool_calls"][0]["function"]["name"] == "get_weather"
+    trailing_content = "".join(d["content"] for d in deltas if d and "content" in d)
+    assert trailing_content == " Anything else?"
+    # No XML markup ever leaks into the content stream.
+    assert "<function=" not in trailing_content
+    assert "</function>" not in trailing_content
+
+
+def test_streaming_no_markup_leak_when_close_tag_split(parser):
+    """When ``</function>`` is split across deltas, the fragment that carries
+    the tag ("ction>") must never surface as a content event."""
+    chunks = [
+        "<function=get_weather><parameter=city>Paris</parameter>",
+        "</fun",
+        "ction>",
+        " done",
+    ]
+    deltas = _stream(parser, chunks)
+    contents = [d["content"] for d in deltas if d and "content" in d]
+    # Only the genuine trailing prose is content; no tag fragment leaks.
+    assert contents == [" done"]
+    assert all("fun" not in c and "<" not in c and ">" not in c for c in contents)
 
 
 def test_streaming_two_sequential_calls_increment_index(parser):
