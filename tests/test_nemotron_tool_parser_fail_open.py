@@ -76,8 +76,7 @@ def test_canonical_json_body_wrapper(parser):
 def test_variant_a_missing_closing_tool_call(parser):
     """(a) ``</tool_call>`` truncated away — the call must still parse."""
     text = (
-        "<tool_call><function=get_weather>"
-        "<parameter=city>Paris</parameter></function>"
+        "<tool_call><function=get_weather><parameter=city>Paris</parameter></function>"
     )
     tc = _only_call(parser.extract_tool_calls(text))
     assert tc["name"] == "get_weather"
@@ -179,9 +178,7 @@ def _stream(parser, chunks):
     results = []
     for chunk in chunks:
         current = previous + chunk
-        results.append(
-            parser.extract_tool_calls_streaming(previous, current, chunk)
-        )
+        results.append(parser.extract_tool_calls_streaming(previous, current, chunk))
         previous = current
     return results
 
@@ -253,6 +250,23 @@ def test_streaming_close_tag_split_across_two_chunks(parser):
     assert tc["index"] == 0
     assert tc["function"]["name"] == "get_weather"
     assert json.loads(tc["function"]["arguments"]) == {"city": "Paris"}
+
+
+def test_streaming_no_reemit_on_trailing_deltas_after_close(parser):
+    """Once a call has closed, later deltas that add no new close tag must not
+    re-emit it (the completion trigger keys on a NEW close tag, so a call is
+    emitted exactly once even as trailing tokens keep arriving)."""
+    chunks = [
+        "<tool_call><function=get_weather><parameter=city>Paris</parameter></function></tool_call>",
+        " and",
+        " that",
+        " is all",
+    ]
+    deltas = _stream(parser, chunks)
+    emitted = [d for d in deltas if d and "tool_calls" in d]
+    assert len(emitted) == 1
+    # The trailing content deltas produce no further tool-call emissions.
+    assert all("tool_calls" not in (d or {}) for d in deltas[1:])
 
 
 def test_streaming_two_sequential_calls_increment_index(parser):

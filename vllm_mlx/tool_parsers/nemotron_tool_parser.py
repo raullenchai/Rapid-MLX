@@ -165,6 +165,17 @@ class NemotronToolParser(ToolParser):
                 tools_called=False, tool_calls=[], content=model_output
             )
 
+    @staticmethod
+    def _close_tag_count(text: str) -> int:
+        """Number of completed tool-call close tags present in ``text``.
+
+        A call may legitimately close on either ``</function>`` (a truncated
+        variant that never emits the wrapper) or ``</tool_call>``. Used by the
+        streaming path to detect that a NEW call finished in the latest delta
+        (count went up) rather than re-parsing on every chunk.
+        """
+        return text.count("</function>") + text.count("</tool_call>")
+
     def extract_tool_calls_streaming(
         self,
         previous_text: str,
@@ -182,17 +193,26 @@ class NemotronToolParser(ToolParser):
             return {"content": delta_text}
 
         # Trigger from the COMPLETION STATE of current_text, NOT from a close
-        # tag appearing inside a single delta_text. The tokenizer can split a
-        # close tag across deltas ("</fun" then "ction>"), so no single delta
-        # ever contains the whole "</function>"/"</tool_call>" — but the
-        # accumulated current_text does, once both fragments have arrived.
-        # extract_tool_calls re-parses current_text and only returns a call
-        # once its <function=..></function> body is complete; we de-dupe
-        # against the number already streamed (tracked in current_tool_id,
-        # which reset() zeroes per request) so each completed call is emitted
-        # exactly once regardless of how the close tag is chunked or whether
-        # </function> and </tool_call> land in the same delta.
-        if "</function>" in current_text or "</tool_call>" in current_text:
+        # tag appearing inside a single delta_text. We fire only when a NEW
+        # close tag finished in this delta — i.e. the close-tag count in
+        # current_text ticked up versus previous_text.
+        #
+        # Counting the delta (rather than testing membership in delta_text) is
+        # what makes a close tag split across chunks work: the tokenizer can
+        # emit "</fun" then "ction>", so no single delta ever contains the
+        # whole "</function>" — but the accumulated current_text does once both
+        # fragments arrive, and only then does the count go up. Gating on the
+        # *increase* also means we never re-parse current_text on the many
+        # trailing deltas after a call has closed (avoiding O(n^2) re-parsing
+        # and repeated fail-open WARNINGs on a trailing unparseable marker).
+        #
+        # extract_tool_calls re-parses current_text and returns ALL complete
+        # calls; we de-dupe against the number already streamed (tracked in
+        # current_tool_id, which reset() zeroes per request) so each completed
+        # call is emitted exactly once even when </function> and </tool_call>
+        # arrive in separate deltas (each bumps the count → one re-parse each,
+        # but the second finds nothing new to emit).
+        if self._close_tag_count(current_text) > self._close_tag_count(previous_text):
             result = self.extract_tool_calls(current_text)
             if result.tools_called:
                 already_emitted = self.current_tool_id + 1
