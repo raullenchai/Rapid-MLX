@@ -951,6 +951,30 @@ def test_origin_is_safe_github_rejects_unrelated_repo(tmp_path) -> None:
     assert _origin_is_safe_github(tmp_path) == (False, None)
 
 
+def test_origin_is_safe_github_rejects_invalid_owner(tmp_path) -> None:
+    """Remote URL owners must match GitHub's login grammar."""
+    from vllm_mlx.community_bench.submission import _origin_is_safe_github
+
+    subprocess.run(
+        ["git", "init", "-q", str(tmp_path)], check=True, capture_output=True
+    )
+    subprocess.run(
+        [
+            "git",
+            "-C",
+            str(tmp_path),
+            "remote",
+            "add",
+            "origin",
+            "https://github.com/bad;owner/Rapid-MLX.git",
+        ],
+        check=True,
+        capture_output=True,
+    )
+
+    assert _origin_is_safe_github(tmp_path) == (False, None)
+
+
 def test_origin_is_safe_github_accepts_upstream_fetch_with_fork_pushurl(
     tmp_path,
 ) -> None:
@@ -2464,6 +2488,38 @@ def test_manual_fallback_with_gh_keeps_gh_command(tmp_path, monkeypatch) -> None
     # Web-UI fallback shouldn't appear when gh is available.
     assert "compare/main..." not in text
     assert "/issues/new" not in text
+
+
+def test_manual_fallback_with_gh_quotes_head_owner(tmp_path, monkeypatch) -> None:
+    """A repo-controlled owner cannot inject shell syntax via ``--head``."""
+    import shlex
+
+    from vllm_mlx.community_bench import submission as sub_mod
+
+    payload = {
+        "submission_id": "abcdef012345",
+        "model": {"alias": "x"},
+        "hardware": {"chip": "Apple M4 Pro"},
+    }
+    sub_path = tmp_path / "submission.json"
+    sub_path.write_text("{}")
+    malicious_owner = "owner;echo-PWNED"
+    monkeypatch.setattr(sub_mod.shutil, "which", lambda _: "/opt/homebrew/bin/gh")
+    monkeypatch.setattr(
+        sub_mod,
+        "_find_contributor_push_target",
+        lambda _repo: ("origin", malicious_owner),
+    )
+
+    out = io.StringIO()
+    sub_mod._print_manual_fallback(tmp_path, sub_path, payload, stdout=out)
+    pr_line = next(
+        line.strip()
+        for line in out.getvalue().splitlines()
+        if line.strip().startswith("gh pr create ")
+    )
+    expected_head = f"{malicious_owner}:community-bench/abcdef012345"
+    assert f"--head {shlex.quote(expected_head)}" in pr_line
 
 
 def test_decode_tps_formula_uses_n_minus_one(monkeypatch) -> None:

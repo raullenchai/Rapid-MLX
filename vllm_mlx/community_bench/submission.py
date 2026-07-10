@@ -244,6 +244,10 @@ def _run_git(repo: Path, *args: str) -> subprocess.CompletedProcess:
 UPSTREAM_OWNER_REPO = "raullenchai/rapid-mlx"
 UPSTREAM_REPO_FOR_GH = "raullenchai/Rapid-MLX"
 FORK_REMOTE_BASENAME = "community-bench-fork"
+GITHUB_OWNER_RE = re.compile(
+    r"^(?!-)(?!.*--)[a-z0-9](?:[a-z0-9-]{0,37}[a-z0-9])?$",
+    re.IGNORECASE,
+)
 
 
 def _list_remotes(repo: Path) -> dict[str, tuple[str | None, str | None]]:
@@ -332,11 +336,14 @@ def _remote_is_safe_github(
         host, path = _parse_git_remote(url.strip())
         if host != "github.com" or not path or "/" not in path:
             return False, None
+        owner, repo_name = path.split("/", 1)
+        if GITHUB_OWNER_RE.fullmatch(owner) is None:
+            return False, None
         if expected_path is not None and path != expected_path.lower():
             return False, None
-        if expected_repo is not None and path.split("/", 1)[1] != expected_repo:
+        if expected_repo is not None and repo_name != expected_repo:
             return False, None
-        owners.add(path.split("/", 1)[0])
+        owners.add(owner)
     if len(owners) != 1:
         return False, None
     return True, owners.pop()
@@ -391,7 +398,7 @@ def _github_login(repo: Path) -> tuple[str | None, str | None]:
         cwd=str(repo),
     )
     login = result.stdout.strip()
-    if result.returncode != 0 or not login:
+    if result.returncode != 0 or GITHUB_OWNER_RE.fullmatch(login) is None:
         error = result.stderr.strip() or "`gh` is not authenticated"
         return None, error
     return login, None
@@ -821,18 +828,18 @@ def _print_manual_fallback(
     if gh_available:
         if contributor_target is not None:
             _, head_owner = contributor_target
-            head = f"{head_owner}:{branch}"
+            head_arg = shlex.quote(f"{head_owner}:{branch}")
         elif "push" in done:
             # A state-aware recovery can reach this branch after a direct
             # upstream push by a maintainer. Keep the same-repo form.
-            head = branch
+            head_arg = shlex.quote(branch)
         else:
             # The fork command above resolves the authenticated owner. Shell
             # substitution keeps the printed recovery command copy/pasteable
             # without guessing the user's GitHub login.
-            head = f'"$(gh api user --jq .login):{branch}"'
+            head_arg = f'"$(gh api user --jq .login):{branch}"'
         print(
-            f"    gh pr create --repo {UPSTREAM_REPO_FOR_GH} --head {head}",
+            f"    gh pr create --repo {UPSTREAM_REPO_FOR_GH} --head {head_arg}",
             file=stdout,
         )
     else:
