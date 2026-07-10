@@ -424,11 +424,19 @@ _GPTOSS_OPENHANDS_XFAIL_REASON = (
 #
 # Hy3 / Hunyuan 3 is a 295B/21B-active MoE and the 0.11.0 Tier-1 5th
 # family. It has NO cheap alias: the only shipped SKU is the 4-bit
-# ``hy3-preview-4bit`` (166 GB weights, ~156 GB peak resident, gated by
-# ``min_memory_gb: 192`` in ``vllm_mlx/aliases.json``). This mirrors the
-# DeepSeek V4-Flash situation EXACTLY — 166 GB weights + the G11 100 GB
-# free-disk floor = 266 GB required against a 256 GB M3 Ultra, so the
-# model is single-node-infeasible in always-on per-PR CI.
+# ``hy3-preview-4bit`` (166 GB weights on disk, ~156 GB peak unified-memory
+# resident, gated by ``min_memory_gb: 192`` in ``vllm_mlx/aliases.json``).
+# This mirrors the DeepSeek V4-Flash situation EXACTLY. Two independent
+# constraints each make it single-node-infeasible in always-on per-PR CI —
+# they are NOT summed, they are evaluated separately:
+#   * RAM: ~156 GB peak resident leaves almost no headroom under a 256 GB
+#     M3 Ultra's unified memory once the OS + server + Metal scratch are
+#     accounted for, and the alias floor is 192 GB.
+#   * Disk: the 166 GB weight download plus the G11 100 GB free-disk floor
+#     means a CI runner needs ~266 GB free before the pull even starts.
+# A supported M3 Ultra (256 GB RAM, ample disk) CAN boot it — that is what
+# the weekly Golden Path job does; it is the always-on per-PR CI runners
+# that cannot.
 #
 # Following the same G8 discipline as the V4-Flash precedent
 # (root-caused note in ``_FAMILY_ALIASES['deepseek'].reason`` +

@@ -99,36 +99,68 @@ _WIRE_REASONING_ONLY = (
 _WIRE_PLAIN_CONTENT = "The answer is 42."
 
 
+_HY3_ALIAS = "hy3-preview-4bit"
+
+
+def _hy3_alias_profile():
+    """Resolve the production ``hy3-preview-4bit`` alias profile.
+
+    Resolving through the real alias loader (not a hard-coded parser
+    name) means this test also guards the **alias → parser wiring**: if
+    the alias ever stops declaring ``tool_call_parser`` /
+    ``reasoning_parser``, or points them at a different parser, the
+    assertions below fail instead of silently passing on a stale literal.
+    """
+    from vllm_mlx.model_aliases import resolve_profile
+
+    profile = resolve_profile(_HY3_ALIAS)
+    assert profile is not None, f"{_HY3_ALIAS!r} alias not found in aliases.json"
+    return profile
+
+
 def _tool_parser():
     """Construct the Hy3 tool parser the ``hy3-preview-4bit`` alias wires.
 
-    The ``hy_v3`` tool parser is merged (PR-2, #1070) and is now a
-    permanent part of the tree, so the import is HARD: an import-time
-    regression or an accidental deletion of the production parser must
-    FAIL this test, not silently skip it. Skipping would let the
-    always-on coverage this file promises go green on broken code — the
-    exact failure mode the offline test exists to catch.
+    The parser name is read FROM the alias config (``tool_call_parser``),
+    not hard-coded, so a change that unwires the alias from ``hy_v3`` is
+    caught here. The import + registry lookup are HARD (no ``pytest.skip``):
+    the ``hy_v3`` parser is merged (PR-2, #1070) and permanent, so an
+    import-time regression or accidental deletion must FAIL this always-on
+    test rather than skip it green — the exact failure mode this file
+    exists to catch.
     """
     from vllm_mlx.tool_parsers import HyV3ToolParser, ToolParserManager
 
-    # Resolve through the registry too, mirroring how the server wires it
-    # from the alias's ``tool_call_parser="hy_v3"`` field.
-    assert ToolParserManager.get_tool_parser("hy_v3") is HyV3ToolParser
-    return HyV3ToolParser()
+    parser_name = _hy3_alias_profile().tool_call_parser
+    assert parser_name == "hy_v3", (
+        f"{_HY3_ALIAS} tool_call_parser changed to {parser_name!r}; "
+        "update this offline test to match the alias wiring"
+    )
+    # Resolve through the registry the way the server wires it from the
+    # alias's ``tool_call_parser`` field.
+    resolved = ToolParserManager.get_tool_parser(parser_name)
+    assert resolved is HyV3ToolParser
+    return resolved()
 
 
 def _reasoning_parser():
-    """Construct the Hy3 reasoning parser the alias wires (``reasoning_parser=hy_v3``).
+    """Construct the Hy3 reasoning parser the alias wires (``reasoning_parser``).
 
-    Hard import for the same reason as ``_tool_parser`` — the ``hy_v3``
-    reasoning parser is merged (PR-2, #1070); a missing/broken import
-    must fail, not skip.
+    Same discipline as ``_tool_parser``: the parser name is read from the
+    alias config and the import is HARD — a missing/broken import or an
+    unwired alias must fail, not skip.
     """
     from vllm_mlx.reasoning import get_parser
     from vllm_mlx.reasoning.hy3_parser import Hy3ReasoningParser
 
-    assert get_parser("hy_v3") is Hy3ReasoningParser
-    return Hy3ReasoningParser()
+    parser_name = _hy3_alias_profile().reasoning_parser
+    assert parser_name == "hy_v3", (
+        f"{_HY3_ALIAS} reasoning_parser changed to {parser_name!r}; "
+        "update this offline test to match the alias wiring"
+    )
+    resolved = get_parser(parser_name)
+    assert resolved is Hy3ReasoningParser
+    return resolved()
 
 
 def _tool_calls_to_openai_shape(extracted) -> list[dict]:
@@ -235,7 +267,16 @@ class TestHy3ReasoningWireOffline:
         parser = _reasoning_parser()
         reasoning, content = parser.extract_reasoning(_WIRE_REASONING_THEN_ANSWER)
         assert reasoning is not None and reasoning.strip(), reasoning
-        assert "get_weather tool" in reasoning, reasoning
+        # The reasoning channel carries the extracted think TEXT verbatim,
+        # with the wrapping ``<think:opensource>…</think:opensource>`` tags
+        # (and the ``:opensource`` suffix) stripped — assert the exact
+        # payload, not just a substring, so a parser that left the raw tags
+        # in ``reasoning`` would fail here (not only in ``content``).
+        assert reasoning == (
+            "The user wants the weather in Tokyo. I should call the get_weather tool."
+        ), reasoning
+        assert_no_think_tag_leak(reasoning)
+        assert ":opensource" not in reasoning, reasoning
         assert content == "The weather in Tokyo is sunny.", content
         # The visible content the client renders must be think-tag-clean.
         assert_no_think_tag_leak(content)
@@ -247,6 +288,10 @@ class TestHy3ReasoningWireOffline:
         parser = _reasoning_parser()
         reasoning, content = parser.extract_reasoning(_WIRE_REASONING_ONLY)
         assert reasoning is not None and reasoning.strip(), reasoning
+        # Reasoning channel holds the stripped think text — no raw tags/suffix.
+        assert reasoning == "Let me work through this step by step.", reasoning
+        assert_no_think_tag_leak(reasoning)
+        assert ":opensource" not in reasoning, reasoning
         # Pure reasoning span — content is empty / None, never the raw tags.
         assert not (content or "").strip(), content
         assert_no_think_tag_leak(content or "")
