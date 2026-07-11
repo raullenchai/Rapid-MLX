@@ -321,6 +321,23 @@ class TestModelPinning:
     the ``-sol`` suffix is required.
     """
 
+    @pytest.fixture(autouse=True)
+    def _restore_module_state(self):
+        """Reload ``codex_review`` under the ambient (real) env after each
+        test so a test that mutates ``PR_VALIDATE_CODEX_MODEL`` + reloads
+        can't leak a stale module-level ``CODEX_MODEL`` into later tests.
+        Reloading (rather than restoring a captured value) also rebinds
+        the ``@property`` and every other module global consistently.
+        """
+        import importlib
+
+        import scripts.pr_validate.steps.codex_review as _cr
+
+        try:
+            yield
+        finally:
+            importlib.reload(_cr)
+
     def test_codex_model_constant_matches_documented(self, monkeypatch):
         # Default (no override) must be the pinned gpt-5.6-sol id.
         monkeypatch.delenv("PR_VALIDATE_CODEX_MODEL", raising=False)
@@ -330,9 +347,6 @@ class TestModelPinning:
 
         importlib.reload(_cr)
         assert _cr.CODEX_MODEL == "gpt-5.6-sol"
-        # Reload once more so module state reflects the ambient env for
-        # any later tests importing the same module object.
-        importlib.reload(_cr)
 
     def test_codex_model_env_override(self, monkeypatch):
         monkeypatch.setenv("PR_VALIDATE_CODEX_MODEL", "gpt-6.0-sol")
@@ -341,11 +355,7 @@ class TestModelPinning:
         import scripts.pr_validate.steps.codex_review as _cr
 
         importlib.reload(_cr)
-        try:
-            assert _cr.CODEX_MODEL == "gpt-6.0-sol"
-        finally:
-            monkeypatch.delenv("PR_VALIDATE_CODEX_MODEL", raising=False)
-            importlib.reload(_cr)
+        assert _cr.CODEX_MODEL == "gpt-6.0-sol"
 
     def test_codex_command_includes_explicit_model_flag(self, monkeypatch, tmp_path):
         """Drive the step with a fake ``codex`` binary that records the
