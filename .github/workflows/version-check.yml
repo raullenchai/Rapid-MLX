@@ -145,8 +145,21 @@ jobs:
           # PR (rare; e.g. a revert-then-re-bump correction, which may be a
           # *rollback*). This is distinct from a release bump: it bypasses the
           # strictly-increasing sanity check so a deliberate correction can
-          # pass.
+          # pass. The two modes are MUTUALLY EXCLUSIVE — a release-shaped title
+          # (which will trigger auto-release on merge) must genuinely increase,
+          # so we refuse to let the escape hatch relax the direction check for
+          # it. That combination (e.g. a *downgrade* titled
+          # ``chore: bump version to 0.10.5`` plus skip-version-bump) would
+          # otherwise pass here and then publish a downgrade.
           if echo "$LABELS" | grep -q '"name": *"skip-version-bump"'; then
+            if [ "$TITLE_IS_RELEASE" = "true" ]; then
+              echo "❌ skip-version-bump (a correction escape hatch) cannot be combined with a" >&2
+              echo "   release-shaped title. A 'chore: bump version to X.Y.Z' title triggers" >&2
+              echo "   auto-release on merge, so it must be a genuine increasing bump — not a" >&2
+              echo "   direction-agnostic correction. Drop the label for a real release bump, or" >&2
+              echo "   retitle the PR (non-release subject) for a correction/rollback." >&2
+              exit 1
+            fi
             ESCAPE_HATCH=true
             REASON="skip-version-bump escape-hatch label set"
           fi
