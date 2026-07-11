@@ -81,7 +81,9 @@ DEFAULT_CODEX_PATH = "/opt/homebrew/bin/codex"
 # whitespace-only override falls back to the default rather than
 # passing ``--model ""`` (which codex rejects with an opaque error).
 _DEFAULT_CODEX_MODEL = "gpt-5.6-sol"
-CODEX_MODEL = os.environ.get("PR_VALIDATE_CODEX_MODEL", "").strip() or _DEFAULT_CODEX_MODEL
+CODEX_MODEL = (
+    os.environ.get("PR_VALIDATE_CODEX_MODEL", "").strip() or _DEFAULT_CODEX_MODEL
+)
 
 # Diff byte budget for the codex review prompt. Truncation always
 # happens at a file boundary; partially-cut files would produce
