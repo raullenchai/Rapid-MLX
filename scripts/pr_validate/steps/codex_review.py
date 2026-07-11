@@ -261,7 +261,12 @@ If you find no issues, say "No blocking issues found." and stop.
 
 class CodexReviewStep(Step):
     name = "codex_review"
-    description = "Codex (gpt-5.6-sol) adversarial review of diff"
+
+    @property
+    def description(self) -> str:  # type: ignore[override]
+        # Report the effective model (respects PR_VALIDATE_CODEX_MODEL)
+        # so verbose logs / scorecards name the reviewer actually used.
+        return f"Codex ({CODEX_MODEL}) adversarial review of diff"
 
     def should_run(self, ctx: Context) -> bool:
         # Allow opt-out (offline dev, CI without codex auth, etc.).

@@ -245,8 +245,10 @@ malicious diff shouldn't be able to bypass review by inducing a
 crash). See "Failure-mode classification" below for the full table.
 
 Authentication: codex uses its own ChatGPT login at
-`~/.codex/auth.json`. No env var is read here; the repo is public and
-we explicitly do not want a fallback key in source.
+`~/.codex/auth.json`. No auth/API-key env var is read here; the repo is
+public and we explicitly do not want a fallback key in source. (The
+`PR_VALIDATE_CODEX_MODEL` env var documented below only selects the
+model — it carries no credentials.)
 
 Model is pinned to `gpt-5.6-sol` via the `--model` flag so a change to
 the caller's `~/.codex/config.toml` default cannot silently swap the
