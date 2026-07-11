@@ -93,17 +93,21 @@ jobs:
           ESCAPE_HATCH=false   # skip-version-bump → allowed, ANY correction
           REASON=""
 
-          # Primary signal: PR title matches the auto-release bump regex
-          # (same shape release-preflight.yml + auto-release.yml use). We also
-          # capture the title's X.Y.Z and require it to equal the new
-          # pyproject version — a title claiming 0.10.6 must not greenlight a
-          # pyproject change to 0.10.7 (that mismatch is exactly the drift
-          # class this guard exists to stop). The ``(#NN)`` squash suffix is
-          # tolerated here so a squash-merged title still matches; note that
-          # auto-release.yml itself rejects that suffix (see the squash-suffix
-          # trap in docs/development/pr_merge_sop.md) — merge bump PRs with an
-          # explicit --subject, per releasing.md.
+          # Does the title match the auto-release bump subject? This is the
+          # signal that lets the merged commit actually trigger a release, so
+          # an *increasing* (release) bump REQUIRES it (see the version-bump
+          # label handling below). The ``(#NN)`` squash suffix is tolerated
+          # here so a squash-merged title still matches; note auto-release.yml
+          # itself rejects that suffix (see the squash-suffix trap in
+          # docs/development/pr_merge_sop.md) — merge bump PRs with an explicit
+          # --subject, per releasing.md.
+          TITLE_IS_RELEASE=false
           if echo "$TITLE" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+( \(#[0-9]+\))?$'; then
+            TITLE_IS_RELEASE=true
+            # The title's X.Y.Z must equal the new pyproject version — a title
+            # claiming 0.10.6 must not greenlight a pyproject change to 0.10.7
+            # (that mismatch is exactly the drift class this guard exists to
+            # stop).
             TITLE_VER=$(echo "$TITLE" \
               | sed -E 's/^chore: bump version to ([0-9]+\.[0-9]+\.[0-9]+).*$/\1/')
             if [ "$TITLE_VER" = "$HEAD_VER" ]; then
@@ -116,12 +120,24 @@ jobs:
             fi
           fi
 
-          # Secondary signal: explicit ``version-bump`` label. Treated like a
-          # release bump (still gets the well-formed + strictly-increasing
-          # sanity check below).
+          # Secondary signal: explicit ``version-bump`` label. This authorizes
+          # the change but is NOT sufficient on its own for a release bump: if
+          # the title isn't a release subject, the merged squash commit won't
+          # match auto-release.yml's regex and the version would advance
+          # without ever publishing — the exact incident this guard prevents.
+          # So the label requires a release-shaped title too; the sanity step
+          # still confirms the increase.
           if echo "$LABELS" | grep -q '"name": *"version-bump"'; then
-            IS_BUMP=true
-            REASON="version-bump label set"
+            if [ "$TITLE_IS_RELEASE" = "true" ]; then
+              IS_BUMP=true
+              REASON="version-bump label + release title"
+            else
+              echo "❌ version-bump label is set but the PR title is not a release subject." >&2
+              echo "   An increasing bump must be titled 'chore: bump version to X.Y.Z' so the" >&2
+              echo "   merged commit triggers auto-release. (For a deliberate correction/rollback" >&2
+              echo "   that should NOT publish, use the skip-version-bump label instead.)" >&2
+              exit 1
+            fi
           fi
 
           # Manual escape hatch: legacy ``skip-version-bump`` label lets a

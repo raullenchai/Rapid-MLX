@@ -72,7 +72,7 @@ Runs on PRs that modify `pyproject.toml` (so any version-line edit is always che
 - **A dedicated bump PR that changes the `version` line** → **PASS**, plus a sanity check that the new version is well-formed `X.Y.Z` (no leading-zero components) and strictly greater than base.
 - **A PR that does not touch the `version` line** → **PASS** (nothing to guard).
 
-A "bump PR" is identified by (primary) its PR title matching the auto-release regex `chore: bump version to X.Y.Z` — the same shape `release-preflight.yml` uses — or (secondary) a `version-bump` label. When the title is the signal, the guard also requires the **title's `X.Y.Z` to equal the new `pyproject.toml` version** — a title claiming `0.10.6` cannot greenlight a `pyproject` change to `0.10.7`. (The guard tolerates a trailing `(#NN)` squash suffix in the title so a squash-merged bump still matches; note `auto-release.yml` itself rejects that suffix, so bump PRs must be merged with an explicit `--subject` — see the squash-suffix trap below.)
+A "bump PR" is identified by (primary) its PR title matching the auto-release regex `chore: bump version to X.Y.Z` — the same shape `release-preflight.yml` uses — or (secondary) a `version-bump` label. When the title is the signal, the guard also requires the **title's `X.Y.Z` to equal the new `pyproject.toml` version** — a title claiming `0.10.6` cannot greenlight a `pyproject` change to `0.10.7`. The `version-bump` label authorizes the change but is **not sufficient on its own for an increasing bump**: the title must *also* be a release subject, otherwise the merged squash commit wouldn't match `auto-release.yml`'s regex and the version would advance without ever publishing (the exact incident this guard prevents). (The guard tolerates a trailing `(#NN)` squash suffix in the title so a squash-merged bump still matches; note `auto-release.yml` itself rejects that suffix, so bump PRs must be merged with an explicit `--subject` — see the squash-suffix trap below.)
 
 The `skip-version-bump` escape hatch is validated differently: because it's meant for deliberate corrections (which may be a **rollback**), it only checks that the version is well-formed and actually changed — it does **not** enforce strictly-increasing.
 
@@ -211,7 +211,7 @@ For PRs that are explicitly about perf changes (a kernel rewrite, a new fast pat
 | Pitfall | Memory ref | Mitigation |
 |---|---|---|
 | `(#NN)` squash suffix breaks regex | `release_squash_subject` | PF-1 |
-| `skip-version-bump` escape-hatch label needs PR close+reopen to refire | `gotcha_skip_version_bump_label` | Doc note; close+reopen or push to refire `pull_request` event |
+| `skip-version-bump` escape-hatch label refire | `gotcha_skip_version_bump_label` | Auto-refires — `version-check.yml` subscribes to `labeled`/`unlabeled`/`edited`, so adding/removing the label or re-titling reruns the guard (no close+reopen needed) |
 | Mutable GitHub Actions tags as supply-chain vector | `pr_merge_sop` §7 | `scripts/check_gha_pinning.py` (advisory pending pinning cleanup) |
 | MLX upstream new module-scope calls (M5 #404) | `release_workflow` G10 | `scripts/check_mlx_upstream_calls.py` in `release-preflight.yml` |
 | Codex-skip rationalization on bump PRs ("feels like just a version bump") | `feedback_release_sop_third_offense` | CI/M3 split — most skippable gates are now in CI, not in the human's hands |
