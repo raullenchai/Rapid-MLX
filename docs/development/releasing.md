@@ -10,7 +10,7 @@ The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs
 |---|---|
 | Push commit `chore: bump version to X.Y.Z` to `main` | `auto-release.yml` creates tag `vX.Y.Z` + GitHub Release |
 | GitHub Release published | `publish.yml` builds → PyPI publish → dispatches Homebrew tap to bump formula |
-| PR touches `aliases.json` / `model_auto_config.py` / `cli.py` / dep changes | `version-check.yml` requires same PR to bump `pyproject.toml` version (or set the `skip-version-bump` label) |
+| PR changes the `pyproject.toml` `version` line outside a dedicated bump PR | `version-check.yml` **fails** — version may only change in a `chore: bump version to X.Y.Z` PR (or a PR with the `version-bump` label) |
 
 ## Cutting a release
 
@@ -62,25 +62,30 @@ The sequence is hands-off after step 2.
 
 ## Safety nets
 
-### `version-check.yml` — block stale releases at PR time
+### `version-check.yml` — forbid stray version bumps at PR time
 
-Runs on PRs that modify any of:
-- `vllm_mlx/aliases.json` — new model alias entries
-- `vllm_mlx/model_auto_config.py` — new model profiles or capability flags
-- `vllm_mlx/cli.py` — new flags or entrypoints
-- `pyproject.toml` — new dependencies (matched by grep on `dependencies` / `optional-dependencies` / `requires`)
+The guardrail (G4): the `pyproject.toml` `version` line may **only** change in a dedicated bump PR. This is the inverse of the old rule — the workflow used to *force* user-facing PRs (aliases / profiles / CLI flags) to bump the version, which fought our batch-then-cut release SOP and caused inline bumps to smuggle into `fix(...)` commits, drift the version, and silently skip releases (the commit subject didn't match `auto-release`'s regex).
 
-If those files changed but `pyproject.toml`'s `version` field didn't, the check fails with:
+Runs on PRs that modify `pyproject.toml` (so any version-line edit is always checked, whoever makes it). The decision:
+
+- **A non-bump PR that changes the `version` line** → **FAIL** (loud) with the G4 message.
+- **A dedicated bump PR that changes the `version` line** → **PASS**, plus a sanity check that the new version is well-formed `X.Y.Z` and strictly greater than base.
+- **A PR that does not touch the `version` line** → **PASS** (nothing to guard).
+
+A "bump PR" is identified by (primary) its PR title matching the auto-release regex `chore: bump version to X.Y.Z` — the same regex `release-preflight.yml` uses — or (secondary) a `version-bump` label.
+
+The FAIL message looks like:
 
 ```
-❌ User-facing change detected but pyproject.toml version is unchanged.
-Files that triggered this check: ...
-To fix: bump pyproject.toml — e.g. 0.6.15 → next patch.
-To bypass (pure refactor, no user-visible change): add the
-``skip-version-bump`` label to this PR.
+❌ pyproject version must only change in a dedicated `chore: bump version to X.Y.Z` PR (guardrail G4).
+This PR changes the version line (0.10.5 -> 0.10.6) but its title is
+not a bump subject and it carries no version-bump label.
+Feature/fix PRs must NOT bump version — batch them and cut the release
+separately. If this really is the release bump, title the PR
+`chore: bump version to X.Y.Z`.
 ```
 
-**Bypass**: add the `skip-version-bump` label. Use this **only** for refactors that touch a watched file but don't change observable behaviour (e.g. moving a function inside `cli.py` without adding flags).
+**Legacy escape hatch**: the `skip-version-bump` label lets a maintainer intentionally change the `version` line *outside* a titled bump PR (rare — e.g. a revert-then-re-bump correction). It is no longer the primary bypass; the primary path is simply to title the PR `chore: bump version to X.Y.Z`.
 
 ### `_version_check.py` — warn end users on stale local installs
 
@@ -94,19 +99,18 @@ Cache: `~/.cache/rapid-mlx/version_check.json` (24h TTL). Network timeout: 2s. *
 
 ## Adding a new model
 
-If your PR adds a model alias or profile, the version-check guard will require a version bump. The flow:
+If your PR adds a model alias or profile, it ships **without** a version bump — the version-check guard now *forbids* a stray bump in a non-bump PR. The release is cut later in a dedicated bump PR (batch-then-cut SOP). The flow:
 
 1. Add the entry to `vllm_mlx/aliases.json` and (if it has non-default capabilities) to `vllm_mlx/model_auto_config.py`.
 2. Add tests as appropriate.
-3. **Bump `pyproject.toml` version** in the same PR.
-4. Optional but recommended: run the eligibility bench (see [issue #269](https://github.com/raullenchai/Rapid-MLX/issues/269)) and paste tier classification into the `ModelConfig` entry.
-5. After merge, your bump-version commit triggers the auto-release pipeline.
+3. Optional but recommended: run the eligibility bench (see [issue #269](https://github.com/raullenchai/Rapid-MLX/issues/269)) and paste tier classification into the `ModelConfig` entry.
+4. Merge the alias PR with **no** version change. When you're ready to release, cut a dedicated `chore: bump version to X.Y.Z` PR (see [Cutting a release](#cutting-a-release)) — that bump commit triggers the auto-release pipeline and ships the batched aliases.
 
 ## Manual override paths
 
 Sometimes the auto pipeline isn't right. Escape hatches:
 
-- **Skip the version-check guard for one PR**: add the `skip-version-bump` label.
+- **Change the version outside a titled bump PR** (rare — e.g. a revert-then-re-bump correction): add the `skip-version-bump` label. This is the escape hatch that lets `version-check.yml` accept a `version` change in a PR whose title isn't `chore: bump version to X.Y.Z`.
 - **Disable the staleness warning system-wide**: set `RAPID_MLX_DISABLE_VERSION_CHECK=1` in your shell profile.
 - **Re-trigger a release** (e.g. PyPI publish failed mid-pipeline): create the GitHub Release manually from the existing tag — `publish.yml` will re-fire.
 - **Skip auto-release entirely** (e.g. you want to bump version but not publish yet): use a different commit subject (`chore: prep 0.6.17` instead of `chore: bump version to 0.6.17`). `auto-release.yml` only matches the strict subject.
@@ -205,7 +209,7 @@ For PRs that are explicitly about perf changes (a kernel rewrite, a new fast pat
 | Pitfall | Memory ref | Mitigation |
 |---|---|---|
 | `(#NN)` squash suffix breaks regex | `release_squash_subject` | PF-1 |
-| `skip-version-bump` label needs PR close+reopen to refire | `gotcha_skip_version_bump_label` | Doc note; close+reopen or push to refire `pull_request` event |
+| `skip-version-bump` escape-hatch label needs PR close+reopen to refire | `gotcha_skip_version_bump_label` | Doc note; close+reopen or push to refire `pull_request` event |
 | Mutable GitHub Actions tags as supply-chain vector | `pr_merge_sop` §7 | `scripts/check_gha_pinning.py` (advisory pending pinning cleanup) |
 | MLX upstream new module-scope calls (M5 #404) | `release_workflow` G10 | `scripts/check_mlx_upstream_calls.py` in `release-preflight.yml` |
 | Codex-skip rationalization on bump PRs ("feels like just a version bump") | `feedback_release_sop_third_offense` | CI/M3 split — most skippable gates are now in CI, not in the human's hands |

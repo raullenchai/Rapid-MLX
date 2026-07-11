@@ -163,6 +163,6 @@ Common reasoning parsers: `qwen3`, `deepseek_r1`, `gemma4`, `minimax`.
 
 The release pipeline is fully automated from a single commit on `main`. Push a commit with subject `chore: bump version to X.Y.Z` (matching the new `pyproject.toml` version) and the rest happens on its own: tag → GitHub Release → PyPI → Homebrew formula PR.
 
-If your PR adds a model alias, capability profile, or CLI flag, the `version-check.yml` workflow requires you to bump `pyproject.toml` in the same PR (or set the `skip-version-bump` label for pure refactors). This is the safety net that prevents stale `rapid-mlx models` after a merge.
+If your PR adds a model alias, capability profile, or CLI flag, do **not** bump `pyproject.toml` — ship the change with no version bump. The `version-check.yml` workflow instead *blocks* a stray `version` change in any non-bump PR; the release is cut later in a dedicated `chore: bump version to X.Y.Z` PR that batches the accumulated changes. This batch-then-cut SOP is what prevents a stale `rapid-mlx models` list (and the silently-skipped releases an inline bump would cause).
 
 Full details, escape hatches, and rationale: [`docs/development/releasing.md`](docs/development/releasing.md).

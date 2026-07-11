@@ -57,7 +57,7 @@ For first-time contributors learning the ropes: relax tone, not standards. Walk 
 - Confirm `git status` clean; branch rebased on latest `raullenchai/main`. Heavy divergence → ask the contributor to rebase first.
 - **Identify blast radius** (this gates which later steps fire):
   - **Inference-touching** (`vllm_mlx/{engine,scheduler,parsers,routes,reasoning,tool_parsers,memory_cache}/`, `vllm_mlx/runtime/`, `vllm_mlx/agents/`) → all gates required, including `make check` and Anthropic-compat round-trip.
-  - **Surface-touching** (CLI flags, alias registry, `pyproject.toml`) → version-bump check fires; `make check` skip OK if no behavior change in generation path.
+  - **Surface-touching** (CLI flags, alias registry, `pyproject.toml`) → the version-bump guard now only fires to *block* a stray `version` change, not to require one; surface PRs ship with **no** version bump (release is cut later in a dedicated bump PR). `make check` skip OK if no behavior change in generation path.
   - **Dev-only** (bench scripts, dev tooling, CI workflows, docs, tests) → `make check` skip OK; full unit + lint still required.
 
 - **Verify required PR-template fields** are filled. If any are missing, **request fill-in before review begins** — don't silently start reading the diff with the contributor unaware of the gap. Required fields:
@@ -265,7 +265,7 @@ Everything else is automated. The `pr_validate` scorecard comment is the single 
 - **Background processes block GPU** — orphaned `rapid-mlx serve` from prior sessions can hang pytest. `pkill -f "vllm_mlx.cli serve"` before benches.
 - **Auto-deploy blast radius** — merging to main with version bump = instant PyPI + Homebrew release. External PR review must include the Step 7 supply-chain audit before merge.
 - **Squash-suffix trap** — GitHub's default squash-merge appends `(#NN)` to the subject, breaking `auto-release.yml`'s regex. Always pass `--subject` to `gh pr merge` for bump PRs. `release-preflight.yml` PF-1 catches this pre-merge.
-- **`skip-version-bump` label refire** — adding the label after `version-check.yml` has already failed does NOT auto-re-run the workflow (the label-add event isn't a `pull_request` event the bypass step listens to). Either close+reopen the PR or push a commit to refire. Memory: `gotcha_skip_version_bump_label_after_run`.
+- **`skip-version-bump` label refire** — the label is now the escape hatch for intentionally changing the `version` line outside a titled bump PR. Adding it after `version-check.yml` has already failed does NOT auto-re-run the workflow (the label-add event isn't a `pull_request` event the guard listens to). Either close+reopen the PR or push a commit to refire. Memory: `gotcha_skip_version_bump_label_after_run`.
 - **A/B classify validation-surfaced bugs** — when `pr_validate` or codex surfaces a bug, replay against base/main before deciding it's PR-introduced. Pre-existing bugs are follow-up issues, not PR scope creep. Memory: `feedback_pr_scope_ab_classify_first`.
 - **Codex+DeepSeek convergence asymmetry** — codex converges in ~9 rounds, DeepSeek is asymptotic. Run codex to convergence, then ONE DeepSeek round. Memory: `codex_deepseek_convergence_asymmetry`.
 - **Pre-existing pre-existing flake confirmation** — use a worktree, not `git stash`. The stash pattern leaves work stashed if pytest crashes mid-run.

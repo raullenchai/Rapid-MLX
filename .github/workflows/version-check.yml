@@ -1,21 +1,37 @@
-name: Version bump check
+name: Version bump guard
 
-# When a PR touches user-facing surface (model aliases, CLI flags,
-# capability profiles, dependencies), require that pyproject.toml's
-# version field is bumped in the same PR. Without this guard, brew /
-# PyPI users see a stale ``rapid-mlx models`` list any time someone
-# merges a model add but forgets to cut a release.
+# Guardrail G4: the ``pyproject.toml`` ``version`` line may ONLY change in a
+# dedicated release PR whose title is ``chore: bump version to X.Y.Z``.
 #
-# Bypass for pure refactors that touch the watched paths but don't
-# change user-visible behavior: add the `skip-version-bump` label.
+# History: this workflow used to do the *opposite* — it FORCED every PR that
+# touched user-facing surface (aliases.json / model_auto_config.py / cli.py /
+# deps) to bump ``version`` or fail CI. That "one bump per user-facing PR"
+# rule directly conflicts with our actual release SOP (batch many fix/feature
+# PRs, then cut ONE dedicated bump PR). On 2026-07-10 it caused #1077 + #1078
+# to each smuggle an inline version bump into a ``fix(...)`` commit — drifting
+# 0.10.5 → 0.10.6 → 0.10.7 (skipping the planned 0.10.6) and, because those
+# commit subjects didn't match auto-release's ``chore: bump version to X.Y.Z``
+# regex, SILENTLY skipping every release. So the philosophy is inverted:
+#
+#   * Only a dedicated bump PR may change the version line  → PASS.
+#   * A non-bump PR that changes the version line           → FAIL (loud).
+#   * Any PR that does not touch the version line           → PASS.
+#
+# A "bump PR" is identified by its PR title matching the auto-release regex
+# (primary signal — reliable in the ``pull_request`` event context and the
+# same check ``release-preflight.yml`` uses) OR a ``version-bump`` label.
+# The legacy ``skip-version-bump`` label is honored as a manual escape hatch
+# for the rare case where a version change is intentional outside a titled
+# bump PR.
 
 on:
   pull_request:
     branches: [main]
     paths:
-      - "vllm_mlx/aliases.json"
-      - "vllm_mlx/model_auto_config.py"
-      - "vllm_mlx/cli.py"
+      # Only pyproject.toml matters now — we no longer force bumps based on
+      # aliases.json / model_auto_config.py / cli.py edits (that was the cause
+      # of the incident). We watch pyproject.toml so any version-line edit is
+      # always checked, whoever makes it.
       - "pyproject.toml"
 
 permissions:
@@ -23,83 +39,131 @@ permissions:
   pull-requests: read
 
 jobs:
-  check:
+  guard:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
 
-      - name: Skip if bypass label set
-        id: bypass
-        env:
-          LABELS: ${{ toJson(github.event.pull_request.labels) }}
-        run: |
-          if echo "$LABELS" | grep -q '"name": *"skip-version-bump"'; then
-            echo "Bypass label set — skipping version bump check"
-            echo "bypass=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "bypass=false" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Detect user-facing changes
-        if: steps.bypass.outputs.bypass != 'true'
-        id: facing
+      - name: Determine whether the version line changed
+        id: verchange
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_SHA: ${{ github.event.pull_request.head.sha }}
         run: |
-          # Files that actually expose new things to users.
-          # pyproject.toml is checked separately (deps changes also count).
-          USER_FACING=$(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- \
-            vllm_mlx/aliases.json \
-            vllm_mlx/model_auto_config.py \
-            vllm_mlx/cli.py \
-            || true)
-          DEPS_CHANGED=$(git diff "$BASE_SHA" "$HEAD_SHA" -- pyproject.toml \
-            | grep -E '^\+.*(dependencies|optional-dependencies|requires)' \
-            || true)
-
-          if [ -z "$USER_FACING" ] && [ -z "$DEPS_CHANGED" ]; then
-            echo "No user-facing change detected"
-            echo "user_facing=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "User-facing change detected:"
-            [ -n "$USER_FACING" ] && echo "$USER_FACING"
-            [ -n "$DEPS_CHANGED" ] && echo "deps changed in pyproject.toml"
-            echo "user_facing=true" >> "$GITHUB_OUTPUT"
-          fi
-
-      - name: Verify version bump
-        if: steps.bypass.outputs.bypass != 'true' && steps.facing.outputs.user_facing == 'true'
-        env:
-          BASE_SHA: ${{ github.event.pull_request.base.sha }}
-          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
-        run: |
-          # Extract version line on base + head. ``grep -m1`` stops at the
-          # first match; the project version is the first ``version =``
-          # in ``[project]``.
-          BASE_VER=$(git show "$BASE_SHA:pyproject.toml" \
+          # Extract the ``[project]`` version on base + head. ``grep -m1``
+          # stops at the first match; the project version is the first
+          # ``version =`` line.
+          BASE_VER=$(git show "$BASE_SHA:pyproject.toml" 2>/dev/null \
             | grep -m1 '^version *=' | awk -F'"' '{print $2}')
-          HEAD_VER=$(git show "$HEAD_SHA:pyproject.toml" \
+          HEAD_VER=$(git show "$HEAD_SHA:pyproject.toml" 2>/dev/null \
             | grep -m1 '^version *=' | awk -F'"' '{print $2}')
 
-          echo "base version: $BASE_VER"
-          echo "head version: $HEAD_VER"
+          echo "base version: ${BASE_VER:-<none>}"
+          echo "head version: ${HEAD_VER:-<none>}"
+          echo "base_ver=$BASE_VER" >> "$GITHUB_OUTPUT"
+          echo "head_ver=$HEAD_VER" >> "$GITHUB_OUTPUT"
 
           if [ "$BASE_VER" = "$HEAD_VER" ]; then
-            cat <<EOF >&2
+            echo "Version line unchanged."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "Version line changed: $BASE_VER -> $HEAD_VER"
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
 
-          ❌ User-facing change detected but pyproject.toml version is unchanged.
+      - name: Determine whether this is a dedicated bump PR
+        id: isbump
+        if: steps.verchange.outputs.changed == 'true'
+        env:
+          TITLE: ${{ github.event.pull_request.title }}
+          LABELS: ${{ toJson(github.event.pull_request.labels) }}
+        run: |
+          IS_BUMP=false
+          REASON=""
 
-          Files that triggered this check:
-          $(git diff --name-only "$BASE_SHA" "$HEAD_SHA" -- vllm_mlx/aliases.json vllm_mlx/model_auto_config.py vllm_mlx/cli.py | sed 's/^/    /')
+          # Primary signal: PR title matches the auto-release bump regex
+          # (same regex release-preflight.yml + auto-release.yml use).
+          if echo "$TITLE" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+( \(#[0-9]+\))?$'; then
+            IS_BUMP=true
+            REASON="PR title matches 'chore: bump version to X.Y.Z'"
+          fi
 
-          To fix: bump pyproject.toml — e.g. ${BASE_VER} → next patch.
-          To bypass (pure refactor, no user-visible change): add the
-          ``skip-version-bump`` label to this PR.
+          # Secondary signal: explicit ``version-bump`` label.
+          if echo "$LABELS" | grep -q '"name": *"version-bump"'; then
+            IS_BUMP=true
+            REASON="version-bump label set"
+          fi
+
+          # Manual escape hatch: legacy ``skip-version-bump`` label lets a
+          # maintainer intentionally change the version outside a titled bump
+          # PR (rare; e.g. a revert-then-re-bump correction).
+          if echo "$LABELS" | grep -q '"name": *"skip-version-bump"'; then
+            IS_BUMP=true
+            REASON="skip-version-bump escape-hatch label set"
+          fi
+
+          if [ "$IS_BUMP" = "true" ]; then
+            echo "This is a bump PR ($REASON)."
+            echo "is_bump=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "This is NOT a bump PR."
+            echo "is_bump=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Block stray version bumps in non-bump PRs
+        if: steps.verchange.outputs.changed == 'true' && steps.isbump.outputs.is_bump != 'true'
+        env:
+          BASE_VER: ${{ steps.verchange.outputs.base_ver }}
+          HEAD_VER: ${{ steps.verchange.outputs.head_ver }}
+        run: |
+          cat <<EOF >&2
+
+          ❌ pyproject version must only change in a dedicated \`chore: bump version to X.Y.Z\` PR (guardrail G4).
+
+          This PR changes the version line ($BASE_VER -> $HEAD_VER) but its title is
+          not a bump subject and it carries no version-bump label.
+
+          Feature/fix PRs must NOT bump version — batch them and cut the release
+          separately. If this really is the release bump, title the PR
+          \`chore: bump version to X.Y.Z\`.
+
+          (Root-cause context: an inline bump in a fix PR both skips the planned
+          version and — because the commit subject doesn't match auto-release's
+          regex — silently skips the release entirely.)
           EOF
+          exit 1
+
+      - name: Sanity-check the new version is well-formed and increases
+        if: steps.verchange.outputs.changed == 'true' && steps.isbump.outputs.is_bump == 'true'
+        env:
+          BASE_VER: ${{ steps.verchange.outputs.base_ver }}
+          HEAD_VER: ${{ steps.verchange.outputs.head_ver }}
+        run: |
+          # A bump PR is allowed to change the version. As a nice-to-have,
+          # verify the new version is well-formed X.Y.Z and strictly greater
+          # than base. Advisory-friendly: a malformed/non-increasing bump is a
+          # hard error because it would confuse auto-release + PyPI ordering.
+          if ! echo "$HEAD_VER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+            echo "❌ New version '$HEAD_VER' is not a well-formed X.Y.Z." >&2
             exit 1
           fi
 
-          echo "✓ version bumped: $BASE_VER → $HEAD_VER"
+          # Strictly-greater check via ``sort -V``: the larger of the two under
+          # version sort must be HEAD, and the two must differ.
+          if [ "$BASE_VER" = "$HEAD_VER" ]; then
+            echo "❌ Bump PR but version did not actually change." >&2
+            exit 1
+          fi
+          GREATER=$(printf '%s\n%s\n' "$BASE_VER" "$HEAD_VER" | sort -V | tail -1)
+          if [ "$GREATER" != "$HEAD_VER" ]; then
+            echo "❌ New version '$HEAD_VER' is not greater than base '$BASE_VER'." >&2
+            exit 1
+          fi
+
+          echo "✓ Bump PR: version $BASE_VER -> $HEAD_VER (well-formed, increasing)."
+
+      - name: Pass — no stray version change
+        if: steps.verchange.outputs.changed != 'true'
+        run: echo "✓ Version line unchanged — nothing to guard."
