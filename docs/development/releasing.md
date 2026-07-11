@@ -115,7 +115,7 @@ Sometimes the auto pipeline isn't right. Escape hatches:
 - **Change the version outside a titled bump PR** (rare — e.g. a revert-then-re-bump correction): add the `skip-version-bump` label. This is the escape hatch that lets `version-check.yml` accept a `version` change in a PR whose title isn't `chore: bump version to X.Y.Z`.
 - **Disable the staleness warning system-wide**: set `RAPID_MLX_DISABLE_VERSION_CHECK=1` in your shell profile.
 - **Re-trigger a release** (e.g. PyPI publish failed mid-pipeline): create the GitHub Release manually from the existing tag — `publish.yml` will re-fire.
-- **Skip auto-release entirely** (e.g. you want to bump version but not publish yet): use a different commit subject (`chore: prep 0.6.17` instead of `chore: bump version to 0.6.17`). `auto-release.yml` only matches the strict subject.
+- **Skip auto-release entirely** (e.g. you want to change the version but not publish yet): use a non-release commit subject (`chore: prep 0.6.17` instead of `chore: bump version to 0.6.17`) so `auto-release.yml` doesn't fire — **and add the `skip-version-bump` label**, because `version-check.yml` will otherwise reject a version change under a non-release title. (A non-release title without the label is exactly the stray-bump case the guard blocks.)
 
 ## Release commit message format
 

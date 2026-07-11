@@ -19,10 +19,15 @@ name: Version bump guard
 #
 # A "bump PR" is identified by its PR title matching the auto-release regex
 # (primary signal — reliable in the ``pull_request`` event context and the
-# same check ``release-preflight.yml`` uses) OR a ``version-bump`` label.
-# The legacy ``skip-version-bump`` label is honored as a manual escape hatch
-# for the rare case where a version change is intentional outside a titled
-# bump PR.
+# same shape ``release-preflight.yml`` uses). A ``version-bump`` label is a
+# secondary AUTHORIZATION, but it is NOT sufficient on its own: because the
+# merged squash subject must match auto-release's regex to actually publish,
+# an increasing bump ALWAYS requires the release-shaped title too — the label
+# just makes the intent explicit. The legacy ``skip-version-bump`` label is a
+# separate, mutually-exclusive escape hatch for a deliberate correction
+# (possibly a rollback) that changes the version OUTSIDE a titled bump PR and
+# should NOT publish; it bypasses the strictly-increasing check but is refused
+# in combination with a release-shaped title.
 
 on:
   pull_request:
