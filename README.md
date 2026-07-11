@@ -178,6 +178,8 @@ python3.12 -m pip install rapid-mlx
 
 If `pip install rapid-mlx` says "no matching distribution", your Python is too old. `brew install python@3.12` first. Upgrade with `pip install -U rapid-mlx`.
 
+For image-input / VLM models (Qwen-VL, true multimodal), install the vision extra: `pip install 'rapid-mlx[vision]'` — see [Optional extras](https://rapidmlx.com/docs/extras.html).
+
 </details>
 
 ---
