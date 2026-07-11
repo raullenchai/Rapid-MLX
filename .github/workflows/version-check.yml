@@ -26,6 +26,14 @@ name: Version bump guard
 
 on:
   pull_request:
+    # The guard authorizes a version change off the PR *title* and *labels*, so
+    # it must re-run when either changes — otherwise re-titling a PR to a bump
+    # subject (or removing the version-bump / skip-version-bump label) after a
+    # green run would leave the gate falsely passing. ``edited`` covers title
+    # edits; ``labeled`` / ``unlabeled`` cover label churn. The default trio
+    # (opened / synchronize / reopened) is kept explicitly since naming
+    # ``types`` overrides the default set.
+    types: [opened, synchronize, reopened, edited, labeled, unlabeled]
     branches: [main]
     paths:
       # Only pyproject.toml matters now — we no longer force bumps based on
@@ -79,18 +87,38 @@ jobs:
         env:
           TITLE: ${{ github.event.pull_request.title }}
           LABELS: ${{ toJson(github.event.pull_request.labels) }}
+          HEAD_VER: ${{ steps.verchange.outputs.head_ver }}
         run: |
-          IS_BUMP=false
+          IS_BUMP=false        # a real release bump → allowed + sanity-checked
+          ESCAPE_HATCH=false   # skip-version-bump → allowed, ANY correction
           REASON=""
 
           # Primary signal: PR title matches the auto-release bump regex
-          # (same regex release-preflight.yml + auto-release.yml use).
+          # (same shape release-preflight.yml + auto-release.yml use). We also
+          # capture the title's X.Y.Z and require it to equal the new
+          # pyproject version — a title claiming 0.10.6 must not greenlight a
+          # pyproject change to 0.10.7 (that mismatch is exactly the drift
+          # class this guard exists to stop). The ``(#NN)`` squash suffix is
+          # tolerated here so a squash-merged title still matches; note that
+          # auto-release.yml itself rejects that suffix (see the squash-suffix
+          # trap in docs/development/pr_merge_sop.md) — merge bump PRs with an
+          # explicit --subject, per releasing.md.
           if echo "$TITLE" | grep -qE '^chore: bump version to [0-9]+\.[0-9]+\.[0-9]+( \(#[0-9]+\))?$'; then
-            IS_BUMP=true
-            REASON="PR title matches 'chore: bump version to X.Y.Z'"
+            TITLE_VER=$(echo "$TITLE" \
+              | sed -E 's/^chore: bump version to ([0-9]+\.[0-9]+\.[0-9]+).*$/\1/')
+            if [ "$TITLE_VER" = "$HEAD_VER" ]; then
+              IS_BUMP=true
+              REASON="PR title matches 'chore: bump version to $HEAD_VER'"
+            else
+              echo "❌ Title says version $TITLE_VER but pyproject changed to $HEAD_VER." >&2
+              echo "   A bump PR's title version must equal the new pyproject version." >&2
+              exit 1
+            fi
           fi
 
-          # Secondary signal: explicit ``version-bump`` label.
+          # Secondary signal: explicit ``version-bump`` label. Treated like a
+          # release bump (still gets the well-formed + strictly-increasing
+          # sanity check below).
           if echo "$LABELS" | grep -q '"name": *"version-bump"'; then
             IS_BUMP=true
             REASON="version-bump label set"
@@ -98,19 +126,25 @@ jobs:
 
           # Manual escape hatch: legacy ``skip-version-bump`` label lets a
           # maintainer intentionally change the version outside a titled bump
-          # PR (rare; e.g. a revert-then-re-bump correction).
+          # PR (rare; e.g. a revert-then-re-bump correction, which may be a
+          # *rollback*). This is distinct from a release bump: it bypasses the
+          # strictly-increasing sanity check so a deliberate correction can
+          # pass.
           if echo "$LABELS" | grep -q '"name": *"skip-version-bump"'; then
-            IS_BUMP=true
+            ESCAPE_HATCH=true
             REASON="skip-version-bump escape-hatch label set"
           fi
 
-          if [ "$IS_BUMP" = "true" ]; then
-            echo "This is a bump PR ($REASON)."
+          if [ "$IS_BUMP" = "true" ] || [ "$ESCAPE_HATCH" = "true" ]; then
+            echo "Version change is authorized ($REASON)."
             echo "is_bump=true" >> "$GITHUB_OUTPUT"
           else
-            echo "This is NOT a bump PR."
+            echo "Version change is NOT authorized (no bump title/label)."
             echo "is_bump=false" >> "$GITHUB_OUTPUT"
           fi
+          # Export the escape-hatch flag so the sanity step can relax the
+          # strictly-increasing rule for deliberate corrections.
+          echo "escape_hatch=$ESCAPE_HATCH" >> "$GITHUB_OUTPUT"
 
       - name: Block stray version bumps in non-bump PRs
         if: steps.verchange.outputs.changed == 'true' && steps.isbump.outputs.is_bump != 'true'
@@ -140,20 +174,37 @@ jobs:
         env:
           BASE_VER: ${{ steps.verchange.outputs.base_ver }}
           HEAD_VER: ${{ steps.verchange.outputs.head_ver }}
+          ESCAPE_HATCH: ${{ steps.isbump.outputs.escape_hatch }}
         run: |
-          # A bump PR is allowed to change the version. As a nice-to-have,
-          # verify the new version is well-formed X.Y.Z and strictly greater
-          # than base. Advisory-friendly: a malformed/non-increasing bump is a
-          # hard error because it would confuse auto-release + PyPI ordering.
-          if ! echo "$HEAD_VER" | grep -qE '^[0-9]+\.[0-9]+\.[0-9]+$'; then
-            echo "❌ New version '$HEAD_VER' is not a well-formed X.Y.Z." >&2
+          # An authorized version change is allowed. Verify the new version is
+          # well-formed X.Y.Z with no leading-zero components — ``01`` / ``1.00.1``
+          # would sort-normalize under ``sort -V`` (so ``1.00.1`` could read as
+          # greater than ``1.0.1``) and would also confuse PyPI's canonical
+          # ordering. A malformed version is always a hard error.
+          if ! echo "$HEAD_VER" | grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "❌ New version '$HEAD_VER' is not a well-formed X.Y.Z (no leading zeros)." >&2
             exit 1
           fi
 
-          # Strictly-greater check via ``sort -V``: the larger of the two under
-          # version sort must be HEAD, and the two must differ.
+          # The skip-version-bump escape hatch is for deliberate corrections,
+          # which may be a rollback (e.g. revert-then-re-bump). For that path
+          # we only require the version to be well-formed and to have actually
+          # changed — NOT strictly increasing.
           if [ "$BASE_VER" = "$HEAD_VER" ]; then
-            echo "❌ Bump PR but version did not actually change." >&2
+            echo "❌ Authorized as a version change but version did not actually change." >&2
+            exit 1
+          fi
+          if [ "$ESCAPE_HATCH" = "true" ]; then
+            echo "✓ Escape-hatch correction: version $BASE_VER -> $HEAD_VER (well-formed; direction not enforced)."
+            exit 0
+          fi
+
+          # Release bump path: also require a well-formed base and that HEAD is
+          # strictly greater. ``sort -V`` is safe now that leading zeros are
+          # rejected on HEAD; guard BASE the same way so a malformed base can't
+          # skew the comparison.
+          if ! echo "$BASE_VER" | grep -qE '^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "❌ Base version '$BASE_VER' is not a well-formed X.Y.Z — cannot compare." >&2
             exit 1
           fi
           GREATER=$(printf '%s\n%s\n' "$BASE_VER" "$HEAD_VER" | sort -V | tail -1)

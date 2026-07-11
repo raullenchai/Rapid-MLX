@@ -69,10 +69,12 @@ The guardrail (G4): the `pyproject.toml` `version` line may **only** change in a
 Runs on PRs that modify `pyproject.toml` (so any version-line edit is always checked, whoever makes it). The decision:
 
 - **A non-bump PR that changes the `version` line** → **FAIL** (loud) with the G4 message.
-- **A dedicated bump PR that changes the `version` line** → **PASS**, plus a sanity check that the new version is well-formed `X.Y.Z` and strictly greater than base.
+- **A dedicated bump PR that changes the `version` line** → **PASS**, plus a sanity check that the new version is well-formed `X.Y.Z` (no leading-zero components) and strictly greater than base.
 - **A PR that does not touch the `version` line** → **PASS** (nothing to guard).
 
-A "bump PR" is identified by (primary) its PR title matching the auto-release regex `chore: bump version to X.Y.Z` — the same regex `release-preflight.yml` uses — or (secondary) a `version-bump` label.
+A "bump PR" is identified by (primary) its PR title matching the auto-release regex `chore: bump version to X.Y.Z` — the same shape `release-preflight.yml` uses — or (secondary) a `version-bump` label. When the title is the signal, the guard also requires the **title's `X.Y.Z` to equal the new `pyproject.toml` version** — a title claiming `0.10.6` cannot greenlight a `pyproject` change to `0.10.7`. (The guard tolerates a trailing `(#NN)` squash suffix in the title so a squash-merged bump still matches; note `auto-release.yml` itself rejects that suffix, so bump PRs must be merged with an explicit `--subject` — see the squash-suffix trap below.)
+
+The `skip-version-bump` escape hatch is validated differently: because it's meant for deliberate corrections (which may be a **rollback**), it only checks that the version is well-formed and actually changed — it does **not** enforce strictly-increasing.
 
 The FAIL message looks like:
 
