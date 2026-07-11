@@ -356,6 +356,21 @@ class TestModelPinning:
 
         importlib.reload(_cr)
         assert _cr.CODEX_MODEL == "gpt-6.0-sol"
+        # The step description must report the *effective* model, not a
+        # stale default, so scorecards/logs name the real reviewer.
+        assert "gpt-6.0-sol" in _cr.CodexReviewStep().description
+
+    def test_codex_model_blank_override_falls_back_to_default(self, monkeypatch):
+        # An empty / whitespace-only override must not become ``--model
+        # ""``; it falls back to the pinned default.
+        import importlib
+
+        import scripts.pr_validate.steps.codex_review as _cr
+
+        for blank in ("", "   ", "\t"):
+            monkeypatch.setenv("PR_VALIDATE_CODEX_MODEL", blank)
+            importlib.reload(_cr)
+            assert _cr.CODEX_MODEL == "gpt-5.6-sol"
 
     def test_codex_command_includes_explicit_model_flag(self, monkeypatch, tmp_path):
         """Drive the step with a fake ``codex`` binary that records the
