@@ -68,9 +68,17 @@ DEFAULT_CODEX_PATH = "/opt/homebrew/bin/codex"
 # Pinned model. ``codex exec`` without ``--model`` falls back to the
 # caller's ``~/.codex/config.toml`` default — which silently changes
 # the gate whenever the user (or a fresh CI machine) configures
-# something else. The README + step description promise gpt-5.5; pin
-# explicitly so the promise is mechanically enforced.
-CODEX_MODEL = "gpt-5.5"
+# something else. The README + step description promise gpt-5.6-sol;
+# pin explicitly so the promise is mechanically enforced.
+#
+# The id MUST be ``gpt-5.6-sol`` (the codex config default), NOT the
+# bare ``gpt-5.6``: under ChatGPT auth (``~/.codex/auth.json``) the
+# bare id is 400-rejected with "model not supported", so the ``-sol``
+# suffix is REQUIRED for the gpt-5.6 generation to resolve.
+#
+# Override via the ``PR_VALIDATE_CODEX_MODEL`` env var when a newer
+# generation ships or for local experimentation.
+CODEX_MODEL = os.environ.get("PR_VALIDATE_CODEX_MODEL", "gpt-5.6-sol")
 
 # Diff byte budget for the codex review prompt. Truncation always
 # happens at a file boundary; partially-cut files would produce
@@ -82,14 +90,14 @@ CODEX_MODEL = "gpt-5.5"
 # specific files getting omitted, leaving codex with only the
 # adjacent test/config/alias files. That produced "alias is live
 # but engine wiring cannot be reviewed" meta-BLOCKING findings on
-# every round, none of which were code defects. gpt-5/gpt-5.5 ship
+# every round, none of which were code defects. gpt-5/gpt-5.6 ship
 # with 200K+ token input windows; 200 KB of UTF-8 diff fits
 # comfortably even with the reviewer prompt header. If a future PR
 # is large enough to need more, prefer splitting it over bumping
 # this further — past ~200KB the model's signal-to-noise drops.
 MAX_DIFF_BYTES = 200_000
 
-# Wall-clock cap on the codex subprocess. gpt-5.5 reviews a typical
+# Wall-clock cap on the codex subprocess. gpt-5.6-sol reviews a typical
 # diff in 20–90s; complex multi-commit diffs (e.g. PR #504's 73 KB
 # diff) take 2–4 min. 10 min is generous and matches the DeepSeek
 # previous cap.
@@ -253,7 +261,7 @@ If you find no issues, say "No blocking issues found." and stop.
 
 class CodexReviewStep(Step):
     name = "codex_review"
-    description = "Codex (gpt-5.5) adversarial review of diff"
+    description = "Codex (gpt-5.6-sol) adversarial review of diff"
 
     def should_run(self, ctx: Context) -> bool:
         # Allow opt-out (offline dev, CI without codex auth, etc.).
@@ -383,14 +391,14 @@ class CodexReviewStep(Step):
                         # Pin the model explicitly so a change to the
                         # user's ``~/.codex/config.toml`` default can't
                         # silently swap reviewers underneath us. The
-                        # README + step description promise gpt-5.5.
+                        # README + step description promise gpt-5.6-sol.
                         "--model",
                         CODEX_MODEL,
                         # Force the OpenAI cloud provider for the review
                         # call. The user's config.toml may set
                         # ``model_provider = "rapid-mlx"`` for normal
                         # codex use (so codex routes to local server),
-                        # but pr_validate wants the gpt-5.5 cloud model
+                        # but pr_validate wants the gpt-5.6-sol cloud model
                         # talking through OpenAI, not the local mlx
                         # server. Without this override, codex tries to
                         # refresh /models against the rapid-mlx server

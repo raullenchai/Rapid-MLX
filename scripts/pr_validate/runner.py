@@ -63,7 +63,7 @@ STEPS: list[Step] = [
     # when the diff touches dep-declaration files — see ``_test_env.py``
     # for the gate.
     TestEnvCheckStep(),
-    CodexReviewStep(),  # 6 — adversarial review (codex exec, gpt-5.5)
+    CodexReviewStep(),  # 6 — adversarial review (codex exec, gpt-5.6-sol)
     LintStep(),  # 2 — ruff check + format
     TargetedTestsStep(),  # 3 — diff-aware test selection + neg control
     FullUnitStep(),  # 4 — full pytest, gated on blast radius

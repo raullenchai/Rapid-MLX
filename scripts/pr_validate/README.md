@@ -232,7 +232,7 @@ must keep the runner image read-only.
 
 ### `codex_review` (step 6, runs early)
 
-Sends the diff to `codex exec` (OpenAI gpt-5.5) with the prompt
+Sends the diff to `codex exec` (OpenAI gpt-5.6-sol) with the prompt
 embedded as the `PROMPT_TEMPLATE` string constant in
 `steps/codex_review.py`. The prompt requires `[BLOCKING]`/`[NIT]`
 tiering on every finding (see "Code Review Philosophy" above). Only
@@ -248,9 +248,12 @@ Authentication: codex uses its own ChatGPT login at
 `~/.codex/auth.json`. No env var is read here; the repo is public and
 we explicitly do not want a fallback key in source.
 
-Model is pinned to `gpt-5.5` via the `--model` flag so a change to
+Model is pinned to `gpt-5.6-sol` via the `--model` flag so a change to
 the caller's `~/.codex/config.toml` default cannot silently swap the
-reviewer underneath the gate.
+reviewer underneath the gate. The `-sol` suffix is required: the bare
+`gpt-5.6` id is 400-rejected ("model not supported") under ChatGPT
+auth. Override the pin with the `PR_VALIDATE_CODEX_MODEL` env var when
+a newer generation ships or for local experimentation.
 
 `PR_VALIDATE_NO_DEEPSEEK=1` is still honored (with a one-line stderr
 deprecation notice) so CI/local workflows that pre-date the codex
