@@ -615,45 +615,86 @@ def test_audit_batch_reasoning_parser_wirings() -> None:
         )
 
 
-def test_bonsai_family_wires_glm4_reasoning_parser() -> None:
-    """The Bonsai chat template (verified at
-    https://huggingface.co/prism-ml/Bonsai-1.7B-unpacked/resolve/main/chat_template.jinja)
-    injects an empty ``<think>\\n\\n</think>`` block when
-    ``add_generation_prompt=True`` — the model's actual output stream
-    then contains only content, no tags. The base class' "no tags
-    yet, treat as reasoning" default would misclassify every Bonsai
-    token; the ``glm4`` parser overrides exactly that branch.
+def test_bonsai_ternary_alias_wiring() -> None:
+    """The Bonsai first-run candidate is the **ternary** (1.58-bit,
+    MLX-2bit-packed) checkpoint ``prism-ml/Ternary-Bonsai-1.7B-mlx-2bit``
+    — a ``Qwen3ForCausalLM`` at ~0.5 GB. Dogfooded 2026-07-10 through the
+    OpenAI server: multi-turn recall PASS and tool-call 6/6 clean with the
+    ``hermes`` parser (the model emits ``<tool_call>...</tool_call>``
+    blocks).
 
-    If a downstream user enables thinking via ``reasoning_content``
-    on a prior assistant turn, the model may emit real
-    ``<think>...</think>`` blocks; the same glm4 parser splits those
-    correctly. Net effect: glm4 is strictly safer than null with
-    zero behavioural downside for non-thinking turns.
+    ``reasoning_parser`` is ``None`` on purpose. This checkpoint is a
+    NON-THINKING Qwen3 variant — its packed chat template never emits
+    ``<think>...</think>`` blocks (there is no working ``enable_thinking``
+    toggle). Wiring the ``qwen3`` reasoning parser on such a model
+    DUPLICATES the whole answer into BOTH ``content`` and
+    ``reasoning_content`` when a client passes ``enable_thinking=True``
+    (same class as ``test_qwen3_non_thinking_variants`` / PR #715 fuzz
+    finding A) — verified live on this checkpoint. ``None`` keeps every
+    turn's output in ``content`` with no duplication.
+
+    The earlier ``bonsai-*-unpacked`` aliases pointed at the FP16
+    DECOMPRESSED repos (``prism-ml/Bonsai-*-unpacked``), which the vendor
+    documents as "loses all compression benefits" — they discarded the
+    entire point of Bonsai and are removed. The loop below guards that no
+    alias resurrects an ``-unpacked`` repo.
     """
-    profiles = list_profiles()
-    for alias in ("bonsai-1.7b-unpacked", "bonsai-4b-unpacked", "bonsai-8b-unpacked"):
-        assert alias in profiles, f"{alias} missing from aliases.json"
-        assert profiles[alias].reasoning_parser == "glm4", (
-            f"{alias}: reasoning_parser must be 'glm4' per audit. "
-            f"Got {profiles[alias].reasoning_parser!r}."
+    raw = _raw_aliases()
+    alias = "bonsai-1.7b-2bit"
+    assert alias in raw, f"{alias} missing from aliases.json"
+    p = list_profiles()[alias]
+    assert p.hf_path == "prism-ml/Ternary-Bonsai-1.7B-mlx-2bit", (
+        f"{alias}: must point at the ternary MLX-2bit repo, got {p.hf_path!r}."
+    )
+    assert p.tool_call_parser == "hermes", (
+        f"{alias}: tool_call_parser must be 'hermes' (model emits "
+        f"<tool_call> blocks). Got {p.tool_call_parser!r}."
+    )
+    assert p.reasoning_parser is None, (
+        f"{alias}: reasoning_parser must be None — a non-thinking Qwen3 "
+        f"variant; qwen3 here duplicates content into reasoning_content. "
+        f"Got {p.reasoning_parser!r}."
+    )
+    assert p.is_hybrid is False
+    # Explicit non-hybrid pin suppresses the runtime ArraysCache
+    # auto-promotion; spec-decode is off (no verified drafter).
+    assert raw[alias].get("is_hybrid_explicit") is True, (
+        f"{alias}: is_hybrid_explicit must be true to pin non-hybrid."
+    )
+    assert p.supports_spec_decode is False
+
+    # The three FP16 ``bonsai-*-unpacked`` aliases are gone, and no alias
+    # may resurrect an ``-unpacked`` repo (they lose all compression).
+    assert not any(k.startswith("bonsai-") and k.endswith("-unpacked") for k in raw), (
+        "an FP16 bonsai-*-unpacked alias was reintroduced"
+    )
+    for name, entry in raw.items():
+        hf = entry.get("hf_path") if isinstance(entry, dict) else entry
+        assert not (isinstance(hf, str) and hf.endswith("-unpacked")), (
+            f"{name}: resolves to an FP16 unpacked repo {hf!r} — use the "
+            f"Ternary-*-mlx-2bit checkpoint instead."
         )
 
 
-def test_audit_batch_bonsai_tool_call_parser_wired() -> None:
-    """Pin the Model Onboarding SOP audit fix for the Bonsai family.
-    The chat template emits ``<tool_call>...</tool_call>`` blocks
-    (hermes pattern); leaving ``tool_call_parser=null`` made every
-    tool call land in ``message.content`` as plain text. Verified the
-    template format directly against
-    https://huggingface.co/prism-ml/Bonsai-1.7B-unpacked.
-    """
+def test_rename_map_targets_are_live_aliases() -> None:
+    """``scripts/rename_map.json`` canonicalizes legacy bare alias names to
+    the current explicit aliases and is consumed by ``sweep_alias_refs.py``
+    to rewrite references repo-wide. Every target MUST be a live alias — a
+    dangling target (e.g. left behind when an alias is deleted) makes the
+    sweep rewrite references to a NON-EXISTENT model. Regression guard for
+    the ``bonsai-*-unpacked`` removal (the three legacy ``bonsai-*`` names
+    used to point at the now-deleted unpacked aliases)."""
+    rename_map = json.loads(
+        (
+            Path(__file__).resolve().parents[1] / "scripts" / "rename_map.json"
+        ).read_text()
+    )
     profiles = list_profiles()
-    for alias in ("bonsai-1.7b-unpacked", "bonsai-4b-unpacked", "bonsai-8b-unpacked"):
-        assert alias in profiles, f"{alias} missing from aliases.json"
-        assert profiles[alias].tool_call_parser == "hermes", (
-            f"{alias}: tool_call_parser must be 'hermes' per audit. "
-            f"Got {profiles[alias].tool_call_parser!r}."
-        )
+    dangling = {old: new for old, new in rename_map.items() if new not in profiles}
+    assert not dangling, (
+        f"rename_map.json targets missing from aliases.json: {dangling}. "
+        f"Point each at a live alias or remove the entry."
+    )
 
 
 def test_deepseek_v4_flash_family_wires_deepseek_r1_reasoning_parser() -> None:

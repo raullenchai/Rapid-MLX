@@ -1,7 +1,5 @@
 {
-  "bonsai-1.7b": "bonsai-1.7b-unpacked",
-  "bonsai-4b": "bonsai-4b-unpacked",
-  "bonsai-8b": "bonsai-8b-unpacked",
+  "bonsai-1.7b": "bonsai-1.7b-2bit",
   "deepseek-r1-32b": "deepseek-r1-32b-4bit",
   "deepseek-r1-8b": "deepseek-r1-8b-4bit",
   "deepseek-v4-flash": "deepseek-v4-flash-8bit",

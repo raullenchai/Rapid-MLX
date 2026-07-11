@@ -80,12 +80,14 @@ def test_no_orphan_aliases() -> None:
 
 
 def test_orphan_aliases_now_covered() -> None:
-    """Pin the 6 specific aliases that were orphans before this PR to
-    catch a regression where someone deletes their profile."""
+    """Pin the specific aliases that were orphans before the SSOT PR to
+    catch a regression where someone deletes their profile.
+
+    The three ``bonsai-*-unpacked`` entries (FP16 decompressed repos) were
+    removed in favour of the ternary ``bonsai-1.7b-2bit`` checkpoint, which
+    must itself resolve — so it takes their slot in this guard."""
     for orphan in (
-        "bonsai-1.7b-unpacked",
-        "bonsai-4b-unpacked",
-        "bonsai-8b-unpacked",
+        "bonsai-1.7b-2bit",
         "ministral-3b-4bit",
         "nemotron-30b-4bit",
     ):
