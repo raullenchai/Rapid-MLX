@@ -10,7 +10,7 @@ The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs
 |---|---|
 | Push commit `chore: bump version to X.Y.Z` to `main` | `auto-release.yml` creates tag `vX.Y.Z` + GitHub Release |
 | GitHub Release published | `publish.yml` builds → PyPI publish → dispatches Homebrew tap to bump formula |
-| PR changes the `pyproject.toml` `version` line outside a dedicated bump PR | `version-check.yml` **fails** — version may only change in a `chore: bump version to X.Y.Z` PR (or a PR with the `version-bump` label) |
+| PR changes the `pyproject.toml` `version` line outside a dedicated bump PR | `version-check.yml` **fails** — version may only change in a PR titled `chore: bump version to X.Y.Z` (the `version-bump` label authorizes the change but still requires that release-shaped title; the `skip-version-bump` label is the escape hatch for corrections) |
 
 ## Cutting a release
 
