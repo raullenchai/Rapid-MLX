@@ -205,25 +205,39 @@ def is_gemma4_family_model(model_path: str | Path) -> bool:
     return _read_model_type(model_path) in _GEMMA4_FAMILY_MODEL_TYPES
 
 
-def is_gemma4_model(model_path: str | Path) -> bool:
+def is_gemma4_nonunified_model(model_path: str | Path) -> bool:
     """Check if the model is a NON-unified Gemma 4 text arch.
 
     Matches ``gemma4`` and ``gemma4_assistant`` — the arches served by
-    :func:`load_gemma4_text`. Callers that want "any Gemma 4
-    text-servable arch" should use :func:`is_gemma4_family_model`;
-    callers that specifically want the unified arch should use
-    :func:`is_gemma4_unified_model`.
-
-    Historically this did ``"gemma4" in model_type``, which ALSO caught
-    ``gemma4_unified`` by substring. That happened to work because
-    ``gemma4`` and ``gemma4_unified`` ship dataclass-identical
-    ``TextConfig`` shapes and reuse the same ``LanguageModel`` class —
-    but conflating them was misleading and fragile. We now split unified
-    out to its own detector/loader while keeping the assistant arch on
-    this non-unified path (its nested ``text_config`` is ``gemma4_text``,
-    same as the base arch). See #509.
+    :func:`load_gemma4_text`. This is the explicitly-named narrowed
+    predicate; :func:`is_gemma4_model` is a back-compat alias for it.
+    Callers that want "any Gemma 4 text-servable arch" should use
+    :func:`is_gemma4_family_model`; callers that specifically want the
+    unified arch should use :func:`is_gemma4_unified_model`.
     """
     return _read_model_type(model_path) in _GEMMA4_NONUNIFIED_MODEL_TYPES
+
+
+def is_gemma4_model(model_path: str | Path) -> bool:
+    """Back-compat alias for :func:`is_gemma4_nonunified_model`.
+
+    Pre-#509 this did ``"gemma4" in model_type``, so it returned True for
+    the base ``gemma4`` arch AND (by substring) ``gemma4_unified`` /
+    ``gemma4_assistant`` / a hypothetical ``gemma4_videogen``. That worked
+    only because ``gemma4`` and ``gemma4_unified`` ship dataclass-identical
+    ``TextConfig`` shapes and reuse the same ``LanguageModel`` class — but
+    conflating them was misleading and fragile.
+
+    The name is kept (the only in-tree callers are this module's own tests
+    — it is not exported and had a single production caller, now migrated
+    to :func:`gemma4_family_kind`), but its meaning is now the exact
+    NON-unified set. ``gemma4_unified`` split out to its own
+    detector/loader; ``gemma4_assistant`` stays on the non-unified path
+    (its nested ``text_config`` is a ``gemma4_text`` shape). Prefer
+    :func:`is_gemma4_nonunified_model` (explicit) or
+    :func:`is_gemma4_family_model` (family-wide) in new code. See #509.
+    """
+    return is_gemma4_nonunified_model(model_path)
 
 
 def is_gemma4_unified_model(model_path: str | Path) -> bool:

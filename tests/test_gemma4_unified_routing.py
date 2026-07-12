@@ -2,25 +2,31 @@
 """Regression tests for explicit ``gemma4`` vs ``gemma4_unified`` routing.
 
 Issue #509: ``is_gemma4_model`` used a ``"gemma4" in model_type`` substring
-test that matched BOTH the non-unified ``gemma4`` arch (26B/31B/e2b/e4b)
-AND ``gemma4_unified`` (the 12B aliases) — plus any sibling like
-``gemma4_assistant`` (which already exists on the Hub) or a hypothetical
-``gemma4_videogen``. Both loaded through the non-unified mlx-vlm
-subpackage. It worked empirically (dataclass-identical ``TextConfig`` +
-shared ``LanguageModel``) but was misleading and fragile.
+test that matched the non-unified ``gemma4`` arch (26B/31B/e2b/e4b), the
+unified ``gemma4_unified`` arch (the 12B aliases), the ``gemma4_assistant``
+aliases, AND would catch any hypothetical future sibling like
+``gemma4_videogen`` or the inner sub-config's own ``gemma4_text`` label.
+Everything loaded through the non-unified mlx-vlm subpackage. It worked
+empirically (dataclass-identical ``TextConfig`` + shared ``LanguageModel``)
+but was misleading and fragile.
 
-These tests pin the corrected behavior:
-- ``is_gemma4_model`` matches ONLY exact ``model_type == "gemma4"``.
+These tests pin the corrected behavior — an exact-match allow-list, not a
+substring test:
+- ``is_gemma4_model`` matches the NON-unified arches
+  (``gemma4`` + ``gemma4_assistant``), the ones served by
+  ``load_gemma4_text``. NOT ``gemma4_unified``.
 - ``is_gemma4_unified_model`` matches ONLY exact ``"gemma4_unified"``.
-- ``is_gemma4_family_model`` is the OR of the two, and REJECTS
-  ``gemma4_assistant`` / ``gemma4_videogen`` (the substring-match trap).
+- ``is_gemma4_family_model`` is the OR of all three accepted outer types;
+  ``gemma4_assistant`` is ACCEPTED (kept on the non-unified path for
+  backward compat), while genuinely-unknown siblings (``gemma4_videogen``,
+  the inner ``gemma4_text``, etc.) are REJECTED — the substring-match trap.
+- ``gemma4_family_kind`` classifies with a single config read.
 - Each loader resolves to the matching mlx-vlm subpackage when installed,
   and falls back to the vendored copy when mlx-vlm is absent (the
   0.10.0 fresh-install regression that must never come back).
 
 The old substring implementation FAILS the ``gemma4_unified`` /
-``gemma4_assistant`` discrimination assertions; the fixed implementation
-PASSES.
+unknown-sibling discrimination assertions; the fixed implementation PASSES.
 """
 
 from __future__ import annotations
@@ -42,7 +48,7 @@ def _write_config(tmp_path: Path, model_type: str) -> Path:
     weight download or forward pass.
     """
     d = tmp_path / model_type
-    d.mkdir()
+    d.mkdir(exist_ok=True)
     (d / "config.json").write_text(json.dumps({"model_type": model_type}))
     return d
 
@@ -71,6 +77,21 @@ def test_gemma4_nonunified_detected_only_by_base_detector(tmp_path):
     assert gemma4_text.is_gemma4_unified_model(d) is False
     assert gemma4_text.is_gemma4_family_model(d) is True
     assert gemma4_text.gemma4_family_kind(d) == "nonunified"
+
+
+def test_is_gemma4_model_is_alias_of_nonunified(tmp_path):
+    """``is_gemma4_model`` is a back-compat alias for
+    ``is_gemma4_nonunified_model`` — same verdict for every model_type,
+    and (per #509) it no longer claims ``gemma4_unified``."""
+    for mt in ("gemma4", "gemma4_assistant", "gemma4_unified", "qwen3_moe"):
+        d = _write_config(tmp_path, mt)
+        assert gemma4_text.is_gemma4_model(d) is gemma4_text.is_gemma4_nonunified_model(
+            d
+        )
+    # Spot-check the narrowed semantics explicitly: no longer unified.
+    assert (
+        gemma4_text.is_gemma4_model(_write_config(tmp_path, "gemma4_unified")) is False
+    )
 
 
 def test_gemma4_assistant_routes_to_nonunified(tmp_path):
