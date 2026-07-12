@@ -219,25 +219,23 @@ def is_gemma4_nonunified_model(model_path: str | Path) -> bool:
 
 
 def is_gemma4_model(model_path: str | Path) -> bool:
-    """Back-compat alias for :func:`is_gemma4_nonunified_model`.
+    """Back-compat alias: is this ANY Gemma 4 text-servable arch?
 
-    Pre-#509 this did ``"gemma4" in model_type``, so it returned True for
-    the base ``gemma4`` arch AND (by substring) ``gemma4_unified`` /
-    ``gemma4_assistant`` / a hypothetical ``gemma4_videogen``. That worked
-    only because ``gemma4`` and ``gemma4_unified`` ship dataclass-identical
-    ``TextConfig`` shapes and reuse the same ``LanguageModel`` class — but
-    conflating them was misleading and fragile.
+    Pre-#509 this did ``"gemma4" in model_type``, returning True for the
+    base ``gemma4`` arch AND (by substring) ``gemma4_unified`` /
+    ``gemma4_assistant``. To keep that documented family-wide meaning for
+    any existing caller of this name, it now delegates to
+    :func:`is_gemma4_family_model` (the exact-match allow-list) rather
+    than the old substring test. The only behavioral difference vs the
+    substring version is that a NON-family arch that merely contains the
+    text ``"gemma4"`` (a hypothetical ``gemma4_videogen``) is no longer
+    falsely claimed — which is the whole point of #509.
 
-    The name is kept (the only in-tree callers are this module's own tests
-    — it is not exported and had a single production caller, now migrated
-    to :func:`gemma4_family_kind`), but its meaning is now the exact
-    NON-unified set. ``gemma4_unified`` split out to its own
-    detector/loader; ``gemma4_assistant`` stays on the non-unified path
-    (its nested ``text_config`` is a ``gemma4_text`` shape). Prefer
-    :func:`is_gemma4_nonunified_model` (explicit) or
-    :func:`is_gemma4_family_model` (family-wide) in new code. See #509.
+    New code should call the precise predicate for its intent:
+    :func:`is_gemma4_unified_model`, :func:`is_gemma4_nonunified_model`,
+    or :func:`gemma4_family_kind` (single-read classification).
     """
-    return is_gemma4_nonunified_model(model_path)
+    return is_gemma4_family_model(model_path)
 
 
 def is_gemma4_unified_model(model_path: str | Path) -> bool:

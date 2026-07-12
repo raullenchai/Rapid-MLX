@@ -60,37 +60,40 @@ def _write_config(tmp_path: Path, model_type: str) -> Path:
 
 def test_gemma4_unified_detected_only_by_unified_detector(tmp_path):
     """A ``gemma4_unified`` model (the gemma-4-12b aliases) is detected by
-    ``is_gemma4_unified_model`` and NOT by the corrected
-    ``is_gemma4_model``."""
+    ``is_gemma4_unified_model`` and NOT by the NARROWED
+    ``is_gemma4_nonunified_model``. The family-wide back-compat
+    ``is_gemma4_model`` still claims it."""
     d = _write_config(tmp_path, "gemma4_unified")
     assert gemma4_text.is_gemma4_unified_model(d) is True
-    assert gemma4_text.is_gemma4_model(d) is False
+    assert gemma4_text.is_gemma4_nonunified_model(d) is False
     assert gemma4_text.is_gemma4_family_model(d) is True
+    assert gemma4_text.is_gemma4_model(d) is True  # family-wide alias
     assert gemma4_text.gemma4_family_kind(d) == "unified"
 
 
 def test_gemma4_nonunified_detected_only_by_base_detector(tmp_path):
     """A non-unified ``gemma4`` model (gemma-4-31b etc.) is detected by
-    ``is_gemma4_model`` and NOT by ``is_gemma4_unified_model``."""
+    ``is_gemma4_nonunified_model`` and NOT by ``is_gemma4_unified_model``."""
     d = _write_config(tmp_path, "gemma4")
-    assert gemma4_text.is_gemma4_model(d) is True
+    assert gemma4_text.is_gemma4_nonunified_model(d) is True
     assert gemma4_text.is_gemma4_unified_model(d) is False
     assert gemma4_text.is_gemma4_family_model(d) is True
+    assert gemma4_text.is_gemma4_model(d) is True
     assert gemma4_text.gemma4_family_kind(d) == "nonunified"
 
 
-def test_is_gemma4_model_is_alias_of_nonunified(tmp_path):
-    """``is_gemma4_model`` is a back-compat alias for
-    ``is_gemma4_nonunified_model`` — same verdict for every model_type,
-    and (per #509) it no longer claims ``gemma4_unified``."""
+def test_is_gemma4_model_is_family_wide_alias(tmp_path):
+    """``is_gemma4_model`` is the back-compat family-wide predicate: it
+    tracks ``is_gemma4_family_model`` for every model_type (True for
+    gemma4 / gemma4_unified / gemma4_assistant, False otherwise) and,
+    unlike the old substring test, does NOT claim a non-family arch that
+    merely contains the text ``"gemma4"``."""
     for mt in ("gemma4", "gemma4_assistant", "gemma4_unified", "qwen3_moe"):
         d = _write_config(tmp_path, mt)
-        assert gemma4_text.is_gemma4_model(d) is gemma4_text.is_gemma4_nonunified_model(
-            d
-        )
-    # Spot-check the narrowed semantics explicitly: no longer unified.
-    assert (
-        gemma4_text.is_gemma4_model(_write_config(tmp_path, "gemma4_unified")) is False
+        assert gemma4_text.is_gemma4_model(d) is gemma4_text.is_gemma4_family_model(d)
+    # The #509 fix: a hypothetical sibling is no longer swallowed.
+    assert gemma4_text.is_gemma4_model(_write_config(tmp_path, "gemma4_videogen")) is (
+        False
     )
 
 
