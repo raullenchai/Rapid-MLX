@@ -210,10 +210,12 @@ def is_gemma4_nonunified_model(model_path: str | Path) -> bool:
 
     Matches ``gemma4`` and ``gemma4_assistant`` — the arches served by
     :func:`load_gemma4_text`. This is the explicitly-named narrowed
-    predicate; :func:`is_gemma4_model` is a back-compat alias for it.
-    Callers that want "any Gemma 4 text-servable arch" should use
-    :func:`is_gemma4_family_model`; callers that specifically want the
-    unified arch should use :func:`is_gemma4_unified_model`.
+    predicate (the complement of :func:`is_gemma4_unified_model` within
+    the family). Callers that want "any Gemma 4 text-servable arch"
+    should use :func:`is_gemma4_family_model` (which the family-wide
+    back-compat alias :func:`is_gemma4_model` delegates to); callers that
+    specifically want the unified arch should use
+    :func:`is_gemma4_unified_model`.
     """
     return _read_model_type(model_path) in _GEMMA4_NONUNIFIED_MODEL_TYPES
 
