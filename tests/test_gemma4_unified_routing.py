@@ -12,7 +12,7 @@ but was misleading and fragile.
 
 These tests pin the corrected behavior — an exact-match allow-list, not a
 substring test:
-- ``is_gemma4_model`` matches the NON-unified arches
+- ``is_gemma4_nonunified_model`` matches the NON-unified arches
   (``gemma4`` + ``gemma4_assistant``), the ones served by
   ``load_gemma4_text``. NOT ``gemma4_unified``.
 - ``is_gemma4_unified_model`` matches ONLY exact ``"gemma4_unified"``.
@@ -20,6 +20,10 @@ substring test:
   ``gemma4_assistant`` is ACCEPTED (kept on the non-unified path for
   backward compat), while genuinely-unknown siblings (``gemma4_videogen``,
   the inner ``gemma4_text``, etc.) are REJECTED — the substring-match trap.
+- ``is_gemma4_model`` is the family-wide back-compat alias — it delegates
+  to ``is_gemma4_family_model``, preserving the broad meaning the name
+  carried pre-#509 (True for all three) while no longer swallowing a
+  non-family arch that merely contains the text ``"gemma4"``.
 - ``gemma4_family_kind`` classifies with a single config read.
 - Each loader resolves to the matching mlx-vlm subpackage when installed,
   and falls back to the vendored copy when mlx-vlm is absent (the
