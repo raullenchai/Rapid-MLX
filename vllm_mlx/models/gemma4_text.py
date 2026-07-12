@@ -1,15 +1,30 @@
 # SPDX-License-Identifier: Apache-2.0
 """
-Gemma 4 text-only model loader for the LLM path.
+Gemma 4 text-only model loaders for the LLM path.
 
 mlx-lm 0.31+ added native ``gemma4`` (used by the 26B / 31B aliases), but
 ``gemma4_unified`` (the model_type the four ``gemma-4-12b-*`` aliases ship
 under) is still not in mlx-lm. This module loads the language model
-portion from mlx-vlm and wraps it to be compatible with mlx-lm's
-generate_step() interface, enabling:
+portion from mlx-vlm (or the vendored copy) and wraps it to be compatible
+with mlx-lm's generate_step() interface, enabling:
 - Prompt cache (KV reuse across requests)
 - DeltaNet state snapshots (if applicable)
 - All LLM-path optimizations
+
+Two model_types are served, each with an EXPLICIT detector + loader so
+routing is unambiguous (see #509 — the old ``"gemma4" in model_type``
+substring test also caught siblings like ``gemma4_assistant`` and would
+silently misroute a hypothetical ``gemma4_videogen``):
+
+- ``gemma4``          → :func:`is_gemma4_model` / :func:`load_gemma4_text`
+- ``gemma4_unified``  → :func:`is_gemma4_unified_model` /
+                        :func:`load_gemma4_unified_text`
+
+:func:`is_gemma4_family_model` is the OR of the two for call sites that
+just need "is this a Gemma 4 text-servable arch?". Both loaders prefer
+the matching upstream ``mlx_vlm`` subpackage when installed and fall back
+to the vendored copy under ``vllm_mlx/models/gemma4_vendored/`` so a
+fresh ``pip install rapid-mlx`` (no ``[vision]`` extra) still boots.
 
 The wrapper is thin: it just ensures model(input_ids, cache=cache) returns
 a raw logits tensor instead of LanguageModelOutput.
@@ -102,18 +117,22 @@ def _path_matches_any_suffix(path: str, suffixes: set[str]) -> bool:
     return False
 
 
-def is_gemma4_model(model_path: str | Path) -> bool:
-    """Check if the model at the given path is a Gemma 4 model.
+def _read_model_type(model_path: str | Path) -> str | None:
+    """Read the top-level ``model_type`` from a model's ``config.json``.
 
-    The previous implementation called ``snapshot_download(repo_id)`` to
-    populate a local cache before reading ``config.json``. That works,
-    but ``snapshot_download`` validates/fetches the ENTIRE model tree
-    (all safetensors shards, tokenizer files, generation config), which
-    for an 8-bit 35B model is ~35 GB of Xet-protocol revalidation on
-    every cold ``rapid-mlx serve`` start. Switch to ``hf_hub_download``
-    targeting ``config.json`` directly: a ~5 KB file, validated against
-    the existing HF cache. This was the root cause of stress_e2e_bench
-    server-boot timeouts on large models in PR #600 validation.
+    Returns ``None`` when the config is unreachable or unparseable so
+    callers can treat "can't tell" as "not this family".
+
+    The previous ``is_gemma4_model`` implementation called
+    ``snapshot_download(repo_id)`` to populate a local cache before
+    reading ``config.json``. That works, but ``snapshot_download``
+    validates/fetches the ENTIRE model tree (all safetensors shards,
+    tokenizer files, generation config), which for an 8-bit 35B model is
+    ~35 GB of Xet-protocol revalidation on every cold ``rapid-mlx serve``
+    start. We fetch ``config.json`` directly via ``hf_hub_download``: a
+    ~5 KB file, validated against the existing HF cache. This was the
+    root cause of stress_e2e_bench server-boot timeouts on large models
+    in PR #600 validation.
     """
     p = Path(model_path)
     config_path = p / "config.json" if p.is_dir() else None
@@ -125,15 +144,73 @@ def is_gemma4_model(model_path: str | Path) -> bool:
                 hf_hub_download(repo_id=str(model_path), filename="config.json")
             )
         except Exception:
-            return False
+            return None
     if not config_path.exists():
-        return False
+        return None
     try:
         config = json.loads(config_path.read_text())
-        model_type = config.get("model_type", "")
-        return "gemma4" in model_type
+        return config.get("model_type", "")
     except Exception:
-        return False
+        return None
+
+
+def is_gemma4_family_model(model_path: str | Path) -> bool:
+    """Check if the model belongs to the Gemma 4 *family* (text loader path).
+
+    Covers the two model_types the Gemma 4 text loader knows how to
+    serve today:
+
+    - ``gemma4`` — the non-unified text arch (26B / 31B / e2b / e4b
+      aliases, ``Gemma4ForConditionalGeneration``).
+    - ``gemma4_unified`` — the unified arch shipped by the
+      ``gemma-4-12b-*`` aliases (``Gemma4UnifiedForConditionalGeneration``).
+
+    This is a deliberate exact-match allow-list, NOT a ``"gemma4" in
+    model_type`` substring test. The old substring check also matched
+    unrelated future or sibling arches by accident — e.g.
+    ``gemma4_assistant`` (which already exists on the Hub as
+    ``mlx-community/gemma-4-31B-it-assistant``) or a hypothetical
+    ``gemma4_videogen`` — and silently routed them through the text
+    loader even though we've never validated them. Adding a new
+    supported member is a one-line edit here plus a real loader branch,
+    which is the point: routing becomes explicit and drift surfaces as a
+    clear "unsupported model_type" instead of a silent misroute.
+    """
+    # Read the model_type once (may hit hf_hub_download for a remote repo,
+    # cached ~5 KB) rather than paying two lookups via the two exact
+    # detectors.
+    return _read_model_type(model_path) in ("gemma4", "gemma4_unified")
+
+
+def is_gemma4_model(model_path: str | Path) -> bool:
+    """Check if the model is the NON-unified Gemma 4 text arch.
+
+    Exact match on ``model_type == "gemma4"`` (26B / 31B / e2b / e4b).
+    Callers that want "any Gemma 4 text-servable arch" should use
+    :func:`is_gemma4_family_model`; callers that specifically want the
+    unified arch should use :func:`is_gemma4_unified_model`.
+
+    Historically this did ``"gemma4" in model_type``, which also caught
+    ``gemma4_unified`` (and ``gemma4_assistant``, ``gemma4_text``, …) by
+    substring. That happened to work because ``gemma4`` and
+    ``gemma4_unified`` ship dataclass-identical ``TextConfig`` shapes and
+    reuse the same ``LanguageModel`` class — but the routing was
+    misleading and fragile. See #509.
+    """
+    return _read_model_type(model_path) == "gemma4"
+
+
+def is_gemma4_unified_model(model_path: str | Path) -> bool:
+    """Check if the model is the unified Gemma 4 arch (``gemma4_unified``).
+
+    Exact match on ``model_type == "gemma4_unified"`` — the arch the four
+    ``gemma-4-12b-*`` aliases ship under
+    (``Gemma4UnifiedForConditionalGeneration``). Routed to
+    :func:`load_gemma4_unified_text`, which pins to the matching
+    ``mlx_vlm.models.gemma4_unified`` subpackage when mlx-vlm is
+    installed and falls back to the vendored copy otherwise. See #509.
+    """
+    return _read_model_type(model_path) == "gemma4_unified"
 
 
 class Gemma4TextWrapper(nn.Module):
@@ -144,13 +221,16 @@ class Gemma4TextWrapper(nn.Module):
     This wrapper extracts .logits so the interface matches.
     """
 
-    def __init__(self, language_model):
+    def __init__(self, language_model, default_model_type: str = "gemma4"):
         super().__init__()
         self.language_model = language_model
         # Expose config for mlx-lm compatibility
         self.config = language_model.config
         self.model = language_model.model
-        self.model_type = getattr(language_model, "model_type", "gemma4")
+        # The unified arch reuses the same text ``LanguageModel`` (which
+        # reports model_type "gemma4_text"), so fall back to the arch the
+        # caller actually routed for (``gemma4`` vs ``gemma4_unified``).
+        self.model_type = getattr(language_model, "model_type", default_model_type)
 
     def __call__(self, input_ids, cache=None, **kwargs):
         out = self.language_model(input_ids, cache=cache, **kwargs)
@@ -205,10 +285,143 @@ class Gemma4TextWrapper(nn.Module):
         return self.language_model.n_kv_heads
 
 
-def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
-    """Load Gemma 4 as a text-only model via the LLM path.
+# Shared preamble for both loaders. As of 0.10.1 we vendor the Gemma 4
+# text classes (~50 KB, ~1200 lines) directly under
+# `vllm_mlx/models/gemma4_vendored/` so a fresh `pip install rapid-mlx`
+# boots Gemma 4 out of the box — no `[vision]` extra required.
+# Previously we imported from `mlx_vlm.models.gemma4.*`, but that
+# required either promoting mlx-vlm to a core dep (~+483 MB transitive
+# bloat: opencv-python, pyarrow, pandas, scipy, mlx-audio — none of
+# which text-only Gemma 4 inference touches) or making users know to
+# `pip install --no-deps 'mlx-vlm>=0.6.1'` themselves. See
+# `vllm_mlx/models/gemma4_vendored/__init__.py` for the sync policy.
+#
+# We still prefer upstream mlx-vlm when it's already importable
+# (e.g. `[vision]` users): mlx-vlm may ship a bug fix or Gemma 4.1
+# update before we sync the vendored copy. The vendored fallback keeps
+# the fresh-install path working with zero extras.
 
-    Returns (model, tokenizer) compatible with mlx-lm's generate_step().
+
+def _resolve_gemma4_text_classes():
+    """Return ``(TextConfig, LanguageModel)`` for the NON-unified ``gemma4``
+    arch — upstream ``mlx_vlm.models.gemma4`` when importable, else the
+    vendored copy (dataclass-identical, no ``[vision]`` extra needed)."""
+    try:
+        from mlx_vlm.models.gemma4.config import TextConfig
+        from mlx_vlm.models.gemma4.language import LanguageModel
+
+        return TextConfig, LanguageModel
+    except ImportError:
+        from vllm_mlx.models.gemma4_vendored import (
+            config as _v_cfg,
+        )
+        from vllm_mlx.models.gemma4_vendored import (
+            language as _v_lang,
+        )
+
+        return _v_cfg.TextConfig, _v_lang.LanguageModel
+
+
+def _resolve_gemma4_unified_text_classes():
+    """Return ``(TextConfig, LanguageModel)`` for the ``gemma4_unified`` arch.
+
+    Prefer upstream ``mlx_vlm.models.gemma4_unified`` when mlx-vlm is
+    installed, so we pin to the subpackage that actually matches the
+    ``Gemma4UnifiedForConditionalGeneration`` checkpoints and surface any
+    future upstream drift instead of silently reusing the non-unified
+    classes. Notes on the upstream layout (mlx-vlm 0.6.3):
+
+    - ``gemma4_unified.config.TextConfig`` subclasses
+      ``gemma4.config.TextConfig`` with unified-specific defaults; the
+      concrete field values still come from the checkpoint's
+      ``text_config`` via ``from_dict``, so it stays dataclass-compatible
+      with the vendored copy.
+    - ``gemma4_unified.LanguageModel`` is literally re-exported from
+      ``gemma4.language`` (``from ..gemma4.language import LanguageModel``
+      in ``gemma4_unified.py``) — the unified arch only adds vision/audio
+      embedders around the SAME text stack. So the text forward path is
+      identical to the non-unified loader by construction, which is why
+      serving ``gemma-4-12b`` through the ``gemma4`` classes worked
+      empirically (see #509). Routing here just makes the intent explicit.
+
+    Falls back to the vendored ``gemma4`` copy when mlx-vlm is absent
+    (fresh install). The vendored copy has no separate ``unified``
+    variant, but since upstream's ``LanguageModel`` IS the ``gemma4`` one
+    and the ``TextConfig`` is dataclass-identical for text purposes, the
+    vendored classes serve ``gemma4_unified`` correctly — same behavior
+    as today, just reached through an explicit branch. A real
+    ``ImportError`` is only possible if BOTH upstream-unified AND the
+    vendored copy are unavailable, which cannot happen because the
+    vendored copy ships inside the wheel.
+    """
+    try:
+        from mlx_vlm.models.gemma4_unified import LanguageModel
+        from mlx_vlm.models.gemma4_unified.config import TextConfig
+
+        return TextConfig, LanguageModel
+    except ImportError:
+        # No upstream unified subpackage (fresh install, or an older
+        # mlx-vlm without gemma4_unified). Fall back to the vendored
+        # text classes — same as the non-unified path.
+        from vllm_mlx.models.gemma4_vendored import (
+            config as _v_cfg,
+        )
+        from vllm_mlx.models.gemma4_vendored import (
+            language as _v_lang,
+        )
+
+        return _v_cfg.TextConfig, _v_lang.LanguageModel
+
+
+def load_gemma4_unified_text(model_path: str | Path, tokenizer_config: dict = None):
+    """Load a ``gemma4_unified`` Gemma 4 checkpoint as a text-only model.
+
+    Explicit loader for the ``gemma-4-12b-*`` aliases
+    (``Gemma4UnifiedForConditionalGeneration``). Pins to the matching
+    ``mlx_vlm.models.gemma4_unified`` subpackage when mlx-vlm is
+    installed, else falls back to the vendored copy. See #509 and
+    :func:`_resolve_gemma4_unified_text_classes` for the fallback
+    rationale. Returns ``(model, tokenizer)`` compatible with mlx-lm's
+    ``generate_step()``.
+    """
+    return _load_gemma4_text_impl(
+        model_path,
+        tokenizer_config,
+        resolve_classes=_resolve_gemma4_unified_text_classes,
+        default_model_type="gemma4_unified",
+    )
+
+
+def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
+    """Load a NON-unified ``gemma4`` checkpoint as a text-only model.
+
+    For the 26B / 31B / e2b / e4b aliases
+    (``Gemma4ForConditionalGeneration``). Returns ``(model, tokenizer)``
+    compatible with mlx-lm's ``generate_step()``. For ``gemma4_unified``
+    (12B) use :func:`load_gemma4_unified_text` instead.
+    """
+    return _load_gemma4_text_impl(
+        model_path,
+        tokenizer_config,
+        resolve_classes=_resolve_gemma4_text_classes,
+        default_model_type="gemma4",
+    )
+
+
+def _load_gemma4_text_impl(
+    model_path: str | Path,
+    tokenizer_config: dict = None,
+    *,
+    resolve_classes,
+    default_model_type: str,
+):
+    """Shared build for both Gemma 4 text loaders.
+
+    ``resolve_classes`` returns ``(TextConfig, LanguageModel)`` for the
+    target arch (unified vs non-unified); everything downstream —
+    weight sanitize, checkpoint-driven quantization, tokenizer load — is
+    identical between the two because the unified arch reuses the same
+    text ``LanguageModel``.
     """
     from mlx_lm.utils import load_tokenizer
 
@@ -221,40 +434,13 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
     config = json.loads((p / "config.json").read_text())
     text_config = config.get("text_config", config)
 
-    # Build the language model. As of 0.10.1 we vendor the Gemma 4 text
-    # classes (~50 KB, ~1200 lines) directly under
-    # `vllm_mlx/models/gemma4_vendored/` so a fresh `pip install rapid-mlx`
-    # boots Gemma 4 out of the box — no `[vision]` extra required.
-    # Previously we imported from `mlx_vlm.models.gemma4.*`, but that
-    # required either promoting mlx-vlm to a core dep (~+483 MB transitive
-    # bloat: opencv-python, pyarrow, pandas, scipy, mlx-audio — none of
-    # which text-only Gemma 4 inference touches) or making users know to
-    # `pip install --no-deps 'mlx-vlm>=0.6.1'` themselves. See
-    # `vllm_mlx/models/gemma4_vendored/__init__.py` for the sync policy.
-    #
-    # We still prefer upstream mlx-vlm when it's already importable
-    # (e.g. `[vision]` users): mlx-vlm may ship a bug fix or Gemma 4.1
-    # update before we sync the vendored copy. The vendored fallback
-    # keeps the fresh-install path working with zero extras.
-    try:
-        from mlx_vlm.models.gemma4.config import TextConfig
-        from mlx_vlm.models.gemma4.language import LanguageModel
-    except ImportError:
-        from vllm_mlx.models.gemma4_vendored import (
-            config as _v_cfg,
-        )
-        from vllm_mlx.models.gemma4_vendored import (
-            language as _v_lang,
-        )
-
-        TextConfig = _v_cfg.TextConfig
-        LanguageModel = _v_lang.LanguageModel
+    TextConfig, LanguageModel = resolve_classes()
 
     tc = TextConfig.from_dict(text_config)
     language_model = LanguageModel(tc)
 
     # Wrap for mlx-lm compatibility
-    model = Gemma4TextWrapper(language_model)
+    model = Gemma4TextWrapper(language_model, default_model_type=default_model_type)
 
     # Load weights once up front (mmap-backed, cheap) — we'll feed these
     # back into ``model.load_weights`` after quantization. Sanitize per
@@ -376,6 +562,8 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
     tokenizer = load_tokenizer(p, tokenizer_config, eos_token_ids=eos_token_ids)
 
     logger.info(
-        "[gemma4] Loaded text-only model via LLM path (%d layers)", len(model.layers)
+        "[gemma4] Loaded %s text-only model via LLM path (%d layers)",
+        default_model_type,
+        len(model.layers),
     )
     return model, tokenizer

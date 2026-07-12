@@ -1,0 +1,282 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Regression tests for explicit ``gemma4`` vs ``gemma4_unified`` routing.
+
+Issue #509: ``is_gemma4_model`` used a ``"gemma4" in model_type`` substring
+test that matched BOTH the non-unified ``gemma4`` arch (26B/31B/e2b/e4b)
+AND ``gemma4_unified`` (the 12B aliases) — plus any sibling like
+``gemma4_assistant`` (which already exists on the Hub) or a hypothetical
+``gemma4_videogen``. Both loaded through the non-unified mlx-vlm
+subpackage. It worked empirically (dataclass-identical ``TextConfig`` +
+shared ``LanguageModel``) but was misleading and fragile.
+
+These tests pin the corrected behavior:
+- ``is_gemma4_model`` matches ONLY exact ``model_type == "gemma4"``.
+- ``is_gemma4_unified_model`` matches ONLY exact ``"gemma4_unified"``.
+- ``is_gemma4_family_model`` is the OR of the two, and REJECTS
+  ``gemma4_assistant`` / ``gemma4_videogen`` (the substring-match trap).
+- Each loader resolves to the matching mlx-vlm subpackage when installed,
+  and falls back to the vendored copy when mlx-vlm is absent (the
+  0.10.0 fresh-install regression that must never come back).
+
+The old substring implementation FAILS the ``gemma4_unified`` /
+``gemma4_assistant`` discrimination assertions; the fixed implementation
+PASSES.
+"""
+
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+from vllm_mlx.models import gemma4_text
+
+
+def _write_config(tmp_path: Path, model_type: str) -> Path:
+    """Write a minimal local model dir carrying only ``model_type``.
+
+    The detectors read the TOP-LEVEL ``model_type`` from config.json, so a
+    one-key config is enough to exercise the routing decision without any
+    weight download or forward pass.
+    """
+    d = tmp_path / model_type
+    d.mkdir()
+    (d / "config.json").write_text(json.dumps({"model_type": model_type}))
+    return d
+
+
+# --------------------------------------------------------------------------
+# Detection: exact-match, no substring bleed
+# --------------------------------------------------------------------------
+
+
+def test_gemma4_unified_detected_only_by_unified_detector(tmp_path):
+    """A ``gemma4_unified`` model (the gemma-4-12b aliases) is detected by
+    ``is_gemma4_unified_model`` and NOT by the corrected
+    ``is_gemma4_model``."""
+    d = _write_config(tmp_path, "gemma4_unified")
+    assert gemma4_text.is_gemma4_unified_model(d) is True
+    assert gemma4_text.is_gemma4_model(d) is False
+    assert gemma4_text.is_gemma4_family_model(d) is True
+
+
+def test_gemma4_nonunified_detected_only_by_base_detector(tmp_path):
+    """A non-unified ``gemma4`` model (gemma-4-31b etc.) is detected by
+    ``is_gemma4_model`` and NOT by ``is_gemma4_unified_model``."""
+    d = _write_config(tmp_path, "gemma4")
+    assert gemma4_text.is_gemma4_model(d) is True
+    assert gemma4_text.is_gemma4_unified_model(d) is False
+    assert gemma4_text.is_gemma4_family_model(d) is True
+
+
+@pytest.mark.parametrize("mt", ["gemma4_assistant", "gemma4_videogen", "gemma4_text"])
+def test_gemma4_siblings_not_misrouted(tmp_path, mt):
+    """Sibling model_types that the old ``"gemma4" in model_type`` substring
+    match would have swallowed must NOT be claimed by any Gemma 4 text
+    detector. ``gemma4_assistant`` already exists on the Hub
+    (mlx-community/gemma-4-31B-it-assistant); routing it (or a future
+    ``gemma4_videogen``) through the text loader would be a silent
+    misroute. This assertion fails against the old substring impl."""
+    d = _write_config(tmp_path, mt)
+    assert gemma4_text.is_gemma4_model(d) is False
+    assert gemma4_text.is_gemma4_unified_model(d) is False
+    assert gemma4_text.is_gemma4_family_model(d) is False
+
+
+def test_non_gemma_model_rejected(tmp_path):
+    """A completely unrelated arch is rejected by all detectors."""
+    d = _write_config(tmp_path, "qwen3_moe")
+    assert gemma4_text.is_gemma4_model(d) is False
+    assert gemma4_text.is_gemma4_unified_model(d) is False
+    assert gemma4_text.is_gemma4_family_model(d) is False
+
+
+def test_unreadable_config_is_not_gemma(tmp_path):
+    """A directory with no config.json (and not a resolvable repo id)
+    yields ``None`` model_type → not Gemma 4."""
+    d = tmp_path / "empty"
+    d.mkdir()
+    assert gemma4_text.is_gemma4_model(d) is False
+    assert gemma4_text.is_gemma4_unified_model(d) is False
+    assert gemma4_text.is_gemma4_family_model(d) is False
+
+
+# --------------------------------------------------------------------------
+# Loader class resolution: pin to the matching subpackage
+# --------------------------------------------------------------------------
+
+
+def test_nonunified_resolves_to_gemma4_subpackage():
+    """``load_gemma4_text`` resolves TextConfig + LanguageModel from the
+    non-unified ``mlx_vlm.models.gemma4`` subpackage when mlx-vlm is
+    installed."""
+    pytest.importorskip("mlx_vlm.models.gemma4")
+    tc, lm = gemma4_text._resolve_gemma4_text_classes()
+    assert tc.__module__ == "mlx_vlm.models.gemma4.config"
+    assert lm.__module__ == "mlx_vlm.models.gemma4.language"
+
+
+def test_unified_resolves_to_gemma4_unified_subpackage():
+    """``load_gemma4_unified_text`` resolves TextConfig from the
+    ``mlx_vlm.models.gemma4_unified`` subpackage (the matching one) when
+    mlx-vlm is installed.
+
+    Note: upstream deliberately re-exports the SAME ``LanguageModel`` from
+    ``gemma4.language`` inside ``gemma4_unified`` (the unified arch only
+    wraps vision/audio embedders around the identical text stack), so we
+    only assert the CONFIG module pin here — that's the drift-surfacing
+    signal. The LanguageModel object identity is asserted separately."""
+    pytest.importorskip("mlx_vlm.models.gemma4_unified")
+    tc, lm = gemma4_text._resolve_gemma4_unified_text_classes()
+    assert tc.__module__ == "mlx_vlm.models.gemma4_unified.config"
+
+
+def test_unified_and_base_share_language_model_class():
+    """Sanity: upstream's ``gemma4_unified`` LanguageModel IS the
+    ``gemma4`` one (re-export). This is WHY serving gemma-4-12b through
+    the non-unified classes worked empirically before this fix — and why
+    the vendored fallback (which has no unified variant) is correct."""
+    pytest.importorskip("mlx_vlm.models.gemma4_unified")
+    _, lm_base = gemma4_text._resolve_gemma4_text_classes()
+    _, lm_unified = gemma4_text._resolve_gemma4_unified_text_classes()
+    assert lm_base is lm_unified
+
+
+# --------------------------------------------------------------------------
+# Fresh-install (no mlx-vlm) anti-regression: vendored fallback
+# --------------------------------------------------------------------------
+
+
+def _block_mlx_vlm(monkeypatch):
+    """Make every ``import mlx_vlm*`` raise ImportError, simulating a fresh
+    ``pip install rapid-mlx`` without the ``[vision]`` extra."""
+    for mod_name in list(sys.modules):
+        if mod_name == "mlx_vlm" or mod_name.startswith("mlx_vlm."):
+            monkeypatch.delitem(sys.modules, mod_name, raising=False)
+
+    real_import = (
+        __builtins__["__import__"]
+        if isinstance(__builtins__, dict)
+        else __builtins__.__import__
+    )
+
+    def blocking_import(name, globals=None, locals=None, fromlist=(), level=0):
+        if name == "mlx_vlm" or name.startswith("mlx_vlm."):
+            raise ImportError(f"No module named {name!r}")
+        return real_import(name, globals, locals, fromlist, level)
+
+    monkeypatch.setattr("builtins.__import__", blocking_import)
+
+
+def test_unified_resolver_falls_back_to_vendored_without_mlx_vlm(monkeypatch):
+    """The #1 anti-regression: the unified loader must resolve to the
+    VENDORED text classes when mlx-vlm is absent, NOT raise ImportError.
+    Breaking this reintroduces the 0.10.0 fresh-install regression where
+    ``rapid-mlx serve gemma-4-12b`` died on a missing mlx-vlm."""
+    _block_mlx_vlm(monkeypatch)
+    tc, lm = gemma4_text._resolve_gemma4_unified_text_classes()
+    assert tc.__module__ == "vllm_mlx.models.gemma4_vendored.config"
+    assert lm.__module__ == "vllm_mlx.models.gemma4_vendored.language"
+
+
+def test_base_resolver_falls_back_to_vendored_without_mlx_vlm(monkeypatch):
+    """Non-unified loader also falls back to vendored classes without
+    mlx-vlm (existing 0.10.1 contract, re-pinned)."""
+    _block_mlx_vlm(monkeypatch)
+    tc, lm = gemma4_text._resolve_gemma4_text_classes()
+    assert tc.__module__ == "vllm_mlx.models.gemma4_vendored.config"
+    assert lm.__module__ == "vllm_mlx.models.gemma4_vendored.language"
+
+
+def test_unified_loader_reaches_weight_check_without_mlx_vlm(tmp_path, monkeypatch):
+    """End-to-end-ish: with mlx-vlm blocked, ``load_gemma4_unified_text``
+    gets past class construction (via the vendored fallback) and reaches
+    the ``No .safetensors files`` check — proving the vendored path is
+    actually exercised, mirroring ``test_gemma4_text_import_guard`` for
+    the unified loader."""
+    cfg = {
+        "model_type": "gemma4_unified",
+        "text_config": {
+            "hidden_size": 16,
+            "num_hidden_layers": 2,
+            "intermediate_size": 32,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 8,
+            "global_head_dim": 8,
+            "vocab_size": 32,
+            "vocab_size_per_layer_input": 32,
+            "hidden_size_per_layer_input": 0,
+            "num_kv_shared_layers": 0,
+            "sliding_window_pattern": 2,
+            "layer_types": ["sliding_attention", "full_attention"],
+            "use_double_wide_mlp": False,
+        },
+    }
+    (tmp_path / "config.json").write_text(json.dumps(cfg))
+
+    _block_mlx_vlm(monkeypatch)
+
+    with pytest.raises(FileNotFoundError, match="No .safetensors files"):
+        gemma4_text.load_gemma4_unified_text(tmp_path, None)
+
+
+# --------------------------------------------------------------------------
+# Dispatch wiring: tokenizer.py routes each arch to the matching loader
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "model_type,expected_loader,other_loader",
+    [
+        ("gemma4_unified", "load_gemma4_unified_text", "load_gemma4_text"),
+        ("gemma4", "load_gemma4_text", "load_gemma4_unified_text"),
+    ],
+)
+def test_dispatch_routes_to_matching_loader(
+    tmp_path, monkeypatch, model_type, expected_loader, other_loader
+):
+    """``_load_model_with_fallback_impl`` (the tokenizer dispatch) must send
+    ``gemma4_unified`` to ``load_gemma4_unified_text`` and non-unified
+    ``gemma4`` to ``load_gemma4_text``.
+
+    We force the "native mlx-lm load failed" branch (so the explicit
+    loaders run) by making ``mlx_lm.load`` raise, and stub both loaders to
+    record which one fired. This exercises the real routing decision in
+    ``vllm_mlx/utils/tokenizer.py`` without any weight download.
+    """
+    from vllm_mlx.utils import tokenizer as tok
+
+    d = _write_config(tmp_path, model_type)
+
+    # Force the native-load path to fail so the fallback branch runs.
+    def _boom(*a, **k):
+        raise RuntimeError("native load unavailable (forced for test)")
+
+    monkeypatch.setattr("mlx_lm.load", _boom)
+    # Neutralize side-effects the dispatch may attempt before the gemma gate.
+    monkeypatch.setattr(tok, "_needs_tokenizer_fallback", lambda *_: False)
+    monkeypatch.setattr(tok, "_is_vendored_arch_model", lambda *_: False)
+    monkeypatch.setattr(tok, "_register_vendored_archs", lambda *_: None)
+
+    called: dict[str, object] = {}
+
+    def make_stub(name):
+        def _stub(model_name, tokenizer_config=None):
+            called["loader"] = name
+            called["model_name"] = model_name
+            return ("MODEL", "TOKENIZER")
+
+        return _stub
+
+    monkeypatch.setattr(gemma4_text, expected_loader, make_stub(expected_loader))
+    monkeypatch.setattr(gemma4_text, other_loader, make_stub(other_loader))
+
+    result = tok._load_model_with_fallback_impl(str(d), {})
+
+    assert result == ("MODEL", "TOKENIZER")
+    assert called.get("loader") == expected_loader, (
+        f"{model_type} should route to {expected_loader}, got {called.get('loader')}"
+    )

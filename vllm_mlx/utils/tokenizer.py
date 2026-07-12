@@ -792,10 +792,17 @@ def _load_model_with_fallback_impl(model_name: str, tokenizer_config: dict = Non
         return _load_with_tokenizer_fallback(model_name)
 
     # Gemma 4: mlx-lm 0.31+ supports it natively. Only use our wrapper
-    # for older mlx-lm versions that lack gemma4 model support.
-    from ..models.gemma4_text import is_gemma4_model
+    # for older mlx-lm versions that lack gemma4 model support. Two
+    # model_types ride this path — the non-unified ``gemma4`` (26B/31B/
+    # e2b/e4b) and ``gemma4_unified`` (12B). Detect the whole family
+    # here, but dispatch the fallback to the loader that pins to the
+    # matching mlx-vlm subpackage (see #509).
+    from ..models.gemma4_text import (
+        is_gemma4_family_model,
+        is_gemma4_unified_model,
+    )
 
-    if is_gemma4_model(model_name):
+    if is_gemma4_family_model(model_name):
         try:
             # Try native mlx-lm load first (0.31+)
             model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
@@ -809,7 +816,19 @@ def _load_model_with_fallback_impl(model_name: str, tokenizer_config: dict = Non
             return model, tokenizer
         except Exception as e:
             # Fall back to our wrapper for older mlx-lm versions
-            # that lack native gemma4 architecture support
+            # that lack native gemma4 architecture support. Route
+            # ``gemma4_unified`` to the explicit unified loader so it
+            # pins to ``mlx_vlm.models.gemma4_unified`` (with vendored
+            # fallback); everything else uses the non-unified loader.
+            if is_gemma4_unified_model(model_name):
+                from ..models.gemma4_text import load_gemma4_unified_text
+
+                logger.info(
+                    f"Gemma 4 unified native load failed ({e}), "
+                    "falling back to unified text-only wrapper (legacy mlx-lm)"
+                )
+                return load_gemma4_unified_text(model_name, tokenizer_config)
+
             from ..models.gemma4_text import load_gemma4_text
 
             logger.info(
