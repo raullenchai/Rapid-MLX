@@ -17,8 +17,10 @@ the old ``"gemma4" in model_type`` substring test would silently
 misroute a hypothetical ``gemma4_videogen`` or the inner sub-config's
 own ``gemma4_text`` label):
 
-- ``gemma4``           → :func:`is_gemma4_model` / :func:`load_gemma4_text`
-- ``gemma4_assistant`` → :func:`is_gemma4_model` / :func:`load_gemma4_text`
+- ``gemma4``           → :func:`is_gemma4_nonunified_model` /
+                         :func:`load_gemma4_text`
+- ``gemma4_assistant`` → :func:`is_gemma4_nonunified_model` /
+                         :func:`load_gemma4_text`
                          (the ``gemma-4-*-assistant`` aliases; its nested
                          ``text_config`` is a ``gemma4_text`` shape, so it
                          rides the same non-unified loader the old
@@ -29,10 +31,13 @@ own ``gemma4_text`` label):
 
 :func:`is_gemma4_family_model` is the OR of all three for call sites that
 just need "is this a Gemma 4 text-servable arch?"; :func:`gemma4_family_kind`
-classifies with a single config read for dispatch sites. Both loaders
-prefer the matching upstream ``mlx_vlm`` subpackage when installed and
-fall back to the vendored copy under ``vllm_mlx/models/gemma4_vendored/``
-so a fresh ``pip install rapid-mlx`` (no ``[vision]`` extra) still boots.
+classifies with a single config read for dispatch sites.
+:func:`is_gemma4_model` is a family-wide back-compat alias for
+:func:`is_gemma4_family_model` (NOT the narrow non-unified router — new
+code should use the precise predicates above). Both loaders prefer the
+matching upstream ``mlx_vlm`` subpackage when installed and fall back to
+the vendored copy under ``vllm_mlx/models/gemma4_vendored/`` so a fresh
+``pip install rapid-mlx`` (no ``[vision]`` extra) still boots.
 
 The wrapper is thin: it just ensures model(input_ids, cache=cache) returns
 a raw logits tensor instead of LanguageModelOutput.
