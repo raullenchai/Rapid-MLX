@@ -792,17 +792,19 @@ def _load_model_with_fallback_impl(model_name: str, tokenizer_config: dict = Non
         return _load_with_tokenizer_fallback(model_name)
 
     # Gemma 4: mlx-lm 0.31+ supports it natively. Only use our wrapper
-    # for older mlx-lm versions that lack gemma4 model support. Two
+    # for older mlx-lm versions that lack gemma4 model support. Several
     # model_types ride this path — the non-unified ``gemma4`` (26B/31B/
-    # e2b/e4b) and ``gemma4_unified`` (12B). Detect the whole family
-    # here, but dispatch the fallback to the loader that pins to the
-    # matching mlx-vlm subpackage (see #509).
+    # e2b/e4b) and ``gemma4_assistant`` (assistant aliases), plus
+    # ``gemma4_unified`` (12B). Read the arch ONCE and retain the
+    # classification through the native-load fallback so a remote repo's
+    # config isn't fetched twice and a transient second lookup can't
+    # flip the loader choice (see #509).
     from ..models.gemma4_text import (
-        is_gemma4_family_model,
-        is_gemma4_unified_model,
+        gemma4_family_kind,
     )
 
-    if is_gemma4_family_model(model_name):
+    gemma4_kind = gemma4_family_kind(model_name)  # "unified" | "nonunified" | None
+    if gemma4_kind is not None:
         try:
             # Try native mlx-lm load first (0.31+)
             model, tokenizer = load(model_name, tokenizer_config=tokenizer_config)
@@ -820,7 +822,7 @@ def _load_model_with_fallback_impl(model_name: str, tokenizer_config: dict = Non
             # ``gemma4_unified`` to the explicit unified loader so it
             # pins to ``mlx_vlm.models.gemma4_unified`` (with vendored
             # fallback); everything else uses the non-unified loader.
-            if is_gemma4_unified_model(model_name):
+            if gemma4_kind == "unified":
                 from ..models.gemma4_text import load_gemma4_unified_text
 
                 logger.info(

@@ -60,6 +60,7 @@ def test_gemma4_unified_detected_only_by_unified_detector(tmp_path):
     assert gemma4_text.is_gemma4_unified_model(d) is True
     assert gemma4_text.is_gemma4_model(d) is False
     assert gemma4_text.is_gemma4_family_model(d) is True
+    assert gemma4_text.gemma4_family_kind(d) == "unified"
 
 
 def test_gemma4_nonunified_detected_only_by_base_detector(tmp_path):
@@ -69,20 +70,36 @@ def test_gemma4_nonunified_detected_only_by_base_detector(tmp_path):
     assert gemma4_text.is_gemma4_model(d) is True
     assert gemma4_text.is_gemma4_unified_model(d) is False
     assert gemma4_text.is_gemma4_family_model(d) is True
+    assert gemma4_text.gemma4_family_kind(d) == "nonunified"
 
 
-@pytest.mark.parametrize("mt", ["gemma4_assistant", "gemma4_videogen", "gemma4_text"])
-def test_gemma4_siblings_not_misrouted(tmp_path, mt):
-    """Sibling model_types that the old ``"gemma4" in model_type`` substring
-    match would have swallowed must NOT be claimed by any Gemma 4 text
-    detector. ``gemma4_assistant`` already exists on the Hub
-    (mlx-community/gemma-4-31B-it-assistant); routing it (or a future
-    ``gemma4_videogen``) through the text loader would be a silent
-    misroute. This assertion fails against the old substring impl."""
+def test_gemma4_assistant_routes_to_nonunified(tmp_path):
+    """``gemma4_assistant`` (the ``gemma-4-*-assistant`` aliases) is a
+    first-class NON-unified member: the old substring match sent it down
+    the ``gemma4`` text fallback and its nested ``text_config`` is a
+    ``gemma4_text`` shape, so we keep it on that path to avoid regressing
+    those aliases. It must be claimed by ``is_gemma4_model`` +
+    ``is_gemma4_family_model`` but NOT by the unified detector."""
+    d = _write_config(tmp_path, "gemma4_assistant")
+    assert gemma4_text.is_gemma4_model(d) is True
+    assert gemma4_text.is_gemma4_unified_model(d) is False
+    assert gemma4_text.is_gemma4_family_model(d) is True
+    assert gemma4_text.gemma4_family_kind(d) == "nonunified"
+
+
+@pytest.mark.parametrize("mt", ["gemma4_videogen", "gemma4_text", "gemma4_foo"])
+def test_gemma4_unknown_siblings_not_misrouted(tmp_path, mt):
+    """Unknown sibling model_types that the old ``"gemma4" in model_type``
+    substring match would have swallowed must NOT be claimed by any Gemma
+    4 text detector. A hypothetical future ``gemma4_videogen`` (or the
+    inner sub-config's own ``gemma4_text`` label) routed through the text
+    loader would be a silent misroute. These assertions fail against the
+    old substring impl."""
     d = _write_config(tmp_path, mt)
     assert gemma4_text.is_gemma4_model(d) is False
     assert gemma4_text.is_gemma4_unified_model(d) is False
     assert gemma4_text.is_gemma4_family_model(d) is False
+    assert gemma4_text.gemma4_family_kind(d) is None
 
 
 def test_non_gemma_model_rejected(tmp_path):
@@ -233,6 +250,7 @@ def test_unified_loader_reaches_weight_check_without_mlx_vlm(tmp_path, monkeypat
     [
         ("gemma4_unified", "load_gemma4_unified_text", "load_gemma4_text"),
         ("gemma4", "load_gemma4_text", "load_gemma4_unified_text"),
+        ("gemma4_assistant", "load_gemma4_text", "load_gemma4_unified_text"),
     ],
 )
 def test_dispatch_routes_to_matching_loader(
@@ -240,7 +258,7 @@ def test_dispatch_routes_to_matching_loader(
 ):
     """``_load_model_with_fallback_impl`` (the tokenizer dispatch) must send
     ``gemma4_unified`` to ``load_gemma4_unified_text`` and non-unified
-    ``gemma4`` to ``load_gemma4_text``.
+    ``gemma4`` / ``gemma4_assistant`` to ``load_gemma4_text``.
 
     We force the "native mlx-lm load failed" branch (so the explicit
     loaders run) by making ``mlx_lm.load`` raise, and stub both loaders to
@@ -280,3 +298,40 @@ def test_dispatch_routes_to_matching_loader(
     assert called.get("loader") == expected_loader, (
         f"{model_type} should route to {expected_loader}, got {called.get('loader')}"
     )
+
+
+# --------------------------------------------------------------------------
+# Wrapper reports the routed arch, not the generic inner "gemma4_text"
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "routed,inner,expected",
+    [
+        # Shared text stack reports the generic inner label → normalize to
+        # the routed arch (the real bug codex flagged: default never used).
+        ("gemma4_unified", "gemma4_text", "gemma4_unified"),
+        ("gemma4", "gemma4_text", "gemma4"),
+        ("gemma4_assistant", "gemma4_text", "gemma4_assistant"),
+        # A more-specific inner label (if a future model reports one) wins.
+        ("gemma4", "gemma4_special", "gemma4_special"),
+        # Missing inner attribute → routed arch.
+        ("gemma4_unified", None, "gemma4_unified"),
+    ],
+)
+def test_wrapper_reports_routed_model_type(routed, inner, expected):
+    """``Gemma4TextWrapper.model_type`` must reflect the arch the caller
+    routed for. Before the fix, ``getattr(lm, "model_type", default)``
+    always returned the wrapped stack's generic ``"gemma4_text"`` and the
+    routed default was dead code, so a unified wrapper reported the wrong
+    arch."""
+
+    class _FakeLM:
+        def __init__(self):
+            self.config = object()
+            self.model = object()
+            if inner is not None:
+                self.model_type = inner
+
+    wrapper = gemma4_text.Gemma4TextWrapper(_FakeLM(), routed_model_type=routed)
+    assert wrapper.model_type == expected

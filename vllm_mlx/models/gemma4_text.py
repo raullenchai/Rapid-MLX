@@ -154,50 +154,67 @@ def _read_model_type(model_path: str | Path) -> str | None:
         return None
 
 
+# Model_types the Gemma 4 text loader path claims. This is a deliberate
+# exact-match allow-list, NOT a ``"gemma4" in model_type`` substring test
+# (see #509). The substring check also matched a hypothetical future
+# ``gemma4_videogen`` (or ``gemma4_text`` — the inner text sub-config's
+# own model_type) and would silently misroute it. Each member here maps
+# to a concrete loader in :func:`_gemma4_loader_for`; adding a new
+# supported arch is a one-line edit plus a loader branch, which is the
+# point — routing is explicit and unknown arches surface loudly instead
+# of silently riding the text path.
+#
+# - ``gemma4``           : non-unified text arch (26B/31B/e2b/e4b,
+#                          ``Gemma4ForConditionalGeneration``).
+# - ``gemma4_unified``   : unified arch (the four ``gemma-4-12b-*``
+#                          aliases, ``Gemma4UnifiedForConditionalGeneration``).
+# - ``gemma4_assistant`` : the ``gemma-4-*-assistant`` aliases
+#                          (``Gemma4AssistantForCausalLM``). Its nested
+#                          ``text_config`` is a ``gemma4_text`` shape, so
+#                          it loads through the SAME non-unified path the
+#                          old substring match sent it down. Kept in the
+#                          allow-list to preserve that pre-#509 behavior
+#                          (dropping it would regress those aliases to the
+#                          unsupported native-load path).
+_GEMMA4_NONUNIFIED_MODEL_TYPES = ("gemma4", "gemma4_assistant")
+_GEMMA4_UNIFIED_MODEL_TYPES = ("gemma4_unified",)
+_GEMMA4_FAMILY_MODEL_TYPES = (
+    _GEMMA4_NONUNIFIED_MODEL_TYPES + _GEMMA4_UNIFIED_MODEL_TYPES
+)
+
+
 def is_gemma4_family_model(model_path: str | Path) -> bool:
     """Check if the model belongs to the Gemma 4 *family* (text loader path).
 
-    Covers the two model_types the Gemma 4 text loader knows how to
-    serve today:
-
-    - ``gemma4`` — the non-unified text arch (26B / 31B / e2b / e4b
-      aliases, ``Gemma4ForConditionalGeneration``).
-    - ``gemma4_unified`` — the unified arch shipped by the
-      ``gemma-4-12b-*`` aliases (``Gemma4UnifiedForConditionalGeneration``).
-
-    This is a deliberate exact-match allow-list, NOT a ``"gemma4" in
-    model_type`` substring test. The old substring check also matched
-    unrelated future or sibling arches by accident — e.g.
-    ``gemma4_assistant`` (which already exists on the Hub as
-    ``mlx-community/gemma-4-31B-it-assistant``) or a hypothetical
-    ``gemma4_videogen`` — and silently routed them through the text
-    loader even though we've never validated them. Adding a new
-    supported member is a one-line edit here plus a real loader branch,
-    which is the point: routing becomes explicit and drift surfaces as a
-    clear "unsupported model_type" instead of a silent misroute.
+    True for any model_type the Gemma 4 text loaders serve — see
+    :data:`_GEMMA4_FAMILY_MODEL_TYPES`. Use this as the routing gate;
+    then split with :func:`is_gemma4_unified_model` to pick the loader.
     """
     # Read the model_type once (may hit hf_hub_download for a remote repo,
-    # cached ~5 KB) rather than paying two lookups via the two exact
+    # cached ~5 KB) rather than paying multiple lookups via the exact
     # detectors.
-    return _read_model_type(model_path) in ("gemma4", "gemma4_unified")
+    return _read_model_type(model_path) in _GEMMA4_FAMILY_MODEL_TYPES
 
 
 def is_gemma4_model(model_path: str | Path) -> bool:
-    """Check if the model is the NON-unified Gemma 4 text arch.
+    """Check if the model is a NON-unified Gemma 4 text arch.
 
-    Exact match on ``model_type == "gemma4"`` (26B / 31B / e2b / e4b).
-    Callers that want "any Gemma 4 text-servable arch" should use
-    :func:`is_gemma4_family_model`; callers that specifically want the
-    unified arch should use :func:`is_gemma4_unified_model`.
+    Matches ``gemma4`` and ``gemma4_assistant`` — the arches served by
+    :func:`load_gemma4_text`. Callers that want "any Gemma 4
+    text-servable arch" should use :func:`is_gemma4_family_model`;
+    callers that specifically want the unified arch should use
+    :func:`is_gemma4_unified_model`.
 
-    Historically this did ``"gemma4" in model_type``, which also caught
-    ``gemma4_unified`` (and ``gemma4_assistant``, ``gemma4_text``, …) by
-    substring. That happened to work because ``gemma4`` and
-    ``gemma4_unified`` ship dataclass-identical ``TextConfig`` shapes and
-    reuse the same ``LanguageModel`` class — but the routing was
-    misleading and fragile. See #509.
+    Historically this did ``"gemma4" in model_type``, which ALSO caught
+    ``gemma4_unified`` by substring. That happened to work because
+    ``gemma4`` and ``gemma4_unified`` ship dataclass-identical
+    ``TextConfig`` shapes and reuse the same ``LanguageModel`` class —
+    but conflating them was misleading and fragile. We now split unified
+    out to its own detector/loader while keeping the assistant arch on
+    this non-unified path (its nested ``text_config`` is ``gemma4_text``,
+    same as the base arch). See #509.
     """
-    return _read_model_type(model_path) == "gemma4"
+    return _read_model_type(model_path) in _GEMMA4_NONUNIFIED_MODEL_TYPES
 
 
 def is_gemma4_unified_model(model_path: str | Path) -> bool:
@@ -210,7 +227,26 @@ def is_gemma4_unified_model(model_path: str | Path) -> bool:
     ``mlx_vlm.models.gemma4_unified`` subpackage when mlx-vlm is
     installed and falls back to the vendored copy otherwise. See #509.
     """
-    return _read_model_type(model_path) == "gemma4_unified"
+    return _read_model_type(model_path) in _GEMMA4_UNIFIED_MODEL_TYPES
+
+
+def gemma4_family_kind(model_path: str | Path) -> str | None:
+    """Classify a Gemma 4 family model with a SINGLE config read.
+
+    Returns ``"unified"`` for ``gemma4_unified``, ``"nonunified"`` for
+    ``gemma4`` / ``gemma4_assistant``, or ``None`` if the model isn't in
+    the Gemma 4 text-loader family. Prefer this over calling
+    :func:`is_gemma4_family_model` then :func:`is_gemma4_unified_model` at
+    a dispatch site — it reads ``config.json`` once (one Hub lookup for a
+    remote repo) and the retained classification can't be flipped by a
+    transient second lookup failure.
+    """
+    mt = _read_model_type(model_path)
+    if mt in _GEMMA4_UNIFIED_MODEL_TYPES:
+        return "unified"
+    if mt in _GEMMA4_NONUNIFIED_MODEL_TYPES:
+        return "nonunified"
+    return None
 
 
 class Gemma4TextWrapper(nn.Module):
@@ -221,16 +257,22 @@ class Gemma4TextWrapper(nn.Module):
     This wrapper extracts .logits so the interface matches.
     """
 
-    def __init__(self, language_model, default_model_type: str = "gemma4"):
+    def __init__(self, language_model, routed_model_type: str = "gemma4"):
         super().__init__()
         self.language_model = language_model
         # Expose config for mlx-lm compatibility
         self.config = language_model.config
         self.model = language_model.model
-        # The unified arch reuses the same text ``LanguageModel`` (which
-        # reports model_type "gemma4_text"), so fall back to the arch the
-        # caller actually routed for (``gemma4`` vs ``gemma4_unified``).
-        self.model_type = getattr(language_model, "model_type", default_model_type)
+        # Report the arch the caller ACTUALLY routed for (``gemma4`` /
+        # ``gemma4_unified`` / ``gemma4_assistant``). The wrapped
+        # ``LanguageModel`` is the shared text stack and always reports the
+        # generic inner label ``"gemma4_text"`` regardless of the outer
+        # arch, so we normalize that to the routed model_type. If the
+        # wrapped model ever reports a more specific type, honor it.
+        inner = getattr(language_model, "model_type", None)
+        self.model_type = (
+            inner if inner and inner != "gemma4_text" else routed_model_type
+        )
 
     def __call__(self, input_ids, cache=None, **kwargs):
         out = self.language_model(input_ids, cache=cache, **kwargs)
@@ -434,13 +476,19 @@ def _load_gemma4_text_impl(
     config = json.loads((p / "config.json").read_text())
     text_config = config.get("text_config", config)
 
+    # The outer arch the checkpoint actually declares (``gemma4`` /
+    # ``gemma4_unified`` / ``gemma4_assistant``). Prefer it over the
+    # ``default_model_type`` hint so the wrapper reports the real arch
+    # (e.g. ``gemma4_assistant``) instead of a coarser default.
+    routed_model_type = config.get("model_type") or default_model_type
+
     TextConfig, LanguageModel = resolve_classes()
 
     tc = TextConfig.from_dict(text_config)
     language_model = LanguageModel(tc)
 
     # Wrap for mlx-lm compatibility
-    model = Gemma4TextWrapper(language_model, default_model_type=default_model_type)
+    model = Gemma4TextWrapper(language_model, routed_model_type=routed_model_type)
 
     # Load weights once up front (mmap-backed, cheap) — we'll feed these
     # back into ``model.load_weights`` after quantization. Sanitize per
@@ -563,7 +611,7 @@ def _load_gemma4_text_impl(
 
     logger.info(
         "[gemma4] Loaded %s text-only model via LLM path (%d layers)",
-        default_model_type,
+        routed_model_type,
         len(model.layers),
     )
     return model, tokenizer
