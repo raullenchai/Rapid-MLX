@@ -11,20 +11,28 @@ with mlx-lm's generate_step() interface, enabling:
 - DeltaNet state snapshots (if applicable)
 - All LLM-path optimizations
 
-Two model_types are served, each with an EXPLICIT detector + loader so
-routing is unambiguous (see #509 — the old ``"gemma4" in model_type``
-substring test also caught siblings like ``gemma4_assistant`` and would
-silently misroute a hypothetical ``gemma4_videogen``):
+Three outer model_types are served, routed to two loaders via an
+EXPLICIT exact-match allow-list so routing is unambiguous (see #509 —
+the old ``"gemma4" in model_type`` substring test would silently
+misroute a hypothetical ``gemma4_videogen`` or the inner sub-config's
+own ``gemma4_text`` label):
 
-- ``gemma4``          → :func:`is_gemma4_model` / :func:`load_gemma4_text`
-- ``gemma4_unified``  → :func:`is_gemma4_unified_model` /
-                        :func:`load_gemma4_unified_text`
+- ``gemma4``           → :func:`is_gemma4_model` / :func:`load_gemma4_text`
+- ``gemma4_assistant`` → :func:`is_gemma4_model` / :func:`load_gemma4_text`
+                         (the ``gemma-4-*-assistant`` aliases; its nested
+                         ``text_config`` is a ``gemma4_text`` shape, so it
+                         rides the same non-unified loader the old
+                         substring match sent it down — kept for
+                         backward compat)
+- ``gemma4_unified``   → :func:`is_gemma4_unified_model` /
+                         :func:`load_gemma4_unified_text`
 
-:func:`is_gemma4_family_model` is the OR of the two for call sites that
-just need "is this a Gemma 4 text-servable arch?". Both loaders prefer
-the matching upstream ``mlx_vlm`` subpackage when installed and fall back
-to the vendored copy under ``vllm_mlx/models/gemma4_vendored/`` so a
-fresh ``pip install rapid-mlx`` (no ``[vision]`` extra) still boots.
+:func:`is_gemma4_family_model` is the OR of all three for call sites that
+just need "is this a Gemma 4 text-servable arch?"; :func:`gemma4_family_kind`
+classifies with a single config read for dispatch sites. Both loaders
+prefer the matching upstream ``mlx_vlm`` subpackage when installed and
+fall back to the vendored copy under ``vllm_mlx/models/gemma4_vendored/``
+so a fresh ``pip install rapid-mlx`` (no ``[vision]`` extra) still boots.
 
 The wrapper is thin: it just ensures model(input_ids, cache=cache) returns
 a raw logits tensor instead of LanguageModelOutput.
@@ -158,11 +166,12 @@ def _read_model_type(model_path: str | Path) -> str | None:
 # exact-match allow-list, NOT a ``"gemma4" in model_type`` substring test
 # (see #509). The substring check also matched a hypothetical future
 # ``gemma4_videogen`` (or ``gemma4_text`` — the inner text sub-config's
-# own model_type) and would silently misroute it. Each member here maps
-# to a concrete loader in :func:`_gemma4_loader_for`; adding a new
-# supported arch is a one-line edit plus a loader branch, which is the
-# point — routing is explicit and unknown arches surface loudly instead
-# of silently riding the text path.
+# own model_type) and would silently misroute it. Each member is
+# classified by :func:`gemma4_family_kind` and routed to the matching
+# ``load_gemma4_*`` loader; adding a new supported arch is a one-line
+# edit here plus a loader branch, which is the point — routing is
+# explicit and unknown arches surface loudly instead of silently riding
+# the text path.
 #
 # - ``gemma4``           : non-unified text arch (26B/31B/e2b/e4b,
 #                          ``Gemma4ForConditionalGeneration``).

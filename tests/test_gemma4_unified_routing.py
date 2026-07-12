@@ -261,18 +261,30 @@ def test_dispatch_routes_to_matching_loader(
     ``gemma4`` / ``gemma4_assistant`` to ``load_gemma4_text``.
 
     We force the "native mlx-lm load failed" branch (so the explicit
-    loaders run) by making ``mlx_lm.load`` raise, and stub both loaders to
-    record which one fired. This exercises the real routing decision in
-    ``vllm_mlx/utils/tokenizer.py`` without any weight download.
+    loaders run) by making the ``load`` symbol the dispatch calls raise,
+    and stub both loaders to record which one fired. This exercises the
+    real routing decision in ``vllm_mlx/utils/tokenizer.py`` without any
+    weight download.
+
+    ``_load_model_with_fallback_impl`` rebinds ``load`` locally via
+    ``from mlx_lm import load`` on every call, so patching ``mlx_lm.load``
+    is what the dispatch actually resolves — but we assert the forced
+    exception fired (``native_load_raised``) so the test can never pass by
+    coincidence via a native load that happened to succeed or a different
+    rejection path.
     """
     from vllm_mlx.utils import tokenizer as tok
 
     d = _write_config(tmp_path, model_type)
 
-    # Force the native-load path to fail so the fallback branch runs.
-    def _boom(*a, **k):
+    native_load_calls: list[str] = []
+
+    def _boom(model_name, *a, **k):
+        native_load_calls.append(model_name)
         raise RuntimeError("native load unavailable (forced for test)")
 
+    # The dispatch does ``from mlx_lm import load`` at call time, so the
+    # authoritative binding to patch is ``mlx_lm.load``.
     monkeypatch.setattr("mlx_lm.load", _boom)
     # Neutralize side-effects the dispatch may attempt before the gemma gate.
     monkeypatch.setattr(tok, "_needs_tokenizer_fallback", lambda *_: False)
@@ -294,6 +306,13 @@ def test_dispatch_routes_to_matching_loader(
 
     result = tok._load_model_with_fallback_impl(str(d), {})
 
+    # The forced native-load failure must actually have fired — otherwise
+    # the routing assertion below could pass via a native path we didn't
+    # intend to test.
+    assert native_load_calls, (
+        "native mlx_lm.load was never called — the dispatch didn't reach "
+        "the gemma4 fallback branch, so this test isn't exercising routing"
+    )
     assert result == ("MODEL", "TOKENIZER")
     assert called.get("loader") == expected_loader, (
         f"{model_type} should route to {expected_loader}, got {called.get('loader')}"
