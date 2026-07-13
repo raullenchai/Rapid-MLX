@@ -552,6 +552,16 @@ def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
     else:
         num_shared = raw_shared
 
+    # Write the normalized value back onto ``tc`` so the subsequent
+    # ``LanguageModel(tc)`` build sees a plain int (its producer-split math
+    # ``num_hidden - num_kv_shared_layers`` would otherwise raise a cryptic
+    # ``TypeError`` on a ``None`` that reached it via an explicit config null).
+    if raw_shared is not num_shared:
+        try:
+            tc.num_kv_shared_layers = num_shared
+        except Exception:
+            pass
+
     if num_shared < 0 or num_shared >= num_hidden:
         raise ValueError(
             f"Gemma 4 KV-sharing config INVALID for {model_id}: "
@@ -571,22 +581,35 @@ def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
         )
         return
 
-    # 0 < num_shared < num_hidden → sharing candidate. Verify every borrower
-    # attention type actually has a producer of that type below the split;
-    # otherwise a borrower would have nothing to borrow (malformed layer_types).
+    # 0 < num_shared < num_hidden → sharing candidate. Active sharing REQUIRES
+    # a usable ``layer_types`` (one entry per layer): the producer→borrower map
+    # is built by matching each borrower's attention type to the last same-type
+    # producer. Without it we cannot establish that map, so declaring sharing
+    # ACTIVE would be unfounded — raise instead of logging a claim we did not
+    # validate. (The dataclass ``__post_init__`` always derives ``layer_types``;
+    # a missing/short one is a genuinely malformed config.)
     layer_types = getattr(tc, "layer_types", None)
     num_producers = num_hidden - num_shared
-    if isinstance(layer_types, (list, tuple)) and len(layer_types) == num_hidden:
-        producer_types = set(layer_types[:num_producers])
-        borrower_types = set(layer_types[num_producers:])
-        orphan_types = borrower_types - producer_types
-        if orphan_types:
-            raise ValueError(
-                f"Gemma 4 KV-sharing config INVALID for {model_id}: borrower "
-                f"attention type(s) {sorted(orphan_types)} have no producer "
-                f"layer of that type in the first {num_producers} layer(s). "
-                "This layer_types layout cannot share K/V correctly."
-            )
+    if not isinstance(layer_types, (list, tuple)) or len(layer_types) != num_hidden:
+        raise ValueError(
+            f"Gemma 4 KV-sharing config INVALID for {model_id}: sharing is on "
+            f"(num_kv_shared_layers={num_shared}) but layer_types is missing or "
+            f"the wrong length (need {num_hidden} entries, got "
+            f"{len(layer_types) if isinstance(layer_types, (list, tuple)) else layer_types!r}). "
+            "Cannot establish the producer→borrower map."
+        )
+    # Every borrower attention type must have a producer of that type below the
+    # split; otherwise a borrower would have nothing to borrow.
+    producer_types = set(layer_types[:num_producers])
+    borrower_types = set(layer_types[num_producers:])
+    orphan_types = borrower_types - producer_types
+    if orphan_types:
+        raise ValueError(
+            f"Gemma 4 KV-sharing config INVALID for {model_id}: borrower "
+            f"attention type(s) {sorted(orphan_types)} have no producer "
+            f"layer of that type in the first {num_producers} layer(s). "
+            "This layer_types layout cannot share K/V correctly."
+        )
 
     default_note = (
         ""

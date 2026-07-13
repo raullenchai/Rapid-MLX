@@ -192,6 +192,38 @@ def test_guard_none_shared_is_inactive(caplog):
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
 
 
+def test_guard_none_writeback_lets_model_build():
+    """None num_kv_shared_layers is normalized to 0 IN PLACE on tc, so the
+    subsequent LanguageModel(tc) build sees a plain int and does not raise a
+    TypeError in its ``num_hidden - num_kv_shared_layers`` producer split."""
+    tc = _build_text_config(35, 20)
+    tc.num_kv_shared_layers = None
+    _check_kv_share_config(
+        {"num_hidden_layers": 35, "num_kv_shared_layers": None}, tc, "test/none"
+    )
+    assert tc.num_kv_shared_layers == 0  # written back
+    # The model must now build without a TypeError.
+    lm = LanguageModel(tc)
+    assert lm.model.first_kv_shared_layer_idx == 35  # no borrowers
+
+
+def test_guard_active_requires_usable_layer_types():
+    """Sharing on but layer_types missing/wrong-length → ValueError (cannot
+    establish the producer→borrower map), NOT a bare ACTIVE log."""
+    tc = _build_text_config(35, 20)
+    tc.layer_types = None
+    with pytest.raises(ValueError, match="layer_types is missing or"):
+        _check_kv_share_config(
+            {"num_hidden_layers": 35, "num_kv_shared_layers": 20}, tc, "test/nolt"
+        )
+    tc2 = _build_text_config(35, 20)
+    tc2.layer_types = ["full_attention"] * 10  # wrong length
+    with pytest.raises(ValueError, match="wrong length"):
+        _check_kv_share_config(
+            {"num_hidden_layers": 35, "num_kv_shared_layers": 20}, tc2, "test/shortlt"
+        )
+
+
 def test_guard_orphan_borrower_type_raises():
     """A borrower attention type with no producer of that type below the split
     is a malformed layer_types layout → ValueError (borrower has nothing to
@@ -300,6 +332,38 @@ def test_e2b_borrow_is_active_smoke():
     borrower_producers = {lm.model.previous_kvs[j] for j in range(15, 35)}
     producer_types = {lm.model.layers[p].layer_type for p in borrower_producers}
     assert producer_types == {"full_attention", "sliding_attention"}
+
+
+def _assert_e2b_active_sharing(cfg_cls, model_cls):
+    """Build an E2B-shape (35/20) model with the given class pair and assert
+    make_cache() is producer-only (borrow active). Works for both the upstream
+    mlx-vlm and the vendored class implementations."""
+    tc = cfg_cls.from_dict({"num_hidden_layers": 35, "num_kv_shared_layers": 20})
+    lm = model_cls(tc)
+    caches = lm.make_cache()
+    assert len(caches) == 15, (
+        f"{model_cls.__module__}: make_cache() returned {len(caches)} caches, "
+        "expected 15 (producer-only) — borrow is NOT active"
+    )
+    assert lm.model.first_kv_shared_layer_idx == 15
+    assert len(caches) < len(lm.model.layers) == 35
+
+
+def test_resolved_load_path_borrow_active():
+    """Exercise the SAME class resolution production uses
+    (``_resolve_gemma4_text_classes`` — upstream mlx-vlm when installed, else
+    vendored). If the class production actually loads ever stops sharing, this
+    fails — the vendored-only tests above would not catch that."""
+    from vllm_mlx.models.gemma4_text import _resolve_gemma4_text_classes
+
+    cfg_cls, model_cls = _resolve_gemma4_text_classes()
+    _assert_e2b_active_sharing(cfg_cls, model_cls)
+
+
+def test_vendored_fallback_borrow_active():
+    """The fresh-install path (no mlx-vlm ``[vision]`` extra) must also keep
+    borrow active. Force the vendored branch regardless of what is installed."""
+    _assert_e2b_active_sharing(TextConfig, LanguageModel)
 
 
 # --------------------------------------------------------------------------
