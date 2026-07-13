@@ -46,6 +46,132 @@ def test_parse_version_rejects_garbage(raw):
     assert vc._parse_version(raw) is None
 
 
+# --- _fetch_latest routes through the countable landing worker --------
+
+
+class _FakeResp:
+    """Minimal urlopen() context-manager stand-in."""
+
+    def __init__(self, body: bytes):
+        self._body = body
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+    def read(self):
+        return self._body
+
+
+def test_fetch_latest_targets_cli_update_endpoint_with_version(monkeypatch):
+    """The update poll must go to rapidmlx.com/api/cli-update (countable),
+    NOT api.github.com directly, and carry the installed version as the
+    ``v`` query param so the server can bucket active-install counts."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        captured["timeout"] = timeout
+        return _FakeResp(json.dumps({"tag_name": "v0.6.70"}).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    result = vc._fetch_latest()
+
+    assert result == "0.6.70"  # leading v stripped, parse unchanged
+    assert captured["url"].startswith("https://rapidmlx.com/api/cli-update")
+    assert "v=0.6.61" in captured["url"]
+    # Never hit GitHub directly — that path can't be counted.
+    assert "api.github.com" not in captured["url"]
+    # Timeout guard preserved.
+    assert captured["timeout"] == vc.NETWORK_TIMEOUT_SECONDS
+
+
+def test_fetch_latest_url_encodes_version(monkeypatch):
+    """A version with URL-special chars (local build metadata carries
+    ``+``) must be percent-encoded so the query string stays well-formed
+    and nothing but the version leaks."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61+local.build")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResp(json.dumps({"tag_name": "0.6.70"}).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    vc._fetch_latest()
+    # ``+`` percent-encoded (urlencode uses quote_plus → %2B), no raw +.
+    assert "v=0.6.61%2Blocal.build" in captured["url"]
+
+
+def test_fetch_latest_sends_empty_version_when_uninstalled(monkeypatch):
+    """Running from an uninstalled source tree → ``_installed_version``
+    is None → still send ``v=`` (empty), never crash."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: None)
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        captured["url"] = req.full_url
+        return _FakeResp(json.dumps({"tag_name": "0.6.70"}).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    assert vc._fetch_latest() == "0.6.70"
+    assert "v=" in captured["url"]
+    assert captured["url"].startswith("https://rapidmlx.com/api/cli-update")
+
+
+def test_fetch_latest_fail_open_on_urlerror(monkeypatch):
+    """Any network error → None, silently (never break the CLI)."""
+    import urllib.error
+
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+
+    def boom(req, timeout=None):
+        raise urllib.error.URLError("offline")
+
+    monkeypatch.setattr("urllib.request.urlopen", boom)
+    assert vc._fetch_latest() is None
+
+
+def test_fetch_latest_fail_open_on_bad_json(monkeypatch):
+    """Malformed worker response → None, no exception."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp(b"not json{")
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    assert vc._fetch_latest() is None
+
+
+def test_fetch_latest_returns_none_when_tag_missing(monkeypatch):
+    """Passthrough JSON without ``tag_name`` → None (unchanged parse)."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+
+    def fake_urlopen(req, timeout=None):
+        return _FakeResp(json.dumps({"other": "field"}).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+    assert vc._fetch_latest() is None
+
+
+def test_disabled_short_circuits_before_any_fetch(monkeypatch):
+    """``_disabled()`` must gate the whole check — no network, even the
+    countable one, when running in CI / non-TTY / opted out."""
+    monkeypatch.setattr(vc, "_disabled", lambda: True)
+    monkeypatch.setattr(
+        vc,
+        "_fetch_latest",
+        lambda: pytest.fail("fetch leaked despite _disabled()"),
+    )
+    assert vc.staleness_warning() is None
+
+
 # --- staleness_warning logic (no network) -----------------------------
 
 
@@ -56,10 +182,10 @@ def isolated_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(vc, "_cache_path", lambda: cache_dir / "version_check.json")
     # Disable the disabled() short-circuit so logic runs.
     monkeypatch.setattr(vc, "_disabled", lambda: False)
-    # Block real network — every test MUST stub _fetch_latest_from_github.
+    # Block real network — every test MUST stub _fetch_latest.
     monkeypatch.setattr(
         vc,
-        "_fetch_latest_from_github",
+        "_fetch_latest",
         lambda: pytest.fail("real network call leaked into test"),
     )
     return cache_dir
@@ -125,7 +251,7 @@ def test_silent_when_offline(tmp_path, monkeypatch):
     monkeypatch.setattr(vc, "_cache_path", lambda: cache_dir / "version_check.json")
     monkeypatch.setattr(vc, "_disabled", lambda: False)
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.14")
-    monkeypatch.setattr(vc, "_fetch_latest_from_github", lambda: None)
+    monkeypatch.setattr(vc, "_fetch_latest", lambda: None)
 
     assert vc.staleness_warning() is None
 

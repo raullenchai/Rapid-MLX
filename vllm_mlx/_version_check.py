@@ -33,12 +33,21 @@ import os
 import sys
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from importlib.metadata import PackageNotFoundError
 from importlib.metadata import version as pkg_version
 from pathlib import Path
 
-GITHUB_LATEST_API = "https://api.github.com/repos/raullenchai/Rapid-MLX/releases/latest"
+# The update check routes through the landing worker rather than hitting
+# api.github.com directly. The worker at ``rapidmlx.com/api/cli-update``
+# is a passthrough that returns the SAME GitHub ``releases/latest`` JSON,
+# so parsing is unchanged; the indirection just lets the server count
+# active CLI polls (mirrors what the desktop app now does). The ONLY
+# thing that goes on the wire is the installed version, sent URL-encoded
+# as the ``v`` query param so counts can be bucketed by version — no
+# other data, ever.
+CLI_UPDATE_ENDPOINT = "https://rapidmlx.com/api/cli-update"
 CACHE_TTL_SECONDS = 24 * 3600  # 24h
 NETWORK_TIMEOUT_SECONDS = 2  # tight — staleness check is best-effort
 # Minimum patch lag before warning. Bumping by 1 patch happens often
@@ -112,10 +121,26 @@ def _write_cache(latest: str) -> None:
         pass
 
 
-def _fetch_latest_from_github() -> str | None:
+def _fetch_latest() -> str | None:
+    """Fetch the latest release tag via the landing worker.
+
+    Routes through ``rapidmlx.com/api/cli-update`` instead of
+    api.github.com directly so the poll is countable server-side. The
+    worker passes the GitHub ``releases/latest`` JSON straight through,
+    so the parse (``tag_name``) is identical to the old direct fetch.
+
+    Privacy: the ONLY thing sent is the installed version, URL-encoded as
+    the ``v`` query param (empty string when running from an uninstalled
+    source tree). Nothing else — no client id, no os/arch, no headers
+    beyond the JSON Accept. Fail-open: any network / parse / sandbox
+    error returns None silently, exactly as before.
+    """
     try:
+        installed = _installed_version() or ""
+        query = urllib.parse.urlencode({"v": installed})
+        url = f"{CLI_UPDATE_ENDPOINT}?{query}"
         req = urllib.request.Request(
-            GITHUB_LATEST_API,
+            url,
             headers={"Accept": "application/vnd.github+json"},
         )
         with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:
@@ -147,7 +172,7 @@ def get_latest_version(force_refresh: bool = False) -> str | None:
             v = cached.get("latest")
             if isinstance(v, str):
                 return v
-    latest = _fetch_latest_from_github()
+    latest = _fetch_latest()
     if latest is not None:
         _write_cache(latest)
     return latest
