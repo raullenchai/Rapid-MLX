@@ -548,28 +548,47 @@ def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
     the vendored text classes (both expose ``num_hidden_layers`` /
     ``num_kv_shared_layers`` on the dataclass ``TextConfig``).
     """
+    # ``num_hidden_layers`` must be a positive, non-boolean int for any of the
+    # split math to make sense. A malformed value (0, negative, bool, string,
+    # None) is a broken config — raise the clear diagnostic here rather than
+    # letting the model build fail cryptically or silently produce an empty
+    # stack. (``bool`` is an ``int`` subclass in Python, so exclude it first.)
     num_hidden = getattr(tc, "num_hidden_layers", None)
-    if not isinstance(num_hidden, bool) and isinstance(num_hidden, int):
-        pass
-    else:
-        # Not a shape we can reason about; nothing to guard.
-        return
-    if num_hidden <= 0:
-        return
+    if (
+        isinstance(num_hidden, bool)
+        or not isinstance(num_hidden, int)
+        or num_hidden <= 0
+    ):
+        raise ValueError(
+            f"Gemma 4 config INVALID for {model_id}: num_hidden_layers="
+            f"{num_hidden!r} must be a positive integer."
+        )
 
     key_present = "num_kv_shared_layers" in text_config
+    raw_dict_val = text_config.get("num_kv_shared_layers", "__absent__")
     raw_shared = getattr(tc, "num_kv_shared_layers", 0)
+
+    # Reject an EXPLICIT JSON null: a config that writes ``num_kv_shared_layers:
+    # null`` is malformed (it can't declare a share count and leave it unset).
+    # We must not guess a size-specific value — forcing the class default would
+    # give E4B 20 borrowers instead of 18, or a dense model 20 instead of 0,
+    # silently changing its architecture. An ABSENT key is different: it keeps
+    # whatever the dataclass default already filled in via ``from_dict`` (the
+    # legitimate "checkpoint didn't override the default" case).
+    if key_present and raw_dict_val is None:
+        raise ValueError(
+            f"Gemma 4 KV-sharing config INVALID for {model_id}: "
+            "num_kv_shared_layers is explicitly null. A checkpoint must declare "
+            "a concrete share count (an int) or omit the key entirely; a null "
+            "value is malformed and cannot be resolved to a size-specific split."
+        )
 
     # Normalize the value the model will be built from.
     #   * A plain non-negative int → used as-is.
-    #   * ``None`` (explicit JSON ``null`` OR an absent key that left the field
-    #     ``None``) → treated as "not specified": fall back to the config
-    #     dataclass DEFAULT for the field, NOT a hard 0. Forcing 0 would turn a
-    #     shared-KV checkpoint's borrower layers into producers and make the
-    #     model expect K/V projections the checkpoint doesn't ship. We cannot
-    #     know the size-specific correct value from config alone (that is the
-    #     checkpoint's job), so the least-surprising fallback is the same
-    #     default an absent key already gets via ``from_dict``.
+    #   * ``None`` reaching here means the key was ABSENT (not explicit null,
+    #     handled above) and the dataclass field itself is ``None`` — fall back
+    #     to the config dataclass DEFAULT for the field, the same value an
+    #     absent key already gets via ``from_dict``.
     #   * Anything else (string, list, float, bool) → malformed config → raise.
     if raw_shared is None:
         num_shared = _text_config_default_num_kv_shared(tc)

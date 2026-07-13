@@ -194,34 +194,32 @@ def test_guard_non_int_shared_raises(bad):
         )
 
 
-def test_guard_none_falls_back_to_dataclass_default(caplog):
-    """num_kv_shared_layers=None (explicit null / absent) → the config dataclass
-    DEFAULT (20 for the vendored TextConfig), NOT a forced 0. Forcing 0 would
-    turn a shared-KV checkpoint's borrowers into producers and change its
-    architecture; the least-surprising fallback is the same default an absent
-    key already gets. So None → ACTIVE (20 borrowers here)."""
+def test_guard_explicit_null_raises():
+    """An EXPLICIT ``num_kv_shared_layers: null`` in the config dict is
+    malformed → ValueError. We must not guess a size-specific value (forcing
+    the default would give e.g. E4B 20 borrowers instead of 18)."""
+    tc = _build_text_config(35, 20)
+    tc.num_kv_shared_layers = None
+    with pytest.raises(ValueError, match="explicitly null"):
+        _check_kv_share_config(
+            {"num_hidden_layers": 35, "num_kv_shared_layers": None}, tc, "test/null"
+        )
+
+
+def test_guard_absent_key_with_none_field_uses_default(caplog):
+    """When the key is ABSENT from the config dict but the dataclass field is
+    ``None`` (e.g. a class whose default is None), fall back to the dataclass
+    DEFAULT — the legitimate "checkpoint didn't override the default" path. Not
+    the explicit-null case (that raises)."""
     tc = _build_text_config(35, 20)
     tc.num_kv_shared_layers = None
     with caplog.at_level(logging.DEBUG, logger="vllm_mlx.models.gemma4_text"):
-        _check_kv_share_config(
-            {"num_hidden_layers": 35, "num_kv_shared_layers": None}, tc, "test/none"
-        )
-    assert "KV-sharing ACTIVE" in caplog.text
-    assert "checkpoint omitted the key" in caplog.text  # not explicitly specified
-    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
-
-
-def test_guard_none_writeback_lets_model_build():
-    """None num_kv_shared_layers is normalized IN PLACE on tc to the dataclass
-    default (an int), so the subsequent LanguageModel(tc) build sees a plain
-    int and does not raise a TypeError in its producer-split computation."""
-    tc = _build_text_config(35, 20)
-    tc.num_kv_shared_layers = None
-    _check_kv_share_config(
-        {"num_hidden_layers": 35, "num_kv_shared_layers": None}, tc, "test/none"
-    )
+        # dict OMITS the key → absent, not explicit null.
+        _check_kv_share_config({"num_hidden_layers": 35}, tc, "test/absentnone")
     assert tc.num_kv_shared_layers == 20  # written back to the dataclass default
-    # The model must now build without a TypeError.
+    assert "KV-sharing ACTIVE" in caplog.text
+    assert "checkpoint omitted the key" in caplog.text
+    # Model must build without a TypeError on the (now int) value.
     lm = LanguageModel(tc)
     assert lm.model.first_kv_shared_layer_idx == 15  # 35 - 20
 
@@ -275,15 +273,18 @@ def test_guard_orphan_borrower_type_raises():
         )
 
 
-def test_guard_skips_unknown_shape():
-    """Missing/zero num_hidden_layers → no-op (nothing to reason about)."""
+@pytest.mark.parametrize("bad_hidden", [0, -1, None, "35", True])
+def test_guard_invalid_num_hidden_raises(bad_hidden):
+    """A malformed num_hidden_layers (0, negative, None, string, bool) is a
+    broken config → clear ValueError, not a silent skip that lets the model
+    build fail cryptically or produce an empty stack."""
 
     class _Stub:
-        num_hidden_layers = 0
+        num_hidden_layers = bad_hidden
         num_kv_shared_layers = 0
 
-    # Must not raise and must not log anything actionable.
-    _check_kv_share_config({}, _Stub(), "test/unknown")
+    with pytest.raises(ValueError, match="num_hidden_layers"):
+        _check_kv_share_config({}, _Stub(), "test/badhidden")
 
 
 # --------------------------------------------------------------------------
