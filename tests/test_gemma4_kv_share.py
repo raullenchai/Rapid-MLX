@@ -6,16 +6,18 @@ text stack (``vllm_mlx/models/gemma4_vendored/language.py``, since 0.10.1):
 the last ``num_kv_shared_layers`` decoder layers are "borrowers" that compute
 no K/V and reuse the last same-type producer layer's K/V. ``make_cache()``
 therefore returns a *producer-only* cache list (borrowers get no cache
-object), which is where the prefill/TTFT win comes from.
+object) — which reduces the resident KV cache (measured ~2.3x smaller
+footprint on gemma-4-e2b-4bit; the prefill/TTFT wall-time delta was ~1.0x on
+that size, so the demonstrated benefit is memory, not decode speed).
 
 Nothing in the tree asserted this held, so a future refactor that
 "normalizes" ``make_cache()`` back to one-cache-per-layer would silently
 break the borrow with zero coverage — and a checkpoint whose ``config.json``
-sets ``num_kv_shared_layers=0`` would silently pay full per-layer prefill.
+sets ``num_kv_shared_layers=0`` would silently lose the KV-memory reduction.
 
 These tests lock both:
 
-* the load-time guard ``_check_kv_share_config`` (WARN on inactive, RAISE on
+* the load-time guard ``_check_kv_share_config`` (INFO on inactive, RAISE on
   malformed, DEBUG on active), and
 * the producer→borrower map + ``make_cache()`` length for all 5 Gemma 4
   size shapes (E2B / E4B / 12B / 26B-A4B / 31B), using their real
@@ -32,8 +34,9 @@ blocks, confirmed 2026-07-13):
     31B        60                  0   (dense — no sharing, by design)
 
 Only the Gemma-3n-lineage E-series (E2B / E4B) shares K/V; the dense large
-sizes ship ``num_kv_shared_layers=0`` and never borrow. The guard WARNs (not
-raises) on the ``0`` case precisely because it is legitimate for those sizes.
+sizes ship ``num_kv_shared_layers=0`` and never borrow. The guard logs the
+``0`` case at INFO (not WARNING, not raise) precisely because it is
+legitimate — and the common case — for those dense sizes.
 """
 
 from __future__ import annotations
@@ -114,19 +117,23 @@ def test_guard_active_logs_debug(caplog):
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
 
 
-def test_guard_explicit_zero_warns(caplog):
-    """num_kv_shared_layers=0 (real 12B/26B/31B case) → WARNING, no raise."""
+def test_guard_explicit_zero_logs_info_not_warning(caplog):
+    """num_kv_shared_layers=0 (real 12B/26B/31B case) → INFO, not WARNING, no
+    raise. The dense sizes legitimately ship 0 and are the common case, so a
+    WARNING on every such load would be a false-positive alert."""
     tc = _build_text_config(48, 0)
-    with caplog.at_level(logging.WARNING, logger="vllm_mlx.models.gemma4_text"):
+    with caplog.at_level(logging.INFO, logger="vllm_mlx.models.gemma4_text"):
         _check_kv_share_config(
             {"num_hidden_layers": 48, "num_kv_shared_layers": 0}, tc, "test/12b"
         )
-    warnings = [r for r in caplog.records if r.levelno == logging.WARNING]
-    assert len(warnings) == 1
-    msg = warnings[0].getMessage()
+    infos = [r for r in caplog.records if r.levelno == logging.INFO]
+    assert len(infos) == 1
+    msg = infos[0].getMessage()
     assert "KV-sharing INACTIVE" in msg
     assert "test/12b" in msg
     assert "num_kv_shared_layers=0" in msg
+    # Explicitly NOT a warning — no false-positive production alert.
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
 
 
 def test_guard_absent_key_defaults_to_active(caplog):
@@ -158,6 +165,49 @@ def test_guard_invalid_raises(bad):
     with pytest.raises(ValueError, match="KV-sharing config INVALID"):
         _check_kv_share_config(
             {"num_hidden_layers": 35, "num_kv_shared_layers": bad}, tc, "test/bad"
+        )
+
+
+@pytest.mark.parametrize("bad", ["20", 3.5, [], True])
+def test_guard_non_int_shared_raises(bad):
+    """A non-int (or bool) num_kv_shared_layers is a malformed config → clear
+    ValueError, not an incidental TypeError from the range comparison."""
+    tc = _build_text_config(35, 20)
+    tc.num_kv_shared_layers = bad
+    with pytest.raises(ValueError, match="KV-sharing config INVALID"):
+        _check_kv_share_config(
+            {"num_hidden_layers": 35, "num_kv_shared_layers": bad}, tc, "test/badtype"
+        )
+
+
+def test_guard_none_shared_is_inactive(caplog):
+    """num_kv_shared_layers=None normalizes to 0 (inactive) → INFO, no raise."""
+    tc = _build_text_config(35, 20)
+    tc.num_kv_shared_layers = None
+    with caplog.at_level(logging.INFO, logger="vllm_mlx.models.gemma4_text"):
+        _check_kv_share_config(
+            {"num_hidden_layers": 35, "num_kv_shared_layers": None}, tc, "test/none"
+        )
+    assert "KV-sharing INACTIVE" in caplog.text
+    assert not any(r.levelno >= logging.WARNING for r in caplog.records)
+
+
+def test_guard_orphan_borrower_type_raises():
+    """A borrower attention type with no producer of that type below the split
+    is a malformed layer_types layout → ValueError (borrower has nothing to
+    borrow)."""
+    tc = _build_text_config(4, 2)
+    # 2 producers, 2 borrowers. Make the only full_attention layer a borrower
+    # so the full-attention borrower has no full-attention producer.
+    tc.layer_types = [
+        "sliding_attention",  # producer 0
+        "sliding_attention",  # producer 1
+        "full_attention",  # borrower 2 — no full producer below split!
+        "sliding_attention",  # borrower 3
+    ]
+    with pytest.raises(ValueError, match="have no producer layer of that type"):
+        _check_kv_share_config(
+            {"num_hidden_layers": 4, "num_kv_shared_layers": 2}, tc, "test/orphan"
         )
 
 
@@ -282,9 +332,9 @@ def _write_gemma4_config(tmp_path, num_kv_shared_layers, num_hidden_layers=2):
     return tmp_path
 
 
-def test_loader_warns_on_inactive_sharing(tmp_path, caplog):
+def test_loader_logs_inactive_sharing(tmp_path, caplog):
     """Through the real ``load_gemma4_text`` path, a config with
-    ``num_kv_shared_layers=0`` emits the INACTIVE warning before the loader
+    ``num_kv_shared_layers=0`` emits the INACTIVE INFO line before the loader
     reaches the (absent) weight files."""
     from vllm_mlx.models.gemma4_text import load_gemma4_text
 
@@ -292,15 +342,15 @@ def test_loader_warns_on_inactive_sharing(tmp_path, caplog):
     # No safetensors present → loader raises FileNotFoundError AFTER the guard
     # has already run and logged.
     with (
-        caplog.at_level(logging.WARNING, logger="vllm_mlx.models.gemma4_text"),
+        caplog.at_level(logging.INFO, logger="vllm_mlx.models.gemma4_text"),
         pytest.raises(FileNotFoundError),
     ):
         load_gemma4_text(model_dir, None)
     assert any(
         "KV-sharing INACTIVE" in r.getMessage()
         for r in caplog.records
-        if r.levelno == logging.WARNING
-    ), "loader did not emit the INACTIVE warning for num_kv_shared_layers=0"
+        if r.levelno == logging.INFO
+    ), "loader did not emit the INACTIVE info line for num_kv_shared_layers=0"
 
 
 def test_loader_raises_on_malformed_split(tmp_path):

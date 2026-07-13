@@ -484,7 +484,10 @@ def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
     Gemma 3n / Gemma 4's last ``num_kv_shared_layers`` decoder layers are
     "borrowers": they compute no K/V and reuse the last same-type producer
     layer's K/V (split at ``num_hidden_layers - num_kv_shared_layers``). This
-    is the mechanism behind the prefill/TTFT win — see
+    is the mechanism behind the smaller resident KV cache (measured ~2.3x
+    footprint reduction on gemma-4-e2b-4bit; the prefill/TTFT wall-time win is
+    negligible on the small quantized sizes because the eliminated
+    K/V-projection compute is <3% of prefill) — see
     ``models/gemma4_vendored/language.py`` (``make_cache`` returns a
     producer-only cache list; borrowers get no cache object).
 
@@ -499,18 +502,22 @@ def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
 
     * ``tc.num_kv_shared_layers == 0`` → ``first_kv_shared`` equals
       ``num_hidden_layers`` → NO layer borrows → every layer allocates its
-      own KV → the user silently pays a full per-layer prefill with no
-      cross-layer reuse. We WARN (do not hard-fail: the dense large Gemma 4
-      sizes — 12B / 26B-A4B / 31B — legitimately ship ``num_kv_shared_layers=0``
-      and never share; only the Gemma-3n-lineage E2B / E4B do). The WARNING
-      makes the "no cross-layer reuse" fact observable so a user can never
-      silently believe sharing is on when it is not.
-    * ``tc.num_kv_shared_layers`` invalid (``< 0`` or ``>= num_hidden_layers``)
-      → malformed config that would ask for at least as many borrowers as
-      there are layers (no producers, or an out-of-range split). We RAISE —
-      this is a broken checkpoint, not a silent degrade.
-    * ``0 < tc.num_kv_shared_layers < num_hidden_layers`` → sharing active;
-      log the producer/borrower split at debug.
+      own KV, so the resident cache is not reduced by cross-layer reuse. We
+      log at INFO (not WARNING, and never hard-fail): the dense large Gemma 4
+      sizes — 12B / 26B-A4B / 31B — legitimately ship
+      ``num_kv_shared_layers=0`` and never share, so warning on every such
+      load would be a false-positive alert. INFO still makes the "no
+      cross-layer reuse" fact observable so a user can never silently believe
+      sharing is on when it is not.
+    * ``tc.num_kv_shared_layers`` invalid — not a non-negative integer, or
+      ``>= num_hidden_layers``, or a borrower attention type with no
+      producer of that type below the split — → malformed config that cannot
+      share correctly (no producers, out-of-range split, or a borrower with
+      nothing to borrow). We RAISE — a broken checkpoint, not a silent
+      degrade.
+    * ``0 < tc.num_kv_shared_layers < num_hidden_layers`` (and every borrower
+      type has a producer) → sharing active; log the producer/borrower split
+      at debug.
 
     Placed on the shared build path (``_load_gemma4_text_impl``) so it fires
     for every Gemma 4 size and both loaders (``gemma4`` / ``gemma4_unified``),
@@ -519,12 +526,31 @@ def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
     ``num_kv_shared_layers`` on the dataclass ``TextConfig``).
     """
     num_hidden = getattr(tc, "num_hidden_layers", None)
-    if not isinstance(num_hidden, int) or num_hidden <= 0:
+    if not isinstance(num_hidden, bool) and isinstance(num_hidden, int):
+        pass
+    else:
         # Not a shape we can reason about; nothing to guard.
+        return
+    if num_hidden <= 0:
         return
 
     key_present = "num_kv_shared_layers" in text_config
-    num_shared = getattr(tc, "num_kv_shared_layers", 0) or 0
+    raw_shared = getattr(tc, "num_kv_shared_layers", 0)
+
+    # Normalize: None / absent → 0 (sharing off). A non-int, non-None value
+    # (e.g. a string from malformed JSON) is itself a broken config — raise a
+    # clear error rather than letting the range comparison throw TypeError or
+    # silently coercing.
+    if raw_shared is None:
+        num_shared = 0
+    elif isinstance(raw_shared, bool) or not isinstance(raw_shared, int):
+        raise ValueError(
+            f"Gemma 4 KV-sharing config INVALID for {model_id}: "
+            f"num_kv_shared_layers={raw_shared!r} is not a non-negative "
+            "integer. This is a malformed checkpoint config."
+        )
+    else:
+        num_shared = raw_shared
 
     if num_shared < 0 or num_shared >= num_hidden:
         raise ValueError(
@@ -536,18 +562,32 @@ def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
         )
 
     if num_shared == 0:
-        logger.warning(
-            "Gemma 4 KV-sharing INACTIVE for %s: config sets "
-            "num_kv_shared_layers=0; prefill will not benefit from "
-            "cross-layer KV reuse (every layer allocates its own KV). This "
-            "is expected for the dense sizes (12B / 26B-A4B / 31B) and a "
-            "regression for the E-series (E2B / E4B).",
+        logger.info(
+            "[gemma4] KV-sharing INACTIVE for %s: num_kv_shared_layers=0; "
+            "no cross-layer KV reuse (every layer allocates its own KV). "
+            "Expected for the dense sizes (12B / 26B-A4B / 31B); only the "
+            "E-series (E2B / E4B) shares.",
             model_id,
         )
         return
 
-    # 0 < num_shared < num_hidden → sharing active.
+    # 0 < num_shared < num_hidden → sharing candidate. Verify every borrower
+    # attention type actually has a producer of that type below the split;
+    # otherwise a borrower would have nothing to borrow (malformed layer_types).
+    layer_types = getattr(tc, "layer_types", None)
     num_producers = num_hidden - num_shared
+    if isinstance(layer_types, (list, tuple)) and len(layer_types) == num_hidden:
+        producer_types = set(layer_types[:num_producers])
+        borrower_types = set(layer_types[num_producers:])
+        orphan_types = borrower_types - producer_types
+        if orphan_types:
+            raise ValueError(
+                f"Gemma 4 KV-sharing config INVALID for {model_id}: borrower "
+                f"attention type(s) {sorted(orphan_types)} have no producer "
+                f"layer of that type in the first {num_producers} layer(s). "
+                "This layer_types layout cannot share K/V correctly."
+            )
+
     default_note = (
         ""
         if key_present
@@ -600,9 +640,9 @@ def _load_gemma4_text_impl(
 
     tc = TextConfig.from_dict(text_config)
 
-    # Guard cross-layer KV-sharing before building the model: warn if the
-    # checkpoint won't benefit (no/zero num_kv_shared_layers → silent
-    # double-prefill), raise on a malformed split. See _check_kv_share_config.
+    # Guard cross-layer KV-sharing before building the model: log (INFO) if the
+    # checkpoint won't share (num_kv_shared_layers=0 — normal for the dense
+    # sizes), raise on a malformed split. See _check_kv_share_config.
     _check_kv_share_config(text_config, tc, str(model_path))
 
     language_model = LanguageModel(tc)
