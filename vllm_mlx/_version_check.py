@@ -43,11 +43,21 @@ from pathlib import Path
 # api.github.com directly. The worker at ``rapidmlx.com/api/cli-update``
 # is a passthrough that returns the SAME GitHub ``releases/latest`` JSON,
 # so parsing is unchanged; the indirection just lets the server count
-# active CLI polls (mirrors what the desktop app now does). The ONLY
-# thing that goes on the wire is the installed version, sent URL-encoded
-# as the ``v`` query param so counts can be bucketed by version — no
-# other data, ever.
+# active CLI polls (mirrors what the desktop app now does).
+#
+# What goes on the wire, precisely: the installed version, URL-encoded as
+# the ``v`` query param (so counts bucket by version), PLUS the transport
+# metadata every HTTP request unavoidably carries — the client IP and a
+# User-Agent. We pin a fixed, non-identifying ``USER_AGENT`` below so the
+# UA leaks nothing (urllib would otherwise default to
+# ``Python-urllib/<x.y.z>``, exposing the interpreter patch version). This
+# is the SAME network exposure the previous direct ``api.github.com`` call
+# already had — the only change is the recipient is now our own endpoint.
+# Never sent: client id, os/arch, flag values, prompt or generated content.
 CLI_UPDATE_ENDPOINT = "https://rapidmlx.com/api/cli-update"
+# Fixed, non-identifying User-Agent so the poll carries no data beyond the
+# ``v`` param + unavoidable IP. Overrides urllib's ``Python-urllib/x.y.z``.
+USER_AGENT = "rapid-mlx-cli"
 CACHE_TTL_SECONDS = 24 * 3600  # 24h
 NETWORK_TIMEOUT_SECONDS = 2  # tight — staleness check is best-effort
 # Minimum patch lag before warning. Bumping by 1 patch happens often
@@ -129,11 +139,16 @@ def _fetch_latest() -> str | None:
     worker passes the GitHub ``releases/latest`` JSON straight through,
     so the parse (``tag_name``) is identical to the old direct fetch.
 
-    Privacy: the ONLY thing sent is the installed version, URL-encoded as
-    the ``v`` query param (empty string when running from an uninstalled
-    source tree). Nothing else — no client id, no os/arch, no headers
-    beyond the JSON Accept. Fail-open: any network / parse / sandbox
-    error returns None silently, exactly as before.
+    Privacy: the only application data sent is the installed version,
+    URL-encoded as the ``v`` query param (empty string when running from
+    an uninstalled source tree). Like any HTTP request it also exposes the
+    client IP and a User-Agent — we pin the fixed, non-identifying
+    ``USER_AGENT`` so nothing beyond the version + unavoidable transport
+    metadata leaves the machine (no client id, no os/arch, no interpreter
+    version, no headers that identify the host). Same network exposure as
+    the prior direct GitHub call; only the recipient changed. Fail-open:
+    any network / parse / sandbox error returns None silently, exactly as
+    before.
     """
     try:
         installed = _installed_version() or ""
@@ -141,7 +156,10 @@ def _fetch_latest() -> str | None:
         url = f"{CLI_UPDATE_ENDPOINT}?{query}"
         req = urllib.request.Request(
             url,
-            headers={"Accept": "application/vnd.github+json"},
+            headers={
+                "Accept": "application/vnd.github+json",
+                "User-Agent": USER_AGENT,
+            },
         )
         with urllib.request.urlopen(req, timeout=NETWORK_TIMEOUT_SECONDS) as resp:
             data = json.loads(resp.read())

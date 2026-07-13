@@ -10,6 +10,7 @@ laptop.
 from __future__ import annotations
 
 import json
+import urllib.parse
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -82,12 +83,38 @@ def test_fetch_latest_targets_cli_update_endpoint_with_version(monkeypatch):
     result = vc._fetch_latest()
 
     assert result == "0.6.70"  # leading v stripped, parse unchanged
-    assert captured["url"].startswith("https://rapidmlx.com/api/cli-update")
-    assert "v=0.6.61" in captured["url"]
-    # Never hit GitHub directly — that path can't be counted.
-    assert "api.github.com" not in captured["url"]
+    # Exact URL — parse it so a near-miss path like ``/api/cli-update-legacy``
+    # (which ``startswith`` would wave through) fails the test.
+    parsed = urllib.parse.urlparse(captured["url"])
+    assert parsed.scheme == "https"
+    assert parsed.netloc == "rapidmlx.com"  # never api.github.com
+    assert parsed.path == "/api/cli-update"  # exact path, no suffix
+    assert urllib.parse.parse_qs(parsed.query) == {"v": ["0.6.61"]}
     # Timeout guard preserved.
     assert captured["timeout"] == vc.NETWORK_TIMEOUT_SECONDS
+
+
+def test_fetch_latest_pins_nonidentifying_user_agent(monkeypatch):
+    """The poll must send a fixed, non-identifying User-Agent — NOT
+    urllib's default ``Python-urllib/<x.y.z>`` (which would leak the
+    interpreter patch version). This keeps the on-the-wire footprint to
+    the ``v`` param + unavoidable IP, matching the privacy docstring."""
+    monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.61")
+    captured = {}
+
+    def fake_urlopen(req, timeout=None):
+        # urllib normalizes header keys to ``User-agent``.
+        captured["ua"] = req.get_header("User-agent")
+        return _FakeResp(json.dumps({"tag_name": "0.6.70"}).encode())
+
+    monkeypatch.setattr("urllib.request.urlopen", fake_urlopen)
+
+    vc._fetch_latest()
+
+    assert captured["ua"] == vc.USER_AGENT
+    assert captured["ua"] == "rapid-mlx-cli"
+    # Never the interpreter-leaking default.
+    assert "Python-urllib" not in (captured["ua"] or "")
 
 
 def test_fetch_latest_url_encodes_version(monkeypatch):
