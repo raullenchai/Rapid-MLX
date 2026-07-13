@@ -194,6 +194,29 @@ def test_guard_non_int_shared_raises(bad):
         )
 
 
+def test_text_config_default_helper():
+    """_text_config_default_num_kv_shared reads the dataclass field DEFAULT.
+    An int default → that int; a None default (or non-dataclass) → 0 (fail-safe
+    inactive)."""
+    import dataclasses
+
+    from vllm_mlx.models.gemma4_text import _text_config_default_num_kv_shared
+
+    @dataclasses.dataclass
+    class _IntDefault:
+        num_kv_shared_layers: int = 7
+
+    @dataclasses.dataclass
+    class _NoneDefault:
+        num_kv_shared_layers: int | None = None
+
+    assert _text_config_default_num_kv_shared(_IntDefault()) == 7
+    assert _text_config_default_num_kv_shared(_NoneDefault()) == 0  # None → 0
+    assert _text_config_default_num_kv_shared(object()) == 0  # non-dataclass → 0
+    # And the real vendored TextConfig default is 20 (E2B shape).
+    assert _text_config_default_num_kv_shared(TextConfig()) == 20
+
+
 def test_guard_explicit_null_raises():
     """An EXPLICIT ``num_kv_shared_layers: null`` in the config dict is
     malformed → ValueError. We must not guess a size-specific value (forcing
@@ -207,10 +230,12 @@ def test_guard_explicit_null_raises():
 
 
 def test_guard_absent_key_with_none_field_uses_default(caplog):
-    """When the key is ABSENT from the config dict but the dataclass field is
-    ``None`` (e.g. a class whose default is None), fall back to the dataclass
-    DEFAULT — the legitimate "checkpoint didn't override the default" path. Not
-    the explicit-null case (that raises)."""
+    """When the key is ABSENT from the config dict but the field on the tc
+    instance is ``None``, fall back to the dataclass DEFAULT (20 for the
+    vendored TextConfig) — the legitimate "checkpoint didn't override the
+    default" path, distinct from the explicit-null case (which raises). The
+    helper's own None-default → 0 fallback is covered by
+    test_text_config_default_helper."""
     tc = _build_text_config(35, 20)
     tc.num_kv_shared_layers = None
     with caplog.at_level(logging.DEBUG, logger="vllm_mlx.models.gemma4_text"):

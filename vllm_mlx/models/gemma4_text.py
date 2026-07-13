@@ -481,12 +481,15 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
 def _text_config_default_num_kv_shared(tc) -> int:
     """The ``num_kv_shared_layers`` dataclass DEFAULT for ``tc``'s class.
 
-    Used when the checkpoint left the field unspecified (absent or explicit
-    ``null``): we fall back to the same default an absent key already receives
-    via ``from_dict`` rather than forcing 0, which would silently change a
-    shared-KV checkpoint's architecture. Robust across the upstream mlx-vlm and
-    vendored ``TextConfig`` dataclasses; returns 0 if the default cannot be
-    introspected (fail-safe: inactive rather than a wrong active split).
+    Used only when the config key was ABSENT and the dataclass field itself
+    resolved to ``None`` (an explicit ``null`` is rejected upstream in
+    :func:`_check_kv_share_config`, so it never reaches here). We fall back to
+    the same default an absent key already receives via ``from_dict`` rather
+    than forcing 0, which would silently change a shared-KV checkpoint's
+    architecture. Robust across the upstream mlx-vlm and vendored
+    ``TextConfig`` dataclasses; returns 0 if the default cannot be introspected
+    or is itself ``None`` (fail-safe: inactive rather than a wrong active
+    split).
     """
     import dataclasses
 
