@@ -348,10 +348,12 @@ def test_borrower_maps_to_last_same_type_producer(label, n_hidden, n_shared):
 
 
 def test_e2b_borrow_is_active_smoke():
-    """E2B default shape: borrow is structurally active (the shipped
-    behaviour). Guards the mlx-lm ``make_cache`` deferral contract — if a
-    future edit made make_cache() return one-cache-per-layer, this fails."""
-    tc = TextConfig()  # default == E2B (35 layers, 20 shared)
+    """E2B shape (35 layers / 20 shared): borrow is structurally active (the
+    shipped behaviour). Guards the mlx-lm ``make_cache`` deferral contract — if
+    a future edit made make_cache() return one-cache-per-layer, this fails.
+    Uses the tiny-dim builder so it doesn't allocate the full 262144x1536
+    embedding."""
+    tc = _build_text_config(35, 20)  # E2B topology, tiny dims
     lm = LanguageModel(tc)
     caches = lm.make_cache()
     assert len(caches) == 15 < len(lm.model.layers) == 35
