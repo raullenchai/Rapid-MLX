@@ -63,15 +63,29 @@ GEMMA4_SIZES = [
 def _build_text_config(num_hidden_layers: int, num_kv_shared_layers: int) -> TextConfig:
     """Construct a vendored ``TextConfig`` for a given size shape.
 
-    Only the fields that drive the producer/borrower split matter here; the
-    rest keep their E2B-shaped dataclass defaults. ``layer_types`` is derived
-    by ``__post_init__`` from ``sliding_window_pattern`` (4 sliding + 1 full),
+    Only the layer count + share count + ``layer_types`` topology drive the
+    producer/borrower split under test, so we shrink hidden/intermediate/vocab/
+    head dims to tiny consistent values. This keeps ``LanguageModel(tc)`` builds
+    (constructed by the make_cache / producer-map tests up to 60 layers) cheap
+    — the default E2B dims (hidden 1536, vocab 262144) would allocate a
+    262144x1536 embedding per build. ``layer_types`` is still derived by
+    ``__post_init__`` from ``sliding_window_pattern`` (4 sliding + 1 full),
     matching how the real checkpoints interleave attention types.
     """
     return TextConfig.from_dict(
         {
             "num_hidden_layers": num_hidden_layers,
             "num_kv_shared_layers": num_kv_shared_layers,
+            "hidden_size": 16,
+            "intermediate_size": 32,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 8,
+            "global_head_dim": 8,
+            "vocab_size": 32,
+            "vocab_size_per_layer_input": 32,
+            "hidden_size_per_layer_input": 0,
+            "use_double_wide_mlp": False,
         }
     )
 
@@ -222,6 +236,19 @@ def test_guard_active_requires_usable_layer_types():
         _check_kv_share_config(
             {"num_hidden_layers": 35, "num_kv_shared_layers": 20}, tc2, "test/shortlt"
         )
+    # Non-string / unhashable entry → clear ValueError, not an incidental
+    # TypeError from the set() construction.
+    tc3 = _build_text_config(4, 2)
+    tc3.layer_types = [
+        "sliding_attention",
+        "full_attention",
+        ["oops"],
+        "sliding_attention",
+    ]
+    with pytest.raises(ValueError, match="must be a list of attention-type strings"):
+        _check_kv_share_config(
+            {"num_hidden_layers": 4, "num_kv_shared_layers": 2}, tc3, "test/badlt"
+        )
 
 
 def test_guard_orphan_borrower_type_raises():
@@ -337,8 +364,24 @@ def test_e2b_borrow_is_active_smoke():
 def _assert_e2b_active_sharing(cfg_cls, model_cls):
     """Build an E2B-shape (35/20) model with the given class pair and assert
     make_cache() is producer-only (borrow active). Works for both the upstream
-    mlx-vlm and the vendored class implementations."""
-    tc = cfg_cls.from_dict({"num_hidden_layers": 35, "num_kv_shared_layers": 20})
+    mlx-vlm and the vendored class implementations. Uses tiny hidden/vocab/head
+    dims (only the 35/20 topology matters) to keep the build cheap."""
+    tc = cfg_cls.from_dict(
+        {
+            "num_hidden_layers": 35,
+            "num_kv_shared_layers": 20,
+            "hidden_size": 16,
+            "intermediate_size": 32,
+            "num_attention_heads": 2,
+            "num_key_value_heads": 1,
+            "head_dim": 8,
+            "global_head_dim": 8,
+            "vocab_size": 32,
+            "vocab_size_per_layer_input": 32,
+            "hidden_size_per_layer_input": 0,
+            "use_double_wide_mlp": False,
+        }
+    )
     lm = model_cls(tc)
     caches = lm.make_cache()
     assert len(caches) == 15, (
@@ -347,17 +390,26 @@ def _assert_e2b_active_sharing(cfg_cls, model_cls):
     )
     assert lm.model.first_kv_shared_layer_idx == 15
     assert len(caches) < len(lm.model.layers) == 35
+    return tc
 
 
 def test_resolved_load_path_borrow_active():
     """Exercise the SAME class resolution production uses
     (``_resolve_gemma4_text_classes`` — upstream mlx-vlm when installed, else
     vendored). If the class production actually loads ever stops sharing, this
-    fails — the vendored-only tests above would not catch that."""
+    fails — the vendored-only tests above would not catch that. Also runs the
+    load-time guard on the resolved active config so the guard cannot silently
+    reject the upstream TextConfig shape production resolves."""
     from vllm_mlx.models.gemma4_text import _resolve_gemma4_text_classes
 
     cfg_cls, model_cls = _resolve_gemma4_text_classes()
-    _assert_e2b_active_sharing(cfg_cls, model_cls)
+    tc = _assert_e2b_active_sharing(cfg_cls, model_cls)
+    # Guard must ACCEPT the resolved active config (no raise) and log ACTIVE.
+    _check_kv_share_config(
+        {"num_hidden_layers": 35, "num_kv_shared_layers": 20},
+        tc,
+        "test/resolved-e2b",
+    )
 
 
 def test_vendored_fallback_borrow_active():

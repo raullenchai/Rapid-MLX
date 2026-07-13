@@ -556,11 +556,18 @@ def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
     # ``LanguageModel(tc)`` build sees a plain int (its producer-split math
     # ``num_hidden - num_kv_shared_layers`` would otherwise raise a cryptic
     # ``TypeError`` on a ``None`` that reached it via an explicit config null).
+    # If the writeback can't take (e.g. a frozen config), fail loudly here
+    # rather than let the model crash later on the unchanged value.
     if raw_shared is not num_shared:
         try:
             tc.num_kv_shared_layers = num_shared
-        except Exception:
-            pass
+        except Exception as exc:
+            raise ValueError(
+                f"Gemma 4 KV-sharing config for {model_id}: could not normalize "
+                f"num_kv_shared_layers={raw_shared!r} → {num_shared} on the "
+                f"config object ({exc}); the model would then fail its "
+                "producer-split computation."
+            ) from exc
 
     if num_shared < 0 or num_shared >= num_hidden:
         raise ValueError(
@@ -597,6 +604,14 @@ def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
             f"the wrong length (need {num_hidden} entries, got "
             f"{len(layer_types) if isinstance(layer_types, (list, tuple)) else layer_types!r}). "
             "Cannot establish the producer→borrower map."
+        )
+    # Entries must be strings (attention-type labels) — guard against
+    # unhashable / non-string entries producing an incidental TypeError from
+    # the set() below instead of this clear malformed-config diagnostic.
+    if not all(isinstance(t, str) for t in layer_types):
+        raise ValueError(
+            f"Gemma 4 KV-sharing config INVALID for {model_id}: layer_types "
+            "must be a list of attention-type strings; found a non-string entry."
         )
     # Every borrower attention type must have a producer of that type below the
     # split; otherwise a borrower would have nothing to borrow.
