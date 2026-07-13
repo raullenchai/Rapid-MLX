@@ -478,6 +478,29 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
     )
 
 
+def _text_config_default_num_kv_shared(tc) -> int:
+    """The ``num_kv_shared_layers`` dataclass DEFAULT for ``tc``'s class.
+
+    Used when the checkpoint left the field unspecified (absent or explicit
+    ``null``): we fall back to the same default an absent key already receives
+    via ``from_dict`` rather than forcing 0, which would silently change a
+    shared-KV checkpoint's architecture. Robust across the upstream mlx-vlm and
+    vendored ``TextConfig`` dataclasses; returns 0 if the default cannot be
+    introspected (fail-safe: inactive rather than a wrong active split).
+    """
+    import dataclasses
+
+    try:
+        for f in dataclasses.fields(tc):
+            if f.name == "num_kv_shared_layers":
+                default = f.default
+                if isinstance(default, int) and not isinstance(default, bool):
+                    return default
+    except (TypeError, ValueError):
+        pass
+    return 0
+
+
 def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
     """Guard Gemma 4 cross-layer KV-sharing at load time.
 
@@ -537,12 +560,20 @@ def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
     key_present = "num_kv_shared_layers" in text_config
     raw_shared = getattr(tc, "num_kv_shared_layers", 0)
 
-    # Normalize: None / absent → 0 (sharing off). A non-int, non-None value
-    # (e.g. a string from malformed JSON) is itself a broken config — raise a
-    # clear error rather than letting the range comparison throw TypeError or
-    # silently coercing.
+    # Normalize the value the model will be built from.
+    #   * A plain non-negative int → used as-is.
+    #   * ``None`` (explicit JSON ``null`` OR an absent key that left the field
+    #     ``None``) → treated as "not specified": fall back to the config
+    #     dataclass DEFAULT for the field, NOT a hard 0. Forcing 0 would turn a
+    #     shared-KV checkpoint's borrower layers into producers and make the
+    #     model expect K/V projections the checkpoint doesn't ship. We cannot
+    #     know the size-specific correct value from config alone (that is the
+    #     checkpoint's job), so the least-surprising fallback is the same
+    #     default an absent key already gets via ``from_dict``.
+    #   * Anything else (string, list, float, bool) → malformed config → raise.
     if raw_shared is None:
-        num_shared = 0
+        num_shared = _text_config_default_num_kv_shared(tc)
+        key_present = False  # surface "not explicitly specified" in the log
     elif isinstance(raw_shared, bool) or not isinstance(raw_shared, int):
         raise ValueError(
             f"Gemma 4 KV-sharing config INVALID for {model_id}: "

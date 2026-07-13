@@ -194,31 +194,36 @@ def test_guard_non_int_shared_raises(bad):
         )
 
 
-def test_guard_none_shared_is_inactive(caplog):
-    """num_kv_shared_layers=None normalizes to 0 (inactive) → INFO, no raise."""
+def test_guard_none_falls_back_to_dataclass_default(caplog):
+    """num_kv_shared_layers=None (explicit null / absent) → the config dataclass
+    DEFAULT (20 for the vendored TextConfig), NOT a forced 0. Forcing 0 would
+    turn a shared-KV checkpoint's borrowers into producers and change its
+    architecture; the least-surprising fallback is the same default an absent
+    key already gets. So None → ACTIVE (20 borrowers here)."""
     tc = _build_text_config(35, 20)
     tc.num_kv_shared_layers = None
-    with caplog.at_level(logging.INFO, logger="vllm_mlx.models.gemma4_text"):
+    with caplog.at_level(logging.DEBUG, logger="vllm_mlx.models.gemma4_text"):
         _check_kv_share_config(
             {"num_hidden_layers": 35, "num_kv_shared_layers": None}, tc, "test/none"
         )
-    assert "KV-sharing INACTIVE" in caplog.text
+    assert "KV-sharing ACTIVE" in caplog.text
+    assert "checkpoint omitted the key" in caplog.text  # not explicitly specified
     assert not any(r.levelno >= logging.WARNING for r in caplog.records)
 
 
 def test_guard_none_writeback_lets_model_build():
-    """None num_kv_shared_layers is normalized to 0 IN PLACE on tc, so the
-    subsequent LanguageModel(tc) build sees a plain int and does not raise a
-    TypeError in its ``num_hidden - num_kv_shared_layers`` producer split."""
+    """None num_kv_shared_layers is normalized IN PLACE on tc to the dataclass
+    default (an int), so the subsequent LanguageModel(tc) build sees a plain
+    int and does not raise a TypeError in its producer-split computation."""
     tc = _build_text_config(35, 20)
     tc.num_kv_shared_layers = None
     _check_kv_share_config(
         {"num_hidden_layers": 35, "num_kv_shared_layers": None}, tc, "test/none"
     )
-    assert tc.num_kv_shared_layers == 0  # written back
+    assert tc.num_kv_shared_layers == 20  # written back to the dataclass default
     # The model must now build without a TypeError.
     lm = LanguageModel(tc)
-    assert lm.model.first_kv_shared_layer_idx == 35  # no borrowers
+    assert lm.model.first_kv_shared_layer_idx == 15  # 35 - 20
 
 
 def test_guard_active_requires_usable_layer_types():
@@ -392,6 +397,17 @@ def _assert_e2b_active_sharing(cfg_cls, model_cls):
     )
     assert lm.model.first_kv_shared_layer_idx == 15
     assert len(caches) < len(lm.model.layers) == 35
+
+    # Also validate the borrower→producer mapping on THIS class (not just the
+    # cache count): every borrower must reuse the last same-type producer below
+    # the split. A resolved upstream impl with a wrong previous_kvs mapping
+    # would pass the count check but produce wrong attention — this catches it.
+    expected = _expected_previous_kvs(tc)
+    assert list(lm.model.previous_kvs) == expected, (
+        f"{model_cls.__module__}: previous_kvs mismatch\n"
+        f"  got     ={list(lm.model.previous_kvs)}\n"
+        f"  expected={expected}"
+    )
     return tc
 
 
