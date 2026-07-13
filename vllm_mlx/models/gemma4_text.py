@@ -478,6 +478,92 @@ def load_gemma4_text(model_path: str | Path, tokenizer_config: dict = None):
     )
 
 
+def _check_kv_share_config(text_config: dict, tc, model_id: str) -> None:
+    """Guard Gemma 4 cross-layer KV-sharing at load time.
+
+    Gemma 3n / Gemma 4's last ``num_kv_shared_layers`` decoder layers are
+    "borrowers": they compute no K/V and reuse the last same-type producer
+    layer's K/V (split at ``num_hidden_layers - num_kv_shared_layers``). This
+    is the mechanism behind the prefill/TTFT win — see
+    ``models/gemma4_vendored/language.py`` (``make_cache`` returns a
+    producer-only cache list; borrowers get no cache object).
+
+    Severity is decided on ``tc.num_kv_shared_layers`` — the value the model
+    is actually built from (``LanguageModel(tc)`` uses it to split producers
+    from borrowers). The raw ``text_config`` dict is consulted only to enrich
+    the message (distinguish "checkpoint omitted the key, dataclass default
+    applied" from "checkpoint explicitly set 0"), because ``from_dict`` fills
+    an absent key with the dataclass default and thereby masks its absence.
+
+    Failure modes this guards against:
+
+    * ``tc.num_kv_shared_layers == 0`` → ``first_kv_shared`` equals
+      ``num_hidden_layers`` → NO layer borrows → every layer allocates its
+      own KV → the user silently pays a full per-layer prefill with no
+      cross-layer reuse. We WARN (do not hard-fail: the dense large Gemma 4
+      sizes — 12B / 26B-A4B / 31B — legitimately ship ``num_kv_shared_layers=0``
+      and never share; only the Gemma-3n-lineage E2B / E4B do). The WARNING
+      makes the "no cross-layer reuse" fact observable so a user can never
+      silently believe sharing is on when it is not.
+    * ``tc.num_kv_shared_layers`` invalid (``< 0`` or ``>= num_hidden_layers``)
+      → malformed config that would ask for at least as many borrowers as
+      there are layers (no producers, or an out-of-range split). We RAISE —
+      this is a broken checkpoint, not a silent degrade.
+    * ``0 < tc.num_kv_shared_layers < num_hidden_layers`` → sharing active;
+      log the producer/borrower split at debug.
+
+    Placed on the shared build path (``_load_gemma4_text_impl``) so it fires
+    for every Gemma 4 size and both loaders (``gemma4`` / ``gemma4_unified``),
+    regardless of whether ``resolve_classes`` returns the upstream mlx-vlm or
+    the vendored text classes (both expose ``num_hidden_layers`` /
+    ``num_kv_shared_layers`` on the dataclass ``TextConfig``).
+    """
+    num_hidden = getattr(tc, "num_hidden_layers", None)
+    if not isinstance(num_hidden, int) or num_hidden <= 0:
+        # Not a shape we can reason about; nothing to guard.
+        return
+
+    key_present = "num_kv_shared_layers" in text_config
+    num_shared = getattr(tc, "num_kv_shared_layers", 0) or 0
+
+    if num_shared < 0 or num_shared >= num_hidden:
+        raise ValueError(
+            f"Gemma 4 KV-sharing config INVALID for {model_id}: "
+            f"num_kv_shared_layers={num_shared} must satisfy "
+            f"0 <= num_kv_shared_layers < num_hidden_layers={num_hidden}. "
+            "This is a malformed checkpoint config (borrowers would exceed "
+            "producers, or the split would be out of range)."
+        )
+
+    if num_shared == 0:
+        logger.warning(
+            "Gemma 4 KV-sharing INACTIVE for %s: config sets "
+            "num_kv_shared_layers=0; prefill will not benefit from "
+            "cross-layer KV reuse (every layer allocates its own KV). This "
+            "is expected for the dense sizes (12B / 26B-A4B / 31B) and a "
+            "regression for the E-series (E2B / E4B).",
+            model_id,
+        )
+        return
+
+    # 0 < num_shared < num_hidden → sharing active.
+    num_producers = num_hidden - num_shared
+    default_note = (
+        ""
+        if key_present
+        else " (checkpoint omitted the key; dataclass default applied)"
+    )
+    logger.debug(
+        "[gemma4] KV-sharing ACTIVE for %s: %d producer layer(s) + "
+        "%d borrower layer(s) (first_kv_shared_layer_idx=%d)%s",
+        model_id,
+        num_producers,
+        num_shared,
+        num_producers,
+        default_note,
+    )
+
+
 def _load_gemma4_text_impl(
     model_path: str | Path,
     tokenizer_config: dict = None,
@@ -513,6 +599,12 @@ def _load_gemma4_text_impl(
     TextConfig, LanguageModel = resolve_classes()
 
     tc = TextConfig.from_dict(text_config)
+
+    # Guard cross-layer KV-sharing before building the model: warn if the
+    # checkpoint won't benefit (no/zero num_kv_shared_layers → silent
+    # double-prefill), raise on a malformed split. See _check_kv_share_config.
+    _check_kv_share_config(text_config, tc, str(model_path))
+
     language_model = LanguageModel(tc)
 
     # Wrap for mlx-lm compatibility
