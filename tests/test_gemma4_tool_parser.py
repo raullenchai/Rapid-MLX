@@ -58,6 +58,21 @@ from vllm_mlx.tool_parsers.gemma4_tool_parser import (
         ('msg:<|"|>hello, world<|"|>', {"msg": "hello, world"}),
         # negative integer
         ("n:-5", {"n": -5}),
+        # nested object used by agent-to-agent tool calls
+        (
+            'arguments:{message:<|"|>How are {you}?<|"|>,'
+            'metadata:{urgent:false,tags:[<|"|>xmpp<|"|>,<|"|>demo<|"|>]}},'
+            'endpointId:<|"|>jane@example.org<|"|>,'
+            'tool:<|"|>conversation.message<|"|>',
+            {
+                "arguments": {
+                    "message": "How are {you}?",
+                    "metadata": {"urgent": False, "tags": ["xmpp", "demo"]},
+                },
+                "endpointId": "jane@example.org",
+                "tool": "conversation.message",
+            },
+        ),
         # empty arg dict
         ("", {}),
     ],
@@ -102,6 +117,48 @@ def test_extract_mixed_args():
     res = parser.extract_tool_calls(out)
     args = json.loads(res.tool_calls[0]["arguments"])
     assert args == {"a": 3, "b": "hi"}
+    assert res.content is None
+
+
+def test_extract_nested_tool_arguments_without_truncation():
+    """Nested argument objects must not close the outer tool call early."""
+    parser = Gemma4ToolParser()
+    out = (
+        "<|tool_call>call:agents_call_tool{"
+        'arguments:{message:<|"|>How are {you}?<|"|>},'
+        'endpointId:<|"|>jane@example.org<|"|>,'
+        'tool:<|"|>conversation.message<|"|>'
+        "}<tool_call|>"
+    )
+
+    res = parser.extract_tool_calls(out)
+
+    assert res.tools_called is True
+    assert len(res.tool_calls) == 1
+    assert res.tool_calls[0]["name"] == "agents_call_tool"
+    assert json.loads(res.tool_calls[0]["arguments"]) == {
+        "arguments": {"message": "How are {you}?"},
+        "endpointId": "jane@example.org",
+        "tool": "conversation.message",
+    }
+    assert res.content is None
+
+
+def test_extract_json_string_containing_closing_brace():
+    parser = Gemma4ToolParser()
+    out = (
+        'call:agents_call_tool{arguments:{"message":"brace } stays"},'
+        'endpointId:<|"|>jane@example.org<|"|>,'
+        'tool:<|"|>conversation.message<|"|>}'
+    )
+
+    res = parser.extract_tool_calls(out)
+
+    assert json.loads(res.tool_calls[0]["arguments"]) == {
+        "arguments": {"message": "brace } stays"},
+        "endpointId": "jane@example.org",
+        "tool": "conversation.message",
+    }
     assert res.content is None
 
 
@@ -178,6 +235,29 @@ def test_streaming_emits_completed_tool_call_once():
     # Subsequent calls with no new completed tools — no re-emit
     r3 = parser.extract_tool_calls_streaming(full, full, "")
     assert r3 is None
+
+
+def test_streaming_waits_for_outer_close_with_nested_arguments():
+    parser = Gemma4ToolParser()
+    parser.reset()
+    partial = (
+        "<|tool_call>call:agents_call_tool{"
+        'arguments:{message:<|"|>How are {you}?<|"|>},'
+        'endpointId:<|"|>jane@example.org<|"|>,'
+        'tool:<|"|>conversation.message<|"|>'
+    )
+    full = partial + "}<tool_call|>"
+
+    assert parser.extract_tool_calls_streaming("", partial, partial) is None
+    result = parser.extract_tool_calls_streaming(partial, full, full[len(partial) :])
+
+    assert result is not None
+    arguments = json.loads(result["tool_calls"][0]["function"]["arguments"])
+    assert arguments == {
+        "arguments": {"message": "How are {you}?"},
+        "endpointId": "jane@example.org",
+        "tool": "conversation.message",
+    }
 
 
 def test_streaming_passthrough_when_no_markup():

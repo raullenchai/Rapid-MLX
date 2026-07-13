@@ -10,6 +10,7 @@ import json
 import re
 import uuid
 from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from .abstract_tool_parser import (
@@ -37,21 +38,211 @@ from .abstract_tool_parser import (
 # calling — Gemma 4 does not emit ``call:NAME{...}`` in natural prose,
 # so allowing the wrappers to be absent does not introduce false
 # positives on regular chat turns.
-GEMMA4_TOOL_PATTERN = re.compile(
-    r"(?:<\|tool_call>)?call:(\w+)\{(.*?)\}(?:<tool_call\|>)?", re.DOTALL
-)
+GEMMA4_TOOL_OPENER_PATTERN = re.compile(r"(?:<\|tool_call>)?call:(\w+)\{")
+GEMMA4_TOOL_TRAILER = "<tool_call|>"
 
 # Match a quoted-string value: <|"|>...<|"|>
 GEMMA4_QUOTED_VAL_PATTERN = re.compile(r'<\|"\|>(.*?)<\|"\|>', re.DOTALL)
 # Match a bare key:value pair (key, then anything up to , or end-of-string)
 GEMMA4_KV_BARE_PATTERN = re.compile(r"(\w+)\s*:\s*([^,]+?)(?=\s*,|\s*$)")
 
+
+@dataclass(frozen=True)
+class _Gemma4ToolCallMatch:
+    start: int
+    end: int
+    name: str
+    arguments: str
+
+
+def _scan_gemma4_tool_calls(
+    text: str,
+) -> tuple[list[_Gemma4ToolCallMatch], int]:
+    """Find tool calls with balanced argument braces.
+
+    A regex cannot distinguish the outer closing brace from a nested
+    argument object's closing brace. Scan one call at a time instead, while
+    ignoring braces inside Gemma quote tokens and JSON strings. The returned
+    opener count lets the streaming path distinguish complete calls from a
+    call that is still being generated.
+    """
+    matches: list[_Gemma4ToolCallMatch] = []
+    opener_count = 0
+    search_from = 0
+
+    while opener := GEMMA4_TOOL_OPENER_PATTERN.search(text, search_from):
+        opener_count += 1
+        body_start = opener.end()
+        depth = 1
+        index = body_start
+        in_gemma_string = False
+        in_json_string = False
+        escaped = False
+
+        while index < len(text):
+            char = text[index]
+            if in_json_string:
+                if escaped:
+                    escaped = False
+                elif char == "\\":
+                    escaped = True
+                elif char == '"':
+                    in_json_string = False
+                index += 1
+                continue
+            if text.startswith('<|"|>', index):
+                in_gemma_string = not in_gemma_string
+                index += len('<|"|>')
+                continue
+            if in_gemma_string:
+                index += 1
+                continue
+            if char == '"':
+                in_json_string = True
+            elif char == "{":
+                depth += 1
+            elif char == "}":
+                depth -= 1
+                if depth == 0:
+                    call_end = index + 1
+                    if text.startswith(GEMMA4_TOOL_TRAILER, call_end):
+                        call_end += len(GEMMA4_TOOL_TRAILER)
+                    matches.append(
+                        _Gemma4ToolCallMatch(
+                            start=opener.start(),
+                            end=call_end,
+                            name=opener.group(1),
+                            arguments=text[body_start:index],
+                        )
+                    )
+                    search_from = call_end
+                    break
+            index += 1
+        else:
+            # The final call is incomplete. Its nested contents cannot contain
+            # another top-level call, so there is nothing useful left to scan.
+            break
+
+    return matches, opener_count
+
+
+class _Gemma4ArgumentParser:
+    """Recursive parser for Gemma's JSON-like argument syntax."""
+
+    def __init__(self, text: str):
+        self.text = text
+        self.index = 0
+
+    def parse_arguments(self, terminator: str | None = None) -> dict[str, Any]:
+        result: dict[str, Any] = {}
+        self._skip_space()
+        while self.index < len(self.text):
+            if terminator and self.text[self.index] == terminator:
+                self.index += 1
+                return result
+            key = self._parse_key()
+            self._skip_space()
+            self._expect(":")
+            result[key] = self._parse_value()
+            self._skip_space()
+            if self.index >= len(self.text):
+                break
+            if terminator and self.text[self.index] == terminator:
+                self.index += 1
+                return result
+            self._expect(",")
+            self._skip_space()
+        if terminator:
+            raise ValueError(f"missing closing {terminator!r}")
+        return result
+
+    def _parse_key(self) -> str:
+        self._skip_space()
+        if self.index < len(self.text) and self.text[self.index] == '"':
+            value = self._parse_json_string()
+            if isinstance(value, str):
+                return value
+        match = re.match(r"\w+", self.text[self.index :])
+        if not match:
+            raise ValueError("expected argument name")
+        self.index += len(match.group(0))
+        return match.group(0)
+
+    def _parse_value(self) -> Any:
+        self._skip_space()
+        if self.text.startswith('<|"|>', self.index):
+            return self._parse_gemma_string()
+        if self.index >= len(self.text):
+            raise ValueError("expected argument value")
+
+        char = self.text[self.index]
+        if char == "{":
+            self.index += 1
+            return self.parse_arguments("}")
+        if char == "[":
+            return self._parse_array()
+        if char == '"':
+            return self._parse_json_string()
+
+        start = self.index
+        while self.index < len(self.text) and self.text[self.index] not in ",}]":
+            self.index += 1
+        raw_value = self.text[start : self.index].strip()
+        if not raw_value:
+            raise ValueError("expected argument value")
+        try:
+            return json.loads(raw_value)
+        except (json.JSONDecodeError, ValueError):
+            return raw_value
+
+    def _parse_array(self) -> list[Any]:
+        self.index += 1
+        values: list[Any] = []
+        self._skip_space()
+        while self.index < len(self.text):
+            if self.text[self.index] == "]":
+                self.index += 1
+                return values
+            values.append(self._parse_value())
+            self._skip_space()
+            if self.index < len(self.text) and self.text[self.index] == "]":
+                self.index += 1
+                return values
+            self._expect(",")
+            self._skip_space()
+        raise ValueError("missing closing ']'")
+
+    def _parse_gemma_string(self) -> str:
+        marker = '<|"|>'
+        self.index += len(marker)
+        end = self.text.find(marker, self.index)
+        if end < 0:
+            raise ValueError("unterminated Gemma string")
+        value = self.text[self.index : end]
+        self.index = end + len(marker)
+        return value
+
+    def _parse_json_string(self) -> Any:
+        value, consumed = json.JSONDecoder().raw_decode(self.text[self.index :])
+        self.index += consumed
+        return value
+
+    def _skip_space(self) -> None:
+        while self.index < len(self.text) and self.text[self.index].isspace():
+            self.index += 1
+
+    def _expect(self, expected: str) -> None:
+        if self.index >= len(self.text) or self.text[self.index] != expected:
+            raise ValueError(f"expected {expected!r}")
+        self.index += 1
+
+
 # r5-E F-DGF-V080-B-8: prose-fallback recovery patterns. Gemma 4 at
 # low temperature (~0.1) intermittently emits prose describing the
 # tool intent ("I should call the `add` tool with a=13 and b=29.")
 # instead of emitting the structured ``<|tool_call>call:NAME{...}<tool_call|>``
-# wire form. Trace verdict (see commit body): NEITHER parser pattern
-# miss (the regex above correctly catches every structured emission)
+# wire form. Trace verdict (see commit body): NEITHER parser scan
+# miss (the scanner above correctly catches every structured emission)
 # NOR template tool injection miss (the chat template renders
 # ``<|tool>declaration:NAME{...}<tool|>`` verbatim and the model has
 # the schema). The model just chose to think-aloud through the
@@ -92,11 +283,17 @@ def _parse_gemma4_args(args_str: str) -> dict[str, Any]:
       - String values are wrapped in quote tokens:  key:<|"|>value<|"|>
       - Numeric / bool / null values are bare:      key:3   key:true   key:null
 
-    Strategy: replace each quoted string with a placeholder, run a generic
-    bare-KV parser over the result, then restore placeholders before
-    returning. This lets a single pass handle mixed-type arg dicts.
+    Parse the JSON-like object recursively so nested objects and arrays retain
+    their structure. If the model emits malformed syntax, fall back to the
+    historical flat best-effort parser rather than dropping the entire call.
     """
-    # Step 1: stash quoted string values so they can't confuse the bare parser
+    try:
+        return _Gemma4ArgumentParser(args_str).parse_arguments()
+    except (ValueError, json.JSONDecodeError):
+        # Keep the historical best-effort behavior for malformed model output.
+        pass
+
+    # Stash quoted string values so they can't confuse the fallback bare parser.
     stashed: list[str] = []
 
     def _stash(m: re.Match) -> str:
@@ -390,7 +587,7 @@ class Gemma4ToolParser(ToolParser):
     def extract_tool_calls(
         self, model_output: str, request: Any = None
     ) -> ExtractedToolCallInformation:
-        matches = list(GEMMA4_TOOL_PATTERN.finditer(model_output))
+        matches, _ = _scan_gemma4_tool_calls(model_output)
 
         if not matches:
             # r5-E F-DGF-V080-B-8: structured form missed. Try the
@@ -428,20 +625,24 @@ class Gemma4ToolParser(ToolParser):
 
         tool_calls = []
         for match in matches:
-            func_name = match.group(1)
-            args_str = match.group(2)
-            args = _parse_gemma4_args(args_str)
+            args = _parse_gemma4_args(match.arguments)
 
             tool_calls.append(
                 {
                     "id": _generate_tool_id(),
-                    "name": func_name,
+                    "name": match.name,
                     "arguments": json.dumps(args),
                 }
             )
 
         # Content is everything outside the tool calls
-        content = GEMMA4_TOOL_PATTERN.sub("", model_output).strip() or None
+        content_parts: list[str] = []
+        content_start = 0
+        for match in matches:
+            content_parts.append(model_output[content_start : match.start])
+            content_start = match.end
+        content_parts.append(model_output[content_start:])
+        content = "".join(content_parts).strip() or None
 
         return ExtractedToolCallInformation(
             tools_called=True, tool_calls=tool_calls, content=content
@@ -463,15 +664,11 @@ class Gemma4ToolParser(ToolParser):
         # comment above ``GEMMA4_TOOL_PATTERN`` for the empirical
         # justification.
         if "<|tool_call>" in current_text or re.search(r"call:\w+\{", current_text):
-            # ``GEMMA4_TOOL_PATTERN`` matches completed bodies (it
-            # requires the closing ``}`` and optionally the
-            # ``<tool_call|>`` trailer). Count those as completed; if
-            # the body opener appears more often than completed bodies,
-            # we're still mid-stream and should suppress emission.
-            completed_matches = list(GEMMA4_TOOL_PATTERN.finditer(current_text))
+            # The balanced scanner returns completed bodies and the number of
+            # openers seen. If there are more openers than completed calls,
+            # the final call is still mid-stream and must be suppressed.
+            completed_matches, open_count = _scan_gemma4_tool_calls(current_text)
             completed = len(completed_matches)
-            opener_re = re.compile(r"call:\w+\{")
-            open_count = len(list(opener_re.finditer(current_text)))
 
             # Still accumulating an incomplete tool call
             if completed < open_count:
