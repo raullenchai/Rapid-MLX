@@ -1335,7 +1335,12 @@
     "is_hybrid": false,
     "is_moe": false,
     "supports_spec_decode": true,
-    "suffix_decoding_tier": "unknown"
+    "suffix_decoding_tier": "avoid",
+    "suffix_bench_speedup": {
+      "chat": 0.673,
+      "json_array": 0.936,
+      "tool_loop": 2.13
+    }
   },
   "vibethinker-1.5b-4bit": {
     "hf_path": "mlx-community/VibeThinker-1.5B-mlx-4bit",
