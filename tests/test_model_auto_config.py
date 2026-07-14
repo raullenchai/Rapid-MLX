@@ -1055,12 +1055,16 @@ class TestVisibility:
         assert "KV-share         : no" not in table
 
     def test_mtp_path_value_stays_within_contract(self):
-        # codex #1112 [NIT] round 4: the MTP-path value must always be one
-        # of the three documented tokens — never a fourth free-form value.
-        from vllm_mlx.model_auto_config import _mtp_path_label
-        from vllm_mlx.model_profile import ModelProfile
+        # codex #1112 [NIT] round 4 + [BLOCKING] round 8: the RENDERED MTP-
+        # path value must always be one of the documented tokens. This
+        # parses ``format_profile_table`` output (the real public surface),
+        # NOT ``_mtp_path_label`` in isolation — so the ``cfg is None``
+        # branch's ``unknown`` value is covered too. Contract vocabulary:
+        # a MATCHED profile → native | sidecar | disabled; the UNMATCHED
+        # (``cfg is None``) branch → "unknown (unmatched profile)".
+        import re
 
-        allowed = {"native", "sidecar", "disabled"}
+        matched_allowed = {"native", "sidecar", "disabled"}
         probes = [
             "mlx-community/gemma-4-12B-it-4bit",
             "mlx-community/Hy3-preview-4bit",
@@ -1071,12 +1075,21 @@ class TestVisibility:
             "some-org/Qwen3.5-gemma-4-merge-8bit",
             "totally-unknown-model",
         ]
+        row_re = re.compile(r"MTP path\s+:\s+(.*?)\s+│")
         for name in probes:
             cfg = detect_model_config(name)
-            profile = cfg if cfg is not None else ModelProfile(hf_path=name)
-            assert _mtp_path_label(name, profile) in allowed, (
-                f"MTP path for {name!r} escaped the contract"
-            )
+            table = format_profile_table(name, cfg)
+            m = row_re.search(table)
+            assert m is not None, f"no MTP path row rendered for {name!r}"
+            value = m.group(1)
+            if cfg is None:
+                assert value == "unknown (unmatched profile)", (
+                    f"unmatched profile {name!r} must report unknown, got {value!r}"
+                )
+            else:
+                assert value in matched_allowed, (
+                    f"matched profile {name!r} escaped the contract: {value!r}"
+                )
 
     def test_mtp_kv_share_rows_fit_box(self):
         # New rows must not break the fixed-width box on any family.

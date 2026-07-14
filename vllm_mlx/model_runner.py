@@ -155,6 +155,11 @@ class MLXModelRunner:
 
     def _apply_optimizations(self) -> None:
         """Apply low-level optimizations for maximum performance."""
+        # Reset at entry so a failed RE-attempt after a prior success does
+        # not leave the runner falsely reporting ``optimized`` (codex
+        # #1112 [NIT] round 8). The flag is re-set True only if this
+        # attempt completes.
+        self._optimizations_applied = False
         try:
             from vllm_mlx.optimizations import (
                 configure_memory_optimization,
