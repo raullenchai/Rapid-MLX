@@ -107,12 +107,16 @@ shape.
 
 ## Totals
 
-Across the four always-on families (Qwen 3.6, Gemma 4, DeepSeek, gpt-oss):
+Across the four always-on families (Qwen 3.6, Gemma 4, DeepSeek, gpt-oss);
+the Hy3 column adds 11 more agent cells, all `xfail(strict=True)`:
 
-- **Agents:** 55 cells → 46 PASS · 9 XFAIL (arch) · not counting the Hy3
-  column.
-- **Frameworks:** 15 cells → the two `tool_calls`-dependent frameworks XFAIL
-  on DeepSeek; smolagents PASSes.
+- **Agents:** 11 agents × 4 families = 44 cells → **36 PASS · 8 XFAIL ·
+  0 FAIL**. The 8 XFAIL are the 7 DeepSeek arch cells (opencode, qwen-code,
+  hermes-agent, kilo-code, copilot, droid, kimi-code) + 1 gpt-oss × OpenHands
+  format cell.
+- **Frameworks:** 3 frameworks × 4 families = 12 cells → the two
+  `tool_calls`-dependent frameworks (LangChain, PydanticAI) XFAIL on DeepSeek;
+  smolagents PASSes everywhere.
 - **Combined always-on run** (56 cells excluding Hy3): **46 PASS · 10 XFAIL
   · 0 FAIL** — 9 XFAIL are the DeepSeek R1-Distill architectural
   tool-emission cells, 1 is gpt-oss × OpenHands.
