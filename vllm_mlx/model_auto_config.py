@@ -1493,15 +1493,24 @@ def _truncate_tier_note(text: str, max_width: int | None) -> str:
 # unrelated checkpoint, and (when both a Qwen and a Gemma marker appeared
 # in the path) the native branch stole Gemma's sidecar branch.
 #
-# codex #1112 [NIT]: the family tokens are boundary-anchored so an
-# unrelated substring (``Llama-3-hy3per-8B`` → ``hy3``, ``megemma4x`` →
-# ``gemma4``) does NOT match. ``(?:^|[^0-9a-z])`` / ``(?=$|[^0-9a-z])``
-# require the token to start/end at a name-segment boundary (a separator
-# ``-`` / ``_`` / ``.`` / ``/`` or the string edge), since HF names use
-# those separators between tokens. The family core allows an internal
-# separator (``qwen3.5`` / ``qwen3-5``, ``hy-v3`` / ``hyv3``).
+# codex #1112 [BLOCKING] round 5: the family token must be at the START
+# of the model-NAME segment — the architecture-position slot. HF model
+# names lead with the architecture family (``gemma-4-12b-it``,
+# ``Qwen3.5-4B``, ``Hy3-preview``); a family token appearing LATER in the
+# name is provenance, not the architecture (``Llama-3-Distilled-from-
+# Gemma-4`` is a Llama, ``Mistral-merge-of-Qwen3.5`` is a Mistral). The
+# leading ``^`` anchors to the segment start; the trailing
+# ``(?=$|[^0-9a-z])`` boundary still rejects substrings that merely begin
+# with the token (``gemma-40b``, ``qwen3.55``). This is verified against
+# the whole alias registry: every real Gemma 4 / HY3 / Qwen3.5 / Qwen3.6
+# checkpoint leads with its family token; only ``diffusiongemma`` (a
+# text-diffusion variant, correctly NOT a Gemma 4 KV-share checkpoint)
+# does not lead with ``gemma-4`` and is excluded.
+#
+# [NIT round 4] the family core still allows an internal separator
+# (``qwen3.5`` / ``qwen3-5``, ``hy-v3`` / ``hyv3``).
 _NATIVE_MTP_NAME_RE = re.compile(
-    r"(?:^|[^0-9a-z])(?:qwen3[._-]?[56]|hy[-_]?v?3|hunyuan[-_]?3)(?=$|[^0-9a-z])",
+    r"^(?:qwen3[._-]?[56]|hy[-_]?v?3|hunyuan[-_]?3)(?=$|[^0-9a-z])",
     re.IGNORECASE,
 )
 
@@ -1509,12 +1518,10 @@ _NATIVE_MTP_NAME_RE = re.compile(
 # ``gemma4_unified_assistant`` — see
 # ``vllm_mlx.spec_decode.mtp.gemma4_inject``), NOT a native head baked
 # into the checkpoint. Identify the family from the Gemma-4-specific
-# parser stamp the profile already carries (``tool_call_parser`` /
-# ``reasoning_parser`` == ``gemma4``), falling back to a boundary-anchored
-# name match against the extracted name segment only.
-_GEMMA4_NAME_RE = re.compile(
-    r"(?:^|[^0-9a-z])gemma[-_]?4(?=$|[^0-9a-z])", re.IGNORECASE
-)
+# parser stamp the profile carries; the name fallback (below) is
+# start-anchored to the architecture-position slot for the same reason as
+# the native-MTP regex above.
+_GEMMA4_NAME_RE = re.compile(r"^gemma[-_]?4(?=$|[^0-9a-z])", re.IGNORECASE)
 
 
 def _resolve_family(model_path: str, cfg: "ModelConfig") -> str:
@@ -1531,15 +1538,17 @@ def _resolve_family(model_path: str, cfg: "ModelConfig") -> str:
     Both callers (``_mtp_path_label`` / ``_kv_share_label``) consume this
     single function so their family view can never disagree.
 
-    The load-bearing signal is the **name marker on the extracted
-    model-NAME segment** — the canonical basename
+    The load-bearing signal is the **architecture-position family marker
+    on the extracted model-NAME segment** — the canonical basename
     (``_extract_model_name_segment``: org/parent dirs and HF-cache
-    intermediates stripped; boundary-anchored so substrings like
-    ``Llama-3-hy3per-8B`` / ``megemma4x`` don't match). The name segment
-    is REQUIRED (codex #1112 [BLOCKING] round 4): the parser stamp alone
-    is not trusted because ``detect_model_config``'s regex table matches
-    the FULL path, so an org/parent dir like ``gemma4-labs/Llama-3-8B``
-    yields a ``gemma4`` stamp on a non-Gemma model. Every real Gemma 4 /
+    intermediates stripped). The marker must lead the name segment
+    (``^``-anchored), so a substring (``Llama-3-hy3per-8B``) and a later
+    provenance token (``Llama-3-Distilled-from-Gemma-4`` is a Llama, not a
+    Gemma) are both rejected. The name segment is REQUIRED (codex #1112
+    [BLOCKING] round 4): the parser stamp alone is not trusted because
+    ``detect_model_config``'s regex table matches the FULL path, so an
+    org/parent dir like ``gemma4-labs/Llama-3-8B`` yields a ``gemma4``
+    stamp on a non-Gemma model. Every real Gemma 4 /
     HY3 / Qwen3.5 / Qwen3.6 checkpoint carries its family marker in the
     name segment, so requiring it costs nothing and closes the spoof.
     (It also correctly excludes ``diffusiongemma`` — a text-diffusion

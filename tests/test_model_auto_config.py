@@ -1160,38 +1160,48 @@ class TestVisibility:
         assert _mtp_path_label(stub.hf_path, stub) == "native"
         assert _kv_share_label(stub.hf_path, stub) == "no"
 
-    def test_family_token_boundaries_reject_substrings(self):
-        # codex #1112 [NIT] round 2: unrelated basenames that merely
-        # CONTAIN a family token as a substring must not match (no token
-        # boundaries → false labels). ``Llama-3-hy3per-8B`` contains
-        # ``hy3`` but is not HY3; ``megemma4x`` contains ``gemma4`` but is
-        # not Gemma 4.
+    def test_family_token_substrings_and_provenance_rejected(self):
+        # codex #1112 [NIT] round 2 + [BLOCKING] round 5: a family token
+        # must be at the START of the name segment (the architecture-
+        # position slot). Reject (a) substrings — ``Llama-3-hy3per-8B``
+        # contains ``hy3``, ``megemma4x`` contains ``gemma4`` — and (b)
+        # LATER provenance tokens — ``Llama-3-Distilled-from-Gemma-4`` is a
+        # Llama, ``Mistral-merge-of-Qwen3.5`` is a Mistral.
         from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
         from vllm_mlx.model_profile import ModelProfile
 
-        not_hy3 = ModelProfile(hf_path="some-org/Llama-3-hy3per-8B")
-        assert _mtp_path_label(not_hy3.hf_path, not_hy3) == "disabled"
-        assert _kv_share_label(not_hy3.hf_path, not_hy3) == "no"
+        for name in (
+            "some-org/Llama-3-hy3per-8B",
+            "some-org/megemma4x-13B",
+            "some-org/Llama-3-Distilled-from-Gemma-4-8bit",
+            "some-org/Mistral-merge-of-Qwen3.5-7b",
+            "some-org/Yi-based-on-Hy3-9b",
+        ):
+            stub = ModelProfile(hf_path=name)  # spec decode defaults True
+            assert _mtp_path_label(name, stub) == "disabled", name
+            assert _kv_share_label(name, stub) == "no", name
 
-        not_gemma4 = ModelProfile(hf_path="some-org/megemma4x-13B")
-        assert _kv_share_label(not_gemma4.hf_path, not_gemma4) == "no"
-        assert _mtp_path_label(not_gemma4.hf_path, not_gemma4) == "disabled"
-
-    def test_ambiguous_both_markers_no_stamp_is_conservative(self):
-        # codex #1112 [BLOCKING] round 3: a name carrying BOTH a Gemma 4
-        # and a native-MTP marker with no parser stamp to disambiguate is
-        # ambiguous — degrade to the conservative disabled / no rather
-        # than guessing a family.
+    def test_architecture_position_token_wins_in_merge_name(self):
+        # codex #1112 round 5: in a merge name the LEADING family token is
+        # the architecture; the later token is provenance. ``Qwen3.5-gemma-
+        # 4-merge`` is a Qwen3.5-architecture merge → native; ``gemma-4-
+        # qwen3.5-merge`` leads with Gemma 4 → sidecar / KV-share yes.
         from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
         from vllm_mlx.model_profile import ModelProfile
 
-        ambiguous = ModelProfile(hf_path="some-org/Qwen3.5-gemma-4-merge-8bit")
-        assert _mtp_path_label(ambiguous.hf_path, ambiguous) == "disabled"
-        assert _kv_share_label(ambiguous.hf_path, ambiguous) == "no"
+        qwen_lead = ModelProfile(hf_path="some-org/Qwen3.5-gemma-4-merge-8bit")
+        assert _mtp_path_label(qwen_lead.hf_path, qwen_lead) == "native"
+        assert _kv_share_label(qwen_lead.hf_path, qwen_lead) == "no"
 
-    def test_ambiguous_name_with_stamp_uses_stamp(self):
-        # But an authoritative parser stamp still wins over an ambiguous
-        # name — the stamp is the SSOT.
+        gemma_lead = ModelProfile(hf_path="some-org/gemma-4-qwen3.5-merge-8bit")
+        assert _mtp_path_label(gemma_lead.hf_path, gemma_lead) == "sidecar"
+        assert _kv_share_label(gemma_lead.hf_path, gemma_lead) == "yes (default)"
+
+    def test_stamp_does_not_override_architecture_position(self):
+        # A ``gemma4`` parser stamp (which can come from an org-dir regex
+        # match on the full path) does NOT override the architecture-
+        # position name marker: ``Qwen3.5-…`` leads with Qwen3.5, so it
+        # stays native even with a stray gemma4 stamp.
         from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
         from vllm_mlx.model_profile import ModelProfile
 
@@ -1200,8 +1210,8 @@ class TestVisibility:
             tool_call_parser="gemma4",
             reasoning_parser="gemma4",
         )
-        assert _mtp_path_label(stamped.hf_path, stamped) == "sidecar"
-        assert _kv_share_label(stamped.hf_path, stamped) == "yes (default)"
+        assert _mtp_path_label(stamped.hf_path, stamped) == "native"
+        assert _kv_share_label(stamped.hf_path, stamped) == "no"
 
 
 class TestGetProfile:
