@@ -1132,6 +1132,32 @@ class TestVisibility:
         assert _kv_share_label(not_gemma4.hf_path, not_gemma4) == "no"
         assert _mtp_path_label(not_gemma4.hf_path, not_gemma4) == "disabled"
 
+    def test_ambiguous_both_markers_no_stamp_is_conservative(self):
+        # codex #1112 [BLOCKING] round 3: a name carrying BOTH a Gemma 4
+        # and a native-MTP marker with no parser stamp to disambiguate is
+        # ambiguous — degrade to the conservative disabled / no rather
+        # than guessing a family.
+        from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
+        from vllm_mlx.model_profile import ModelProfile
+
+        ambiguous = ModelProfile(hf_path="some-org/Qwen3.5-gemma-4-merge-8bit")
+        assert _mtp_path_label(ambiguous.hf_path, ambiguous) == "disabled"
+        assert _kv_share_label(ambiguous.hf_path, ambiguous) == "no"
+
+    def test_ambiguous_name_with_stamp_uses_stamp(self):
+        # But an authoritative parser stamp still wins over an ambiguous
+        # name — the stamp is the SSOT.
+        from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
+        from vllm_mlx.model_profile import ModelProfile
+
+        stamped = ModelProfile(
+            hf_path="some-org/Qwen3.5-gemma-4-merge-8bit",
+            tool_call_parser="gemma4",
+            reasoning_parser="gemma4",
+        )
+        assert _mtp_path_label(stamped.hf_path, stamped) == "sidecar"
+        assert _kv_share_label(stamped.hf_path, stamped) == "yes (default)"
+
 
 class TestGetProfile:
     """``get_profile()`` is the public one-shot API."""

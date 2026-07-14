@@ -1517,54 +1517,53 @@ _GEMMA4_NAME_RE = re.compile(
 )
 
 
-def _is_gemma4_family(model_path: str, cfg: "ModelConfig") -> bool:
-    """True iff the resolved profile is a Gemma 4 checkpoint.
+def _resolve_family(model_path: str, cfg: "ModelConfig") -> str:
+    """Single authoritative family discriminator for the info rows.
 
-    Family is decided from the Gemma-4-specific parser stamp the profile
-    already carries (the single source of truth set by the
-    precedence-ordered detection in ``detect_model_config`` — Gemma 3n
-    matches the earlier ``gemma-3n`` regex to ``tool_call_parser=None``
-    and is therefore excluded). The name match is a fallback for
-    direct-HF-path serves whose parser stamp is a generic default, and is
-    scoped to the extracted model-NAME segment so an org/parent dir
-    cannot spoof the family.
+    Returns exactly one of:
 
-    codex #1112 [BLOCKING] round 2: the authoritative ``hy_v3`` native
-    stamp WINS over a stray ``gemma4`` name marker. Without this a
-    hypothetical ``Hy3-distilled-from-Gemma-4`` (native ``hy_v3`` parser
-    stamp + ``gemma-4`` in the name) would be mislabeled ``sidecar`` /
-    ``KV-share: yes`` instead of ``native`` / ``no``. Explicit family
-    stamps are resolved before any name fallback.
+    * ``"gemma4"``     — Gemma 4 (sidecar MTP drafter + cross-layer
+      KV-share).
+    * ``"native_mtp"`` — a native-MTP-head family (Qwen3.5 / Qwen3.6 /
+      HY3).
+    * ``"other"``      — anything else, INCLUDING an ambiguous name that
+      carries BOTH a Gemma 4 and a native-MTP marker with no parser stamp
+      to disambiguate (conservative — codex #1112 [BLOCKING] round 3).
+
+    Resolution order (first authoritative signal wins), so both callers
+    (``_mtp_path_label`` / ``_kv_share_label``) always agree and there is
+    no per-caller check-ordering that could disagree:
+
+    1. Parser stamp — the single source of truth set by
+       ``detect_model_config``'s precedence-ordered detection. ``gemma4``
+       ⇒ Gemma 4; ``hy_v3`` ⇒ native. A stamp is authoritative and a
+       stray opposite-family NAME marker cannot override it (a
+       ``Hy3-distilled-from-Gemma-4`` with a ``hy_v3`` stamp is native).
+    2. Name markers on the extracted model-NAME segment (basename only;
+       org/parent dirs stripped; boundary-anchored so substrings like
+       ``Llama-3-hy3per-8B`` / ``megemma4x`` don't match). If EXACTLY one
+       family's marker is present, that family wins. If BOTH are present
+       (a genuinely ambiguous name with no stamp), return ``"other"`` so
+       the row degrades to the conservative ``disabled`` / ``no`` rather
+       than guessing.
     """
-    # A native-MTP parser stamp is authoritative and excludes Gemma 4.
-    if cfg.tool_call_parser == "hy_v3" or cfg.reasoning_parser == "hy_v3":
-        return False
-    if cfg.tool_call_parser == "gemma4" or cfg.reasoning_parser == "gemma4":
-        return True
+    tcp, rp = cfg.tool_call_parser, cfg.reasoning_parser
+    if tcp == "gemma4" or rp == "gemma4":
+        return "gemma4"
+    if tcp == "hy_v3" or rp == "hy_v3":
+        return "native_mtp"
+
     name_seg = _extract_model_name_segment((cfg.hf_path or model_path).lower())
-    return bool(_GEMMA4_NAME_RE.search(name_seg))
-
-
-def _is_native_mtp_family(model_path: str, cfg: "ModelConfig") -> bool:
-    """True iff the resolved profile is a native-MTP-head family.
-
-    HY3 carries a unique ``hy_v3`` parser stamp (SSOT). Qwen3.5 / Qwen3.6
-    share the generic ``hermes`` / ``qwen3_coder_xml`` parsers with
-    non-MTP Qwen variants, so those need a name match — scoped to the
-    extracted model-NAME segment (not the full path) so an org/parent dir
-    cannot spoof the family, and boundary-anchored so an unrelated
-    substring (``Llama-3-hy3per-8B``) does not match.
-
-    A ``gemma4`` parser stamp is authoritative and excludes the native
-    family (Gemma 4 uses the sidecar drafter), mirroring the reciprocal
-    exclusion in ``_is_gemma4_family``.
-    """
-    if cfg.tool_call_parser == "gemma4" or cfg.reasoning_parser == "gemma4":
-        return False
-    if cfg.tool_call_parser == "hy_v3" or cfg.reasoning_parser == "hy_v3":
-        return True
-    name_seg = _extract_model_name_segment((cfg.hf_path or model_path).lower())
-    return bool(_NATIVE_MTP_NAME_RE.search(name_seg))
+    is_gemma4 = bool(_GEMMA4_NAME_RE.search(name_seg))
+    is_native = bool(_NATIVE_MTP_NAME_RE.search(name_seg))
+    if is_gemma4 and is_native:
+        # Ambiguous, no stamp — do not guess.
+        return "other"
+    if is_gemma4:
+        return "gemma4"
+    if is_native:
+        return "native_mtp"
+    return "other"
 
 
 def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
@@ -1581,10 +1580,10 @@ def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
       profile enables spec decode.
     * ``disabled`` — spec decode is off for this profile
       (``supports_spec_decode=False`` — hybrid arch, or no MTP head /
-      drafter registered for this alias), OR the family has no MTP
-      mechanism at all (SuffixDecoding / DFlash are separate lanes and
-      are surfaced by the ``Spec decode`` / ``Suffix tier`` rows, not
-      here — this row is specifically about MTP).
+      drafter registered for this alias), the family has no MTP mechanism
+      at all (SuffixDecoding / DFlash are separate lanes surfaced by the
+      ``Spec decode`` / ``Suffix tier`` rows), or the family is ambiguous
+      (see ``_resolve_family``).
 
     Derivation is from the resolved profile only (no ``config.json``
     read), keeping the ``rapid-mlx info`` path weight-free.
@@ -1594,40 +1593,42 @@ def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
         # no MTP head/drafter registered for this alias). Even for a
         # native-MTP family the head isn't wired for this checkpoint.
         return "disabled"
-    # Gemma 4 (sidecar) is checked before the native-MTP family so a path
-    # that somehow carries both markers resolves to the correct
-    # parser-stamped family rather than letting the native branch win.
-    if _is_gemma4_family(model_path, cfg):
+    family = _resolve_family(model_path, cfg)
+    if family == "gemma4":
         return "sidecar"
-    if _is_native_mtp_family(model_path, cfg):
+    if family == "native_mtp":
         return "native"
-    # Spec decode is on but via a non-MTP mechanism (SuffixDecoding).
+    # Spec decode is on but via a non-MTP mechanism (SuffixDecoding), or
+    # the family could not be disambiguated.
     return "disabled"
 
 
 def _kv_share_label(model_path: str, cfg: "ModelConfig") -> str:
-    """Truth-in-labeling for Gemma 4 cross-layer KV-sharing.
+    """Truth-in-labeling for cross-layer KV-sharing.
 
     Returns ``yes (default)`` for Gemma 4, ``no`` for every other family.
 
-    The ``(default)`` qualifier is deliberate and load-bearing for
-    honesty (codex #1112 [BLOCKING]): the ``rapid-mlx info`` fast path
-    does NOT read ``config.json``, so the true per-checkpoint
-    ``num_kv_shared_layers`` is not inspected here. Every shipped Gemma 4
-    checkpoint ships cross-layer KV-sharing on (``num_kv_shared_layers >
-    0`` — the last N decoder layers borrow an earlier layer's K/V;
-    default 20 on the vendored ``TextConfig``, verify-locked in #1104),
-    so ``yes (default)`` reports the family default rather than claiming a
+    Scope is deliberately Gemma 4 only: it is the sole family with a
+    cross-layer KV-share code path in this engine (the vendored
+    ``gemma4_vendored`` decoder, guard + 5-size test verify-locked in
+    #1104). Gemma 3n has no model implementation here (its aliases carry
+    ``tool_call_parser=None`` and route through the generic lane), so this
+    row makes no claim about it — reporting ``no`` for a family the engine
+    does not drive with KV-sharing is the honest answer, not a false
+    negative (codex #1112 [BLOCKING] round 3).
+
+    The ``(default)`` qualifier is load-bearing for honesty: the
+    ``rapid-mlx info`` fast path does NOT read ``config.json``, so the
+    true per-checkpoint ``num_kv_shared_layers`` is not inspected here.
+    Every shipped Gemma 4 checkpoint ships cross-layer KV-sharing on
+    (``num_kv_shared_layers > 0`` — the last N decoder layers borrow an
+    earlier layer's K/V; default 20 on the vendored ``TextConfig``), so
+    ``yes (default)`` reports the family default rather than claiming a
     verified read. On the rare non-canonical unshared checkpoint
     (``num_kv_shared_layers=0``) the load-time guard
     (``gemma4_text._check_kv_share_config``) logs the real state at serve.
-
-    Gemma 3n shares the mechanism but is matched by the more specific
-    ``gemma-3n`` regex to ``tool_call_parser=None`` and is intentionally
-    out of scope here (its aliases don't route through the Gemma 4
-    KV-share path).
     """
-    return "yes (default)" if _is_gemma4_family(model_path, cfg) else "no"
+    return "yes (default)" if _resolve_family(model_path, cfg) == "gemma4" else "no"
 
 
 def format_profile_summary(model_path: str, cfg: "ModelConfig | None") -> str:
