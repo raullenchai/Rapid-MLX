@@ -42,6 +42,15 @@ rapid-mlx brings native Apple Silicon GPU acceleration to vLLM by integrating:
 - [AI Client Compatibility](guides/ai-clients.md)
 - [SDK Compatibility Notes](guides/sdk-compat.md)
 
+### Coding Agents
+- [Agent Support Matrix](agents/matrix.md) — family × agent, honest PASS/XFAIL
+- [Codex CLI](agents/codex-cli.md)
+- [Claude Code](agents/claude-code.md)
+- [OpenCode](agents/opencode.md)
+- [Qwen Code](agents/qwen-code.md)
+- [OpenHands](agents/openhands.md)
+- [Hermes Agent](agents/hermes-agent.md)
+
 ### Reference
 - [CLI Commands](reference/cli.md)
 - [Supported Models](reference/models.md)

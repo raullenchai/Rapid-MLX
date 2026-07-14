@@ -66,6 +66,15 @@ These clients have been verified through automated integration tests
 
 ### Coding Agents
 
+Tier-1 coding agents have dedicated copy-paste setup pages with per-family
+config, plus an honest test-backed [support matrix](../agents/matrix.md):
+[Codex CLI](../agents/codex-cli.md) ·
+[Claude Code](../agents/claude-code.md) ·
+[OpenCode](../agents/opencode.md) ·
+[Qwen Code](../agents/qwen-code.md) ·
+[OpenHands](../agents/openhands.md) ·
+[Hermes Agent](../agents/hermes-agent.md).
+
 | Client | Type | Setup | Status | Notes |
 |--------|------|-------|--------|-------|
 | [Aider](https://aider.chat) | CLI | `OPENAI_API_BASE=http://localhost:8000/v1 aider --model openai/default` | Verified | Architect mode, edit-and-commit |
