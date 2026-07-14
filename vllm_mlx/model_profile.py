@@ -53,27 +53,46 @@ from typing import Literal
 Modality = Literal["text", "text-diffusion", "vision", "image-gen"]
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, kw_only=True)
 class ModelProfile:
     """Per-model profile — parser defaults + capability gates.
 
     The single dataclass behind both ``AliasProfile`` (alias-keyed) and
     ``ModelConfig`` (regex-detected). Frozen so a resolved profile can be
-    shared safely across threads and cached without a defensive copy;
-    ``enrich_model_config`` produces mutated variants via
-    ``dataclasses.replace``. Defaults err on the side of "supported" —
-    known-incompatible families set the flag explicitly.
+    shared safely across threads and cached without a defensive copy.
 
     ``hf_path`` defaults to ``""`` so a regex-detected profile (no owning
     alias) can be constructed without one; alias construction always
     passes a validated non-empty path via ``model_aliases._coerce``.
 
-    Field ORDER is load-bearing: ``hf_path`` stays first and new fields
-    are appended at the tail so existing positional construction
-    (``ModelProfile(hf_path, tool_call_parser, ...)`` — historically
-    ``AliasProfile(...)``) keeps binding to the same slots. pr_validate
-    codex round 11 [BLOCKING #1] once caught a mid-dataclass insert
-    silently routing the parser positional into the wrong field.
+    Construction is KEYWORD-ONLY (``kw_only=True``). This is deliberate
+    and load-bearing for the unification: the pre-unification ``ModelConfig``
+    began with ``tool_call_parser`` and carried no ``hf_path`` field at
+    all, whereas the unified profile begins with ``hf_path``. Under
+    positional construction a legacy call like ``ModelConfig("hermes")``
+    would silently bind ``hf_path="hermes"`` instead of the intended
+    ``tool_call_parser`` (pr_validate codex flagged exactly this on PR
+    #1108). ``kw_only=True`` makes any positional construction a loud
+    ``TypeError`` instead of a silent field-misbind, so the field-order
+    difference between the two former dataclasses can never surface as a
+    routing bug. Every construction site in-tree already passes keywords
+    (``model_aliases._coerce``, the ``model_auto_config`` regex table,
+    and all tests), so this is a no-op for existing callers.
+
+    Migration paths for the two shape changes the unification introduced
+    (both flagged by codex as needing an explicit deprecation path):
+      * ``ModelConfig`` was mutable; a resolved profile is now frozen.
+        Produce a modified copy with ``dataclasses.replace(profile,
+        field=value)`` instead of ``profile.field = value``
+        (``model_auto_config.enrich_model_config`` and
+        ``engine_core`` already do this).
+      * ``suffix_bench_speedup`` was a ``dict``; it is now a tuple of
+        ``(workload, speedup)`` pairs (frozen dataclasses need immutable,
+        hashable fields). Read it as a mapping via the ``speedup_dict``
+        property, never ``profile.suffix_bench_speedup.get(...)``.
+
+    Defaults err on the side of "supported" — known-incompatible families
+    set the flag explicitly.
     """
 
     hf_path: str = ""
@@ -154,10 +173,6 @@ class ModelProfile:
     # ``"text-diffusion"`` → ``runtime/diffusion_lane.py`` (block
     # denoising, no spec-decode, no DFlash); ``"vision"`` /
     # ``"image-gen"`` reserved for upcoming integrations.
-    #
-    # NOTE on positional ABI: appended at the tail (not after ``hf_path``)
-    # so existing positional construction keeps binding to the same
-    # fields. Keep new fields at the tail.
     modality: Modality = "text"
     # PFlash long-prompt compression eligibility (#287). Default
     # ``"unknown"`` keeps the engine's PFlash mode at ``"off"`` so a
