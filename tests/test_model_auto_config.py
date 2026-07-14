@@ -1041,16 +1041,18 @@ class TestVisibility:
         assert "MTP path         : disabled" in table
         assert "KV-share         : no" in table
 
-    def test_unknown_model_mtp_disabled_kv_share_no(self):
-        # ``cfg is None`` path — an unmatched family has no known MTP head
-        # or KV-share config. codex #1112 [NIT] round 4: the value must be
-        # exactly ``disabled`` (within the documented native | sidecar |
-        # disabled contract), not a fourth value like
-        # ``disabled (unknown family)``.
+    def test_unknown_model_reports_unknown_not_definite(self):
+        # ``cfg is None`` path — no regex/alias matched, so the
+        # architecture is genuinely UNKNOWN (an opaquely named Qwen3.5 /
+        # Gemma 4 checkpoint lands here too). codex #1112 [BLOCKING]
+        # round 7: reporting a definite ``disabled`` / ``no`` would falsely
+        # claim the model lacks MTP / KV-sharing — report ``unknown``.
         table = format_profile_table("some-brand-new-model-xyz", None)
-        assert "MTP path         : disabled" in table
-        assert "disabled (unknown family)" not in table
-        assert "KV-share         : no" in table
+        assert "MTP path         : unknown (unmatched profile)" in table
+        assert "KV-share         : unknown (unmatched profile)" in table
+        # Must NOT falsely assert a definite off-state for an unknown arch.
+        assert "MTP path         : disabled" not in table
+        assert "KV-share         : no" not in table
 
     def test_mtp_path_value_stays_within_contract(self):
         # codex #1112 [NIT] round 4: the MTP-path value must always be one

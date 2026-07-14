@@ -1683,15 +1683,18 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ("Reasoning parser", "(none)"),
             ("Architecture", "unknown"),
             ("Spec decode", "✓ default-on"),
-            # Truth-in-labeling: an unmatched family has no known native
-            # MTP head / KV-share config, so both default to the
-            # conservative "off" state until the model loads and the
-            # runtime probe / load-time guard reports the real config.
-            # ``MTP path`` stays within the documented native | sidecar |
-            # disabled contract (codex #1112 [NIT] round 4 — no fourth
-            # value).
-            ("MTP path", "disabled"),
-            ("KV-share", "no"),
+            # Truth-in-labeling: no regex/alias matched, so the
+            # architecture is genuinely UNKNOWN here — an opaquely named
+            # Qwen3.5 or Gemma 4 checkpoint would land in this branch too.
+            # Reporting a definite ``disabled`` / ``no`` would falsely
+            # claim the model lacks MTP / KV-sharing (codex #1112
+            # [BLOCKING] round 7). Report ``unknown`` until the model loads
+            # and the runtime probe / load-time guard reports the real
+            # config. ``unknown`` is the ONLY branch that emits this value;
+            # a matched profile always resolves to a definite token via
+            # ``_mtp_path_label`` / ``_kv_share_label``.
+            ("MTP path", "unknown (unmatched profile)"),
+            ("KV-share", "unknown (unmatched profile)"),
             ("Throttle", "✗ default-off"),
             (
                 "Suffix tier",
@@ -1727,10 +1730,12 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ("Spec decode", spec),
             # Truth-in-labeling for the MTP spec-decode path and Gemma 4
             # cross-layer KV-share, derived from the resolved profile (no
-            # weight load). ``MTP path`` = native | sidecar | disabled;
-            # ``KV-share`` = "yes (default)" | no (the ``(default)``
-            # qualifier is honest — the fast path reports the Gemma 4
-            # family default, not a per-checkpoint config.json read).
+            # weight load). For a MATCHED profile: ``MTP path`` = native |
+            # sidecar | disabled; ``KV-share`` = "yes (default)" | no (the
+            # ``(default)`` qualifier is honest — the fast path reports the
+            # Gemma 4 family default, not a per-checkpoint config.json
+            # read). The unmatched-profile (``cfg is None``) branch above
+            # reports ``unknown`` for both instead of a definite value.
             ("MTP path", _mtp_path_label(model_path, cfg)),
             ("KV-share", _kv_share_label(model_path, cfg)),
             ("Throttle", throttle),
