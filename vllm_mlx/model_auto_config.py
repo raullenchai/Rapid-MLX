@@ -1555,33 +1555,18 @@ def _resolve_family(model_path: str, cfg: "ModelConfig") -> str:
     variant that carries the ``gemma4`` parser stamp but is not a
     canonical Gemma 4 KV-share checkpoint.)
 
-    The parser stamp is used only as a TIE-BREAKER when the segment
-    carries BOTH a Gemma 4 and a native-MTP marker (a merge/distill name):
-    an authoritative ``gemma4`` / ``hy_v3`` stamp picks the family;
-    without one the name is genuinely ambiguous and we return ``"other"``
-    so the row degrades to the conservative ``disabled`` / ``no`` rather
-    than guessing.
+    Because both name regexes are anchored to the segment START and their
+    leading tokens are disjoint (``gemma-4`` begins with ``g``; the
+    native tokens begin with ``q`` / ``h``), at most ONE can match — the
+    leading (architecture-position) token alone decides the family, so no
+    tie-break is needed. A merge name resolves to whichever family it
+    leads with (``Qwen3.5-gemma-4-merge`` → native; ``gemma-4-qwen3.5-
+    merge`` → gemma4). A name that leads with neither is ``other``.
     """
     name_seg = _extract_model_name_segment((cfg.hf_path or model_path).lower())
-    is_gemma4 = bool(_GEMMA4_NAME_RE.search(name_seg))
-    is_native = bool(_NATIVE_MTP_NAME_RE.search(name_seg))
-
-    if is_gemma4 and is_native:
-        # Ambiguous segment — let an authoritative parser stamp break the
-        # tie; otherwise do not guess.
-        tcp, rp = cfg.tool_call_parser, cfg.reasoning_parser
-        if (tcp == "gemma4" or rp == "gemma4") and not (
-            tcp == "hy_v3" or rp == "hy_v3"
-        ):
-            return "gemma4"
-        if (tcp == "hy_v3" or rp == "hy_v3") and not (
-            tcp == "gemma4" or rp == "gemma4"
-        ):
-            return "native_mtp"
-        return "other"
-    if is_gemma4:
+    if _GEMMA4_NAME_RE.search(name_seg):
         return "gemma4"
-    if is_native:
+    if _NATIVE_MTP_NAME_RE.search(name_seg):
         return "native_mtp"
     return "other"
 
@@ -1743,7 +1728,9 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             # Truth-in-labeling for the MTP spec-decode path and Gemma 4
             # cross-layer KV-share, derived from the resolved profile (no
             # weight load). ``MTP path`` = native | sidecar | disabled;
-            # ``KV-share`` = yes | no.
+            # ``KV-share`` = "yes (default)" | no (the ``(default)``
+            # qualifier is honest — the fast path reports the Gemma 4
+            # family default, not a per-checkpoint config.json read).
             ("MTP path", _mtp_path_label(model_path, cfg)),
             ("KV-share", _kv_share_label(model_path, cfg)),
             ("Throttle", throttle),

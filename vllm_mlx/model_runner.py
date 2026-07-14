@@ -103,6 +103,12 @@ class MLXModelRunner:
         # Optimization settings
         self._enable_optimizations = enable_optimizations
         self._hardware_info = None  # Detected hardware profile
+        # Set True only after ``_apply_optimizations`` completes without
+        # raising. ``_hardware_info`` being populated is NOT proof of
+        # success: ``configure_memory_optimization()`` can raise AFTER the
+        # hardware probe, and that exception is caught + logged. Derive the
+        # ``optimized`` status from this flag, not from ``_hardware_info``.
+        self._optimizations_applied = False
 
         logger.info(f"MLXModelRunner initialized for model: {self.model_config.model}")
         logger.info(
@@ -163,6 +169,9 @@ class MLXModelRunner:
 
             # Configure memory settings
             configure_memory_optimization()
+
+            # Reached only if every step above succeeded.
+            self._optimizations_applied = True
 
         except Exception as e:
             logger.warning(f"Failed to apply optimizations: {e}")
@@ -443,7 +452,7 @@ class MLXModelRunner:
             # a stable dict shape instead of hitting a ``KeyError``.
             info["optimizations"] = {
                 "kernel_fusion": False,
-                "memory_optimized": self._hardware_info is not None,
+                "memory_optimized": self._optimizations_applied,
             }
 
             if self._hardware_info:
@@ -459,5 +468,5 @@ class MLXModelRunner:
 
     def __repr__(self) -> str:
         status = "loaded" if self._loaded else "not loaded"
-        opt_status = "optimized" if self._hardware_info else "standard"
+        opt_status = "optimized" if self._optimizations_applied else "standard"
         return f"<MLXModelRunner model={self.model_config.model} status={status} mode={opt_status}>"
