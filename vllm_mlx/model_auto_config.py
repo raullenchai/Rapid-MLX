@@ -1528,10 +1528,12 @@ _NATIVE_MTP_NAME_RE = re.compile(
 # Gemma 4 uses an assistant/sidecar drafter (``gemma4_assistant`` /
 # ``gemma4_unified_assistant`` — see
 # ``vllm_mlx.spec_decode.mtp.gemma4_inject``), NOT a native head baked
-# into the checkpoint. Identify the family from the Gemma-4-specific
-# parser stamp the profile carries; the name fallback (below) is anchored
-# to the architecture-position slot (optional ``_NAME_PREFIX`` allowed)
-# for the same reason as the native-MTP regex above.
+# into the checkpoint. ``_resolve_family`` identifies the family from this
+# name marker on the extracted NAME segment — a name-only discriminator
+# (the parser stamp is deliberately NOT consulted: it can be spoofed by an
+# org/parent dir on the full path — see ``_resolve_family``). Anchored to
+# the architecture-position slot (optional ``_NAME_PREFIX`` allowed) for
+# the same reason as the native-MTP regex above.
 _GEMMA4_NAME_RE = re.compile(
     r"^" + _NAME_PREFIX + r"gemma[-_]?4(?=$|[^0-9a-z])", re.IGNORECASE
 )
