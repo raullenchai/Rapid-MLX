@@ -146,11 +146,11 @@ def test_ple_table_not_low_bit_quantized(label, num_layers):
         )
         result = predicate(path, mod)
         bits = _resolved_bits(result)
-        assert bits is not None, (
-            f"{label}: PLE table {path} was excluded from quantization "
-            f"(result={result!r}); expected an explicit >= {MIN_SAFE_PLE_BITS}-bit "
-            f"pin. (fp/8-bit are both acceptable — 4-bit is not.)"
-        )
+        # ``None`` == excluded from quantization == kept full precision (fp),
+        # which is strictly safer than any quantization. Only a *low-bit*
+        # quantization corrupts the PLE table, so fp is accepted here.
+        if bits is None:
+            continue
         assert bits >= MIN_SAFE_PLE_BITS, (
             f"{label}: PLE table {path} would be {bits}-bit quantized "
             f"(predicate result {result!r}). 4-bit PLE produces garbage output; "
@@ -178,10 +178,7 @@ def test_regular_linear_still_takes_default_bits(label, num_layers):
             continue
         # Only ordinary attention/mlp Linears — skip PLE, router, and the
         # bare-fp altup projection which have deliberate special handling.
-        if any(
-            s in path
-            for s in ("embed_tokens_per_layer", "router", "per_layer")
-        ):
+        if any(s in path for s in ("embed_tokens_per_layer", "router", "per_layer")):
             continue
         if path.endswith(("o_proj", "q_proj", "k_proj", "v_proj")) or path.endswith(
             ("gate_proj", "up_proj", "down_proj")
