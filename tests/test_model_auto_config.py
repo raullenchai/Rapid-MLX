@@ -1004,12 +1004,14 @@ class TestVisibility:
 
     def test_gemma4_mtp_is_sidecar_and_kv_share_yes(self):
         # Gemma 4 uses an assistant/sidecar drafter (no native head) and
-        # ships cross-layer KV-sharing (num_kv_shared_layers > 0).
+        # ships cross-layer KV-sharing (num_kv_shared_layers > 0). The
+        # ``(default)`` qualifier signals the value is the family default,
+        # not a per-checkpoint config.json read (info stays weight-free).
         cfg = detect_model_config("mlx-community/gemma-4-12B-it-4bit")
         assert cfg is not None and cfg.supports_spec_decode is True
         table = format_profile_table("mlx-community/gemma-4-12B-it-4bit", cfg)
         assert "MTP path         : sidecar" in table
-        assert "KV-share         : yes" in table
+        assert "KV-share         : yes (default)" in table
 
     def test_hy3_mtp_is_native_and_kv_share_no(self):
         # HY3 ships a native DeepSeek-V3-style MTP head; not a Gemma 4, so
@@ -1063,6 +1065,39 @@ class TestVisibility:
                 f"MTP/KV-share rows broke box alignment for {name}: "
                 f"widths={widths}\n{table}"
             )
+
+    def test_family_marker_in_org_dir_does_not_mislabel(self):
+        # codex #1112 [BLOCKING]: a family marker in an ORG / parent
+        # directory must not spoof the MTP/KV-share family — the match is
+        # scoped to the extracted model-NAME segment. Here the name
+        # segment is a plain Llama checkpoint; the ``gemma4`` / ``qwen3.5``
+        # markers live only in the (fictional) org prefix and must be
+        # ignored. The resolved profile carries no gemma4/hy_v3 parser
+        # stamp for these, so the label falls through to disabled/no.
+        from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
+
+        cfg = detect_model_config("some-random-model")  # None → build a stub
+        from vllm_mlx.model_profile import ModelProfile
+
+        stub = ModelProfile(hf_path="gemma4-labs/Llama-3-8B-Instruct-4bit")
+        assert _kv_share_label(stub.hf_path, stub) == "no"
+        assert _mtp_path_label(stub.hf_path, stub) == "disabled"
+
+        stub2 = ModelProfile(hf_path="qwen3.5-community/Mistral-7B-4bit")
+        assert _mtp_path_label(stub2.hf_path, stub2) == "disabled"
+
+    def test_gemma4_name_in_segment_still_labels_sidecar(self):
+        # Positive control for the anchoring fix: when the Gemma 4 marker
+        # IS in the model-name segment (direct HF path, no parser stamp
+        # because it's an unaliased path routed through the regex), it
+        # must still label sidecar / KV-share yes.
+        from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
+        from vllm_mlx.model_profile import ModelProfile
+
+        # No parser stamp, spec on — the name segment carries ``gemma-4``.
+        stub = ModelProfile(hf_path="some-org/gemma-4-9b-custom-4bit")
+        assert _kv_share_label(stub.hf_path, stub) == "yes (default)"
+        assert _mtp_path_label(stub.hf_path, stub) == "sidecar"
 
 
 class TestGetProfile:

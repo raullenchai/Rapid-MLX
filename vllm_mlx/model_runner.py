@@ -434,8 +434,15 @@ class MLXModelRunner:
                     }
                 )
 
-            # Add optimization status
+            # Add optimization status. ``kernel_fusion`` is retained as a
+            # permanently-``False`` compatibility key: the always-on
+            # ``mx.compile`` forward-pass fusion it reported was rejected
+            # (A5 — bucketed compile regressed batch=1 decode; the win was
+            # already captured by ``mx.async_eval``) and its dead code was
+            # removed, but any external caller that indexes this key keeps
+            # a stable dict shape instead of hitting a ``KeyError``.
             info["optimizations"] = {
+                "kernel_fusion": False,
                 "memory_optimized": self._hardware_info is not None,
             }
 
