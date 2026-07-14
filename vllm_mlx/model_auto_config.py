@@ -1492,8 +1492,17 @@ def _truncate_tier_note(text: str, max_width: int | None) -> str:
 # org or parent directory named e.g. ``qwen3.5-org/…`` mislabel an
 # unrelated checkpoint, and (when both a Qwen and a Gemma marker appeared
 # in the path) the native branch stole Gemma's sidecar branch.
+#
+# codex #1112 [NIT]: the family tokens are boundary-anchored so an
+# unrelated substring (``Llama-3-hy3per-8B`` → ``hy3``, ``megemma4x`` →
+# ``gemma4``) does NOT match. ``(?:^|[^0-9a-z])`` / ``(?=$|[^0-9a-z])``
+# require the token to start/end at a name-segment boundary (a separator
+# ``-`` / ``_`` / ``.`` / ``/`` or the string edge), since HF names use
+# those separators between tokens. The family core allows an internal
+# separator (``qwen3.5`` / ``qwen3-5``, ``hy-v3`` / ``hyv3``).
 _NATIVE_MTP_NAME_RE = re.compile(
-    r"qwen3[._]?[56]|hy[-_]?v?3|hunyuan[-_]?3", re.IGNORECASE
+    r"(?:^|[^0-9a-z])(?:qwen3[._-]?[56]|hy[-_]?v?3|hunyuan[-_]?3)(?=$|[^0-9a-z])",
+    re.IGNORECASE,
 )
 
 # Gemma 4 uses an assistant/sidecar drafter (``gemma4_assistant`` /
@@ -1501,9 +1510,11 @@ _NATIVE_MTP_NAME_RE = re.compile(
 # ``vllm_mlx.spec_decode.mtp.gemma4_inject``), NOT a native head baked
 # into the checkpoint. Identify the family from the Gemma-4-specific
 # parser stamp the profile already carries (``tool_call_parser`` /
-# ``reasoning_parser`` == ``gemma4``), falling back to a name match
-# against the extracted name segment only.
-_GEMMA4_NAME_RE = re.compile(r"gemma[-_]?4", re.IGNORECASE)
+# ``reasoning_parser`` == ``gemma4``), falling back to a boundary-anchored
+# name match against the extracted name segment only.
+_GEMMA4_NAME_RE = re.compile(
+    r"(?:^|[^0-9a-z])gemma[-_]?4(?=$|[^0-9a-z])", re.IGNORECASE
+)
 
 
 def _is_gemma4_family(model_path: str, cfg: "ModelConfig") -> bool:
@@ -1517,7 +1528,17 @@ def _is_gemma4_family(model_path: str, cfg: "ModelConfig") -> bool:
     direct-HF-path serves whose parser stamp is a generic default, and is
     scoped to the extracted model-NAME segment so an org/parent dir
     cannot spoof the family.
+
+    codex #1112 [BLOCKING] round 2: the authoritative ``hy_v3`` native
+    stamp WINS over a stray ``gemma4`` name marker. Without this a
+    hypothetical ``Hy3-distilled-from-Gemma-4`` (native ``hy_v3`` parser
+    stamp + ``gemma-4`` in the name) would be mislabeled ``sidecar`` /
+    ``KV-share: yes`` instead of ``native`` / ``no``. Explicit family
+    stamps are resolved before any name fallback.
     """
+    # A native-MTP parser stamp is authoritative and excludes Gemma 4.
+    if cfg.tool_call_parser == "hy_v3" or cfg.reasoning_parser == "hy_v3":
+        return False
     if cfg.tool_call_parser == "gemma4" or cfg.reasoning_parser == "gemma4":
         return True
     name_seg = _extract_model_name_segment((cfg.hf_path or model_path).lower())
@@ -1531,8 +1552,15 @@ def _is_native_mtp_family(model_path: str, cfg: "ModelConfig") -> bool:
     share the generic ``hermes`` / ``qwen3_coder_xml`` parsers with
     non-MTP Qwen variants, so those need a name match — scoped to the
     extracted model-NAME segment (not the full path) so an org/parent dir
-    cannot spoof the family.
+    cannot spoof the family, and boundary-anchored so an unrelated
+    substring (``Llama-3-hy3per-8B``) does not match.
+
+    A ``gemma4`` parser stamp is authoritative and excludes the native
+    family (Gemma 4 uses the sidecar drafter), mirroring the reciprocal
+    exclusion in ``_is_gemma4_family``.
     """
+    if cfg.tool_call_parser == "gemma4" or cfg.reasoning_parser == "gemma4":
+        return False
     if cfg.tool_call_parser == "hy_v3" or cfg.reasoning_parser == "hy_v3":
         return True
     name_seg = _extract_model_name_segment((cfg.hf_path or model_path).lower())

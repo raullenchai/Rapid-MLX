@@ -1099,6 +1099,39 @@ class TestVisibility:
         assert _kv_share_label(stub.hf_path, stub) == "yes (default)"
         assert _mtp_path_label(stub.hf_path, stub) == "sidecar"
 
+    def test_native_stamp_wins_over_gemma_name_marker(self):
+        # codex #1112 [BLOCKING] round 2: an authoritative ``hy_v3`` parser
+        # stamp must win over a stray ``gemma-4`` name marker. A
+        # hypothetical HY3 distilled from Gemma 4 must render native / no,
+        # NOT sidecar / yes.
+        from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
+        from vllm_mlx.model_profile import ModelProfile
+
+        stub = ModelProfile(
+            hf_path="some-org/Hy3-distilled-from-Gemma-4-8bit",
+            tool_call_parser="hy_v3",
+            reasoning_parser="hy_v3",
+        )
+        assert _mtp_path_label(stub.hf_path, stub) == "native"
+        assert _kv_share_label(stub.hf_path, stub) == "no"
+
+    def test_family_token_boundaries_reject_substrings(self):
+        # codex #1112 [NIT] round 2: unrelated basenames that merely
+        # CONTAIN a family token as a substring must not match (no token
+        # boundaries → false labels). ``Llama-3-hy3per-8B`` contains
+        # ``hy3`` but is not HY3; ``megemma4x`` contains ``gemma4`` but is
+        # not Gemma 4.
+        from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
+        from vllm_mlx.model_profile import ModelProfile
+
+        not_hy3 = ModelProfile(hf_path="some-org/Llama-3-hy3per-8B")
+        assert _mtp_path_label(not_hy3.hf_path, not_hy3) == "disabled"
+        assert _kv_share_label(not_hy3.hf_path, not_hy3) == "no"
+
+        not_gemma4 = ModelProfile(hf_path="some-org/megemma4x-13B")
+        assert _kv_share_label(not_gemma4.hf_path, not_gemma4) == "no"
+        assert _mtp_path_label(not_gemma4.hf_path, not_gemma4) == "disabled"
+
 
 class TestGetProfile:
     """``get_profile()`` is the public one-shot API."""
