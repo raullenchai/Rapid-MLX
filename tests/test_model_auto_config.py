@@ -992,6 +992,78 @@ class TestVisibility:
         for line in table.splitlines():
             assert len(line) <= 80, f"line too wide: {line!r}"
 
+    # --- MTP path / KV-share truth-in-labeling rows ---
+
+    def test_table_has_mtp_and_kv_share_rows(self):
+        # Both rows must be present on every rendered table so users see
+        # the spec-decode/KV-share truth without loading weights.
+        cfg = detect_model_config("mlx-community/gemma-4-12B-it-4bit")
+        table = format_profile_table("mlx-community/gemma-4-12B-it-4bit", cfg)
+        assert "MTP path" in table
+        assert "KV-share" in table
+
+    def test_gemma4_mtp_is_sidecar_and_kv_share_yes(self):
+        # Gemma 4 uses an assistant/sidecar drafter (no native head) and
+        # ships cross-layer KV-sharing (num_kv_shared_layers > 0).
+        cfg = detect_model_config("mlx-community/gemma-4-12B-it-4bit")
+        assert cfg is not None and cfg.supports_spec_decode is True
+        table = format_profile_table("mlx-community/gemma-4-12B-it-4bit", cfg)
+        assert "MTP path         : sidecar" in table
+        assert "KV-share         : yes" in table
+
+    def test_hy3_mtp_is_native_and_kv_share_no(self):
+        # HY3 ships a native DeepSeek-V3-style MTP head; not a Gemma 4, so
+        # no cross-layer KV-share.
+        cfg = detect_model_config("mlx-community/Hy3-preview-4bit")
+        assert cfg is not None and cfg.supports_spec_decode is True
+        table = format_profile_table("mlx-community/Hy3-preview-4bit", cfg)
+        assert "MTP path         : native" in table
+        assert "KV-share         : no" in table
+
+    def test_qwen35_spec_off_mtp_disabled(self):
+        # Native-MTP family (Qwen3.5), but this alias has spec decode off
+        # (no MTP head registered) → the honest MTP path is ``disabled``.
+        cfg = detect_model_config("mlx-community/Qwen3.5-4B-MLX-4bit")
+        assert cfg is not None and cfg.supports_spec_decode is False
+        table = format_profile_table("mlx-community/Qwen3.5-4B-MLX-4bit", cfg)
+        assert "MTP path         : disabled" in table
+        assert "KV-share         : no" in table
+
+    def test_non_mtp_spec_on_family_mtp_disabled(self):
+        # Qwen3 dense enables spec decode via SuffixDecoding, NOT MTP.
+        # The MTP-path row must stay ``disabled`` — SuffixDecoding is a
+        # different lane, surfaced by the Spec-decode / Suffix-tier rows.
+        cfg = detect_model_config("mlx-community/Qwen3-0.6B-8bit")
+        assert cfg is not None and cfg.supports_spec_decode is True
+        table = format_profile_table("mlx-community/Qwen3-0.6B-8bit", cfg)
+        assert "MTP path         : disabled" in table
+        assert "KV-share         : no" in table
+
+    def test_unknown_model_mtp_disabled_kv_share_no(self):
+        # ``cfg is None`` path — an unmatched family has no known MTP head
+        # or KV-share config.
+        table = format_profile_table("some-brand-new-model-xyz", None)
+        assert "MTP path" in table and "disabled" in table
+        assert "KV-share         : no" in table
+
+    def test_mtp_kv_share_rows_fit_box(self):
+        # New rows must not break the fixed-width box on any family.
+        for name in (
+            "mlx-community/gemma-4-12B-it-4bit",
+            "mlx-community/Hy3-preview-4bit",
+            "mlx-community/Qwen3.5-4B-MLX-4bit",
+        ):
+            table = format_profile_table(name, detect_model_config(name))
+            widths = {
+                len(line)
+                for line in table.splitlines()
+                if line.startswith(("│", "┌", "└"))
+            }
+            assert len(widths) == 1, (
+                f"MTP/KV-share rows broke box alignment for {name}: "
+                f"widths={widths}\n{table}"
+            )
+
 
 class TestGetProfile:
     """``get_profile()`` is the public one-shot API."""

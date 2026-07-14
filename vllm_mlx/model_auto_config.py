@@ -1472,6 +1472,104 @@ def _truncate_tier_note(text: str, max_width: int | None) -> str:
     return text
 
 
+# Families whose checkpoints ship a NATIVE multi-token-prediction (MTP)
+# head baked into the model class — the engine drives it directly, no
+# separate drafter model. This mirrors the authoritative
+# ``vllm_mlx.spec_decode.mtp.detect._SUPPORTED_MODEL_TYPES`` allowlist
+# (``qwen3_5`` / ``qwen3_5_moe`` / ``hy_v3``) but is derived from the
+# name-regex-resolved profile rather than a loaded ``config.json`` so the
+# ``rapid-mlx info`` fast path stays weight-free. Kept as a small local
+# regex (not an import from the operator-owned ``spec_decode`` package)
+# so this display helper has no coupling into that lane. Qwen3.5 and the
+# dense/MoE Qwen3.6 release share the ``qwen3_5`` model_type upstream, so
+# one ``qwen3\.[56]`` regex covers both; HY3 (Tencent Hunyuan 3) carries
+# a DeepSeek-V3-style native MTP head.
+_NATIVE_MTP_NAME_RE = re.compile(r"qwen3[._]?[56]|hy[-_]?v?3|hunyuan[-_]?3", re.IGNORECASE)
+
+# Gemma 4 uses an assistant/sidecar drafter (``gemma4_assistant`` /
+# ``gemma4_unified_assistant`` — see
+# ``vllm_mlx.spec_decode.mtp.gemma4_inject``), NOT a native head baked
+# into the checkpoint. Identify the family from the Gemma-4-specific
+# parser stamp the profile already carries (``tool_call_parser`` /
+# ``reasoning_parser`` == ``gemma4``), falling back to the name.
+_GEMMA4_NAME_RE = re.compile(r"gemma[-_]?4", re.IGNORECASE)
+
+
+def _mtp_path_label(model_path: str, cfg: "ModelConfig") -> str:
+    """Truth-in-labeling for the MTP spec-decode path of a model.
+
+    Returns one of ``native`` / ``sidecar`` / ``disabled``:
+
+    * ``native``   — the family ships a native MTP head in the checkpoint
+      (Qwen3.5 / Qwen3.6 / HY3) AND the resolved profile enables spec
+      decode (``supports_spec_decode=True``). This is the path
+      ``vllm_mlx.spec_decode.mtp`` drives directly.
+    * ``sidecar``  — Gemma 4: MTP is provided by an assistant drafter
+      loaded alongside the base weights (no head baked in), and the
+      profile enables spec decode.
+    * ``disabled`` — spec decode is off for this profile
+      (``supports_spec_decode=False`` — hybrid arch, or no MTP head /
+      drafter registered for this alias), OR the family has no MTP
+      mechanism at all (SuffixDecoding / DFlash are separate lanes and
+      are surfaced by the ``Spec decode`` / ``Suffix tier`` rows, not
+      here — this row is specifically about MTP).
+
+    Derivation is from the name-regex profile only (no ``config.json``
+    read), keeping the ``rapid-mlx info`` path weight-free.
+    """
+    is_gemma4 = (
+        cfg.tool_call_parser == "gemma4"
+        or cfg.reasoning_parser == "gemma4"
+        or bool(_GEMMA4_NAME_RE.search(cfg.hf_path or ""))
+        or bool(_GEMMA4_NAME_RE.search(model_path))
+    )
+    is_native_mtp_family = bool(
+        _NATIVE_MTP_NAME_RE.search(cfg.hf_path or "")
+        or _NATIVE_MTP_NAME_RE.search(model_path)
+        or cfg.tool_call_parser == "hy_v3"
+        or cfg.reasoning_parser == "hy_v3"
+    )
+
+    if not cfg.supports_spec_decode:
+        # Honest: the profile has spec decode gated off (hybrid arch, or
+        # no MTP head/drafter registered for this alias). Even for a
+        # native-MTP family the head isn't wired for this checkpoint.
+        return "disabled"
+    if is_native_mtp_family:
+        return "native"
+    if is_gemma4:
+        return "sidecar"
+    # Spec decode is on but via a non-MTP mechanism (SuffixDecoding).
+    return "disabled"
+
+
+def _kv_share_label(model_path: str, cfg: "ModelConfig") -> str:
+    """Truth-in-labeling for Gemma 4 cross-layer KV-sharing.
+
+    Returns ``yes`` for Gemma 4 (every shipped Gemma 4 checkpoint declares
+    ``num_kv_shared_layers > 0`` — the last N decoder layers borrow an
+    earlier layer's K/V; default 20 on the vendored ``TextConfig``,
+    verify-locked in #1104), ``no`` for every other family. Gemma 3n
+    shares the mechanism but is matched by the more specific ``gemma-3n``
+    regex to ``tool_call_parser=None`` and is intentionally out of scope
+    here (its aliases don't route through the Gemma 4 KV-share path).
+
+    Family is read from the Gemma-4 parser stamp the profile already
+    carries, falling back to the name — no ``config.json`` read, so the
+    ``info`` fast path stays weight-free. On the rare unshared Gemma 4
+    checkpoint (``num_kv_shared_layers=0``) this over-reports, but that
+    configuration is non-canonical and the load-time guard
+    (``gemma4_text._check_kv_share_config``) logs the real state at serve.
+    """
+    is_gemma4 = (
+        cfg.tool_call_parser == "gemma4"
+        or cfg.reasoning_parser == "gemma4"
+        or bool(_GEMMA4_NAME_RE.search(cfg.hf_path or ""))
+        or bool(_GEMMA4_NAME_RE.search(model_path))
+    )
+    return "yes" if is_gemma4 else "no"
+
+
 def format_profile_summary(model_path: str, cfg: "ModelConfig | None") -> str:
     """Single-line profile summary for startup logs (Level 1).
 
@@ -1519,6 +1617,12 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ("Reasoning parser", "(none)"),
             ("Architecture", "unknown"),
             ("Spec decode", "✓ default-on"),
+            # Truth-in-labeling: an unmatched family has no known native
+            # MTP head / KV-share config, so both default to the
+            # conservative "off" state until the model loads and the
+            # runtime probe / load-time guard reports the real config.
+            ("MTP path", "disabled (unknown family)"),
+            ("KV-share", "no"),
             ("Throttle", "✗ default-off"),
             (
                 "Suffix tier",
@@ -1552,6 +1656,12 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             ("Reasoning parser", cfg.reasoning_parser or "(none)"),
             ("Architecture", _arch_label(cfg)),
             ("Spec decode", spec),
+            # Truth-in-labeling for the MTP spec-decode path and Gemma 4
+            # cross-layer KV-share, derived from the resolved profile (no
+            # weight load). ``MTP path`` = native | sidecar | disabled;
+            # ``KV-share`` = yes | no.
+            ("MTP path", _mtp_path_label(model_path, cfg)),
+            ("KV-share", _kv_share_label(model_path, cfg)),
             ("Throttle", throttle),
             ("Suffix tier", _suffix_tier_cell(cfg, max_width=value_width)),
         ]

@@ -6,7 +6,6 @@ This module implements the model runner that bridges vLLM's request
 handling with mlx-lm's inference capabilities.
 
 Includes low-level optimizations:
-- mx.compile() for kernel fusion
 - Memory bandwidth optimization
 - Prefill chunking for L2 cache efficiency
 """
@@ -70,7 +69,6 @@ class MLXModelRunner:
     - KV cache management (delegated to mlx-lm)
 
     Optimizations:
-    - mx.compile() for kernel fusion (fuses multiple ops into single Metal kernel)
     - Memory optimization for bandwidth efficiency
     - Prefill chunking for L2 cache utilization
     """
@@ -104,7 +102,6 @@ class MLXModelRunner:
 
         # Optimization settings
         self._enable_optimizations = enable_optimizations
-        self._compiled_forward = None  # Compiled model forward pass
         self._hardware_info = None  # Detected hardware profile
 
         logger.info(f"MLXModelRunner initialized for model: {self.model_config.model}")
@@ -167,36 +164,8 @@ class MLXModelRunner:
             # Configure memory settings
             configure_memory_optimization()
 
-            # Compile the model forward pass for kernel fusion
-            self._setup_compiled_forward()
-
         except Exception as e:
             logger.warning(f"Failed to apply optimizations: {e}")
-
-    def _setup_compiled_forward(self) -> None:
-        """
-        Setup compiled forward pass using mx.compile() for kernel fusion.
-
-        This fuses multiple operations into single Metal kernels,
-        reducing kernel launch overhead and improving throughput.
-        """
-        if self.model is None:
-            return
-
-        try:
-            # Compile the model's __call__ method
-            # This creates fused Metal kernels for the forward pass
-            if hasattr(self.model, "__call__"):
-                self._compiled_forward = mx.compile(self.model.__call__)
-                logger.info("Compiled forward pass enabled (mx.compile kernel fusion)")
-            else:
-                logger.warning(
-                    "Model does not have __call__ method, skipping compilation"
-                )
-
-        except Exception as e:
-            logger.warning(f"Failed to compile forward pass: {e}")
-            self._compiled_forward = None
 
     def _create_default_sampler(self) -> None:
         """Create default sampler for generation."""
@@ -352,8 +321,7 @@ class MLXModelRunner:
         if len(input_ids.shape) == 1:
             input_ids = input_ids.reshape(1, -1)
 
-        # Use compiled forward if available, otherwise use model directly
-        forward_fn = self._compiled_forward if self._compiled_forward else self.model
+        forward_fn = self.model
 
         if seq_len <= chunk_size:
             # Process entire sequence at once
@@ -377,7 +345,6 @@ class MLXModelRunner:
         Generate tokens for a single request.
 
         Uses optimizations when enabled:
-        - Compiled forward pass (kernel fusion)
         - Prefill chunking for long prompts
 
         Args:
@@ -469,7 +436,6 @@ class MLXModelRunner:
 
             # Add optimization status
             info["optimizations"] = {
-                "kernel_fusion": self._compiled_forward is not None,
                 "memory_optimized": self._hardware_info is not None,
             }
 
@@ -486,5 +452,5 @@ class MLXModelRunner:
 
     def __repr__(self) -> str:
         status = "loaded" if self._loaded else "not loaded"
-        opt_status = "optimized" if self._compiled_forward else "standard"
+        opt_status = "optimized" if self._hardware_info else "standard"
         return f"<MLXModelRunner model={self.model_config.model} status={status} mode={opt_status}>"
