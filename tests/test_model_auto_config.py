@@ -1159,21 +1159,38 @@ class TestVisibility:
         assert _kv_share_label(stub.hf_path, stub) == "yes (default)"
         assert _mtp_path_label(stub.hf_path, stub) == "sidecar"
 
-    def test_native_stamp_wins_over_gemma_name_marker(self):
-        # codex #1112 [BLOCKING] round 2: an authoritative ``hy_v3`` parser
-        # stamp must win over a stray ``gemma-4`` name marker. A
-        # hypothetical HY3 distilled from Gemma 4 must render native / no,
-        # NOT sidecar / yes.
+    def test_leading_family_token_beats_provenance_suffix(self):
+        # codex #1112 round 5 + round 9: the family is decided by the
+        # LEADING architecture-position token, not a later provenance
+        # token. ``Hy3-distilled-from-Gemma-4`` leads with ``Hy3`` → native
+        # (the trailing ``gemma-4`` is provenance and is ignored). The
+        # resolver is name-based, so parser stamps here are irrelevant —
+        # this documents leading-token precedence, not stamp precedence.
         from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
         from vllm_mlx.model_profile import ModelProfile
 
-        stub = ModelProfile(
-            hf_path="some-org/Hy3-distilled-from-Gemma-4-8bit",
-            tool_call_parser="hy_v3",
-            reasoning_parser="hy_v3",
-        )
+        stub = ModelProfile(hf_path="some-org/Hy3-distilled-from-Gemma-4-8bit")
         assert _mtp_path_label(stub.hf_path, stub) == "native"
         assert _kv_share_label(stub.hf_path, stub) == "no"
+
+    def test_quant_prefix_before_family_token_still_resolves(self):
+        # codex #1112 [BLOCKING] round 9: a repackaged/renamed checkpoint
+        # may prepend a quantization/format prefix before the architecture
+        # token. Those must still resolve to the family, while a mid-name
+        # provenance token (not a known prefix) stays rejected.
+        from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
+        from vllm_mlx.model_profile import ModelProfile
+
+        for name, mtp, kv in (
+            ("some-org/quantized-gemma-4-12b", "sidecar", "yes (default)"),
+            ("some-org/mlx-gemma-4-9b-it", "sidecar", "yes (default)"),
+            ("some-org/4bit-gemma-4-12b", "sidecar", "yes (default)"),
+            ("some-org/quant-Qwen3.6-35B", "native", "no"),
+            ("some-org/mlx-Hy3-preview", "native", "no"),
+        ):
+            stub = ModelProfile(hf_path=name)  # spec decode defaults True
+            assert _mtp_path_label(name, stub) == mtp, name
+            assert _kv_share_label(name, stub) == kv, name
 
     def test_family_token_substrings_and_provenance_rejected(self):
         # codex #1112 [NIT] round 2 + [BLOCKING] round 5: a family token

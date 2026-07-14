@@ -1493,24 +1493,35 @@ def _truncate_tier_note(text: str, max_width: int | None) -> str:
 # unrelated checkpoint, and (when both a Qwen and a Gemma marker appeared
 # in the path) the native branch stole Gemma's sidecar branch.
 #
-# codex #1112 [BLOCKING] round 5: the family token must be at the START
-# of the model-NAME segment — the architecture-position slot. HF model
-# names lead with the architecture family (``gemma-4-12b-it``,
-# ``Qwen3.5-4B``, ``Hy3-preview``); a family token appearing LATER in the
-# name is provenance, not the architecture (``Llama-3-Distilled-from-
-# Gemma-4`` is a Llama, ``Mistral-merge-of-Qwen3.5`` is a Mistral). The
-# leading ``^`` anchors to the segment start; the trailing
-# ``(?=$|[^0-9a-z])`` boundary still rejects substrings that merely begin
-# with the token (``gemma-40b``, ``qwen3.55``). This is verified against
-# the whole alias registry: every real Gemma 4 / HY3 / Qwen3.5 / Qwen3.6
-# checkpoint leads with its family token; only ``diffusiongemma`` (a
-# text-diffusion variant, correctly NOT a Gemma 4 KV-share checkpoint)
-# does not lead with ``gemma-4`` and is excluded.
+# codex #1112 [BLOCKING] round 5: the family token must be at the
+# architecture-position slot of the model-NAME segment. HF names lead
+# with the architecture family (``gemma-4-12b-it``, ``Qwen3.5-4B``,
+# ``Hy3-preview``); a family token appearing LATER is provenance, not the
+# architecture (``Llama-3-Distilled-from-Gemma-4`` is a Llama,
+# ``Mistral-merge-of-Qwen3.5`` is a Mistral). The trailing
+# ``(?=$|[^0-9a-z])`` boundary rejects substrings that merely begin with
+# the token (``gemma-40b``, ``qwen3.55``, ``megemma4x``, ``diffusiongemma``).
+#
+# codex #1112 [BLOCKING] round 9: a renamed/repackaged checkpoint may
+# prepend a quantization/format prefix before the architecture token
+# (``quantized-gemma-4-12b``, ``mlx-hy3-preview``, ``4bit-gemma-4-12b``).
+# ``_NAME_PREFIX`` allows a run of known repackaging prefixes before the
+# family token, so those resolve correctly — while a MID-name provenance
+# token (which is NOT one of these prefixes, e.g. ``distilled-from-`` /
+# ``merge-of-`` / ``based-on-``) is still rejected. Verified against the
+# whole alias registry: zero real Gemma 4 / HY3 / Qwen3.5 / Qwen3.6 alias
+# regresses.
 #
 # [NIT round 4] the family core still allows an internal separator
 # (``qwen3.5`` / ``qwen3-5``, ``hy-v3`` / ``hyv3``).
+_NAME_PREFIX = (
+    r"(?:(?:quantized|quant|mlx|gguf|awq|gptq|int4|int8|fp16|bf16|4bit|8bit|"
+    r"6bit|3bit|2bit|mxfp4|nvfp4|dwq|ud|optiq|turbo|q4|q8)[-_.])*"
+)
 _NATIVE_MTP_NAME_RE = re.compile(
-    r"^(?:qwen3[._-]?[56]|hy[-_]?v?3|hunyuan[-_]?3)(?=$|[^0-9a-z])",
+    r"^"
+    + _NAME_PREFIX
+    + r"(?:qwen3[._-]?[56]|hy[-_]?v?3|hunyuan[-_]?3)(?=$|[^0-9a-z])",
     re.IGNORECASE,
 )
 
@@ -1518,10 +1529,12 @@ _NATIVE_MTP_NAME_RE = re.compile(
 # ``gemma4_unified_assistant`` — see
 # ``vllm_mlx.spec_decode.mtp.gemma4_inject``), NOT a native head baked
 # into the checkpoint. Identify the family from the Gemma-4-specific
-# parser stamp the profile carries; the name fallback (below) is
-# start-anchored to the architecture-position slot for the same reason as
-# the native-MTP regex above.
-_GEMMA4_NAME_RE = re.compile(r"^gemma[-_]?4(?=$|[^0-9a-z])", re.IGNORECASE)
+# parser stamp the profile carries; the name fallback (below) is anchored
+# to the architecture-position slot (optional ``_NAME_PREFIX`` allowed)
+# for the same reason as the native-MTP regex above.
+_GEMMA4_NAME_RE = re.compile(
+    r"^" + _NAME_PREFIX + r"gemma[-_]?4(?=$|[^0-9a-z])", re.IGNORECASE
+)
 
 
 def _resolve_family(model_path: str, cfg: "ModelConfig") -> str:
@@ -1555,13 +1568,15 @@ def _resolve_family(model_path: str, cfg: "ModelConfig") -> str:
     variant that carries the ``gemma4`` parser stamp but is not a
     canonical Gemma 4 KV-share checkpoint.)
 
-    Because both name regexes are anchored to the segment START and their
-    leading tokens are disjoint (``gemma-4`` begins with ``g``; the
-    native tokens begin with ``q`` / ``h``), at most ONE can match — the
-    leading (architecture-position) token alone decides the family, so no
-    tie-break is needed. A merge name resolves to whichever family it
-    leads with (``Qwen3.5-gemma-4-merge`` → native; ``gemma-4-qwen3.5-
-    merge`` → gemma4). A name that leads with neither is ``other``.
+    Because both name regexes are anchored to the architecture-position
+    slot (segment start, after an optional ``_NAME_PREFIX`` run of
+    quant/format prefixes) and their family tokens are disjoint, at most
+    ONE can match — the leading architecture token alone decides the
+    family, so no tie-break is needed. A merge name resolves to whichever
+    family it leads with (``Qwen3.5-gemma-4-merge`` → native;
+    ``gemma-4-qwen3.5-merge`` → gemma4); a repackaged name resolves
+    through its quant prefix (``quantized-gemma-4-12b`` → gemma4). A name
+    that leads with neither is ``other``.
     """
     name_seg = _extract_model_name_segment((cfg.hf_path or model_path).lower())
     if _GEMMA4_NAME_RE.search(name_seg):
