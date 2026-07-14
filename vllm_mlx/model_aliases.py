@@ -14,20 +14,15 @@ that entry just gets default capability flags.
 import difflib
 import json
 import os
-from dataclasses import dataclass
-from typing import Literal
 
-# Canonical modality enum. Default is ``"text"`` so every legacy alias
-# (and every external JSON snippet that pre-dates this field) keeps the
-# auto-regressive LLM lane untouched. New modalities branch the runtime
-# at startup — see ``runtime/diffusion_lane.py`` for the discrete
-# text-diffusion path used by DiffusionGemma. ``"vision"`` and
-# ``"image-gen"`` are reserved for forthcoming Bonsai/VLM integrations
-# (see project memory: bonsai_image_4b_integration). Adding a new value
-# requires editing this Literal AND the dispatch table in cli.py /
-# routes/models.py so the surface-level UX (info, ls, chat) doesn't
-# silently expose LLM-only columns on a non-LLM alias.
-Modality = Literal["text", "text-diffusion", "vision", "image-gen"]
+from .model_profile import Modality, ModelProfile
+
+# ``Modality`` and the unified ``ModelProfile`` dataclass live in the
+# import-light ``model_profile`` module — the single source of truth for
+# per-model profile shape. Re-exported here so existing
+# ``from vllm_mlx.model_aliases import Modality`` / ``AliasProfile`` call
+# sites keep resolving. See ``model_profile`` for why the class lives
+# there (import-light + avoids the model_auto_config↔model_aliases cycle).
 # Implemented lanes — what ``load_model`` can actually dispatch to today.
 # ``vision`` and ``image-gen`` are RESERVED in the type alias so that
 # routing code can pattern-match on them once their dispatch paths land,
@@ -88,127 +83,13 @@ _aliases: dict[str, "AliasProfile"] | None = None
 _hf_to_alias: dict[str, str] | None = None
 
 
-@dataclass(frozen=True)
-class AliasProfile:
-    """Per-alias profile — resolved from ``aliases.json``.
-
-    Mirrors a subset of ``ModelConfig``'s fields. Kept separate so this
-    module stays import-light (``model_auto_config`` pulls in regex,
-    typing, etc. that aren't needed when callers only want the alias →
-    hf_path map).
-    """
-
-    hf_path: str
-    tool_call_parser: str | None = None
-    reasoning_parser: str | None = None
-    is_hybrid: bool = False
-    # r6-A R6-C1: when an aliases.json entry explicitly declares
-    # ``is_hybrid``, the runtime ArraysCache probe in
-    # ``model_auto_config.enrich_model_config`` MUST NOT override the
-    # declared value. Without this flag, the probe one-way-promotes
-    # ``is_hybrid`` to ``True`` for any model whose ``make_cache()``
-    # returns linear-attention layers — which is exactly what dense
-    # Qwen3.5 / Qwen3.6 weights do (model_type=qwen3_5 uses
-    # GatedDeltaNet), forcing the alias-level routing decision (hybrid
-    # throttle + prefix-boundary snapshot) back on even after the JSON
-    # marked the model as non-hybrid. That re-promotion is what
-    # wedges ``rapid-mlx serve qwen3.5-4b-4bit`` on metal::malloc with a
-    # 499000 byte limit; ``--no-hybrid`` was the only workaround.
-    #
-    # Default ``False`` keeps the existing safety-net behaviour for
-    # legacy aliases that haven't opted into the explicit contract —
-    # those still pick up the probe's hybrid promotion as before.
-    is_hybrid_explicit: bool = False
-    # MoE / sparse-expert architecture (A3B, A10B, A17B Qwen3.5/3.6 variants,
-    # plus future Mixtral/Granite-MoE families). Tracked separately from
-    # ``is_hybrid`` because the two attributes gate different downstream
-    # paths — hybrid affects ArraysCache/GDN rollback, MoE affects DFlash
-    # acceptance rate (the drafter's hidden-state fusion misfires on
-    # expert-routing churn; PoC measured 0.76-0.82× regression regardless
-    # of precision on Qwen3.6-35B-A3B).
-    is_moe: bool = False
-    supports_spec_decode: bool = True
-    default_max_tokens: int | None = None
-    # SuffixDecoding eligibility — populated from cross-model bench (issue #269).
-    # ``None`` for ``suffix_bench_speedup`` means "not benched yet"; the tier
-    # then defaults to ``"unknown"`` and the startup hint stays silent.
-    # When populated, ``suffix_bench_speedup`` is a tuple of ``(workload, speedup)``
-    # pairs (tuple, not dict, so frozen dataclass instances stay safely shareable).
-    suffix_decoding_tier: str = "unknown"
-    suffix_bench_speedup: tuple[tuple[str, float], ...] | None = None
-    # DFlash speculative-decoding eligibility (issue #264). Explicit opt-in
-    # per alias rather than auto-derived because the PoC showed
-    # precision-dependent regressions: 4-bit kills acceptance even on dense
-    # models. Aliases keep ``supports_dflash=False`` until benched to win
-    # by ≥1.3× on the canonical Fibonacci/Quicksort/HashTable prompts.
-    # ``dflash_draft_model`` is the matching drafter HF path (e.g.
-    # ``z-lab/Qwen3.5-27B-DFlash``); required if ``supports_dflash=True``.
-    supports_dflash: bool = False
-    dflash_draft_model: str | None = None
-    # Recommended sampling defaults — curated per-family overrides that
-    # sit above HF ``generation_config.json`` in the resolve chain (see
-    # ``service/helpers.py``). Tuple-of-pairs (not dict) because the
-    # dataclass is frozen and dict defaults are mutable. Keys are
-    # restricted to the sampling subset: ``temperature``, ``top_p``,
-    # ``top_k``, ``min_p``, ``repetition_penalty``, ``presence_penalty``,
-    # ``frequency_penalty``. ``None`` means "no curated value" → fall
-    # through to ``generation_config.json``.
-    recommended_sampling: tuple[tuple[str, float], ...] | None = None
-    # Inference modality. Default ``"text"`` covers every legacy LLM
-    # alias and keeps the auto-regressive scheduler/runtime path
-    # unchanged. Non-text modalities branch into dedicated lanes:
-    # ``"text-diffusion"`` → ``runtime/diffusion_lane.py`` (block
-    # denoising, no spec-decode, no DFlash); ``"vision"`` /
-    # ``"image-gen"`` reserved for upcoming integrations.
-    #
-    # NOTE on positional ABI: this field is intentionally appended at
-    # the END of the dataclass instead of after ``hf_path`` so that
-    # existing callers using positional construction
-    # (``AliasProfile(hf_path, tool_call_parser, ...)``) continue to
-    # bind their positional args to the same fields they always did.
-    # pr_validate codex round 11 [BLOCKING #1]: inserting ``modality``
-    # at position 1 silently routed the parser positional into the
-    # modality slot and broke construction without raising. Keep new
-    # fields at the tail.
-    modality: Modality = "text"
-    # PFlash long-prompt compression eligibility (#287). Default
-    # ``"unknown"`` keeps the engine's PFlash mode at ``"off"`` so a
-    # brand-new alias never silently enables compression on an
-    # unbenched architecture. ``"verified"`` flips the engine's default
-    # to ``"always"`` — used only for aliases where we've measured both
-    # the TTFT speedup AND the needle-recall floor (Qwen3.5 / Qwen3.6
-    # families per #287). Explicit CLI ``--pflash {off,auto,always}``
-    # still wins; this only changes the no-flag default.
-    #
-    # NOTE on positional ABI: kept at the tail of the dataclass to
-    # preserve the positional-construction contract spelled out on
-    # ``modality`` — inserting a field higher silently routes existing
-    # positional kwargs into the wrong slot.
-    pflash_tier: str = "unknown"
-    # TurboQuant K8V4 default-on tier. See ``VALID_TURBOQUANT_TIERS``.
-    turboquant_tier: str = "unknown"
-    # DDTree speculative-decoding eligibility (#879). Appended at the
-    # tail to preserve AliasProfile's positional-construction ABI.
-    # This is intentionally separate from DFlash even though it uses the
-    # same DFlash draft weights: DDTree verifies a tree of candidate
-    # continuations and needs model-family specific verifier support.
-    supports_ddtree: bool = False
-    ddtree_draft_model: str | None = None
-    ddtree_speculative_tokens: int | None = None
-    ddtree_tree_budget: int | None = None
-    # codex round 3 [NIT #3]: minimum unified-memory floor (in GB) for
-    # aliases that are unfit for smaller machines. ``None`` means "no
-    # hardware gate" — the default for every text/vision model we ship
-    # under 100 GB weights. Populated for the flagship-tier Ultra-only
-    # entries (currently ``hy3-preview-4bit`` at 166 GB weights + ~156
-    # GB peak RSS per the pre-vendor memory profile — needs 192 GB+ M3
-    # Ultra). Enforced as a boot-time WARNING (not a hard block) in
-    # ``vllm_mlx/cli.py`` so a user who bought a 128 GB Max still sees
-    # the actionable pointer before the download starts instead of an
-    # opaque OOM 90 minutes later. Appended at the tail to preserve
-    # AliasProfile's positional-construction ABI (see the ``modality``
-    # comment block above for the rationale).
-    min_memory_gb: float | None = None
+# ``AliasProfile`` is a DEPRECATED alias of the unified ``ModelProfile``
+# (defined in the import-light ``model_profile`` module). Retained so the
+# ~20 call sites that import ``AliasProfile`` by name keep resolving; a
+# follow-up rename PR migrates them to ``ModelProfile`` and drops this
+# shim. It is the SAME class object, not a subclass — construction and
+# ``isinstance`` behave identically to ``ModelProfile``.
+AliasProfile = ModelProfile
 
 
 def _coerce(alias: str, value: object) -> AliasProfile:

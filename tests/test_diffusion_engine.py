@@ -26,6 +26,29 @@ import pytest
 # 70 unrelated ImportError "failures" drown out real signal.
 pytest.importorskip("mlx")
 
+
+@pytest.fixture(autouse=True, scope="module")
+def _reset_config_after_module():
+    """Contain config-singleton leakage into downstream test files.
+
+    Several tests below deliberately mutate the process-wide config
+    singleton (e.g. ``cfg.tool_call_parser = "hermes"`` to exercise the
+    diffusion tool-call veto) via :func:`vllm_mlx.config.reset_config`
+    plus field assignment, but never restore it. Without this teardown
+    the last such mutation escapes the module and pollutes any later
+    test that reads a server-global parser without pinning it — e.g.
+    ``test_routes.py::TestModelsRoutes::test_retrieve_unknown_id_keeps_baseline_shape``
+    would observe a leaked ``tool_call_parser='hermes'`` and fail under
+    any collection order that runs this file first. Resetting at module
+    teardown keeps the leak contained without changing any in-file test
+    ordering or state (the leak only matters at the module boundary).
+    """
+    yield
+    from vllm_mlx.config import reset_config
+
+    reset_config()
+
+
 # ----------------------------------------------------------------------
 # Helpers — minimal mlx-vlm surface mock
 # ----------------------------------------------------------------------

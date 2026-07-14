@@ -24,90 +24,25 @@ specific first.
 
 import logging
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import replace
 from typing import Any
 
 from .model_aliases import resolve_profile
+from .model_profile import ModelProfile
 
 logger = logging.getLogger(__name__)
 
 
-@dataclass
-class ModelConfig:
-    """Auto-detected configuration for a model family.
-
-    Includes both parser defaults (tool/reasoning) and capability gates
-    (which optimizations are safe to enable). Defaults err on the side
-    of "supported" — known-incompatible families set the flag explicitly.
-    """
-
-    # --- Parser defaults ---
-    tool_call_parser: str | None = None
-    reasoning_parser: str | None = None
-    default_max_tokens: int | None = (
-        None  # Per-model default when user omits max_tokens
-    )
-
-    # --- Architecture / capability gates ---
-    # ``is_hybrid`` = the model uses linear-attention or recurrent layers
-    # (GatedDeltaNet, Mamba, Jamba, ...). Hybrid models need request
-    # throttling and disable optimizations that rely on chunked-batched
-    # forward — verified on Qwen3.5-4B where spec decode produces
-    # corrupted output (see evals/results/SUFFIX_POC_REPORT.md).
-    is_hybrid: bool = False
-
-    # r6-A R6-C1: when the alias profile (or an explicit caller) pins
-    # ``is_hybrid``, ``enrich_model_config``'s runtime ArraysCache probe
-    # MUST NOT one-way-flip the value to True. Without this gate, dense
-    # Qwen3.5 / Qwen3.6 aliases whose JSON declares ``is_hybrid=false``
-    # still got promoted to hybrid at boot because ``make_cache()``
-    # returns linear-attention layers — re-enabling the throttle +
-    # prefix-boundary snapshot path that wedges ``rapid-mlx serve
-    # qwen3.5-4b-4bit`` with ``metal::malloc`` Resource-limit (499000)
-    # errors. Default ``False`` preserves the legacy safety-net behaviour
-    # for aliases / serve targets that haven't opted into the explicit
-    # contract; the probe still promotes ``is_hybrid`` to True when the
-    # cache type indicates linear attention.
-    is_hybrid_explicit: bool = False
-
-    # ``supports_spec_decode`` controls SuffixDecoding / draft-model
-    # speculative decoding. Disabled for hybrid models because the
-    # batched-verify path through GatedDeltaNet derails generation.
-    # Pure-attention models (llama, qwen3, mistral, gemma3, gpt-oss,
-    # phi, ...) are safe.
-    supports_spec_decode: bool = True
-
-    # SuffixDecoding eligibility tier (#269). One of:
-    #   "unknown"    — not benched (silent default)
-    #   "agent"      — tool_loop ≥ 1.8x, no regression — recommend the flag
-    #   "structured" — peak workload ≥ 1.5x, no regression — may help
-    #   "neutral"    — no workload wins, no regression — silent
-    #   "avoid"      — at least one workload regresses — warn
-    suffix_decoding_tier: str = "unknown"
-    # Per-workload speedup measured by ``scripts/bench_suffix_decoding_integrated.py``.
-    # ``field(default_factory=dict)`` so each ``ModelConfig`` instance gets
-    # its own fresh dict (a literal ``{}`` would silently share state).
-    suffix_bench_speedup: dict[str, float] = field(default_factory=dict)
-
-    # PFlash long-prompt compression eligibility (#287). Mirrors
-    # ``AliasProfile.pflash_tier`` — the single source of truth lives in
-    # ``aliases.json`` and is copied here by ``detect_model_config`` so
-    # ``serve``/``bench`` can pick up the default without re-resolving
-    # the profile. Values: ``"unknown"`` (engine defaults PFlash off) or
-    # ``"verified"`` (engine defaults PFlash to ``always``). Explicit
-    # CLI ``--pflash`` still wins. See VALID_PFLASH_TIERS for the enum.
-    pflash_tier: str = "unknown"
-
-    # Mirrors ``AliasProfile.turboquant_tier``; see VALID_TURBOQUANT_TIERS.
-    turboquant_tier: str = "unknown"
-
-    # DFlash block-diffusion speculative decoding eligibility (#264).
-    # Mirrors ``AliasProfile.supports_dflash`` so ``rapid-mlx info`` can
-    # call out the DFlash opt-in path in the ``Spec decode`` row instead
-    # of mis-leading the user with ``(no MTP/drafter trained)`` when an
-    # alias has the DFlash drafter registered. 0.9.1 dogfood found the
-    # 27B-8bit alias hitting exactly that mismatch.
-    supports_dflash: bool = False
+# ``ModelConfig`` is a DEPRECATED alias of the unified ``ModelProfile``
+# (defined in the import-light ``model_profile`` module). The regex table
+# below constructs ``ModelConfig(...)`` by keyword; since it is the SAME
+# class as ``ModelProfile`` (frozen; ``hf_path`` defaults to "" so a
+# regex-detected profile needs no owning alias), those constructions are
+# unchanged. ``detect_model_config`` now returns the resolved
+# ``ModelProfile`` directly for aliases — no field-by-field copy that
+# could silently drop a field. A follow-up rename PR migrates the ~20
+# call sites to ``ModelProfile`` and drops this shim.
+ModelConfig = ModelProfile
 
 
 # The name-regex map below is the ONLY fall-back when a serve target lacks
@@ -756,30 +691,15 @@ def detect_model_config(model_path: str) -> ModelConfig | None:
             f"pflash_tier={profile.pflash_tier}, "
             f"turboquant_tier={profile.turboquant_tier}",
         )
-        # AliasProfile stores the bench dict as a sorted tuple (frozen
-        # dataclasses must avoid mutable shared state). Materialize a
-        # fresh dict here so each ModelConfig instance owns its copy.
-        speedup = (
-            dict(profile.suffix_bench_speedup) if profile.suffix_bench_speedup else {}
-        )
-        return ModelConfig(
-            tool_call_parser=profile.tool_call_parser,
-            reasoning_parser=profile.reasoning_parser,
-            default_max_tokens=profile.default_max_tokens,
-            is_hybrid=profile.is_hybrid,
-            # r6-A R6-C1: thread the explicit-pin flag so
-            # ``enrich_model_config`` can honour aliases that have
-            # deliberately marked their model as non-hybrid even when
-            # the upstream ``make_cache()`` returns linear-attention
-            # layers (qwen3_5 dense weights).
-            is_hybrid_explicit=profile.is_hybrid_explicit,
-            supports_spec_decode=profile.supports_spec_decode,
-            suffix_decoding_tier=profile.suffix_decoding_tier,
-            suffix_bench_speedup=speedup,
-            pflash_tier=profile.pflash_tier,
-            turboquant_tier=profile.turboquant_tier,
-            supports_dflash=profile.supports_dflash,
-        )
+        # The resolved profile IS a ModelProfile with every field already
+        # populated — return it directly. The former field-by-field copy
+        # into a fresh ModelConfig is exactly the drift surface this
+        # unification removes: any AliasProfile field omitted from that
+        # copy (is_moe, dflash_draft_model, recommended_sampling, modality,
+        # ddtree_*, min_memory_gb) silently never reached callers of
+        # detect_model_config. ``suffix_bench_speedup`` stays a tuple here;
+        # consumers that index by workload key use ``.speedup_dict``.
+        return profile
 
     # DeepSeek-Coder-V2 / V2-Lite routing — handled here (not in the
     # ``_MODEL_PATTERNS`` regex table) because the decision MUST be scoped
@@ -1422,7 +1342,7 @@ def suffix_decoding_hint(cfg: "ModelConfig | None") -> str | None:
     if not cfg.supports_spec_decode:
         return None
     tier = cfg.suffix_decoding_tier
-    speedup = cfg.suffix_bench_speedup or {}
+    speedup = cfg.speedup_dict
     if tier == "agent":
         peak = speedup.get("tool_loop") or (max(speedup.values()) if speedup else 0)
         return (
@@ -1489,7 +1409,7 @@ def _suffix_tier_cell(cfg: "ModelConfig", max_width: int | None = None) -> str:
             text = "n/a (no MTP/drafter — spec decode off)"
     else:
         tier = cfg.suffix_decoding_tier
-        speedup = cfg.suffix_bench_speedup or {}
+        speedup = cfg.speedup_dict
         if tier == "unknown":
             text = "unknown — run scripts/bench_suffix_decoding_integrated"
         elif tier == "agent" and speedup:

@@ -19,7 +19,7 @@ import sys
 import time
 import uuid
 from collections.abc import AsyncIterator
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from typing import Any
 
 import mlx.core as mx
@@ -262,8 +262,9 @@ class EngineCore:
         # auto-detection/enrichment but *before* the scheduler reads
         # capability gates. Mutex pairs (force_X / no_X) are validated
         # at the CLI layer and re-validated here as a second line of
-        # defense for programmatic callers. ModelConfig is non-frozen
-        # so direct mutation is fine; we only touch fields whose
+        # defense for programmatic callers. ModelConfig (now the frozen
+        # unified ``ModelProfile``) rebinds via ``dataclasses.replace``
+        # rather than in-place mutation; we only touch fields whose
         # override flag was explicitly set.
         if self.config.force_hybrid and self.config.no_hybrid:
             raise ValueError("force_hybrid and no_hybrid are mutually exclusive")
@@ -272,18 +273,18 @@ class EngineCore:
                 "force_spec_decode and no_spec_decode are mutually exclusive"
             )
         if self.config.no_hybrid:
-            self.model_config.is_hybrid = False
+            self.model_config = replace(self.model_config, is_hybrid=False)
             logger.info("Routing override: is_hybrid forced False via --no-hybrid")
         elif self.config.force_hybrid:
-            self.model_config.is_hybrid = True
+            self.model_config = replace(self.model_config, is_hybrid=True)
             logger.info("Routing override: is_hybrid forced True via --force-hybrid")
         if self.config.no_spec_decode:
-            self.model_config.supports_spec_decode = False
+            self.model_config = replace(self.model_config, supports_spec_decode=False)
             logger.info(
                 "Routing override: supports_spec_decode forced False via --no-spec-decode"
             )
         elif self.config.force_spec_decode:
-            self.model_config.supports_spec_decode = True
+            self.model_config = replace(self.model_config, supports_spec_decode=True)
             logger.info(
                 "Routing override: supports_spec_decode forced True via --force-spec-decode"
             )

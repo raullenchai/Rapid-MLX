@@ -256,19 +256,24 @@ class TestModelConfigDefaults:
         assert ModelConfig().suffix_decoding_tier == "unknown"
 
     def test_default_speedup_dict_is_empty_not_none(self):
-        # ``None`` would crash hint/table code that does ``or {}``;
-        # default-empty-dict avoids the conditional and keeps semantics
-        # ("we have no data" reads cleanly as ``not cfg.suffix_bench_speedup``).
+        # Unified ModelProfile stores ``suffix_bench_speedup`` as a tuple
+        # (or None when not benched) so the frozen dataclass stays
+        # hashable/shareable; consumers read the dict via the
+        # ``speedup_dict`` property, which normalizes None → {} so the old
+        # ``or {}`` conditional in hint/table code is no longer needed.
         cfg = ModelConfig()
-        assert cfg.suffix_bench_speedup == {}
+        assert cfg.suffix_bench_speedup is None
+        assert cfg.speedup_dict == {}
 
     def test_each_modelconfig_gets_its_own_dict(self):
-        """``field(default_factory=dict)`` regression test — using a
-        bare ``dict()`` literal as the default would share the same
-        dict across all ModelConfig instances."""
+        """``speedup_dict`` must materialize a FRESH dict each call so a
+        caller that mutates the returned dict can't corrupt shared profile
+        state. The unified ModelProfile is frozen with an immutable tuple
+        backing field, so instances inherently cannot share mutable state
+        (the original ``default_factory=dict`` sharing concern is gone)."""
         a = ModelConfig()
-        b = ModelConfig()
-        a.suffix_bench_speedup["chat"] = 1.0
-        assert b.suffix_bench_speedup == {}, (
-            "ModelConfig instances must not share dict state"
+        d = a.speedup_dict
+        d["chat"] = 1.0  # mutating the returned dict must not persist
+        assert a.speedup_dict == {}, (
+            "speedup_dict must return a fresh dict, not shared state"
         )

@@ -729,6 +729,16 @@ class TestModelsRoutes:
             model_name="custom-operator-model-not-in-registry",
             model_alias=None,
             api_key=None,
+            # Pin the server-global parser explicitly: because
+            # ``model_name`` above makes this id the *served* model,
+            # ``effective_parsers_for`` (Tier 2) reads ``cfg.tool_call_parser``
+            # for it. Relying on the singleton default made this baseline
+            # assertion depend on leftover global state — any earlier test
+            # that set ``cfg.tool_call_parser`` without restoring it (e.g.
+            # the diffusion tool-call-veto tests) would leak a non-None
+            # value here. Pinning None keeps the "unknown-id baseline"
+            # contract hermetic regardless of collection order.
+            tool_call_parser=None,
         )
         try:
             client = TestClient(self._make_app())
