@@ -895,6 +895,17 @@ class LanguageModel(nn.Module):
                 return False
             if "router" in path:
                 return {"group_size": 64, "bits": 8}
+            # Per-Layer-Embedding (PLE) table. On the e2b/e4b "altup"
+            # variants ``embed_tokens_per_layer`` is a large nn.Embedding
+            # whose rows feed every decoder layer's per-layer input gate.
+            # Early 4-bit conversions quantized it at the model default
+            # (4-bit) and the model emitted garbage. mlx-community's own
+            # checkpoints never 4-bit this table (the e2b/e4b 8-bit builds
+            # keep it at 8-bit; the 12b/26b/31b variants have no PLE at
+            # all). Cap it at 8-bit here so a future 4-bit convert can't
+            # silently corrupt it — matches the ``router`` treatment above.
+            if "embed_tokens_per_layer" in path:
+                return {"group_size": 64, "bits": 8}
             return True
 
         return predicate
