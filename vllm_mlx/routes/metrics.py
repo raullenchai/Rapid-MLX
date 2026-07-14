@@ -1096,7 +1096,9 @@ def _render_prometheus(cfg: Any) -> str:
                     "carried a non-trimmable recurrent-state layer "
                     "(hybrid GatedDeltaNet / Mamba MoE). Expected to climb "
                     "on hybrid models — it is the observable signal that "
-                    "the #1025/#1058 recurrent-state leak fix is active."
+                    "the #1025/#1058 recurrent-state leak fix is active. "
+                    "Stays flat when --hybrid-cache-entries > 0 opts into "
+                    "bounded trim-free reuse (#1103)."
                 ),
             ),
         ):
@@ -1155,6 +1157,23 @@ def _render_prometheus(cfg: Any) -> str:
                     "below the cap."
                 ),
                 int(_coerce_number(cache_stats.get("current_memory_bytes"))),
+            )
+        )
+        # #1103: live count of retained non-trimmable (hybrid recurrent-
+        # state) entries. 0 whenever --hybrid-cache-entries is 0 (the
+        # default #1075 drop-at-store policy); otherwise bounded by that
+        # flag — a value that exceeds the configured bound would indicate
+        # the hybrid-reuse LRU bound is broken (the #1025 leak shape).
+        lines.extend(
+            _fmt_metric(
+                "rapid_mlx_prefix_cache_non_trimmable_entries",
+                "gauge",
+                (
+                    "Hybrid (recurrent-state) entries currently retained for "
+                    "trim-free reuse. Bounded by --hybrid-cache-entries; "
+                    "always 0 when that flag is 0 (default)."
+                ),
+                int(_coerce_number(cache_stats.get("non_trimmable_entries"))),
             )
         )
 

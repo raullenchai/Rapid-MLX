@@ -141,6 +141,11 @@ class SchedulerConfig:
     use_memory_aware_cache: bool = True  # Use memory-based eviction
     cache_memory_mb: int | None = None  # None = auto-detect (20% of available RAM)
     cache_memory_percent: float = 0.20  # Fraction of available RAM if auto-detecting
+    # #1103: bounded trim-free prefix reuse for hybrid (GatedDeltaNet /
+    # Mamba MoE) models. 0 (default) keeps the #1075 drop-at-store policy;
+    # N > 0 retains at most N recurrent-state entries for exact /
+    # prefix-extension reuse (LRU-evicted among themselves).
+    hybrid_cache_entries: int = 0
 
     # KV cache quantization (reduces prefix cache memory). The
     # ``kv_cache_dtype`` field is the canonical R15 #300 knob — it
@@ -1963,6 +1968,8 @@ class Scheduler:
                     kv_turboquant_bits=self.config.kv_cache_turboquant_bits,
                     kv_turboquant_group_size=self.config.kv_cache_turboquant_group_size,
                     kv_turboquant_mode=self.config.kv_cache_turboquant_mode,
+                    # #1103: bounded trim-free hybrid reuse (0 = #1075 policy).
+                    hybrid_reuse_max_entries=self.config.hybrid_cache_entries,
                 )
                 # R15-P1 (task #303): radix-tree prefix-cache index.
                 # Constructed when ``prefix_cache_index == "radix"`` and

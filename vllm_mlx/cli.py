@@ -2986,6 +2986,8 @@ def serve_command(args):
         use_memory_aware_cache=not args.no_memory_aware_cache,
         cache_memory_mb=args.cache_memory_mb,
         cache_memory_percent=args.cache_memory_percent,
+        # #1103: bounded trim-free hybrid (recurrent-state) prefix reuse.
+        hybrid_cache_entries=getattr(args, "hybrid_cache_entries", 0),
         # Paged cache options
         use_paged_cache=args.use_paged_cache,
         paged_cache_block_size=args.paged_cache_block_size,
@@ -4031,6 +4033,10 @@ def bench_command(args):
             use_memory_aware_cache=not args.no_memory_aware_cache,
             cache_memory_mb=args.cache_memory_mb,
             cache_memory_percent=args.cache_memory_percent,
+            # #1103: bounded trim-free hybrid (recurrent-state) prefix reuse.
+            # Bench path mirrors serve so hybrid-reuse effects show up in
+            # `rapid-mlx bench` numbers too.
+            hybrid_cache_entries=getattr(args, "hybrid_cache_entries", 0),
             # Paged cache options
             use_paged_cache=args.use_paged_cache,
             paged_cache_block_size=args.paged_cache_block_size,
@@ -6784,6 +6790,19 @@ Examples:
         type=float,
         default=0.20,
         help="Fraction of available RAM for cache if auto-detecting (default: 0.20)",
+    )
+    # #1103: bounded trim-free prefix reuse for hybrid (GatedDeltaNet /
+    # Mamba MoE) models. Opt-in: the default 0 keeps the #1075 policy of
+    # dropping recurrent-state entries at store time.
+    serve_parser.add_argument(
+        "--hybrid-cache-entries",
+        type=int,
+        default=0,
+        help=(
+            "Retain up to N hybrid (recurrent-state) prefix-cache entries for "
+            "exact/prefix-extension reuse; 0 disables (default: 0). Useful for "
+            "stable-system-prompt agent workloads on GatedDeltaNet/Mamba models."
+        ),
     )
     serve_parser.add_argument(
         "--no-memory-aware-cache",

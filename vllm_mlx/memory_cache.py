@@ -701,6 +701,29 @@ def _array_memory(arr) -> int:
     return 0
 
 
+def _state_memory(state: Any) -> int:
+    """Recursively sum array bytes in a cache layer's ``state``.
+
+    ``state`` shapes seen in the wild (mlx-lm 0.29+):
+      * ``KVCache.state``          → ``(keys, values)`` — two arrays.
+      * ``ArraysCache.state``      → ``list[array]`` of ANY length (e.g.
+        ``[conv_state, recurrent_state]`` for GatedDeltaNet, but the size
+        is model-defined — issue #1103 found sizes != 2 silently counted
+        as 0 bytes under the old ``keys, values = state`` unpack).
+      * ``CacheList.state``        → ``[c.state for c in caches]`` — a
+        NESTED list of the above. The old unpack "succeeded" on a
+        two-cache ``CacheList`` and then counted 0 bytes for both halves
+        (lists have no shape/dtype/nbytes), so recurrent-state entries
+        escaped the byte ledger entirely — the eviction budget never saw
+        the very entries #1025 needed it to reclaim.
+    """
+    if state is None:
+        return 0
+    if isinstance(state, (list, tuple)):
+        return sum(_state_memory(s) for s in state)
+    return _array_memory(state)
+
+
 def estimate_kv_cache_memory(cache: list[Any]) -> int:
     """
     Estimate memory usage of a KV cache in bytes.
@@ -746,11 +769,13 @@ def estimate_kv_cache_memory(cache: list[Any]) -> int:
                 total_bytes += _array_memory(arr)
             continue
         elif hasattr(layer_cache, "state") and not isinstance(layer_cache, dict):
-            # Cache with state property returning (keys, values)
+            # Cache with a ``state`` property: ``(keys, values)`` for KV
+            # classes, an N-array list for ``ArraysCache``, or a nested
+            # list for ``CacheList``. Summed recursively so recurrent-state
+            # arrays are counted instead of silently contributing 0 bytes
+            # (#1103 — they previously escaped the eviction byte ledger).
             try:
-                keys, values = layer_cache.state
-                total_bytes += _array_memory(keys)
-                total_bytes += _array_memory(values)
+                total_bytes += _state_memory(layer_cache.state)
             except (TypeError, ValueError):
                 pass
         elif hasattr(layer_cache, "keys") and hasattr(layer_cache, "values"):
@@ -795,6 +820,19 @@ class MemoryCacheConfig:
     kv_turboquant_bits: int | None = None  # None = auto-select by head_dim
     kv_turboquant_group_size: int = 32
     kv_turboquant_mode: str = "v4"
+    # #1103 (follow-up to #1025/#1058/#1075): bounded trim-free reuse for
+    # hybrid (GatedDeltaNet / Mamba MoE) recurrent-state entries.
+    #
+    #   0 (default)  — #1075 behavior: any entry carrying a non-trimmable
+    #                  recurrent-state layer is DROPPED at store time.
+    #   N > 0        — at most N such entries are retained, evicted LRU-first
+    #                  among themselves. Fetch serves them ONLY on the two
+    #                  trim-free match paths (exact and prefix-extension);
+    #                  the trim-requiring paths (supersequence-with-excess,
+    #                  LCP) still refuse them, so the #214-era within-
+    #                  conversation reuse comes back without re-opening the
+    #                  #1025 unbounded-retention leak.
+    hybrid_reuse_max_entries: int = 0
 
     def __post_init__(self) -> None:
         if not 0.0 < self.max_memory_percent <= 1.0:
@@ -803,6 +841,11 @@ class MemoryCacheConfig:
             )
         if self.max_entries < 1:
             raise ValueError(f"max_entries must be >= 1, got {self.max_entries}")
+        if self.hybrid_reuse_max_entries < 0:
+            raise ValueError(
+                "hybrid_reuse_max_entries must be >= 0, "
+                f"got {self.hybrid_reuse_max_entries}"
+            )
         if self.kv_min_quantize_tokens < 0:
             raise ValueError(
                 f"kv_min_quantize_tokens must be >= 0, got {self.kv_min_quantize_tokens}"
@@ -959,6 +1002,10 @@ class _CacheEntry:
     tokens: tuple[int, ...]
     cache: list[Any]
     memory_bytes: int
+    # #1103: True when any layer is a non-trimmable recurrent-state cache
+    # (hybrid GatedDeltaNet / Mamba MoE). Computed once at creation so the
+    # hybrid-bound eviction scan doesn't re-inspect layers per store.
+    non_trimmable: bool = False
 
     @classmethod
     def create(cls, tokens: list[int], cache: list[Any]) -> _CacheEntry:
@@ -968,6 +1015,7 @@ class _CacheEntry:
             tokens=tuple(tokens),
             cache=cache,
             memory_bytes=memory,
+            non_trimmable=_cache_has_non_trimmable(cache),
         )
 
 
@@ -1057,11 +1105,15 @@ def _needs_kv_trim(layer: Any) -> bool:
 # ratchets up holding leaked recurrent state while ``reserved KV`` stays ~0,
 # wedging the D-METAL-CAP admission gate / eventually OOM-crashing.
 #
-# The fetch path already refuses to reuse these entries (supersequence match
-# is skipped when any layer ``not is_trimmable()`` — see ``fetch`` above) AND
-# the paged path gates them out via ``prefix_cache._SEQ_AXIS_KV_CLASSES``. A
-# hybrid entry that fetch will never reuse but store retains forever is pure
-# leak: so we DROP it at store time (whole entry — see below).
+# The fetch path refuses to reuse these entries on the TRIM-REQUIRING match
+# paths (supersequence-with-excess and LCP are skipped when any layer ``not
+# is_trimmable()`` — see ``fetch`` above) AND the paged path gates them out
+# via ``prefix_cache._SEQ_AXIS_KV_CLASSES``. The two TRIM-FREE paths (exact
+# match and prefix-extension) can serve them safely — resuming a stored
+# prefix at its own token boundary needs no trim (#214, #1103). By default we
+# still DROP the whole entry at store time (leak-safe #1075 policy); setting
+# ``hybrid_reuse_max_entries > 0`` opts in to a BOUNDED number of retained
+# hybrid entries for trim-free reuse (see ``store``).
 #
 # For the dict-form extracted cache (block-aware path, where layers are
 # ``{"class_name": ...}`` dicts, not live objects) we cannot call
@@ -1669,19 +1721,29 @@ class MemoryAwarePrefixCache:
         # Reuse-cache gate for hybrid recurrent-state models (#1025 / #1058).
         #
         # If ANY layer is a non-trimmable recurrent-state cache (ArraysCache /
-        # CacheList-wrapping-one, from GatedDeltaNet / Mamba MoE models), DROP
-        # the whole entry rather than store it. Granularity = whole entry, not
-        # per-layer, because:
-        #   * reconstruction needs ALL layers (a half-populated entry with only
-        #     the KVCache layers cannot resume a hybrid model — mlx-lm rebuilds
-        #     the full cache list or nothing), and
-        #   * the fetch path already refuses to reuse an entry once any layer
-        #     is non-trimmable (supersequence match is skipped), so storing the
-        #     trimmable subset would only cost memory for zero reuse.
-        # Result: the per-request recurrent state has NO lingering reference in
-        # ``_entries`` and is reclaimed by ``mx.clear_cache()`` / GC once the
-        # request object drops its own reference in ``_cleanup_finished``.
-        if _cache_has_non_trimmable(cache):
+        # CacheList-wrapping-one, from GatedDeltaNet / Mamba MoE models), the
+        # entry is dropped by default. Granularity = whole entry, not
+        # per-layer, because reconstruction needs ALL layers (a half-populated
+        # entry with only the KVCache layers cannot resume a hybrid model —
+        # mlx-lm rebuilds the full cache list or nothing).
+        #
+        # #1103 refinement: the trim-free fetch paths (exact match and
+        # prefix-extension) CAN safely serve these entries — resuming a stored
+        # prefix at its own token boundary needs no trim, and that reuse is
+        # exactly the #214-era within-conversation speedup. When
+        # ``hybrid_reuse_max_entries > 0`` we therefore store the entry
+        # (flagged ``non_trimmable``) instead of dropping it, and enforce a
+        # dedicated LRU bound over non-trimmable entries after insert (below)
+        # so cross-conversation unique-superset keys can never accumulate
+        # unbounded the way #1025 observed. With the default of 0 this branch
+        # is byte-for-byte the #1075 behavior: the per-request recurrent state
+        # has NO lingering reference in ``_entries`` and is reclaimed by
+        # ``mx.clear_cache()`` / GC once the request object drops its own
+        # reference in ``_cleanup_finished``.
+        if (
+            _cache_has_non_trimmable(cache)
+            and self._config.hybrid_reuse_max_entries <= 0
+        ):
             self._stats.non_trimmable_skips += 1
             logger.debug(
                 "[cache_store] skipped hybrid recurrent-state entry "
@@ -1811,6 +1873,22 @@ class MemoryAwarePrefixCache:
                         f"[radix] insert failed for {len(tokens_key)} tokens: {exc}"
                     )
 
+            # #1103: dedicated LRU bound over non-trimmable (hybrid
+            # recurrent-state) entries. Their keys are unique supersets
+            # across conversations (#1025), so unlike KV-only entries they
+            # can pile up without ever being reclaimed by prefix-subset
+            # eviction — this bound is what keeps the recovered reuse from
+            # re-opening that leak. Scans in LRU order (``_entries`` is an
+            # ``OrderedDict``); O(entries) only on the hybrid store path.
+            if entry.non_trimmable:
+                limit = self._config.hybrid_reuse_max_entries
+                non_trimmable_keys = [
+                    key for key, e in self._entries.items() if e.non_trimmable
+                ]
+                while len(non_trimmable_keys) > limit:
+                    oldest = non_trimmable_keys.pop(0)
+                    self._evict_entry_locked(oldest, reason="hybrid_bound")
+
         logger.debug(
             f"Stored cache: {len(tokens)} tokens, "
             f"{entry.memory_bytes / _BYTES_PER_MB:.2f}MB, "
@@ -1833,16 +1911,24 @@ class MemoryAwarePrefixCache:
         if not self._entries:
             return
 
-        # Peek the oldest key, drop sorted-index entry first so a fetch
-        # without the lock can't trip the orphaned-sorted-key KeyError.
+        # Peek the oldest key.
         tokens_key = next(iter(self._entries))
+        self._evict_entry_locked(tokens_key, reason="lru_evict")
+
+    def _evict_entry_locked(self, tokens_key: tuple[int, ...], reason: str) -> None:
+        """Evict one entry by key with full index/ledger bookkeeping.
+
+        Caller must hold ``self._lock`` and guarantee ``tokens_key`` is
+        present. Drops the sorted-index entry first so a fetch without the
+        lock can't trip the orphaned-sorted-key KeyError.
+        """
         self._remove_from_sorted(tokens_key)
         if self._radix_index is not None:
             try:
                 self._radix_index.remove(tokens_key)
             except Exception as exc:  # pragma: no cover — defensive
                 logger.warning(
-                    f"[radix] lru-evict remove failed for {len(tokens_key)} tokens: {exc}"
+                    f"[radix] {reason} remove failed for {len(tokens_key)} tokens: {exc}"
                 )
         entry = self._entries.pop(tokens_key)
         self._current_memory -= entry.memory_bytes
@@ -1851,7 +1937,7 @@ class MemoryAwarePrefixCache:
         self._stats.current_memory_bytes = self._current_memory
 
         logger.debug(
-            f"[lru_evict] removed {len(tokens_key)} tokens, "
+            f"[{reason}] removed {len(tokens_key)} tokens, "
             f"freed {entry.memory_bytes / _BYTES_PER_MB:.2f}MB"
         )
 
@@ -1929,6 +2015,16 @@ class MemoryAwarePrefixCache:
         legacy cache counters.
         """
         out = self._stats.to_dict()
+        # #1103: live count of retained non-trimmable (hybrid recurrent-state)
+        # entries — drives the ``rapid_mlx_prefix_cache_non_trimmable_entries``
+        # gauge so operators can verify the hybrid-reuse bound holds (0 when
+        # ``hybrid_reuse_max_entries`` is 0, i.e. the #1075 drop-at-store
+        # policy is active). O(entries) under the lock, same cost class as
+        # the sorted-index maintenance store already pays.
+        with self._lock:
+            out["non_trimmable_entries"] = sum(
+                1 for e in self._entries.values() if e.non_trimmable
+            )
         if self._radix_index is not None:
             try:
                 out["radix"] = self._radix_index.stats()
@@ -3090,6 +3186,11 @@ class MemoryAwarePrefixCache:
                     tokens=tokens_key,
                     cache=cache,
                     memory_bytes=memory,
+                    # #1103: legacy on-disk snapshots (pre-#1075 saves) can
+                    # carry hybrid recurrent-state entries; flag them so the
+                    # hybrid-reuse bound and the non_trimmable_entries gauge
+                    # see them the same as freshly stored ones.
+                    non_trimmable=_cache_has_non_trimmable(cache),
                 )
                 staged[tokens_key] = entry
                 staged_memory += memory
