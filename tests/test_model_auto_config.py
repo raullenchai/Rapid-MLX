@@ -1043,10 +1043,38 @@ class TestVisibility:
 
     def test_unknown_model_mtp_disabled_kv_share_no(self):
         # ``cfg is None`` path — an unmatched family has no known MTP head
-        # or KV-share config.
+        # or KV-share config. codex #1112 [NIT] round 4: the value must be
+        # exactly ``disabled`` (within the documented native | sidecar |
+        # disabled contract), not a fourth value like
+        # ``disabled (unknown family)``.
         table = format_profile_table("some-brand-new-model-xyz", None)
-        assert "MTP path" in table and "disabled" in table
+        assert "MTP path         : disabled" in table
+        assert "disabled (unknown family)" not in table
         assert "KV-share         : no" in table
+
+    def test_mtp_path_value_stays_within_contract(self):
+        # codex #1112 [NIT] round 4: the MTP-path value must always be one
+        # of the three documented tokens — never a fourth free-form value.
+        from vllm_mlx.model_auto_config import _mtp_path_label
+        from vllm_mlx.model_profile import ModelProfile
+
+        allowed = {"native", "sidecar", "disabled"}
+        probes = [
+            "mlx-community/gemma-4-12B-it-4bit",
+            "mlx-community/Hy3-preview-4bit",
+            "mlx-community/Qwen3.5-4B-MLX-4bit",
+            "mlx-community/Qwen3-0.6B-8bit",
+            "mlx-community/Qwen3.6-35B-A3B-4bit",
+            "gemma4-labs/Llama-3-8B-Instruct-4bit",
+            "some-org/Qwen3.5-gemma-4-merge-8bit",
+            "totally-unknown-model",
+        ]
+        for name in probes:
+            cfg = detect_model_config(name)
+            profile = cfg if cfg is not None else ModelProfile(hf_path=name)
+            assert _mtp_path_label(name, profile) in allowed, (
+                f"MTP path for {name!r} escaped the contract"
+            )
 
     def test_mtp_kv_share_rows_fit_box(self):
         # New rows must not break the fixed-width box on any family.
@@ -1068,23 +1096,40 @@ class TestVisibility:
 
     def test_family_marker_in_org_dir_does_not_mislabel(self):
         # codex #1112 [BLOCKING]: a family marker in an ORG / parent
-        # directory must not spoof the MTP/KV-share family — the match is
-        # scoped to the extracted model-NAME segment. Here the name
-        # segment is a plain Llama checkpoint; the ``gemma4`` / ``qwen3.5``
-        # markers live only in the (fictional) org prefix and must be
-        # ignored. The resolved profile carries no gemma4/hy_v3 parser
-        # stamp for these, so the label falls through to disabled/no.
-        from vllm_mlx.model_auto_config import _kv_share_label, _mtp_path_label
+        # directory must not spoof the MTP/KV-share family. This exercises
+        # the REAL public path (``detect_model_config`` →
+        # ``format_profile_table``), NOT a hand-built stub — because
+        # ``detect_model_config``'s regex table matches the FULL path, an
+        # org prefix like ``gemma4-labs/…`` yields a ``gemma4`` parser
+        # stamp on a non-Gemma model; the info-row family resolver must
+        # require the family marker in the NAME segment, so the stamp
+        # alone cannot spoof the label. The name segment here is a plain
+        # Llama / Mistral checkpoint — no family marker → disabled / no.
+        for spoof in (
+            "gemma4-labs/Llama-3-8B-Instruct-4bit",
+            "qwen3.5-community/Mistral-7B-Instruct-4bit",
+            "hy3-org/Llama-3-8B-Instruct-4bit",
+        ):
+            table = format_profile_table(spoof, detect_model_config(spoof))
+            assert "MTP path         : disabled" in table, (
+                f"org-dir marker spoofed MTP path for {spoof}:\n{table}"
+            )
+            assert "KV-share         : no" in table, (
+                f"org-dir marker spoofed KV-share for {spoof}:\n{table}"
+            )
 
-        cfg = detect_model_config("some-random-model")  # None → build a stub
+    def test_qwen35_spec_on_stub_labels_native(self):
+        # codex #1112 [NIT] round 4: a positive assertion that a spec-decode-
+        # enabled Qwen3.5/3.6 name renders ``MTP path: native`` via the
+        # name regex — so deleting Qwen handling from ``_NATIVE_MTP_NAME_RE``
+        # would break this test (the shipped Qwen3.5 aliases all have spec
+        # decode OFF, which alone can't catch a native-regex regression).
+        from vllm_mlx.model_auto_config import _mtp_path_label
         from vllm_mlx.model_profile import ModelProfile
 
-        stub = ModelProfile(hf_path="gemma4-labs/Llama-3-8B-Instruct-4bit")
-        assert _kv_share_label(stub.hf_path, stub) == "no"
-        assert _mtp_path_label(stub.hf_path, stub) == "disabled"
-
-        stub2 = ModelProfile(hf_path="qwen3.5-community/Mistral-7B-4bit")
-        assert _mtp_path_label(stub2.hf_path, stub2) == "disabled"
+        for name in ("some-org/Qwen3.5-9B-custom-4bit", "some-org/Qwen3.6-9B-4bit"):
+            stub = ModelProfile(hf_path=name)  # spec decode defaults True
+            assert _mtp_path_label(stub.hf_path, stub) == "native"
 
     def test_gemma4_name_in_segment_still_labels_sidecar(self):
         # Positive control for the anchoring fix: when the Gemma 4 marker

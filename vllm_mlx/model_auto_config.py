@@ -1526,38 +1526,49 @@ def _resolve_family(model_path: str, cfg: "ModelConfig") -> str:
       KV-share).
     * ``"native_mtp"`` — a native-MTP-head family (Qwen3.5 / Qwen3.6 /
       HY3).
-    * ``"other"``      — anything else, INCLUDING an ambiguous name that
-      carries BOTH a Gemma 4 and a native-MTP marker with no parser stamp
-      to disambiguate (conservative — codex #1112 [BLOCKING] round 3).
+    * ``"other"``      — anything else, including ambiguous names.
 
-    Resolution order (first authoritative signal wins), so both callers
-    (``_mtp_path_label`` / ``_kv_share_label``) always agree and there is
-    no per-caller check-ordering that could disagree:
+    Both callers (``_mtp_path_label`` / ``_kv_share_label``) consume this
+    single function so their family view can never disagree.
 
-    1. Parser stamp — the single source of truth set by
-       ``detect_model_config``'s precedence-ordered detection. ``gemma4``
-       ⇒ Gemma 4; ``hy_v3`` ⇒ native. A stamp is authoritative and a
-       stray opposite-family NAME marker cannot override it (a
-       ``Hy3-distilled-from-Gemma-4`` with a ``hy_v3`` stamp is native).
-    2. Name markers on the extracted model-NAME segment (basename only;
-       org/parent dirs stripped; boundary-anchored so substrings like
-       ``Llama-3-hy3per-8B`` / ``megemma4x`` don't match). If EXACTLY one
-       family's marker is present, that family wins. If BOTH are present
-       (a genuinely ambiguous name with no stamp), return ``"other"`` so
-       the row degrades to the conservative ``disabled`` / ``no`` rather
-       than guessing.
+    The load-bearing signal is the **name marker on the extracted
+    model-NAME segment** — the canonical basename
+    (``_extract_model_name_segment``: org/parent dirs and HF-cache
+    intermediates stripped; boundary-anchored so substrings like
+    ``Llama-3-hy3per-8B`` / ``megemma4x`` don't match). The name segment
+    is REQUIRED (codex #1112 [BLOCKING] round 4): the parser stamp alone
+    is not trusted because ``detect_model_config``'s regex table matches
+    the FULL path, so an org/parent dir like ``gemma4-labs/Llama-3-8B``
+    yields a ``gemma4`` stamp on a non-Gemma model. Every real Gemma 4 /
+    HY3 / Qwen3.5 / Qwen3.6 checkpoint carries its family marker in the
+    name segment, so requiring it costs nothing and closes the spoof.
+    (It also correctly excludes ``diffusiongemma`` — a text-diffusion
+    variant that carries the ``gemma4`` parser stamp but is not a
+    canonical Gemma 4 KV-share checkpoint.)
+
+    The parser stamp is used only as a TIE-BREAKER when the segment
+    carries BOTH a Gemma 4 and a native-MTP marker (a merge/distill name):
+    an authoritative ``gemma4`` / ``hy_v3`` stamp picks the family;
+    without one the name is genuinely ambiguous and we return ``"other"``
+    so the row degrades to the conservative ``disabled`` / ``no`` rather
+    than guessing.
     """
-    tcp, rp = cfg.tool_call_parser, cfg.reasoning_parser
-    if tcp == "gemma4" or rp == "gemma4":
-        return "gemma4"
-    if tcp == "hy_v3" or rp == "hy_v3":
-        return "native_mtp"
-
     name_seg = _extract_model_name_segment((cfg.hf_path or model_path).lower())
     is_gemma4 = bool(_GEMMA4_NAME_RE.search(name_seg))
     is_native = bool(_NATIVE_MTP_NAME_RE.search(name_seg))
+
     if is_gemma4 and is_native:
-        # Ambiguous, no stamp — do not guess.
+        # Ambiguous segment — let an authoritative parser stamp break the
+        # tie; otherwise do not guess.
+        tcp, rp = cfg.tool_call_parser, cfg.reasoning_parser
+        if (tcp == "gemma4" or rp == "gemma4") and not (
+            tcp == "hy_v3" or rp == "hy_v3"
+        ):
+            return "gemma4"
+        if (tcp == "hy_v3" or rp == "hy_v3") and not (
+            tcp == "gemma4" or rp == "gemma4"
+        ):
+            return "native_mtp"
         return "other"
     if is_gemma4:
         return "gemma4"
@@ -1682,7 +1693,10 @@ def format_profile_table(model_path: str, cfg: "ModelConfig | None") -> str:
             # MTP head / KV-share config, so both default to the
             # conservative "off" state until the model loads and the
             # runtime probe / load-time guard reports the real config.
-            ("MTP path", "disabled (unknown family)"),
+            # ``MTP path`` stays within the documented native | sidecar |
+            # disabled contract (codex #1112 [NIT] round 4 — no fourth
+            # value).
+            ("MTP path", "disabled"),
             ("KV-share", "no"),
             ("Throttle", "✗ default-off"),
             (
