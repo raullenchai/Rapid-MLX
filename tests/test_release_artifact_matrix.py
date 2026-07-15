@@ -106,3 +106,50 @@ def test_parser_rejects_unknown_family(matrix):
     parser = matrix._build_parser()
     with pytest.raises(SystemExit):
         parser.parse_args(["--dist-dir", "dist", "--family", "unknown"])
+
+
+def test_assert_port_available_rejects_a_busy_port(matrix):
+    """A stale listener on the release port must be caught BEFORE spawn.
+
+    Guards the readiness-probe integrity fix: if the port is already held
+    (e.g. a stale same-family server), the runner must refuse rather than let
+    that other process answer /v1/models and mask a broken candidate.
+    """
+    import socket
+
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    listener.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+    listener.bind(("127.0.0.1", 0))
+    listener.listen(1)
+    busy_port = listener.getsockname()[1]
+    try:
+        with pytest.raises(RuntimeError, match="already in use"):
+            matrix._assert_port_available(busy_port)
+    finally:
+        listener.close()
+
+
+def test_assert_port_available_accepts_a_free_port(matrix):
+    """A genuinely-free port must pass so a normal boot is not blocked."""
+    import socket
+
+    probe = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    probe.bind(("127.0.0.1", 0))
+    free_port = probe.getsockname()[1]
+    probe.close()  # release it so the helper can re-bind
+
+    # Should not raise.
+    matrix._assert_port_available(free_port)
+
+
+def test_matrix_test_dependencies_are_client_only(matrix):
+    """The SDK/test clients installed into the client venv must never leak
+    into the released package's runtime dependency set — they belong in the
+    CLIENT venv, isolated from the server venv, so a missing runtime dep in
+    the wheel cannot be masked by a client's transitive closure."""
+    client_pkgs = matrix.MATRIX_TEST_DEPENDENCIES
+    # Sanity: the known client SDKs are present and none is an engine runtime
+    # dep (these names must not appear in pyproject's [project] dependencies).
+    assert any(spec.startswith("openai") for spec in client_pkgs)
+    assert any(spec.startswith("langchain-openai") for spec in client_pkgs)
+    assert any(spec.startswith("aider-chat") for spec in client_pkgs)

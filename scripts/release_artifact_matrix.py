@@ -11,11 +11,15 @@ This is deliberately separate from ``release_smoke.py``:
   family.
 
 The runner is intended for an isolated Apple-Silicon macOS release machine.
-It installs the wheel into a fresh venv, starts the console script from an
-empty working directory, then drives the integration clients from the source
-checkout over HTTP.  Keeping the server out of the checkout is important:
-otherwise Python can import ``vllm_mlx/`` from the tree and falsely validate
-the source instead of the candidate artifact.
+It installs the wheel into a fresh SERVER venv (release artifact + declared
+extras only), starts the console script from an empty working directory, then
+drives the integration clients from a SEPARATE CLIENT venv (test/SDK deps)
+against the running server over HTTP.  Two isolations matter here: keeping the
+server out of the source checkout (otherwise Python can import ``vllm_mlx/``
+from the tree and falsely validate the source instead of the candidate
+artifact), and keeping the client SDK dependencies out of the server venv
+(otherwise a client's transitive dependency could satisfy a runtime import the
+wheel forgot to declare, masking a missing runtime dependency).
 
 Run one family per invocation so every matrix cell is attributable to the
 model actually loaded by that server.  A release workflow fans this script
@@ -28,6 +32,7 @@ import argparse
 import json
 import os
 import shutil
+import socket
 import subprocess
 import sys
 import tempfile
@@ -171,10 +176,45 @@ def find_release_wheel(dist_dir: Path) -> Path:
     return wheels[0].resolve()
 
 
+def _assert_port_available(port: int) -> None:
+    """Fail if anything is already listening on ``port`` before we spawn.
+
+    Without this, a stale same-family server left on the fixed release port
+    could answer ``/v1/models`` with 200 while the candidate process is still
+    loading (or has failed to bind), letting a broken candidate pass the
+    readiness gate on another process's response. Binding the port ourselves
+    proves it is genuinely free; we release it immediately so the candidate
+    server can claim it.
+    """
+
+    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # No SO_REUSEADDR: we want the bind to FAIL if the port is in use,
+        # not to share it with a lingering listener.
+        sock.bind(("127.0.0.1", port))
+    except OSError as exc:
+        raise RuntimeError(
+            f"release port {port} is already in use before the candidate "
+            f"server is started ({exc}). Refusing to run — a stale listener "
+            f"could answer the readiness probe and mask a broken candidate. "
+            f"Free the port on the release runner and retry."
+        ) from exc
+    finally:
+        sock.close()
+
+
 def _wait_for_server(
     *, port: int, process: subprocess.Popen[str], log: Path, timeout: int
 ) -> None:
-    """Wait until the candidate artifact's server exposes ``/v1/models``."""
+    """Wait until the candidate artifact's server exposes ``/v1/models``.
+
+    Readiness is only accepted when (a) the spawned candidate process is
+    still alive and (b) it answers ``/v1/models`` with 200. The caller has
+    already proven the port was free before the spawn (see
+    ``_assert_port_available``), so a 200 here can only come from the
+    candidate process we launched — not a stale server that happened to
+    hold the port.
+    """
 
     url = f"http://127.0.0.1:{port}/v1/models"
     deadline = time.monotonic() + timeout
@@ -188,6 +228,19 @@ def _wait_for_server(
         try:
             with urllib.request.urlopen(url, timeout=5) as response:
                 if response.status == 200:
+                    # Re-confirm the candidate is still the live process after a
+                    # successful probe — closes the window where it crashes just
+                    # as (or just after) it starts answering.
+                    if process.poll() is not None:
+                        tail = (
+                            log.read_text(errors="replace")[-4000:]
+                            if log.exists()
+                            else ""
+                        )
+                        raise RuntimeError(
+                            f"candidate server exited ({process.returncode}) "
+                            f"immediately after readiness; log tail:\n{tail}"
+                        )
                     return
         except (OSError, urllib.error.URLError) as exc:
             last_error = str(exc)
@@ -231,7 +284,15 @@ def run_family(
 
     wheel = find_release_wheel(dist_dir)
     root = Path(tempfile.mkdtemp(prefix=f"rapid-mlx-release-{family}-"))
-    venv = root / "venv"
+    # Two isolated venvs, never one. The SERVER venv holds ONLY the release
+    # wheel (+ its declared extras) so the boot proves the wheel's own runtime
+    # dependency set is complete — nothing masks a missing runtime dep. The
+    # CLIENT venv holds the matrix test/SDK dependencies; if these lived in the
+    # server venv, one of their transitive deps could satisfy a runtime import
+    # the wheel forgot to declare and the server would boot on borrowed deps,
+    # silently defeating the clean-room guarantee this runner exists to give.
+    server_venv = root / "server-venv"
+    client_venv = root / "client-venv"
     server_cwd = root / "server-cwd"
     log = root / "server.log"
     process: subprocess.Popen[str] | None = None
@@ -239,12 +300,14 @@ def run_family(
 
     try:
         server_cwd.mkdir()
-        _run([sys.executable, "-m", "venv", str(venv)], cwd=root, env=env)
-        python = venv / "bin" / "python"
-        rapid_mlx = venv / "bin" / "rapid-mlx"
+
+        # --- Server venv: release wheel + extras ONLY ---------------------- #
+        _run([sys.executable, "-m", "venv", str(server_venv)], cwd=root, env=env)
+        server_python = server_venv / "bin" / "python"
+        rapid_mlx = server_venv / "bin" / "rapid-mlx"
 
         _run(
-            [str(python), "-m", "pip", "install", "--upgrade", "pip"],
+            [str(server_python), "-m", "pip", "install", "--upgrade", "pip"],
             cwd=root,
             env=env,
         )
@@ -252,7 +315,14 @@ def run_family(
         if config.extras:
             artifact_spec = f"{artifact_spec}[{','.join(config.extras)}]"
         _run(
-            [str(python), "-m", "pip", "install", "--prefer-binary", artifact_spec],
+            [
+                str(server_python),
+                "-m",
+                "pip",
+                "install",
+                "--prefer-binary",
+                artifact_spec,
+            ],
             cwd=root,
             env=env,
         )
@@ -261,15 +331,24 @@ def run_family(
                 f"release wheel did not install rapid-mlx at {rapid_mlx}"
             )
         for script in CLI_SMOKE_SCRIPTS:
-            executable = venv / "bin" / script
+            executable = server_venv / "bin" / script
             if not executable.is_file():
                 raise RuntimeError(
                     f"release wheel did not install console script {script!r}"
                 )
             _run([str(executable), "--help"], cwd=root, env=env)
+
+        # --- Client venv: matrix test + SDK deps (NEVER in the server venv) - #
+        _run([sys.executable, "-m", "venv", str(client_venv)], cwd=root, env=env)
+        client_python = client_venv / "bin" / "python"
+        _run(
+            [str(client_python), "-m", "pip", "install", "--upgrade", "pip"],
+            cwd=root,
+            env=env,
+        )
         _run(
             [
-                str(python),
+                str(client_python),
                 "-m",
                 "pip",
                 "install",
@@ -280,7 +359,9 @@ def run_family(
             env=env,
         )
 
-        runner_env = env | {"PATH": f"{venv / 'bin'}:{env.get('PATH', '')}"}
+        # The matrix drives the running server over HTTP from the CLIENT venv.
+        # Aider is a client too, so its binary comes from the client venv.
+        runner_env = env | {"PATH": f"{client_venv / 'bin'}:{env.get('PATH', '')}"}
 
         # A release matrix must fail rather than silently omit Docker/Aider
         # cells.  The tests themselves convert missing prerequisites into
@@ -310,6 +391,10 @@ def run_family(
                 f"OpenHands cell: {docker.stderr[-1000:]}"
             )
 
+        # Prove the port is free BEFORE spawning, so the readiness probe can
+        # only ever be answered by the candidate process we launch (never a
+        # stale same-family server lingering on the fixed release port).
+        _assert_port_available(port)
         with log.open("w", encoding="utf-8") as log_file:
             process = subprocess.Popen(
                 [
@@ -333,10 +418,17 @@ def run_family(
             "RAPID_MLX_AGENT_MATRIX_FAMILY": family,
             "RAPID_MLX_MATRIX_STRICT": "1",
             "RAPID_MLX_MATRIX_NO_SKIPS": "1",
-            "AIDER_BIN": str(venv / "bin" / "aider"),
+            "AIDER_BIN": str(client_venv / "bin" / "aider"),
         }
         _run(
-            [str(python), "-m", "pytest", *map(str, MATRIX_FILES), "-v", "--tb=short"],
+            [
+                str(client_python),
+                "-m",
+                "pytest",
+                *map(str, MATRIX_FILES),
+                "-v",
+                "--tb=short",
+            ],
             cwd=REPO_ROOT,
             env=matrix_env,
         )

@@ -12,105 +12,103 @@ new xfail would pass the audit and quietly shrink the number of cells that
 must actually PASS — exactly the class of regression the matrix gate is
 supposed to prevent.
 
-This test closes that hole. It collects the two integration-matrix
-modules, computes the set of cells that ``conftest.pytest_collection_
-modifyitems`` marks ``xfail(strict=True)``, and asserts it equals an
-*expected* set derived from the conftest registration constants. The
-expected set is pinned three ways:
+This test closes that hole with an **independent, checked-in snapshot** of
+the exact strict-xfail nodeids (``_EXPECTED_STRICT_XFAIL_NODEIDS`` below).
+It collects the two integration-matrix modules, computes the set of cells
+that ``conftest.pytest_collection_modifyitems`` marks ``xfail(strict=
+True)``, and asserts that set equals the snapshot exactly.
 
-  1. **Membership** — the exact nodeids must match. A new strict-xfail on
-     a cell that is not in a registration constant fails here.
-  2. **Count** — the total is asserted against ``_EXPECTED_STRICT_XFAIL_
-     COUNT``. Adding or removing any strict-xfail cell (even a legitimate
-     one) forces an explicit edit to that number, so the change is
-     reviewed rather than silent.
-  3. **Per-family breakdown** — the DeepSeek / gpt-oss / Hy3 sub-counts
-     are pinned individually, so a shift *between* families (e.g. a new
-     DeepSeek cell balanced by a dropped Hy3 cell that keeps the total
-     the same) is still caught.
+The snapshot is deliberately NOT derived from the conftest registration
+constants. An earlier draft rebuilt the expected set from those same
+constants; codex flagged (correctly) that this is tautological — swapping
+one strict-xfail for another *within the same family* preserves the count
+AND keeps the derived expected set in lock-step with the hook, so the test
+stays green while coverage silently shifts. A hardcoded snapshot removes
+that blind spot: ANY membership change (add, remove, or swap) diverges
+from the snapshot and fails here, forcing an explicit, reviewed edit to
+this file.
 
-Net effect: adding or removing ANY strict-xfail in the matrix now requires
-an explicit change to this test, which surfaces the coverage delta in
-review. This is intentionally a pure-collection audit — no server, no
-model boot, no test bodies execute — so it runs in every ``make smoke`` /
-pr_validate cycle alongside ``test_xfail_audit``.
+The snapshot pins:
+
+  1. **Exact membership** — every nodeid must match. Adding, removing, or
+     swapping a strict-xfail cell fails the set-equality assertion.
+  2. **Total count** (24) and **per-family breakdown** (9 / 1 / 14) — a
+     redundant tripwire that makes the coverage delta obvious in the
+     failure message even before the reviewer diffs the nodeid set.
+
+This is intentionally a pure-collection audit — no server, no model boot,
+no test bodies execute — so it runs in every ``make smoke`` / pr_validate
+cycle alongside ``test_xfail_audit``.
 """
 
 from __future__ import annotations
 
 import pytest
 
-from tests.integrations import conftest as matrix_conftest
-
 # --------------------------------------------------------------------------- #
-# Expected strict-xfail set, derived from the conftest registration constants.
+# Independent, checked-in snapshot of every strict-xfail matrix cell.
 # --------------------------------------------------------------------------- #
 #
-# The matrix parametrizes every cell over a single ``family`` argument, so a
-# strict-xfail nodeid is always ``<module>::<Class>::test_smoke[<family>]``.
-# We rebuild the expected set from the same constants the conftest hook
-# consumes, so the two cannot drift: if a registration constant changes,
-# the expected set changes with it — but the pinned counts below still force
-# an explicit acknowledgement of the coverage delta.
+# 24 cells total, one strict-xfail per line. Grouped by the reason family
+# (see tests/integrations/conftest.py for the root-cause of each group).
+# Editing this set is the ONLY sanctioned way to add/remove a strict-xfail
+# in the matrix — the assertion below fails until this snapshot matches the
+# markers the conftest hook actually applies.
 
-# The matrix modules that carry family-parametrized cells (mirrors the
-# conftest ``_INTEGRATION_MATRIX_MODULES`` gate).
-_MATRIX_MODULES = ("test_agents_matrix.py", "test_frameworks_matrix.py")
-
-# All matrix classes, per module — the universe the Hy3 family-wide rule
-# spans. Sourced by collecting the modules (below), NOT hardcoded, so a new
-# agent/framework class is automatically included in the Hy3 expectation.
-
-
-def _expected_deepseek_nodeids(all_nodeids: set[str]) -> set[str]:
-    """9 DeepSeek R1-Distill tool-call cells.
-
-    Registered in ``conftest._DEEPSEEK_R1_TOOLCALL_XFAIL_NODEIDS`` as
-    ``<module>::<Class>`` prefixes; the applied marker lands on the
-    ``[deepseek]`` param of each.
-    """
-    out: set[str] = set()
-    for nodeid in all_nodeids:
-        if "[deepseek]" not in nodeid:
-            continue
-        if any(
-            prefix in nodeid
-            for prefix in matrix_conftest._DEEPSEEK_R1_TOOLCALL_XFAIL_NODEIDS
-        ):
-            out.add(nodeid)
-    return out
-
-
-def _expected_gptoss_nodeids(all_nodeids: set[str]) -> set[str]:
-    """1 gpt-oss × OpenHands cell (harmony ↔ CodeActAgent format mismatch)."""
-    nodeid_frag = matrix_conftest._GPTOSS_OPENHANDS_XFAIL_NODEID
-    family = matrix_conftest._GPTOSS_OPENHANDS_XFAIL_FAMILY
-    return {
-        nodeid
-        for nodeid in all_nodeids
-        if nodeid_frag in nodeid and f"[{family}]" in nodeid
+# 9 × DeepSeek R1-Distill tool-call cells — R1 distillation dropped OpenAI
+# tool_call emission (conftest ``_DEEPSEEK_R1_TOOLCALL_XFAIL_NODEIDS``).
+_DEEPSEEK_STRICT_XFAIL = frozenset(
+    {
+        "tests/integrations/test_agents_matrix.py::TestOpenCode::test_smoke[deepseek]",
+        "tests/integrations/test_agents_matrix.py::TestQwenCode::test_smoke[deepseek]",
+        "tests/integrations/test_agents_matrix.py::TestHermesAgent::test_smoke[deepseek]",
+        "tests/integrations/test_agents_matrix.py::TestKiloCode::test_smoke[deepseek]",
+        "tests/integrations/test_agents_matrix.py::TestCopilot::test_smoke[deepseek]",
+        "tests/integrations/test_agents_matrix.py::TestDroid::test_smoke[deepseek]",
+        "tests/integrations/test_agents_matrix.py::TestKimiCode::test_smoke[deepseek]",
+        "tests/integrations/test_frameworks_matrix.py::TestLangChain::test_smoke[deepseek]",
+        "tests/integrations/test_frameworks_matrix.py::TestPydanticAI::test_smoke[deepseek]",
     }
+)
 
-
-def _expected_hy3_nodeids(all_nodeids: set[str]) -> set[str]:
-    """Every Hy3 matrix cell (family-wide, 166 GB Ultra-only)."""
-    family = matrix_conftest._HY3_XFAIL_FAMILY
-    return {
-        nodeid
-        for nodeid in all_nodeids
-        if f"[{family}]" in nodeid
-        and any(module in nodeid for module in _MATRIX_MODULES)
+# 1 × gpt-oss × OpenHands cell — harmony ↔ CodeActAgent text-action mismatch.
+_GPTOSS_STRICT_XFAIL = frozenset(
+    {
+        "tests/integrations/test_agents_matrix.py::TestOpenHands::test_smoke[gptoss]",
     }
+)
 
+# 14 × Hy3 cells — 166 GB single-node-infeasible, Ultra-only (family-wide:
+# every agent + framework class × [hy3]).
+_HY3_STRICT_XFAIL = frozenset(
+    {
+        "tests/integrations/test_agents_matrix.py::TestCodexCLI::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestClaudeCode::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestOpenCode::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestQwenCode::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestOpenHands::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestHermesAgent::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestAider::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestKiloCode::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestCopilot::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestDroid::test_smoke[hy3]",
+        "tests/integrations/test_agents_matrix.py::TestKimiCode::test_smoke[hy3]",
+        "tests/integrations/test_frameworks_matrix.py::TestLangChain::test_smoke[hy3]",
+        "tests/integrations/test_frameworks_matrix.py::TestPydanticAI::test_smoke[hy3]",
+        "tests/integrations/test_frameworks_matrix.py::TestSmolagents::test_smoke[hy3]",
+    }
+)
 
-# Pinned counts. These are the tripwire: changing the strict-xfail set
-# without editing these numbers fails the test.
+_EXPECTED_STRICT_XFAIL_NODEIDS = (
+    _DEEPSEEK_STRICT_XFAIL | _GPTOSS_STRICT_XFAIL | _HY3_STRICT_XFAIL
+)
+
+# Redundant count tripwires — make the coverage delta obvious even before
+# the reviewer diffs the nodeid set. Guarded against snapshot typos below.
 _EXPECTED_DEEPSEEK_COUNT = 9
 _EXPECTED_GPTOSS_COUNT = 1
 _EXPECTED_HY3_COUNT = 14
-_EXPECTED_STRICT_XFAIL_COUNT = (
-    _EXPECTED_DEEPSEEK_COUNT + _EXPECTED_GPTOSS_COUNT + _EXPECTED_HY3_COUNT
-)  # 24
+_EXPECTED_STRICT_XFAIL_COUNT = 24
 
 
 class _StrictXfailCollector:
@@ -147,60 +145,82 @@ def _collect_matrix() -> _StrictXfailCollector:
         ],
         plugins=[collector],
     )
-    # Collection-only must succeed (0 = OK, 5 = no tests collected is a bug here).
+    # Collection-only must succeed (0 = OK; 5 = no tests collected is a bug here).
     assert ret == 0, f"matrix collection failed with pytest exit code {ret}"
     assert collector.all_nodeids, "matrix collected zero cells — harness broke"
     return collector
 
 
+def test_snapshot_internal_consistency():
+    """The checked-in snapshot itself must be internally consistent.
+
+    Catches a typo in ``_EXPECTED_STRICT_XFAIL_NODEIDS`` (e.g. a duplicate
+    line silently collapsed by ``frozenset``) before it can mask a real
+    coverage drift in the assertion below.
+    """
+    assert len(_DEEPSEEK_STRICT_XFAIL) == _EXPECTED_DEEPSEEK_COUNT
+    assert len(_GPTOSS_STRICT_XFAIL) == _EXPECTED_GPTOSS_COUNT
+    assert len(_HY3_STRICT_XFAIL) == _EXPECTED_HY3_COUNT
+    assert len(_EXPECTED_STRICT_XFAIL_NODEIDS) == _EXPECTED_STRICT_XFAIL_COUNT
+    # The three family sets must be disjoint (a nodeid belongs to one family).
+    assert not (_DEEPSEEK_STRICT_XFAIL & _GPTOSS_STRICT_XFAIL)
+    assert not (_DEEPSEEK_STRICT_XFAIL & _HY3_STRICT_XFAIL)
+    assert not (_GPTOSS_STRICT_XFAIL & _HY3_STRICT_XFAIL)
+
+
 def test_strict_xfail_set_is_pinned():
-    """The applied strict-xfail set must equal the registered set exactly."""
+    """The applied strict-xfail set must equal the checked-in snapshot exactly."""
     collector = _collect_matrix()
     applied = collector.strict_xfail_nodeids
+    expected = set(_EXPECTED_STRICT_XFAIL_NODEIDS)
 
-    expected_deepseek = _expected_deepseek_nodeids(collector.all_nodeids)
-    expected_gptoss = _expected_gptoss_nodeids(collector.all_nodeids)
-    expected_hy3 = _expected_hy3_nodeids(collector.all_nodeids)
-    expected = expected_deepseek | expected_gptoss | expected_hy3
+    # Every snapshot nodeid must actually be collectable — else the snapshot
+    # references a renamed/deleted cell and the audit is silently vacuous.
+    stale = expected - collector.all_nodeids
+    assert not stale, (
+        "snapshot references nodeid(s) that no longer exist in the matrix — "
+        "a class was renamed/removed without updating this snapshot:\n"
+        + "\n".join(f"  ? {n}" for n in sorted(stale))
+    )
 
-    # --- Membership: exact set equality --------------------------------- #
+    # --- Membership: exact set equality (catches add / remove / swap) ---- #
     unexpected = applied - expected
     missing = expected - applied
     assert not unexpected, (
-        "NEW strict-xfail cell(s) not registered in conftest — a genuinely-"
-        "failing matrix cell may have been silently muted, shrinking the "
-        "required-PASS coverage of the release-artifact matrix gate. Register "
-        "it in the appropriate conftest constant and update the pinned counts "
-        "in test_strict_xfail_registry.py:\n"
-        + "\n".join(f"  + {n}" for n in sorted(unexpected))
+        "NEW strict-xfail cell(s) not in the checked-in snapshot — a "
+        "genuinely-failing matrix cell may have been silently muted, "
+        "shrinking the required-PASS coverage of the release-artifact matrix "
+        "gate. Add it to _EXPECTED_STRICT_XFAIL_NODEIDS (and bump the counts) "
+        "in test_strict_xfail_registry.py, and justify the coverage delta in "
+        "the PR:\n" + "\n".join(f"  + {n}" for n in sorted(unexpected))
     )
     assert not missing, (
-        "Registered strict-xfail cell(s) are NOT being applied — the conftest "
-        "marker hook or a registration constant drifted. Reconcile "
-        "conftest.pytest_collection_modifyitems with the registration "
-        "constants:\n" + "\n".join(f"  - {n}" for n in sorted(missing))
+        "Snapshot strict-xfail cell(s) are NOT being applied by the conftest "
+        "hook — either a registration constant drifted or a cell now passes. "
+        "Reconcile the snapshot with conftest.pytest_collection_modifyitems:\n"
+        + "\n".join(f"  - {n}" for n in sorted(missing))
     )
 
-    # --- Count: total tripwire ------------------------------------------ #
+    # --- Count: redundant total + per-family tripwire -------------------- #
     assert len(applied) == _EXPECTED_STRICT_XFAIL_COUNT, (
         f"strict-xfail cell count changed: expected "
         f"{_EXPECTED_STRICT_XFAIL_COUNT}, found {len(applied)}. Adding or "
         f"removing a strict-xfail must be an explicit, reviewed change — "
-        f"update _EXPECTED_STRICT_XFAIL_COUNT (and the per-family count) in "
-        f"test_strict_xfail_registry.py, and justify the coverage delta in "
-        f"the PR."
+        f"update _EXPECTED_STRICT_XFAIL_NODEIDS (and the per-family counts) "
+        f"in test_strict_xfail_registry.py, and justify the coverage delta."
     )
-
-    # --- Per-family breakdown: catch same-total shifts ------------------ #
-    assert len(expected_deepseek) == _EXPECTED_DEEPSEEK_COUNT, (
+    applied_deepseek = {n for n in applied if "[deepseek]" in n}
+    applied_gptoss = {n for n in applied if "[gptoss]" in n}
+    applied_hy3 = {n for n in applied if "[hy3]" in n}
+    assert len(applied_deepseek) == _EXPECTED_DEEPSEEK_COUNT, (
         f"DeepSeek strict-xfail count changed: expected "
-        f"{_EXPECTED_DEEPSEEK_COUNT}, found {len(expected_deepseek)}."
+        f"{_EXPECTED_DEEPSEEK_COUNT}, found {len(applied_deepseek)}."
     )
-    assert len(expected_gptoss) == _EXPECTED_GPTOSS_COUNT, (
+    assert len(applied_gptoss) == _EXPECTED_GPTOSS_COUNT, (
         f"gpt-oss strict-xfail count changed: expected "
-        f"{_EXPECTED_GPTOSS_COUNT}, found {len(expected_gptoss)}."
+        f"{_EXPECTED_GPTOSS_COUNT}, found {len(applied_gptoss)}."
     )
-    assert len(expected_hy3) == _EXPECTED_HY3_COUNT, (
+    assert len(applied_hy3) == _EXPECTED_HY3_COUNT, (
         f"Hy3 strict-xfail count changed: expected {_EXPECTED_HY3_COUNT}, "
-        f"found {len(expected_hy3)}."
+        f"found {len(applied_hy3)}."
     )
