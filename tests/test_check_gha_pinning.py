@@ -37,10 +37,10 @@ def _make_workflow(tmp_path: pathlib.Path, body: str) -> pathlib.Path:
     return wf
 
 
-# ---------- allowlisted owners pass ----------------------------------
+# ---------- all tag refs are violations -------------------------------
 
 
-def test_actions_owner_tag_is_allowed(cgp, tmp_path):
+def test_actions_owner_tag_is_violation(cgp, tmp_path):
     wf = _make_workflow(
         tmp_path,
         """
@@ -51,10 +51,10 @@ def test_actions_owner_tag_is_allowed(cgp, tmp_path):
               - uses: actions/setup-python@v5
         """,
     )
-    assert cgp.violations_in_file(wf) == []
+    assert len(cgp.violations_in_file(wf)) == 2
 
 
-def test_github_owner_tag_is_allowed(cgp, tmp_path):
+def test_github_owner_tag_is_violation(cgp, tmp_path):
     wf = _make_workflow(
         tmp_path,
         """
@@ -64,10 +64,10 @@ def test_github_owner_tag_is_allowed(cgp, tmp_path):
               - uses: github/codeql-action@v3
         """,
     )
-    assert cgp.violations_in_file(wf) == []
+    assert len(cgp.violations_in_file(wf)) == 1
 
 
-# ---------- third-party tag refs are violations ----------------------
+# ---------- third-party tag refs are violations -----------------------
 
 
 def test_third_party_tag_is_violation(cgp, tmp_path):
@@ -156,7 +156,7 @@ def test_main_clean_dir_exits_0(cgp, tmp_path):
         jobs:
           x:
             steps:
-              - uses: actions/checkout@v4
+              - uses: actions/checkout@0000000000000000000000000000000000000000
         """,
     )
     assert cgp.main(["--workflows-dir", str(tmp_path)]) == 0

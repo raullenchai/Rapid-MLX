@@ -1,0 +1,357 @@
+name: Release artifact acceptance matrix
+
+# This is intentionally dispatch-only until an isolated Apple-Silicon release
+# runner is registered.  It builds a candidate once, then every matrix shard
+# installs that exact wheel rather than importing the checkout.  See
+# docs/development/release-artifact-acceptance.md for the promotion procedure.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ref:
+        description: "Release-candidate commit, branch, or tag to build"
+        required: true
+        default: "main"
+        type: string
+      families:
+        description: "JSON list of feasible matrix families"
+        required: true
+        default: '["qwen36", "gemma4", "deepseek", "gptoss"]'
+        type: string
+      publish:
+        description: "After every matrix shard passes, publish this exact tagged candidate"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-artifact-matrix-${{ inputs.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build-candidate:
+    name: Build candidate distribution
+    runs-on: ubuntu-latest
+    outputs:
+      source_sha: ${{ steps.metadata.outputs.source_sha }}
+      version: ${{ steps.metadata.outputs.version }}
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ inputs.ref }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Validate matrix coverage selection
+        env:
+          FAMILIES: ${{ inputs.families }}
+          PUBLISH: ${{ inputs.publish }}
+        run: |
+          if [ "$PUBLISH" = "true" ]; then
+            python scripts/release_artifact_matrix.py \
+              --validate-families-json "$FAMILIES" \
+              --require-all-families
+          else
+            python scripts/release_artifact_matrix.py \
+              --validate-families-json "$FAMILIES"
+          fi
+
+      - name: Build and validate distributions
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install build twine
+          python -m build
+          twine check dist/*
+
+      - name: Create release artifact manifest
+        id: metadata
+        run: |
+          SOURCE_SHA="$(git rev-parse HEAD)"
+          VERSION="$(python -c "import tomllib; print(tomllib.load(open('pyproject.toml', 'rb'))['project']['version'])")"
+          python scripts/release_manifest.py create \
+            --dist-dir dist \
+            --output release-manifest.json \
+            --source-sha "$SOURCE_SHA" \
+            --version "$VERSION"
+          echo "source_sha=$SOURCE_SHA" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          cat release-manifest.json
+
+      - name: Require the canonical immutable tag for publication
+        if: inputs.publish
+        env:
+          REF: ${{ inputs.ref }}
+          SOURCE_SHA: ${{ steps.metadata.outputs.source_sha }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          if [ "$REF" != "v$VERSION" ]; then
+            echo "Publishing requires ref v$VERSION, not $REF" >&2
+            exit 1
+          fi
+          if [ "$GITHUB_REF" != "refs/tags/v$VERSION" ]; then
+            echo "Publishing requires this workflow to run from refs/tags/v$VERSION, not $GITHUB_REF" >&2
+            exit 1
+          fi
+          if [ "$SOURCE_SHA" != "$GITHUB_SHA" ]; then
+            echo "Candidate source SHA does not match the workflow tag commit" >&2
+            exit 1
+          fi
+
+      - name: Require a draft GitHub Release for publication
+        if: inputs.publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.metadata.outputs.version }}
+        run: |
+          DRAFT=$(gh release view "v$VERSION" --repo "$GITHUB_REPOSITORY" \
+            --json isDraft --jq '.isDraft')
+          if [ "$DRAFT" != "true" ]; then
+            echo "Publishing requires draft release v$VERSION; refusing the legacy published-release path" >&2
+            exit 1
+          fi
+
+      - name: Upload candidate distribution
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02  # v4
+        with:
+          name: release-candidate
+          path: |
+            dist/
+            release-manifest.json
+          if-no-files-found: error
+          retention-days: 14
+
+  artifact-matrix:
+    name: Artifact matrix (${{ matrix.family }})
+    needs: build-candidate
+    # This runner must be a dedicated Apple-Silicon host with an isolated
+    # Docker daemon.  The OpenHands cell mounts the Docker socket by design.
+    runs-on: [self-hosted, macOS, ARM64, rapid-mlx-release]
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        family: ${{ fromJSON(inputs.families) }}
+    steps:
+      - name: Checkout test harness at candidate ref
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
+        with:
+          ref: ${{ needs.build-candidate.outputs.source_sha }}
+
+      - name: Set up Python
+        uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065  # v5
+        with:
+          python-version: "3.12"
+
+      - name: Download candidate distribution
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5
+        with:
+          name: release-candidate
+          path: candidate
+
+      - name: Verify candidate artifact manifest
+        run: |
+          python scripts/release_manifest.py verify \
+            --dist-dir candidate/dist \
+            --manifest candidate/release-manifest.json
+
+      - name: Smoke both release distributions in clean environments
+        run: python scripts/release_smoke.py --dist-dir candidate/dist
+
+      - name: Run strict agent and framework matrix against the wheel
+        run: |
+          python scripts/release_artifact_matrix.py \
+            --dist-dir candidate/dist \
+            --family "${{ matrix.family }}" \
+            --port 18000 \
+            --server-timeout-seconds 900
+
+  publish:
+    name: Publish manifest-verified candidate to PyPI
+    needs: [build-candidate, artifact-matrix]
+    if: inputs.publish == true
+    runs-on: ubuntu-latest
+    # This is an identity boundary, not a second-person approval. Configure
+    # the environment to permit only v* tags; see the release acceptance doc.
+    environment: pypi
+    permissions:
+      id-token: write
+    steps:
+      - name: Download candidate distribution
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5
+        with:
+          name: release-candidate
+          path: candidate
+
+      - name: Verify manifest before obtaining a PyPI credential
+        # Keep this stdlib-only and inline: this OIDC-bearing job must never
+        # execute a script from the candidate checkout or candidate artifact.
+        env:
+          EXPECTED_SHA: ${{ needs.build-candidate.outputs.source_sha }}
+          EXPECTED_VERSION: ${{ needs.build-candidate.outputs.version }}
+        run: |
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          manifest = json.loads(Path("candidate/release-manifest.json").read_text())
+          if manifest.get("schema") != 1 or manifest.get("project") != "rapid-mlx":
+              raise SystemExit("invalid release manifest schema/project")
+          if manifest.get("version") != os.environ["EXPECTED_VERSION"]:
+              raise SystemExit("manifest version does not match the candidate tag")
+          if manifest.get("source_sha") != os.environ["EXPECTED_SHA"]:
+              raise SystemExit("manifest source SHA does not match the candidate")
+
+          artifacts = {item["filename"]: item for item in manifest.get("artifacts", [])}
+          files = sorted(path for path in Path("candidate/dist").iterdir() if path.is_file())
+          if len(artifacts) != 2:
+              raise SystemExit("manifest must contain exactly two artifacts")
+          if set(artifacts) != {path.name for path in files}:
+              raise SystemExit("manifest artifact names do not match candidate dist/")
+          for path in files:
+              item = artifacts[path.name]
+              digest = hashlib.sha256(path.read_bytes()).hexdigest()
+              if item.get("sha256") != digest or item.get("size") != path.stat().st_size:
+                  raise SystemExit(f"manifest digest/size mismatch for {path.name}")
+          wheels = [name for name in artifacts if name.endswith(".whl")]
+          if len(wheels) != 1:
+              raise SystemExit("manifest must contain exactly one wheel")
+          sdists = [name for name in artifacts if name.endswith(".tar.gz")]
+          if len(sdists) != 1:
+              raise SystemExit("manifest must contain exactly one sdist")
+          version = os.environ["EXPECTED_VERSION"]
+          if not wheels[0].startswith(f"rapid_mlx-{version}-"):
+              raise SystemExit("wheel filename does not match the candidate version")
+          if sdists[0] != f"rapid_mlx-{version}.tar.gz":
+              raise SystemExit("sdist filename does not match the candidate version")
+          print("release manifest verified")
+          PY
+
+      - name: Publish exact candidate to PyPI with attestations
+        # This official action produces PyPI publish attestations by default.
+        # A duplicate immutable version fails instead of silently accepting a
+        # different rebuild.
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
+        with:
+          packages-dir: candidate/dist/
+
+  verify-pypi:
+    name: Verify PyPI bytes and publish attestations
+    needs: [build-candidate, publish]
+    runs-on: ubuntu-latest
+    outputs:
+      sdist_url: ${{ steps.files.outputs.sdist_url }}
+      sdist_sha256: ${{ steps.files.outputs.sdist_sha256 }}
+      wheel_url: ${{ steps.files.outputs.wheel_url }}
+    steps:
+      - name: Download manifest-verified candidate
+        uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0  # v5
+        with:
+          name: release-candidate
+          path: candidate
+
+      - name: Fetch files from PyPI and compare the candidate hashes
+        id: files
+        env:
+          EXPECTED_VERSION: ${{ needs.build-candidate.outputs.version }}
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3 4 5 6 7 8 9 10; do
+            if python3 - <<'PY'; then
+          import hashlib
+          import json
+          import os
+          import urllib.request
+          from pathlib import Path
+
+          manifest = json.loads(Path("candidate/release-manifest.json").read_text())
+          expected = {item["filename"]: item for item in manifest["artifacts"]}
+          version = os.environ["EXPECTED_VERSION"]
+          with urllib.request.urlopen(
+              f"https://pypi.org/pypi/rapid-mlx/{version}/json", timeout=30
+          ) as response:
+              metadata = json.load(response)
+          files = {item["filename"]: item["url"] for item in metadata["urls"]}
+          if set(files) != set(expected):
+              raise SystemExit("PyPI file names do not match release manifest")
+          for name, item in expected.items():
+              digest = hashlib.sha256()
+              size = 0
+              with urllib.request.urlopen(files[name], timeout=60) as response:
+                  for chunk in iter(lambda: response.read(1024 * 1024), b""):
+                      digest.update(chunk)
+                      size += len(chunk)
+              if digest.hexdigest() != item["sha256"] or size != item["size"]:
+                  raise SystemExit(f"PyPI hash/size mismatch for {name}")
+          wheel_url = next(url for name, url in files.items() if name.endswith(".whl"))
+          sdist_name = next(name for name in files if name.endswith(".tar.gz"))
+          with open(os.environ["GITHUB_OUTPUT"], "a") as output:
+              output.write(f"wheel_url={wheel_url}\\n")
+              output.write(f"sdist_url={files[sdist_name]}\\n")
+              output.write(f"sdist_sha256={expected[sdist_name]['sha256']}\\n")
+          print("PyPI files match the release manifest")
+          PY
+              break
+            fi
+            if [ "$attempt" = 10 ]; then
+              echo "PyPI did not expose the expected files within five minutes" >&2
+              exit 1
+            fi
+            echo "Waiting for PyPI file propagation (attempt $attempt)"
+            sleep 30
+          done
+
+      - name: Verify PyPI publish attestations
+        env:
+          WHEEL_URL: ${{ steps.files.outputs.wheel_url }}
+          SDIST_URL: ${{ steps.files.outputs.sdist_url }}
+        run: |
+          python -m pip install --disable-pip-version-check --only-binary=:all: \
+            "pypi-attestations==0.0.29"
+          for artifact in "$WHEEL_URL" "$SDIST_URL"; do
+            pypi-attestations verify pypi \
+              --repository "https://github.com/${GITHUB_REPOSITORY}" \
+              "$artifact"
+          done
+
+  publish-github-release:
+    name: Publish the verified GitHub Release
+    needs: [build-candidate, verify-pypi]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish draft release after PyPI verification
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.build-candidate.outputs.version }}
+        run: |
+          gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
+
+  update-homebrew:
+    name: Promote verified sdist to Homebrew
+    needs: [build-candidate, verify-pypi, publish-github-release]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Update Homebrew formula
+        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0  # v3
+        with:
+          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          repository: raullenchai/homebrew-rapid-mlx
+          event-type: update-formula
+          client-payload: |
+            {
+              "version": "${{ needs.build-candidate.outputs.version }}",
+              "url": "${{ needs.verify-pypi.outputs.sdist_url }}",
+              "sha256": "${{ needs.verify-pypi.outputs.sdist_sha256 }}"
+            }

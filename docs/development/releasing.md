@@ -2,6 +2,9 @@
 
 This page documents the **end-to-end release flow** and the **safety nets** that catch the common failure modes.
 
+For the final gate that validates the exact wheel through real models, agents,
+and SDK/framework clients, see [Release artifact acceptance](release-artifact-acceptance.md).
+
 The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs added 30+ new model aliases (`granite4-tiny-4bit`, `smollm3-3b-4bit`, `deepseek-v4-flash-8bit`, `qwen3.6-*`, etc), but no version was bumped — leaving brew/PyPI users with a stale `rapid-mlx models` list. The safety nets below are designed to make that exact failure impossible to repeat without explicit human override.
 
 ## Quick reference
@@ -151,7 +154,7 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 
 | # | Gate | Side | Where it runs | Catches |
 |---|---|---|---|---|
-| G1 | `make release-smoke` — clean-room install + import | CI | `release-preflight.yml` (macOS-14) | dev mlx symbol drift (#408) |
+| G1 | Build wheel + sdist, then clean-room install + import both | CI | `release-preflight.yml` (macOS-14) | dev mlx symbol drift (#408), incomplete source distribution |
 | G2 | Codex review × 2 rounds | local | maintainer machine | every PR-author bug class |
 | G3 | CLI ↔ Config fidelity audit | CI | `ci.yml` lint (ubuntu) | silent CLI flag drop (#400) |
 | G4 | unit suite (≈4500 tests) | CI | `ci.yml` test-matrix (linux) + test-apple-silicon (macOS-14) | parser/router regressions |
@@ -172,7 +175,9 @@ This is the rule. No exceptions. CI doesn't fake-inference with a tiny model on 
 
 **Every bump PR** (title matches `chore: bump version to X.Y.Z`) → `release-preflight.yml` adds PF-1, G1, G10 (advisory), G11. The `preflight-summary` job aggregates them so the bump PR has a single required check.
 
-**Every PR + push to main** → `ci.yml` runs lint (ruff + audit + GHA-pin advisory + parser microbench) + test-matrix (linux curated) + test-apple-silicon (macOS-14 mlx-importing tests).
+**Every PR + push to main** → `ci.yml` runs lint (ruff + audit + mandatory
+GHA SHA-pin check + parser microbench) + test-matrix (linux curated) +
+test-apple-silicon (macOS-14 mlx-importing tests).
 
 ### M3 local — one command before pushing the bump commit
 
@@ -212,8 +217,8 @@ For PRs that are explicitly about perf changes (a kernel rewrite, a new fast pat
 |---|---|---|
 | `(#NN)` squash suffix breaks regex | `release_squash_subject` | PF-1 |
 | `skip-version-bump` escape-hatch label refire | `gotcha_skip_version_bump_label` | Auto-refires — `version-check.yml` subscribes to `labeled`/`unlabeled`/`edited`, so adding/removing the label or re-titling reruns the guard (no close+reopen needed) |
-| Mutable GitHub Actions tags as supply-chain vector | `pr_merge_sop` §7 | `scripts/check_gha_pinning.py` (advisory pending pinning cleanup) |
-| MLX upstream new module-scope calls (M5 #404) | `release_workflow` G10 | `scripts/check_mlx_upstream_calls.py` in `release-preflight.yml` |
+| Mutable GitHub Actions tags as supply-chain vector | `pr_merge_sop` §7 | `scripts/check_gha_pinning.py` (mandatory: every `uses:` is a 40-character SHA) |
+| MLX upstream new module-scope calls (M5 #404) | G10 in this release guide | `scripts/check_mlx_upstream_calls.py` in `release-preflight.yml` |
 | Codex-skip rationalization on bump PRs ("feels like just a version bump") | `feedback_release_sop_third_offense` | CI/M3 split — most skippable gates are now in CI, not in the human's hands |
 
 ### Adding a new gate

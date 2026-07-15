@@ -110,21 +110,24 @@ rapid-mlx serve qwen3.5-4b-4bit \
 Then run either matrix or a specific deep file. **Strict mode requires
 one family shard per booted server** — the ``_guard_family_matches_server``
 autouse fixture in ``conftest.py`` fails cells that ask for a family the
-running server doesn't serve. In practice this means: pick the family
-that matches your ``rapid-mlx serve`` alias and shard the other two into
-separate server boots (or CI jobs).
+running server doesn't serve. In practice this means: pick one of the four
+always-on families that matches your ``rapid-mlx serve`` alias and boot the
+other three in separate server shards (or CI jobs). Hy3 remains an
+Ultra-only weekly-Golden-Path lane.
 
 ```bash
-# All 44 agent cells; only the family matching the running server passes,
-# the other three skip (non-strict) or fail (strict). Use for local sanity;
-# for CI, prefer per-family shards below.
+# All 55 agent cells across five families. Locally, only the matching
+# four-family column passes; the other three feasible columns skip
+# (non-strict) or fail (strict), while Hy3 keeps its documented strict xfail.
+# The always-on release lane is the 44-cell, four-family subset below.
 pytest tests/integrations/test_agents_matrix.py -v
 
-# 12-cell framework matrix (same shard rule as above)
+# 15-cell framework matrix across five families (same shard rule as above)
 pytest tests/integrations/test_frameworks_matrix.py -v
 
-# Strict CI — per-family shard (this is the intended workflow: four
-# CI jobs, one per family, each with its own booted server).
+# Strict CI — per-family shard (the always-on lane uses four jobs, one per
+# feasible family, each with its own booted server). Release artifact
+# acceptance also sets RAPID_MLX_MATRIX_NO_SKIPS=1.
 RAPID_MLX_MATRIX_STRICT=1 RAPID_MLX_AGENT_MATRIX_FAMILY=qwen36 \
     pytest tests/integrations/test_agents_matrix.py
 
@@ -151,6 +154,7 @@ python3 tests/integrations/test_librechat_docker.py
 | `RAPID_MLX_BASE_URL` | `http://localhost:8000/v1` | Where matrix clients point |
 | `RAPID_MLX_AGENT_MATRIX_FAMILY` | (all) | Restrict to `qwen36` / `gemma4` / `deepseek` / `gptoss` / `hy3` (`hy3` is Ultra-only, weekly Golden Path only) |
 | `RAPID_MLX_MATRIX_STRICT` | `0` | If `1`, missing-server → fail (default: skip) |
+| `RAPID_MLX_MATRIX_NO_SKIPS` | `0` | If `1`, the release artifact lane turns ordinary matrix skips (missing SDK, Docker, Aider, etc.) into failures; documented strict xfails remain xfails |
 
 ## Cheap-alias policy
 

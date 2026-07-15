@@ -1,0 +1,6 @@
+# The release acceptance workflow deliberately targets this dedicated,
+# self-hosted Apple-Silicon runner. Keep the label here so actionlint can
+# distinguish it from a typo in a GitHub-hosted runner name.
+self-hosted-runner:
+  labels:
+    - rapid-mlx-release

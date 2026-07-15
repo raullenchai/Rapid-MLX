@@ -174,6 +174,20 @@ def _strict() -> bool:
     return os.environ.get("RAPID_MLX_MATRIX_STRICT", "").strip() == "1"
 
 
+def _no_skips() -> bool:
+    """Return whether release acceptance treats a skipped matrix cell as red.
+
+    ``RAPID_MLX_MATRIX_STRICT`` already turns a missing/mismatched server
+    into a failure.  Client-library and host-tool prerequisites historically
+    used plain ``pytest.skip`` so a release runner missing Docker, Aider, or
+    an SDK could still look green.  The artifact-release runner sets this
+    stricter opt-in to make every ordinary skip actionable.  Documented,
+    strict ``xfail`` cases retain their own semantics and are not changed.
+    """
+
+    return os.environ.get("RAPID_MLX_MATRIX_NO_SKIPS", "").strip() == "1"
+
+
 def matrix_strict_mode() -> bool:
     """Public accessor for ``RAPID_MLX_MATRIX_STRICT``.
 
@@ -183,6 +197,34 @@ def matrix_strict_mode() -> bool:
     before running the matrix.
     """
     return _strict()
+
+
+@pytest.hookimpl(hookwrapper=True)
+def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[object]):
+    """Reject ordinary skips when the release artifact matrix asks for it."""
+
+    outcome = yield
+    report = outcome.get_result()
+    if not _no_skips() or not report.skipped:
+        return
+
+    # ``wasxfail`` is set by pytest for the exact, documented xfail cases
+    # registered in ``pytest_collection_modifyitems`` above.  Those are
+    # explicit release exceptions; a missing prerequisite is not.
+    if getattr(report, "wasxfail", None):
+        return
+
+    if not any(module in item.nodeid for module in _INTEGRATION_MATRIX_MODULES):
+        return
+
+    report.outcome = "failed"
+    report.longrepr = (
+        str(item.path),
+        0,
+        "release artifact matrix forbids skipped cells; install the missing "
+        "client/host prerequisite or record a narrow strict xfail with an "
+        "upstream issue.",
+    )
 
 
 def strict_skip_or_fail(reason: str) -> None:
