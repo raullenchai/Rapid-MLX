@@ -22,7 +22,13 @@ every case so the real hook logic is covered without booting a server.
 
 from __future__ import annotations
 
+import subprocess
+import sys
+from pathlib import Path
+
 from tests.integrations import conftest as matrix_conftest
+
+_REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _MATRIX_NODEID = (
     "tests/integrations/test_agents_matrix.py::TestOpenCode::test_smoke[deepseek]"
@@ -99,3 +105,60 @@ def test_skip_on_non_matrix_test_is_left_alone():
                 )
                 is False
             )
+
+
+# --------------------------------------------------------------------------- #
+# End-to-end: the real hook must fail a skipped cell under NO_SKIPS.
+# --------------------------------------------------------------------------- #
+#
+# The unit tests above exercise the pure decision helper; this subprocess test
+# proves the ``pytest_runtest_makereport`` hook is actually WIRED to it, so
+# deleting or breaking the hook cannot leave the no-skip suite green (codex
+# review). With no server reachable, every matrix cell skips at the
+# family-guard fixture; under ``RAPID_MLX_MATRIX_NO_SKIPS=1`` the hook must
+# convert those skips to failures and the pytest process must exit non-zero.
+
+
+def test_no_skips_hook_fails_a_skipped_cell_end_to_end():
+    env_no_skips = {"RAPID_MLX_MATRIX_NO_SKIPS": "1"}
+    # A plain (non-strict-xfail) matrix cell: must be converted to failure.
+    plain_cell = (
+        "tests/integrations/test_agents_matrix.py::TestCodexCLI::test_smoke[deepseek]"
+    )
+    result = _run_pytest_cell(plain_cell, env_no_skips)
+    assert result.returncode != 0, (
+        "NO_SKIPS run of a skipped matrix cell should FAIL, but pytest exited 0.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def test_no_skips_off_leaves_a_skipped_cell_green_end_to_end():
+    # Sanity: without the env var, the same skipped cell stays a green skip
+    # (the gate only bites when the release runner asks for it).
+    plain_cell = (
+        "tests/integrations/test_agents_matrix.py::TestCodexCLI::test_smoke[deepseek]"
+    )
+    result = _run_pytest_cell(plain_cell, env={})
+    assert result.returncode == 0, (
+        "Without NO_SKIPS, a skipped matrix cell should stay green (exit 0), "
+        f"but pytest exited {result.returncode}.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+
+
+def _run_pytest_cell(nodeid: str, env: dict[str, str]) -> subprocess.CompletedProcess:
+    import os
+
+    run_env = os.environ.copy()
+    # Ensure no operator server is picked up: point at an unroutable port so
+    # the family guard skips every cell deterministically.
+    run_env["RAPID_MLX_BASE_URL"] = "http://127.0.0.1:1/v1"
+    run_env.update(env)
+    return subprocess.run(
+        [sys.executable, "-m", "pytest", nodeid, "-p", "no:cacheprovider", "-q"],
+        cwd=str(_REPO_ROOT),
+        env=run_env,
+        capture_output=True,
+        text=True,
+        timeout=120,
+    )

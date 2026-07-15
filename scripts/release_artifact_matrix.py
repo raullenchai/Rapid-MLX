@@ -185,6 +185,15 @@ def _assert_port_available(port: int) -> None:
     readiness gate on another process's response. Binding the port ourselves
     proves it is genuinely free; we release it immediately so the candidate
     server can claim it.
+
+    There is a narrow TOCTOU window between releasing this probe socket and the
+    candidate server binding. It is not exploitable in practice: if a foreign
+    listener grabbed the port in that window, the candidate ``rapid-mlx serve``
+    would fail to bind and exit, and ``_wait_for_server``'s ``process.poll()``
+    liveness check surfaces that as "candidate server exited early" rather than
+    accepting the foreign listener's response. The alternative — handing the
+    bound socket to the child — is not possible because ``rapid-mlx serve``
+    opens its own listening socket.
     """
 
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)

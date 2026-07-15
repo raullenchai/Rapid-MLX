@@ -28,27 +28,87 @@ import re
 import sys
 from pathlib import Path
 
-# uses: <owner>/<repo>[/path]@<ref>
-USES_RE = re.compile(
-    r"^\s*-?\s*uses:\s*([^@\s]+)@([^\s#]+)",
-    re.MULTILINE,
-)
+import yaml
+
 SHA_RE = re.compile(r"^[0-9a-f]{40}$")
+# A container image digest, e.g. ``docker://ghcr.io/org/img@sha256:<64 hex>``.
+DIGEST_RE = re.compile(r"@sha256:[0-9a-f]{64}$")
+
+
+class _LineLoader(yaml.SafeLoader):
+    """SafeLoader that records the 1-based line number of every mapping value.
+
+    Parsing the YAML (rather than regex-scanning raw text) means a quoted key
+    (``"uses": ...``) or a quoted value (``uses: "actions/checkout@v4"``) is
+    validated exactly like the bare form — the previous ``^\\s*uses:`` regex
+    silently skipped both, leaving a mutable action reference green.
+    """
+
+
+def _construct_mapping(loader: _LineLoader, node: yaml.MappingNode):
+    mapping = {}
+    for key_node, value_node in node.value:
+        key = loader.construct_object(key_node)
+        value = loader.construct_object(value_node)
+        mapping[key] = value
+        if key == "uses":
+            # Stash the source line so a violation can point at it.
+            mapping.setdefault("__uses_line__", value_node.start_mark.line + 1)
+    return mapping
+
+
+_LineLoader.add_constructor(
+    yaml.resolver.BaseResolver.DEFAULT_MAPPING_TAG, _construct_mapping
+)
+
+
+def _iter_uses(node: object):
+    """Yield ``(uses_value, line_no)`` for every ``uses:`` mapping in the tree."""
+    if isinstance(node, dict):
+        if "uses" in node and isinstance(node["uses"], str):
+            yield node["uses"], node.get("__uses_line__")
+        for value in node.values():
+            yield from _iter_uses(value)
+    elif isinstance(node, list):
+        for item in node:
+            yield from _iter_uses(item)
+
+
+def _is_pinned(uses: str) -> bool:
+    """True iff ``uses`` is an acceptably-immutable reference.
+
+    * Local actions (``./path`` or ``.`` — same-repo, no supply-chain hop) pass.
+    * Container actions pinned by ``@sha256:<digest>`` pass.
+    * Remote ``owner/repo[/path]@<ref>`` must pin ``<ref>`` to a 40-char SHA.
+    """
+    if uses.startswith("./") or uses == ".":
+        return True
+    if uses.startswith("docker://"):
+        return bool(DIGEST_RE.search(uses))
+    if "@" not in uses:
+        # No ref at all on a remote action — mutable by definition.
+        return False
+    ref = uses.rsplit("@", 1)[1]
+    return bool(SHA_RE.fullmatch(ref))
 
 
 def violations_in_file(path: Path) -> list[str]:
     """Return a list of human-readable violations for one workflow file."""
     out: list[str] = []
     text = path.read_text()
-    for m in USES_RE.finditer(text):
-        action, ref = m.group(1), m.group(2)
-        if SHA_RE.fullmatch(ref):
-            continue
-        line_no = text[: m.start()].count("\n") + 1
-        out.append(
-            f"{path}:{line_no}: uses: {action}@{ref} — action must pin "
-            "to a 40-char SHA, not a tag/branch"
-        )
+    try:
+        documents = list(yaml.load_all(text, Loader=_LineLoader))
+    except yaml.YAMLError as exc:
+        return [f"{path}: unparseable YAML — cannot verify action pinning ({exc})"]
+    for document in documents:
+        for uses, line_no in _iter_uses(document):
+            if _is_pinned(uses):
+                continue
+            where = f"{path}:{line_no}" if line_no else str(path)
+            out.append(
+                f"{where}: uses: {uses} — action must pin to a 40-char SHA "
+                "(or sha256 digest for container actions), not a tag/branch"
+            )
     return out
 
 

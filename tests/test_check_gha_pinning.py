@@ -146,6 +146,100 @@ def test_third_party_40_char_sha_uppercase_is_rejected(cgp, tmp_path):
     assert len(cgp.violations_in_file(wf)) == 1
 
 
+# ---------- quoted YAML forms must NOT bypass the check ---------------
+
+
+def test_quoted_uses_key_tag_is_violation(cgp, tmp_path):
+    """``"uses": ...`` (quoted key) is valid YAML and must be caught.
+
+    The old raw-text ``^\\s*uses:`` regex silently skipped this, leaving a
+    mutable action reference green (codex review).
+    """
+    wf = _make_workflow(
+        tmp_path,
+        """
+        jobs:
+          x:
+            steps:
+              - "uses": actions/checkout@v4
+        """,
+    )
+    assert len(cgp.violations_in_file(wf)) == 1
+
+
+def test_quoted_uses_value_tag_is_violation(cgp, tmp_path):
+    """``uses: "actions/checkout@v4"`` (quoted value) must be caught."""
+    wf = _make_workflow(
+        tmp_path,
+        """
+        jobs:
+          x:
+            steps:
+              - uses: "actions/checkout@v4"
+        """,
+    )
+    assert len(cgp.violations_in_file(wf)) == 1
+
+
+def test_quoted_uses_value_sha_is_accepted(cgp, tmp_path):
+    """A quoted value that IS a 40-char SHA must still pass."""
+    sha = "0" * 40
+    wf = _make_workflow(
+        tmp_path,
+        f"""
+        jobs:
+          x:
+            steps:
+              - uses: "actions/checkout@{sha}"
+        """,
+    )
+    assert cgp.violations_in_file(wf) == []
+
+
+def test_local_action_is_accepted(cgp, tmp_path):
+    """A same-repo local action (``./...``) has no supply-chain hop → pass."""
+    wf = _make_workflow(
+        tmp_path,
+        """
+        jobs:
+          x:
+            steps:
+              - uses: ./.github/actions/setup
+        """,
+    )
+    assert cgp.violations_in_file(wf) == []
+
+
+def test_container_digest_is_accepted_but_tag_is_violation(cgp, tmp_path):
+    """Container actions must pin a sha256 digest; a mutable tag is a violation."""
+    good = _make_workflow(
+        tmp_path,
+        """
+        jobs:
+          x:
+            steps:
+              - uses: docker://ghcr.io/org/img@sha256:{d}
+        """.replace("{d}", "0" * 64),
+    )
+    assert good.read_text()  # sanity
+    assert cgp.violations_in_file(good) == []
+
+    bad = tmp_path / "bad.yml"
+    import textwrap
+
+    bad.write_text(
+        textwrap.dedent(
+            """
+            jobs:
+              x:
+                steps:
+                  - uses: docker://ghcr.io/org/img:latest
+            """
+        )
+    )
+    assert len(cgp.violations_in_file(bad)) == 1
+
+
 # ---------- entry point ----------------------------------------------
 
 

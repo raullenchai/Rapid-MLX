@@ -80,6 +80,9 @@ jobs:
     environment: pypi
     permissions:
       id-token: write
+      # contents: read is required for the tag re-resolution step's
+      # authenticated `gh api` call below.
+      contents: read
     outputs:
       sdist_sha256: ${{ steps.verify-manifest.outputs.sdist_sha256 }}
     steps:
@@ -141,6 +144,33 @@ jobs:
               output.write(f"sdist_sha256={artifacts[sdists[0]]['sha256']}\n")
           print("release manifest verified")
           PY
+
+      - name: Re-resolve the tag and require it still points at the manifest SHA
+        # TOCTOU guard: this job trusts the frozen ``github.sha`` from the
+        # `release: published` event, but a tag force-moved or recreated after
+        # the event fired would let PyPI receive artifacts built from a
+        # different commit than the tag now identifies. Re-resolve
+        # refs/tags/$GITHUB_REF_NAME (dereferencing annotated tags) right
+        # before the credential and require it to equal the manifest SHA.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ github.sha }}
+          TAG: ${{ github.event.release.tag_name }}
+        run: |
+          set -euo pipefail
+          REF=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+            --jq '.object.sha')
+          TYPE=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+            --jq '.object.type')
+          if [ "$TYPE" = "tag" ]; then
+            REF=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${REF}" \
+              --jq '.object.sha')
+          fi
+          if [ "$REF" != "$EXPECTED_SHA" ]; then
+            echo "Tag ${TAG} now points at ${REF}, not the manifest SHA ${EXPECTED_SHA}; refusing to publish" >&2
+            exit 1
+          fi
+          echo "Tag ${TAG} still resolves to the manifest SHA ${EXPECTED_SHA}"
 
       - name: Publish to PyPI
         # Duplicate files fail loudly. A retry must consume the same
