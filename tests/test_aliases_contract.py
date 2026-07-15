@@ -45,6 +45,12 @@ ALLOWED_PROFILE_KEYS: frozenset[str] = frozenset(
     {
         "hf_path",
         "modality",
+        # State-pin (parallel to ``is_hybrid``): serve a vision-config
+        # checkpoint through the text-only mlx-lm lane. Translated to the
+        # registered ``force_text`` routing kwarg (#393) in
+        # server.load_model. Used by Ternary-Bonsai-27B (mlx-vlm can't
+        # drive its bundled vision tower).
+        "is_text_only",
         "tool_call_parser",
         "reasoning_parser",
         "is_hybrid",
@@ -1573,4 +1579,79 @@ def test_glm_5_2_reap50_alias_resolves_to_pipenetwork_4bit() -> None:
         "glm-5.2-reap50: sparse-expert MoE — DFlash drafter hidden-state "
         "fusion misfires on expert-routing churn (see "
         "test_dflash_excludes_moe_architectures)."
+    )
+
+
+# =============================================================================
+# is_text_only routing state-pin (#393 declarative default for force_text)
+# =============================================================================
+
+
+@pytest.mark.parametrize("alias", _alias_ids())
+def test_is_text_only_requires_text_modality(alias: str) -> None:
+    """``is_text_only=True`` serves a vision-config checkpoint through the
+    AR text mlx-lm lane (translated to the ``force_text`` routing kwarg).
+    It is a contradiction on any non-``text`` modality (which already picks
+    its own dedicated lane, e.g. text-diffusion → DiffusionEngine).
+    ``_coerce`` rejects the combination at load; this contract test pins the
+    invariant at PR time so a future edit can't smuggle ``is_text_only`` on
+    a diffusion / vision alias."""
+    profile = list_profiles()[alias]
+    if profile.is_text_only:
+        assert profile.modality == "text", (
+            f"{alias}: is_text_only=True requires modality='text' (it serves "
+            f"the checkpoint through the AR text mlx-lm lane); got "
+            f"modality={profile.modality!r}."
+        )
+
+
+def test_bonsai_27b_ternary_routes_through_text_loader() -> None:
+    """PrismML Ternary-Bonsai-27B — 27B-class quality at 5.9 GB (ternary
+    2-bit) that must load through the text-only mlx-lm ``qwen3_5`` lane.
+
+    The checkpoint's ``config.json`` declares ``vision_config`` and a
+    ``Qwen3_5ForConditionalGeneration`` architecture, AND its safetensors
+    ship 333 real ``vision_tower.*`` tensors — so ``is_mllm_model``
+    auto-detection routes it to the mlx-vlm MLLM engine, where the
+    GatedDeltaNet/SSM forward+cache path garbles output (a decisive test
+    confirmed the same-arch 4-bit Qwen3.5-27B is ALSO garbage under
+    mlx-vlm but coherent under mlx-lm → the loader, not the quant/arch).
+    ``is_text_only=True`` is the declarative state-pin for the pre-existing
+    ``--no-mllm`` / ``force_text`` routing override (#393): it serves the
+    coherent mlx-lm text path with no CLI flag.
+
+    Pinned so a bulk edit can't (a) drop ``is_text_only`` — which would
+    silently re-route to the broken mlx-vlm path — or (b) re-point the
+    alias away from the ternary MLX-2bit repo.
+
+    HF: https://huggingface.co/prism-ml/Ternary-Bonsai-27B-mlx-2bit
+    """
+    profile = list_profiles()["bonsai-27b-2bit"]
+    assert profile.hf_path == "prism-ml/Ternary-Bonsai-27B-mlx-2bit", (
+        f"bonsai-27b-2bit: hf_path drifted off the ternary MLX-2bit repo. "
+        f"Got {profile.hf_path!r}."
+    )
+    assert profile.is_text_only is True, (
+        "bonsai-27b-2bit: MUST set is_text_only=True. The checkpoint declares "
+        "vision_config + ships vision_tower weights, so mlx-vlm "
+        "auto-detection would route it to the MLLM engine where its "
+        "GatedDeltaNet path garbles output. is_text_only pins the coherent "
+        "mlx-lm text lane (via the force_text routing kwarg)."
+    )
+    assert profile.modality == "text", (
+        f"bonsai-27b-2bit: modality must be 'text' (force_text drives the AR "
+        f"mlx-lm lane). Got {profile.modality!r}."
+    )
+    assert profile.reasoning_parser == "qwen3", (
+        f"bonsai-27b-2bit: base is Qwen3.5; the chat template emits "
+        f"`<think>...</think>` blocks — route through ``qwen3`` so the trace "
+        f"lands in reasoning_content. Got {profile.reasoning_parser!r}."
+    )
+    assert profile.tool_call_parser == "hermes", (
+        f"bonsai-27b-2bit: Qwen3.5 tool envelope is Hermes-style "
+        f"`<tool_call>{{...}}</tool_call>` (verified empirically over HTTP). "
+        f"Got {profile.tool_call_parser!r}."
+    )
+    assert profile.supports_spec_decode is False, (
+        "bonsai-27b-2bit: no drafter benched for the ternary checkpoint."
     )

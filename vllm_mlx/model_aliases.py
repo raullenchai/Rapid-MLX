@@ -122,6 +122,17 @@ def _coerce(alias: str, value: object) -> AliasProfile:
         {
             "hf_path",
             "modality",
+            # State-pin (parallel to ``is_hybrid`` / ``is_moe``): serve
+            # this checkpoint through the text mlx-lm lane even though its
+            # config declares a vision tower. server.load_model translates
+            # it into the pre-existing, registered ``force_text`` kwarg
+            # (``--mllm`` / ``--no-mllm`` pair in
+            # tests/test_no_mllm_flag.py::AUTO_ROUTING_FLAG_PAIRS), so the
+            # routing decision still flows through the audited kwarg
+            # surface. Used by Ternary-Bonsai-27B (mlx-vlm can't drive its
+            # bundled vision tower; mlx-lm's qwen3_5 serves the text
+            # backbone coherently).
+            "is_text_only",
             "tool_call_parser",
             "reasoning_parser",
             "is_hybrid",
@@ -350,12 +361,25 @@ def _coerce(alias: str, value: object) -> AliasProfile:
             f"{sorted(_VALID_MODALITIES)}, got {raw_modality!r}"
         )
     modality: Modality = raw_modality  # type: ignore[assignment]
+    # ``is_text_only`` — state-pin that serves a vision-config checkpoint
+    # through the AR text mlx-lm lane (translated to the ``force_text``
+    # routing kwarg in server.load_model). Only meaningful on the ``text``
+    # modality: a non-``text`` modality already picks its own dedicated
+    # lane (text-diffusion → DiffusionEngine), so combining the two is a
+    # contradiction that must fail loud rather than silently pick one.
+    is_text_only = _strict_bool("is_text_only", False)
     # Capability gates that only make sense for the auto-regressive LLM
     # lane. Catching the mismatch here keeps the diffusion / vision /
     # image-gen lanes from silently inheriting a routing decision that
     # would never apply to them — and makes a bad aliases.json entry
     # fail loud at load instead of misroute at request time.
     if modality != "text":
+        if is_text_only:
+            raise ValueError(
+                f"alias {alias!r}: is_text_only=true is only valid when "
+                f"modality='text' (it serves the checkpoint through the AR "
+                f"text mlx-lm lane); got modality={modality!r}"
+            )
         if _strict_bool("supports_spec_decode", True):
             raise ValueError(
                 f"alias {alias!r}: supports_spec_decode must be false when "
@@ -376,6 +400,7 @@ def _coerce(alias: str, value: object) -> AliasProfile:
     return AliasProfile(
         hf_path=hf_path,
         modality=modality,
+        is_text_only=is_text_only,
         tool_call_parser=value.get("tool_call_parser"),
         reasoning_parser=value.get("reasoning_parser"),
         is_hybrid=_strict_bool("is_hybrid", False),

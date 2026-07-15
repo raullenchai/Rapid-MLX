@@ -113,8 +113,18 @@ def _resolve_context_window(model_id: str) -> int | None:
     return window
 
 
-def _reported_modality(model_id: str, profile_modality: str) -> str:
+def _reported_modality(
+    model_id: str, profile_modality: str, is_text_only: bool = False
+) -> str:
     """Return the modality the wire-level ``/v1/models`` should advertise.
+
+    ``is_text_only`` is authoritative: when the alias pins the checkpoint
+    to the text lane (``is_text_only=True`` — e.g. Ternary-Bonsai-27B,
+    whose vision tower we don't serve), the wire must advertise ``text``
+    and never ``image``, even though the checkpoint's ``config.json``
+    declares a ``vision_config`` that ``is_mllm_model`` would otherwise
+    match. Advertising vision for a text-only-served model would make
+    clients send image content the engine can't accept.
 
     ``AliasProfile.modality`` is an engine-routing discriminator:
     ``text`` selects the AR ``BatchedEngine`` lane, ``text-diffusion``
@@ -138,6 +148,10 @@ def _reported_modality(model_id: str, profile_modality: str) -> str:
     """
     if profile_modality != "text":
         return profile_modality
+    if is_text_only:
+        # Operator pinned the text lane for a vision-config checkpoint —
+        # authoritative, do not consult is_mllm_model.
+        return "text"
     try:
         if is_mllm_model(model_id):
             return "image"
@@ -170,7 +184,9 @@ def _locked_embedding_id() -> str | None:
         return None
 
 
-def _is_vlm(model_id: str, profile_modality: str | None) -> bool:
+def _is_vlm(
+    model_id: str, profile_modality: str | None, is_text_only: bool = False
+) -> bool:
     """Return True when ``model_id`` accepts image input.
 
     Single source of truth for VLM detection on the wire. Combines
@@ -200,6 +216,10 @@ def _is_vlm(model_id: str, profile_modality: str | None) -> bool:
         # below, but the capability tag is decided independently.
         if profile_modality == "image":
             return True
+    if is_text_only:
+        # Operator pinned the text lane for a vision-config checkpoint —
+        # authoritative, do not advertise the vision capability.
+        return False
     try:
         return bool(is_mllm_model(model_id))
     except Exception:  # noqa: BLE001
@@ -273,6 +293,7 @@ def _detect_capabilities(
     model_id: str,
     profile_modality: str | None = None,
     profile_tool_parser: str | None = None,
+    is_text_only: bool = False,
 ) -> list[str]:
     """Compute the ``capabilities`` tag list for ``model_id``.
 
@@ -308,7 +329,7 @@ def _detect_capabilities(
         return ["embedding"]
 
     caps: list[str] = ["text"]
-    if _is_vlm(model_id, profile_modality):
+    if _is_vlm(model_id, profile_modality, is_text_only):
         caps.append("vision")
     if _tools_capable(model_id, profile_tool_parser):
         caps.append("tools")
@@ -774,6 +795,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         model_id,
         profile_modality=profile.modality,
         profile_tool_parser=eff_tool,
+        is_text_only=profile.is_text_only,
     )
     return ModelInfo(
         id=model_id,
@@ -782,7 +804,7 @@ def _build_model_info(model_id: str) -> ModelInfo:
         is_moe=profile.is_moe,
         tool_call_parser=eff_tool,
         reasoning_parser=eff_reasoning,
-        modality=_reported_modality(model_id, profile.modality),
+        modality=_reported_modality(model_id, profile.modality, profile.is_text_only),
         capabilities=capabilities,
         context_window=context_window,
         audio_lanes=audio_lanes,
