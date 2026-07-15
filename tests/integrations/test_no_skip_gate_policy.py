@@ -119,15 +119,33 @@ def test_skip_on_non_matrix_test_is_left_alone():
 # convert those skips to failures and the pytest process must exit non-zero.
 
 
+# pytest exit codes (from ``pytest.ExitCode``): 0=all passed, 1=tests failed,
+# 2=interrupted, 3=internal error, 4=usage error, 5=no tests collected. We
+# require EXACTLY 1 (a genuine test failure) so a collection error / conftest
+# crash / usage error cannot make the assertion pass on a non-zero fluke.
+_EXIT_TESTS_FAILED = 1
+_EXIT_ALL_PASSED = 0
+# The exact message the no-skip hook injects when it converts a skip.
+_HOOK_MESSAGE = "release artifact matrix forbids skipped cells"
+
+_PLAIN_CELL = (
+    "tests/integrations/test_agents_matrix.py::TestCodexCLI::test_smoke[deepseek]"
+)
+
+
 def test_no_skips_hook_fails_a_skipped_cell_end_to_end():
-    env_no_skips = {"RAPID_MLX_MATRIX_NO_SKIPS": "1"}
-    # A plain (non-strict-xfail) matrix cell: must be converted to failure.
-    plain_cell = (
-        "tests/integrations/test_agents_matrix.py::TestCodexCLI::test_smoke[deepseek]"
+    result = _run_pytest_cell(_PLAIN_CELL, {"RAPID_MLX_MATRIX_NO_SKIPS": "1"})
+    combined = result.stdout + result.stderr
+    assert result.returncode == _EXIT_TESTS_FAILED, (
+        "NO_SKIPS run of a skipped matrix cell must exit with pytest code 1 "
+        f"(tests failed), got {result.returncode} — a non-1 non-zero code "
+        "means a collection/internal/usage error, not the hook doing its job.\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
-    result = _run_pytest_cell(plain_cell, env_no_skips)
-    assert result.returncode != 0, (
-        "NO_SKIPS run of a skipped matrix cell should FAIL, but pytest exited 0.\n"
+    assert _HOOK_MESSAGE in combined, (
+        "the failure must carry the no-skip hook's specific message "
+        f"({_HOOK_MESSAGE!r}) — otherwise the cell failed for an unrelated "
+        f"reason and this test is not proving the hook is wired.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
 
@@ -135,14 +153,14 @@ def test_no_skips_hook_fails_a_skipped_cell_end_to_end():
 def test_no_skips_off_leaves_a_skipped_cell_green_end_to_end():
     # Sanity: without the env var, the same skipped cell stays a green skip
     # (the gate only bites when the release runner asks for it).
-    plain_cell = (
-        "tests/integrations/test_agents_matrix.py::TestCodexCLI::test_smoke[deepseek]"
-    )
-    result = _run_pytest_cell(plain_cell, env={})
-    assert result.returncode == 0, (
+    result = _run_pytest_cell(_PLAIN_CELL, env={})
+    assert result.returncode == _EXIT_ALL_PASSED, (
         "Without NO_SKIPS, a skipped matrix cell should stay green (exit 0), "
         f"but pytest exited {result.returncode}.\n"
         f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert _HOOK_MESSAGE not in (result.stdout + result.stderr), (
+        "the no-skip hook must NOT fire when RAPID_MLX_MATRIX_NO_SKIPS is unset."
     )
 
 
