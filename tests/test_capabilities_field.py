@@ -548,3 +548,31 @@ class TestIsTextOnlyOverride:
         )
         assert "vision" not in caps, caps
         assert "text" in caps and "tools" in caps
+
+    def test_build_model_info_forwards_is_text_only_for_bonsai_alias(self, monkeypatch):
+        """Integration guard (codex #1116 NIT): the direct-helper tests
+        above stay green even if ``_build_model_info`` STOPS forwarding
+        ``profile.is_text_only`` into ``_reported_modality`` /
+        ``_detect_capabilities``. This test drives the real
+        ``_build_model_info`` on the ``bonsai-27b-2bit`` alias — whose
+        profile pins ``is_text_only=True`` — with the VLM detector forced
+        True (mirrors the checkpoint's local-dir verdict). If the
+        forwarding is dropped, the detector's True leaks through and this
+        fails: modality flips to ``image`` and ``vision`` appears.
+        """
+        from vllm_mlx.routes import models as models_route
+
+        # Force the detector to claim VLM for this id — without the
+        # is_text_only forwarding, the wire would advertise vision.
+        monkeypatch.setattr(models_route, "is_mllm_model", lambda _mid: True)
+
+        info = models_route._build_model_info("bonsai-27b-2bit")
+        assert info.modality == "text", (
+            f"bonsai-27b-2bit is_text_only pin not forwarded through "
+            f"_build_model_info — modality leaked to {info.modality!r}."
+        )
+        assert "vision" not in info.capabilities, (
+            f"bonsai-27b-2bit is_text_only pin not forwarded — vision "
+            f"capability leaked: {info.capabilities}."
+        )
+        assert "text" in info.capabilities

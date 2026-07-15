@@ -147,15 +147,18 @@ class ModelProfile:
     # governed ``--no-mllm`` / ``force_text`` routing override (#393,
     # registered in ``tests/test_no_mllm_flag.py::AUTO_ROUTING_FLAG_PAIRS``
     # under the ``--mllm`` / ``--no-mllm`` pair): ``server.load_model``
-    # translates ``is_text_only=True`` into the registered ``force_text``
-    # kwarg, so the routing decision still flows through the same audited
-    # kwarg surface — no new escape hatch. Applied only when the operator
-    # did NOT pass an explicit ``--mllm``; an explicit ``--mllm`` still
-    # reaches the ``force_mllm``/``force_text`` mutual-exclusion guard and
-    # fails loudly rather than silently flipping. Default ``False`` leaves
-    # every legacy alias on auto-detection untouched — real VLM aliases
-    # (Qwen-VL, gemma vision, UI-TARS, …) never set it and keep routing to
-    # mlx-vlm exactly as before.
+    # translates ``is_text_only=True`` UNCONDITIONALLY into the registered
+    # ``force_text`` kwarg, so the routing decision still flows through the
+    # same audited kwarg surface — no new escape hatch. It is applied even
+    # when the operator passes ``--mllm``: that collides with the resulting
+    # ``force_text=True`` at the ``force_mllm``/``force_text`` mutual-
+    # exclusion guard in ``load_model`` and raises loudly, so an operator
+    # who insists on the (broken) MLLM path for a text-only-pinned alias
+    # gets a clear error rather than a silent flip to the garbling MLLM
+    # engine (codex #1116). Default ``False`` leaves every legacy alias on
+    # auto-detection untouched — real VLM aliases (Qwen-VL, gemma vision,
+    # UI-TARS, …) never set it and keep routing to mlx-vlm exactly as
+    # before.
     is_text_only: bool = False
     # MoE / sparse-expert architecture (A3B, A10B, A17B Qwen3.5/3.6 variants,
     # plus future Mixtral/Granite-MoE families). Tracked separately from
