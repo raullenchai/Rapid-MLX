@@ -412,6 +412,29 @@ def test_force_text_and_force_mllm_mutually_exclusive_in_load_model():
         )
 
 
+def test_is_text_only_alias_plus_explicit_mllm_raises_loudly():
+    """An ``is_text_only`` alias pins ``force_text=True`` inside
+    ``load_model``. An operator who ALSO passes ``--mllm`` (force_mllm)
+    must get a loud ``mutually exclusive`` ValueError — NOT a silent flip
+    to the (known-broken) MLLM engine.
+
+    Regression for codex #1116 BLOCKING: the first implementation gated
+    the profile's force_text on ``not force_mllm``, which suppressed the
+    mutual-exclusion guard and silently selected the garbling MLLM path
+    for a text-only-pinned checkpoint. The profile's force_text must be
+    applied unconditionally so the conflict surfaces.
+    """
+    from vllm_mlx.model_aliases import resolve_profile
+    from vllm_mlx.server import load_model
+
+    # Precondition: the alias really pins is_text_only (else this test
+    # would pass vacuously if the alias were renamed/dropped).
+    assert resolve_profile("bonsai-27b-2bit").is_text_only is True
+
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        load_model("bonsai-27b-2bit", force_mllm=True)
+
+
 def test_friendly_error_on_missing_vision_tensors(monkeypatch):
     """MLLMModel.load() must translate mlx_vlm's
     `ValueError: Missing N parameters: vision_tower.*` into a RuntimeError

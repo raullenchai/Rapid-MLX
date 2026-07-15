@@ -1370,12 +1370,16 @@ def load_model(
     # state description (parallel to ``is_hybrid`` / ``is_moe``) and it
     # feeds the SAME ``force_text`` kwarg already registered in
     # ``AUTO_ROUTING_FLAG_PAIRS`` (``--mllm`` / ``--no-mllm``, #393).
-    # Explicit ``--mllm`` (force_mllm) is deliberately NOT overridden
-    # here: it falls through to the ``force_mllm and force_text``
-    # mutual-exclusion check below, which raises loudly — an operator who
-    # insists on the (broken) MLLM path for such an alias gets a clear
-    # error, not a silent flip.
-    if _profile is not None and _profile.is_text_only and not force_mllm:
+    #
+    # Set it UNCONDITIONALLY (do NOT gate on ``not force_mllm``): an
+    # explicit ``--mllm`` on such an alias must then collide with this
+    # ``force_text=True`` at the ``force_mllm and force_text``
+    # mutual-exclusion check below and raise loudly — an operator who
+    # insists on the (broken) MLLM path for a text-only-pinned alias gets
+    # a clear error, NOT a silent flip to the garbling MLLM engine.
+    # Gating on ``not force_mllm`` here would suppress that guard and
+    # silently select the broken path (codex #1116 BLOCKING).
+    if _profile is not None and _profile.is_text_only:
         if not force_text:
             logger.info(
                 "Alias profile declares is_text_only=True — routing to the "
