@@ -375,8 +375,27 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.build-candidate.outputs.version }}
+          EXPECTED_SHA: ${{ needs.build-candidate.outputs.source_sha }}
         run: |
-          gh release edit "v$VERSION" --repo "$GITHUB_REPOSITORY" --draft=false
+          set -euo pipefail
+          TAG="v$VERSION"
+          # Re-resolve the tag one last time before flipping the draft to
+          # published, so a tag moved after PyPI verification cannot promote a
+          # GitHub Release pointing at code different from the published,
+          # verified artifacts.
+          REF=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+            --jq '.object.sha')
+          TYPE=$(gh api "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+            --jq '.object.type')
+          if [ "$TYPE" = "tag" ]; then
+            REF=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${REF}" \
+              --jq '.object.sha')
+          fi
+          if [ "$REF" != "$EXPECTED_SHA" ]; then
+            echo "Tag ${TAG} now points at ${REF}, not the verified ${EXPECTED_SHA}; refusing to promote the release" >&2
+            exit 1
+          fi
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
 
   update-homebrew:
     name: Promote verified sdist to Homebrew
