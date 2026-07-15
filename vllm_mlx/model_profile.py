@@ -129,37 +129,6 @@ class ModelProfile:
     # legacy aliases that haven't opted into the explicit contract —
     # those still pick up the probe's hybrid promotion as before.
     is_hybrid_explicit: bool = False
-    # ``is_text_only`` = this checkpoint is served through the
-    # auto-regressive text (mlx-lm) lane even though its ``config.json``
-    # declares a ``vision_config`` (and may ship ``vision_tower`` weights)
-    # that would make ``is_mllm_model`` auto-detection route it to the
-    # mlx-vlm MLLM engine. Same shape and spirit as ``is_hybrid_explicit``
-    # above: a STATE description of the model (parallel to ``is_hybrid`` /
-    # ``is_moe``), not an imperative ``force_*`` switch — it pins what the
-    # served capability IS so the runtime name/config probe can't route it
-    # to a lane we don't support. The canonical example is PrismML
-    # Ternary-Bonsai-27B: a Qwen3.5-class checkpoint whose bundled vision
-    # tower our mlx-vlm loader can't drive (its GatedDeltaNet/SSM forward
-    # garbles output), but whose text backbone is coherent via mlx-lm's
-    # ``qwen3_5``.
-    #
-    # This is the per-alias declarative form of the existing, fully
-    # governed ``--no-mllm`` / ``force_text`` routing override (#393,
-    # registered in ``tests/test_no_mllm_flag.py::AUTO_ROUTING_FLAG_PAIRS``
-    # under the ``--mllm`` / ``--no-mllm`` pair): ``server.load_model``
-    # translates ``is_text_only=True`` UNCONDITIONALLY into the registered
-    # ``force_text`` kwarg, so the routing decision still flows through the
-    # same audited kwarg surface — no new escape hatch. It is applied even
-    # when the operator passes ``--mllm``: that collides with the resulting
-    # ``force_text=True`` at the ``force_mllm``/``force_text`` mutual-
-    # exclusion guard in ``load_model`` and raises loudly, so an operator
-    # who insists on the (broken) MLLM path for a text-only-pinned alias
-    # gets a clear error rather than a silent flip to the garbling MLLM
-    # engine (codex #1116). Default ``False`` leaves every legacy alias on
-    # auto-detection untouched — real VLM aliases (Qwen-VL, gemma vision,
-    # UI-TARS, …) never set it and keep routing to mlx-vlm exactly as
-    # before.
-    is_text_only: bool = False
     # MoE / sparse-expert architecture (A3B, A10B, A17B Qwen3.5/3.6 variants,
     # plus future Mixtral/Granite-MoE families). Tracked separately from
     # ``is_hybrid`` because the two attributes gate different downstream
@@ -236,6 +205,44 @@ class ModelProfile:
     # GB peak RSS — needs 192 GB+ M3 Ultra). Enforced as a boot-time
     # WARNING (not a hard block) in ``vllm_mlx/cli.py``.
     min_memory_gb: float | None = None
+    # ``is_text_only`` = this checkpoint is served through the
+    # auto-regressive text (mlx-lm) lane even though its ``config.json``
+    # declares a ``vision_config`` (and may ship ``vision_tower`` weights)
+    # that would make ``is_mllm_model`` auto-detection route it to the
+    # mlx-vlm MLLM engine. Same shape and spirit as ``is_hybrid_explicit``:
+    # a STATE description of the model (parallel to ``is_hybrid`` /
+    # ``is_moe``), not an imperative ``force_*`` switch — it pins what the
+    # served capability IS so the runtime name/config probe can't route it
+    # to a lane we don't support. Canonical example: PrismML
+    # Ternary-Bonsai-27B — a Qwen3.5-class checkpoint whose bundled vision
+    # tower our mlx-vlm loader can't drive (its GatedDeltaNet/SSM forward
+    # garbles output), but whose text backbone is coherent via mlx-lm's
+    # ``qwen3_5``.
+    #
+    # This is the per-alias declarative form of the existing, fully
+    # governed ``--no-mllm`` / ``force_text`` routing override (#393,
+    # registered in ``tests/test_no_mllm_flag.py::AUTO_ROUTING_FLAG_PAIRS``
+    # under the ``--mllm`` / ``--no-mllm`` pair): ``server.load_model``
+    # translates ``is_text_only=True`` UNCONDITIONALLY into the registered
+    # ``force_text`` kwarg, so the routing decision still flows through the
+    # same audited kwarg surface — no new escape hatch. It is applied even
+    # when the operator passes ``--mllm``: that collides with the resulting
+    # ``force_text=True`` at the ``force_mllm``/``force_text`` mutual-
+    # exclusion guard in ``load_model`` and raises loudly, so an operator
+    # who insists on the (broken) MLLM path for a text-only-pinned alias
+    # gets a clear error rather than a silent flip to the garbling MLLM
+    # engine (codex #1116). Default ``False`` leaves every legacy alias on
+    # auto-detection untouched — real VLM aliases (Qwen-VL, gemma vision,
+    # UI-TARS, …) never set it and keep routing to mlx-vlm exactly as
+    # before.
+    #
+    # Placed LAST in the field list deliberately: although the frozen
+    # dataclass is ``kw_only=True`` (positional construction is a loud
+    # TypeError, not a silent misbind — see the class docstring), keeping
+    # new fields at the end preserves the positional signature for any
+    # out-of-tree caller and quiets the recurring "mid-dataclass insert"
+    # review flag.
+    is_text_only: bool = False
 
     @property
     def speedup_dict(self) -> dict[str, float]:

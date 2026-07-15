@@ -435,6 +435,56 @@ def test_is_text_only_alias_plus_explicit_mllm_raises_loudly():
         load_model("bonsai-27b-2bit", force_mllm=True)
 
 
+def test_is_text_only_alias_routes_load_model_to_text_engine(monkeypatch):
+    """Integration guard (codex #1116): calling the ordinary
+    ``load_model("bonsai-27b-2bit")`` with NO routing overrides must
+    translate the alias's ``is_text_only`` pin into ``force_text=True`` on
+    the constructed ``BatchedEngine`` — i.e. select the text mlx-lm lane,
+    not the MLLM engine.
+
+    The metadata-only contract test (``test_bonsai_27b_ternary_routes_
+    through_text_loader``) would stay green even if ``server.load_model``
+    stopped forwarding the pin; this test drives the real translation seam
+    by capturing the kwargs ``load_model`` hands to ``BatchedEngine``. A
+    sentinel is raised at construction so no model weights load and the
+    fragile post-construction wiring is skipped — we only care that the
+    routing kwargs are correct.
+    """
+    from vllm_mlx.model_aliases import resolve_profile
+
+    assert resolve_profile("bonsai-27b-2bit").is_text_only is True
+
+    import vllm_mlx.server as srv
+
+    captured = {}
+
+    class _SentinelError(Exception):
+        pass
+
+    def _spy_batched_engine(*args, **kwargs):
+        captured.update(kwargs)
+        raise _SentinelError()
+
+    monkeypatch.setattr(srv, "BatchedEngine", _spy_batched_engine)
+
+    # No routing overrides — the alias pin is the ONLY thing that can set
+    # force_text here.
+    with pytest.raises(_SentinelError):
+        srv.load_model("bonsai-27b-2bit")
+
+    assert captured.get("force_text") is True, (
+        "load_model must translate the alias is_text_only pin into "
+        f"force_text=True on BatchedEngine; got force_text="
+        f"{captured.get('force_text')!r}. Routing to the text mlx-lm lane "
+        "is broken — the checkpoint would load through the garbling MLLM "
+        "engine."
+    )
+    assert captured.get("force_mllm") is False, (
+        "force_mllm must stay False for a text-only-pinned alias with no "
+        f"explicit --mllm; got {captured.get('force_mllm')!r}."
+    )
+
+
 def test_friendly_error_on_missing_vision_tensors(monkeypatch):
     """MLLMModel.load() must translate mlx_vlm's
     `ValueError: Missing N parameters: vision_tower.*` into a RuntimeError
