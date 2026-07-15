@@ -235,6 +235,43 @@ jobs:
           print("release manifest verified")
           PY
 
+      - name: Re-resolve the tag and require it still points at the tested SHA
+        # TOCTOU guard: the tag -> SHA binding was checked in build-candidate,
+        # but the matrix can run for hours. Re-resolve refs/tags/vX.Y.Z right
+        # before requesting the PyPI credential and require it (and the draft
+        # release target) still equal the source SHA the matrix accepted. A
+        # tag force-moved or recreated after the matrix passed must NOT be
+        # published against.
+        env:
+          GH_TOKEN: ${{ github.token }}
+          EXPECTED_SHA: ${{ needs.build-candidate.outputs.source_sha }}
+          EXPECTED_VERSION: ${{ needs.build-candidate.outputs.version }}
+        run: |
+          set -euo pipefail
+          TAG="v$EXPECTED_VERSION"
+          TAG_SHA=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+            --jq '.object.sha')
+          # Annotated tags resolve to a tag object; dereference to the commit.
+          TAG_TYPE=$(gh api \
+            "repos/${GITHUB_REPOSITORY}/git/refs/tags/${TAG}" \
+            --jq '.object.type')
+          if [ "$TAG_TYPE" = "tag" ]; then
+            TAG_SHA=$(gh api "repos/${GITHUB_REPOSITORY}/git/tags/${TAG_SHA}" \
+              --jq '.object.sha')
+          fi
+          if [ "$TAG_SHA" != "$EXPECTED_SHA" ]; then
+            echo "Tag ${TAG} now points at ${TAG_SHA}, not the tested ${EXPECTED_SHA}; refusing to publish" >&2
+            exit 1
+          fi
+          RELEASE_SHA=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" \
+            --json targetCommitish --jq '.targetCommitish')
+          if [ "$RELEASE_SHA" != "$EXPECTED_SHA" ] && [ "$RELEASE_SHA" != "$TAG" ]; then
+            echo "Draft release ${TAG} targets ${RELEASE_SHA}, not the tested ${EXPECTED_SHA}; refusing to publish" >&2
+            exit 1
+          fi
+          echo "Tag ${TAG} still resolves to the tested SHA ${EXPECTED_SHA}"
+
       - name: Publish exact candidate to PyPI with attestations
         # This official action produces PyPI publish attestations by default.
         # A duplicate immutable version fails instead of silently accepting a

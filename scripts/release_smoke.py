@@ -135,9 +135,27 @@ def smoke(install_spec: str, *, source: str) -> None:
             shutil.rmtree(venv, ignore_errors=True)
 
 
+def _artifact_version(name: str) -> str:
+    """Extract the version from a ``rapid_mlx-<version>`` artifact filename.
+
+    ``rapid_mlx-0.10.9-py3-none-any.whl`` -> ``0.10.9``;
+    ``rapid_mlx-0.10.9.tar.gz``           -> ``0.10.9``.
+    """
+    stem = name
+    if stem.endswith(".tar.gz"):
+        stem = stem[: -len(".tar.gz")]
+        return stem[len("rapid_mlx-") :]
+    if stem.endswith(".whl"):
+        # rapid_mlx-<version>-<pytag>-<abitag>-<plat>.whl
+        return stem[len("rapid_mlx-") :].split("-", 1)[0]
+    raise ValueError(f"unrecognized artifact filename: {name}")
+
+
 def release_artifacts(dist_dir: Path) -> tuple[Path, Path]:
     """Return the sole rapid-mlx wheel and sdist in a candidate directory."""
 
+    if not dist_dir.is_dir():
+        raise ValueError(f"--dist-dir is not a directory: {dist_dir}")
     all_files = sorted(path for path in dist_dir.iterdir() if path.is_file())
     wheels = sorted(path for path in dist_dir.glob("rapid_mlx-*.whl") if path.is_file())
     sdists = sorted(
@@ -147,6 +165,14 @@ def release_artifacts(dist_dir: Path) -> tuple[Path, Path]:
         raise ValueError(
             "--dist-dir must contain exactly one rapid_mlx-*.whl and one "
             "rapid_mlx-*.tar.gz, with no extra files"
+        )
+    wheel_version = _artifact_version(wheels[0].name)
+    sdist_version = _artifact_version(sdists[0].name)
+    if wheel_version != sdist_version:
+        raise ValueError(
+            "--dist-dir wheel and sdist are different versions "
+            f"({wheel_version} vs {sdist_version}); a release candidate must "
+            "be a single coherent build"
         )
     return wheels[0].resolve(), sdists[0].resolve()
 

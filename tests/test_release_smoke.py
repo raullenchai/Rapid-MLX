@@ -56,3 +56,18 @@ def test_release_artifacts_rejects_extra_file(release_smoke, tmp_path):
 
     with pytest.raises(ValueError, match="no extra files"):
         release_smoke.release_artifacts(tmp_path)
+
+
+def test_release_artifacts_rejects_version_mismatch(release_smoke, tmp_path):
+    """A wheel and sdist from different builds must not be accepted together."""
+    (tmp_path / "rapid_mlx-0.10.9-py3-none-any.whl").write_bytes(b"wheel")
+    (tmp_path / "rapid_mlx-0.10.8.tar.gz").write_bytes(b"sdist")
+
+    with pytest.raises(ValueError, match="different versions"):
+        release_smoke.release_artifacts(tmp_path)
+
+
+def test_release_artifacts_rejects_missing_directory(release_smoke, tmp_path):
+    """A --dist-dir that does not exist must raise a clear error, not traceback."""
+    with pytest.raises(ValueError, match="not a directory"):
+        release_smoke.release_artifacts(tmp_path / "does-not-exist")

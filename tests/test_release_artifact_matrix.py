@@ -142,14 +142,56 @@ def test_assert_port_available_accepts_a_free_port(matrix):
     matrix._assert_port_available(free_port)
 
 
+def _canonical_pkg_name(spec: str) -> str:
+    """Extract + PEP 503-normalize the package name from a requirement spec.
+
+    ``"langchain-openai>=0.2.0"`` -> ``"langchain-openai"``. Normalization
+    lower-cases and collapses ``-``/``_``/``.`` runs to a single ``-`` so a
+    runtime dep declared as ``Langchain_OpenAI`` still compares equal.
+    """
+    import re
+
+    # Strip version/marker/extras noise: name ends at the first char that is
+    # not part of a PEP 508 distribution name.
+    name = re.split(r"[<>=!~;\[ ]", spec.strip(), maxsplit=1)[0]
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def test_matrix_test_dependencies_are_client_only(matrix):
-    """The SDK/test clients installed into the client venv must never leak
-    into the released package's runtime dependency set — they belong in the
-    CLIENT venv, isolated from the server venv, so a missing runtime dep in
-    the wheel cannot be masked by a client's transitive closure."""
-    client_pkgs = matrix.MATRIX_TEST_DEPENDENCIES
-    # Sanity: the known client SDKs are present and none is an engine runtime
-    # dep (these names must not appear in pyproject's [project] dependencies).
-    assert any(spec.startswith("openai") for spec in client_pkgs)
-    assert any(spec.startswith("langchain-openai") for spec in client_pkgs)
-    assert any(spec.startswith("aider-chat") for spec in client_pkgs)
+    """The SDK/test clients must never leak into the wheel's RUNTIME deps.
+
+    They belong only in the CLIENT venv, isolated from the server venv, so a
+    missing runtime dep in the wheel cannot be masked by a client's transitive
+    closure. A presence check alone is not enough (it stays green even if a
+    client is ALSO added to ``[project].dependencies``); assert the client set
+    is disjoint from the released package's declared runtime dependencies.
+    """
+    try:
+        import tomllib  # type: ignore[import-not-found]
+    except ModuleNotFoundError:  # pragma: no cover — 3.10 fallback
+        try:
+            import tomli as tomllib  # type: ignore[import-not-found,no-redef]
+        except ModuleNotFoundError:
+            pytest.skip("tomllib/tomli required to parse pyproject.toml")
+
+    pyproject_path = _REPO_ROOT / "pyproject.toml"
+    with pyproject_path.open("rb") as fp:
+        pyproject = tomllib.load(fp)
+
+    runtime_deps = {
+        _canonical_pkg_name(spec)
+        for spec in pyproject.get("project", {}).get("dependencies", [])
+    }
+    client_pkgs = {
+        _canonical_pkg_name(spec) for spec in matrix.MATRIX_TEST_DEPENDENCIES
+    }
+
+    # Sanity: the known client SDKs really are in the client tuple.
+    assert {"openai", "langchain-openai", "aider-chat"} <= client_pkgs
+
+    leaked = client_pkgs & runtime_deps
+    assert not leaked, (
+        "matrix client/test package(s) also appear in the released package's "
+        "runtime [project].dependencies — this defeats the server/client venv "
+        f"split and lets a client mask a missing runtime dep: {sorted(leaked)}"
+    )

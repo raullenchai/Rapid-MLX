@@ -199,6 +199,24 @@ def matrix_strict_mode() -> bool:
     return _strict()
 
 
+def _has_strict_xfail_marker(item: pytest.Item) -> bool:
+    """True iff the cell carries an ``xfail(strict=True)`` marker.
+
+    The release-approved skip exceptions are EXACTLY the strict-xfail cells
+    registered in ``pytest_collection_modifyitems`` (and pinned by
+    ``test_strict_xfail_registry.py``). We gate on the marker itself rather
+    than ``report.wasxfail``: pytest also sets ``wasxfail`` for NON-strict
+    ``xfail(strict=False, ...)`` markers and for dynamic ``pytest.xfail()``
+    calls, so a ``wasxfail`` check would let an un-audited, non-strict xfail
+    silently bypass ``RAPID_MLX_MATRIX_NO_SKIPS`` — shrinking the required-
+    PASS coverage the release gate exists to guarantee (codex review).
+    """
+    for marker in item.iter_markers(name="xfail"):
+        if marker.kwargs.get("strict") is True:
+            return True
+    return False
+
+
 @pytest.hookimpl(hookwrapper=True)
 def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[object]):
     """Reject ordinary skips when the release artifact matrix asks for it."""
@@ -208,10 +226,10 @@ def pytest_runtest_makereport(item: pytest.Item, call: pytest.CallInfo[object]):
     if not _no_skips() or not report.skipped:
         return
 
-    # ``wasxfail`` is set by pytest for the exact, documented xfail cases
-    # registered in ``pytest_collection_modifyitems`` above.  Those are
-    # explicit release exceptions; a missing prerequisite is not.
-    if getattr(report, "wasxfail", None):
+    # The ONLY release-approved skip exception is an explicit
+    # ``xfail(strict=True)`` cell (the documented, snapshot-pinned set). A
+    # missing prerequisite — or a non-strict / dynamic xfail — is not.
+    if _has_strict_xfail_marker(item):
         return
 
     if not any(module in item.nodeid for module in _INTEGRATION_MATRIX_MODULES):
