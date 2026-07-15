@@ -83,16 +83,14 @@ if [ -z "$BASE_URL" ]; then
     BASE_URL="http://127.0.0.1:${PORT}/v1"
 fi
 
-# Locate aider — never PATH-search on the operator's box because the
-# harness must NOT accidentally trigger a fresh install. The 2026-07-06
-# Tier-1 install (v0.86.2) sits at ~/.local/bin/aider.
-AIDER_BIN="${AIDER_BIN:-/Users/raullenstudio/.local/bin/aider}"
-if [ ! -x "$AIDER_BIN" ]; then
-    # Fall back to PATH so the harness still runs on CI where the pinned
-    # path doesn't exist; but never install.
+# Locate aider without ever triggering a fresh install. Operators that
+# install aider outside PATH point AIDER_BIN at the binary; otherwise we
+# discover it on PATH. No machine-specific path is baked in.
+AIDER_BIN="${AIDER_BIN:-}"
+if [ -z "$AIDER_BIN" ] || [ ! -x "$AIDER_BIN" ]; then
     AIDER_BIN="$(command -v aider 2>/dev/null || true)"
     if [ -z "$AIDER_BIN" ]; then
-        echo "ERROR: aider binary not found (checked /Users/raullenstudio/.local/bin/aider and PATH)" >&2
+        echo "ERROR: aider binary not found (checked AIDER_BIN and PATH)" >&2
         exit 1
     fi
 fi

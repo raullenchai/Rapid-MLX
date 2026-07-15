@@ -294,9 +294,9 @@ jobs:
           wheel_url = next(url for name, url in files.items() if name.endswith(".whl"))
           sdist_name = next(name for name in files if name.endswith(".tar.gz"))
           with open(os.environ["GITHUB_OUTPUT"], "a") as output:
-              output.write(f"wheel_url={wheel_url}\\n")
-              output.write(f"sdist_url={files[sdist_name]}\\n")
-              output.write(f"sdist_sha256={expected[sdist_name]['sha256']}\\n")
+              output.write(f"wheel_url={wheel_url}\n")
+              output.write(f"sdist_url={files[sdist_name]}\n")
+              output.write(f"sdist_sha256={expected[sdist_name]['sha256']}\n")
           print("PyPI files match the release manifest")
           PY
               break
@@ -308,6 +308,8 @@ jobs:
             echo "Waiting for PyPI file propagation (attempt $attempt)"
             sleep 30
           done
+          echo "Resolved release-file outputs written to GITHUB_OUTPUT:"
+          cat "$GITHUB_OUTPUT"
 
       - name: Verify PyPI publish attestations
         env:

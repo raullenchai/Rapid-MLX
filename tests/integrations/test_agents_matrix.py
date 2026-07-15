@@ -542,18 +542,21 @@ class TestAider:
 
     _HARNESS_TIMEOUT_SECONDS = 300
 
-    _PINNED_AIDER_BIN = "/Users/raullenstudio/.local/bin/aider"
-
     @staticmethod
     def _resolve_aider_bin() -> str | None:
         """Return a usable aider binary path, or ``None`` if none present.
 
         Codex #1047 nit: previously the pytest skip guard only checked
-        ``shutil.which("aider")`` + the pinned operator path, ignoring
-        the ``AIDER_BIN`` env var that the bash harness already honors.
-        A CI operator that pins a non-standard binary via ``AIDER_BIN``
-        would see the cell skip even though the harness would happily
-        run. Centralize the lookup so Python and bash agree.
+        ``shutil.which("aider")``, ignoring the ``AIDER_BIN`` env var that
+        the bash harness already honors. A CI operator that pins a
+        non-standard binary via ``AIDER_BIN`` would see the cell skip even
+        though the harness would happily run. Centralize the lookup so
+        Python and bash agree.
+
+        Lookup order (no machine-specific fallback — operators that install
+        aider outside ``PATH`` point ``AIDER_BIN`` at it):
+          1. ``AIDER_BIN`` env var (an executable file), then
+          2. ``shutil.which("aider")`` on ``PATH``.
         """
         env_pin = os.environ.get("AIDER_BIN")
         if env_pin and Path(env_pin).is_file() and os.access(env_pin, os.X_OK):
@@ -561,10 +564,6 @@ class TestAider:
         which = shutil.which("aider")
         if which is not None:
             return which
-        if Path(TestAider._PINNED_AIDER_BIN).is_file() and os.access(
-            TestAider._PINNED_AIDER_BIN, os.X_OK
-        ):
-            return TestAider._PINNED_AIDER_BIN
         return None
 
     def test_smoke(
@@ -580,9 +579,8 @@ class TestAider:
         # rebooting install policy from the test.
         if self._resolve_aider_bin() is None:
             pytest.skip(
-                "aider CLI not found (checked AIDER_BIN env var, PATH, and "
-                f"{self._PINNED_AIDER_BIN}) — install `pip install aider-chat` "
-                "or set AIDER_BIN"
+                "aider CLI not found (checked AIDER_BIN env var and PATH) — "
+                "install `pip install aider-chat` or set AIDER_BIN"
             )
 
         # Codex #1047 blocking: pass the FULL parsed base_url to the
