@@ -1387,6 +1387,18 @@ def load_model(
                 "alias, #393)"
             )
         force_text = True
+        # Fail FAST on the alias-pin ↔ ``--mllm`` conflict — before the
+        # generation-config load / cloud-router / guardrail I/O below. The
+        # general ``force_mllm and force_text`` guard further down still
+        # covers direct ``load_model(force_mllm=True, force_text=True)``
+        # callers; this early raise just avoids doing config I/O for an
+        # invocation we already know is invalid (codex #1116 nit).
+        if force_mllm:
+            raise ValueError(
+                "force_mllm and force_text are mutually exclusive — "
+                "pick at most one to override auto-detection. "
+                "(alias pins is_text_only=True but --mllm was also given)"
+            )
     try:
         gen_cfg = load_generation_config_sampling(model_name)
     except Exception as _e:  # pragma: no cover — defensive belt-and-suspenders

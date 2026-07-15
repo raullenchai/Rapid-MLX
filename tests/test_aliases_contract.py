@@ -1606,8 +1606,10 @@ def test_is_text_only_requires_text_modality(alias: str) -> None:
 
 
 def test_bonsai_27b_ternary_routes_through_text_loader() -> None:
-    """PrismML Ternary-Bonsai-27B — 27B-class quality at 5.9 GB (ternary
-    2-bit) that must load through the text-only mlx-lm ``qwen3_5`` lane.
+    """PrismML Ternary-Bonsai-27B — 27B-class quality at ~7.9 GB on disk
+    (ternary 2-bit = stock 2-bit affine; ``model.safetensors`` is
+    8,490,785,104 bytes / ~7.9 GiB, peak RSS ~7.8 GB) that must load
+    through the text-only mlx-lm ``qwen3_5`` lane.
 
     The checkpoint's ``config.json`` declares ``vision_config`` and a
     ``Qwen3_5ForConditionalGeneration`` architecture, AND its safetensors
