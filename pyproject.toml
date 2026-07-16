@@ -117,7 +117,14 @@ dependencies = [
 # Required for any model with vision input. Text-only models work without this.
 # 0.5.0+ also unlocks DFlash speculative decoding (see [dflash] extras).
 vision = [
-    "mlx-vlm>=0.6.3",  # 0.6.3: DiffusionGemma (Gemma 4 DLM PR #1347 + long-context prefill PR #1348). 0.6.1 floor: gemma4_unified architecture. 0.5.0 baseline: gemma4 multi-image + tool-parser fixes, TurboQuant race-condition fix, continuous-batching guard. Also unlocks DFlash spec-decode hooks (see [dflash] extras).
+    # 0.6.3: DiffusionGemma (Gemma 4 DLM PR #1347 + long-context prefill PR #1348). 0.6.1 floor: gemma4_unified architecture. 0.5.0 baseline: gemma4 multi-image + tool-parser fixes, TurboQuant race-condition fix, continuous-batching guard. Also unlocks DFlash spec-decode hooks (see [dflash] extras).
+    # !=0.6.4 EXCLUDED: 0.6.4 ships a broken qwen3_5 GatedDeltaNet SSM forward
+    # (garbage output; this is why Bonsai 27B is served text-only via mlx-lm).
+    # It is the CURRENT PyPI latest with no 0.6.5 fix, so a bare ``>=0.6.3``
+    # resolves a fresh install straight to the broken build. All five extras
+    # that pull mlx-vlm carry this exclusion — enforced by
+    # tests/test_vision_extra_install.py so a new extra can't silently regress.
+    "mlx-vlm>=0.6.3,!=0.6.4",
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
@@ -131,7 +138,7 @@ vision = [
 # the vision extras do. Only enable if you serve a DFlash-eligible alias
 # (e.g. qwen3.5-27b-8bit) with --speculative-config '{"method":"dflash"}'.
 dflash = [
-    "mlx-vlm>=0.6.3",
+    "mlx-vlm>=0.6.3,!=0.6.4",
 ]
 # MTP (Multi-Token Prediction) speculative decoding — Gemma 4 external
 # assistant path via ``--speculative-config '{"method":"mtp","model":"<path>"}'``.
@@ -181,7 +188,7 @@ chat = [
 # pip install .[all] and editable installs.
 all = [
     # vision
-    "mlx-vlm>=0.6.3",
+    "mlx-vlm>=0.6.3,!=0.6.4",
     "opencv-python>=4.8.0",
     "torch>=2.3.0",
     "torchvision>=0.18.0",
@@ -234,7 +241,7 @@ test = [
     # ``pytest tests/`` without hand-installed local extras.
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
-    "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
+    "mlx-vlm>=0.6.3,!=0.6.4; platform_system == 'Darwin'",
     "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
 ]
 dev = [
@@ -249,7 +256,7 @@ dev = [
     'tomli>=2.0.1; python_version < "3.11"',
     "aiohttp>=3.9.0",
     "pillow>=10.0.0",
-    "mlx-vlm>=0.6.3; platform_system == 'Darwin'",
+    "mlx-vlm>=0.6.3,!=0.6.4; platform_system == 'Darwin'",
     "mlx-audio>=0.2.9,<0.4.4; platform_system == 'Darwin'",
     # Linters / typer — NOT in the `test` extras because pr_validate
     # only needs to *run* the tests; lint is its own pipeline step

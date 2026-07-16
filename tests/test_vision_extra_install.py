@@ -552,3 +552,66 @@ def test_dev_extra_pins_tomli_for_python_310() -> None:
         f'"3.11"` marker so 3.10 CI workers can actually run the '
         f"L-07 lock-in suite. Got dev specs: {dev_specs!r}"
     )
+
+
+# ──────────────────────────────────────────────────────────────────────
+# Broken-build exclusion: mlx-vlm 0.6.4 ships a broken qwen3_5
+# GatedDeltaNet SSM forward (garbage output — this is why Bonsai 27B is
+# served text-only via mlx-lm). It is the CURRENT PyPI latest with no
+# 0.6.5 fix, so a bare ``mlx-vlm>=0.6.3`` resolves a fresh
+# ``pip install 'rapid-mlx[vision]'`` STRAIGHT to the broken wheel.
+# Every extra that pulls mlx-vlm must exclude it. Mirrors the upstream
+# fix waybarrios/vllm-mlx#633 for our rebranded tree.
+# ──────────────────────────────────────────────────────────────────────
+
+
+def _spec_excludes_064(spec: str) -> bool:
+    """True iff ``spec`` cannot resolve to the broken mlx-vlm 0.6.4.
+
+    Evaluated with full PEP 440 semantics via ``packaging`` — NOT a
+    substring check. A naive ``"!=0.6.4" in spec`` would be fooled by
+    ``!=0.6.4.1`` (which excludes 0.6.4.1 yet still ADMITS 0.6.4), so we
+    ask the parsed specifier set directly whether it admits 0.6.4. This
+    also transparently accepts a future ``>=0.6.5`` floor after an
+    upstream fix, with no test edit. ``packaging.requirements.Requirement``
+    parses (and discards) any PEP 508 environment marker such as
+    ``; platform_system == 'Darwin'`` on its own, so the Darwin-gated
+    dev/test pins are handled identically to the unmarked ones.
+    ``prereleases=True`` keeps the check honest if a pin ever carries a
+    0.6.4 prerelease form (defensive; our pins are all final releases)."""
+    from packaging.requirements import Requirement
+    from packaging.version import Version
+
+    return not Requirement(spec).specifier.contains(
+        Version("0.6.4"), prereleases=True
+    )
+
+
+def test_all_mlx_vlm_specs_exclude_broken_064() -> None:
+    """EVERY optional-dependency extra that pulls mlx-vlm must exclude the
+    broken 0.6.4 build.
+
+    0.6.4 ships a broken qwen3_5 GatedDeltaNet SSM forward (garbage
+    output) AND is the current PyPI latest with no 0.6.5 fix, so a bare
+    ``mlx-vlm>=0.6.3`` installs it on a fresh venv — the exact fresh-user
+    trap this test guards. The scan walks ALL extras (not a hard-coded
+    list) so a NEW extra that adds mlx-vlm without the exclusion is caught
+    here, at CI time, instead of by a user's broken vision/dflash boot."""
+    py = _load_pyproject()
+    extras = py.get("project", {}).get("optional-dependencies", {})
+    offenders: list[tuple[str, str]] = []
+    for extra_name, specs in extras.items():
+        for spec in specs:
+            name, _ = _split_spec(spec)
+            if name.lower() != "mlx-vlm":
+                continue
+            if not _spec_excludes_064(spec):
+                offenders.append((extra_name, spec))
+    assert offenders == [], (
+        "These mlx-vlm specs can still resolve to the BROKEN 0.6.4 build:\n"
+        + "\n".join(f"  [{e}] {s!r}" for e, s in offenders)
+        + "\n\n0.6.4 has a broken qwen3_5 GatedDeltaNet SSM forward and is "
+        "the current PyPI latest with no fix, so a bare `>=0.6.3` installs "
+        "it on a fresh venv. Add `!=0.6.4` to each spec (or a `>=0.6.5` "
+        "floor once an upstream fix ships)."
+    )
