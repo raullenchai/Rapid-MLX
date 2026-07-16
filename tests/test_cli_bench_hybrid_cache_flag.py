@@ -123,20 +123,40 @@ def test_bench_hybrid_cache_entries_defaults_to_zero():
 
 
 def test_bench_rejects_negative_hybrid_cache_entries():
-    """A negative value is nonsensical (the bound is ``>= 0``); argparse must
-    still PARSE it (the memory cache validates ``>= 0`` downstream), so this
-    only asserts the flag is registered on the bench parser and flows through
-    unchanged — i.e. plumbing is present."""
+    """A negative value is nonsensical (the bound is ``>= 0``). argparse PARSES
+    it unchanged (``type=int`` does not clamp), so ``--hybrid-cache-entries -1``
+    flows through the bench plumbing into ``SchedulerConfig(hybrid_cache_entries
+    =-1)`` — and, at engine boot, the scheduler feeds that straight into
+    ``MemoryCacheConfig(hybrid_reuse_max_entries=...)`` (scheduler.py:1976),
+    whose ``__post_init__`` rejects ``< 0`` (memory_cache.py:844).
+
+    A positive-value assertion cannot prove the rejection — it would stay green
+    even if the ``>= 0`` guard were deleted. So here we (1) drive the real CLI /
+    ``SchedulerConfig`` assembly to confirm ``-1`` arrives UNCLAMPED, then
+    (2) reproduce the exact scheduler → cache mapping and assert the real
+    ``MemoryCacheConfig`` construction raises. Fully offline: no engine boot,
+    no network (the helper mocks every model-loading / disk / network
+    boundary)."""
+    from vllm_mlx.memory_cache import MemoryCacheConfig
+
     captured = _run_bench_capturing_scheduler_config(
         [
             "bench",
             "does-not-exist/definitely-not-a-real-model",
             "--hybrid-cache-entries",
-            "2",
+            "-1",
             "--num-prompts",
             "1",
             "--max-tokens",
             "1",
         ]
     )
-    assert captured.get("hybrid_cache_entries") == 2
+    # (1) The negative value reaches SchedulerConfig UNCLAMPED (nothing between
+    # argparse and the scheduler config sanitizes it away).
+    assert captured.get("hybrid_cache_entries") == -1
+
+    # (2) Feeding that scheduler value into MemoryCacheConfig exactly as
+    # scheduler.py:1976 does must raise — this is the guard the bench flow
+    # would trip at engine boot.
+    with pytest.raises(ValueError, match=r"hybrid_reuse_max_entries must be >= 0"):
+        MemoryCacheConfig(hybrid_reuse_max_entries=captured["hybrid_cache_entries"])
