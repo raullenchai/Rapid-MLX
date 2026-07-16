@@ -142,9 +142,8 @@ GEMMA4_BESTEFFORT_BODY_PATTERN = re.compile(r"(.*?)\}(?:<tool_call\|>)?", re.DOT
 
 def _recover_incomplete_gemma4_calls(
     text: str,
-    search_from: int = 0,
 ) -> list[_Gemma4ToolCallMatch]:
-    """NON-STREAMING best-effort recovery for malformed tool calls.
+    """NON-STREAMING best-effort fallback for malformed tool calls.
 
     ``_scan_gemma4_tool_calls`` tracks Gemma quote (``<|"|>``) and JSON
     string state so nested ``{}`` inside string values do not close the
@@ -152,25 +151,27 @@ def _recover_incomplete_gemma4_calls(
     emits an UNTERMINATED string (``call:f{x:<|"|>unterminated}`` — the
     closing ``<|"|>`` is missing) the scanner stays in the open-string
     state, swallows the trailing ``}``, and returns zero matches — so the
-    whole call is dropped.
+    whole call would be dropped to raw content.
 
-    The historical regex parser (``GEMMA4_TOOL_PATTERN``, non-greedy
-    ``.*?\\}``) recovered these by taking the first ``}`` as the body end.
-    Preserve that best-effort behavior HERE, on the non-streaming finalize
-    path only, so a malformed-but-complete call is still surfaced instead
-    of leaking as raw content. This is deliberately NOT wired into the
-    streaming scanner: a call that is genuinely still being generated
-    (``call:f{x:<|"|>hel``) has no closing ``}`` yet, so this matcher
-    finds nothing and the stream stays pending, exactly as before.
+    This is the historical, well-understood best-effort recovery: it mirrors
+    the old ``call:NAME{(.*?)\\}`` non-greedy regex (the first ``}`` after the
+    opener closes the body), tracking no string state. It runs ONLY on the
+    non-streaming finalize path and ONLY when the balanced scanner found no
+    complete call, so a malformed-but-terminated call is still surfaced
+    instead of leaking as content.
 
-    ``search_from`` lets ``extract_tool_calls`` restrict recovery to the
-    region AFTER the last call the balanced scanner already resolved, so a
-    mixed ``call:a{...}call:b{<malformed>}`` output recovers ``b`` without
-    re-processing (and duplicating) the clean ``a``. (codex #1102 round-2
-    BLOCKING: recovery previously ran only when the scanner found NOTHING,
-    silently dropping every well-formed-suffix call after a malformed one.)
+    It deliberately does NOT try to perfectly reconstruct a mixed
+    valid+malformed multi-call sequence: broken tool-call text only happens
+    when the model itself emits corrupt output (rare), and it is not worth
+    non-linear recovery complexity that historically introduced more bugs
+    than the original truncation problem.
+
+    It is NOT wired into the streaming path: a call that is genuinely still
+    being generated (``call:f{x:<|"|>hel``) has no closing ``}`` yet, so this
+    matcher finds nothing there and the stream stays pending, as before.
     """
     matches: list[_Gemma4ToolCallMatch] = []
+    search_from = 0
     while opener := GEMMA4_TOOL_OPENER_PATTERN.search(text, search_from):
         body_start = opener.end()
         body = GEMMA4_BESTEFFORT_BODY_PATTERN.match(text, body_start)
@@ -724,63 +725,22 @@ class Gemma4ToolParser(ToolParser):
         # (see ``extract_tool_calls_streaming``): a call that cannot be closed
         # by the balanced scanner might still be mid-generation, so streaming
         # must keep it pending instead of force-emitting a best-effort call.
-        matches, opener_count = _scan_gemma4_tool_calls(model_output)
-        # Raw ``call:NAME{`` opener count, ignoring Gemma / JSON string state.
-        # ``opener_count`` from the balanced scanner can UNDER-count when an
-        # opener is swallowed inside a mispaired string (see the second branch
-        # below), so the string-agnostic regex count is the ground truth for
-        # "how many calls did the model attempt".
-        raw_opener_count = sum(
-            1 for _ in GEMMA4_TOOL_OPENER_PATTERN.finditer(model_output)
-        )
+        matches, _opener_count = _scan_gemma4_tool_calls(model_output)
 
-        if _allow_recovery and opener_count > len(matches):
-            # The balanced scanner saw MORE ``call:NAME{`` openers than it
-            # could close — most commonly because the model emitted an
-            # UNTERMINATED Gemma / JSON string
-            # (``call:f{x:<|"|>unterminated}``), leaving the scanner stuck
-            # in the open-string state so the trailing ``}`` is swallowed
-            # and the scan aborts. On this NON-STREAMING finalize path we
-            # know generation is done, so fall back to the historical
-            # best-effort extraction (first ``}`` closes the body) rather
-            # than dropping the unresolved call(s).
+        if not matches and _allow_recovery:
+            # The balanced scanner found no complete call. On the
+            # NON-STREAMING finalize path generation is known complete, so a
+            # malformed-but-terminated call (e.g. an unterminated ``<|"|>`` /
+            # JSON string that keeps the scanner stuck in the open-string
+            # state and swallows the trailing ``}``) is recovered with the
+            # historical best-effort parser (first ``}`` closes the body)
+            # rather than being dropped to raw content. This is deliberately
+            # a simple, conservative fallback — it does not attempt to
+            # perfectly reconstruct mixed valid+malformed multi-call output.
             #
-            # codex #1102 round-2 BLOCKING: recovery must not run ONLY when
-            # the scanner found nothing. A mixed output like
-            # ``call:a{x:1}call:b{y:<|"|>unterminated}`` resolves ``a``
-            # cleanly and then aborts on ``b`` — the historical regex parser
-            # recovered BOTH, so dropping ``b`` is a regression. Recover the
-            # unresolved suffix starting AFTER the last balanced match's end
-            # and merge it with the clean matches in source order (no
-            # duplication: the recovery scan never revisits the resolved
-            # prefix). Balanced matches keep their accurate nested-brace
-            # parse; recovery only fills the tail the scanner could not
-            # close.
-            #
-            # Streaming is untouched: it never calls this recovery, so a
-            # still-generating call stays pending.
-            tail_start = matches[-1].end if matches else 0
-            recovered_tail = _recover_incomplete_gemma4_calls(model_output, tail_start)
-            if recovered_tail:
-                matches = matches + recovered_tail
-        elif _allow_recovery and raw_opener_count > opener_count:
-            # The balanced scanner mispaired quote markers ACROSS a call
-            # boundary and over-consumed. Example: two back-to-back calls that
-            # each open (but never close) a Gemma string —
-            # ``call:a{x:<|"|>u1}call:b{y:<|"|>u2}``. The scanner treats the
-            # first ``<|"|>`` as an open quote, the SECOND ``<|"|>`` (in the
-            # next call) as its close, and swallows ``b``'s opener as string
-            # content — yielding ONE spurious match whose body straddles both
-            # calls (``opener_count`` is 1 but the raw regex sees 2 openers).
-            # The lone "successful" match is unreliable, so redo the whole
-            # extraction with the historical first-``}`` best-effort parser,
-            # which recovers each call independently. This branch is entered
-            # ONLY when a real opener was absorbed into a string
-            # (``raw_opener_count > opener_count``); every well-formed nested
-            # call keeps ``raw_opener_count == opener_count`` and is untouched.
-            recovered_all = _recover_incomplete_gemma4_calls(model_output, 0)
-            if recovered_all:
-                matches = recovered_all
+            # Streaming is untouched: it passes ``_allow_recovery=False``, so
+            # a still-generating call stays pending.
+            matches = _recover_incomplete_gemma4_calls(model_output)
 
         if not matches and _allow_recovery:
             # r5-E F-DGF-V080-B-8: structured form missed. Try the
@@ -863,19 +823,9 @@ class Gemma4ToolParser(ToolParser):
             # the final call is still mid-stream and must be suppressed.
             completed_matches, open_count = _scan_gemma4_tool_calls(current_text)
             completed = len(completed_matches)
-            # Raw (string-agnostic) opener count. When it exceeds the scanner's
-            # opener count, a real ``call:NAME{`` opener was absorbed into a
-            # mispaired string (two consecutive unterminated strings) and the
-            # scanner's lone "complete" match is spurious. On the stream we
-            # cannot tell whether the strings will terminate in later tokens,
-            # so stay pending rather than emit a best-effort call that
-            # subsequent tokens could invalidate. (codex #1102 round-2.)
-            raw_open_count = sum(
-                1 for _ in GEMMA4_TOOL_OPENER_PATTERN.finditer(current_text)
-            )
 
             # Still accumulating an incomplete tool call
-            if completed < open_count or raw_open_count > open_count:
+            if completed < open_count:
                 return None  # suppress output while inside tool markup
 
             # Only emit newly completed tool calls (dedup)
@@ -884,10 +834,8 @@ class Gemma4ToolParser(ToolParser):
 
             # ``_allow_recovery=False``: a call the balanced scanner could not
             # close might still be mid-generation on the stream, so we must
-            # never force-emit a best-effort recovery here. This also stops the
-            # mispaired-quote recovery (two consecutive unterminated strings)
-            # from firing mid-stream, which would emit a call that later tokens
-            # could still change. (codex #1102 round-2.)
+            # never force-emit a best-effort recovery here — an incomplete or
+            # malformed call stays pending until generation finalizes.
             result = self.extract_tool_calls(current_text, _allow_recovery=False)
             if result.tools_called:
                 # Only emit tool calls we haven't sent yet

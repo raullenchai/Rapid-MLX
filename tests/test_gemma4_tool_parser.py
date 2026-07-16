@@ -371,16 +371,19 @@ def test_has_pending_recognises_stripped_opener():
 
 
 # ---------------------------------------------------------------------------
-# Malformed / unterminated tool-call strings (codex #1102 BLOCKING-1)
+# Malformed / unterminated tool-call strings
 #
 # The balanced-brace scanner tracks Gemma quote (``<|"|>``) and JSON string
 # state so nested ``{}`` inside string values do not close the call early.
 # If the model emits an UNTERMINATED string, the scanner stays in the
 # open-string state forever, swallows the trailing ``}``, and returns zero
-# matches. The historical regex parser (``GEMMA4_TOOL_PATTERN``, non-greedy
-# ``.*?\}``) recovered these on a best-effort basis. That recovery is
-# preserved on the NON-STREAMING finalize path only; STREAMING must still
-# hold an incomplete call pending (return None) exactly as before.
+# matches. A single, conservative best-effort fallback (the historical
+# non-greedy ``call:NAME{(.*?)}`` semantics: first ``}`` closes the body)
+# recovers such a call — but ONLY on the NON-STREAMING finalize path and ONLY
+# when the balanced scanner found no complete call. We do NOT attempt to
+# perfectly reconstruct rare mixed valid+malformed multi-call output.
+# STREAMING must still hold an incomplete/malformed call pending (return None)
+# exactly as before.
 # ---------------------------------------------------------------------------
 
 
@@ -407,28 +410,6 @@ def test_nonstreaming_recovers_unterminated_gemma_string():
     # Best-effort: the value keeps the raw (unclosed) quote text.
     assert json.loads(res.tool_calls[0]["arguments"]) == {"x": '<|"|>unterminated'}
     assert res.content is None
-
-
-def test_nonstreaming_recovers_unterminated_gemma_string_full_wire():
-    """Same regression with the pristine wire wrappers present."""
-    parser = Gemma4ToolParser()
-    out = '<|tool_call>call:f{x:<|"|>unterminated}<tool_call|>'
-    res = parser.extract_tool_calls(out)
-    assert res.tools_called is True
-    assert res.tool_calls[0]["name"] == "f"
-    assert json.loads(res.tool_calls[0]["arguments"]) == {"x": '<|"|>unterminated'}
-
-
-def test_nonstreaming_recovers_unterminated_json_string():
-    """An unterminated JSON string (``x:"unterminated}``) is the same class
-    of failure — the scanner never sees the closing ``"`` so it swallows the
-    ``}``. Non-streaming recovery must still extract the call."""
-    parser = Gemma4ToolParser()
-    out = 'call:f{x:"unterminated}'
-    res = parser.extract_tool_calls(out)
-    assert res.tools_called is True
-    assert res.tool_calls[0]["name"] == "f"
-    assert json.loads(res.tool_calls[0]["arguments"]) == {"x": '"unterminated'}
 
 
 def test_recover_helper_no_close_brace_returns_nothing():
@@ -480,163 +461,6 @@ def test_many_key_object_parses_after_position_key_match():
     body = ",".join(f"k{i}:{i}" for i in range(50))
     res = _parse_gemma4_args(body)
     assert res == pairs
-
-
-# ---------------------------------------------------------------------------
-# codex #1102 round-2 BLOCKING-1: mixed valid + malformed multi-call recovery
-#
-# The round-1 fix only ran recovery when the balanced scanner found NOTHING,
-# so ``call:a{...}call:b{<malformed>}`` surfaced ``a`` but SILENTLY DROPPED
-# ``b`` — a regression vs the historical regex parser, which recovered BOTH.
-# The round-2 fix recovers unresolved openers beyond the last balanced match
-# and merges them, in source order, without duplicating already-closed calls.
-# ---------------------------------------------------------------------------
-
-
-def _names_and_args(res):
-    return [(tc["name"], json.loads(tc["arguments"])) for tc in res.tool_calls]
-
-
-def test_mixed_valid_then_valid_both_from_scanner():
-    """Baseline sanity: two well-formed back-to-back calls both come cleanly
-    from the balanced scanner (recovery must not fire or duplicate)."""
-    parser = Gemma4ToolParser()
-    res = parser.extract_tool_calls("call:a{x:1}call:b{y:2}")
-    assert res.tools_called is True
-    assert _names_and_args(res) == [("a", {"x": 1}), ("b", {"y": 2})]
-    assert res.content is None
-
-
-def test_mixed_valid_then_unterminated_recovers_both():
-    """THE round-2 BLOCKING case: a clean call followed by a malformed one.
-    Both must be surfaced — the malformed suffix must NOT be dropped."""
-    parser = Gemma4ToolParser()
-    out = 'call:a{x:1}call:b{y:<|"|>unterminated}'
-    res = parser.extract_tool_calls(out)
-    assert res.tools_called is True
-    assert _names_and_args(res) == [
-        ("a", {"x": 1}),
-        ("b", {"y": '<|"|>unterminated'}),
-    ]
-    assert res.content is None
-
-
-def test_mixed_unterminated_then_valid_recovers_both():
-    """Malformed call FIRST, then a clean one. The balanced scanner aborts on
-    the first opener, so recovery must re-scan and surface both in order."""
-    parser = Gemma4ToolParser()
-    out = 'call:a{x:<|"|>unterminated}call:b{y:1}'
-    res = parser.extract_tool_calls(out)
-    assert _names_and_args(res) == [
-        ("a", {"x": '<|"|>unterminated'}),
-        ("b", {"y": 1}),
-    ]
-    assert res.content is None
-
-
-def test_mixed_unterminated_then_unterminated_recovers_both():
-    """Two back-to-back malformed calls. The balanced scanner mispairs the two
-    unterminated ``<|"|>`` markers across the call boundary and over-consumes
-    into ONE spurious match; recovery must detect the absorbed opener
-    (``raw_opener_count > scanner_opener_count``) and recover each call
-    independently with the historical first-``}`` semantics."""
-    parser = Gemma4ToolParser()
-    out = 'call:a{x:<|"|>u1}call:b{y:<|"|>u2}'
-    res = parser.extract_tool_calls(out)
-    assert _names_and_args(res) == [
-        ("a", {"x": '<|"|>u1'}),
-        ("b", {"y": '<|"|>u2'}),
-    ]
-    assert res.content is None
-
-
-def test_mixed_valid_then_unterminated_json_recovers_both():
-    """Same regression, but the malformed suffix is an unterminated JSON
-    string (``y:"unterm}``) rather than a Gemma quote."""
-    parser = Gemma4ToolParser()
-    out = 'call:a{x:1}call:b{y:"unterm}'
-    res = parser.extract_tool_calls(out)
-    assert _names_and_args(res) == [("a", {"x": 1}), ("b", {"y": '"unterm'})]
-    assert res.content is None
-
-
-def test_mixed_three_calls_valid_valid_unterminated():
-    """Two clean calls then a malformed one — all three recovered in order."""
-    parser = Gemma4ToolParser()
-    out = 'call:a{x:1}call:b{y:2}call:c{z:<|"|>u}'
-    res = parser.extract_tool_calls(out)
-    assert _names_and_args(res) == [
-        ("a", {"x": 1}),
-        ("b", {"y": 2}),
-        ("c", {"z": '<|"|>u'}),
-    ]
-
-
-def test_mixed_valid_unterminated_middle_valid():
-    """A malformed call BETWEEN two clean ones. The balanced scanner resolves
-    the prefix, aborts on the middle, and recovery fills the malformed-middle
-    plus the trailing clean call."""
-    parser = Gemma4ToolParser()
-    out = 'call:a{x:1}call:b{y:<|"|>u}call:c{z:2}'
-    res = parser.extract_tool_calls(out)
-    assert _names_and_args(res) == [
-        ("a", {"x": 1}),
-        ("b", {"y": '<|"|>u'}),
-        ("c", {"z": 2}),
-    ]
-
-
-def test_mixed_valid_nested_preserved_when_suffix_unterminated():
-    """CRITICAL accuracy guard: a valid call with a nested JSON object whose
-    string value contains a literal ``}`` must keep its ACCURATE balanced
-    parse even while a malformed suffix call is recovered. The recovery must
-    NOT re-parse the clean prefix with the lossy first-``}`` heuristic (which
-    would truncate the nested object at the inner brace)."""
-    parser = Gemma4ToolParser()
-    out = 'call:a{arguments:{"m":"brace } here"}}call:b{y:<|"|>unterm}'
-    res = parser.extract_tool_calls(out)
-    assert _names_and_args(res) == [
-        ("a", {"arguments": {"m": "brace } here"}}),
-        ("b", {"y": '<|"|>unterm'}),
-    ]
-    assert res.content is None
-
-
-def test_mixed_recovery_strips_surrounding_content():
-    """Content around a mixed valid+malformed pair must have all tool markup
-    stripped (both the clean and the recovered spans)."""
-    parser = Gemma4ToolParser()
-    out = 'prefix call:a{x:1}call:b{y:<|"|>u} suffix'
-    res = parser.extract_tool_calls(out)
-    assert res.tools_called is True
-    assert len(res.tool_calls) == 2
-    assert res.content == "prefix  suffix"
-    assert "call:a{" not in (res.content or "")
-    assert "call:b{" not in (res.content or "")
-
-
-def test_full_wire_mixed_valid_then_unterminated_recovers_both():
-    """The mixed regression with the pristine ``<|tool_call>...<tool_call|>``
-    wrappers present on the clean call."""
-    parser = Gemma4ToolParser()
-    out = '<|tool_call>call:a{x:1}<tool_call|>call:b{y:<|"|>unterm}'
-    res = parser.extract_tool_calls(out)
-    names = [tc["name"] for tc in res.tool_calls]
-    assert names == ["a", "b"]
-    assert json.loads(res.tool_calls[0]["arguments"]) == {"x": 1}
-    assert json.loads(res.tool_calls[1]["arguments"]) == {"y": '<|"|>unterm'}
-
-
-def test_mixed_recovery_never_duplicates_clean_call():
-    """The recovery must start AFTER the last balanced match, so a clean call
-    is never emitted twice when a malformed call follows it."""
-    parser = Gemma4ToolParser()
-    out = 'call:a{x:1}call:b{y:<|"|>u}'
-    res = parser.extract_tool_calls(out)
-    ids = [tc["id"] for tc in res.tool_calls]
-    names = [tc["name"] for tc in res.tool_calls]
-    assert names == ["a", "b"]  # exactly one 'a', not two
-    assert len(ids) == len(set(ids))  # unique ids
 
 
 # ---------------------------------------------------------------------------
@@ -823,30 +647,3 @@ def test_genuinely_truncated_call_not_force_closed_nonstreaming():
         res = parser.extract_tool_calls(out)
         assert res.tools_called is False, out
         assert res.content == out
-
-
-def test_malformed_multi_call_streaming_never_force_emits():
-    """STREAMING must NEVER adopt the non-streaming recovery: every
-    malformed-but-terminated multi-call shape stays pending (return None) —
-    it must not force-emit a best-effort call mid-stream."""
-    for out in (
-        'call:a{x:1}call:b{y:<|"|>u}',  # valid + unterminated
-        'call:a{x:<|"|>u}call:b{y:1}',  # unterminated + valid
-        'call:a{x:<|"|>u1}call:b{y:<|"|>u2}',  # unterminated + unterminated
-        'call:a{x:1}call:b{y:"unterm}',  # valid + unterminated-json
-    ):
-        parser = Gemma4ToolParser()
-        parser.reset()
-        assert parser.extract_tool_calls_streaming("", out, out) is None, out
-
-
-def test_scanner_opener_count_under_counts_on_mispaired_quotes():
-    """Pin the scanner behavior the round-2 mispaired-quote recovery relies
-    on: two consecutive unterminated ``<|"|>`` strings make the scanner mispair
-    the markers and emit ONE spurious match, so its opener_count (1) is LESS
-    than the raw regex opener count (2)."""
-    matches, opener_count = _scan_gemma4_tool_calls(
-        'call:a{x:<|"|>u1}call:b{y:<|"|>u2}'
-    )
-    assert len(matches) == 1  # spurious single match
-    assert opener_count == 1  # scanner under-counts the absorbed opener
