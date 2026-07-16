@@ -1874,20 +1874,10 @@ class MemoryAwarePrefixCache:
                     )
 
             # #1103: dedicated LRU bound over non-trimmable (hybrid
-            # recurrent-state) entries. Their keys are unique supersets
-            # across conversations (#1025), so unlike KV-only entries they
-            # can pile up without ever being reclaimed by prefix-subset
-            # eviction — this bound is what keeps the recovered reuse from
-            # re-opening that leak. Scans in LRU order (``_entries`` is an
-            # ``OrderedDict``); O(entries) only on the hybrid store path.
+            # recurrent-state) entries — the recovered reuse can otherwise
+            # re-open the #1025 leak. Only the hybrid store path pays the scan.
             if entry.non_trimmable:
-                limit = self._config.hybrid_reuse_max_entries
-                non_trimmable_keys = [
-                    key for key, e in self._entries.items() if e.non_trimmable
-                ]
-                while len(non_trimmable_keys) > limit:
-                    oldest = non_trimmable_keys.pop(0)
-                    self._evict_entry_locked(oldest, reason="hybrid_bound")
+                self._enforce_hybrid_bound_locked()
 
         logger.debug(
             f"Stored cache: {len(tokens)} tokens, "
@@ -1940,6 +1930,47 @@ class MemoryAwarePrefixCache:
             f"[{reason}] removed {len(tokens_key)} tokens, "
             f"freed {entry.memory_bytes / _BYTES_PER_MB:.2f}MB"
         )
+
+    def _enforce_hybrid_bound_locked(self) -> tuple[int, int]:
+        """Enforce the ``hybrid_reuse_max_entries`` bound over non-trimmable
+        (hybrid recurrent-state) entries.
+
+        Caller must hold ``self._lock``. Returns ``(evicted_count,
+        evicted_bytes)`` so the persistent-load path can reconcile its
+        loaded-entry / loaded-byte tallies with what actually survived.
+
+        #1103: non-trimmable entries carry unique-superset keys across
+        conversations (#1025), so unlike KV-only entries they are never
+        reclaimed by prefix-subset eviction and can pile up unbounded. This
+        bound is the single source of truth for how many are retained and is
+        shared by BOTH the store path (after inserting a fresh non-trimmable
+        entry) and the persistent-load commit path (after installing a staged
+        set, which may carry legacy hybrid entries from a pre-#1075 snapshot).
+
+        Semantics MATCH the store-time gate exactly:
+
+        * ``hybrid_reuse_max_entries <= 0`` (disabled, the default) → drop ALL
+          non-trimmable entries, so a server restart that reloads a snapshot is
+          byte-for-byte the #1075 drop-at-store behavior — including retaining
+          NONE when N == 0.
+        * ``> 0`` → LRU-evict the oldest non-trimmable entries until at most N
+          remain. ``_entries`` is an ``OrderedDict`` in LRU order, so the head
+          of the filtered list is the least-recently-used.
+        """
+        limit = self._config.hybrid_reuse_max_entries
+        non_trimmable_keys = [
+            key for key, e in self._entries.items() if e.non_trimmable
+        ]
+        evicted_count = 0
+        evicted_bytes = 0
+        # limit <= 0 disables reuse: the ``> max(limit, 0)`` guard drops every
+        # non-trimmable entry (matches the store-path ``<= 0`` drop-at-store).
+        while len(non_trimmable_keys) > max(limit, 0):
+            oldest = non_trimmable_keys.pop(0)
+            evicted_bytes += self._entries[oldest].memory_bytes
+            self._evict_entry_locked(oldest, reason="hybrid_bound")
+            evicted_count += 1
+        return evicted_count, evicted_bytes
 
     def remove(self, tokens: list[int]) -> bool:
         """
@@ -3395,6 +3426,21 @@ class MemoryAwarePrefixCache:
                         continue
 
                 loaded_bytes += entry.memory_bytes
+
+            # #1103 codex BLOCKING-1: loaded snapshots can carry non-trimmable
+            # hybrid entries (flagged at staging above). Unlike the store path,
+            # nothing gated them on the way in, so a restart could retain them
+            # ABOVE ``hybrid_reuse_max_entries`` — or retain them at all when
+            # N == 0 — breaking both the opt-in AND the bounded guarantee.
+            # Enforce the SAME bound the store path applies: with N <= 0 this
+            # drops every non-trimmable entry (byte-for-byte #1075 after a
+            # restart); with N > 0 it LRU-trims down to N. Runs inside the
+            # commit critical section so a scraper never sees an over-bound
+            # cache. Reconcile the reported tallies so the import route counts
+            # only entries that SURVIVED the bound.
+            bound_evicted, bound_bytes = self._enforce_hybrid_bound_locked()
+            loaded -= bound_evicted
+            loaded_bytes -= bound_bytes
 
             self._stats.entry_count = len(self._entries)
             self._stats.current_memory_bytes = self._current_memory

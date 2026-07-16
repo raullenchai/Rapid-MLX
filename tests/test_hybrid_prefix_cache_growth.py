@@ -433,6 +433,45 @@ def test_hybrid_bound_is_enforced(reuse_cache):
     assert stats["evictions"] >= 1
 
 
+def test_hybrid_bound_evicts_by_recency_not_insertion_order(reuse_cache):
+    """#1103 codex NIT-3: the bound is LRU, not FIFO — a cache HIT must
+    refresh an entry's recency so it survives a later eviction.
+
+    ``test_hybrid_bound_is_enforced`` only ever stores (never fetches), so
+    insertion order == recency order there and it can't distinguish LRU from
+    FIFO. Here we store chain_a then chain_b, then FETCH chain_a (an exact
+    trim-free hit that must bump it to most-recent), then store chain_c. Under
+    LRU the least-recently-used is now chain_b, so chain_b — NOT the
+    first-inserted chain_a — must be the one evicted.
+    """
+    chain_a = list(range(1000, 1100))
+    chain_b = list(range(2000, 2100))
+    chain_c = list(range(3000, 3100))
+
+    reuse_cache.store(chain_a, _hybrid_cache())
+    reuse_cache.store(chain_b, _hybrid_cache())
+
+    # Exact-match hit on chain_a — trim-free, so a retained hybrid entry
+    # serves it AND its recency is refreshed to most-recently-used.
+    result, remaining = reuse_cache.fetch(chain_a)
+    assert result is not None, "Exact match on chain_a must hit (trim-free)"
+    assert remaining == []
+
+    # Now the LRU order is [chain_b (oldest), chain_a (newest)]. Storing
+    # chain_c pushes the count to 3 > bound 2, so the OLDEST (chain_b) goes.
+    reuse_cache.store(chain_c, _hybrid_cache())
+
+    stats = reuse_cache.get_stats()
+    assert stats["non_trimmable_entries"] == 2, "Bound of 2 must hold"
+    assert tuple(chain_b) not in reuse_cache._entries, (
+        "chain_b was least-recently-used and must be evicted (LRU, not FIFO)"
+    )
+    assert tuple(chain_a) in reuse_cache._entries, (
+        "chain_a was refreshed by its fetch hit and must survive"
+    )
+    assert tuple(chain_c) in reuse_cache._entries
+
+
 def test_hybrid_bound_does_not_evict_dense_entries(reuse_cache):
     """The hybrid bound only ever evicts non-trimmable entries — dense
     KV-only entries are invisible to it."""
@@ -498,4 +537,134 @@ def test_hybrid_entry_memory_reaches_the_ledger(reuse_cache):
     assert entry.non_trimmable is True
     assert entry.memory_bytes >= 1000, (
         "ArraysCache state bytes must be included in the entry's ledger size"
+    )
+
+
+# ---------------------------------------------------------------------------
+# #1103 codex BLOCKING-1: the hybrid bound must be enforced on the
+# PERSISTENT-LOAD path too, not only at store time. A snapshot written while
+# the opt-in was enabled can be reloaded on restart under a DIFFERENT (or
+# absent) ``hybrid_reuse_max_entries``. Before the fix, loaded entries were
+# flagged non-trimmable but NEVER subjected to the bound — so a restart could
+# retain entries ABOVE N, or retain them at all when N == 0, breaking BOTH the
+# opt-in and the bounded guarantee (the "default is byte-for-byte unchanged"
+# property). These tests use REAL mlx-lm cache objects so the save/load round-
+# trip through safetensors is exercised end-to-end, not mocked.
+# ---------------------------------------------------------------------------
+
+
+def _real_hybrid_cache(seqlen: int = 8):
+    """A real (KVCache + ArraysCache) hybrid cache populated with mx arrays so
+    it survives ``save_prompt_cache`` / ``load_prompt_cache`` round-trips.
+
+    KVCache is trimmable (transformer attention); ArraysCache is the non-
+    trimmable recurrent state (GatedDeltaNet / Mamba) that the bound governs.
+    """
+    import mlx.core as mx
+    from mlx_lm.models.cache import ArraysCache, KVCache
+
+    kv = KVCache()
+    kv.update_and_fetch(
+        mx.random.normal((1, 2, seqlen, 4)),
+        mx.random.normal((1, 2, seqlen, 4)),
+    )
+    arr = ArraysCache(size=2)
+    arr[0] = mx.random.normal((1, 4, 4))
+    arr[1] = mx.random.normal((1, 4, 4))
+    mx.eval(kv.state, arr.state)
+    return [kv, arr]
+
+
+def _persist_three_hybrid_entries(tmp_path) -> str:
+    """Store 3 hybrid entries under a generous bound and save them to disk.
+    Returns the snapshot directory. All 3 are retained on the source side so
+    the RELOAD side is what exercises the bound."""
+    src_config = MemoryCacheConfig(
+        max_memory_mb=100, max_entries=64, hybrid_reuse_max_entries=9
+    )
+    src = MemoryAwarePrefixCache(MagicMock(), src_config)
+    for base in (1000, 2000, 3000):
+        assert src.store(list(range(base, base + 8)), _real_hybrid_cache()) is True
+    assert src.get_stats()["non_trimmable_entries"] == 3
+
+    cache_dir = str(tmp_path / "snap")
+    assert src.save_to_disk(cache_dir) is True
+    return cache_dir
+
+
+def test_persistent_load_respects_hybrid_bound(tmp_path):
+    """Reloading a snapshot of 3 hybrid entries with N=1 must retain only 1 —
+    the bound is applied at commit time, exactly like the store path."""
+    cache_dir = _persist_three_hybrid_entries(tmp_path)
+
+    dst_config = MemoryCacheConfig(
+        max_memory_mb=100, max_entries=64, hybrid_reuse_max_entries=1
+    )
+    dst = MemoryAwarePrefixCache(MagicMock(), dst_config)
+    loaded = dst.load_from_disk(cache_dir, replace=True)
+
+    stats = dst.get_stats()
+    assert stats["non_trimmable_entries"] == 1, (
+        "Persistent load must LRU-trim hybrid entries down to the bound"
+    )
+    assert len(dst._entries) == 1
+    # The reported loaded count must reflect only SURVIVING entries, not the
+    # 3 that were staged before the bound trimmed 2 away.
+    assert loaded == 1
+
+
+def test_persistent_load_drops_all_when_disabled(tmp_path):
+    """Reloading with N=0 (the default / disabled state) must drop ALL non-
+    trimmable entries — byte-for-byte the #1075 drop-at-store behavior applied
+    after a restart. This is the core "default is unchanged" guarantee."""
+    cache_dir = _persist_three_hybrid_entries(tmp_path)
+
+    dst_config = MemoryCacheConfig(
+        max_memory_mb=100, max_entries=64, hybrid_reuse_max_entries=0
+    )
+    dst = MemoryAwarePrefixCache(MagicMock(), dst_config)
+    loaded = dst.load_from_disk(cache_dir, replace=True)
+
+    stats = dst.get_stats()
+    assert stats["non_trimmable_entries"] == 0, (
+        "With reuse disabled, a restart must retain NO non-trimmable entries"
+    )
+    assert len(dst._entries) == 0
+    assert loaded == 0
+
+
+def test_persistent_load_keeps_trimmable_entries_when_disabled(tmp_path):
+    """The disabled-state drop is scoped to NON-trimmable entries only — a
+    persisted dense (all-KVCache) entry must still reload normally with N=0."""
+    import mlx.core as mx
+    from mlx_lm.models.cache import KVCache
+
+    src_config = MemoryCacheConfig(
+        max_memory_mb=100, max_entries=64, hybrid_reuse_max_entries=9
+    )
+    src = MemoryAwarePrefixCache(MagicMock(), src_config)
+
+    dense = KVCache()
+    dense.update_and_fetch(
+        mx.random.normal((1, 2, 8, 4)),
+        mx.random.normal((1, 2, 8, 4)),
+    )
+    mx.eval(dense.state)
+    dense_key = list(range(500, 508))
+    assert src.store(dense_key, [dense]) is True
+    # One hybrid entry too, so we can prove the drop is selective.
+    src.store(list(range(1000, 1008)), _real_hybrid_cache())
+
+    cache_dir = str(tmp_path / "snap")
+    assert src.save_to_disk(cache_dir) is True
+
+    dst_config = MemoryCacheConfig(
+        max_memory_mb=100, max_entries=64, hybrid_reuse_max_entries=0
+    )
+    dst = MemoryAwarePrefixCache(MagicMock(), dst_config)
+    dst.load_from_disk(cache_dir, replace=True)
+
+    assert dst.get_stats()["non_trimmable_entries"] == 0
+    assert tuple(dense_key) in dst._entries, (
+        "Dense (trimmable) entries must survive an N=0 reload"
     )
