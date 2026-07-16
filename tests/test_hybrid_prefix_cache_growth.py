@@ -668,3 +668,47 @@ def test_persistent_load_keeps_trimmable_entries_when_disabled(tmp_path):
     assert tuple(dense_key) in dst._entries, (
         "Dense (trimmable) entries must survive an N=0 reload"
     )
+
+
+def test_merge_load_into_full_hybrid_cache_counts_only_imported(tmp_path):
+    """#1103 codex BLOCKING-1: merge-loading (replace=False) ONE new hybrid
+    entry into a cache already AT the bound must report ``loaded == 1``.
+
+    The bound pass runs at commit and, being LRU, evicts the PRE-EXISTING
+    entry (older) to make room for the freshly imported one. That eviction
+    must NOT be subtracted from the import's ``loaded`` tally — the old code
+    subtracted every bound eviction and returned 0 (or corrupted the byte
+    total) for a load that actually installed a new entry.
+    """
+    # Snapshot on disk: a single NEW hybrid entry to import.
+    src_config = MemoryCacheConfig(
+        max_memory_mb=100, max_entries=64, hybrid_reuse_max_entries=9
+    )
+    src = MemoryAwarePrefixCache(MagicMock(), src_config)
+    assert src.store(list(range(7000, 7008)), _real_hybrid_cache()) is True
+    cache_dir = str(tmp_path / "snap")
+    assert src.save_to_disk(cache_dir) is True
+
+    # Destination already holds a pre-existing hybrid entry and the bound is
+    # N=1, so it is already FULL before the import.
+    dst_config = MemoryCacheConfig(
+        max_memory_mb=100, max_entries=64, hybrid_reuse_max_entries=1
+    )
+    dst = MemoryAwarePrefixCache(MagicMock(), dst_config)
+    assert dst.store(list(range(9000, 9008)), _real_hybrid_cache()) is True
+    assert dst.get_stats()["non_trimmable_entries"] == 1
+
+    loaded = dst.load_from_disk(cache_dir, replace=False)
+
+    # The imported entry survived the bound (it is the most-recent), the
+    # pre-existing one was LRU-evicted — but that eviction belongs to the
+    # destination, not this import, so the imported count stays 1.
+    assert loaded == 1, (
+        "Merge-load must count the surviving imported entry, not net it "
+        "against the pre-existing entry the bound evicted"
+    )
+    assert dst.get_stats()["non_trimmable_entries"] == 1
+    assert tuple(range(7000, 7008)) in dst._entries
+    assert tuple(range(9000, 9008)) not in dst._entries
+    # loaded_bytes ledger must stay coherent (non-negative, matches survivor).
+    assert dst._last_load_bytes > 0

@@ -141,11 +141,6 @@ class SchedulerConfig:
     use_memory_aware_cache: bool = True  # Use memory-based eviction
     cache_memory_mb: int | None = None  # None = auto-detect (20% of available RAM)
     cache_memory_percent: float = 0.20  # Fraction of available RAM if auto-detecting
-    # #1103: bounded trim-free prefix reuse for hybrid (GatedDeltaNet /
-    # Mamba MoE) models. 0 (default) keeps the #1075 drop-at-store policy;
-    # N > 0 retains at most N recurrent-state entries for exact /
-    # prefix-extension reuse (LRU-evicted among themselves).
-    hybrid_cache_entries: int = 0
 
     # KV cache quantization (reduces prefix cache memory). The
     # ``kv_cache_dtype`` field is the canonical R15 #300 knob — it
@@ -191,6 +186,15 @@ class SchedulerConfig:
     )
     paged_cache_block_size: int = 64  # Tokens per block
     max_cache_blocks: int = 1000  # Maximum number of cache blocks
+
+    # #1103: bounded trim-free prefix reuse for hybrid (GatedDeltaNet /
+    # Mamba MoE) models. 0 (default) keeps the #1075 drop-at-store policy;
+    # N > 0 retains at most N recurrent-state entries for exact /
+    # prefix-extension reuse (LRU-evicted among themselves). Appended AFTER
+    # the pre-existing cache fields (codex #1103 NIT-5): keeps every field
+    # that predates this PR at its original dataclass position so no future
+    # positional ``SchedulerConfig(...)`` construction can silently rebind.
+    hybrid_cache_entries: int = 0
 
     # Speculative decoding selection. "none" is baseline decode; "mtp"
     # installs the vendored mlx-lm PR #990 MTP draft/verify path through

@@ -1931,13 +1931,15 @@ class MemoryAwarePrefixCache:
             f"freed {entry.memory_bytes / _BYTES_PER_MB:.2f}MB"
         )
 
-    def _enforce_hybrid_bound_locked(self) -> tuple[int, int]:
+    def _enforce_hybrid_bound_locked(self) -> list[tuple[int, ...]]:
         """Enforce the ``hybrid_reuse_max_entries`` bound over non-trimmable
         (hybrid recurrent-state) entries.
 
-        Caller must hold ``self._lock``. Returns ``(evicted_count,
-        evicted_bytes)`` so the persistent-load path can reconcile its
-        loaded-entry / loaded-byte tallies with what actually survived.
+        Caller must hold ``self._lock``. Returns the LIST of evicted keys (in
+        eviction order) so the persistent-load path can reconcile its loaded
+        tallies against only the keys that belonged to THIS import — a bound
+        pass may evict PRE-EXISTING non-trimmable entries (merge mode) that
+        were never part of the current load and must not be subtracted from it.
 
         #1103: non-trimmable entries carry unique-superset keys across
         conversations (#1025), so unlike KV-only entries they are never
@@ -1961,16 +1963,17 @@ class MemoryAwarePrefixCache:
         non_trimmable_keys = [
             key for key, e in self._entries.items() if e.non_trimmable
         ]
-        evicted_count = 0
-        evicted_bytes = 0
-        # limit <= 0 disables reuse: the ``> max(limit, 0)`` guard drops every
-        # non-trimmable entry (matches the store-path ``<= 0`` drop-at-store).
-        while len(non_trimmable_keys) > max(limit, 0):
-            oldest = non_trimmable_keys.pop(0)
-            evicted_bytes += self._entries[oldest].memory_bytes
+        # limit <= 0 disables reuse: ``max(limit, 0)`` keeps NONE, dropping
+        # every non-trimmable entry (matches the store-path ``<= 0`` drop-at-
+        # store). Slice the eviction prefix once — the head of the LRU-ordered
+        # list is oldest — instead of repeated ``pop(0)`` (O(n**2) on a large
+        # persisted snapshot).
+        keep = max(limit, 0)
+        n_evict = max(0, len(non_trimmable_keys) - keep)
+        victims = non_trimmable_keys[:n_evict]
+        for oldest in victims:
             self._evict_entry_locked(oldest, reason="hybrid_bound")
-            evicted_count += 1
-        return evicted_count, evicted_bytes
+        return victims
 
     def remove(self, tokens: list[int]) -> bool:
         """
@@ -3436,11 +3439,17 @@ class MemoryAwarePrefixCache:
             # drops every non-trimmable entry (byte-for-byte #1075 after a
             # restart); with N > 0 it LRU-trims down to N. Runs inside the
             # commit critical section so a scraper never sees an over-bound
-            # cache. Reconcile the reported tallies so the import route counts
-            # only entries that SURVIVED the bound.
-            bound_evicted, bound_bytes = self._enforce_hybrid_bound_locked()
-            loaded -= bound_evicted
-            loaded_bytes -= bound_bytes
+            # cache. Reconcile the reported tallies against ONLY the evicted
+            # keys that belonged to THIS import (``staged``): in merge mode the
+            # bound can evict PRE-EXISTING non-trimmable entries too, and those
+            # were never counted in ``loaded`` / ``loaded_bytes``, so
+            # subtracting them would under-count (potentially to 0) a load that
+            # actually installed new entries.
+            for victim in self._enforce_hybrid_bound_locked():
+                staged_entry = staged.get(victim)
+                if staged_entry is not None:
+                    loaded -= 1
+                    loaded_bytes -= staged_entry.memory_bytes
 
             self._stats.entry_count = len(self._entries)
             self._stats.current_memory_bytes = self._current_memory
