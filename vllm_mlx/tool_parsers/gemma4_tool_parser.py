@@ -142,6 +142,7 @@ GEMMA4_BESTEFFORT_BODY_PATTERN = re.compile(r"(.*?)\}(?:<tool_call\|>)?", re.DOT
 
 def _recover_incomplete_gemma4_calls(
     text: str,
+    search_from: int = 0,
 ) -> list[_Gemma4ToolCallMatch]:
     """NON-STREAMING best-effort recovery for malformed tool calls.
 
@@ -161,9 +162,15 @@ def _recover_incomplete_gemma4_calls(
     streaming scanner: a call that is genuinely still being generated
     (``call:f{x:<|"|>hel``) has no closing ``}`` yet, so this matcher
     finds nothing and the stream stays pending, exactly as before.
+
+    ``search_from`` lets ``extract_tool_calls`` restrict recovery to the
+    region AFTER the last call the balanced scanner already resolved, so a
+    mixed ``call:a{...}call:b{<malformed>}`` output recovers ``b`` without
+    re-processing (and duplicating) the clean ``a``. (codex #1102 round-2
+    BLOCKING: recovery previously ran only when the scanner found NOTHING,
+    silently dropping every well-formed-suffix call after a malformed one.)
     """
     matches: list[_Gemma4ToolCallMatch] = []
-    search_from = 0
     while opener := GEMMA4_TOOL_OPENER_PATTERN.search(text, search_from):
         body_start = opener.end()
         body = GEMMA4_BESTEFFORT_BODY_PATTERN.match(text, body_start)
@@ -186,12 +193,44 @@ def _recover_incomplete_gemma4_calls(
     return matches
 
 
+# Maximum object/array nesting the recursive argument parser will descend
+# before bailing to the flat best-effort fallback. Gemma tool arguments are
+# shallow in practice (a couple of nested objects for agent-to-agent calls),
+# so 64 is comfortably above any legitimate depth while staying well under
+# CPython's default recursion limit (~1000). A model that emits pathologically
+# deep ``{a:{a:{...}}}`` output would otherwise recurse past the interpreter
+# limit and raise an uncaught ``RecursionError`` that crashes request
+# processing — this bound converts that into a controlled ``ValueError`` that
+# degrades to the historical flat parser. (codex #1102 round-2 BLOCKING.)
+_GEMMA4_MAX_NESTING_DEPTH = 64
+
+
+class _Gemma4NestingTooDeepError(ValueError):
+    """Raised when argument nesting exceeds ``_GEMMA4_MAX_NESTING_DEPTH``.
+
+    Subclasses ``ValueError`` so every existing ``except ValueError`` handler
+    (notably ``_parse_gemma4_args``) already routes it to the lenient
+    best-effort fallback without a special case.
+    """
+
+
 class _Gemma4ArgumentParser:
     """Recursive parser for Gemma's JSON-like argument syntax."""
 
     def __init__(self, text: str):
         self.text = text
         self.index = 0
+        # Current object/array nesting depth. Guarded against runaway
+        # recursion so deeply-nested model output can never crash the request
+        # with an uncaught ``RecursionError`` (codex #1102 round-2 BLOCKING).
+        self.depth = 0
+
+    def _enter_nesting(self) -> None:
+        self.depth += 1
+        if self.depth > _GEMMA4_MAX_NESTING_DEPTH:
+            raise _Gemma4NestingTooDeepError(
+                f"argument nesting exceeds {_GEMMA4_MAX_NESTING_DEPTH}"
+            )
 
     def parse_arguments(self, terminator: str | None = None) -> dict[str, Any]:
         result: dict[str, Any] = {}
@@ -241,7 +280,11 @@ class _Gemma4ArgumentParser:
         char = self.text[self.index]
         if char == "{":
             self.index += 1
-            return self.parse_arguments("}")
+            self._enter_nesting()
+            try:
+                return self.parse_arguments("}")
+            finally:
+                self.depth -= 1
         if char == "[":
             return self._parse_array()
         if char == '"':
@@ -260,20 +303,24 @@ class _Gemma4ArgumentParser:
 
     def _parse_array(self) -> list[Any]:
         self.index += 1
-        values: list[Any] = []
-        self._skip_space()
-        while self.index < len(self.text):
-            if self.text[self.index] == "]":
-                self.index += 1
-                return values
-            values.append(self._parse_value())
+        self._enter_nesting()
+        try:
+            values: list[Any] = []
             self._skip_space()
-            if self.index < len(self.text) and self.text[self.index] == "]":
-                self.index += 1
-                return values
-            self._expect(",")
-            self._skip_space()
-        raise ValueError("missing closing ']'")
+            while self.index < len(self.text):
+                if self.text[self.index] == "]":
+                    self.index += 1
+                    return values
+                values.append(self._parse_value())
+                self._skip_space()
+                if self.index < len(self.text) and self.text[self.index] == "]":
+                    self.index += 1
+                    return values
+                self._expect(",")
+                self._skip_space()
+            raise ValueError("missing closing ']'")
+        finally:
+            self.depth -= 1
 
     def _parse_gemma_string(self) -> str:
         marker = '<|"|>'
@@ -286,8 +333,13 @@ class _Gemma4ArgumentParser:
         return value
 
     def _parse_json_string(self) -> Any:
-        value, consumed = json.JSONDecoder().raw_decode(self.text[self.index :])
-        self.index += consumed
+        # Decode from ``self.index`` in place. ``raw_decode(s, idx)`` anchors at
+        # ``idx`` and returns the ABSOLUTE end offset, so we avoid slicing a
+        # fresh ``self.text[self.index:]`` copy per JSON-quoted field — that
+        # slice made parsing many quoted fields O(n²) in the buffer length.
+        # (codex #1102 round-2 NIT.)
+        value, end = json.JSONDecoder().raw_decode(self.text, self.index)
+        self.index = end
         return value
 
     def _skip_space(self) -> None:
@@ -352,8 +404,15 @@ def _parse_gemma4_args(args_str: str) -> dict[str, Any]:
     """
     try:
         return _Gemma4ArgumentParser(args_str).parse_arguments()
-    except (ValueError, json.JSONDecodeError):
+    except (ValueError, json.JSONDecodeError, RecursionError):
         # Keep the historical best-effort behavior for malformed model output.
+        # ``RecursionError`` is caught explicitly: the parser's own depth guard
+        # converts pathologically nested Gemma objects/arrays into a
+        # ``ValueError``, but a deeply-nested JSON string VALUE
+        # (``x:"[[[[...]]]]"``) recurses inside the stdlib ``json`` decoder,
+        # which has no such guard. Catching it here means deep model output can
+        # never crash the request — it degrades to the flat best-effort parse
+        # exactly like any other malformed input. (codex #1102 round-2 BLOCKING.)
         pass
 
     # Stash quoted string values so they can't confuse the fallback bare parser.
@@ -378,10 +437,14 @@ def _parse_gemma4_args(args_str: str) -> dict[str, Any]:
                 continue
             except (ValueError, IndexError):
                 pass
-        # Try to parse as JSON literal (int, float, bool, null)
+        # Try to parse as JSON literal (int, float, bool, null). Catch
+        # ``RecursionError`` too: a deeply-nested bare value that survived the
+        # quoted-string stash (``k:[[[[...]]]]``) would otherwise recurse past
+        # the interpreter limit inside ``json.loads``. Falling back to the raw
+        # string keeps this best-effort path crash-free. (codex #1102 round-2.)
         try:
             result[key] = json.loads(raw_val)
-        except (json.JSONDecodeError, ValueError):
+        except (json.JSONDecodeError, ValueError, RecursionError):
             result[key] = raw_val
     return result
 
@@ -648,24 +711,78 @@ class Gemma4ToolParser(ToolParser):
         return self.has_text_format_tool_call(text)
 
     def extract_tool_calls(
-        self, model_output: str, request: Any = None
+        self,
+        model_output: str,
+        request: Any = None,
+        *,
+        _allow_recovery: bool = True,
     ) -> ExtractedToolCallInformation:
+        # ``_allow_recovery`` gates every best-effort recovery path (malformed
+        # tool-call closing and prose recovery). It is ``True`` on the
+        # NON-STREAMING finalize path — generation is known complete, so it is
+        # safe to close a malformed call. The STREAMING path passes ``False``
+        # (see ``extract_tool_calls_streaming``): a call that cannot be closed
+        # by the balanced scanner might still be mid-generation, so streaming
+        # must keep it pending instead of force-emitting a best-effort call.
         matches, opener_count = _scan_gemma4_tool_calls(model_output)
+        # Raw ``call:NAME{`` opener count, ignoring Gemma / JSON string state.
+        # ``opener_count`` from the balanced scanner can UNDER-count when an
+        # opener is swallowed inside a mispaired string (see the second branch
+        # below), so the string-agnostic regex count is the ground truth for
+        # "how many calls did the model attempt".
+        raw_opener_count = sum(
+            1 for _ in GEMMA4_TOOL_OPENER_PATTERN.finditer(model_output)
+        )
 
-        if not matches and opener_count:
-            # The balanced scanner saw a ``call:NAME{`` opener but could
-            # not close it — most commonly because the model emitted an
+        if _allow_recovery and opener_count > len(matches):
+            # The balanced scanner saw MORE ``call:NAME{`` openers than it
+            # could close — most commonly because the model emitted an
             # UNTERMINATED Gemma / JSON string
             # (``call:f{x:<|"|>unterminated}``), leaving the scanner stuck
-            # in the open-string state so the trailing ``}`` is swallowed.
-            # On this NON-STREAMING finalize path we know generation is
-            # done, so fall back to the historical best-effort extraction
-            # (first ``}`` closes the body) rather than dropping the call.
+            # in the open-string state so the trailing ``}`` is swallowed
+            # and the scan aborts. On this NON-STREAMING finalize path we
+            # know generation is done, so fall back to the historical
+            # best-effort extraction (first ``}`` closes the body) rather
+            # than dropping the unresolved call(s).
+            #
+            # codex #1102 round-2 BLOCKING: recovery must not run ONLY when
+            # the scanner found nothing. A mixed output like
+            # ``call:a{x:1}call:b{y:<|"|>unterminated}`` resolves ``a``
+            # cleanly and then aborts on ``b`` — the historical regex parser
+            # recovered BOTH, so dropping ``b`` is a regression. Recover the
+            # unresolved suffix starting AFTER the last balanced match's end
+            # and merge it with the clean matches in source order (no
+            # duplication: the recovery scan never revisits the resolved
+            # prefix). Balanced matches keep their accurate nested-brace
+            # parse; recovery only fills the tail the scanner could not
+            # close.
+            #
             # Streaming is untouched: it never calls this recovery, so a
-            # still-generating call stays pending. (codex #1102 BLOCKING-1)
-            matches = _recover_incomplete_gemma4_calls(model_output)
+            # still-generating call stays pending.
+            tail_start = matches[-1].end if matches else 0
+            recovered_tail = _recover_incomplete_gemma4_calls(model_output, tail_start)
+            if recovered_tail:
+                matches = matches + recovered_tail
+        elif _allow_recovery and raw_opener_count > opener_count:
+            # The balanced scanner mispaired quote markers ACROSS a call
+            # boundary and over-consumed. Example: two back-to-back calls that
+            # each open (but never close) a Gemma string —
+            # ``call:a{x:<|"|>u1}call:b{y:<|"|>u2}``. The scanner treats the
+            # first ``<|"|>`` as an open quote, the SECOND ``<|"|>`` (in the
+            # next call) as its close, and swallows ``b``'s opener as string
+            # content — yielding ONE spurious match whose body straddles both
+            # calls (``opener_count`` is 1 but the raw regex sees 2 openers).
+            # The lone "successful" match is unreliable, so redo the whole
+            # extraction with the historical first-``}`` best-effort parser,
+            # which recovers each call independently. This branch is entered
+            # ONLY when a real opener was absorbed into a string
+            # (``raw_opener_count > opener_count``); every well-formed nested
+            # call keeps ``raw_opener_count == opener_count`` and is untouched.
+            recovered_all = _recover_incomplete_gemma4_calls(model_output, 0)
+            if recovered_all:
+                matches = recovered_all
 
-        if not matches:
+        if not matches and _allow_recovery:
             # r5-E F-DGF-V080-B-8: structured form missed. Try the
             # prose-fallback recovery before giving up — gemma4 at
             # low temperature intermittently describes the tool
@@ -674,7 +791,8 @@ class Gemma4ToolParser(ToolParser):
             # ``<|tool_call>`` channel form. The recovery is gated
             # by ``request.tools`` so an unrelated chat that happens
             # to contain ``a=13`` prose cannot trigger a false
-            # tool_call.
+            # tool_call. Also gated on ``_allow_recovery`` so the
+            # streaming path never force-recovers mid-generation.
             recovered = _try_prose_recover_tool_call(
                 model_output, _extract_request_tools(request)
             )
@@ -745,16 +863,32 @@ class Gemma4ToolParser(ToolParser):
             # the final call is still mid-stream and must be suppressed.
             completed_matches, open_count = _scan_gemma4_tool_calls(current_text)
             completed = len(completed_matches)
+            # Raw (string-agnostic) opener count. When it exceeds the scanner's
+            # opener count, a real ``call:NAME{`` opener was absorbed into a
+            # mispaired string (two consecutive unterminated strings) and the
+            # scanner's lone "complete" match is spurious. On the stream we
+            # cannot tell whether the strings will terminate in later tokens,
+            # so stay pending rather than emit a best-effort call that
+            # subsequent tokens could invalidate. (codex #1102 round-2.)
+            raw_open_count = sum(
+                1 for _ in GEMMA4_TOOL_OPENER_PATTERN.finditer(current_text)
+            )
 
             # Still accumulating an incomplete tool call
-            if completed < open_count:
+            if completed < open_count or raw_open_count > open_count:
                 return None  # suppress output while inside tool markup
 
             # Only emit newly completed tool calls (dedup)
             if completed <= self._emitted_tool_count:
                 return None
 
-            result = self.extract_tool_calls(current_text)
+            # ``_allow_recovery=False``: a call the balanced scanner could not
+            # close might still be mid-generation on the stream, so we must
+            # never force-emit a best-effort recovery here. This also stops the
+            # mispaired-quote recovery (two consecutive unterminated strings)
+            # from firing mid-stream, which would emit a call that later tokens
+            # could still change. (codex #1102 round-2.)
+            result = self.extract_tool_calls(current_text, _allow_recovery=False)
             if result.tools_called:
                 # Only emit tool calls we haven't sent yet
                 new_calls = result.tool_calls[self._emitted_tool_count :]
