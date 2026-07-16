@@ -23,6 +23,8 @@ import pytest
 from vllm_mlx.tool_parsers.gemma4_tool_parser import (
     Gemma4ToolParser,
     _parse_gemma4_args,
+    _recover_incomplete_gemma4_calls,
+    _scan_gemma4_tool_calls,
 )
 
 # ---------------------------------------------------------------------------
@@ -364,3 +366,115 @@ def test_has_pending_recognises_stripped_opener():
     # No opener — must not trigger
     assert parser.has_pending_tool_call("hello world") is False
     assert parser.has_pending_tool_call("call me later") is False
+
+
+# ---------------------------------------------------------------------------
+# Malformed / unterminated tool-call strings (codex #1102 BLOCKING-1)
+#
+# The balanced-brace scanner tracks Gemma quote (``<|"|>``) and JSON string
+# state so nested ``{}`` inside string values do not close the call early.
+# If the model emits an UNTERMINATED string, the scanner stays in the
+# open-string state forever, swallows the trailing ``}``, and returns zero
+# matches. The historical regex parser (``GEMMA4_TOOL_PATTERN``, non-greedy
+# ``.*?\}``) recovered these on a best-effort basis. That recovery is
+# preserved on the NON-STREAMING finalize path only; STREAMING must still
+# hold an incomplete call pending (return None) exactly as before.
+# ---------------------------------------------------------------------------
+
+
+def test_scanner_swallows_unterminated_gemma_string():
+    """Pin the raw scanner behavior: an unterminated ``<|"|>`` string makes
+    the balanced scanner miss the call (0 matches), which is precisely why
+    the non-streaming recovery below is needed."""
+    matches, opener_count = _scan_gemma4_tool_calls('call:f{x:<|"|>unterminated}')
+    assert matches == []
+    assert opener_count == 1
+
+
+def test_nonstreaming_recovers_unterminated_gemma_string():
+    """codex #1102 BLOCKING-1: malformed ``call:f{x:<|"|>unterminated}``
+    (missing closing ``<|"|>``) must still surface a tool call in the
+    non-streaming finalize path, matching the historical best-effort parser
+    instead of dropping the whole call to raw content."""
+    parser = Gemma4ToolParser()
+    out = 'call:f{x:<|"|>unterminated}'
+    res = parser.extract_tool_calls(out)
+    assert res.tools_called is True
+    assert len(res.tool_calls) == 1
+    assert res.tool_calls[0]["name"] == "f"
+    # Best-effort: the value keeps the raw (unclosed) quote text.
+    assert json.loads(res.tool_calls[0]["arguments"]) == {"x": '<|"|>unterminated'}
+    assert res.content is None
+
+
+def test_nonstreaming_recovers_unterminated_gemma_string_full_wire():
+    """Same regression with the pristine wire wrappers present."""
+    parser = Gemma4ToolParser()
+    out = '<|tool_call>call:f{x:<|"|>unterminated}<tool_call|>'
+    res = parser.extract_tool_calls(out)
+    assert res.tools_called is True
+    assert res.tool_calls[0]["name"] == "f"
+    assert json.loads(res.tool_calls[0]["arguments"]) == {"x": '<|"|>unterminated'}
+
+
+def test_nonstreaming_recovers_unterminated_json_string():
+    """An unterminated JSON string (``x:"unterminated}``) is the same class
+    of failure — the scanner never sees the closing ``"`` so it swallows the
+    ``}``. Non-streaming recovery must still extract the call."""
+    parser = Gemma4ToolParser()
+    out = 'call:f{x:"unterminated}'
+    res = parser.extract_tool_calls(out)
+    assert res.tools_called is True
+    assert res.tool_calls[0]["name"] == "f"
+    assert json.loads(res.tool_calls[0]["arguments"]) == {"x": '"unterminated'}
+
+
+def test_recover_helper_no_close_brace_returns_nothing():
+    """The recovery helper only fires when a closing ``}`` exists. A
+    genuinely truncated call (no ``}`` at all) yields no recovery, which is
+    what keeps a still-generating stream from being force-closed."""
+    assert _recover_incomplete_gemma4_calls('call:f{x:<|"|>hel') == []
+    assert _recover_incomplete_gemma4_calls("call:f{x:") == []
+    assert _recover_incomplete_gemma4_calls("call:f{") == []
+
+
+def test_streaming_malformed_complete_stays_pending():
+    """CRITICAL: streaming must NOT adopt the non-streaming recovery. A
+    malformed-but-terminated call (``call:f{x:<|"|>unterminated}``) has an
+    opener the balanced scanner cannot close, so streaming must keep it
+    pending (return None) — it never force-emits a best-effort call
+    mid-stream."""
+    parser = Gemma4ToolParser()
+    parser.reset()
+    out = 'call:f{x:<|"|>unterminated}'
+    assert parser.extract_tool_calls_streaming("", out, out) is None
+
+
+def test_streaming_genuinely_incomplete_stays_pending():
+    """A call still being generated (no closing ``}`` yet) must stay pending
+    on the streaming path — unchanged by the recovery."""
+    parser = Gemma4ToolParser()
+    parser.reset()
+    for text in ('call:f{x:<|"|>hel', "call:f{x:", "call:f{"):
+        parser.reset()
+        assert parser.extract_tool_calls_streaming("", text, text) is None
+
+
+def test_valid_nested_unaffected_by_recovery():
+    """Guard against the recovery over-firing: a well-formed nested call must
+    still be parsed by the balanced scanner (clean nested dict), NOT routed
+    through the best-effort first-``}`` recovery."""
+    parser = Gemma4ToolParser()
+    out = 'call:g{a:{b:<|"|>v<|"|>}}'
+    res = parser.extract_tool_calls(out)
+    assert res.tools_called is True
+    assert json.loads(res.tool_calls[0]["arguments"]) == {"a": {"b": "v"}}
+
+
+def test_many_key_object_parses_after_position_key_match():
+    """Regression for the compiled-key / position-match optimisation
+    (codex #1102 NIT): a many-key object must still parse every key/value."""
+    pairs = {f"k{i}": i for i in range(50)}
+    body = ",".join(f"k{i}:{i}" for i in range(50))
+    res = _parse_gemma4_args(body)
+    assert res == pairs

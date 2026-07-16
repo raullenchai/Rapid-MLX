@@ -45,6 +45,10 @@ GEMMA4_TOOL_TRAILER = "<tool_call|>"
 GEMMA4_QUOTED_VAL_PATTERN = re.compile(r'<\|"\|>(.*?)<\|"\|>', re.DOTALL)
 # Match a bare key:value pair (key, then anything up to , or end-of-string)
 GEMMA4_KV_BARE_PATTERN = re.compile(r"(\w+)\s*:\s*([^,]+?)(?=\s*,|\s*$)")
+# Bare (unquoted) argument key. Compiled once and matched against the full
+# buffer with a start position so parsing an N-key object does not slice a
+# fresh remaining-input string per key (quadratic allocation).
+GEMMA4_KEY_PATTERN = re.compile(r"\w+")
 
 
 @dataclass(frozen=True)
@@ -126,6 +130,62 @@ def _scan_gemma4_tool_calls(
     return matches, opener_count
 
 
+# Best-effort closer for a single opener body. Mirrors the historical
+# ``GEMMA4_TOOL_PATTERN`` non-greedy ``call:NAME{(.*?)\}`` semantics: it
+# takes the FIRST ``}`` after the opener as the body terminator, without
+# tracking Gemma / JSON string state. That is exactly what recovers a
+# malformed emission like ``call:f{x:<|"|>unterminated}`` where the
+# balanced scanner stalls because the ``<|"|>`` quote is never closed and
+# every subsequent ``}`` gets swallowed by the open-string state.
+GEMMA4_BESTEFFORT_BODY_PATTERN = re.compile(r"(.*?)\}(?:<tool_call\|>)?", re.DOTALL)
+
+
+def _recover_incomplete_gemma4_calls(
+    text: str,
+) -> list[_Gemma4ToolCallMatch]:
+    """NON-STREAMING best-effort recovery for malformed tool calls.
+
+    ``_scan_gemma4_tool_calls`` tracks Gemma quote (``<|"|>``) and JSON
+    string state so nested ``{}`` inside string values do not close the
+    call early. That is correct for well-formed output, but if the model
+    emits an UNTERMINATED string (``call:f{x:<|"|>unterminated}`` — the
+    closing ``<|"|>`` is missing) the scanner stays in the open-string
+    state, swallows the trailing ``}``, and returns zero matches — so the
+    whole call is dropped.
+
+    The historical regex parser (``GEMMA4_TOOL_PATTERN``, non-greedy
+    ``.*?\\}``) recovered these by taking the first ``}`` as the body end.
+    Preserve that best-effort behavior HERE, on the non-streaming finalize
+    path only, so a malformed-but-complete call is still surfaced instead
+    of leaking as raw content. This is deliberately NOT wired into the
+    streaming scanner: a call that is genuinely still being generated
+    (``call:f{x:<|"|>hel``) has no closing ``}`` yet, so this matcher
+    finds nothing and the stream stays pending, exactly as before.
+    """
+    matches: list[_Gemma4ToolCallMatch] = []
+    search_from = 0
+    while opener := GEMMA4_TOOL_OPENER_PATTERN.search(text, search_from):
+        body_start = opener.end()
+        body = GEMMA4_BESTEFFORT_BODY_PATTERN.match(text, body_start)
+        if not body:
+            # No closing ``}`` anywhere after this opener → genuinely
+            # incomplete, nothing to recover. Nested contents cannot hold
+            # another top-level call, so stop scanning.
+            break
+        matches.append(
+            _Gemma4ToolCallMatch(
+                start=opener.start(),
+                end=body.end(),
+                name=opener.group(1),
+                # Only the captured body (group 1) — excludes the closing
+                # ``}`` and the optional ``<tool_call|>`` trailer.
+                arguments=body.group(1),
+            )
+        )
+        search_from = body.end()
+    return matches
+
+
 class _Gemma4ArgumentParser:
     """Recursive parser for Gemma's JSON-like argument syntax."""
 
@@ -162,10 +222,13 @@ class _Gemma4ArgumentParser:
             value = self._parse_json_string()
             if isinstance(value, str):
                 return value
-        match = re.match(r"\w+", self.text[self.index :])
+        # Match against the full buffer from ``self.index`` (no per-key
+        # ``self.text[self.index:]`` copy → avoids quadratic allocation on
+        # many-key objects). ``Pattern.match`` anchors at ``pos``.
+        match = GEMMA4_KEY_PATTERN.match(self.text, self.index)
         if not match:
             raise ValueError("expected argument name")
-        self.index += len(match.group(0))
+        self.index = match.end()
         return match.group(0)
 
     def _parse_value(self) -> Any:
@@ -575,8 +638,8 @@ class Gemma4ToolParser(ToolParser):
         ``call:NAME{`` — works for both the pristine wire form
         (``<|tool_call>call:NAME{...}<tool_call|>``) AND the
         post-HF-decode stripped form (``call:NAME{...}``). See the
-        comment above ``GEMMA4_TOOL_PATTERN`` for why the wrappers can
-        be absent.
+        comment above ``GEMMA4_TOOL_OPENER_PATTERN`` for why the
+        wrappers can be absent.
         """
         if "<|tool_call>" in text:
             return True
@@ -587,7 +650,20 @@ class Gemma4ToolParser(ToolParser):
     def extract_tool_calls(
         self, model_output: str, request: Any = None
     ) -> ExtractedToolCallInformation:
-        matches, _ = _scan_gemma4_tool_calls(model_output)
+        matches, opener_count = _scan_gemma4_tool_calls(model_output)
+
+        if not matches and opener_count:
+            # The balanced scanner saw a ``call:NAME{`` opener but could
+            # not close it — most commonly because the model emitted an
+            # UNTERMINATED Gemma / JSON string
+            # (``call:f{x:<|"|>unterminated}``), leaving the scanner stuck
+            # in the open-string state so the trailing ``}`` is swallowed.
+            # On this NON-STREAMING finalize path we know generation is
+            # done, so fall back to the historical best-effort extraction
+            # (first ``}`` closes the body) rather than dropping the call.
+            # Streaming is untouched: it never calls this recovery, so a
+            # still-generating call stays pending. (codex #1102 BLOCKING-1)
+            matches = _recover_incomplete_gemma4_calls(model_output)
 
         if not matches:
             # r5-E F-DGF-V080-B-8: structured form missed. Try the
@@ -661,7 +737,7 @@ class Gemma4ToolParser(ToolParser):
         # Check if we're inside a tool call. Either the pristine wire
         # form (``<|tool_call>...<tool_call|>``) or the post-HF-decode
         # stripped form (``call:NAME{...}``) triggers parsing — see the
-        # comment above ``GEMMA4_TOOL_PATTERN`` for the empirical
+        # comment above ``GEMMA4_TOOL_OPENER_PATTERN`` for the empirical
         # justification.
         if "<|tool_call>" in current_text or re.search(r"call:\w+\{", current_text):
             # The balanced scanner returns completed bodies and the number of
