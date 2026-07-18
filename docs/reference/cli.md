@@ -49,6 +49,8 @@ rapid-mlx serve <model> [options]
 | `--mcp-config` | Path to MCP config file | None |
 | `--paged-cache-block-size` | Tokens per cache block | 64 |
 | `--max-cache-blocks` | Maximum cache blocks | 1000 |
+| `--hybrid-cache-entries` | Opt-in trim-free prefix reuse: retain N non-trimmable prefix-cache entries (stable prefix + new suffix each turn) for hybrid (GatedDeltaNet/Mamba) and sliding-window (Gemma 4, GPT-OSS) models. 0 disables. | 0 |
+| `--response-cache-entries` | Opt-in response cache: retain N fully-computed greedy (`temperature 0` / `top_k 1`) chat completions; a completely repeated request returns the stored completion with zero GPU decode. 0 disables. | 0 |
 | `--max-num-seqs` | Max concurrent sequences | 256 |
 | `--gpu-memory-utilization` | Fraction of device memory for Metal allocation limit (0.0-1.0) | 0.90 |
 | `--default-temperature` | Default temperature when not specified in request | None |
