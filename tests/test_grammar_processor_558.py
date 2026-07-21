@@ -2206,6 +2206,12 @@ def test_rejected_committed_token_drops_constraint_and_stops_masking():
         def get_error(self):
             return None  # compiled fine
 
+        def deep_copy(self):
+            # get_request_matcher caches a never-consumed template and hands each
+            # request a deep_copy of it; a fresh instance (n_consumed=0) is the
+            # faithful clone of the initial-state template.
+            return _RejectingMatcher()
+
         def consume_token(self, tok_id):
             self.n_consumed += 1
             # Accept the first generated token, reject the second (simulating a
