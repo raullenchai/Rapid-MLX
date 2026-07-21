@@ -169,11 +169,19 @@ def _bucket_id(raw: str) -> str:
 
 
 def _subnet_bucket(host: str) -> str:
-    """Group IPv4 hosts into /24 and IPv6 hosts into /64 subnets."""
+    """Group IPv4 hosts into /24 and IPv6 hosts into /64 subnets.
+
+    IPv4-mapped IPv6 addresses (``::ffff:a.b.c.d``, common when the
+    server binds to ``::`` on dual-stack Linux) are unwrapped to their
+    underlying IPv4 address before bucketing so each /24 gets its own
+    rate-limit bucket (#589).
+    """
     try:
         addr = ipaddress.ip_address(host)
         if isinstance(addr, ipaddress.IPv4Address):
             network = ipaddress.ip_network(f"{addr}/24", strict=False)
+        elif addr.ipv4_mapped is not None:
+            network = ipaddress.ip_network(f"{addr.ipv4_mapped}/24", strict=False)
         else:
             network = ipaddress.ip_network(f"{addr}/64", strict=False)
         return str(network.network_address)
