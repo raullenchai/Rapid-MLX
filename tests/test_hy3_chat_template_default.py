@@ -70,10 +70,8 @@ class _CapturingTokenizer:
 
     def __init__(self):
         self.captured_kwargs: dict = {}
-        self.captured_messages: list[dict] = []
 
     def apply_chat_template(self, messages, **kwargs) -> str:
-        self.captured_messages = messages
         self.captured_kwargs = kwargs
         return "<stub prompt>"
 
@@ -188,94 +186,6 @@ def test_gpt_oss_low_effort_survives_enable_thinking_retry():
     assert tok.calls[0].get("enable_thinking") is False
     assert tok.calls[1].get("reasoning_effort") == "low"
     assert "enable_thinking" not in tok.calls[1]
-
-
-def test_gpt_oss_tools_get_strict_argument_guardrail():
-    """Codex dogfood regression: GPT-OSS can invent undeclared tool
-    arguments (``patch`` for an ``exec_command`` schema that only has
-    ``cmd``). The Harmony prompt should explicitly forbid that shape."""
-
-    class GptOssLikeTokenizer(_CapturingTokenizer):
-        chat_template = (
-            "{% if reasoning_effort is not defined %}"
-            "{% set reasoning_effort = 'medium' %}{% endif %}"
-            "Reasoning: {{ reasoning_effort }}"
-        )
-
-    tok = GptOssLikeTokenizer()
-    apply_chat_template(
-        tok,
-        messages=[{"role": "user", "content": "apply a patch"}],
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": "exec_command",
-                    "description": "Runs a shell command.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"cmd": {"type": "string"}},
-                        "required": ["cmd"],
-                    },
-                },
-            }
-        ],
-        model_name="66ton99/gpt-oss-120b",
-    )
-    assert tok.captured_messages[0]["role"] == "developer"
-    guard = tok.captured_messages[0]["content"]
-    assert "Do not invent extra argument keys" in guard
-    assert "`patch`" in guard
-    assert "inside `cmd`" in guard
-    assert "every deleted/context line must be copied exactly" in guard
-    assert "`omitted`" in guard
-    assert "If `apply_patch` fails" in guard
-    assert "do not stop and ask the user to edit manually" in guard
-    assert "retry with a smaller exact-context patch" in guard
-    assert "Do not replace existing compatibility or runtime-guard code" in guard
-    assert "verified every documented entrypoint" in guard
-    assert "run all relevant entrypoints, not just a syntax check" in guard
-    assert "inspect the actual files or command output you changed" in guard
-    assert "only claim changes that are present on disk" in guard
-    assert "never send a final answer that asks the user to edit files" in guard
-    assert "run the relevant verification commands yourself" in guard
-
-
-def test_gpt_oss_non_codex_tools_do_not_get_codex_guardrail():
-    """The apply_patch autonomy instructions are useful for Codex but too
-    specific for ordinary function tools."""
-
-    class GptOssLikeTokenizer(_CapturingTokenizer):
-        chat_template = (
-            "{% if reasoning_effort is not defined %}"
-            "{% set reasoning_effort = 'medium' %}{% endif %}"
-            "Reasoning: {{ reasoning_effort }}"
-        )
-
-    tok = GptOssLikeTokenizer()
-    apply_chat_template(
-        tok,
-        messages=[{"role": "user", "content": "weather?"}],
-        tools=[
-            {
-                "type": "function",
-                "function": {
-                    "name": "get_weather",
-                    "description": "Returns weather.",
-                    "parameters": {
-                        "type": "object",
-                        "properties": {"city": {"type": "string"}},
-                        "required": ["city"],
-                    },
-                },
-            }
-        ],
-        model_name="66ton99/gpt-oss-120b",
-    )
-    assert tok.captured_messages[0]["role"] == "user"
-    assert (
-        "Do not invent extra argument keys" not in tok.captured_messages[0]["content"]
-    )
 
 
 def test_non_hy3_model_never_sees_reasoning_effort_kwarg():

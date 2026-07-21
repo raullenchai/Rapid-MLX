@@ -904,85 +904,6 @@ def _template_uses_reasoning_effort_without_enable_thinking(
     return "reasoning_effort" in template and "enable_thinking" not in template
 
 
-_HARMONY_TOOL_ARGUMENT_STRICTNESS = (
-    "Tool-call arguments must be a JSON object whose keys are only the "
-    "properties declared in the selected tool schema. Do not invent extra "
-    "argument keys. If a tool has a `cmd` parameter, put the full command "
-    "and any command payload inside `cmd`; do not add separate `patch`, "
-    "`content`, or similar arguments unless that exact property is listed "
-    "in the tool schema. When using `apply_patch`, every deleted/context "
-    "line must be copied exactly from the current file; never use "
-    "placeholders such as `...`, `omitted`, or `for brevity` inside a "
-    "patch. If `apply_patch` fails because expected lines do not match, "
-    "do not stop and ask the user to edit manually; inspect the current "
-    "file, then retry with a smaller exact-context patch or use another "
-    "safe in-scope command to complete the edit yourself. Do not replace "
-    "existing compatibility or runtime-guard code with a shorter equivalent "
-    "unless you have verified every documented entrypoint that depends on "
-    "it. When tests or project instructions mention multiple commands, run "
-    "all relevant entrypoints, not just a syntax check. Before your final "
-    "answer, inspect the actual files or command output you changed and "
-    "only claim changes that are present on disk. While you have tool "
-    "access, never send a final answer that asks the user to edit files, "
-    "run tests, or continue the implementation for you; only send the "
-    "final answer after you have completed the in-scope edit and run the "
-    "relevant verification commands yourself."
-)
-
-
-def _inject_harmony_tool_argument_strictness(
-    messages: list[dict],
-    tools: list[dict] | None,
-    template_applicator,
-    model_name: str = "",
-) -> list[dict]:
-    """Add a compact guardrail for GPT-OSS/Harmony tool calls.
-
-    GPT-OSS renders tools as a TypeScript namespace. Local dogfood showed
-    that the model can still add convenient-but-undeclared arguments
-    (notably ``patch`` on Codex's ``exec_command`` tool). Since downstream
-    tool runners commonly ignore unknown keys, this turns a generated patch
-    into a bare ``apply_patch`` no-op. Keep the instruction scoped to
-    Harmony-style templates with tools so unrelated model families do not
-    inherit Codex-specific wording.
-    """
-
-    if (
-        not tools
-        or not _template_uses_reasoning_effort_without_enable_thinking(
-            template_applicator, model_name=model_name
-        )
-        or not _tools_include_codex_exec_command(tools)
-    ):
-        return messages
-
-    if messages and messages[0].get("role") in {"developer", "system"}:
-        first = dict(messages[0])
-        content = first.get("content", "")
-        if isinstance(content, str):
-            first["content"] = f"{content}\n\n{_HARMONY_TOOL_ARGUMENT_STRICTNESS}"
-            return [first, *messages[1:]]
-
-    return [
-        {"role": "developer", "content": _HARMONY_TOOL_ARGUMENT_STRICTNESS},
-        *messages,
-    ]
-
-
-def _tools_include_codex_exec_command(tools: list[dict] | None) -> bool:
-    """Return True when the request exposes Codex's exec_command tool shape."""
-    for tool in tools or []:
-        function = tool.get("function") if isinstance(tool, dict) else None
-        if not isinstance(function, dict) or function.get("name") != "exec_command":
-            continue
-        parameters = function.get("parameters")
-        if not isinstance(parameters, dict):
-            return True
-        properties = parameters.get("properties")
-        return not isinstance(properties, dict) or "cmd" in properties
-    return False
-
-
 def apply_chat_template(
     template_applicator,
     messages: list[dict],
@@ -1071,10 +992,6 @@ def apply_chat_template(
             e,
         )
         tools = _baseline_sanitize_tools(tools)
-
-    messages = _inject_harmony_tool_argument_strictness(
-        messages, tools, template_applicator, model_name=model_name
-    )
 
     if not hasattr(template_applicator, "apply_chat_template"):
         # Fallback for models without apply_chat_template.

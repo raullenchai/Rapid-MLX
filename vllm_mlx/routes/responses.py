@@ -17,11 +17,9 @@ history every turn in ``input``.
 import asyncio
 import json
 import logging
-import shlex
 import time
 import uuid
 from collections.abc import AsyncIterator, Mapping
-from types import SimpleNamespace
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import Response, StreamingResponse
@@ -1412,7 +1410,6 @@ async def _non_stream(
     tool_calls = _enforce_responses_tool_choice(
         tool_calls, responses_request, openai_request
     )
-    _repair_codex_response_tool_calls(tool_calls, responses_request)
 
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
         raw_text=output.raw_text or output.text,
@@ -1545,8 +1542,6 @@ async def _emit_function_call_item(tc, output_index: int) -> AsyncIterator[str]:
     because the underlying engine doesn't surface per-token tool-call
     streaming yet (Codex CLI concatenates either way).
     """
-    _repair_codex_malformed_tool_arguments_json(tc)
-    _repair_codex_apply_patch_tool_call(tc)
     fc_id = f"fc_{uuid.uuid4().hex[:24]}"
     yield _sse(
         "response.output_item.added",
@@ -1586,229 +1581,6 @@ async def _emit_function_call_item(tc, output_index: int) -> AsyncIterator[str]:
                 "status": "completed",
             },
         },
-    )
-
-
-def _repair_codex_response_tool_calls(
-    tool_calls: list | None,
-    responses_request: ResponsesRequest,
-) -> None:
-    """Apply narrow Codex/GPT-OSS tool-call repairs in every Responses mode."""
-    for tc in tool_calls or []:
-        _repair_codex_malformed_tool_arguments_json(tc)
-        _repair_codex_apply_patch_tool_call(tc, responses_request)
-
-
-def _repair_codex_apply_patch_tool_call(
-    tc,
-    responses_request: ResponsesRequest | None = None,
-) -> bool:
-    """Repair a common Codex/GPT-OSS malformed tool call.
-
-    Dogfooding ``66ton99/gpt-oss-120b`` through Codex exposed a repeated
-    pattern: the model calls ``exec_command`` with ``{"cmd":"apply_patch",
-    "patch":"*** Begin Patch..."}``. The Codex runner ignores unknown
-    properties, so it executes bare ``apply_patch`` and the edit fails with
-    the usage text instead of applying the patch.
-
-    A second captured pattern calls a non-existent direct ``apply_patch``
-    function with ``{"patch":"*** Begin Patch..."}``, which Codex rejects
-    as ``unsupported call: apply_patch``. Both shapes express the same
-    concrete, safe-to-translate intent: execute the supported
-    ``exec_command`` tool with the patch as apply_patch's single shell
-    argument. Repair only those exact shapes; all other tool calls remain
-    byte-faithful.
-    """
-
-    function = getattr(tc, "function", None)
-    if function is None:
-        return False
-    name = getattr(function, "name", None)
-    if name not in {"exec_command", "apply_patch"}:
-        return False
-    request_has_exec_command = (
-        responses_request is not None
-        and _responses_request_has_function_tool(responses_request, "exec_command")
-    )
-    if name == "apply_patch" and not request_has_exec_command:
-        return False
-
-    raw_args = getattr(function, "arguments", "") or ""
-    try:
-        args = json.loads(raw_args)
-    except Exception:
-        return False
-    if not isinstance(args, dict):
-        return False
-
-    patch = args.get("patch")
-    if not isinstance(patch, str):
-        return False
-    if not patch.startswith("*** Begin Patch\n"):
-        return False
-
-    if name == "exec_command":
-        if args.get("cmd") != "apply_patch":
-            return False
-        repaired = dict(args)
-        repaired["cmd"] = f"apply_patch {shlex.quote(patch)}"
-        repaired.pop("patch", None)
-        warning = (
-            "Responses: repaired Codex exec_command apply_patch tool arguments "
-            "by moving the extra patch field into cmd"
-        )
-    else:
-        repaired = {"cmd": f"apply_patch {shlex.quote(patch)}"}
-        function.name = "exec_command"
-        warning = (
-            "Responses: repaired Codex direct apply_patch tool call into exec_command"
-        )
-
-    function.arguments = json.dumps(repaired, ensure_ascii=False, separators=(",", ":"))
-    logger.warning(warning)
-    return True
-
-
-def _repair_codex_malformed_tool_arguments_json(tc) -> bool:
-    """Repair narrowly malformed Codex tool-call argument JSON.
-
-    GPT-OSS/Harmony dogfood produced an ``exec_command`` call whose
-    argument string was otherwise a valid ``{"cmd": "..."}`` object but
-    ended as ``"]}`` instead of ``"}`` after a large here-doc patch
-    payload. Codex rejects that before the command can run:
-    ``failed to parse function arguments``. Repair only that exact
-    spurious-array-close suffix, and only if the repaired payload parses
-    to an ``exec_command`` object with a string ``cmd``.
-    """
-
-    function = getattr(tc, "function", None)
-    if function is None or getattr(function, "name", None) != "exec_command":
-        return False
-
-    raw_args = getattr(function, "arguments", "") or ""
-    try:
-        json.loads(raw_args)
-        return False
-    except Exception:
-        pass
-
-    stripped = raw_args.rstrip()
-    if not stripped.endswith('"]}'):
-        return False
-
-    repaired_raw = f'{stripped[:-3]}"}}'
-    try:
-        repaired = json.loads(repaired_raw)
-    except Exception:
-        return False
-    if not isinstance(repaired, dict):
-        return False
-    cmd = repaired.get("cmd")
-    if not isinstance(cmd, str) or not cmd.strip():
-        return False
-
-    function.arguments = json.dumps(repaired, ensure_ascii=False, separators=(",", ":"))
-    logger.warning(
-        "Responses: repaired Codex exec_command arguments JSON by removing "
-        "a spurious trailing array close before the object close"
-    )
-    return True
-
-
-_CODEX_REASONING_EXEC_COMMAND_ARG_KEYS = frozenset(
-    {
-        "cmd",
-        "justification",
-        "login",
-        "max_output_tokens",
-        "prefix_rule",
-        "sandbox_permissions",
-        "shell",
-        "tty",
-        "workdir",
-        "yield_time_ms",
-    }
-)
-
-
-def _responses_request_has_function_tool(
-    responses_request: ResponsesRequest, name: str
-) -> bool:
-    """Return True when the Responses request exposed a callable function tool."""
-
-    for tool in getattr(responses_request, "tools", None) or []:
-        if isinstance(tool, Mapping):
-            if tool.get("name") == name:
-                return True
-            function = tool.get("function")
-            if isinstance(function, Mapping) and function.get("name") == name:
-                return True
-            continue
-
-        if getattr(tool, "name", None) == name:
-            return True
-        function = getattr(tool, "function", None)
-        if getattr(function, "name", None) == name:
-            return True
-
-    return False
-
-
-def _extract_trailing_json_object(text: str) -> dict | None:
-    """Extract a JSON object that ends the text, allowing markdown fences."""
-
-    decoder = json.JSONDecoder()
-    candidate = text.strip()
-    if candidate.endswith("```"):
-        candidate = candidate[:-3].rstrip()
-
-    for idx in range(len(candidate) - 1, -1, -1):
-        if candidate[idx] != "{":
-            continue
-        try:
-            value, end = decoder.raw_decode(candidate[idx:])
-        except ValueError:
-            continue
-        if candidate[idx + end :].strip():
-            continue
-        if isinstance(value, dict):
-            return value
-    return None
-
-
-def _recover_codex_reasoning_exec_command_tool_call(
-    reasoning_text: str,
-    responses_request: ResponsesRequest,
-):
-    """Recover Codex exec_command JSON that a Harmony model leaked in reasoning.
-
-    GPT-OSS/Harmony dogfood captured a model turn that ended with an
-    analysis-channel sentence plus a literal ``{"cmd": "..."}`` object,
-    then ``finish_reason="stop"``. Codex meant that object to be a tool call,
-    but because it arrived as hidden reasoning, the stream completed with no
-    assistant message and no actionable tool. Recover only the narrow
-    ``exec_command`` argument shape and only when the client actually exposed
-    that tool on the request.
-    """
-
-    if not _responses_request_has_function_tool(responses_request, "exec_command"):
-        return None
-
-    args = _extract_trailing_json_object(reasoning_text)
-    if not args:
-        return None
-    if set(args) - _CODEX_REASONING_EXEC_COMMAND_ARG_KEYS:
-        return None
-    cmd = args.get("cmd")
-    if not isinstance(cmd, str) or not cmd.strip() or "\x00" in cmd:
-        return None
-
-    return SimpleNamespace(
-        id=f"call_{uuid.uuid4().hex[:24]}",
-        function=SimpleNamespace(
-            name="exec_command",
-            arguments=json.dumps(args, ensure_ascii=False, separators=(",", ":")),
-        ),
     )
 
 
@@ -3121,17 +2893,11 @@ async def _stream_responses(
         )
         reasoning_status = "incomplete" if mid_think_cutoff else "completed"
 
-        # GPT-OSS/Harmony dogfood: in a long Codex session the model
-        # occasionally emits a tool-call-shaped JSON object in the
-        # hidden analysis/reasoning channel and then stops, e.g.
-        # ``... {"cmd": "sed -n '770,830p' darknet-worker.js"}``.
-        # If we first materialize that as a ``reasoning`` output item,
-        # Codex sees a completed response with no final answer/tool and
-        # terminates the turn. Before emitting any reasoning-only item,
-        # recover the narrow supported ``exec_command`` shape; otherwise
-        # fail the stream before ``response.completed`` so the client can
-        # treat it as a retryable model-format failure instead of a
-        # successful empty turn.
+        # If the model stops after producing only hidden reasoning,
+        # expose the captured reasoning item and then fail the response.
+        # A successful ``response.completed`` with no final message/tool
+        # leaves Responses clients with an empty turn that cannot be
+        # distinguished from a legitimate empty completion.
         no_final_answer_stop = (
             last_finish_reason == "stop"
             and completion_tokens > 0
@@ -3139,113 +2905,100 @@ async def _stream_responses(
             and not (accumulated_text or tool_calls)
         )
         if no_final_answer_stop:
-            recovered_tool_call = _recover_codex_reasoning_exec_command_tool_call(
-                accumulated_reasoning_text,
-                responses_request,
-            )
-            if recovered_tool_call is not None:
-                logger.warning(
-                    "Responses (stream): recovered Codex exec_command tool call "
-                    "from reasoning-only stop"
-                )
-                tool_calls = [recovered_tool_call]
-                accumulated_reasoning_text = ""
-                reasoning_status = "completed"
-            else:
-                if reasoning_item_added:
-                    reasoning_item_payload_done = {
-                        "type": "reasoning",
-                        "id": reasoning_item_id,
-                        "status": reasoning_status,
-                        "summary": (
-                            [
-                                {
-                                    "type": "summary_text",
-                                    "text": accumulated_reasoning_text,
-                                }
-                            ]
-                            if accumulated_reasoning_text
-                            else []
-                        ),
-                    }
-                    yield _emit(
-                        "response.output_item.done",
-                        {
-                            "type": "response.output_item.done",
-                            "output_index": reasoning_output_index,
-                            "item": reasoning_item_payload_done,
-                        },
-                    )
-                elif accumulated_reasoning_text:
-                    reasoning_output_index = len(completed_output)
-                    reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
-                    reasoning_item_payload_added = {
-                        "type": "reasoning",
-                        "id": reasoning_item_id,
-                        "status": "in_progress",
-                        "summary": [],
-                    }
-                    yield _emit(
-                        "response.output_item.added",
-                        {
-                            "type": "response.output_item.added",
-                            "output_index": reasoning_output_index,
-                            "item": reasoning_item_payload_added,
-                        },
-                    )
-                    reasoning_item_payload_done = {
-                        "type": "reasoning",
-                        "id": reasoning_item_id,
-                        "status": reasoning_status,
-                        "summary": [
+            if reasoning_item_added:
+                reasoning_item_payload_done = {
+                    "type": "reasoning",
+                    "id": reasoning_item_id,
+                    "status": reasoning_status,
+                    "summary": (
+                        [
                             {
                                 "type": "summary_text",
                                 "text": accumulated_reasoning_text,
                             }
-                        ],
-                    }
-                    yield _emit(
-                        "response.output_item.done",
-                        {
-                            "type": "response.output_item.done",
-                            "output_index": reasoning_output_index,
-                            "item": reasoning_item_payload_done,
-                        },
-                    )
-                logger.warning(
-                    "Responses (stream): model stopped after emitting %d token(s) "
-                    "but before any final message/tool_call; surfacing as "
-                    "response.failed",
-                    completion_tokens,
-                )
+                        ]
+                        if accumulated_reasoning_text
+                        else []
+                    ),
+                }
                 yield _emit(
-                    "response.failed",
+                    "response.output_item.done",
                     {
-                        "type": "response.failed",
-                        "response": {
-                            "id": response_id,
-                            "object": "response",
-                            "created_at": created_at,
-                            "status": "failed",
-                            "model": served_model,
-                            "error": {
-                                "code": "model_no_final_answer",
-                                "message": (
-                                    "The model stopped after emitting reasoning "
-                                    "but did not produce a final answer or tool "
-                                    "call. Retry the request; if it repeats, "
-                                    "reduce the prompt or reasoning budget."
-                                ),
-                            },
-                        },
+                        "type": "response.output_item.done",
+                        "output_index": reasoning_output_index,
+                        "item": reasoning_item_payload_done,
                     },
                 )
-                elapsed = time.perf_counter() - start_time
-                logger.info(
-                    f"Responses (stream, failed): prompt={prompt_tokens} + "
-                    f"completion={completion_tokens} tokens in {elapsed:.2f}s"
+            elif accumulated_reasoning_text:
+                reasoning_output_index = len(completed_output)
+                reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+                reasoning_item_payload_added = {
+                    "type": "reasoning",
+                    "id": reasoning_item_id,
+                    "status": "in_progress",
+                    "summary": [],
+                }
+                yield _emit(
+                    "response.output_item.added",
+                    {
+                        "type": "response.output_item.added",
+                        "output_index": reasoning_output_index,
+                        "item": reasoning_item_payload_added,
+                    },
                 )
-                return
+                reasoning_item_payload_done = {
+                    "type": "reasoning",
+                    "id": reasoning_item_id,
+                    "status": reasoning_status,
+                    "summary": [
+                        {
+                            "type": "summary_text",
+                            "text": accumulated_reasoning_text,
+                        }
+                    ],
+                }
+                yield _emit(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": reasoning_output_index,
+                        "item": reasoning_item_payload_done,
+                    },
+                )
+            logger.warning(
+                "Responses (stream): model stopped after emitting %d token(s) "
+                "but before any final message/tool_call; surfacing as "
+                "response.failed",
+                completion_tokens,
+            )
+            yield _emit(
+                "response.failed",
+                {
+                    "type": "response.failed",
+                    "response": {
+                        "id": response_id,
+                        "object": "response",
+                        "created_at": created_at,
+                        "status": "failed",
+                        "model": served_model,
+                        "error": {
+                            "code": "model_no_final_answer",
+                            "message": (
+                                "The model stopped after emitting reasoning "
+                                "but did not produce a final answer or tool "
+                                "call. Retry the request; if it repeats, "
+                                "reduce the prompt or reasoning budget."
+                            ),
+                        },
+                    },
+                },
+            )
+            elapsed = time.perf_counter() - start_time
+            logger.info(
+                f"Responses (stream, failed): prompt={prompt_tokens} + "
+                f"completion={completion_tokens} tokens in {elapsed:.2f}s"
+            )
+            return
 
         if reasoning_item_added:
             # Case 1 (R12-M3): leading slot was flushed pre-message. Ship
@@ -3451,8 +3204,6 @@ async def _stream_responses(
         # reasoning item's index (both were 1).
         tool_output_index = len(completed_output)
         for tc in tool_calls or []:
-            _repair_codex_malformed_tool_arguments_json(tc)
-            _repair_codex_apply_patch_tool_call(tc, responses_request)
             # R10-C3: inline the tool-call event triplet here (instead of
             # delegating to ``_emit_function_call_item`` / ``_emit_computer_call_item``)
             # so the ``completed_output`` array can be populated with the
