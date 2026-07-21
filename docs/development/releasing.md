@@ -55,11 +55,11 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 
 3. **`auto-release.yml` fires** (~30s) — verifies the commit, checks the tag doesn't already exist, builds a CHANGELOG from `git log <prev-tag>..HEAD`, creates the GitHub Release.
 
-4. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment), polls PyPI until the version is queryable, computes the tarball SHA256, dispatches an `update-formula` event to `raullenchai/homebrew-rapid-mlx`.
+4. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment).
 
-5. **The tap repo's workflow** (in `homebrew-rapid-mlx`) updates `Formula/rapid-mlx.rb` `url` + `sha256` + commits.
+5. **Homebrew (homebrew/core)** — no action needed. `rapid-mlx` is in homebrew/core, which tracks new PyPI releases via Homebrew's autobump/livecheck (BrewTestBot opens the bump PR and builds bottles). If autobump ever lags, a maintainer can run `brew bump-formula-pr --version=X.Y.Z rapid-mlx`.
 
-6. **Verify**: `brew update && brew upgrade rapid-mlx` should pull in the new version.
+6. **Verify**: once the core bump merges, `brew update && brew upgrade rapid-mlx` pulls in the new version.
 
 The sequence is hands-off after step 2.
 

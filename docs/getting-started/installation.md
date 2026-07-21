@@ -28,16 +28,11 @@ if you don't want to install `uv` first.
 ## Install with Homebrew
 
 ```bash
-brew tap raullenchai/rapid-mlx
-brew trust raullenchai/rapid-mlx
 brew install rapid-mlx
 ```
 
-All three steps are required. Homebrew 4.x refuses one-shot installs from
-third-party taps with `Refusing to load formula ... from untrusted tap` —
-the `brew trust` line is what marks the tap as trusted. Tap + trust are
-both per-machine and persist across upgrades; `brew upgrade rapid-mlx`
-after the first install works directly.
+`rapid-mlx` is in **homebrew/core** — no tap, no trust, just one command.
+Upgrade later with `brew upgrade rapid-mlx`.
 
 ## Install with pip
 
@@ -106,21 +101,12 @@ Use a smaller quantized model:
 rapid-mlx serve qwen3.5-4b-4bit
 ```
 
-### `Refusing to load formula ... from untrusted tap`
-
-Homebrew 4.x refuses installs from third-party taps until you mark them
-trusted. Run the three-step install at the top of this page (tap, trust,
-install). The `brew trust` line is the one that flips the refusal off.
-Only needs to be done once per machine.
-
 ### `brew install` fails with `Operation not permitted`
 
-Brew 5.x's install sandbox sometimes can't auto-tap `homebrew/core` mid-install.
+Brew's install sandbox sometimes can't auto-tap `homebrew/core` mid-install.
 Pre-tap it once, then retry:
 
 ```bash
 brew tap homebrew/core --force   # ~1.3 GB, one-time
-brew tap raullenchai/rapid-mlx
-brew trust raullenchai/rapid-mlx
 brew install rapid-mlx
 ```

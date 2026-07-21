@@ -335,10 +335,9 @@ def test_print_helper_swallows_all_exceptions(monkeypatch, capsys):
 def test_warning_message_recommends_upgrade_subcommand(isolated_cache, monkeypatch):
     """The banner must point users at our own upgrade subcommand.
 
-    Pre-0.6.31 we suggested raw ``brew upgrade rapid-mlx`` — wrong formula
-    path (the tap is ``raullenchai/rapid-mlx/rapid-mlx``) AND it stranded pip /
-    install.sh users. The new flow centralises the install-method detection
-    in ``rapid-mlx upgrade``, so the warning just needs to point there.
+    We centralise install-method detection in ``rapid-mlx upgrade`` (it also
+    handles pip / install.sh users, who a raw ``brew upgrade`` would strand),
+    so the warning just needs to point there.
     """
     monkeypatch.setattr(vc, "_installed_version", lambda: "0.6.20")
     _seed_cache(isolated_cache, "0.6.30")
@@ -354,9 +353,8 @@ def test_warning_message_recommends_upgrade_subcommand(isolated_cache, monkeypat
 def test_detect_install_method_brew(monkeypatch):
     """A brew install resolves through realpath into ``/opt/homebrew/Cellar/``.
 
-    The detector must spot that and return the *tap-qualified* formula path
-    — ``brew upgrade rapid-mlx`` alone doesn't know about external taps and
-    fails with ``Error: rapid-mlx not installed`` for users on the tap.
+    The detector must spot that and return the core formula upgrade command
+    — ``brew upgrade rapid-mlx`` (rapid-mlx is in homebrew/core, no tap needed).
     """
     fake_binary = "/opt/homebrew/bin/rapid-mlx"
     fake_realpath = "/opt/homebrew/Cellar/rapid-mlx/0.6.20/bin/rapid-mlx"
@@ -368,8 +366,8 @@ def test_detect_install_method_brew(monkeypatch):
 
     info = vc.detect_install_method()
     assert info.method == "brew"
-    assert info.upgrade_command == "brew upgrade raullenchai/rapid-mlx/rapid-mlx"
-    assert info.upgrade_argv == ["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"]
+    assert info.upgrade_command == "brew upgrade rapid-mlx"
+    assert info.upgrade_argv == ["brew", "upgrade", "rapid-mlx"]
     assert info.binary_path == fake_binary
 
 
@@ -562,8 +560,8 @@ def test_prompt_returns_false_when_upgrade_subprocess_fails(monkeypatch, interac
         "detect_install_method",
         lambda: vc.InstallInfo(
             method="brew",
-            upgrade_command="brew upgrade raullenchai/rapid-mlx/rapid-mlx",
-            upgrade_argv=["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"],
+            upgrade_command="brew upgrade rapid-mlx",
+            upgrade_argv=["brew", "upgrade", "rapid-mlx"],
         ),
     )
     fake_result = MagicMock(returncode=1)
@@ -613,8 +611,8 @@ def test_prompt_returns_true_and_runs_upgrade_on_accept(monkeypatch, interactive
         "detect_install_method",
         lambda: vc.InstallInfo(
             method="brew",
-            upgrade_command="brew upgrade raullenchai/rapid-mlx/rapid-mlx",
-            upgrade_argv=["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"],
+            upgrade_command="brew upgrade rapid-mlx",
+            upgrade_argv=["brew", "upgrade", "rapid-mlx"],
         ),
     )
     fake_result = MagicMock(returncode=0)
@@ -624,9 +622,7 @@ def test_prompt_returns_true_and_runs_upgrade_on_accept(monkeypatch, interactive
         patch("subprocess.run", return_value=fake_result) as run,
     ):
         assert vc.prompt_upgrade_if_available() is True
-        run.assert_called_once_with(
-            ["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"], check=False
-        )
+        run.assert_called_once_with(["brew", "upgrade", "rapid-mlx"], check=False)
 
 
 def test_prompt_crosses_minor_boundary(monkeypatch, interactive):

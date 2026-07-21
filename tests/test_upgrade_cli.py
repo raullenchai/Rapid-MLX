@@ -26,8 +26,8 @@ def _stub_brew_with_upgrade_available(monkeypatch):
         lambda: vc.InstallInfo(
             method="brew",
             binary_path="/opt/homebrew/bin/rapid-mlx",
-            upgrade_command="brew upgrade raullenchai/rapid-mlx/rapid-mlx",
-            upgrade_argv=["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"],
+            upgrade_command="brew upgrade rapid-mlx",
+            upgrade_argv=["brew", "upgrade", "rapid-mlx"],
         ),
     )
 
@@ -45,7 +45,7 @@ def test_dry_run_does_not_invoke_subprocess(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Current:  rapid-mlx 0.9.3" in out
     assert "Latest:   rapid-mlx 0.9.4" in out
-    assert "brew upgrade raullenchai/rapid-mlx/rapid-mlx" in out
+    assert "brew upgrade rapid-mlx" in out
     assert "(dry-run — not executed" in out
 
 
@@ -68,9 +68,7 @@ def test_non_dry_run_still_calls_subprocess(monkeypatch):
         pytest.raises(SystemExit) as exc,
     ):
         upgrade_command(args)
-    run.assert_called_once_with(
-        ["brew", "upgrade", "raullenchai/rapid-mlx/rapid-mlx"], check=False
-    )
+    run.assert_called_once_with(["brew", "upgrade", "rapid-mlx"], check=False)
     assert exc.value.code == 0
 
 
