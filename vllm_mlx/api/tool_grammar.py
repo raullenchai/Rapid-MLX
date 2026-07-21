@@ -804,9 +804,13 @@ def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
                 is_builder = False
         if not is_builder:
             # Another thread is building this exact key: wait, then prefer the
-            # cache; else clone the builder's published (valid-but-uncached)
-            # template so a burst never re-runs the expensive build. Only a
-            # broken/crashed build leaves both empty -> loop and one rebuilds.
+            # cache; else reuse the builder's PUBLISHED template so a burst never
+            # re-runs the build — even for a grammar that is not retained in the
+            # LRU (valid-but-oversized) or is broken (codex #1155). A broken
+            # matcher is INERT (``is_broken()`` short-circuits — it never masks or
+            # consumes and the route discards it), so waiters may SHARE it
+            # directly; a valid template is cloned per request. Only a build that
+            # crashed before publishing leaves the slot empty -> loop and rebuild.
             slot.event.wait()
             with _compiled_matcher_lock:
                 hit = _cache_hit_copy_locked(key)
@@ -814,16 +818,20 @@ def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
                 return hit
             published = slot.template
             if published is not None:
-                return published.deep_copy()
+                return published if published.get_error() else published.deep_copy()
             continue
 
         # We own the build. Construct OUTSIDE the global lock so this slow step
         # blocks neither cache hits nor OTHER keys' builds.
         try:
             template = LLMatcher(lltokenizer, grammar)
+            # Publish immediately (valid OR broken) so concurrent waiters on the
+            # SAME key reuse this single build instead of each re-compiling it —
+            # covers the valid-but-oversized AND the broken-grammar bursts.
+            slot.template = template
             if template.get_error():
-                # Broken -> uncached, unpublished (is_broken() path unchanged);
-                # waiters rebuild (cheap, rare) rather than deep_copy an error.
+                # Broken -> uncached (is_broken() fallback unchanged); returned
+                # as-is, and shared with waiters (inert, so sharing is safe).
                 return template
             # Byte count (NOT len()): a non-ASCII grammar's UTF-8 size can be up
             # to ~4x its code-point count, so ``len(grammar)`` would under-count
@@ -837,10 +845,6 @@ def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
                     _compiled_matcher_cache[key] = (lltokenizer, template, nbytes)
                     _compiled_matcher_cache_bytes += nbytes
                     _evict_compiled_matchers_locked()
-            # Publish the valid template so concurrent waiters CLONE it even when
-            # it was too large to retain in the LRU (codex #1155 — no N-way
-            # rebuild of an oversized grammar under a burst).
-            slot.template = template
             return template.deep_copy()
         finally:
             # Release single-flight ATOMICALLY: signal completion AND drop the

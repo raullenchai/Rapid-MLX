@@ -126,6 +126,35 @@ def test_concurrent_cold_burst_builds_template_exactly_once():
     assert len({id(m) for m in results}) == n, "no two requests share a matcher"
 
 
+def test_concurrent_burst_of_broken_grammar_builds_once():
+    # codex #1155: a concurrent burst of the SAME broken grammar must not
+    # serialize into N compilations. The builder publishes the (inert) broken
+    # matcher via the _BuildSlot; waiters share it instead of rebuilding.
+    _FakeMatcher.construct_delay = 0.05
+    lltok = object()
+    g = "start: BROKEN"
+    n = 6
+    barrier = threading.Barrier(n)
+    results: list = []
+    res_lock = threading.Lock()
+
+    def worker():
+        barrier.wait()
+        m = tg.get_request_matcher(lltok, g)
+        with res_lock:
+            results.append(m)
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert _FakeMatcher.builds == 1, "broken grammar burst must compile once"
+    assert all(m.get_error() for m in results), "all requests see the compile error"
+    assert (id(lltok), g) not in tg._compiled_matcher_cache  # broken stays uncached
+
+
 def test_distinct_grammars_build_distinct_templates():
     lltok = object()
     tg.get_request_matcher(lltok, "start: A\nA: /a/")
