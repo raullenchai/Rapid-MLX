@@ -34,15 +34,23 @@
 
 ## Quick Start (60 seconds)
 
-**1. Install** (one command, detects your RAM, picks a starter model):
+**1. Install** — pick one path (run only one of these):
+
+Homebrew — prebuilt bottle straight from homebrew-core (recommended):
+
+```bash
+brew install rapid-mlx
+```
+
+or the one-liner — detects your RAM, picks a starter model:
 
 ```bash
 curl -fsSL https://rapidmlx.com/install.sh | bash
 ```
 
-Installs Python 3.10+ if missing, creates an isolated venv at `~/.rapid-mlx/`, symlinks the `rapid-mlx` CLI into `~/.local/bin/`, and prints a serve command sized to your Mac (8–23 GB → `qwen3.5-4b-4bit`; 24–47 GB → `gpt-oss-20b-mxfp4-q8`; 48–95 GB → `qwen3.6-35b-8bit`; 96 GB+ → `gpt-oss-120b-mxfp4-q8`).
+Both land the same `rapid-mlx` CLI. The curl installer additionally installs Python 3.10+ if missing, creates an isolated venv at `~/.rapid-mlx/`, symlinks the `rapid-mlx` CLI into `~/.local/bin/`, and prints a serve command sized to your Mac (8–23 GB → `qwen3.5-4b-4bit`; 24–47 GB → `gpt-oss-20b-mxfp4-q8`; 48–95 GB → `qwen3.6-35b-8bit`; 96 GB+ → `gpt-oss-120b-mxfp4-q8`).
 
-> **`curl | bash` security.** `install.sh` is served over HTTPS (HSTS-preload) from `rapidmlx.com` and is a byte-identical mirror of [`install.sh`](install.sh) at the current release commit — read it before running if you like. Two verified alternatives:
+> **Install security.** `install.sh` is served over HTTPS (HSTS-preload) from `rapidmlx.com` and is a byte-identical mirror of [`install.sh`](install.sh) at the release commit — read it before running if you like. If you want a cryptographically verified installer rather than trusting the website pipe, don't `curl | bash` the URL above: instead download the release's `install.sh` asset, verify it against the cosign-signed `SHA256SUMS.txt` shipped alongside it, and run that verified copy — full recipe in [SECURITY.md](SECURITY.md). PyPI artifacts additionally carry Sigstore attestations (PEP 740). Two more low-trust paths:
 > - **Pin to a commit hash** — `curl -fsSL https://raw.githubusercontent.com/raullenchai/Rapid-MLX/<commit>/install.sh -o install.sh && shasum -a 256 install.sh && bash install.sh`
 > - **Skip the shell script entirely** — use Homebrew, `uv`, or `pip` below.
 
@@ -143,16 +151,16 @@ The installer's RAM detector picks a sensible default. If you want to shop the f
 
 ## Alternative install methods
 
-The curl one-liner above wraps all of these — reach for these only if you already manage Python yourself.
+The two paths above cover most users — reach for these only if you already manage Python yourself.
 
 <details>
-<summary><strong>Homebrew</strong> — Mac-native, in <code>homebrew/core</code></summary>
+<summary><strong>Homebrew</strong> — Mac-native, one command, prebuilt bottle from <code>homebrew/core</code></summary>
 
 ```bash
 brew install rapid-mlx
 ```
 
-Upgrade with `brew upgrade rapid-mlx`.
+Ships in homebrew-core since 0.10.12 — no tap, no trust prompt. Upgrade with `brew upgrade rapid-mlx`. If you previously installed from the legacy `raullenchai/rapid-mlx` tap, switch once: `brew uninstall rapid-mlx && brew untap raullenchai/rapid-mlx && brew install rapid-mlx`.
 
 </details>
 
@@ -216,6 +224,7 @@ Top three things that go wrong:
 ## Community & Contributing
 
 - **Report a bug or request a model:** [Issues](https://github.com/raullenchai/Rapid-MLX/issues/new/choose)
+- **Report a security issue:** [Private advisory](https://github.com/raullenchai/Rapid-MLX/security/advisories/new) — see [SECURITY.md](SECURITY.md)
 - **Ask a question or share a build:** [Discussions](https://github.com/raullenchai/Rapid-MLX/discussions)
 - **Contribute code, aliases, or docs:** [CONTRIBUTING.md](CONTRIBUTING.md)
 - **Add your hardware to the public benchmark:** `rapid-mlx bench <alias> --submit` opens the PR for you
