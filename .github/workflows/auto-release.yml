@@ -2,7 +2,7 @@ name: Auto-release on version bump
 
 # When a commit lands on main with subject ``chore: bump version to X.Y.Z``,
 # automatically tag ``vX.Y.Z`` and publish a GitHub Release. The existing
-# ``publish.yml`` then fans out to PyPI + Homebrew on the ``release:
+# ``publish.yml`` then publishes to PyPI on the ``release:
 # published`` event.
 #
 # Without this, the release pipeline stalls between "version committed
@@ -93,7 +93,7 @@ jobs:
               echo "_(no changes recorded)_"
             fi
             echo
-            echo "Install: \`brew upgrade raullenchai/rapid-mlx/rapid-mlx\` or \`pip install -U rapid-mlx==$VERSION\` (or just \`rapid-mlx upgrade\`)."
+            echo "Install: \`brew upgrade rapid-mlx\` or \`pip install -U rapid-mlx==$VERSION\` (or just \`rapid-mlx upgrade\`)."
             echo '__EOF__'
           } >> "$GITHUB_OUTPUT"
 
@@ -128,4 +128,4 @@ jobs:
             --notes-file - \
             --target "$TARGET_SHA"
 
-          echo "✓ Released $TAG — publish.yml will now fan out to PyPI + Homebrew"
+          echo "✓ Released $TAG — publish.yml will now publish to PyPI"

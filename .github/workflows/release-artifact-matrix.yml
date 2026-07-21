@@ -395,23 +395,3 @@ jobs:
             exit 1
           fi
           gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false
-
-  update-homebrew:
-    name: Promote verified sdist to Homebrew
-    needs: [build-candidate, verify-pypi, publish-github-release]
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Update Homebrew formula
-        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0  # v3
-        with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          repository: raullenchai/homebrew-rapid-mlx
-          event-type: update-formula
-          client-payload: |
-            {
-              "version": "${{ needs.build-candidate.outputs.version }}",
-              "url": "${{ needs.verify-pypi.outputs.sdist_url }}",
-              "sha256": "${{ needs.verify-pypi.outputs.sdist_sha256 }}"
-            }

@@ -1,4 +1,4 @@
-name: Publish to PyPI & Homebrew
+name: Publish to PyPI
 
 on:
   release:
@@ -179,59 +179,3 @@ jobs:
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b  # release/v1
         with:
           packages-dir: candidate/dist/
-
-  update-homebrew:
-    needs: publish
-    runs-on: ubuntu-latest
-    permissions:
-      contents: read
-    steps:
-      - name: Wait for PyPI to propagate
-        run: sleep 30
-
-      - name: Get release version
-        id: version
-        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
-
-      - name: Fetch tarball URL and SHA256
-        id: pypi
-        env:
-          EXPECTED_SHA256: ${{ needs.publish.outputs.sdist_sha256 }}
-        run: |
-          VERSION="${{ steps.version.outputs.version }}"
-          # Poll PyPI until the new version appears (max 5 minutes)
-          for i in $(seq 1 10); do
-            URL=$(curl -fsSL "https://pypi.org/pypi/rapid-mlx/${VERSION}/json" 2>/dev/null \
-              | python3 -c "import json,sys; d=json.load(sys.stdin); print([u['url'] for u in d['urls'] if u['packagetype']=='sdist'][0])" 2>/dev/null) && break
-            echo "Waiting for PyPI... (attempt $i)"
-            sleep 30
-          done
-          if [ -z "$URL" ]; then echo "Failed to find tarball on PyPI"; exit 1; fi
-
-          # Download and compute SHA256
-          curl -fsSL "$URL" -o /tmp/rapid-mlx.tar.gz
-          SHA256=$(sha256sum /tmp/rapid-mlx.tar.gz | cut -d' ' -f1)
-          rm /tmp/rapid-mlx.tar.gz
-          if [ "$SHA256" != "$EXPECTED_SHA256" ]; then
-            echo "PyPI sdist SHA256 does not match the manifest" >&2
-            echo "expected: $EXPECTED_SHA256" >&2
-            echo "actual:   $SHA256" >&2
-            exit 1
-          fi
-
-          echo "url=$URL" >> "$GITHUB_OUTPUT"
-          echo "sha256=$SHA256" >> "$GITHUB_OUTPUT"
-          echo "Found: $URL (sha256: $SHA256)"
-
-      - name: Update Homebrew formula
-        uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0  # v3
-        with:
-          token: ${{ secrets.HOMEBREW_TAP_TOKEN }}
-          repository: raullenchai/homebrew-rapid-mlx
-          event-type: update-formula
-          client-payload: |
-            {
-              "version": "${{ steps.version.outputs.version }}",
-              "url": "${{ steps.pypi.outputs.url }}",
-              "sha256": "${{ steps.pypi.outputs.sha256 }}"
-            }

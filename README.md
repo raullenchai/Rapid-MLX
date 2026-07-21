@@ -10,7 +10,7 @@
 
 <p align="center">
   <a href="https://pypi.org/project/rapid-mlx/"><img src="https://img.shields.io/pypi/v/rapid-mlx?color=blue&label=PyPI" alt="PyPI"></a>
-  <a href="https://github.com/raullenchai/homebrew-rapid-mlx"><img src="https://img.shields.io/badge/Homebrew-raullenchai%2Frapid--mlx-orange?logo=homebrew" alt="Homebrew tap"></a>
+  <a href="https://formulae.brew.sh/formula/rapid-mlx"><img src="https://img.shields.io/badge/Homebrew-core-orange?logo=homebrew" alt="Homebrew core"></a>
   <a href="https://www.python.org/downloads/"><img src="https://img.shields.io/badge/python-3.10+-blue.svg" alt="Python 3.10+"></a>
   <a href="https://support.apple.com/en-us/HT211814"><img src="https://img.shields.io/badge/Apple_Silicon-M1%20|%20M2%20|%20M3%20|%20M4-black.svg?logo=apple" alt="Apple Silicon"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/License-Apache_2.0-blue.svg" alt="License"></a>
@@ -146,15 +146,13 @@ The installer's RAM detector picks a sensible default. If you want to shop the f
 The curl one-liner above wraps all of these — reach for these only if you already manage Python yourself.
 
 <details>
-<summary><strong>Homebrew</strong> — Mac-native, tap + trust required on Homebrew 4.x</summary>
+<summary><strong>Homebrew</strong> — Mac-native, in <code>homebrew/core</code></summary>
 
 ```bash
-brew tap raullenchai/rapid-mlx
-brew trust raullenchai/rapid-mlx
 brew install rapid-mlx
 ```
 
-Upgrade with `brew upgrade rapid-mlx`. If `brew install` stalls on `Tapping homebrew/core`, run `brew tap homebrew/core --force` once (one-time ~1.3 GB download) and retry.
+Upgrade with `brew upgrade rapid-mlx`.
 
 </details>
 
