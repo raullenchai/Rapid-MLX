@@ -725,8 +725,28 @@ _compiled_matcher_cache: "OrderedDict[tuple[int, str], tuple[Any, Any, int]]" = 
 )
 _compiled_matcher_cache_bytes = 0
 _compiled_matcher_lock = threading.Lock()
-# Per-key in-flight build registry for single-flight (key -> Event).
-_compiled_matcher_building: "dict[tuple[int, str], threading.Event]" = {}
+
+
+class _BuildSlot:
+    """Per-key single-flight slot: an Event + the built template for waiters.
+
+    The builder publishes a VALID template on ``template`` before waking waiters,
+    so a concurrent burst on a grammar that is NOT retained in the LRU (a valid
+    grammar too large for the byte budget) still CLONES the one build instead of
+    each waiter re-running the expensive construction (codex #1155). A broken
+    grammar is left unpublished (``template`` stays ``None``) — those are cheap to
+    rebuild and rare, and this keeps ``deep_copy`` off an errored matcher.
+    """
+
+    __slots__ = ("event", "template")
+
+    def __init__(self) -> None:
+        self.event = threading.Event()
+        self.template: Any = None
+
+
+# Per-key in-flight build registry for single-flight (key -> _BuildSlot).
+_compiled_matcher_building: "dict[tuple[int, str], _BuildSlot]" = {}
 
 
 def _evict_compiled_matchers_locked() -> None:
@@ -774,18 +794,27 @@ def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
             hit = _cache_hit_copy_locked(key)
             if hit is not None:
                 return hit
-            ev = _compiled_matcher_building.get(key)
-            if ev is None:
-                # We own the build for this key; publish an Event others wait on.
-                ev = threading.Event()
-                _compiled_matcher_building[key] = ev
+            slot = _compiled_matcher_building.get(key)
+            if slot is None:
+                # We own the build for this key; publish a slot others wait on.
+                slot = _BuildSlot()
+                _compiled_matcher_building[key] = slot
                 is_builder = True
             else:
                 is_builder = False
         if not is_builder:
-            # Another thread is building this exact key: wait, then re-check the
-            # cache (loop). Never construct a duplicate automaton for this key.
-            ev.wait()
+            # Another thread is building this exact key: wait, then prefer the
+            # cache; else clone the builder's published (valid-but-uncached)
+            # template so a burst never re-runs the expensive build. Only a
+            # broken/crashed build leaves both empty -> loop and one rebuilds.
+            slot.event.wait()
+            with _compiled_matcher_lock:
+                hit = _cache_hit_copy_locked(key)
+            if hit is not None:
+                return hit
+            published = slot.template
+            if published is not None:
+                return published.deep_copy()
             continue
 
         # We own the build. Construct OUTSIDE the global lock so this slow step
@@ -793,7 +822,9 @@ def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
         try:
             template = LLMatcher(lltokenizer, grammar)
             if template.get_error():
-                return template  # broken -> uncached (is_broken() path unchanged)
+                # Broken -> uncached, unpublished (is_broken() path unchanged);
+                # waiters rebuild (cheap, rare) rather than deep_copy an error.
+                return template
             nbytes = len(grammar)
             with _compiled_matcher_lock:
                 # Refuse to cache a single grammar larger than the whole byte
@@ -803,13 +834,16 @@ def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
                     _compiled_matcher_cache[key] = (lltokenizer, template, nbytes)
                     _compiled_matcher_cache_bytes += nbytes
                     _evict_compiled_matchers_locked()
+            # Publish the valid template so concurrent waiters CLONE it even when
+            # it was too large to retain in the LRU (codex #1155 — no N-way
+            # rebuild of an oversized grammar under a burst).
+            slot.template = template
             return template.deep_copy()
         finally:
-            # Release single-flight: drop the registry entry and wake waiters,
-            # which re-read the cache (hit if we cached, else one rebuilds).
+            # Release single-flight: drop the registry entry and wake waiters.
             with _compiled_matcher_lock:
                 _compiled_matcher_building.pop(key, None)
-            ev.set()
+            slot.event.set()
 
 
 def build_tool_grammar(

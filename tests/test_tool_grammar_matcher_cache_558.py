@@ -33,6 +33,9 @@ class _FakeMatcher:
         self.lltok = lltok
         self.grammar = grammar
         self.is_copy = False
+        # A mutable parse cursor, so a test can prove that consuming on one
+        # per-request copy does NOT advance any other copy or the cached template.
+        self.consumed = 0
         # A grammar carrying the BROKEN marker reports a compile error, mirroring
         # llguidance's never-raise "error is stored on the matcher" contract.
         self._error = "boom" if "BROKEN" in grammar else ""
@@ -40,11 +43,16 @@ class _FakeMatcher:
     def get_error(self):
         return self._error
 
+    def consume_token(self, tok_id):
+        self.consumed += 1
+        return True
+
     def deep_copy(self):
         c = _FakeMatcher.__new__(_FakeMatcher)
         c.lltok = self.lltok
         c.grammar = self.grammar
         c._error = self._error
+        c.consumed = self.consumed  # clone COPIES the cursor at copy time
         c.is_copy = True
         return c
 
@@ -73,6 +81,18 @@ def test_same_key_builds_template_once_and_returns_distinct_copies():
     assert _FakeMatcher.builds == 1
     assert m1.is_copy and m2.is_copy
     assert m1 is not m2  # per-request isolation — no shared parse cursor
+
+    # Prove STATE isolation, not just object identity: consuming on m1 must not
+    # advance m2's cursor NOR the cached template's (the template must stay at
+    # its initial, never-consumed state so future clones start fresh).
+    m1.consume_token(7)
+    m1.consume_token(7)
+    assert m1.consumed == 2
+    assert m2.consumed == 0, "consuming on one copy must not advance another"
+    cached_template = tg._compiled_matcher_cache[(id(lltok), g)][1]
+    assert cached_template.consumed == 0, "the cached template must never be mutated"
+    m3 = tg.get_request_matcher(lltok, g)
+    assert m3.consumed == 0, "a later clone must start from the initial state"
 
 
 def test_concurrent_cold_burst_builds_template_exactly_once():
