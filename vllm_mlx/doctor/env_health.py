@@ -544,7 +544,22 @@ def section_updates(
         return s
 
     pc, pl = vc._parse_version(cur), vc._parse_version(latest)
-    if pc and pl and pl > pc:
+    if pc is None or pl is None:
+        # One side is a dev/rc/git-describe build ``_parse_version`` won't
+        # touch (e.g. ``0.10.15.dev3``, ``0.11.0rc1``, ``0.10``). We can't
+        # order them, so DON'T fall through to a green "up to date" — that
+        # would falsely reassure a user who might well be behind. Downgrade
+        # to ⚠ like every other uncertain branch in this section.
+        s.add(
+            f"rapid-mlx {cur} — can't compare against latest {latest} "
+            "(unrecognized version format); freshness check skipped",
+            CheckStatus.WARN,
+            detail=(
+                f"installed={cur} latest={latest} "
+                f"parsed_installed={pc} parsed_latest={pl}"
+            ),
+        )
+    elif pl > pc:
         info = install_info if install_info is not None else vc.detect_install_method()
         cmd = getattr(info, "upgrade_command", None) or "rapid-mlx upgrade"
         s.add(
@@ -855,9 +870,14 @@ def _rapid_mlx_on_path(path_env: str | None = None) -> list[str]:
     seen: set[str] = set()
     out: list[str] = []
     for d in raw.split(os.pathsep):
-        if not d:
-            continue
-        cand = os.path.join(d, "rapid-mlx")
+        # An empty PATH component means the current directory on POSIX, which
+        # is exactly how ``shutil.which()`` (the function that picks the
+        # *active* rapid-mlx above) resolves it. Skipping it would let a
+        # ``./rapid-mlx`` shadow slip past this very check — the kind of
+        # competing install it exists to surface — so map "" → os.curdir
+        # instead of dropping it.
+        directory = d or os.curdir
+        cand = os.path.join(directory, "rapid-mlx")
         if os.path.isfile(cand) and os.access(cand, os.X_OK):
             target = os.path.realpath(cand)
             if target not in seen:

@@ -583,6 +583,29 @@ def test_updates_unknown_installed_version_marks_warn():
     assert "unknown" in row.label
 
 
+@pytest.mark.parametrize(
+    "installed,latest",
+    [
+        ("0.10", "0.10.15"),  # installed unparseable (too few components)
+        ("0.10.15", "0.11.0rc1"),  # latest unparseable (rc suffix)
+        ("0.10.15.dev3", "0.10.16.dev1"),  # both dev builds
+    ],
+)
+def test_updates_unparseable_version_marks_warn_not_up_to_date(installed, latest):
+    """A version ``_parse_version`` can't order (dev/rc/short) must NOT
+    silently green-light "up to date" — that falsely reassures a user who
+    may well be behind. It downgrades to ⚠ like every other uncertain
+    branch, and never to a hard fail."""
+    section = eh.section_updates(
+        installed=lambda: installed,
+        fetch_latest=lambda: latest,
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    assert "up to date" not in row.label
+    assert all(c.status is not eh.CheckStatus.FAIL for c in section.checks)
+
+
 # ---------------------------------------------------------------------------
 # Section: Shell Integration — shadowed / duplicate installs
 # ---------------------------------------------------------------------------
@@ -632,3 +655,17 @@ def test_rapid_mlx_on_path_dedupes_by_resolved_target(tmp_path: Path):
     path_env = os.pathsep.join(str(d) for d in (d1, d2, d3))
     found = eh._rapid_mlx_on_path(path_env=path_env)
     assert found == [str(real), str(other)]
+
+
+def test_rapid_mlx_on_path_empty_component_is_cwd(tmp_path: Path, monkeypatch):
+    """An empty PATH component means the current directory (shutil.which
+    semantics). A ``./rapid-mlx`` shadow must be surfaced, not skipped."""
+    cli = tmp_path / "rapid-mlx"
+    cli.write_text("#!/bin/sh\n")
+    cli.chmod(0o755)
+    monkeypatch.chdir(tmp_path)
+
+    # Leading empty component ("" before the sep) resolves to cwd.
+    found = eh._rapid_mlx_on_path(path_env=os.pathsep + "/nonexistent-doctor-dir")
+    resolved = [os.path.realpath(p) for p in found]
+    assert os.path.realpath(str(cli)) in resolved
