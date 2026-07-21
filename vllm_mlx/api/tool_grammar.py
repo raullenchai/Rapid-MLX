@@ -698,20 +698,27 @@ def _compile_lark_cached(lark: str) -> str | None:
 # re-read the cache (codex #1155 — a barrier test asserts a single construction
 # under a cold burst). Different keys still build fully in parallel.
 #
-# MEMORY BOUND — count cap AND byte budget, evicting on whichever binds first. A
-# count cap alone does not bound memory: a client-controlled grammar (and the
-# native automaton built from it) can be large. The upstream route already
-# rejects a serialized tools list over 64 KiB (``_TOOL_GRAMMAR_MAX_SCHEMA_BYTES``)
-# BEFORE a grammar is built, so cached inputs are pre-bounded; ``len(grammar)`` is
-# the in-cache size proxy (the automaton scales with grammar size — llguidance
-# exposes no native byte count). A single grammar larger than the whole budget is
-# NOT cached (it would evict everything and still overflow) and rebuilds per
-# request. Retention is therefore LRU-BOUNDED, not a leak: a burst of distinct
-# one-off schemas evicts oldest-first back under the caps. The cached template
-# pins its ``lltokenizer`` (so ``id()`` can't be recycled to a different
-# tokenizer while live); rapid-mlx's engine already holds that tokenizer for the
-# model's lifetime, so this adds only bounded, LRU-evicted post-unload retention.
-_COMPILED_MATCHER_CACHE_MAX = 128
+# MEMORY BOUND — a DELIBERATELY CONSERVATIVE entry cap AND a byte budget, evicting
+# on whichever binds first. A count cap alone does not bound memory: a
+# client-controlled grammar (and the native automaton built from it) can be
+# large, and llguidance exposes NO native byte count, so exact automaton/tokenizer
+# accounting is not possible — ``len(grammar)`` is the in-cache size proxy (the
+# automaton scales with grammar size). We therefore compensate with a SMALL entry
+# cap (32): real deployments expose a handful of distinct tool schemas, so 32
+# comfortably covers reuse while keeping the WORST-case cached automaton count
+# small even though each automaton's exact bytes are unmeasurable (codex #1155 —
+# "substantially safer entry bound"). Input is additionally pre-bounded upstream:
+# the route rejects a serialized tools list over 64 KiB
+# (``_TOOL_GRAMMAR_MAX_SCHEMA_BYTES``) BEFORE a grammar is built. A single grammar
+# larger than the whole byte budget is NOT cached (it would evict everything and
+# still overflow) and rebuilds per request. Retention is thus LRU-BOUNDED, not a
+# leak: a burst of distinct one-off schemas evicts oldest-first back under the
+# caps. The cached template pins its ``lltokenizer`` (so ``id()`` can't be
+# recycled to a different tokenizer while live); rapid-mlx's engine already holds
+# that tokenizer for the model's lifetime, so this adds only bounded, LRU-evicted
+# post-unload retention — no explicit model-lifecycle hook is warranted for a
+# cache this small.
+_COMPILED_MATCHER_CACHE_MAX = 32
 _COMPILED_MATCHER_CACHE_MAX_BYTES = 16 * 1024 * 1024  # 16 MiB grammar-string budget
 _compiled_matcher_cache: "OrderedDict[tuple[int, str], tuple[Any, Any, int]]" = (
     OrderedDict()
