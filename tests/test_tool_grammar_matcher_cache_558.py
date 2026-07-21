@@ -8,10 +8,16 @@ construction WITHOUT sharing stateful parse cursors between requests. These test
 drive the cache with a fake ``LLMatcher`` (no model / no llguidance needed) so the
 build-count, per-request isolation, broken-grammar bypass, and LRU bound are all
 asserted deterministically.
+
+The concurrency tests use an event-latch (NOT sleeps): the sole builder blocks in
+``__init__`` until the test confirms — by instrumenting the under-lock
+``_cache_hit_copy_locked`` entry — that every competing caller has committed
+inside the single-flight critical section. Only then is the builder released, so
+"burst builds once" holds by construction rather than by timing (codex #1155).
 """
 
 import threading
-import time
+from contextlib import contextmanager
 
 import pytest
 
@@ -23,13 +29,17 @@ class _FakeMatcher:
 
     builds = 0
     _builds_lock = threading.Lock()
-    construct_delay = 0.0  # widen the race window in the concurrency test
+    # The sole builder blocks here until a concurrency test releases it, so the
+    # single-flight slot stays open until every competitor has committed to wait
+    # on it (deterministic; no sleeps). Default set => non-concurrency tests
+    # construct synchronously.
+    proceed = threading.Event()
+    proceed.set()
 
     def __init__(self, lltok, grammar):
         with _FakeMatcher._builds_lock:
             _FakeMatcher.builds += 1
-        if _FakeMatcher.construct_delay:
-            time.sleep(_FakeMatcher.construct_delay)
+        _FakeMatcher.proceed.wait()
         self.lltok = lltok
         self.grammar = grammar
         self.is_copy = False
@@ -64,12 +74,77 @@ def _isolate_cache(monkeypatch):
     tg._compiled_matcher_building.clear()
     tg._compiled_matcher_cache_bytes = 0
     _FakeMatcher.builds = 0
-    _FakeMatcher.construct_delay = 0.0
+    _FakeMatcher.proceed.set()
     yield
     tg._compiled_matcher_cache.clear()
     tg._compiled_matcher_building.clear()
     tg._compiled_matcher_cache_bytes = 0
-    _FakeMatcher.construct_delay = 0.0
+    _FakeMatcher.proceed.set()
+
+
+@contextmanager
+def _single_flight_latch(monkeypatch, n):
+    """Hold the sole builder until all ``n`` callers commit in the critical path.
+
+    ``_cache_hit_copy_locked`` runs UNDER ``_compiled_matcher_lock`` for every
+    caller's first-pass (one thread registers the build slot; the rest read it as
+    present and commit to WAIT on it). Counting those entries lets the test
+    release the builder only once the whole burst is provably sharing one build —
+    replacing the previous timing-dependent ``sleep`` with a deterministic latch.
+    Yields a callable that blocks until all ``n`` have entered, then releases the
+    builder.
+    """
+    entered = {"n": 0}
+    cond = threading.Condition()
+    real_hit = tg._cache_hit_copy_locked
+
+    def _counting_hit(key):
+        with cond:
+            entered["n"] += 1
+            cond.notify_all()
+        return real_hit(key)
+
+    monkeypatch.setattr(tg, "_cache_hit_copy_locked", _counting_hit)
+    _FakeMatcher.proceed.clear()
+
+    def _release_when_all_entered():
+        with cond:
+            if not cond.wait_for(lambda: entered["n"] >= n, timeout=5):
+                raise AssertionError("not all workers entered the single-flight path")
+        _FakeMatcher.proceed.set()
+
+    try:
+        yield _release_when_all_entered
+    finally:
+        _FakeMatcher.proceed.set()  # never wedge threads if an assertion fails
+
+
+def _run_burst(n, target):
+    """Start ``n`` worker threads that each call ``target()`` after a barrier.
+
+    Captures per-worker exceptions (so a swallowed thread failure can't let the
+    test pass on a subset) and returns ``(results, errors)`` with both threads
+    joined (codex #1155).
+    """
+    barrier = threading.Barrier(n)
+    results: list = []
+    errors: list = []
+    lock = threading.Lock()
+
+    def worker():
+        try:
+            barrier.wait()
+            m = target()
+            with lock:
+                results.append(m)
+        except Exception as exc:  # noqa: BLE001 - record, never swallow silently
+            with lock:
+                errors.append(exc)
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    return threads, results, errors
 
 
 def test_same_key_builds_template_once_and_returns_distinct_copies():
@@ -95,61 +170,50 @@ def test_same_key_builds_template_once_and_returns_distinct_copies():
     assert m3.consumed == 0, "a later clone must start from the initial state"
 
 
-def test_concurrent_cold_burst_builds_template_exactly_once():
+def test_concurrent_cold_burst_builds_template_exactly_once(monkeypatch):
     # Per-key single-flight (codex #1155): a burst of N concurrent requests for
     # the SAME uncached key must construct the expensive automaton exactly ONCE,
-    # not once-per-thread. A construct delay widens the race window, and a barrier
-    # releases all threads simultaneously so they genuinely collide on the miss.
-    _FakeMatcher.construct_delay = 0.05
+    # not once-per-thread. The event-latch holds the sole builder until all N
+    # callers have committed inside the critical section, so the collision is
+    # forced deterministically (no sleep / no timing dependence).
     lltok = object()
     g = "start: HOT\nHOT: /h/"
     n = 8
-    barrier = threading.Barrier(n)
-    results: list = []
-    res_lock = threading.Lock()
+    with _single_flight_latch(monkeypatch, n) as release:
+        threads, results, errors = _run_burst(
+            n, lambda: tg.get_request_matcher(lltok, g)
+        )
+        release()
+        for t in threads:
+            t.join(timeout=5)
 
-    def worker():
-        barrier.wait()
-        m = tg.get_request_matcher(lltok, g)
-        with res_lock:
-            results.append(m)
-
-    threads = [threading.Thread(target=worker) for _ in range(n)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
+    assert not errors, f"worker(s) raised: {errors}"
     assert _FakeMatcher.builds == 1, "single-flight must build the automaton once"
-    assert len(results) == n
+    assert len(results) == n, "every worker must have returned a matcher"
     assert all(m.is_copy for m in results), "every request gets its own deep_copy"
     assert len({id(m) for m in results}) == n, "no two requests share a matcher"
 
 
-def test_concurrent_burst_of_broken_grammar_builds_once():
+def test_concurrent_burst_of_broken_grammar_builds_once(monkeypatch):
     # codex #1155: a concurrent burst of the SAME broken grammar must not
     # serialize into N compilations. The builder publishes the (inert) broken
-    # matcher via the _BuildSlot; waiters share it instead of rebuilding.
-    _FakeMatcher.construct_delay = 0.05
+    # matcher via the _BuildSlot; waiters share it instead of rebuilding. Because
+    # broken results are UNCACHED, this "builds once" property is guaranteed only
+    # while every waiter has committed to the slot before the builder retires it —
+    # which the latch enforces deterministically (was a flaky 50 ms sleep before).
     lltok = object()
     g = "start: BROKEN"
     n = 6
-    barrier = threading.Barrier(n)
-    results: list = []
-    res_lock = threading.Lock()
+    with _single_flight_latch(monkeypatch, n) as release:
+        threads, results, errors = _run_burst(
+            n, lambda: tg.get_request_matcher(lltok, g)
+        )
+        release()
+        for t in threads:
+            t.join(timeout=5)
 
-    def worker():
-        barrier.wait()
-        m = tg.get_request_matcher(lltok, g)
-        with res_lock:
-            results.append(m)
-
-    threads = [threading.Thread(target=worker) for _ in range(n)]
-    for t in threads:
-        t.start()
-    for t in threads:
-        t.join()
-
+    assert not errors, f"worker(s) raised: {errors}"
+    assert len(results) == n, "every worker must have returned a matcher"
     assert _FakeMatcher.builds == 1, "broken grammar burst must compile once"
     assert all(m.get_error() for m in results), "all requests see the compile error"
     assert (id(lltok), g) not in tg._compiled_matcher_cache  # broken stays uncached
