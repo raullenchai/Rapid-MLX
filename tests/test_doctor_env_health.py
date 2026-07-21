@@ -18,6 +18,7 @@ mutation) so the suite runs identically on every Python and every OS.
 from __future__ import annotations
 
 import importlib
+import os
 from pathlib import Path
 from unittest import mock
 
@@ -446,15 +447,16 @@ def test_overall_exit_code_zero_with_only_warnings():
 # ---------------------------------------------------------------------------
 
 
-def test_run_all_returns_all_eight_sections():
-    """run_all() must emit exactly the eight sections the spec mandates,
-    in the spec order. Test pins the order so future drift is loud."""
+def test_run_all_returns_all_sections():
+    """run_all() must emit exactly the sections the spec mandates, in the spec
+    order. Test pins the order so future drift is loud."""
     report = eh.run_all()
     titles = [s.title for s in report.sections]
     expected = [
         "System",
         "Python",
         "Required Packages",
+        "Updates",
         "Optional Packages",
         "HuggingFace Cache",
         "Network",
@@ -530,3 +532,103 @@ def test_env_health_public_exports():
     pkg = importlib.import_module("vllm_mlx.doctor")
     for name in ("run_all", "Report", "Section", "Check", "CheckStatus"):
         assert hasattr(pkg, name), f"vllm_mlx.doctor missing {name}"
+
+
+# ---------------------------------------------------------------------------
+# Section: Updates (version freshness)
+# ---------------------------------------------------------------------------
+
+
+def test_updates_up_to_date_marks_ok():
+    section = eh.section_updates(
+        installed=lambda: "0.10.15",
+        fetch_latest=lambda: "0.10.15",
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.OK
+    assert "up to date" in row.label
+
+
+def test_update_available_marks_warn_with_upgrade_command():
+    info = mock.Mock(upgrade_command="brew upgrade rapid-mlx", method="brew")
+    section = eh.section_updates(
+        installed=lambda: "0.10.12",
+        fetch_latest=lambda: "0.10.15",
+        install_info=info,
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    assert "update available: 0.10.15" in row.label
+    assert "brew upgrade rapid-mlx" in row.label
+
+
+def test_updates_offline_marks_warn_never_fail():
+    section = eh.section_updates(
+        installed=lambda: "0.10.15",
+        fetch_latest=lambda: None,
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    # Air-gapped doctor must never escalate the update check to a hard fail.
+    assert all(c.status is not eh.CheckStatus.FAIL for c in section.checks)
+
+
+def test_updates_unknown_installed_version_marks_warn():
+    section = eh.section_updates(
+        installed=lambda: None,
+        fetch_latest=lambda: "0.10.15",
+    )
+    row = section.checks[0]
+    assert row.status is eh.CheckStatus.WARN
+    assert "unknown" in row.label
+
+
+# ---------------------------------------------------------------------------
+# Section: Shell Integration — shadowed / duplicate installs
+# ---------------------------------------------------------------------------
+
+
+def test_shadowed_install_marks_warn(tmp_path: Path):
+    section = eh.section_shell_integration(
+        which=lambda name: (
+            "/opt/homebrew/bin/rapid-mlx" if name == "rapid-mlx" else None
+        ),
+        rcs=[tmp_path / "missing.zshrc"],
+        find_all=lambda: [
+            "/opt/homebrew/bin/rapid-mlx",
+            "/Users/x/.local/bin/rapid-mlx",
+        ],
+    )
+    shadow_row = next(c for c in section.checks if "shadowed" in c.label)
+    assert shadow_row.status is eh.CheckStatus.WARN
+    assert "2 places" in shadow_row.label
+    assert ".local/bin/rapid-mlx" in shadow_row.label
+
+
+def test_single_install_has_no_shadow_warn(tmp_path: Path):
+    section = eh.section_shell_integration(
+        which=lambda name: (
+            "/opt/homebrew/bin/rapid-mlx" if name == "rapid-mlx" else None
+        ),
+        rcs=[tmp_path / "missing.zshrc"],
+        find_all=lambda: ["/opt/homebrew/bin/rapid-mlx"],
+    )
+    assert not any("shadowed" in c.label for c in section.checks)
+
+
+def test_rapid_mlx_on_path_dedupes_by_resolved_target(tmp_path: Path):
+    """A symlink to the same binary is one install; a distinct binary is two."""
+    d1, d2, d3 = tmp_path / "a", tmp_path / "b", tmp_path / "c"
+    for d in (d1, d2, d3):
+        d.mkdir()
+    real = d1 / "rapid-mlx"
+    real.write_text("#!/bin/sh\n")
+    real.chmod(0o755)
+    (d2 / "rapid-mlx").symlink_to(real)  # same target → deduped
+    other = d3 / "rapid-mlx"
+    other.write_text("#!/bin/sh\n")
+    other.chmod(0o755)
+
+    path_env = os.pathsep.join(str(d) for d in (d1, d2, d3))
+    found = eh._rapid_mlx_on_path(path_env=path_env)
+    assert found == [str(real), str(other)]
