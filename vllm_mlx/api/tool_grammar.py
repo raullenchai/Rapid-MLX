@@ -688,19 +688,38 @@ def _compile_lark_cached(lark: str) -> str | None:
 # outlier rebuilds per request (rare — the schema is already ≤64 KiB). ``len(
 # grammar)`` is the byte proxy (the automaton size scales with grammar size).
 #
-# THREAD-SAFE: the chat route runs this on a bounded build-executor pool, so N
-# threads may hit the same key concurrently. The lock guards the dict + the
-# ``deep_copy`` (cheap), but the EXPENSIVE ``LLMatcher`` construction runs OUTSIDE
-# the lock, so one slow schema miss never head-of-line-blocks cache hits or
-# unrelated grammars. A rare duplicate concurrent build of the SAME new key is
-# harmless (equivalent templates; the first inserted wins, the loser is dropped).
+# THREAD-SAFE with PER-KEY SINGLE-FLIGHT. The chat route runs this on a bounded
+# build-executor pool, so N threads may hit the same key concurrently. The global
+# lock guards the dict + the ~0.01ms ``deep_copy`` only; the EXPENSIVE
+# ``LLMatcher`` construction runs OUTSIDE the global lock so one slow schema miss
+# never head-of-line-blocks cache hits or OTHER keys' builds. A PER-KEY
+# ``Event`` makes construction at-most-once per key: the first thread to miss a
+# key builds it; concurrent threads for the SAME key wait on the Event and then
+# re-read the cache (codex #1155 — a barrier test asserts a single construction
+# under a cold burst). Different keys still build fully in parallel.
+#
+# MEMORY BOUND — count cap AND byte budget, evicting on whichever binds first. A
+# count cap alone does not bound memory: a client-controlled grammar (and the
+# native automaton built from it) can be large. The upstream route already
+# rejects a serialized tools list over 64 KiB (``_TOOL_GRAMMAR_MAX_SCHEMA_BYTES``)
+# BEFORE a grammar is built, so cached inputs are pre-bounded; ``len(grammar)`` is
+# the in-cache size proxy (the automaton scales with grammar size — llguidance
+# exposes no native byte count). A single grammar larger than the whole budget is
+# NOT cached (it would evict everything and still overflow) and rebuilds per
+# request. Retention is therefore LRU-BOUNDED, not a leak: a burst of distinct
+# one-off schemas evicts oldest-first back under the caps. The cached template
+# pins its ``lltokenizer`` (so ``id()`` can't be recycled to a different
+# tokenizer while live); rapid-mlx's engine already holds that tokenizer for the
+# model's lifetime, so this adds only bounded, LRU-evicted post-unload retention.
 _COMPILED_MATCHER_CACHE_MAX = 128
-_COMPILED_MATCHER_CACHE_MAX_BYTES = 32 * 1024 * 1024  # 32 MiB grammar-string budget
+_COMPILED_MATCHER_CACHE_MAX_BYTES = 16 * 1024 * 1024  # 16 MiB grammar-string budget
 _compiled_matcher_cache: "OrderedDict[tuple[int, str], tuple[Any, Any, int]]" = (
     OrderedDict()
 )
 _compiled_matcher_cache_bytes = 0
 _compiled_matcher_lock = threading.Lock()
+# Per-key in-flight build registry for single-flight (key -> Event).
+_compiled_matcher_building: "dict[tuple[int, str], threading.Event]" = {}
 
 
 def _evict_compiled_matchers_locked() -> None:
@@ -717,52 +736,73 @@ def _evict_compiled_matchers_locked() -> None:
         _compiled_matcher_cache_bytes -= _old_val[2]
 
 
+def _cache_hit_copy_locked(key: "tuple[int, str]") -> Any:
+    """Return a per-request ``deep_copy`` if ``key`` is cached, else ``None``.
+
+    Caller must hold ``_compiled_matcher_lock``. Refreshes LRU recency on a hit.
+    """
+    entry = _compiled_matcher_cache.get(key)
+    if entry is None:
+        return None
+    _compiled_matcher_cache.move_to_end(key)
+    return entry[1].deep_copy()
+
+
 def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
     """Return a FRESH per-request ``LLMatcher`` for ``(lltokenizer, grammar)``.
 
-    Builds the compiled automaton at most once per distinct ``(tokenizer,
-    grammar)`` and clones it per request via ``deep_copy`` (see the cache-block
-    comment above). The returned matcher is a private, initial-state instance the
-    caller owns and may ``consume_token`` freely — the cached template is never
-    mutated. A grammar that fails to compile (non-empty ``get_error()``) is NOT
-    cached and is returned as-is, so the broken-matcher fallback in
-    ``GrammarLogitsProcessor`` behaves exactly as before.
+    Builds the compiled automaton AT MOST ONCE per distinct ``(tokenizer,
+    grammar)`` — even under a concurrent cold burst (per-key single-flight) — and
+    clones it per request via ``deep_copy`` (see the cache-block comment above).
+    The returned matcher is a private, initial-state instance the caller owns and
+    may ``consume_token`` freely — the cached template is never mutated. A grammar
+    that fails to compile (non-empty ``get_error()``) is NOT cached and is
+    returned as-is, so the broken-matcher fallback in ``GrammarLogitsProcessor``
+    behaves exactly as before.
     """
     global _compiled_matcher_cache_bytes
     key = (id(lltokenizer), grammar)
-    # Fast path: cache hit under the lock (dict read + a ~0.01ms deep_copy only).
-    with _compiled_matcher_lock:
-        entry = _compiled_matcher_cache.get(key)
-        if entry is not None:
-            _compiled_matcher_cache.move_to_end(key)
-            return entry[1].deep_copy()
+    while True:
+        with _compiled_matcher_lock:
+            hit = _cache_hit_copy_locked(key)
+            if hit is not None:
+                return hit
+            ev = _compiled_matcher_building.get(key)
+            if ev is None:
+                # We own the build for this key; publish an Event others wait on.
+                ev = threading.Event()
+                _compiled_matcher_building[key] = ev
+                is_builder = True
+            else:
+                is_builder = False
+        if not is_builder:
+            # Another thread is building this exact key: wait, then re-check the
+            # cache (loop). Never construct a duplicate automaton for this key.
+            ev.wait()
+            continue
 
-    # Miss: build the automaton OUTSIDE the global lock so a slow construction
-    # never blocks cache hits / unrelated grammars (codex #1155). A broken
-    # grammar is returned uncached so the caller's ``is_broken()`` path is
-    # unchanged.
-    template = LLMatcher(lltokenizer, grammar)
-    if template.get_error():
-        return template
-
-    nbytes = len(grammar)
-    with _compiled_matcher_lock:
-        # Re-check: another thread may have inserted this key while we built.
-        existing = _compiled_matcher_cache.get(key)
-        if existing is not None:
-            _compiled_matcher_cache.move_to_end(key)
-            return existing[1].deep_copy()
-        # Refuse to cache a single grammar larger than the whole byte budget —
-        # it would evict every other entry and still overflow. It rebuilds per
-        # request (rare: the upstream schema gate already caps input at 64 KiB).
-        if nbytes > _COMPILED_MATCHER_CACHE_MAX_BYTES:
+        # We own the build. Construct OUTSIDE the global lock so this slow step
+        # blocks neither cache hits nor OTHER keys' builds.
+        try:
+            template = LLMatcher(lltokenizer, grammar)
+            if template.get_error():
+                return template  # broken -> uncached (is_broken() path unchanged)
+            nbytes = len(grammar)
+            with _compiled_matcher_lock:
+                # Refuse to cache a single grammar larger than the whole byte
+                # budget — it would evict everything and still overflow; it
+                # rebuilds per request (rare: schema pre-capped at 64 KiB).
+                if nbytes <= _COMPILED_MATCHER_CACHE_MAX_BYTES:
+                    _compiled_matcher_cache[key] = (lltokenizer, template, nbytes)
+                    _compiled_matcher_cache_bytes += nbytes
+                    _evict_compiled_matchers_locked()
             return template.deep_copy()
-        # Pin ``lltokenizer`` in the value so ``id()`` can't be recycled while
-        # the entry is live; store the byte size for the budget accounting.
-        _compiled_matcher_cache[key] = (lltokenizer, template, nbytes)
-        _compiled_matcher_cache_bytes += nbytes
-        _evict_compiled_matchers_locked()
-        return template.deep_copy()
+        finally:
+            # Release single-flight: drop the registry entry and wake waiters,
+            # which re-read the cache (hit if we cached, else one rebuilds).
+            with _compiled_matcher_lock:
+                _compiled_matcher_building.pop(key, None)
+            ev.set()
 
 
 def build_tool_grammar(

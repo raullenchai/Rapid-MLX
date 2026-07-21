@@ -10,6 +10,9 @@ build-count, per-request isolation, broken-grammar bypass, and LRU bound are all
 asserted deterministically.
 """
 
+import threading
+import time
+
 import pytest
 
 import vllm_mlx.api.tool_grammar as tg
@@ -19,9 +22,14 @@ class _FakeMatcher:
     """Records how many templates were CONSTRUCTED vs deep-copied."""
 
     builds = 0
+    _builds_lock = threading.Lock()
+    construct_delay = 0.0  # widen the race window in the concurrency test
 
     def __init__(self, lltok, grammar):
-        _FakeMatcher.builds += 1
+        with _FakeMatcher._builds_lock:
+            _FakeMatcher.builds += 1
+        if _FakeMatcher.construct_delay:
+            time.sleep(_FakeMatcher.construct_delay)
         self.lltok = lltok
         self.grammar = grammar
         self.is_copy = False
@@ -45,11 +53,15 @@ class _FakeMatcher:
 def _isolate_cache(monkeypatch):
     monkeypatch.setattr(tg, "LLMatcher", _FakeMatcher)
     tg._compiled_matcher_cache.clear()
+    tg._compiled_matcher_building.clear()
     tg._compiled_matcher_cache_bytes = 0
     _FakeMatcher.builds = 0
+    _FakeMatcher.construct_delay = 0.0
     yield
     tg._compiled_matcher_cache.clear()
+    tg._compiled_matcher_building.clear()
     tg._compiled_matcher_cache_bytes = 0
+    _FakeMatcher.construct_delay = 0.0
 
 
 def test_same_key_builds_template_once_and_returns_distinct_copies():
@@ -61,6 +73,37 @@ def test_same_key_builds_template_once_and_returns_distinct_copies():
     assert _FakeMatcher.builds == 1
     assert m1.is_copy and m2.is_copy
     assert m1 is not m2  # per-request isolation — no shared parse cursor
+
+
+def test_concurrent_cold_burst_builds_template_exactly_once():
+    # Per-key single-flight (codex #1155): a burst of N concurrent requests for
+    # the SAME uncached key must construct the expensive automaton exactly ONCE,
+    # not once-per-thread. A construct delay widens the race window, and a barrier
+    # releases all threads simultaneously so they genuinely collide on the miss.
+    _FakeMatcher.construct_delay = 0.05
+    lltok = object()
+    g = "start: HOT\nHOT: /h/"
+    n = 8
+    barrier = threading.Barrier(n)
+    results: list = []
+    res_lock = threading.Lock()
+
+    def worker():
+        barrier.wait()
+        m = tg.get_request_matcher(lltok, g)
+        with res_lock:
+            results.append(m)
+
+    threads = [threading.Thread(target=worker) for _ in range(n)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert _FakeMatcher.builds == 1, "single-flight must build the automaton once"
+    assert len(results) == n
+    assert all(m.is_copy for m in results), "every request gets its own deep_copy"
+    assert len({id(m) for m in results}) == n, "no two requests share a matcher"
 
 
 def test_distinct_grammars_build_distinct_templates():

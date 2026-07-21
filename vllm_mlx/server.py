@@ -333,6 +333,12 @@ async def _shutdown_save_prefix_cache() -> None:
     await asyncio.to_thread(_save_prefix_cache_to_disk)
 
 
+# Upper bound on the startup tool-grammar warmup (the LLTokenizer build normally
+# takes ~1s). If exceeded, startup proceeds and the first request pays the
+# cold-compile rather than the server hanging on a stalled build (codex #1155).
+_TOOL_GRAMMAR_WARMUP_TIMEOUT_S = 30.0
+
+
 def _do_tool_grammar_warmup(tokenizer, parser_cls) -> bool:
     """Pre-build the llguidance ``LLTokenizer`` (+ warm the grammar path).
 
@@ -375,8 +381,14 @@ def _do_tool_grammar_warmup(tokenizer, parser_cls) -> bool:
         if grammar is not None:
             get_request_matcher(lltok, grammar)
     except Exception:
-        # Non-fatal: the LLTokenizer (the expensive part) is already warm.
-        pass
+        # Non-fatal: the LLTokenizer (the expensive part) is already warm. Log
+        # the secondary grammar-path priming failure rather than swallowing it
+        # silently, so a real defect here is diagnosable (codex #1155 nit).
+        logger.warning(
+            "Tool-grammar warmup: LLTokenizer built, but grammar-path priming "
+            "failed (non-fatal — first real request re-primes it)",
+            exc_info=True,
+        )
     return True
 
 
@@ -411,7 +423,22 @@ async def _warmup_tool_grammar(engine) -> None:
         return
     if not getattr(parser_cls, "SUPPORTS_GRAMMAR", False):
         return
-    warmed = await asyncio.to_thread(_do_tool_grammar_warmup, tokenizer, parser_cls)
+    # Bound the warmup so a stalled llguidance build can never wedge startup —
+    # the server must still become ready, paying the cold-compile on the first
+    # request instead (codex #1155 nit). The build normally takes ~1s.
+    try:
+        warmed = await asyncio.wait_for(
+            asyncio.to_thread(_do_tool_grammar_warmup, tokenizer, parser_cls),
+            timeout=_TOOL_GRAMMAR_WARMUP_TIMEOUT_S,
+        )
+    except asyncio.TimeoutError:
+        logger.warning(
+            "Tool-grammar warmup exceeded %.0fs for parser %r; continuing "
+            "startup (first tool-call request will pay the cold-compile)",
+            _TOOL_GRAMMAR_WARMUP_TIMEOUT_S,
+            parser_name,
+        )
+        return
     if warmed:
         logger.info(
             "Tool-grammar warmup complete (LLTokenizer pre-built for parser %r)",
