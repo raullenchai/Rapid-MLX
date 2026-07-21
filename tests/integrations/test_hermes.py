@@ -64,17 +64,39 @@ def api_call(messages, tools=None, stream=False, max_tokens=300, temperature=0.3
     return resp.json()
 
 
+def _detect_context_window() -> int:
+    """Fetch context_window for MODEL_ID from the running server, default 32768."""
+    try:
+        resp = httpx.get(f"{BASE_URL}/models", timeout=5)
+        models = resp.json().get("data", [])
+        # Exact match by MODEL_ID first
+        for m in models:
+            if m.get("id") == MODEL_ID:
+                ctx = m.get("context_window")
+                if isinstance(ctx, int) and ctx > 0:
+                    return ctx
+        # Fallback: first model (single-model serve)
+        if len(models) == 1:
+            ctx = models[0].get("context_window")
+            if isinstance(ctx, int) and ctx > 0:
+                return ctx
+    except Exception:
+        pass
+    return 32768
+
+
 def ensure_hermes_config():
     """Update ~/.hermes/config.yaml to point to the current server/model."""
     config_dir = os.path.expanduser("~/.hermes")
     os.makedirs(config_dir, exist_ok=True)
     config_path = os.path.join(config_dir, "config.yaml")
+    ctx = _detect_context_window()
     config = (
         f"model:\n"
         f'  provider: "custom"\n'
         f'  default: "{MODEL_ID}"\n'
         f'  base_url: "{BASE_URL}"\n'
-        f"  context_length: 32768\n"
+        f"  context_length: {ctx}\n"
         f"  max_tokens: 4096\n"
     )
     with open(config_path, "w") as f:

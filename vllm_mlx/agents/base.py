@@ -131,9 +131,19 @@ class AgentProfile:
         return self.testing
 
     def render_config(
-        self, base_url: str, model_id: str, agent_version: str | None = None
+        self,
+        base_url: str,
+        model_id: str,
+        agent_version: str | None = None,
+        *,
+        context_length: int | None = None,
     ) -> str | dict[str, str]:
         """Render the config file content or env vars for this agent.
+
+        Args:
+            context_length: Model context window size.  When ``None`` the
+                placeholder ``{context_length}`` is replaced with a
+                conservative default (``32768``).
 
         Returns:
             str for file-based configs (yaml/json/toml)
@@ -141,25 +151,23 @@ class AgentProfile:
         """
         cfg = self.get_config_for_version(agent_version)
         base_url_no_v1 = base_url.rstrip("/").removesuffix("/v1")
+        ctx_str = str(context_length if context_length is not None else 32768)
+
+        def _sub(text: str) -> str:
+            return (
+                text.replace("{base_url}", base_url)
+                .replace("{model_id}", model_id)
+                .replace("{base_url_no_v1}", base_url_no_v1)
+                .replace("{context_length}", ctx_str)
+            )
 
         if cfg.type == "env":
             if not cfg.env_vars:
                 return {}
-            rendered = {}
-            for key, val in cfg.env_vars.items():
-                rendered[key] = (
-                    val.replace("{base_url}", base_url)
-                    .replace("{model_id}", model_id)
-                    .replace("{base_url_no_v1}", base_url_no_v1)
-                )
-            return rendered
+            return {key: _sub(val) for key, val in cfg.env_vars.items()}
 
         if cfg.template:
-            return (
-                cfg.template.replace("{base_url}", base_url)
-                .replace("{model_id}", model_id)
-                .replace("{base_url_no_v1}", base_url_no_v1)
-            )
+            return _sub(cfg.template)
         return ""
 
 

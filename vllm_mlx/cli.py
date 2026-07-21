@@ -6359,30 +6359,55 @@ def agents_command(args):
 
     # --setup: auto-configure agent
     if args.setup:
-        # Detect model from running server
-        model_id = args.model or "default"
-        if model_id == "default":
-            try:
-                import httpx
+        from vllm_mlx.agents.adapter import (
+            _detect_running_model,
+            fetch_context_window,
+        )
 
-                resp = httpx.get(f"{base_url}/models", timeout=3)
-                model_id = resp.json()["data"][0]["id"]
-            except Exception:
-                pass
+        # Detect model + context window from running server.
+        # Only query the server when the profile template uses
+        # {context_length} — avoids a 2-second timeout regression
+        # for profiles that don't need it.
+        model_id = args.model or "default"
+        context_length = None
+        cfg = profile.get_config_for_version(args.agent_version)
+        needs_ctx = cfg.template and "{context_length}" in cfg.template
+
+        if model_id == "default":
+            detected_model, detected_ctx = _detect_running_model(base_url)
+            if detected_model:
+                model_id = detected_model
+            if needs_ctx:
+                context_length = detected_ctx
+        elif needs_ctx:
+            # User specified model — look up *that* model's context window
+            context_length = fetch_context_window(base_url, model_id)
 
         summary = setup_agent_config(
-            profile, base_url, model_id, agent_version=args.agent_version
+            profile,
+            base_url,
+            model_id,
+            agent_version=args.agent_version,
+            context_length=context_length,
         )
+        if summary.startswith("Cannot"):
+            print(f"\n  {profile.display_name} setup failed.")
+            print(f"  {summary}")
+            print()
+            sys.exit(1)
         print(f"\n  {profile.display_name} configured!")
         print(f"  {summary}")
         print()
         return
 
     # Default: show setup instructions
-    # Pass "default" to trigger auto-detection of running model
+    # Pass "default" to trigger auto-detection of running model + context
     model_id = args.model or "default"
     instructions = get_setup_instructions(
-        profile, base_url, model_id, agent_version=args.agent_version
+        profile,
+        base_url,
+        model_id,
+        agent_version=args.agent_version,
     )
     print()
     print(instructions)

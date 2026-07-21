@@ -11,10 +11,10 @@ config:
       provider: "custom"
       default: "{model_id}"
       base_url: "{base_url}"
-      context_length: 32768
+      context_length: {context_length}
       max_tokens: 4096
     platform_toolsets:
-      cli: [terminal, file, code_execution, web, browser, skills]
+      cli: [terminal, file, code_execution, web, browser, skills, image, computer_use]
 
 models:
   recommended:
