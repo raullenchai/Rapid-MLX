@@ -1412,6 +1412,7 @@ async def _non_stream(
     tool_calls = _enforce_responses_tool_choice(
         tool_calls, responses_request, openai_request
     )
+    _repair_codex_response_tool_calls(tool_calls, responses_request)
 
     cleaned_text, reasoning_text = _finalize_content_and_reasoning(
         raw_text=output.raw_text or output.text,
@@ -1588,7 +1589,20 @@ async def _emit_function_call_item(tc, output_index: int) -> AsyncIterator[str]:
     )
 
 
-def _repair_codex_apply_patch_tool_call(tc) -> bool:
+def _repair_codex_response_tool_calls(
+    tool_calls: list | None,
+    responses_request: ResponsesRequest,
+) -> None:
+    """Apply narrow Codex/GPT-OSS tool-call repairs in every Responses mode."""
+    for tc in tool_calls or []:
+        _repair_codex_malformed_tool_arguments_json(tc)
+        _repair_codex_apply_patch_tool_call(tc, responses_request)
+
+
+def _repair_codex_apply_patch_tool_call(
+    tc,
+    responses_request: ResponsesRequest | None = None,
+) -> bool:
     """Repair a common Codex/GPT-OSS malformed tool call.
 
     Dogfooding ``66ton99/gpt-oss-120b`` through Codex exposed a repeated
@@ -1611,6 +1625,12 @@ def _repair_codex_apply_patch_tool_call(tc) -> bool:
         return False
     name = getattr(function, "name", None)
     if name not in {"exec_command", "apply_patch"}:
+        return False
+    request_has_exec_command = (
+        responses_request is not None
+        and _responses_request_has_function_tool(responses_request, "exec_command")
+    )
+    if name == "apply_patch" and not request_has_exec_command:
         return False
 
     raw_args = getattr(function, "arguments", "") or ""
@@ -3432,7 +3452,7 @@ async def _stream_responses(
         tool_output_index = len(completed_output)
         for tc in tool_calls or []:
             _repair_codex_malformed_tool_arguments_json(tc)
-            _repair_codex_apply_patch_tool_call(tc)
+            _repair_codex_apply_patch_tool_call(tc, responses_request)
             # R10-C3: inline the tool-call event triplet here (instead of
             # delegating to ``_emit_function_call_item`` / ``_emit_computer_call_item``)
             # so the ``completed_output`` array can be populated with the

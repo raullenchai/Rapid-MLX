@@ -105,6 +105,29 @@ def test_hy3_default_not_injected_when_enable_thinking_false():
     assert "reasoning_effort" not in tok.captured_kwargs
 
 
+def test_hy3_reasoning_effort_template_still_honors_enable_thinking_false():
+    """Hy3 also uses a ``reasoning_effort`` template knob, but
+    ``enable_thinking=False`` must leave its native ``no_think`` default
+    untouched instead of borrowing GPT-OSS's ``low`` workaround."""
+
+    class Hy3LikeTokenizer(_CapturingTokenizer):
+        chat_template = (
+            "{% if reasoning_effort is not defined %}"
+            "{% set reasoning_effort = 'no_think' %}{% endif %}"
+            "Reasoning: {{ reasoning_effort }}"
+        )
+
+    tok = Hy3LikeTokenizer()
+    apply_chat_template(
+        tok,
+        messages=[{"role": "user", "content": "hi"}],
+        enable_thinking=False,
+        model_name="mlx-community/Hy3-preview-4bit",
+    )
+    assert tok.captured_kwargs.get("enable_thinking") is False
+    assert "reasoning_effort" not in tok.captured_kwargs
+
+
 def test_gpt_oss_template_gets_low_effort_when_thinking_disabled():
     """GPT-OSS/Harmony templates ignore ``enable_thinking`` but honor
     ``reasoning_effort``. A route-level thinking-off decision should
@@ -216,6 +239,43 @@ def test_gpt_oss_tools_get_strict_argument_guardrail():
     assert "only claim changes that are present on disk" in guard
     assert "never send a final answer that asks the user to edit files" in guard
     assert "run the relevant verification commands yourself" in guard
+
+
+def test_gpt_oss_non_codex_tools_do_not_get_codex_guardrail():
+    """The apply_patch autonomy instructions are useful for Codex but too
+    specific for ordinary function tools."""
+
+    class GptOssLikeTokenizer(_CapturingTokenizer):
+        chat_template = (
+            "{% if reasoning_effort is not defined %}"
+            "{% set reasoning_effort = 'medium' %}{% endif %}"
+            "Reasoning: {{ reasoning_effort }}"
+        )
+
+    tok = GptOssLikeTokenizer()
+    apply_chat_template(
+        tok,
+        messages=[{"role": "user", "content": "weather?"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "get_weather",
+                    "description": "Returns weather.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"city": {"type": "string"}},
+                        "required": ["city"],
+                    },
+                },
+            }
+        ],
+        model_name="66ton99/gpt-oss-120b",
+    )
+    assert tok.captured_messages[0]["role"] == "user"
+    assert (
+        "Do not invent extra argument keys" not in tok.captured_messages[0]["content"]
+    )
 
 
 def test_non_hy3_model_never_sees_reasoning_effort_kwarg():

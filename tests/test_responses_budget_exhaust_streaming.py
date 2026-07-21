@@ -1704,6 +1704,68 @@ class TestCodexApplyPatchToolRepair:
         done_args = [json.loads(item["arguments"]) for item in function_items]
         assert done_args == repaired
 
+    def test_apply_patch_tool_calls_are_repaired_on_non_stream_response(
+        self, codex_apply_patch_tool_client
+    ):
+        from vllm_mlx.config import get_config
+
+        get_config().reasoning_parser = None
+        resp = codex_apply_patch_tool_client.client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": "apply patch",
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "exec_command",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {
+                                    "cmd": {"type": "string"},
+                                    "yield_time_ms": {"type": "integer"},
+                                },
+                                "required": ["cmd"],
+                            },
+                        },
+                    }
+                ],
+            },
+            headers=HEADERS,
+        )
+        assert resp.status_code == 200, resp.text
+
+        function_items = [
+            item for item in resp.json()["output"] if item["type"] == "function_call"
+        ]
+        assert len(function_items) == 2
+        assert [item["name"] for item in function_items] == [
+            "exec_command",
+            "exec_command",
+        ]
+        repaired = [json.loads(item["arguments"]) for item in function_items]
+        for args in repaired:
+            assert "patch" not in args
+            assert args["cmd"].startswith("apply_patch ")
+            assert _CODEX_PATCH in args["cmd"]
+        assert repaired[0]["yield_time_ms"] == 10000
+        assert set(repaired[1]) == {"cmd"}
+
+    def test_direct_apply_patch_tool_is_not_rewritten_without_exec_command(self):
+        from vllm_mlx.routes.responses import _repair_codex_apply_patch_tool_call
+
+        tc = SimpleNamespace(
+            function=SimpleNamespace(
+                name="apply_patch",
+                arguments=json.dumps({"patch": _CODEX_PATCH}),
+            )
+        )
+
+        assert _repair_codex_apply_patch_tool_call(tc) is False
+        assert tc.function.name == "apply_patch"
+        assert json.loads(tc.function.arguments) == {"patch": _CODEX_PATCH}
+
     def test_reasoning_trailing_exec_command_json_is_recovered_as_tool_call(
         self, codex_reasoning_leaked_exec_command_client
     ):
@@ -1809,6 +1871,43 @@ class TestCodexApplyPatchToolRepair:
         ]
         assert len(function_items) == 1
         assert json.loads(function_items[0]["arguments"]) == repaired_args
+
+    def test_malformed_exec_command_arguments_json_repaired_on_non_stream_response(
+        self, codex_malformed_exec_command_arguments_client
+    ):
+        from vllm_mlx.config import get_config
+
+        get_config().reasoning_parser = None
+        resp = codex_malformed_exec_command_arguments_client.client.post(
+            "/v1/responses",
+            json={
+                "model": "test-model",
+                "input": "apply patch",
+                "tools": [
+                    {
+                        "type": "function",
+                        "function": {
+                            "name": "exec_command",
+                            "parameters": {
+                                "type": "object",
+                                "properties": {"cmd": {"type": "string"}},
+                                "required": ["cmd"],
+                            },
+                        },
+                    }
+                ],
+            },
+            headers=HEADERS,
+        )
+        assert resp.status_code == 200, resp.text
+
+        function_items = [
+            item for item in resp.json()["output"] if item["type"] == "function_call"
+        ]
+        assert len(function_items) == 1
+        repaired_args = json.loads(function_items[0]["arguments"])
+        assert repaired_args == {"cmd": _CODEX_MALFORMED_EXEC_COMMAND_CMD}
+        assert not function_items[0]["arguments"].endswith('"]}')
 
 
 # =============================================================================

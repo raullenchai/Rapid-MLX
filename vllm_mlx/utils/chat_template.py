@@ -858,6 +858,10 @@ _HY3_MODEL_NAME_RE = re.compile(
     r"(?:^|[/_.\-])(?:hy3|hy-v3|hunyuan[-_]?3)(?:$|[_.\-])",
     re.IGNORECASE,
 )
+_GPT_OSS_MODEL_NAME_RE = re.compile(
+    r"(?:^|[/_.\-])gpt[-_]oss(?:$|[_.\-])",
+    re.IGNORECASE,
+)
 
 
 def _looks_like_hy3(model_name: str) -> bool:
@@ -874,8 +878,16 @@ def _looks_like_hy3(model_name: str) -> bool:
     return bool(_HY3_MODEL_NAME_RE.search(model_name))
 
 
+def _looks_like_gpt_oss(model_name: str) -> bool:
+    """Return True when the model name is the GPT-OSS / Harmony family."""
+    if not model_name:
+        return False
+    return bool(_GPT_OSS_MODEL_NAME_RE.search(model_name))
+
+
 def _template_uses_reasoning_effort_without_enable_thinking(
     template_applicator,
+    model_name: str = "",
 ) -> bool:
     """Return True for templates such as GPT-OSS/Harmony that expose a
     ``reasoning_effort`` kwarg but do not consult ``enable_thinking``.
@@ -884,6 +896,8 @@ def _template_uses_reasoning_effort_without_enable_thinking(
     the closest template-native low-reasoning request is
     ``reasoning_effort="low"``.
     """
+    if not _looks_like_gpt_oss(model_name):
+        return False
     template = getattr(template_applicator, "chat_template", None)
     if not isinstance(template, str) or not template:
         return False
@@ -920,6 +934,7 @@ def _inject_harmony_tool_argument_strictness(
     messages: list[dict],
     tools: list[dict] | None,
     template_applicator,
+    model_name: str = "",
 ) -> list[dict]:
     """Add a compact guardrail for GPT-OSS/Harmony tool calls.
 
@@ -932,8 +947,12 @@ def _inject_harmony_tool_argument_strictness(
     inherit Codex-specific wording.
     """
 
-    if not tools or not _template_uses_reasoning_effort_without_enable_thinking(
-        template_applicator
+    if (
+        not tools
+        or not _template_uses_reasoning_effort_without_enable_thinking(
+            template_applicator, model_name=model_name
+        )
+        or not _tools_include_codex_exec_command(tools)
     ):
         return messages
 
@@ -948,6 +967,20 @@ def _inject_harmony_tool_argument_strictness(
         {"role": "developer", "content": _HARMONY_TOOL_ARGUMENT_STRICTNESS},
         *messages,
     ]
+
+
+def _tools_include_codex_exec_command(tools: list[dict] | None) -> bool:
+    """Return True when the request exposes Codex's exec_command tool shape."""
+    for tool in tools or []:
+        function = tool.get("function") if isinstance(tool, dict) else None
+        if not isinstance(function, dict) or function.get("name") != "exec_command":
+            continue
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            return True
+        properties = parameters.get("properties")
+        return not isinstance(properties, dict) or "cmd" in properties
+    return False
 
 
 def apply_chat_template(
@@ -1040,7 +1073,7 @@ def apply_chat_template(
         tools = _baseline_sanitize_tools(tools)
 
     messages = _inject_harmony_tool_argument_strictness(
-        messages, tools, template_applicator
+        messages, tools, template_applicator, model_name=model_name
     )
 
     if not hasattr(template_applicator, "apply_chat_template"):
@@ -1072,7 +1105,9 @@ def apply_chat_template(
     # template silently ignore the off flag and keep ``Reasoning: medium``.
     if (
         enable_thinking is False
-        and _template_uses_reasoning_effort_without_enable_thinking(template_applicator)
+        and _template_uses_reasoning_effort_without_enable_thinking(
+            template_applicator, model_name=model_name
+        )
     ):
         template_kwargs.setdefault("reasoning_effort", "low")
 
