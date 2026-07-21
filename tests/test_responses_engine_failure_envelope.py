@@ -150,6 +150,137 @@ class _ImmediateStopEngine:
         )
 
 
+class _ReasoningOnlyStopEngine:
+    """Harmony/GPT-OSS shaped stream: the model emits analysis bytes,
+    then stops without ever opening final/message or tool_call output."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        return _GenerationOutput(
+            text="",
+            prompt_tokens=7,
+            completion_tokens=2,
+            finish_reason="stop",
+            reasoning_text="I should answer, but I never reach final.",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        chunks = ["I should answer, ", "but I never reach final."]
+        for i, chunk in enumerate(chunks):
+            yield _GenerationOutput(
+                text="".join(chunks[: i + 1]),
+                new_text=chunk,
+                prompt_tokens=7 if i == 0 else 0,
+                completion_tokens=i + 1,
+                finish_reason="stop" if i == len(chunks) - 1 else None,
+                finished=i == len(chunks) - 1,
+                channel="reasoning",
+            )
+
+
+class _TerminalReasoningOnlyStopEngine:
+    """Engine/router shape where reasoning is available only on the
+    terminal sentinel as ``reasoning_text`` and ``new_text`` is empty."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        return _GenerationOutput(
+            text="",
+            prompt_tokens=7,
+            completion_tokens=2,
+            finish_reason="stop",
+            reasoning_text="Terminal reasoning only; no final channel.",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="",
+            new_text="",
+            prompt_tokens=7,
+            completion_tokens=2,
+            finish_reason="stop",
+            finished=True,
+            reasoning_text="Terminal reasoning only; no final channel.",
+        )
+
+
+class _ClosedReasoningOnlyStopEngine:
+    """Harmony/GPT-OSS stream where the model emits reasoning, then a
+    content-channel control token that proves the hidden reasoning block
+    closed, but no user-visible final text/tool_call survives stripping."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        return _GenerationOutput(
+            text="",
+            prompt_tokens=7,
+            completion_tokens=2,
+            finish_reason="stop",
+            reasoning_text="I closed analysis but never answered.",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="I closed analysis but never answered.",
+            new_text="I closed analysis but never answered.",
+            prompt_tokens=7,
+            completion_tokens=1,
+            finish_reason=None,
+            finished=False,
+            channel="reasoning",
+        )
+        yield _GenerationOutput(
+            text="I closed analysis but never answered.<|end|>",
+            new_text="<|end|>",
+            prompt_tokens=0,
+            completion_tokens=2,
+            finish_reason="stop",
+            finished=True,
+            channel="content",
+        )
+
+
+class _HiddenOnlyStopEngine:
+    """Pathological routed stream: the model produced tokens and stopped,
+    but no user-visible message, no tool_call, and no reasoning sidecar
+    survived route-level filtering."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        return _GenerationOutput(
+            text="",
+            prompt_tokens=7,
+            completion_tokens=3,
+            finish_reason="stop",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="",
+            new_text="",
+            prompt_tokens=7,
+            completion_tokens=3,
+            finish_reason="stop",
+            finished=True,
+        )
+
+
 _IMPORTED = (
     "vllm_mlx.config",
     "vllm_mlx.config.server_config",
@@ -261,6 +392,34 @@ def healthy_client(monkeypatch):
 @pytest.fixture
 def immediate_stop_client(monkeypatch):
     holder = _build_client(monkeypatch, _ImmediateStopEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def reasoning_only_stop_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ReasoningOnlyStopEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def terminal_reasoning_only_stop_client(monkeypatch):
+    holder = _build_client(monkeypatch, _TerminalReasoningOnlyStopEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def closed_reasoning_only_stop_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ClosedReasoningOnlyStopEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def hidden_only_stop_client(monkeypatch):
+    holder = _build_client(monkeypatch, _HiddenOnlyStopEngine)
     yield holder
     holder.cleanup()
 
@@ -459,3 +618,135 @@ class TestResponsesStreamFailureEnvelope:
             f"R6-C2 stream guard incorrectly fired on a legitimate "
             f"stop-reason zero-token stream: {names}"
         )
+
+    def test_reasoning_only_stop_stream_emits_response_failed(
+        self, reasoning_only_stop_client
+    ):
+        """GPT-OSS/Harmony can stop after analysis without a final channel.
+
+        That is not a length cutoff and must not be surfaced as a
+        completed reasoning-only response, because Responses clients then
+        have no final answer to consume. It is also not the immediate EOS
+        case above: reasoning bytes and completion tokens were produced.
+        """
+        with reasoning_only_stop_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        names = [n for n, _ in events]
+        assert "response.failed" in names, (
+            f"reasoning-only stop must terminate as response.failed; events={names}"
+        )
+        assert "response.completed" not in names, (
+            f"reasoning-only stop must not also emit response.completed; events={names}"
+        )
+        failed = next(d for n, d in events if n == "response.failed")
+        assert failed["response"]["error"]["code"] == "model_no_final_answer"
+
+    def test_reasoning_only_stop_does_not_promote_reasoning_to_text(
+        self, reasoning_only_stop_client
+    ):
+        """The failure signal must preserve the Harmony no-leak invariant:
+        analysis/reasoning text is never repackaged as output_text."""
+        with reasoning_only_stop_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        names = [n for n, _ in events]
+        assert "response.output_text.delta" not in names, names
+        reasoning_done = [
+            d
+            for n, d in events
+            if n == "response.output_item.done"
+            and d.get("item", {}).get("type") == "reasoning"
+        ]
+        assert reasoning_done, "reasoning item should still be closed for diagnostics"
+
+    def test_terminal_reasoning_only_stop_stream_emits_response_failed(
+        self, terminal_reasoning_only_stop_client
+    ):
+        """Regression for router sentinel streams where ``new_text`` is
+        empty but ``reasoning_text`` carries the accumulated analysis.
+
+        Pre-fix, the empty-delta fast path continued before recording
+        ``reasoning_text``, so the post-loop guard saw no reasoning and
+        emitted ``response.completed`` with no final answer.
+        """
+        with terminal_reasoning_only_stop_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        names = [n for n, _ in events]
+        assert "response.failed" in names, (
+            f"terminal reasoning-only stop must fail; events={names}"
+        )
+        assert "response.completed" not in names, names
+        failed = next(d for n, d in events if n == "response.failed")
+        assert failed["response"]["error"]["code"] == "model_no_final_answer"
+
+    def test_closed_reasoning_only_stop_stream_emits_response_failed(
+        self, closed_reasoning_only_stop_client
+    ):
+        """Regression for Codex dogfood where ``reasoning_block_closed``
+        became true, but the stream still had no consumable message or
+        tool_call.
+
+        Pre-fix, the stop guard treated the close signal itself as
+        downstream output and emitted ``response.completed`` with only a
+        reasoning item. Codex CLI then ended the turn with no final answer.
+        """
+        with closed_reasoning_only_stop_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        names = [n for n, _ in events]
+        assert "response.failed" in names, (
+            f"closed reasoning-only stop must fail; events={names}"
+        )
+        assert "response.completed" not in names, names
+        assert "response.output_text.delta" not in names, names
+        failed = next(d for n, d in events if n == "response.failed")
+        assert failed["response"]["error"]["code"] == "model_no_final_answer"
+
+    def test_hidden_nonzero_stop_stream_emits_response_failed(
+        self, hidden_only_stop_client
+    ):
+        """If the engine reports non-zero completion tokens but the
+        Responses route has no consumable final message/tool_call, the
+        stream must not complete successfully.
+
+        This covers routed Harmony/control-token failures where the
+        model did generate something, but every byte was hidden or
+        swallowed before a final channel/tool call reached the client.
+        """
+        with hidden_only_stop_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        names = [n for n, _ in events]
+        assert "response.failed" in names, (
+            f"hidden nonzero stop must fail; events={names}"
+        )
+        assert "response.completed" not in names, names
+        failed = next(d for n, d in events if n == "response.failed")
+        assert failed["response"]["error"]["code"] == "model_no_final_answer"

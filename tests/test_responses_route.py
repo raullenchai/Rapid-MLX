@@ -405,6 +405,63 @@ class TestResponsesNonStream:
                 headers={"Authorization": "Bearer test-secret"},
             )
 
+    def test_implicit_max_output_tokens_clamped_to_remaining_context(
+        self, responses_client, monkeypatch
+    ):
+        """Omitted ``max_output_tokens`` should not reject long valid prompts.
+
+        Codex CLI commonly leaves ``max_output_tokens`` unset. With a
+        131072-token model window, a 100581-token prompt still leaves
+        30491 completion tokens. The Responses route should clamp the
+        implicit 32768-token default to that remaining room and pass the
+        clamped value to the engine instead of raising
+        ``context_length_exceeded``.
+        """
+        from vllm_mlx.config import get_config
+        from vllm_mlx.routes import responses as responses_route
+
+        client = responses_client.client
+        engine = responses_client.engine
+        cfg = get_config()
+        cfg.default_max_tokens = 32_768
+        cfg.default_max_tokens_is_explicit = False
+
+        captured = {}
+
+        def _capture_context_check(_engine, _messages, **kwargs):
+            captured["context_max_tokens"] = kwargs.get("max_tokens")
+            return 100_581
+
+        def _capture_enforce(_engine, prompt_tokens, *, max_tokens=None):
+            captured.setdefault("enforce_calls", []).append((prompt_tokens, max_tokens))
+
+        monkeypatch.setattr(
+            responses_route,
+            "enforce_context_length_for_messages",
+            _capture_context_check,
+        )
+        monkeypatch.setattr(
+            responses_route,
+            "get_model_max_context",
+            lambda _engine: 131_072,
+        )
+        monkeypatch.setattr(
+            responses_route,
+            "enforce_context_length",
+            _capture_enforce,
+        )
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert captured["context_max_tokens"] is None
+        assert captured["enforce_calls"] == [(100_581, 30_491)]
+        assert engine.calls[-1].kwargs["max_tokens"] == 30_491
+
     def test_mllm_message_prepare_accepts_normalized_object_style_messages(self):
         """Responses MLLM path accepts Chat-normalized object-style messages."""
         from vllm_mlx.routes.responses import _prepare_messages_for_engine

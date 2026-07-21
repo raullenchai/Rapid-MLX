@@ -100,7 +100,7 @@ def test_ubc_evict_darwin_releases_pages(tmp_path):
             "dd",
             "if=/dev/urandom",
             f"of={payload}",
-            "bs=1m",
+            "bs=1048576",
             f"count={size // (1024 * 1024)}",
             "status=none",
         ],
@@ -205,7 +205,14 @@ def test_ubc_evict_munmap_failure_is_not_reported_as_success(tmp_path, caplog):
     """
     payload = tmp_path / "p.bin"
     subprocess.run(
-        ["dd", "if=/dev/urandom", f"of={payload}", "bs=1m", "count=1", "status=none"],
+        [
+            "dd",
+            "if=/dev/urandom",
+            f"of={payload}",
+            "bs=1048576",
+            "count=1",
+            "status=none",
+        ],
         check=True,
     )
 
@@ -324,7 +331,14 @@ def test_counter_monotonic_across_calls(tmp_path):
         p = tmp_path / f"s{i}.bin"
         # 1 MB urandom each.
         subprocess.run(
-            ["dd", "if=/dev/urandom", f"of={p}", "bs=1m", "count=1", "status=none"],
+            [
+                "dd",
+                "if=/dev/urandom",
+                f"of={p}",
+                "bs=1048576",
+                "count=1",
+                "status=none",
+            ],
             check=True,
         )
         files.append(p)

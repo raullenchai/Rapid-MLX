@@ -70,8 +70,10 @@ class _CapturingTokenizer:
 
     def __init__(self):
         self.captured_kwargs: dict = {}
+        self.captured_messages: list[dict] = []
 
     def apply_chat_template(self, messages, **kwargs) -> str:
+        self.captured_messages = messages
         self.captured_kwargs = kwargs
         return "<stub prompt>"
 
@@ -101,6 +103,119 @@ def test_hy3_default_not_injected_when_enable_thinking_false():
         model_name="mlx-community/Hy3-preview-4bit",
     )
     assert "reasoning_effort" not in tok.captured_kwargs
+
+
+def test_gpt_oss_template_gets_low_effort_when_thinking_disabled():
+    """GPT-OSS/Harmony templates ignore ``enable_thinking`` but honor
+    ``reasoning_effort``. A route-level thinking-off decision should
+    render as the closest native setting: ``Reasoning: low``."""
+
+    class GptOssLikeTokenizer(_CapturingTokenizer):
+        chat_template = (
+            "{% if reasoning_effort is not defined %}"
+            "{% set reasoning_effort = 'medium' %}{% endif %}"
+            "Reasoning: {{ reasoning_effort }}"
+        )
+
+    tok = GptOssLikeTokenizer()
+    apply_chat_template(
+        tok,
+        messages=[{"role": "user", "content": "hi"}],
+        enable_thinking=False,
+        model_name="66ton99/gpt-oss-120b",
+    )
+    assert tok.captured_kwargs.get("enable_thinking") is False
+    assert tok.captured_kwargs.get("reasoning_effort") == "low"
+
+
+def test_gpt_oss_low_effort_survives_enable_thinking_retry():
+    """Some template applicators reject unknown ``enable_thinking`` kwargs.
+    The first retry drops only that kwarg and must keep
+    ``reasoning_effort='low'``."""
+
+    class EnableThinkingRejectingGptOssTokenizer:
+        chat_template = (
+            "{% if reasoning_effort is not defined %}"
+            "{% set reasoning_effort = 'medium' %}{% endif %}"
+            "Reasoning: {{ reasoning_effort }}"
+        )
+
+        def __init__(self):
+            self.calls: list[dict] = []
+
+        def apply_chat_template(self, messages, **kwargs):
+            self.calls.append(dict(kwargs))
+            if "enable_thinking" in kwargs:
+                raise TypeError(
+                    "apply_chat_template() got unexpected keyword "
+                    "argument 'enable_thinking'"
+                )
+            return "<gpt-oss prompt>"
+
+    tok = EnableThinkingRejectingGptOssTokenizer()
+    result = apply_chat_template(
+        tok,
+        messages=[{"role": "user", "content": "hi"}],
+        enable_thinking=False,
+        model_name="66ton99/gpt-oss-120b",
+    )
+    assert result == "<gpt-oss prompt>"
+    assert len(tok.calls) == 2
+    assert tok.calls[0].get("reasoning_effort") == "low"
+    assert tok.calls[0].get("enable_thinking") is False
+    assert tok.calls[1].get("reasoning_effort") == "low"
+    assert "enable_thinking" not in tok.calls[1]
+
+
+def test_gpt_oss_tools_get_strict_argument_guardrail():
+    """Codex dogfood regression: GPT-OSS can invent undeclared tool
+    arguments (``patch`` for an ``exec_command`` schema that only has
+    ``cmd``). The Harmony prompt should explicitly forbid that shape."""
+
+    class GptOssLikeTokenizer(_CapturingTokenizer):
+        chat_template = (
+            "{% if reasoning_effort is not defined %}"
+            "{% set reasoning_effort = 'medium' %}{% endif %}"
+            "Reasoning: {{ reasoning_effort }}"
+        )
+
+    tok = GptOssLikeTokenizer()
+    apply_chat_template(
+        tok,
+        messages=[{"role": "user", "content": "apply a patch"}],
+        tools=[
+            {
+                "type": "function",
+                "function": {
+                    "name": "exec_command",
+                    "description": "Runs a shell command.",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {"cmd": {"type": "string"}},
+                        "required": ["cmd"],
+                    },
+                },
+            }
+        ],
+        model_name="66ton99/gpt-oss-120b",
+    )
+    assert tok.captured_messages[0]["role"] == "developer"
+    guard = tok.captured_messages[0]["content"]
+    assert "Do not invent extra argument keys" in guard
+    assert "`patch`" in guard
+    assert "inside `cmd`" in guard
+    assert "every deleted/context line must be copied exactly" in guard
+    assert "`omitted`" in guard
+    assert "If `apply_patch` fails" in guard
+    assert "do not stop and ask the user to edit manually" in guard
+    assert "retry with a smaller exact-context patch" in guard
+    assert "Do not replace existing compatibility or runtime-guard code" in guard
+    assert "verified every documented entrypoint" in guard
+    assert "run all relevant entrypoints, not just a syntax check" in guard
+    assert "inspect the actual files or command output you changed" in guard
+    assert "only claim changes that are present on disk" in guard
+    assert "never send a final answer that asks the user to edit files" in guard
+    assert "run the relevant verification commands yourself" in guard
 
 
 def test_non_hy3_model_never_sees_reasoning_effort_kwarg():

@@ -874,6 +874,82 @@ def _looks_like_hy3(model_name: str) -> bool:
     return bool(_HY3_MODEL_NAME_RE.search(model_name))
 
 
+def _template_uses_reasoning_effort_without_enable_thinking(
+    template_applicator,
+) -> bool:
+    """Return True for templates such as GPT-OSS/Harmony that expose a
+    ``reasoning_effort`` kwarg but do not consult ``enable_thinking``.
+
+    In that shape, passing ``enable_thinking=False`` is silently inert;
+    the closest template-native low-reasoning request is
+    ``reasoning_effort="low"``.
+    """
+    template = getattr(template_applicator, "chat_template", None)
+    if not isinstance(template, str) or not template:
+        return False
+    return "reasoning_effort" in template and "enable_thinking" not in template
+
+
+_HARMONY_TOOL_ARGUMENT_STRICTNESS = (
+    "Tool-call arguments must be a JSON object whose keys are only the "
+    "properties declared in the selected tool schema. Do not invent extra "
+    "argument keys. If a tool has a `cmd` parameter, put the full command "
+    "and any command payload inside `cmd`; do not add separate `patch`, "
+    "`content`, or similar arguments unless that exact property is listed "
+    "in the tool schema. When using `apply_patch`, every deleted/context "
+    "line must be copied exactly from the current file; never use "
+    "placeholders such as `...`, `omitted`, or `for brevity` inside a "
+    "patch. If `apply_patch` fails because expected lines do not match, "
+    "do not stop and ask the user to edit manually; inspect the current "
+    "file, then retry with a smaller exact-context patch or use another "
+    "safe in-scope command to complete the edit yourself. Do not replace "
+    "existing compatibility or runtime-guard code with a shorter equivalent "
+    "unless you have verified every documented entrypoint that depends on "
+    "it. When tests or project instructions mention multiple commands, run "
+    "all relevant entrypoints, not just a syntax check. Before your final "
+    "answer, inspect the actual files or command output you changed and "
+    "only claim changes that are present on disk. While you have tool "
+    "access, never send a final answer that asks the user to edit files, "
+    "run tests, or continue the implementation for you; only send the "
+    "final answer after you have completed the in-scope edit and run the "
+    "relevant verification commands yourself."
+)
+
+
+def _inject_harmony_tool_argument_strictness(
+    messages: list[dict],
+    tools: list[dict] | None,
+    template_applicator,
+) -> list[dict]:
+    """Add a compact guardrail for GPT-OSS/Harmony tool calls.
+
+    GPT-OSS renders tools as a TypeScript namespace. Local dogfood showed
+    that the model can still add convenient-but-undeclared arguments
+    (notably ``patch`` on Codex's ``exec_command`` tool). Since downstream
+    tool runners commonly ignore unknown keys, this turns a generated patch
+    into a bare ``apply_patch`` no-op. Keep the instruction scoped to
+    Harmony-style templates with tools so unrelated model families do not
+    inherit Codex-specific wording.
+    """
+
+    if not tools or not _template_uses_reasoning_effort_without_enable_thinking(
+        template_applicator
+    ):
+        return messages
+
+    if messages and messages[0].get("role") in {"developer", "system"}:
+        first = dict(messages[0])
+        content = first.get("content", "")
+        if isinstance(content, str):
+            first["content"] = f"{content}\n\n{_HARMONY_TOOL_ARGUMENT_STRICTNESS}"
+            return [first, *messages[1:]]
+
+    return [
+        {"role": "developer", "content": _HARMONY_TOOL_ARGUMENT_STRICTNESS},
+        *messages,
+    ]
+
+
 def apply_chat_template(
     template_applicator,
     messages: list[dict],
@@ -963,6 +1039,10 @@ def apply_chat_template(
         )
         tools = _baseline_sanitize_tools(tools)
 
+    messages = _inject_harmony_tool_argument_strictness(
+        messages, tools, template_applicator
+    )
+
     if not hasattr(template_applicator, "apply_chat_template"):
         # Fallback for models without apply_chat_template.
         # Inject tools into the system prompt so the model still sees
@@ -983,6 +1063,18 @@ def apply_chat_template(
     }
     if tools:
         template_kwargs["tools"] = tools
+
+    # GPT-OSS / Harmony-style templates do not expose an on/off
+    # ``enable_thinking`` switch; they expose ``reasoning_effort`` and default
+    # it to ``medium``. When a route already resolved ``enable_thinking=False``
+    # (tools / strict-json / casual-chat auto-disable, or explicit client
+    # opt-out), request the lowest native effort instead of letting the
+    # template silently ignore the off flag and keep ``Reasoning: medium``.
+    if (
+        enable_thinking is False
+        and _template_uses_reasoning_effort_without_enable_thinking(template_applicator)
+    ):
+        template_kwargs.setdefault("reasoning_effort", "low")
 
     # Hy3 chat_template.jinja defaults ``reasoning_effort=no_think`` which
     # empirically returns "France" instead of "Paris" on factual-recall
