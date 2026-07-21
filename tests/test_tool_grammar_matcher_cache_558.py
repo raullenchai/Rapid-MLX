@@ -45,9 +45,11 @@ class _FakeMatcher:
 def _isolate_cache(monkeypatch):
     monkeypatch.setattr(tg, "LLMatcher", _FakeMatcher)
     tg._compiled_matcher_cache.clear()
+    tg._compiled_matcher_cache_bytes = 0
     _FakeMatcher.builds = 0
     yield
     tg._compiled_matcher_cache.clear()
+    tg._compiled_matcher_cache_bytes = 0
 
 
 def test_same_key_builds_template_once_and_returns_distinct_copies():
@@ -96,3 +98,46 @@ def test_cache_is_bounded_lru(monkeypatch):
     for i in range(10):
         tg.get_request_matcher(lltok, f"start: R{i}\nR{i}: /{i}/")
     assert len(tg._compiled_matcher_cache) <= 4
+
+
+def test_eviction_is_recency_ordered_not_fifo(monkeypatch):
+    # Prove LRU (not FIFO / arbitrary): fill to capacity, TOUCH the oldest key so
+    # it becomes most-recently-used, then insert one past capacity. The evicted
+    # entry must be the now-least-recently-used key, NOT the touched one.
+    monkeypatch.setattr(tg, "_COMPILED_MATCHER_CACHE_MAX", 3)
+    lltok = object()
+    g = [f"start: K{i}\nK{i}: /{i}/" for i in range(4)]
+    for i in range(3):  # fill: K0 (oldest) .. K2 (newest)
+        tg.get_request_matcher(lltok, g[i])
+    # Touch K0 -> it becomes most-recently-used; K1 is now the LRU victim.
+    tg.get_request_matcher(lltok, g[0])
+    # Insert K3, forcing one eviction.
+    tg.get_request_matcher(lltok, g[3])
+    keys = {k[1] for k in tg._compiled_matcher_cache}
+    assert g[0] in keys, "touched (recently-used) key must survive — this is LRU"
+    assert g[1] not in keys, "the least-recently-used key must be the one evicted"
+    assert g[3] in keys, "the newest inserted key must be present"
+
+
+def test_oversized_grammar_is_not_cached(monkeypatch):
+    # A single grammar larger than the whole byte budget must NOT be cached (it
+    # would evict everything and still overflow); it is served fresh each call.
+    monkeypatch.setattr(tg, "_COMPILED_MATCHER_CACHE_MAX_BYTES", 64)
+    lltok = object()
+    big = "start: BIG\nBIG: /" + ("x" * 200) + "/"
+    m1 = tg.get_request_matcher(lltok, big)
+    m2 = tg.get_request_matcher(lltok, big)
+    assert m1.is_copy and m2.is_copy  # still a usable per-request matcher
+    assert (id(lltok), big) not in tg._compiled_matcher_cache
+    assert _FakeMatcher.builds == 2  # rebuilt each time (uncached)
+
+
+def test_byte_budget_evicts_before_count_cap(monkeypatch):
+    # With a generous count cap but a tight byte budget, entries evict on BYTES.
+    monkeypatch.setattr(tg, "_COMPILED_MATCHER_CACHE_MAX", 100)
+    monkeypatch.setattr(tg, "_COMPILED_MATCHER_CACHE_MAX_BYTES", 120)
+    lltok = object()
+    for i in range(6):
+        tg.get_request_matcher(lltok, f"g{i}:" + ("y" * 40))  # ~44 bytes each
+    assert tg._compiled_matcher_cache_bytes <= 120
+    assert len(tg._compiled_matcher_cache) < 6  # byte budget bound before count

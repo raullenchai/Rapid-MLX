@@ -677,16 +677,44 @@ def _compile_lark_cached(lark: str) -> str | None:
 # multi-model routing path.
 #
 # BOUNDED LRU (``OrderedDict`` + a lock) so a client that streams unbounded
-# distinct schemas cannot grow the cache without limit. THREAD-SAFE: the chat
-# route runs this on a bounded build-executor pool, so N threads may hit the same
-# key concurrently; the lock guards both the dict and the ``deep_copy`` (cheap
-# enough that holding the lock over it is free, and it serializes concurrent
-# reads of the same native template).
+# distinct schemas cannot grow the cache without limit. The bound is BOTH a
+# count cap AND a byte budget: a count cap alone does not bound memory, because a
+# client-controlled grammar string (and the native automaton built from it) can
+# be large — the upstream route already rejects a schema whose serialized tools
+# list exceeds 64 KiB (``_TOOL_GRAMMAR_MAX_SCHEMA_BYTES``), but ``%json``
+# expansion can still make the emitted grammar several hundred KiB. So we evict
+# by whichever limit binds first and REFUSE to cache a single grammar larger than
+# the whole byte budget (it would evict everything and still overflow); such an
+# outlier rebuilds per request (rare — the schema is already ≤64 KiB). ``len(
+# grammar)`` is the byte proxy (the automaton size scales with grammar size).
+#
+# THREAD-SAFE: the chat route runs this on a bounded build-executor pool, so N
+# threads may hit the same key concurrently. The lock guards the dict + the
+# ``deep_copy`` (cheap), but the EXPENSIVE ``LLMatcher`` construction runs OUTSIDE
+# the lock, so one slow schema miss never head-of-line-blocks cache hits or
+# unrelated grammars. A rare duplicate concurrent build of the SAME new key is
+# harmless (equivalent templates; the first inserted wins, the loser is dropped).
 _COMPILED_MATCHER_CACHE_MAX = 128
-_compiled_matcher_cache: "OrderedDict[tuple[int, str], tuple[Any, Any]]" = (
+_COMPILED_MATCHER_CACHE_MAX_BYTES = 32 * 1024 * 1024  # 32 MiB grammar-string budget
+_compiled_matcher_cache: "OrderedDict[tuple[int, str], tuple[Any, Any, int]]" = (
     OrderedDict()
 )
+_compiled_matcher_cache_bytes = 0
 _compiled_matcher_lock = threading.Lock()
+
+
+def _evict_compiled_matchers_locked() -> None:
+    """Evict LRU entries until BOTH the count cap and byte budget are satisfied.
+
+    Caller must hold ``_compiled_matcher_lock``.
+    """
+    global _compiled_matcher_cache_bytes
+    while _compiled_matcher_cache and (
+        len(_compiled_matcher_cache) > _COMPILED_MATCHER_CACHE_MAX
+        or _compiled_matcher_cache_bytes > _COMPILED_MATCHER_CACHE_MAX_BYTES
+    ):
+        _old_key, _old_val = _compiled_matcher_cache.popitem(last=False)
+        _compiled_matcher_cache_bytes -= _old_val[2]
 
 
 def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
@@ -700,25 +728,40 @@ def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
     cached and is returned as-is, so the broken-matcher fallback in
     ``GrammarLogitsProcessor`` behaves exactly as before.
     """
+    global _compiled_matcher_cache_bytes
     key = (id(lltokenizer), grammar)
+    # Fast path: cache hit under the lock (dict read + a ~0.01ms deep_copy only).
     with _compiled_matcher_lock:
         entry = _compiled_matcher_cache.get(key)
         if entry is not None:
-            # Hit: refresh LRU recency and hand back a private clone.
             _compiled_matcher_cache.move_to_end(key)
             return entry[1].deep_copy()
-        # Miss: build the template under the lock (single-flight — a duplicate
-        # concurrent build of the SAME grammar is wasteful; misses are rare and
-        # the build is typically sub-35ms). A broken grammar is returned
-        # uncached so the caller's ``is_broken()`` path is unchanged.
-        template = LLMatcher(lltokenizer, grammar)
-        if template.get_error():
-            return template
+
+    # Miss: build the automaton OUTSIDE the global lock so a slow construction
+    # never blocks cache hits / unrelated grammars (codex #1155). A broken
+    # grammar is returned uncached so the caller's ``is_broken()`` path is
+    # unchanged.
+    template = LLMatcher(lltokenizer, grammar)
+    if template.get_error():
+        return template
+
+    nbytes = len(grammar)
+    with _compiled_matcher_lock:
+        # Re-check: another thread may have inserted this key while we built.
+        existing = _compiled_matcher_cache.get(key)
+        if existing is not None:
+            _compiled_matcher_cache.move_to_end(key)
+            return existing[1].deep_copy()
+        # Refuse to cache a single grammar larger than the whole byte budget —
+        # it would evict every other entry and still overflow. It rebuilds per
+        # request (rare: the upstream schema gate already caps input at 64 KiB).
+        if nbytes > _COMPILED_MATCHER_CACHE_MAX_BYTES:
+            return template.deep_copy()
         # Pin ``lltokenizer`` in the value so ``id()`` can't be recycled while
-        # the entry is live.
-        _compiled_matcher_cache[key] = (lltokenizer, template)
-        while len(_compiled_matcher_cache) > _COMPILED_MATCHER_CACHE_MAX:
-            _compiled_matcher_cache.popitem(last=False)
+        # the entry is live; store the byte size for the budget accounting.
+        _compiled_matcher_cache[key] = (lltokenizer, template, nbytes)
+        _compiled_matcher_cache_bytes += nbytes
+        _evict_compiled_matchers_locked()
         return template.deep_copy()
 
 
