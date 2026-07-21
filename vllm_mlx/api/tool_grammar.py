@@ -692,6 +692,21 @@ def build_tool_grammar(
     if tool_choice == "none":
         # ``none`` means the model sees no tools -> no grammar (design §4).
         return None
+    # AUTO-path soundness gate (#558). The builder's "free byte prefix + single-
+    # special-token TRIGGER" model expresses auto's zero-call invariant ONLY when
+    # the trigger token appears EXCLUSIVELY at a tool-call boundary. A family
+    # whose only single-special-token trigger is SHARED with non-tool responses
+    # (harmony: ``<|channel|>`` precedes commentary/final/analysis alike) cannot
+    # — committing to the tool tag on that shared trigger FORCES a call, turning
+    # ``auto`` into ``required`` (the #1 regression #558 guards against; verified
+    # offline: a ``<|channel|>final...`` reply is rejected at the first token).
+    # Such a family declares ``TOOL_GRAMMAR_AUTO_SAFE = False`` and stays
+    # free-form on auto (non-regressive), while ``required``/named still build a
+    # grammar below (a forced tool-call structure is exactly what those modes
+    # ask for). Every single-special-token-trigger family (hermes/qwen) defaults
+    # ``True`` and is unaffected.
+    if tool_choice == "auto" and not getattr(parser, "TOOL_GRAMMAR_AUTO_SAFE", True):
+        return None
     info_fn = getattr(parser, "structure_info", None)
     if info_fn is None:
         return None

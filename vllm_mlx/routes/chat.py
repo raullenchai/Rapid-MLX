@@ -638,6 +638,35 @@ def _tool_parser_supports_grammar(cfg) -> bool:
     return bool(parser_cls.supports_grammar())
 
 
+def _tool_parser_auto_safe(cfg) -> bool:
+    """Cheap capability probe: is the configured tool parser AUTO-safe (#558)?
+
+    A grammar-capable parser is AUTO-safe when its ``structure_info`` wire can
+    express auto's zero-call invariant — true for every single-special-token-
+    trigger family (hermes/qwen ``<tool_call>``). Harmony is NOT: its only
+    single-special-token trigger (``<|channel|>``) is shared with non-tool
+    responses, so ``build_tool_grammar`` DECLINES the auto grammar for it
+    (``ToolParser.TOOL_GRAMMAR_AUTO_SAFE = False``). The auto path is therefore
+    NOT a constrained path for such a family, so ``_tool_grammar_constraint_
+    active`` treats an auto request as inactive (free-form): an oversized schema
+    stays free-form instead of a spurious #561 HTTP 400, and the route skips the
+    wasted grammar-build offload that would only decline. Mirrors
+    ``_tool_parser_supports_grammar`` (class-level, no instantiation). Defaults
+    ``True`` (auto-safe) for an unset/unknown parser, matching the ABC default —
+    only a family that explicitly opts out changes behavior.
+    """
+    name = getattr(cfg, "tool_call_parser", None)
+    if not name:
+        return True
+    from ..tool_parsers import ToolParserManager
+
+    try:
+        parser_cls = ToolParserManager.get_tool_parser(name)
+    except KeyError:
+        return True  # unknown parser -> not constrained anyway; stay permissive.
+    return bool(getattr(parser_cls, "TOOL_GRAMMAR_AUTO_SAFE", True))
+
+
 def _tool_grammar_constraint_active(cfg, request) -> bool:
     """True iff the constrained-tool-calling path is ACTIVE for this request.
 
@@ -663,10 +692,19 @@ def _tool_grammar_constraint_active(cfg, request) -> bool:
     # 400 for it — only grammar-capable parsers (hermes/qwen) keep the #561 400.
     if not _tool_parser_supports_grammar(cfg):
         return False
-    return (
-        _normalize_tool_choice_for_grammar(getattr(request, "tool_choice", None))
-        is not None
-    )
+    choice = _normalize_tool_choice_for_grammar(getattr(request, "tool_choice", None))
+    if choice is None:
+        return False
+    # AUTO-soundness (#558): a grammar-capable parser that is NOT auto-safe
+    # (harmony — its ``<|channel|>`` trigger is shared with non-tool responses)
+    # DECLINES the auto grammar in ``build_tool_grammar``, so the auto path is not
+    # a constrained path for it. Treat it as inactive so an oversized schema stays
+    # free-form (no #561 400) and the route skips the wasted build offload —
+    # keeping auto fully non-regressive for such a family while ``required``/named
+    # stay constrained. Every auto-safe family (hermes/qwen) is unaffected.
+    if choice["mode"] == "auto" and not _tool_parser_auto_safe(cfg):
+        return False
+    return True
 
 
 def _tool_grammar_eligible(cfg, request) -> bool:

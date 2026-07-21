@@ -198,6 +198,25 @@ class ToolParser(ABC):
         # from the ABC default (which returns ``None`` — free-form).
         return cls.structure_info is not ToolParser.structure_info
 
+    # Whether this family's grammar-constrained wire (``structure_info``) is
+    # SOUND on the AUTO tool_choice path (#558). The #558 builder is a "free
+    # byte prefix + single-special-token TRIGGER" model: on ``auto`` the model
+    # may emit zero calls by staying in the free prefix, and the trigger is what
+    # commits it into a constrained tool call. That is sound ONLY when the
+    # trigger token appears EXCLUSIVELY at the start of a tool call (e.g. hermes/
+    # qwen ``<tool_call>``) — then plain text never contains it and auto's
+    # zero-call invariant holds. A family whose only single-special-token
+    # trigger is ALSO emitted by non-tool responses (harmony's ``<|channel|>``
+    # precedes ``commentary``/``final``/``analysis`` alike) CANNOT express auto
+    # zero-call: committing to the tool tag on that shared trigger would FORCE a
+    # call, turning ``auto`` into ``required`` — the #1 regression #558 guards
+    # against. Such a family sets this ``False`` so ``build_tool_grammar``
+    # declines the auto path (free-form fallback, non-regressive) while still
+    # constraining the explicit ``required``/named modes where a forced tool-call
+    # structure is exactly what the caller asked for. Defaults ``True`` — every
+    # existing single-special-token-trigger family (hermes/qwen) is unaffected.
+    TOOL_GRAMMAR_AUTO_SAFE: bool = True
+
     @classmethod
     def supports_native_format(cls) -> bool:
         """

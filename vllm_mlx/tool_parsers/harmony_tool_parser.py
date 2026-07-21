@@ -87,6 +87,102 @@ class HarmonyToolParser(ToolParser):
 
     EXPECTED_WIRE_FORMATS = ("harmony_commentary",)
 
+    # Grammar-capable (#558/#1144): harmony overrides ``structure_info`` to emit a
+    # wire triple, so it declares the discoverability marker like hermes/qwen. The
+    # #1149 in-tree guard asserts this matches the override. Capability here means
+    # the REQUIRED/named modes are decoder-constrained (see ``TOOL_GRAMMAR_AUTO_
+    # SAFE`` below for why AUTO is declined).
+    SUPPORTS_GRAMMAR = True
+
+    # Grammar-constrained tool calling (#558) is SOUND for harmony only on the
+    # forced (``required``/named) modes, NOT on ``auto``. See
+    # ``ToolParser.TOOL_GRAMMAR_AUTO_SAFE``: harmony's only single-special-token
+    # trigger is ``<|channel|>``, which precedes commentary (tool call), final,
+    # AND analysis blocks alike — so committing to the tool tag on ``<|channel|>``
+    # would force a call and break auto's zero-call invariant (a plain
+    # ``<|channel|>final...`` reply gets rejected at the first token). Harmony's
+    # true tool-call trigger is a TEXT pattern (``to=functions.`` after
+    # ``<|channel|>commentary``), which the #558 builder's single-special-token
+    # trigger model cannot express (text-trigger support is design §7 open-Q1,
+    # deferred). So harmony opts OUT of the auto grammar (free-form fallback,
+    # non-regressive) and constrains only the explicit forced modes.
+    TOOL_GRAMMAR_AUTO_SAFE = False
+
+    # Harmony tool-call header control tokens, in wire order. Each is a SINGLE
+    # special token on the gpt-oss tokenizer (verified 2026-07 on
+    # ``mlx-community/gpt-oss-20b-MXFP4-Q8``: ids 200005 / 200003 / 200008 /
+    # 200012), so ``structure_info`` declares them as ``sentinels`` and the
+    # grammar builder renders them as Lark special-token refs. The literal header
+    # text BETWEEN them (``commentary to=functions.NAME `` and ``json``) is
+    # emitted as byte literals.
+    _GRAMMAR_SENTINELS = ("<|channel|>", "<|constrain|>", "<|message|>", "<|call|>")
+
+    def structure_info(self):
+        """Grammar-constraint wire triple for the harmony tool-call header (#558).
+
+        Extends the #558 constraint coverage from {qwen, hermes} to +gpt-oss.
+        The harmony tool-call wire the model emits (OpenAI harmony spec; verified
+        byte-for-byte against ``openai-harmony``'s own renderer/parser and the
+        real gpt-oss tokenizer)::
+
+            <|channel|>commentary to=functions.NAME <|constrain|>json<|message|>{args}<|call|>
+
+        The tool NAME lives in the HEADER (``to=functions.NAME``), not the body;
+        the body is a pure JSON object constrained by the tool's JSON Schema via
+        ``%json`` (injected by ``build_tool_lark``). The SPACE before
+        ``<|constrain|>`` is mandatory — ``openai-harmony``'s parser rejects the
+        header without it. ``<|channel|>``/``<|constrain|>``/``<|message|>``/
+        ``<|call|>`` are single special tokens on the gpt-oss tokenizer, so they
+        are declared as ``sentinels`` (rendered as Lark special-token refs); the
+        literal header text between them is emitted as byte literals.
+
+        ``trigger = "<|channel|>"`` satisfies the builder invariants
+        (``begin.startswith(trigger)`` and ``trigger in sentinels``). Note that
+        ``<|channel|>`` is a COARSE trigger — it also precedes ``final`` /
+        ``analysis`` blocks — which is why harmony sets
+        ``TOOL_GRAMMAR_AUTO_SAFE = False`` and this wire is only used for the
+        forced ``required``/named modes (``build_tool_grammar`` declines the auto
+        path for harmony). In a forced mode, driving the model straight into a
+        schema-valid harmony tool call from the first ``<|channel|>`` is exactly
+        the requested behavior.
+
+        As on hermes/qwen, OPT OUT (return ``None`` -> free-form-then-parse
+        fallback) unless the tokenizer proves every sentinel is a single special
+        token — a special-token sentinel on a tokenizer that encodes these as
+        multi-token text would build an unenforceable grammar. Grammar constraint
+        is a best-effort opt-in, never a hard requirement.
+        """
+        from vllm_mlx.api.tool_grammar import (
+            StructureInfo,
+            are_single_special_tokens,
+        )
+
+        if not are_single_special_tokens(self.model_tokenizer, self._GRAMMAR_SENTINELS):
+            return None
+
+        def _info(name: str):
+            # The tool name is a bare identifier inside the header literal
+            # (``to=functions.NAME``), NOT a JSON string — harmony does not quote
+            # it. The grammar emits it as a byte literal via
+            # ``_emit_literal_with_sentinels``; a name with characters that would
+            # break the header (quotes, spaces) is not representable, but tool
+            # names are OpenAI-spec identifiers (``[\w-]+``), so the raw name is
+            # safe here. ``begin`` starts with the ``<|channel|>`` trigger
+            # (builder invariant).
+            begin = (
+                f"<|channel|>commentary to=functions.{name} "
+                f"<|constrain|>json<|message|>"
+            )
+            end = "<|call|>"
+            return StructureInfo(
+                begin=begin,
+                end=end,
+                trigger="<|channel|>",
+                sentinels=self._GRAMMAR_SENTINELS,
+            )
+
+        return _info
+
     def extract_tool_calls(
         self, model_output: str, request: dict[str, Any] | None = None
     ) -> ExtractedToolCallInformation:

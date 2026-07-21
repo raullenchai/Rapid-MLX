@@ -876,6 +876,82 @@ def test_normal_schema_free_form_for_non_grammar_parser(monkeypatch, choice):
     assert _enforce_tool_grammar_bounds_or_400(cfg, req) is None
 
 
+# --------------------------------------------------------------------------
+# Harmony AUTO opt-out (#558 +gpt-oss) — auto path stays free-form even though
+# harmony is now grammar-CAPABLE (structure_info overridden), because its
+# <|channel|> trigger is shared with non-tool responses (TOOL_GRAMMAR_AUTO_SAFE
+# = False). required/named remain constrained.
+# --------------------------------------------------------------------------
+def test_auto_safe_probe_matches_capability():
+    from vllm_mlx.routes.chat import _tool_parser_auto_safe
+
+    # Single-special-token-trigger families are auto-safe.
+    assert _tool_parser_auto_safe(_CfgStub("hermes")) is True
+    assert _tool_parser_auto_safe(_CfgStub("qwen")) is True
+    # Harmony opts out (shared <|channel|> trigger).
+    assert _tool_parser_auto_safe(_CfgStub("harmony")) is False
+    # Unknown / unset -> permissive default (not constrained anyway).
+    assert _tool_parser_auto_safe(_CfgStub("no_such_parser_xyz")) is True
+    assert _tool_parser_auto_safe(_CfgStub(None)) is True
+
+
+@pytest.mark.parametrize("choice", ["auto", None])
+def test_harmony_auto_path_inactive_free_form(choice):
+    # Harmony is grammar-capable, but on AUTO the constraint path is INACTIVE
+    # (declines the grammar) — so it composes like a free-form path: no grammar,
+    # and (below) no #561 400 on an oversized schema.
+    from vllm_mlx.routes.chat import _tool_grammar_constraint_active
+
+    cfg = _CfgStub("harmony")
+    ok = _FunctionTool(
+        "get_weather",
+        parameters={"type": "object", "properties": {"city": {"type": "string"}}},
+    )
+    assert _tool_grammar_constraint_active(cfg, _RequestStub([ok], choice)) is False
+
+
+def test_harmony_required_and_named_paths_active():
+    # required/named ARE constrained for harmony (a forced call is what the
+    # caller asked for).
+    from vllm_mlx.routes.chat import _tool_grammar_constraint_active
+
+    cfg = _CfgStub("harmony")
+    ok = _FunctionTool(
+        "get_weather",
+        parameters={"type": "object", "properties": {"city": {"type": "string"}}},
+    )
+    assert _tool_grammar_constraint_active(cfg, _RequestStub([ok], "required")) is True
+    named = {"type": "function", "function": {"name": "get_weather"}}
+    assert _tool_grammar_constraint_active(cfg, _RequestStub([ok], named)) is True
+
+
+@pytest.mark.parametrize("choice", ["auto", None])
+def test_harmony_auto_oversized_schema_no_400(monkeypatch, choice):
+    # AUTO non-regression: harmony gaining required/named grammar support must
+    # NOT start 400-ing oversized schemas on the auto path (it declines the auto
+    # grammar, so an oversized schema stays free-form — exactly as before).
+    from vllm_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
+
+    monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "1")
+    cfg = _CfgStub("harmony")
+    req = _RequestStub(tools=[_oversized_tool()], tool_choice=choice)
+    assert _enforce_tool_grammar_bounds_or_400(cfg, req) is None
+
+
+def test_harmony_required_oversized_schema_400(monkeypatch):
+    # But required DOES keep the #561 hard 400 for harmony (it is constrained).
+    from fastapi import HTTPException
+
+    from vllm_mlx.routes.chat import _enforce_tool_grammar_bounds_or_400
+
+    monkeypatch.setenv("RAPID_MLX_CONSTRAIN_TOOLS", "1")
+    cfg = _CfgStub("harmony")
+    req = _RequestStub(tools=[_oversized_tool()], tool_choice="required")
+    with pytest.raises(HTTPException) as ei:
+        _enforce_tool_grammar_bounds_or_400(cfg, req)
+    assert ei.value.status_code == 400
+
+
 def test_supports_grammar_marker_declared_for_in_tree_parsers():
     # In-tree DISCOVERABILITY guard (#1149 codex): the explicit
     # ``SUPPORTS_GRAMMAR`` marker itself must match the ``structure_info``
