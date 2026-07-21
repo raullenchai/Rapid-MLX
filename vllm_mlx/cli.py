@@ -2101,6 +2101,42 @@ def _preflight_ddtree_or_exit(args):
     return alias_name, profile
 
 
+_DEFAULT_HYBRID_CACHE_ENTRIES = 8
+
+
+def _resolve_hybrid_cache_entries(
+    *,
+    enable_prefix_cache: bool,
+    explicit_value: int,
+    user_set_explicit: bool,
+    model_name: str,
+) -> int:
+    """Return the effective ``hybrid_cache_entries`` value.
+
+    Auto-defaults to 8 when prefix cache is enabled for a hybrid model
+    and the user did NOT explicitly pass ``--hybrid-cache-entries``.
+    Without this, ``--enable-prefix-cache`` has no effect on hybrid
+    models (#1122).
+    """
+    import logging as _logging
+
+    if not enable_prefix_cache or explicit_value != 0 or user_set_explicit:
+        return explicit_value
+
+    from .model_aliases import resolve_profile as _resolve_alias
+
+    profile = _resolve_alias(model_name)
+    if profile is not None and profile.is_hybrid:
+        _logging.getLogger(__name__).info(
+            "Hybrid model detected with --enable-prefix-cache: "
+            "auto-setting --hybrid-cache-entries=%d "
+            "(pass --hybrid-cache-entries 0 to disable)",
+            _DEFAULT_HYBRID_CACHE_ENTRIES,
+        )
+        return _DEFAULT_HYBRID_CACHE_ENTRIES
+    return explicit_value
+
+
 def serve_command(args):
     """Start the OpenAI-compatible server."""
     import logging
@@ -2975,6 +3011,17 @@ def serve_command(args):
     # Build scheduler config
     enable_prefix_cache = args.enable_prefix_cache and not args.disable_prefix_cache
 
+    # #1122: when prefix cache is enabled for a hybrid model and the user
+    # did NOT explicitly pass --hybrid-cache-entries, auto-default to 8 so
+    # the cache actually stores entries instead of silently dropping them.
+    _hybrid_cache_entries = _resolve_hybrid_cache_entries(
+        enable_prefix_cache=enable_prefix_cache,
+        explicit_value=getattr(args, "hybrid_cache_entries", 0),
+        user_set_explicit="--hybrid-cache-entries" in sys.argv
+        or any(a.startswith("--hybrid-cache-entries=") for a in sys.argv),
+        model_name=getattr(args, "_original_alias", None) or args.model,
+    )
+
     # 0.9.13 PR-A codex round-E blocker #2: resolve model_type on the
     # CLI's asyncio thread and thread it down through SchedulerConfig
     # so the engine's model-load-executor dispatch step does not need
@@ -3008,8 +3055,9 @@ def serve_command(args):
         use_memory_aware_cache=not args.no_memory_aware_cache,
         cache_memory_mb=args.cache_memory_mb,
         cache_memory_percent=args.cache_memory_percent,
-        # #1103: bounded trim-free hybrid (recurrent-state) prefix reuse.
-        hybrid_cache_entries=getattr(args, "hybrid_cache_entries", 0),
+        # #1103/#1122: bounded trim-free hybrid (recurrent-state) prefix reuse.
+        # Auto-defaulted to 8 for hybrid models when prefix cache is enabled.
+        hybrid_cache_entries=_hybrid_cache_entries,
         # Opt-in prompt-deterministic response cache (exact-match short-circuit).
         response_cache_entries=getattr(args, "response_cache_entries", 0),
         # Paged cache options
