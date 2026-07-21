@@ -333,12 +333,6 @@ async def _shutdown_save_prefix_cache() -> None:
     await asyncio.to_thread(_save_prefix_cache_to_disk)
 
 
-# Upper bound on the startup tool-grammar warmup (the LLTokenizer build normally
-# takes ~1s). If exceeded, startup proceeds and the first request pays the
-# cold-compile rather than the server hanging on a stalled build (codex #1155).
-_TOOL_GRAMMAR_WARMUP_TIMEOUT_S = 30.0
-
-
 def _do_tool_grammar_warmup(tokenizer, parser_cls) -> bool:
     """Pre-build the llguidance ``LLTokenizer`` (+ warm the grammar path).
 
@@ -423,46 +417,18 @@ async def _warmup_tool_grammar(engine) -> None:
         return
     if not getattr(parser_cls, "SUPPORTS_GRAMMAR", False):
         return
-    # Bound the warmup so a stalled build can never wedge startup — the server
-    # must still become ready, paying the cold-compile on the first request
-    # instead (build normally ~1s). We run it on a DAEMON thread and poll a
-    # completion Event off the event loop, rather than
-    # ``asyncio.wait_for(asyncio.to_thread(...))``: that only abandons the AWAIT
-    # while the pool thread keeps running, so a genuinely hung build would keep a
-    # non-daemon worker alive and could delay interpreter shutdown (codex #1155).
-    # A daemon thread is killed at interpreter exit, so a stall can never delay
-    # shutdown; and if it is still building when the first request lands, both
-    # serialize on the SAME single-flight build lock (``get_lltokenizer`` /
-    # ``get_request_matcher``) — never a double-build or a torn read.
-    import threading as _threading
-
-    done = _threading.Event()
-    holder: dict[str, bool] = {}
-
-    def _run():
-        try:
-            holder["warmed"] = _do_tool_grammar_warmup(tokenizer, parser_cls)
-        except Exception:
-            logger.debug("Tool-grammar warmup thread failed (non-fatal)", exc_info=True)
-        finally:
-            done.set()
-
-    _threading.Thread(target=_run, name="tool-grammar-warmup", daemon=True).start()
-    loop = asyncio.get_running_loop()
-    deadline = loop.time() + _TOOL_GRAMMAR_WARMUP_TIMEOUT_S
-    while not done.is_set() and loop.time() < deadline:
-        await asyncio.sleep(0.1)
-    if not done.is_set():
-        logger.warning(
-            "Tool-grammar warmup exceeded %.0fs for parser %r; continuing startup. "
-            "The daemon warmup thread finishes in the background (killed at exit); "
-            "the first tool-call request single-flights on the same build lock, so "
-            "it never double-builds or races.",
-            _TOOL_GRAMMAR_WARMUP_TIMEOUT_S,
-            parser_name,
-        )
-        return
-    if holder.get("warmed"):
+    # Run the warmup on the loop's default thread pool and AWAIT it (the ~1s
+    # build runs off the event loop, so the loop stays responsive; startup waits
+    # for it the same way it already waits for ``generate_warmup``'s Metal-shader
+    # compile above). We deliberately impose NO timeout / background thread: a
+    # ``wait_for`` cannot cancel ``to_thread`` (the worker keeps running), and a
+    # detached daemon thread is untracked at shutdown (codex #1155). The warmup is
+    # a bounded, single-flighted CPU build that cannot realistically hang, so the
+    # simplest correct shape is a plain awaited ``to_thread`` — no orphaned worker
+    # to manage, and a genuine llguidance defect surfaces as a normal startup
+    # error rather than being masked by a timeout.
+    warmed = await asyncio.to_thread(_do_tool_grammar_warmup, tokenizer, parser_cls)
+    if warmed:
         logger.info(
             "Tool-grammar warmup complete (LLTokenizer pre-built for parser %r)",
             parser_name,

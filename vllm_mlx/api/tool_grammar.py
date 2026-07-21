@@ -825,7 +825,10 @@ def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
                 # Broken -> uncached, unpublished (is_broken() path unchanged);
                 # waiters rebuild (cheap, rare) rather than deep_copy an error.
                 return template
-            nbytes = len(grammar)
+            # Byte count (NOT len()): a non-ASCII grammar's UTF-8 size can be up
+            # to ~4x its code-point count, so ``len(grammar)`` would under-count
+            # the byte budget (codex #1155).
+            nbytes = len(grammar.encode("utf-8"))
             with _compiled_matcher_lock:
                 # Refuse to cache a single grammar larger than the whole byte
                 # budget — it would evict everything and still overflow; it
@@ -840,10 +843,13 @@ def get_request_matcher(lltokenizer: Any, grammar: str) -> Any:
             slot.template = template
             return template.deep_copy()
         finally:
-            # Release single-flight: drop the registry entry and wake waiters.
+            # Release single-flight ATOMICALLY: signal completion AND drop the
+            # registry entry under the SAME lock, so no arrival can observe "key
+            # not building" before the Event is set and start a duplicate build
+            # of an uncached (oversized) grammar (codex #1155).
             with _compiled_matcher_lock:
+                slot.event.set()
                 _compiled_matcher_building.pop(key, None)
-            slot.event.set()
 
 
 def build_tool_grammar(

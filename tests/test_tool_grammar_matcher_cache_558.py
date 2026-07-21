@@ -195,6 +195,22 @@ def test_oversized_grammar_is_not_cached(monkeypatch):
     assert _FakeMatcher.builds == 2  # rebuilt each time (uncached)
 
 
+def test_byte_budget_counts_utf8_bytes_not_code_points(monkeypatch):
+    # A non-ASCII grammar's UTF-8 size exceeds its code-point count, so budgeting
+    # must use encoded bytes: a grammar of few code points but many UTF-8 bytes
+    # can exceed the budget and be refused caching (codex #1155).
+    monkeypatch.setattr(tg, "_COMPILED_MATCHER_CACHE_MAX_BYTES", 40)
+    lltok = object()
+    # 20 code points, each a 3-byte CJK char = 60 UTF-8 bytes > 40 budget.
+    g = "描" * 20
+    assert len(g) == 20 and len(g.encode("utf-8")) == 60
+    m = tg.get_request_matcher(lltok, g)
+    assert m.is_copy  # usable matcher returned
+    # Refused caching because its UTF-8 byte size (60) exceeds the 40 budget —
+    # would be wrongly cached if the code-point count (20) were used.
+    assert (id(lltok), g) not in tg._compiled_matcher_cache
+
+
 def test_byte_budget_evicts_before_count_cap(monkeypatch):
     # With a generous count cap but a tight byte budget, entries evict on BYTES.
     monkeypatch.setattr(tg, "_COMPILED_MATCHER_CACHE_MAX", 100)
