@@ -554,7 +554,60 @@ def build_tool_lark(
     )
     reasoning_pair = reasoning_refs[:2] if len(reasoning_refs) >= 2 else ()
 
-    if not reasoning_pair:
+    # FORCED (required / named) + NON-REASONING: AUTO's leading free-text
+    # ``TAG_TEXT`` prefix — which exists so an AUTO model may DECLINE to call —
+    # would let a *forced* call be deferred indefinitely. A weak-tool-prior
+    # family (e.g. Hermes-on-Llama, which natively emits ``get_weather --city
+    # ...`` CLI / prose) fills the unbounded ``TAG_TEXT`` prefix and NEVER reaches
+    # the trigger before ``max_tokens``; the parser then extracts nothing and the
+    # route synthesises an EMPTY-arg call (observed ~40-60% ``{}`` on hermes/qwen;
+    # harmony escaped ONLY because its prior emits the trigger immediately). So the
+    # FIRST forced tag starts DIRECTLY AT the trigger — NO free/whitespace prefix
+    # at all — which is what forces the mandatory call and stops the deferral.
+    # Repeated (parallel) calls are separated by a whitespace-only ``SEP``: real
+    # models emit them as ``</tool_call>\n<tool_call>`` (newline-separated), so
+    # ``SEP`` admits that inter-call gap. ``SEP`` is deliberately UNBOUNDED
+    # whitespace: the mandatory first call is ALREADY forced at token 0, so
+    # whitespace BETWEEN already-valid calls cannot defer anything (and capping it
+    # would wrongly reject a real ``\n\n…`` gap while ``tag_end: TAG_TEXT`` allows
+    # unbounded trailing text anyway — codex #558-PR4 round-5 nit). Matches vLLM
+    # xgrammar / SGLang forced-tool constraint (forced ⇒ constrain from the
+    # trigger, no free prefix). REASONING models never reach here — forced + a
+    # normalized reasoning pair is gated to ``None`` in ``build_tool_grammar``
+    # (opts out of the #558 grammar; the route forces the call via the pre-#558
+    # ``forced_assistant_prefix`` lever). Forcing the trigger at token 0 would be
+    # WRONG for a reasoning model — it leaves the prompt-level ``<think>``
+    # unclosed, and with ``enable_thinking=True`` the qwen3 reasoning parser then
+    # buries the whole output (tool call included) in ``reasoning_content``
+    # (``content=None``), losing the call (verified against ``qwen3_parser.py``'s
+    # no-``</think>`` branch). A prefill-aware BOUNDED forced-reasoning grammar
+    # (single leading close when the prompt prefills ``<think>``; ``<open>…
+    # </close>`` otherwise) needs the prompt's reasoning-open state, unavailable at
+    # grammar-build time — tracked as a follow-up. (The ``and not reasoning_pair``
+    # guard below is defensive: production never reaches ``build_tool_lark`` with a
+    # forced reasoning pair, but a direct caller / test might.)
+    forced = tool_choice != "auto"
+    if forced and not reasoning_pair:
+        # ``quant`` here is ``+`` (required / named, ≥1) or ``""`` (single_call,
+        # EXACTLY one). Build the call sequence explicitly so the FIRST call sits
+        # at the trigger with no separator and only SUBSEQUENT calls carry the
+        # ``SEP`` — an interleaved ``(tag)(SEP (tag))*`` rather than a
+        # ``(SEP tag)+`` that would admit a leading separator before call one.
+        if quant == "+":
+            start_calls = f"({tag_names}) (SEP ({tag_names}))*"
+        else:  # quant == "" -> EXACTLY ONE forced call (parallel_tool_calls=False)
+            start_calls = f"({tag_names})"
+        lark = (
+            "%llguidance {}\n"
+            f"start: {start_calls} tag_end\n"
+            "tag_end: TAG_TEXT\n"
+            r"SEP: /[ \t\r\n]*/"
+            "\n"
+            r"TAG_TEXT: /(.|\n)*/"
+            "\n"
+        )
+        prefix_ref = ""  # first call AT the trigger; ``SEP`` separates repeats
+    elif not reasoning_pair:
         # No reasoning tolerance: the free prefix is the bare lazy ``TAG_TEXT``
         # byte regex EVERYWHERE, so the emitted grammar is byte-identical to
         # PR-3 (no reasoning regression).
@@ -565,9 +618,19 @@ def build_tool_lark(
             r"TAG_TEXT: /(.|\n)*/"
             "\n"
         )
+        prefix_ref = "TAG_TEXT"
     else:
-        # BALANCED + PREFILL-TOLERANT (codex #558-PR4 rounds 3-5). Two prefix
-        # flavours:
+        # BALANCED + PREFILL-TOLERANT (codex #558-PR4 rounds 3-5), AUTO + a
+        # reasoning pair. AUTO may DECLINE to call, so an unbounded free prefix
+        # (and the one-time prefilled-close tolerance) is correct here — there is
+        # no forced call to defer. FORCED + reasoning does NOT reach this branch in
+        # production: it is gated to ``None`` upstream in ``build_tool_grammar``
+        # (opts out of the #558 grammar → pre-#558 ``forced_assistant_prefix``
+        # forcing), because neither this unbounded prefix (weak-tool-prior defer /
+        # ``{}`` leak) nor the bounded trigger-first shape (loses a prefilled
+        # reasoning model's call) is correct without the prompt's prefill state. A
+        # direct caller / test that passes a forced choice + reasoning pair still
+        # lands here (harmless — dead in the request path). Two prefix flavours:
         #   * ``lead`` — consumed ONCE at the very start (``start: lead ...``).
         #     It permits a SINGLE optional leading close (``opened?``) modelling
         #     a prompt-prefilled ``<think>``: many reasoning chat templates
@@ -600,7 +663,7 @@ def build_tool_lark(
             r"TAG_TEXT: /(.|\n)*/"
             "\n"
         )
-    prefix_ref = "bal_prefix" if reasoning_pair else "TAG_TEXT"
+        prefix_ref = "bal_prefix"
 
     for i, (tool, si) in enumerate(zip(tools, structure_infos)):
         # Only substitute the default when ``parameters`` is ABSENT. A
@@ -622,7 +685,12 @@ def build_tool_lark(
         schema = json.dumps(params)
         begin_body = _emit_literal_with_sentinels(si.begin, si.sentinels)
         end_body = _emit_literal_with_sentinels(si.end, si.sentinels)
-        lark += f"\ntag_{i}: {prefix_ref} {begin_body} %json {schema}"
+        # ``prefix_ref`` is empty on the forced-non-reasoning path (the first call
+        # sits AT the trigger; ``SEP`` in ``start`` separates repeats), non-empty
+        # otherwise (``TAG_TEXT`` / ``bal_prefix``). Omit the leading space when
+        # empty so the tag rule starts cleanly at the begin literal.
+        pfx = f"{prefix_ref} " if prefix_ref else ""
+        lark += f"\ntag_{i}: {pfx}{begin_body} %json {schema}"
         if end_body:
             lark += f" {end_body}"
         lark += "\n"
@@ -920,6 +988,38 @@ def build_tool_grammar(
     # ask for). Every single-special-token-trigger family (hermes/qwen) defaults
     # ``True`` and is unaffected.
     if tool_choice == "auto" and not getattr(parser, "TOOL_GRAMMAR_AUTO_SAFE", True):
+        return None
+    # FORCED (required / named) + a REASONING model: opt OUT of the #558 grammar
+    # and return ``None`` (the route then FORCES the call via the pre-#558
+    # ``forced_assistant_prefix`` injection — a proven, shipped lever). Neither
+    # static grammar shape works here:
+    #   * the shared reasoning grammar (``lead: opened? bal_prefix``) keeps an
+    #     UNBOUNDED free prefix so a weak-tool-prior reasoning model can exhaust
+    #     ``max_tokens`` before the trigger and reproduce the empty-``{}`` leak
+    #     (codex #558-PR4 round-5);
+    #   * the bounded trigger-first forced grammar forces the trigger at token 0,
+    #     which leaves the prompt-level ``<think>`` unclosed — with
+    #     ``enable_thinking=True`` the qwen3 reasoning parser then buries the whole
+    #     output (tool call included) in ``reasoning_content`` and loses the call
+    #     (verified against ``qwen3_parser.py``'s no-``</think>`` branch).
+    # A CORRECT bounded forced-reasoning grammar must know whether the PROMPT
+    # prefills ``<think>`` (prefilled ⇒ a single leading close before the trigger;
+    # non-prefilled ⇒ ``<open>…</close>`` required first) — that prefill signal is
+    # not available at grammar-build time (grammar built before the prompt is
+    # rendered; a runtime ``</think>``-gate was already rejected in-tree as a
+    # footgun a no-``</think>`` model defeats). So forced+reasoning stays on the
+    # pre-#558 lever until that prefill-state plumbing lands (tracked follow-up).
+    # Gate on the NORMALIZED reasoning pair (dedup + a valid, distinct ``<...>``
+    # (open, close)), MIRRORING ``build_tool_lark``: a single / empty /
+    # duplicate-only / malformed sentinel sequence is NOT a reasoning model and
+    # must take the NON-reasoning constrained path, not be disabled here.
+    _reasoning_refs = tuple(
+        dict.fromkeys(
+            s for s in reasoning_sentinels if s and _is_lark_special_token_ref(s)
+        )
+    )
+    _reasoning_pair = _reasoning_refs[:2] if len(_reasoning_refs) >= 2 else ()
+    if tool_choice != "auto" and _reasoning_pair:
         return None
     info_fn = getattr(parser, "structure_info", None)
     if info_fn is None:
