@@ -189,6 +189,22 @@ def test_subcommand_normalized_to_allowlist(opted_in, stub_queue):
     assert "alice" not in repr(stub_queue[-1])
 
 
+def test_subcommand_aliases_canonicalize(opted_in, stub_queue):
+    """CLI ``aliases=`` (argparse reports the typed name) roll into the
+    primary command so ``rapid-mlx run``/``update`` count with
+    ``chat``/``upgrade`` instead of redacting to ``"other"``."""
+    from vllm_mlx.telemetry import emit
+
+    emit.session_start(subcommand="run")  # alias of `chat`
+    assert stub_queue[-1]["session"]["subcommand"] == "chat"
+
+    emit.session_start(subcommand="update")  # alias of `upgrade`
+    assert stub_queue[-1]["session"]["subcommand"] == "upgrade"
+
+    emit.session_end(subcommand="update", duration_seconds=3)
+    assert stub_queue[-1]["session"]["subcommand"] == "upgrade"
+
+
 def test_runtime_payload_carries_every_schema_v1_field(opted_in, stub_queue):
     """Round 8 codex review: ``SCHEMA_VERSION == 1`` means the runtime
     payload must include EVERY key the dataclass

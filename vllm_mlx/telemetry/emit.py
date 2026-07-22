@@ -124,10 +124,21 @@ _ALLOWED_SUBCOMMANDS: frozenset[str] = frozenset(
 )
 
 
+# CLI subcommand aliases (argparse ``aliases=``) canonicalize to their
+# primary name so telemetry rolls ``rapid-mlx run`` into ``chat`` and
+# ``rapid-mlx update`` into ``upgrade`` instead of redacting them to
+# "other". Keep in sync with the ``aliases=`` lists in cli.py.
+_SUBCOMMAND_ALIASES: dict[str, str] = {
+    "run": "chat",
+    "update": "upgrade",
+}
+
+
 def _normalize_subcommand(raw: str) -> str:
     if not isinstance(raw, str):
         return "other"
-    return raw if raw in _ALLOWED_SUBCOMMANDS else "other"
+    canonical = _SUBCOMMAND_ALIASES.get(raw, raw)
+    return canonical if canonical in _ALLOWED_SUBCOMMANDS else "other"
 
 
 def get_queue() -> TelemetryQueue:

@@ -87,3 +87,43 @@ def test_dry_run_returns_silently_when_already_up_to_date(monkeypatch, capsys):
     out = capsys.readouterr().out
     assert "Already up to date" in out
     assert "dry-run" not in out  # no point printing dry-run if there's nothing to do
+
+
+# ---------------------------------------------------------------------------
+# `update` alias — muscle-memory parity with npm/brew/claude/rustup.
+# Exercised via the real argparse (subprocess `--help`) so we pin that the
+# alias is registered AND accepts the same flags, without importing the giant
+# CLI module in-process (which would drag in torch/mlx-vlm). Mirrors the
+# `_serve_help_stdout` pattern in test_mtp_cli_wiring.py.
+# ---------------------------------------------------------------------------
+
+
+def _cli_help_stdout(*argv: str):
+    import subprocess
+    import sys
+
+    return subprocess.run(
+        [sys.executable, "-m", "vllm_mlx.cli", *argv],
+        capture_output=True,
+        text=True,
+        timeout=60,
+    )
+
+
+def test_update_alias_is_registered_and_routes_to_upgrade():
+    """`rapid-mlx update --help` exits 0 (alias registered) and its help is
+    the upgrade help — an unregistered subcommand would exit 2 instead."""
+    proc = _cli_help_stdout("update", "--help")
+    assert proc.returncode == 0, proc.stderr
+    # --help of the alias renders the upgrade parser: same flags, same
+    # description note pointing back at `upgrade`. Collapse whitespace
+    # first — argparse hard-wraps the description to terminal width.
+    normalized = " ".join(proc.stdout.split())
+    assert "--dry-run" in normalized
+    assert "'rapid-mlx update' is an alias for 'upgrade'" in normalized
+
+
+def test_update_alias_accepts_upgrade_flags():
+    """The alias shares the parser, so `-y`/`--dry-run` parse identically."""
+    proc = _cli_help_stdout("update", "-y", "--dry-run", "--help")
+    assert proc.returncode == 0, proc.stderr

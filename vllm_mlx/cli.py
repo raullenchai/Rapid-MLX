@@ -7706,9 +7706,19 @@ Examples:
     subparsers.add_parser("ps", help="List running rapid-mlx servers")
 
     # Upgrade — detect install method and run the right upgrade command
+    # ``update`` is exposed as a subparser alias purely for muscle-memory
+    # parity (``npm update`` / ``brew update`` / ``claude update`` /
+    # ``rustup update`` all spell it "update"); both names route to
+    # ``upgrade_command``. argparse reports the user-typed name on
+    # ``args.command``, so the dispatch below matches both.
     upgrade_parser = subparsers.add_parser(
         "upgrade",
+        aliases=["update"],
         help="Upgrade rapid-mlx to the latest version (brew / pip / install.sh)",
+        description=(
+            "Upgrade rapid-mlx to the latest version.\n\n"
+            "Note: 'rapid-mlx update' is an alias for 'upgrade'."
+        ),
     )
     upgrade_parser.add_argument(
         "-y",
@@ -8363,7 +8373,10 @@ Examples:
         rm_command(args)
     elif args.command == "ps":
         ps_command(args)
-    elif args.command == "upgrade":
+    elif args.command in ("upgrade", "update"):
+        # ``update`` is exposed as a subparser alias for muscle-memory
+        # parity; argparse routes via ``aliases=`` but reports the
+        # user-typed name on ``args.command``. Both names land here.
         upgrade_command(args)
     elif args.command in ("chat", "run"):
         # ``run`` is exposed as a subparser alias for Ollama compatibility;
