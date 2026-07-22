@@ -2624,6 +2624,13 @@ def serve_command(args):
     # when ``*`` is in the origin list. Operators who need cookie /
     # ``Authorization`` auto-forwarding must pin to specific origins.
     cors_origins = server.configure_cors_from_env(args.cors_origins)
+
+    # Request logging middleware — installed AFTER CORS so it is the
+    # outermost layer (Starlette prepends, so last install runs first).
+    from vllm_mlx.middleware.request_logging import install_request_logging_middleware
+
+    install_request_logging_middleware(server.app)
+
     if args.rate_limit > 0:
         server._rate_limiter = configure_rate_limiter(args.rate_limit, enabled=True)
 
