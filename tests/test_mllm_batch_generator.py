@@ -279,6 +279,32 @@ def test_run_vision_encoding_chunks_with_all_valid_attention_mask():
     assert all("attention_mask" not in c[1] for c in model.calls)
 
 
+def test_chunking_falls_back_to_single_forward_with_partial_attention_mask():
+    """A NON-all-valid mask (e.g. left-padding, or a reused cache entry with a
+    shorter valid span) must NOT be dropped — dropping it on the chunked path
+    would silently change attention semantics and corrupt the logits. Such a
+    request keeps the single forward, which passes the mask through intact."""
+    model = _ChunkRecordingModel()
+    gen = _make_bare_generator(prefill_step_size=22000, model=model)
+    req = _make_ids_request(5000)
+    # First 3 positions masked out (0 = do-not-attend) → carries information.
+    mask = mx.concatenate(
+        [mx.zeros((1, 3), dtype=mx.int32), mx.ones((1, 4997), dtype=mx.int32)],
+        axis=1,
+    )
+    req.attention_mask = mask
+    cache = [_FakeCache()]
+
+    gen._run_vision_encoding(req, cache=cache)
+
+    # One forward over the whole prompt, the partial mask forwarded intact.
+    # (``_run_vision_encoding`` nulls ``request.attention_mask`` afterwards, so
+    # compare against the captured object, not the reset field.)
+    assert len(model.calls) == 1
+    assert model.calls[0][0] == 5000
+    assert model.calls[0][1].get("attention_mask") is mask
+
+
 def test_chunking_falls_back_to_single_forward_with_extra_kwargs():
     """If a processor ever emits sequence-aligned extra kwargs (e.g.
     ``token_type_ids``) for a text-only request, we must NOT chunk (we would

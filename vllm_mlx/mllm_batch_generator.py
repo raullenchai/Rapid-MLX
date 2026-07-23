@@ -55,6 +55,25 @@ logger = logging.getLogger(__name__)
 _MLLM_PREFILL_CHUNK_TOKENS = 2048
 
 
+def _attention_mask_is_droppable(mask) -> bool:
+    """Whether ``mask`` carries no information and can be dropped on the
+    chunked text-only prefill path.
+
+    The chunked path forwards each slice with *no* ``attention_mask`` and
+    relies on the model's own causal mask, so it only matches the single
+    forward when the request mask is either absent or all-valid (every
+    position attended — no padding). A partial mask (e.g. left-padding, or a
+    reused cache entry with a shorter valid span) WOULD change attention
+    semantics if silently dropped, so such a request must keep the single
+    forward that passes the mask through intact. This enforces — rather than
+    merely assumes — the "single request per call, never padded" invariant of
+    the current ``_process_prompts`` caller.
+    """
+    if mask is None:
+        return True
+    return bool(mx.all(mask != 0))
+
+
 @dataclass
 class MLLMBatchRequest:
     """
@@ -898,14 +917,17 @@ class MLLMBatchGenerator:
         # all-valid ``attention_mask``), but if some processor ever emits
         # sequence-aligned kwargs (e.g. ``token_type_ids``) we cannot silently
         # drop or mis-slice them across chunks — fall back to the single
-        # forward, which forwards ``kwargs`` intact. Note ``attention_mask`` is
-        # a *separate* request field (``_preprocess_request`` excludes it from
-        # ``extra_kwargs``), so an all-valid mask never trips this gate; it IS
-        # dropped on the chunked path, and that is lossless here: this method
-        # runs one request per call (``_process_prompts`` loops per request
-        # with its own cache), so the sequence is never padded and the mask is
-        # all-valid — carrying no information, exactly as mlx-lm's own text
-        # prefill treats it (it passes no mask and relies on the causal mask).
+        # forward, which forwards ``kwargs`` intact. ``attention_mask`` is a
+        # *separate* request field (``_preprocess_request`` excludes it from
+        # ``extra_kwargs``), and the chunked forwards do not carry it — so it
+        # is only droppable when it carries no information (absent or all
+        # positions attended). ``_attention_mask_is_droppable`` enforces that:
+        # a partial mask (padding, or a reused shorter valid span) keeps the
+        # single forward that passes the mask through intact, instead of
+        # silently changing attention semantics. For the current caller the
+        # mask is always all-valid (``_process_prompts`` runs one un-padded
+        # request per call with its own cache), matching mlx-lm's own text
+        # prefill, which passes no mask and relies on the causal mask.
         #
         # ``chunk`` is the prefill step; only prompts *longer* than one chunk
         # take the chunked path. Short/ordinary prompts keep the original
@@ -921,6 +943,7 @@ class MLLMBatchGenerator:
             and input_ids.shape[1] > chunk
             and is_text_only
             and no_extra_kwargs
+            and _attention_mask_is_droppable(request.attention_mask)
         ):
             prefix = input_ids[:, :-1]
             prefix_len = prefix.shape[1]
