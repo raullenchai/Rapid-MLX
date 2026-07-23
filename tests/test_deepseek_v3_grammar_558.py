@@ -77,7 +77,10 @@ _TOKENIZER_CANDIDATES = (
 
 # The cached Qwen-tokenizer distill — its section markers are multi-token TEXT, so
 # the parser must OPT OUT. Locks the release-note "safe no-op on distills" nuance.
+# Revision-pinned (like the enforcement candidates) so the regression anchor is
+# reproducible rather than tied to whatever mutable ``main`` snapshot is cached.
 _DISTILL_TOKENIZER = "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit"
+_DISTILL_REVISION = "4e0d3848a0ad8f9fb54638891e4928f04fcca978"
 
 # get_weather: required string + optional enum (exercises %json string, enum, and
 # required-vs-optional). get_time: a second tool for the named-choice narrowing.
@@ -260,7 +263,7 @@ def test_section_wrapper_gate_opts_out_when_multicall_possible():
 @pytest.fixture(scope="module")
 def distill_tok():
     transformers = pytest.importorskip("transformers")
-    if _cached_repo([(_DISTILL_TOKENIZER, None)]) is None:
+    if _cached_repo([(_DISTILL_TOKENIZER, _DISTILL_REVISION)]) is None:
         pytest.skip(
             f"{_DISTILL_TOKENIZER} tokenizer not in the local HF cache — the "
             "distill opt-out test requires it locally"
@@ -268,7 +271,7 @@ def distill_tok():
     # Cache-hit confirmed -> load offline; any load failure PROPAGATES (a corrupt
     # or incomplete cached tokenizer must fail loudly, never a false-green skip).
     return transformers.AutoTokenizer.from_pretrained(
-        _DISTILL_TOKENIZER, local_files_only=True
+        _DISTILL_TOKENIZER, revision=_DISTILL_REVISION, local_files_only=True
     )
 
 
@@ -305,7 +308,7 @@ def _cached_repo(candidates):
     """
     try:
         from huggingface_hub import try_to_load_from_cache
-    except Exception:  # pragma: no cover - hub too old for the cache probe
+    except ImportError:  # pragma: no cover - hub too old for the cache probe
         return None
     for repo, revision in candidates:
         hit = try_to_load_from_cache(repo, "tokenizer_config.json", revision=revision)
