@@ -882,16 +882,36 @@ class MLLMBatchGenerator:
         #      projection) and a final single-token forward produces the
         #      ``[1, 1, vocab]`` logits we actually use.
         #
-        # Output is numerically identical to the single forward (causal
-        # attention: the last token attends to the whole prefix through the
-        # cache). Scope is deliberately text-only: with images, pixel features
-        # must stay aligned with their placeholder tokens in a single
-        # vision-merge forward, and image prompts are bounded by the per-batch
-        # cap anyway. The split also needs a real KV cache to carry prefix
-        # state across forwards; unit-test call sites pass ``cache=None`` and
-        # keep the single forward, which is the only correct behavior there.
+        # The last token attends to the whole prefix through the cache, so the
+        # sampled token matches the single forward (verified end-to-end: same
+        # argmax on a 20k-token gemma-4 prompt); it is not bit-identical
+        # because splitting the attention reductions can reorder float ops.
+        # Scope is deliberately text-only: with images, pixel features must
+        # stay aligned with their placeholder tokens in a single vision-merge
+        # forward, and image prompts are bounded by the per-batch cap anyway.
+        # The split also needs a real KV cache to carry prefix state across
+        # forwards; unit-test call sites pass ``cache=None`` and keep the
+        # single forward, which is the only correct behavior there.
+        #
+        # ``extra_kwargs`` gates the chunked path: current text-only
+        # ``mlx_vlm.prepare_inputs`` returns only ``input_ids`` (+ a one-row,
+        # all-valid ``attention_mask``), but if some processor ever emits
+        # sequence-aligned kwargs (e.g. ``token_type_ids``) we cannot silently
+        # drop or mis-slice them across chunks — fall back to the single
+        # forward, which forwards ``kwargs`` intact. ``attention_mask`` IS
+        # dropped on the chunked path, and that is lossless here: this method
+        # runs one request per call (``_process_prompts`` loops per request
+        # with its own cache), so the sequence is never padded and the mask is
+        # all-valid — carrying no information, exactly as mlx-lm's own text
+        # prefill treats it (it passes no mask and relies on the causal mask).
         is_text_only = request.pixel_values is None and request.image_grid_thw is None
-        if cache is not None and input_ids.shape[1] > 1 and is_text_only:
+        no_extra_kwargs = not request.extra_kwargs
+        if (
+            cache is not None
+            and input_ids.shape[1] > 1
+            and is_text_only
+            and no_extra_kwargs
+        ):
             chunk = min(self.prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS)
             chunk = max(1, chunk)
             prefix = input_ids[:, :-1]
