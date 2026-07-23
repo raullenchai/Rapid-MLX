@@ -427,9 +427,7 @@ def test_hallucinated_tool_name_is_rejected(parser, tok, lltok):
 
     grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
     # Only get_weather is offered; the header name get_stock must be masked.
-    bad = (
-        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_stock"
-    )
+    bad = "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_stock"
     accepted, total, _ = _consume(grammar, lltok, tok, bad)
     assert accepted < total, "hallucinated tool name was NOT rejected"
 
@@ -448,8 +446,6 @@ def test_named_choice_narrows_to_requested_tool(parser, tok, lltok):
     )
     assert accepted == total and accepting, "named get_time call rejected"
     # ...but a call to the OTHER tool is rejected under the named get_time choice.
-    bad = (
-        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather"
-    )
+    bad = "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather"
     accepted, total, _ = _consume(grammar, lltok, tok, bad)
     assert accepted < total, "named get_time choice wrongly allowed get_weather"
