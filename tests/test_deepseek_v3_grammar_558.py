@@ -258,15 +258,25 @@ def test_section_wrapper_gate_opts_out_when_multicall_possible():
 @pytest.fixture(scope="module")
 def distill_tok():
     transformers = pytest.importorskip("transformers")
+    offline_types = _offline_skip_exc_types()
+    _skip_msg = (
+        f"{_DISTILL_TOKENIZER} tokenizer not in the local HF cache — the "
+        "distill opt-out test requires it locally"
+    )
     try:
         return transformers.AutoTokenizer.from_pretrained(
             _DISTILL_TOKENIZER, local_files_only=True
         )
-    except Exception:  # pragma: no cover - distill tokenizer not cached
-        pytest.skip(
-            f"{_DISTILL_TOKENIZER} tokenizer not in the local HF cache — the "
-            "distill opt-out test requires it locally"
-        )
+    except offline_types:  # pragma: no cover - specialized cache-miss
+        pytest.skip(_skip_msg)
+    except OSError as exc:
+        # A local_files_only cache-miss surfaces as a bare OSError on some
+        # transformers versions; skip ONLY that, and RE-RAISE a corrupt-artifact
+        # / tokenizer-loading regression so the two distill regression tests can't
+        # false-green (codex round-3, mirroring the ``tok`` fixture).
+        if _is_offline_oserror(exc):  # pragma: no cover - not cached locally
+            pytest.skip(_skip_msg)
+        raise
 
 
 def test_distill_qwen_tokenizer_markers_are_multitoken(distill_tok):
@@ -334,6 +344,10 @@ _OFFLINE_OSERROR_SIGNATURES = (
     "max retries",
     "connection error",
     "failed to connect",
+    # local_files_only cache-miss phrasings (distill_tok): the file is simply
+    # absent, NOT corrupt — a genuine "not cached" skip.
+    "can't load",
+    "no such file or directory",
 )
 
 
