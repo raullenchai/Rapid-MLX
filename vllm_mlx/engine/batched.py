@@ -1096,9 +1096,9 @@ class BatchedEngine(BaseEngine):
 
             logger.warning(
                 "%s — auto-falling back to text-only serving for '%s'. "
-                "Image/video requests will be rejected. Pass --mllm to force "
-                "the vision lane (it will fail on this checkpoint), or "
-                "--no-mllm to silence this warning. See #393.",
+                "Multimodal requests (image/video/audio) will be rejected. "
+                "Pass --mllm to force the multimodal lane (it will fail on this "
+                "checkpoint), or --no-mllm to silence this warning. See #393.",
                 degrade_reason,
                 self._model_name,
             )

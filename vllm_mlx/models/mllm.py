@@ -97,21 +97,47 @@ def _parse_missing_count(msg: str) -> int | None:
     return int(m.group(1)) if m else None
 
 
+def _name_is_multimodal_tensor(name: str) -> bool:
+    """Whether a single tensor path names a vision/audio/projector weight.
+
+    Draws the vocabulary from the canonical :data:`MULTIMODAL_TENSOR_PREFIXES`
+    allowlist the routing detector keys on (one source of truth), but matches
+    each token at a DOTTED-SEGMENT boundary rather than by bare substring: a
+    tensor path is a dot-joined module chain (``a.b.c.weight``), so a token
+    counts only when it is a whole segment (start-of-path, after a ``.``, or a
+    trailing leaf). This is stricter than the detector's substring test on
+    purpose — the degrade decision wants PRECISION (never mistake a language
+    weight like ``...q_proj.weight`` for multimodal just because a token is a
+    substring of a segment), and erring strict only ever degrades LESS (re-
+    raises), which is the fail-safe direction. Segment-anchored matching still
+    catches every real layout: top-level (``vision_tower.…``), nested
+    (``model.visual.blocks.…``), and leaf (``…image_newline``).
+    """
+    for prefix in MULTIMODAL_TENSOR_PREFIXES:
+        token = prefix.rstrip(".")
+        if (
+            name == token
+            or name.startswith(token + ".")
+            or ("." + token + ".") in name
+            or name.endswith("." + token)
+        ):
+            return True
+    return False
+
+
 def _all_missing_are_multimodal(missing_names: list[str]) -> bool:
     """Whether EVERY missing tensor belongs to a vision/audio/projector module.
 
-    Uses the same canonical :data:`MULTIMODAL_TENSOR_PREFIXES` allowlist the
-    routing detector keys on, so the degrade decision stays in lockstep with
-    detection (one source of truth). A checkpoint whose ONLY missing weights are
-    multimodal has a fully-present language backbone → the text lane is viable
-    → degrade. If ANY missing weight is a language/text-backbone tensor the
-    checkpoint is genuinely incomplete; degrading would mask real corruption, so
-    the caller must re-raise. Empty ``missing_names`` (unparseable message) is
-    ``False`` — fail safe, don't degrade on an unrecognised error shape.
+    A checkpoint whose ONLY missing weights are multimodal (per
+    :func:`_name_is_multimodal_tensor`) has a fully-present language backbone →
+    the text lane is viable → degrade. If ANY missing weight is a language/
+    text-backbone tensor the checkpoint is genuinely incomplete; degrading
+    would mask real corruption, so the caller must re-raise. Empty
+    ``missing_names`` (unparseable message) is ``False`` — fail safe, don't
+    degrade on an unrecognised error shape.
     """
     return bool(missing_names) and all(
-        any(prefix in name for prefix in MULTIMODAL_TENSOR_PREFIXES)
-        for name in missing_names
+        _name_is_multimodal_tensor(name) for name in missing_names
     )
 
 

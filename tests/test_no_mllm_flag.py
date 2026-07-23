@@ -659,6 +659,27 @@ def test_missing_param_name_parser_and_multimodal_partition():
     assert mllm_mod._parse_missing_count("some other error") is None
     assert mllm_mod._all_missing_are_multimodal([]) is False
 
+    # Segment-aware matching (precision): a language-backbone weight whose
+    # SEGMENT merely CONTAINS an allowlisted token as a substring
+    # (``visual_proj`` ⊃ ``visual``, ``connector_gate`` ⊃ ``connector``) must
+    # NOT be misclassified as multimodal — else an all-language missing set
+    # could trigger an invalid degrade. A bare substring test would misfire.
+    assert mllm_mod._name_is_multimodal_tensor("vision_tower.encoder.0.weight")
+    assert mllm_mod._name_is_multimodal_tensor("model.visual.blocks.0.attn.weight")
+    assert mllm_mod._name_is_multimodal_tensor("model.embed_vision.proj.weight")
+    assert not mllm_mod._name_is_multimodal_tensor(
+        "language_model.model.layers.0.self_attn.visual_proj.weight"
+    )
+    assert not mllm_mod._name_is_multimodal_tensor(
+        "language_model.model.layers.0.connector_gate.weight"
+    )
+    assert mllm_mod._all_missing_are_multimodal(
+        ["vision_tower.a.weight", "model.visual.b.weight"]
+    )
+    assert not mllm_mod._all_missing_are_multimodal(
+        ["vision_tower.a.weight", "model.layers.0.visual_proj.weight"]
+    )
+
 
 def _flag_in_add_argument_calls(source: str, flag: str) -> bool:
     """True iff ``flag`` appears as a positional string literal to an
