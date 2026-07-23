@@ -2025,6 +2025,16 @@ def build_tool_grammar(
     # ``True`` and is unaffected.
     if tool_choice == "auto" and not getattr(parser, "TOOL_GRAMMAR_AUTO_SAFE", True):
         return None
+    # SECTION-WRAPPER soundness gate (#558 E1). A family whose structure_info folds
+    # the whole native tool-calls SECTION envelope into each call's begin/end
+    # (DeepSeek/Kimi) is sound only when the grammar emits AT MOST ONE call:
+    # repeating the tag (not single_call -> `+`/`*`) yields back-to-back sections,
+    # which these parsers' single-envelope scanner drops after the first section.
+    # Opt OUT to free-form when >1 call is possible (non-regressive: the model then
+    # emits its canonical one-section-N-calls wire, which the parser handles). True
+    # multi-call section-wrapper grammar support is a tracked follow-up.
+    if getattr(parser, "TOOL_GRAMMAR_SECTION_WRAPPER", False) and not single_call:
+        return None
     # FORCED (required / named) + a REASONING model: opt OUT of the #558 grammar
     # and return ``None`` (the route then FORCES the call via the pre-#558
     # ``forced_assistant_prefix`` injection — a proven, shipped lever). Neither

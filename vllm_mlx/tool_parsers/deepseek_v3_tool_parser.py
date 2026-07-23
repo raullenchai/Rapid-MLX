@@ -104,6 +104,20 @@ class DeepSeekV3ToolParser(ToolParser):
     SUPPORTS_NATIVE_TOOL_FORMAT = True
     EXPECTED_WIRE_FORMATS = ("deepseek_native",)
 
+    # Grammar-capable (#558 E1 / #1144): this parser overrides ``structure_info``
+    # to emit the DeepSeek-V3 section-wrapper wire triple, so declare the marker
+    # to MATCH the override (the marker-consistency check requires it, and it
+    # keeps the #561 oversized-schema route on the constrained path).
+    SUPPORTS_GRAMMAR: bool = True
+
+    # The section-wrapper wire folds the whole <｜tool▁calls▁begin｜>…<｜tool▁calls▁end｜>
+    # envelope into each call's structure_info begin/end, so a repeated grammar tag
+    # yields back-to-back sections — a shape this parser's single-envelope scanner
+    # (_envelope_bounds) drops after the first section. The grammar is therefore
+    # sound ONLY when it can emit at most one call; build_tool_grammar opts out
+    # (free-form) when >1 call is possible. See TOOL_GRAMMAR_SECTION_WRAPPER gate.
+    TOOL_GRAMMAR_SECTION_WRAPPER = True
+
     TOOL_CALLS_START = "<｜tool▁calls▁begin｜>"
     TOOL_CALLS_END = "<｜tool▁calls▁end｜>"
     TOOL_CALL_START = "<｜tool▁call▁begin｜>"
@@ -157,6 +171,21 @@ class DeepSeekV3ToolParser(ToolParser):
         special-token refs). As on hermes/qwen/harmony, OPT OUT (return ``None``
         -> free-form-then-parse) unless the tokenizer proves every sentinel is a
         single special token.
+
+        AT-MOST-ONE-CALL ONLY (``TOOL_GRAMMAR_SECTION_WRAPPER``): because the
+        whole SECTION envelope is folded into EACH call's ``begin``/``end``, a
+        repeated grammar tag emits BACK-TO-BACK sections
+        (``<begin>c1<end><begin>c2<end>``) — a shape this parser's single-envelope
+        scanner (``_envelope_bounds`` / ``_iter_block_bodies``) drops after the
+        first section. So the grammar is sound ONLY on the at-most-one-call path
+        (``parallel_tool_calls=False`` -> ``single_call=True``:
+        required/named/auto emitting EXACTLY-ONE / ZERO-OR-ONE). When >1 call is
+        possible (``single_call=False``) ``build_tool_grammar`` OPTS OUT via the
+        section-wrapper gate and falls back to free-form-then-parse — where the
+        unconstrained model emits its canonical one-section-N-calls wire, which
+        this parser DOES handle. True multi-call section-wrapper grammar support
+        (a builder that repeats only the per-call envelope inside ONE section) is
+        a tracked follow-up.
 
         WHICH CHECKPOINTS THIS ENGAGES (release-note nuance): the fullwidth-pipe
         envelope markers are single special tokens ONLY on the original

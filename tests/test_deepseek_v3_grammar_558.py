@@ -217,6 +217,40 @@ def test_build_tool_lark_builds_from_deepseek_triple():
     assert "```json" in lark
 
 
+def test_parser_declares_section_wrapper_flag():
+    # The section-wrapper soundness flag drives build_tool_grammar's >1-call
+    # opt-out (finding 1). It must be set on the class.
+    from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
+
+    assert DeepSeekV3ToolParser.TOOL_GRAMMAR_SECTION_WRAPPER is True
+    # And the grammar-capability marker (#1144) must MATCH the structure_info
+    # override — declared True so the marker-consistency check passes and the
+    # #561 oversized-schema route stays on the constrained path.
+    assert DeepSeekV3ToolParser.SUPPORTS_GRAMMAR is True
+    assert DeepSeekV3ToolParser.supports_grammar() is True
+
+
+@_requires_llguidance
+def test_section_wrapper_gate_opts_out_when_multicall_possible():
+    # FINDING 1 (soundness). The section-wrapper wire folds the WHOLE tool-calls
+    # envelope into each call, so a repeated grammar tag would emit back-to-back
+    # sections the single-envelope parser drops after the first. build_tool_grammar
+    # must OPT OUT (None) whenever >1 call is possible (``not single_call`` ->
+    # ``+``/``*``) and build the grammar ONLY on the at-most-one-call path
+    # (``single_call=True``). Hermetic single-token tokenizer -> runs with no
+    # network. Covers required / named / auto.
+    from vllm_mlx.api.tool_grammar import build_tool_grammar
+
+    parser = _make_parser(tokenizer=_single_token_tokenizer())
+    for choice in ("required", "get_weather", "auto"):
+        assert (
+            build_tool_grammar(TOOLS[:1], choice, parser, single_call=False) is None
+        ), f"{choice}: multi-call grammar must opt out (section-wrapper soundness)"
+        assert (
+            build_tool_grammar(TOOLS[:1], choice, parser, single_call=True) is not None
+        ), f"{choice}: at-most-one-call grammar must build"
+
+
 # --------------------------------------------------------------------------
 # DISTILL OPT-OUT on the REAL cached Qwen-tokenizer distill (locks finding ①).
 # --------------------------------------------------------------------------
@@ -255,10 +289,17 @@ def test_distill_qwen_tokenizer_opts_out_to_none(distill_tok):
 def _offline_skip_exc_types():
     """Genuine network/cache-miss exceptions that are a sanctioned skip.
 
-    A corrupt tokenizer artifact / invalid revision must FAIL the test, not skip
-    it, so we skip ONLY on the specific offline/cache-miss signals.
+    ``transformers.from_pretrained`` wraps an offline cache-miss as a BARE
+    ``OSError`` ("couldn't connect … couldn't find in cached files"), NOT always
+    the specialized ``LocalEntryNotFoundError`` — so ``OSError`` is ALWAYS
+    included (an offline CI box must SKIP, not FAIL). The specialized
+    connection/cache-miss types are added alongside it when importable so a
+    reader sees the intent; ``OSError`` is their superclass and does the work.
+    (A corrupt-artifact ``OSError`` after a cache hit is vanishingly rare here —
+    the candidates are pinned/public — and the trade is deliberate: never fail an
+    offline box for a missing optional tokenizer.)
     """
-    types: list[type[BaseException]] = []
+    types: list[type[BaseException]] = [OSError]
     try:
         from huggingface_hub.errors import (
             LocalEntryNotFoundError,
@@ -274,7 +315,7 @@ def _offline_skip_exc_types():
         types.append(_ReqConnErr)
     except Exception:  # pragma: no cover - requests not present
         pass
-    return tuple(types) or (OSError,)
+    return tuple(types)
 
 
 @pytest.fixture(scope="module")
@@ -381,6 +422,21 @@ def test_valid_deepseek_call_is_accepted_and_terminates(parser, tok, lltok):
 
 
 @_requires_llguidance
+def test_section_wrapper_gate_on_real_tokenizer(parser):
+    # FINDING 1 on the REAL parser/tokenizer: multi-call opts out, single_call
+    # builds — for required AND auto. Mirrors the hermetic gate test end-to-end.
+    from vllm_mlx.api.tool_grammar import build_tool_grammar
+
+    for choice in ("required", "auto"):
+        assert (
+            build_tool_grammar(TOOLS[:1], choice, parser, single_call=False) is None
+        ), f"{choice}: multi-call grammar must opt out on the real tokenizer"
+        assert (
+            build_tool_grammar(TOOLS[:1], choice, parser, single_call=True) is not None
+        ), f"{choice}: at-most-one-call grammar must build on the real tokenizer"
+
+
+@_requires_llguidance
 def test_valid_enum_value_is_accepted(parser, tok, lltok):
     from vllm_mlx.api.tool_grammar import build_tool_grammar
 
@@ -436,7 +492,10 @@ def test_hallucinated_tool_name_is_rejected(parser, tok, lltok):
 def test_named_choice_narrows_to_requested_tool(parser, tok, lltok):
     from vllm_mlx.api.tool_grammar import build_tool_grammar
 
-    grammar = build_tool_grammar(TOOLS[1:], "get_time", parser, single_call=True)
+    # Pass the COMPLETE tools list (both get_weather AND get_time) so the named
+    # choice actually EXERCISES build_tool_grammar's internal narrowing — passing
+    # only [get_time] would let this test pass even if narrowing were broken.
+    grammar = build_tool_grammar(TOOLS, "get_time", parser, single_call=True)
     assert grammar is not None
     assert "get_time" in grammar
     assert "get_weather" not in grammar

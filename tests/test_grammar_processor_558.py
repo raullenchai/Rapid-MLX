@@ -803,7 +803,9 @@ def test_reasonable_schema_no_400_on_active_path(monkeypatch):
 # instead of 400.
 # --------------------------------------------------------------------------
 # A registered parser that does NOT override ``structure_info`` (grammar-incapable).
-_NON_GRAMMAR_PARSER = "deepseek_v3"
+# (``deepseek_v3`` became grammar-capable in #558 E1; ``mistral`` is the stable
+# non-grammar example — same family the warmup suite uses for this role.)
+_NON_GRAMMAR_PARSER = "mistral"
 
 
 def test_supports_grammar_probe_matches_capability():
