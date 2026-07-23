@@ -34,13 +34,15 @@ a model or a decode loop:
     #558 proof that the constraint is grammar-enforced, not merely post-parsed.
 
 The enforcement tests need an ORIGINAL DeepSeek-V3-family tokenizer (whose five
-section markers are single special tokens, ids 128806–128814). They try, in
-order, ``deepseek-ai/DeepSeek-V3`` (pinned), then ``deepseek-ai/DeepSeek-R1`` and
-``deepseek-ai/DeepSeek-V3-0324`` as fallbacks, downloading ONLY tokenizer/config
-files (never weights). They skip ONLY on genuine unavailability (the ``[guided]``
-extra absent, or none of the candidate tokenizers cached/reachable). The distill
-opt-out test uses the LOCALLY CACHED ``mlx-community/DeepSeek-R1-Distill-Qwen-32B-
-4bit`` (tokenizer only). The pure-Python opt-in/opt-out tests never skip.
+section markers are single special tokens, ids 128806–128814) already in the
+local HF cache. They probe the cache (never the network) for, in order,
+``deepseek-ai/DeepSeek-V3`` (pinned), then ``deepseek-ai/DeepSeek-R1`` and
+``deepseek-ai/DeepSeek-V3-0324``, and load the first hit with
+``local_files_only=True``. They skip ONLY on genuine unavailability (the
+``[guided]`` extra absent, or none of the candidates cached); a cached-but-broken
+tokenizer FAILS loudly on load rather than skipping. The distill opt-out test uses
+the LOCALLY CACHED ``mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit`` (tokenizer
+only). The pure-Python opt-in/opt-out tests never skip.
 """
 
 import importlib.util
@@ -258,25 +260,16 @@ def test_section_wrapper_gate_opts_out_when_multicall_possible():
 @pytest.fixture(scope="module")
 def distill_tok():
     transformers = pytest.importorskip("transformers")
-    offline_types = _offline_skip_exc_types()
-    _skip_msg = (
-        f"{_DISTILL_TOKENIZER} tokenizer not in the local HF cache — the "
-        "distill opt-out test requires it locally"
-    )
-    try:
-        return transformers.AutoTokenizer.from_pretrained(
-            _DISTILL_TOKENIZER, local_files_only=True
+    if _cached_repo([(_DISTILL_TOKENIZER, None)]) is None:
+        pytest.skip(
+            f"{_DISTILL_TOKENIZER} tokenizer not in the local HF cache — the "
+            "distill opt-out test requires it locally"
         )
-    except offline_types:  # pragma: no cover - specialized cache-miss
-        pytest.skip(_skip_msg)
-    except OSError as exc:
-        # A local_files_only cache-miss surfaces as a bare OSError on some
-        # transformers versions; skip ONLY that, and RE-RAISE a corrupt-artifact
-        # / tokenizer-loading regression so the two distill regression tests can't
-        # false-green (codex round-3, mirroring the ``tok`` fixture).
-        if _is_offline_oserror(exc):  # pragma: no cover - not cached locally
-            pytest.skip(_skip_msg)
-        raise
+    # Cache-hit confirmed -> load offline; any load failure PROPAGATES (a corrupt
+    # or incomplete cached tokenizer must fail loudly, never a false-green skip).
+    return transformers.AutoTokenizer.from_pretrained(
+        _DISTILL_TOKENIZER, local_files_only=True
+    )
 
 
 def test_distill_qwen_tokenizer_markers_are_multitoken(distill_tok):
@@ -297,93 +290,52 @@ def test_distill_qwen_tokenizer_opts_out_to_none(distill_tok):
 # --------------------------------------------------------------------------
 # ENFORCEMENT against a REAL original DeepSeek-V3 tokenizer.
 # --------------------------------------------------------------------------
-def _offline_skip_exc_types():
-    """SPECIALIZED network/cache-miss exception types that are a sanctioned skip.
+def _cached_repo(candidates):
+    """First ``(repo, revision)`` whose tokenizer snapshot is in the local HF cache.
 
-    Returns the specialized offline exceptions (huggingface_hub
-    ``LocalEntryNotFoundError`` / ``OfflineModeIsEnabled`` and
-    ``requests.ConnectionError``) when importable. Bare ``OSError`` is
-    DELIBERATELY NOT included: ``transformers.from_pretrained`` wraps a plain
-    offline cache-miss as a bare ``OSError`` — but so does a CORRUPT cached
-    artifact or a tokenizer-loading regression, and catching every ``OSError`` as
-    a skip would turn a broken integration GREEN (codex round-2). The ``tok``
-    fixture therefore skips a bare ``OSError`` ONLY when ``_is_offline_oserror``
-    recognises its message as a genuine offline/cache-miss, and RE-RAISES any
-    other ``OSError`` so a real breakage fails loudly. (Round-1 added bare
-    ``OSError`` here to stop offline boxes FAILING; round-2 narrows it back so a
-    corrupt artifact can't hide — the message-signature split satisfies both.)
+    A DETERMINISTIC, network-free cache probe (``huggingface_hub`` returns a str
+    path for a cached file, a sentinel/``None`` otherwise). It REPLACES the earlier
+    approach of catching ``from_pretrained`` errors and classifying their messages
+    as offline-vs-corrupt: that message-signature split couldn't reliably tell a
+    genuine cache-miss from a corrupt/incomplete cached tokenizer, and the
+    network-capable load added timeout/connection failure modes (codex r2/r4).
+    Callers instead (1) probe the cache — a miss is an explicit typed skip; and
+    (2) on a hit, load ``local_files_only=True`` and let ANY failure PROPAGATE, so
+    a corrupt/incomplete snapshot fails loudly. No network, no message matching.
     """
-    types: list[type[BaseException]] = []
     try:
-        from huggingface_hub.errors import (
-            LocalEntryNotFoundError,
-            OfflineModeIsEnabled,
-        )
-
-        types += [LocalEntryNotFoundError, OfflineModeIsEnabled]
-    except Exception:  # pragma: no cover - old hub without these names
-        pass
-    try:
-        from requests.exceptions import ConnectionError as _ReqConnErr
-
-        types.append(_ReqConnErr)
-    except Exception:  # pragma: no cover - requests not present
-        pass
-    return tuple(types)
-
-
-# Substrings marking a bare ``from_pretrained`` ``OSError`` as a genuine
-# offline/cache-miss (SKIP) rather than a corrupt artifact / loading regression
-# (RE-RAISE). Matches the transformers/hub offline phrasings ("We couldn't
-# connect to … couldn't find it in the cached files", "offline mode", retries).
-_OFFLINE_OSERROR_SIGNATURES = (
-    "offline",
-    "couldn't connect",
-    "couldn't find",
-    "cached file",
-    "max retries",
-    "connection error",
-    "failed to connect",
-    # local_files_only cache-miss phrasings (distill_tok): the file is simply
-    # absent, NOT corrupt — a genuine "not cached" skip.
-    "can't load",
-    "no such file or directory",
-)
-
-
-def _is_offline_oserror(exc: OSError) -> bool:
-    """True iff a bare ``OSError`` reads as offline/cache-miss (sanctioned skip)."""
-    msg = str(exc).lower()
-    return any(sig in msg for sig in _OFFLINE_OSERROR_SIGNATURES)
+        from huggingface_hub import try_to_load_from_cache
+    except Exception:  # pragma: no cover - hub too old for the cache probe
+        return None
+    for repo, revision in candidates:
+        hit = try_to_load_from_cache(repo, "tokenizer_config.json", revision=revision)
+        # A real cached file path -> hit. None / _CACHED_NO_EXIST sentinel -> miss.
+        if isinstance(hit, str):
+            return repo, revision
+    return None
 
 
 @pytest.fixture(scope="module")
 def tok():
-    """Load the first available original DeepSeek-V3-family tokenizer.
+    """Load the first cached original DeepSeek-V3-family tokenizer.
 
-    Tries DeepSeek-V3, then R1 / V3-0324 (all pinned). Tokenizer + config files
-    only — never weights. Skips only when NONE of the candidates is
-    cached/reachable; a corrupt-artifact / loading-regression ``OSError``
-    RE-RAISES rather than silently skipping (codex round-2).
+    Probes the local HF cache for DeepSeek-V3, then R1 / V3-0324 (all pinned) and
+    loads the first hit offline (``local_files_only=True``). Tokenizer + config
+    files only — never weights, never the network. Skips only when NONE of the
+    candidates is cached; a corrupt/incomplete cached snapshot fails loudly on
+    load (never a false-green skip).
     """
     transformers = pytest.importorskip("transformers")
-    offline_types = _offline_skip_exc_types()
-    for repo, revision in _TOKENIZER_CANDIDATES:
-        try:
-            return transformers.AutoTokenizer.from_pretrained(repo, revision=revision)
-        except offline_types:  # pragma: no cover - specialized offline/cache-miss
-            continue
-        except OSError as exc:
-            # transformers wraps some offline cache-misses as a bare OSError; skip
-            # ONLY those, and re-raise a corrupt-artifact / loading regression so a
-            # broken integration fails loudly instead of a false-green skip.
-            if _is_offline_oserror(exc):  # pragma: no cover - offline & uncached
-                continue
-            raise
-    pytest.skip(
-        "no original DeepSeek-V3-family tokenizer cached or reachable "
-        f"({', '.join(r for r, _ in _TOKENIZER_CANDIDATES)}) — E1 enforcement "
-        "tests require one"
+    cached = _cached_repo(_TOKENIZER_CANDIDATES)
+    if cached is None:
+        pytest.skip(
+            "no original DeepSeek-V3-family tokenizer cached "
+            f"({', '.join(r for r, _ in _TOKENIZER_CANDIDATES)}) — E1 "
+            "enforcement tests require one locally"
+        )
+    repo, revision = cached
+    return transformers.AutoTokenizer.from_pretrained(
+        repo, revision=revision, local_files_only=True
     )
 
 
