@@ -62,14 +62,15 @@ SENTINELS = (
     "<｜tool▁calls▁end｜>",
 )
 
-# Original DeepSeek-V3-family tokenizers, tried in order. DeepSeek-V3 is pinned by
-# revision for an IMMUTABLE enforcement artifact; R1 / V3-0324 are unpinned
-# fallbacks (same original tokenizer) for a box where only one is cached. All
-# three are PUBLIC (ungated) and share the section-marker special-token layout.
+# Original DeepSeek-V3-family tokenizers, tried in order. ALL pinned by revision
+# for an IMMUTABLE enforcement artifact (codex: an unpinned fallback would let a
+# mutable upstream retag change what this auto-deploy test enforces). DeepSeek-V3
+# is the primary; R1 / V3-0324 are same-layout fallbacks for a box where only one
+# is cached. All three are PUBLIC (ungated) and share the section-marker layout.
 _TOKENIZER_CANDIDATES = (
     ("deepseek-ai/DeepSeek-V3", "e815299b0bcbac849fa540c768ef21845365c9eb"),
-    ("deepseek-ai/DeepSeek-R1", None),
-    ("deepseek-ai/DeepSeek-V3-0324", None),
+    ("deepseek-ai/DeepSeek-R1", "56d4cbbb4d29f4355bab4b9a39ccb717a14ad5ad"),
+    ("deepseek-ai/DeepSeek-V3-0324", "e9b33add76883f293d6bf61f6bd89b497e80e335"),
 )
 
 # The cached Qwen-tokenizer distill — its section markers are multi-token TEXT, so
@@ -287,19 +288,22 @@ def test_distill_qwen_tokenizer_opts_out_to_none(distill_tok):
 # ENFORCEMENT against a REAL original DeepSeek-V3 tokenizer.
 # --------------------------------------------------------------------------
 def _offline_skip_exc_types():
-    """Genuine network/cache-miss exceptions that are a sanctioned skip.
+    """SPECIALIZED network/cache-miss exception types that are a sanctioned skip.
 
-    ``transformers.from_pretrained`` wraps an offline cache-miss as a BARE
-    ``OSError`` ("couldn't connect … couldn't find in cached files"), NOT always
-    the specialized ``LocalEntryNotFoundError`` — so ``OSError`` is ALWAYS
-    included (an offline CI box must SKIP, not FAIL). The specialized
-    connection/cache-miss types are added alongside it when importable so a
-    reader sees the intent; ``OSError`` is their superclass and does the work.
-    (A corrupt-artifact ``OSError`` after a cache hit is vanishingly rare here —
-    the candidates are pinned/public — and the trade is deliberate: never fail an
-    offline box for a missing optional tokenizer.)
+    Returns the specialized offline exceptions (huggingface_hub
+    ``LocalEntryNotFoundError`` / ``OfflineModeIsEnabled`` and
+    ``requests.ConnectionError``) when importable. Bare ``OSError`` is
+    DELIBERATELY NOT included: ``transformers.from_pretrained`` wraps a plain
+    offline cache-miss as a bare ``OSError`` — but so does a CORRUPT cached
+    artifact or a tokenizer-loading regression, and catching every ``OSError`` as
+    a skip would turn a broken integration GREEN (codex round-2). The ``tok``
+    fixture therefore skips a bare ``OSError`` ONLY when ``_is_offline_oserror``
+    recognises its message as a genuine offline/cache-miss, and RE-RAISES any
+    other ``OSError`` so a real breakage fails loudly. (Round-1 added bare
+    ``OSError`` here to stop offline boxes FAILING; round-2 narrows it back so a
+    corrupt artifact can't hide — the message-signature split satisfies both.)
     """
-    types: list[type[BaseException]] = [OSError]
+    types: list[type[BaseException]] = []
     try:
         from huggingface_hub.errors import (
             LocalEntryNotFoundError,
@@ -318,20 +322,50 @@ def _offline_skip_exc_types():
     return tuple(types)
 
 
+# Substrings marking a bare ``from_pretrained`` ``OSError`` as a genuine
+# offline/cache-miss (SKIP) rather than a corrupt artifact / loading regression
+# (RE-RAISE). Matches the transformers/hub offline phrasings ("We couldn't
+# connect to … couldn't find it in the cached files", "offline mode", retries).
+_OFFLINE_OSERROR_SIGNATURES = (
+    "offline",
+    "couldn't connect",
+    "couldn't find",
+    "cached file",
+    "max retries",
+    "connection error",
+    "failed to connect",
+)
+
+
+def _is_offline_oserror(exc: OSError) -> bool:
+    """True iff a bare ``OSError`` reads as offline/cache-miss (sanctioned skip)."""
+    msg = str(exc).lower()
+    return any(sig in msg for sig in _OFFLINE_OSERROR_SIGNATURES)
+
+
 @pytest.fixture(scope="module")
 def tok():
     """Load the first available original DeepSeek-V3-family tokenizer.
 
-    Tries DeepSeek-V3 (pinned), then R1 / V3-0324. Tokenizer + config files only
-    — never weights. Skips only when NONE of the candidates is cached/reachable.
+    Tries DeepSeek-V3, then R1 / V3-0324 (all pinned). Tokenizer + config files
+    only — never weights. Skips only when NONE of the candidates is
+    cached/reachable; a corrupt-artifact / loading-regression ``OSError``
+    RE-RAISES rather than silently skipping (codex round-2).
     """
     transformers = pytest.importorskip("transformers")
-    skip_types = _offline_skip_exc_types()
+    offline_types = _offline_skip_exc_types()
     for repo, revision in _TOKENIZER_CANDIDATES:
         try:
             return transformers.AutoTokenizer.from_pretrained(repo, revision=revision)
-        except skip_types:  # pragma: no cover - this candidate offline & uncached
+        except offline_types:  # pragma: no cover - specialized offline/cache-miss
             continue
+        except OSError as exc:
+            # transformers wraps some offline cache-misses as a bare OSError; skip
+            # ONLY those, and re-raise a corrupt-artifact / loading regression so a
+            # broken integration fails loudly instead of a false-green skip.
+            if _is_offline_oserror(exc):  # pragma: no cover - offline & uncached
+                continue
+            raise
     pytest.skip(
         "no original DeepSeek-V3-family tokenizer cached or reachable "
         f"({', '.join(r for r, _ in _TOKENIZER_CANDIDATES)}) — E1 enforcement "
