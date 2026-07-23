@@ -898,22 +898,30 @@ class MLLMBatchGenerator:
         # all-valid ``attention_mask``), but if some processor ever emits
         # sequence-aligned kwargs (e.g. ``token_type_ids``) we cannot silently
         # drop or mis-slice them across chunks — fall back to the single
-        # forward, which forwards ``kwargs`` intact. ``attention_mask`` IS
+        # forward, which forwards ``kwargs`` intact. Note ``attention_mask`` is
+        # a *separate* request field (``_preprocess_request`` excludes it from
+        # ``extra_kwargs``), so an all-valid mask never trips this gate; it IS
         # dropped on the chunked path, and that is lossless here: this method
         # runs one request per call (``_process_prompts`` loops per request
         # with its own cache), so the sequence is never padded and the mask is
         # all-valid — carrying no information, exactly as mlx-lm's own text
         # prefill treats it (it passes no mask and relies on the causal mask).
+        #
+        # ``chunk`` is the prefill step; only prompts *longer* than one chunk
+        # take the chunked path. Short/ordinary prompts keep the original
+        # single forward — no extra forward, no ``mx.eval``/``mx.clear_cache``
+        # barrier on the hot path — so per-request latency is unchanged for
+        # them. The chunking only engages once the un-chunked activations +
+        # full-sequence logits would actually spike memory (long contexts).
+        chunk = max(1, min(self.prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS))
         is_text_only = request.pixel_values is None and request.image_grid_thw is None
         no_extra_kwargs = not request.extra_kwargs
         if (
             cache is not None
-            and input_ids.shape[1] > 1
+            and input_ids.shape[1] > chunk
             and is_text_only
             and no_extra_kwargs
         ):
-            chunk = min(self.prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS)
-            chunk = max(1, chunk)
             prefix = input_ids[:, :-1]
             prefix_len = prefix.shape[1]
             pos = 0

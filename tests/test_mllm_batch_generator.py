@@ -248,6 +248,37 @@ def test_run_vision_encoding_no_cache_keeps_single_forward_for_long_text():
     assert model.calls[0][0] == 5000
 
 
+def test_run_vision_encoding_chunks_with_all_valid_attention_mask():
+    """A processor-shaped text-only request — the realistic case where
+    ``mlx_vlm.prepare_inputs`` returns a one-row, all-valid ``attention_mask``
+    — still takes the chunked path. ``attention_mask`` is a *separate* request
+    field (``_preprocess_request`` excludes it from ``extra_kwargs``), so it
+    does NOT trip the ``no_extra_kwargs`` gate; it is simply dropped from the
+    chunked forwards, which is lossless for an all-valid, single-request mask
+    (mlx-lm's own text prefill likewise passes no mask and relies on the
+    causal mask). Regression guard: without this, a reviewer might assume the
+    mask disables the memory fix — it must not."""
+    model = _ChunkRecordingModel()
+    gen = _make_bare_generator(prefill_step_size=22000, model=model)
+    req = _make_ids_request(5000)
+    # Processor supplies a one-row, all-valid mask (a separate field, not in
+    # extra_kwargs). extra_kwargs stays empty, exactly as _preprocess_request
+    # builds it for a text-only prompt.
+    req.attention_mask = mx.ones((1, 5000), dtype=mx.int32)
+    assert req.extra_kwargs == {}
+    cache = [_FakeCache()]
+
+    logits = gen._run_vision_encoding(req, cache=cache)
+
+    # Still chunked (prompt > one chunk), NOT a single full-prompt forward.
+    prefix_seqlens = [c[0] for c in model.calls[:-1]]
+    assert prefix_seqlens == [2048, 2048, 903]
+    assert model.calls[-1][0] == 1
+    assert logits.shape == (1, 1, model.vocab)
+    # The all-valid mask is dropped on the chunked path (no per-chunk mask).
+    assert all("attention_mask" not in c[1] for c in model.calls)
+
+
 def test_chunking_falls_back_to_single_forward_with_extra_kwargs():
     """If a processor ever emits sequence-aligned extra kwargs (e.g.
     ``token_type_ids``) for a text-only request, we must NOT chunk (we would
@@ -277,6 +308,26 @@ def test_run_vision_encoding_single_token_uses_single_forward():
 
     assert len(model.calls) == 1
     assert model.calls[0][0] == 1
+
+
+def test_run_vision_encoding_short_text_prompt_uses_single_forward():
+    """A prompt that fits inside one chunk keeps the *original* single
+    forward — no second forward, no per-chunk ``mx.eval``/``mx.clear_cache``
+    barrier on the hot path. Chunking only engages once the prompt is longer
+    than one chunk, where the un-chunked activations + full-sequence logits
+    would actually spike memory (#1187 B). This guards the latency of the
+    common short-prompt case against the chunking added for long prompts."""
+    model = _ChunkRecordingModel()
+    gen = _make_bare_generator(prefill_step_size=22000, model=model)
+    cache = [_FakeCache()]
+
+    # 100 tokens << chunk = min(22000, 2048) = 2048 → single forward.
+    gen._run_vision_encoding(_make_ids_request(100), cache=cache)
+
+    assert len(model.calls) == 1
+    assert model.calls[0][0] == 100
+    # No barrier ran, so the cache state was never force-evaluated.
+    assert cache[0].state_reads == 0
 
 
 # ---------------------------------------------------------------------------
