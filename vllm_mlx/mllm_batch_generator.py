@@ -945,6 +945,16 @@ class MLLMBatchGenerator:
             and no_extra_kwargs
             and _attention_mask_is_droppable(request.attention_mask)
         ):
+            # Positional correctness across chunks rests on the model deriving
+            # RoPE positions from the *cache offset*, not from each chunk's
+            # local length. This is the same contract every autoregressive
+            # decode step relies on (a decode step is a 1-token forward whose
+            # position is ``cache.offset``), and the one mlx-vlm's own chunked
+            # prefill uses — e.g. Qwen3-VL computes ``arange(L) + cache_offset``
+            # for each text-only chunk, and Gemma3/4 read the rotating-cache
+            # offset. A model that ignored the offset for L>1 forwards could not
+            # decode token 2 correctly either, so honoring it is universal for
+            # any working model; the numerical-equivalence test locks this in.
             prefix = input_ids[:, :-1]
             prefix_len = prefix.shape[1]
             pos = 0
