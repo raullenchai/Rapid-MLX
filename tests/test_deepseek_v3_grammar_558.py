@@ -1,0 +1,455 @@
+# SPDX-License-Identifier: Apache-2.0
+"""Offline tests for grammar-constrained DeepSeek-V3 tool calling (#558 E1).
+
+Extends the #558 constraint coverage from {qwen, hermes, gpt-oss, gemma4} to the
+fourth top-tier wire family: the DeepSeek-V3 "section-wrapper" tool call. The
+wire the V3 chat template emits (verified byte-for-byte against the real
+DeepSeek-V3 tokenizer and copied VERBATIM from SGLang's
+``deepseekv3_detector.structure_info``)::
+
+    <｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>NAME
+    ```json
+    {args}
+    ```<｜tool▁call▁end｜><｜tool▁calls▁end｜>
+
+SGLang folds BOTH the section envelope and the per-call envelope into a single
+call's ``begin``/``end``; the tool NAME is a bare header identifier and the body
+is a whole-object ``%json`` constrained by the tool's JSON Schema — so the
+existing ``build_tool_lark`` needs NO change. These tests prove that path WITHOUT
+a model or a decode loop:
+
+  * the parser opts IN only when the tokenizer proves every one of the five
+    fullwidth-pipe envelope markers is a single special token, and returns the
+    exact SGLang-copied wire triple (pure-Python, hermetic tokenizer stub);
+  * DISTILL OPT-OUT (the release-note nuance): the same V3 chat_template shipped
+    on a **Qwen tokenizer** (``DeepSeek-R1-0528-Qwen3-8B`` /
+    ``DeepSeek-R1-Distill-Qwen-*``) renders those markers as ordinary MULTI-token
+    text, so ``are_single_special_tokens`` is False and ``structure_info()``
+    correctly returns ``None`` (free-form-then-parse fallback). This locks E1 as
+    a safe no-op on the Qwen-tokenizer distills — a regression guard;
+  * grammar ENFORCEMENT via llguidance ``LLMatcher.consume_tokens`` on the REAL
+    DeepSeek-V3 tokenizer: the ground-truth wire is accepted in full and
+    terminates, while an off-schema argument, a bad enum value, and a
+    hallucinated tool name are rejected mid-stream. This is the load-bearing
+    #558 proof that the constraint is grammar-enforced, not merely post-parsed.
+
+The enforcement tests need an ORIGINAL DeepSeek-V3-family tokenizer (whose five
+section markers are single special tokens, ids 128806–128814). They try, in
+order, ``deepseek-ai/DeepSeek-V3`` (pinned), then ``deepseek-ai/DeepSeek-R1`` and
+``deepseek-ai/DeepSeek-V3-0324`` as fallbacks, downloading ONLY tokenizer/config
+files (never weights). They skip ONLY on genuine unavailability (the ``[guided]``
+extra absent, or none of the candidate tokenizers cached/reachable). The distill
+opt-out test uses the LOCALLY CACHED ``mlx-community/DeepSeek-R1-Distill-Qwen-32B-
+4bit`` (tokenizer only). The pure-Python opt-in/opt-out tests never skip.
+"""
+
+import importlib.util
+
+import pytest
+
+_HAS_LLGUIDANCE = importlib.util.find_spec("llguidance") is not None
+_requires_llguidance = pytest.mark.skipif(
+    not _HAS_LLGUIDANCE, reason="llguidance ([guided] extra) not installed"
+)
+
+# The five fullwidth-pipe (U+FF5C) section/per-call/sep markers. Single special
+# tokens (ids 128806–128814) ONLY on the original DeepSeek-V3 / R1 tokenizers.
+SENTINELS = (
+    "<｜tool▁calls▁begin｜>",
+    "<｜tool▁call▁begin｜>",
+    "<｜tool▁sep｜>",
+    "<｜tool▁call▁end｜>",
+    "<｜tool▁calls▁end｜>",
+)
+
+# Original DeepSeek-V3-family tokenizers, tried in order. DeepSeek-V3 is pinned by
+# revision for an IMMUTABLE enforcement artifact; R1 / V3-0324 are unpinned
+# fallbacks (same original tokenizer) for a box where only one is cached. All
+# three are PUBLIC (ungated) and share the section-marker special-token layout.
+_TOKENIZER_CANDIDATES = (
+    ("deepseek-ai/DeepSeek-V3", "e815299b0bcbac849fa540c768ef21845365c9eb"),
+    ("deepseek-ai/DeepSeek-R1", None),
+    ("deepseek-ai/DeepSeek-V3-0324", None),
+)
+
+# The cached Qwen-tokenizer distill — its section markers are multi-token TEXT, so
+# the parser must OPT OUT. Locks the release-note "safe no-op on distills" nuance.
+_DISTILL_TOKENIZER = "mlx-community/DeepSeek-R1-Distill-Qwen-32B-4bit"
+
+# get_weather: required string + optional enum (exercises %json string, enum, and
+# required-vs-optional). get_time: a second tool for the named-choice narrowing.
+TOOLS = [
+    {
+        "name": "get_weather",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string"},
+                "unit": {"type": "string", "enum": ["celsius", "fahrenheit"]},
+            },
+            "required": ["city"],
+            "additionalProperties": False,
+        },
+    },
+    {
+        "name": "get_time",
+        "parameters": {
+            "type": "object",
+            "properties": {"tz": {"type": "string"}},
+            "required": ["tz"],
+            "additionalProperties": False,
+        },
+    },
+]
+
+
+def _make_parser(tokenizer=None):
+    from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
+
+    return DeepSeekV3ToolParser(tokenizer=tokenizer)
+
+
+def _wire(name="get_weather", args='{"city": "Paris"}'):
+    """The DeepSeek-V3 ground-truth section-wrapper wire for one call."""
+    return (
+        f"<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>{name}\n"
+        f"```json\n{args}\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+    )
+
+
+# --------------------------------------------------------------------------
+# Pure-Python opt-in / opt-out contract (always runs — no tokenizer / network).
+# Mirrors the qwen3coder hermetic ``_FakeTokenizer`` (models exactly the surfaces
+# ``are_single_special_tokens`` probes: single ADDED tokens that round-trip).
+# --------------------------------------------------------------------------
+class _FakeAddedToken:
+    def __init__(self, content, special=False):
+        self.content = content
+        self.special = special
+
+
+class _FakeTokenizer:
+    def __init__(self, added=None):
+        self._added = dict(added or {})
+        self._id_to_str = {i: s for s, i in self._added.items()}
+        self.added_tokens_decoder = {
+            i: _FakeAddedToken(s, special=False) for s, i in self._added.items()
+        }
+
+    def encode(self, text, add_special_tokens=False):
+        if text in self._added:
+            return [self._added[text]]
+        return [0, 1]  # ordinary multi-token text
+
+    def decode(self, ids):
+        return "".join(self._id_to_str.get(i, "<unk>") for i in ids)
+
+    def get_vocab(self):
+        return dict(self._added)
+
+
+def _single_token_tokenizer():
+    # The real DeepSeek-V3 layout: each of the five markers is one added token.
+    return _FakeTokenizer(added=dict(zip(SENTINELS, range(128806, 128806 + 5))))
+
+
+def test_structure_info_opts_out_without_tokenizer():
+    # No tokenizer -> cannot prove single-token sentinels -> opt out (None).
+    assert _make_parser(tokenizer=None).structure_info() is None
+
+
+def test_structure_info_opts_out_on_multitoken_tokenizer():
+    # A tokenizer that encodes the markers as ordinary multi-token text -> opt out
+    # rather than build an unenforceable special-token grammar.
+    assert _make_parser(tokenizer=_FakeTokenizer(added={})).structure_info() is None
+
+
+def test_structure_info_returns_deepseek_wire_triple():
+    from vllm_mlx.api.tool_grammar import StructureInfo
+
+    get_info = _make_parser(tokenizer=_single_token_tokenizer()).structure_info()
+    assert callable(get_info), "opt-in must return a name->StructureInfo factory"
+    si = get_info("get_weather")
+    assert isinstance(si, StructureInfo)
+    # The SGLang-copied triple, byte-exact.
+    assert si.begin == (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>"
+        "get_weather\n```json\n"
+    )
+    assert si.end == "\n```<｜tool▁call▁end｜><｜tool▁calls▁end｜>"
+    assert si.trigger == "<｜tool▁calls▁begin｜>"
+    # Builder invariants enforced by build_tool_lark.
+    assert si.begin.startswith(si.trigger)
+    assert si.trigger in si.sentinels
+    # All five envelope markers are declared sentinels (special-token refs).
+    assert si.sentinels == SENTINELS
+    # JSON body (the default arg_style) — the arguments are a whole-object %json.
+    assert si.arg_style == "json"
+
+
+def test_deepseek_family_is_auto_safe_by_default():
+    # DeepSeek does NOT override TOOL_GRAMMAR_AUTO_SAFE — its trigger
+    # (<｜tool▁calls▁begin｜>) is a dedicated tool-call boundary, so it defaults
+    # auto-safe like hermes/qwen (unlike harmony's shared <|channel|>).
+    from vllm_mlx.tool_parsers.deepseek_v3_tool_parser import DeepSeekV3ToolParser
+
+    assert DeepSeekV3ToolParser.TOOL_GRAMMAR_AUTO_SAFE is True
+
+
+@_requires_llguidance
+def test_build_tool_lark_builds_from_deepseek_triple():
+    # The whole point of E1: the EXISTING builder consumes the DeepSeek triple
+    # unchanged. build_tool_lark must produce a grammar with the section markers
+    # as BARE special-token refs (never quoted byte literals) and a %json body.
+    from vllm_mlx.api.tool_grammar import build_tool_lark
+
+    si = _make_parser(tokenizer=_single_token_tokenizer()).structure_info()(
+        "get_weather"
+    )
+    lark = build_tool_lark(TOOLS[:1], "required", [si], single_call=True)
+    assert isinstance(lark, str) and lark.strip()
+    # Section markers as bare refs, not quoted literals a single token can't match.
+    assert " <｜tool▁calls▁begin｜> " in lark
+    assert '"<｜tool▁calls▁begin｜>"' not in lark
+    assert '"<｜tool▁calls▁end｜>"' not in lark
+    # JSON body is a %json object; the fenced-JSON frame is byte-string literals.
+    assert "%json" in lark
+    assert "```json" in lark
+
+
+# --------------------------------------------------------------------------
+# DISTILL OPT-OUT on the REAL cached Qwen-tokenizer distill (locks finding ①).
+# --------------------------------------------------------------------------
+@pytest.fixture(scope="module")
+def distill_tok():
+    transformers = pytest.importorskip("transformers")
+    try:
+        return transformers.AutoTokenizer.from_pretrained(
+            _DISTILL_TOKENIZER, local_files_only=True
+        )
+    except Exception:  # pragma: no cover - distill tokenizer not cached
+        pytest.skip(
+            f"{_DISTILL_TOKENIZER} tokenizer not in the local HF cache — the "
+            "distill opt-out test requires it locally"
+        )
+
+
+def test_distill_qwen_tokenizer_markers_are_multitoken(distill_tok):
+    # The V3 markers on a Qwen tokenizer are ordinary multi-token TEXT — the exact
+    # condition that must drive the parser to opt out.
+    from vllm_mlx.api.tool_grammar import are_single_special_tokens
+
+    assert are_single_special_tokens(distill_tok, SENTINELS) is False
+
+
+def test_distill_qwen_tokenizer_opts_out_to_none(distill_tok):
+    # THE regression guard for the release-note nuance: on a Qwen-tokenizer distill
+    # carrying the V3 chat_template, structure_info() returns None (safe no-op),
+    # NOT a grammar the tokenizer could never satisfy.
+    assert _make_parser(tokenizer=distill_tok).structure_info() is None
+
+
+# --------------------------------------------------------------------------
+# ENFORCEMENT against a REAL original DeepSeek-V3 tokenizer.
+# --------------------------------------------------------------------------
+def _offline_skip_exc_types():
+    """Genuine network/cache-miss exceptions that are a sanctioned skip.
+
+    A corrupt tokenizer artifact / invalid revision must FAIL the test, not skip
+    it, so we skip ONLY on the specific offline/cache-miss signals.
+    """
+    types: list[type[BaseException]] = []
+    try:
+        from huggingface_hub.errors import (
+            LocalEntryNotFoundError,
+            OfflineModeIsEnabled,
+        )
+
+        types += [LocalEntryNotFoundError, OfflineModeIsEnabled]
+    except Exception:  # pragma: no cover - old hub without these names
+        pass
+    try:
+        from requests.exceptions import ConnectionError as _ReqConnErr
+
+        types.append(_ReqConnErr)
+    except Exception:  # pragma: no cover - requests not present
+        pass
+    return tuple(types) or (OSError,)
+
+
+@pytest.fixture(scope="module")
+def tok():
+    """Load the first available original DeepSeek-V3-family tokenizer.
+
+    Tries DeepSeek-V3 (pinned), then R1 / V3-0324. Tokenizer + config files only
+    — never weights. Skips only when NONE of the candidates is cached/reachable.
+    """
+    transformers = pytest.importorskip("transformers")
+    skip_types = _offline_skip_exc_types()
+    for repo, revision in _TOKENIZER_CANDIDATES:
+        try:
+            return transformers.AutoTokenizer.from_pretrained(repo, revision=revision)
+        except skip_types:  # pragma: no cover - this candidate offline & uncached
+            continue
+    pytest.skip(
+        "no original DeepSeek-V3-family tokenizer cached or reachable "
+        f"({', '.join(r for r, _ in _TOKENIZER_CANDIDATES)}) — E1 enforcement "
+        "tests require one"
+    )
+
+
+@pytest.fixture(scope="module")
+def lltok(tok):
+    """Build an llguidance LLTokenizer via the engine's own resolver.
+
+    Once ``tok`` (a real cached DeepSeek-V3 tokenizer) is available, the runtime
+    bridge MUST yield an ``LLTokenizer`` — a ``None`` here would mean the
+    production resolver regressed and DeepSeek grammar constraint is SILENTLY
+    disabled, so we FAIL rather than skip (skipping would let the enforcement
+    suite go green while the feature is broken). The narrow "bridge not
+    installed" case is the only sanctioned skip.
+    """
+    from vllm_mlx.api.tool_grammar import HAS_LL_TOKENIZER, build_lltokenizer
+
+    if not HAS_LL_TOKENIZER:
+        pytest.skip(
+            "llguidance runtime bridge (llguidance.hf / LLTokenizer) not "
+            "installed — DeepSeek enforcement tests require it"
+        )
+    lltokenizer = build_lltokenizer(tok)
+    assert lltokenizer is not None, (
+        "build_lltokenizer returned None for the real DeepSeek-V3 tokenizer with "
+        "the runtime bridge available — the tokenizer->llguidance integration is "
+        "BROKEN (this must FAIL, not skip)."
+    )
+    return lltokenizer
+
+
+@pytest.fixture(scope="module")
+def parser(tok):
+    return _make_parser(tok)
+
+
+def _consume(grammar, lltok, tok, text):
+    """Offline enforcement probe. Returns ``(accepted, total, is_accepting)``.
+
+    Advances real grammar state one token at a time via ``consume_tokens``. A
+    "fully accepted" positive test whose final ``is_accepting()`` is True proves
+    the string is a COMPLETE valid derivation, not merely an accepted prefix.
+    """
+    from llguidance.mlx import LLMatcher
+
+    ids = tok.encode(text, add_special_tokens=False)
+    matcher = LLMatcher(lltok, grammar)
+    assert not matcher.get_error(), matcher.get_error()
+    accepted = 0
+    for tid in ids:
+        if not matcher.consume_tokens([tid]):
+            break
+        accepted += 1
+    return accepted, len(ids), matcher.is_accepting()
+
+
+@_requires_llguidance
+def test_real_tokenizer_markers_are_single_special_tokens(tok):
+    # The enforcement anchor: on the original DeepSeek-V3 tokenizer every section
+    # marker IS a single special token, so the parser opts in.
+    from vllm_mlx.api.tool_grammar import are_single_special_tokens
+
+    assert are_single_special_tokens(tok, SENTINELS) is True
+
+
+@_requires_llguidance
+def test_structure_info_opts_in_on_real_tokenizer(parser):
+    get_info = parser.structure_info()
+    assert get_info is not None, "parser must opt IN on the real DeepSeek tokenizer"
+    si = get_info("get_weather")
+    assert si.begin.startswith(si.trigger)
+    assert si.trigger == "<｜tool▁calls▁begin｜>"
+    assert si.sentinels == SENTINELS
+
+
+@_requires_llguidance
+def test_valid_deepseek_call_is_accepted_and_terminates(parser, tok, lltok):
+    from vllm_mlx.api.tool_grammar import build_tool_grammar
+
+    grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
+    assert grammar is not None
+    accepted, total, accepting = _consume(grammar, lltok, tok, _wire())
+    assert accepted == total, f"valid DeepSeek call rejected ({accepted}/{total})"
+    assert accepting, "valid complete DeepSeek call is not an accepting state"
+
+
+@_requires_llguidance
+def test_valid_enum_value_is_accepted(parser, tok, lltok):
+    from vllm_mlx.api.tool_grammar import build_tool_grammar
+
+    grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
+    accepted, total, accepting = _consume(
+        grammar, lltok, tok, _wire(args='{"city": "P", "unit": "celsius"}')
+    )
+    assert accepted == total, f"valid enum value rejected ({accepted}/{total})"
+    assert accepting, "valid enum call is not an accepting state"
+
+
+@_requires_llguidance
+def test_off_schema_argument_is_rejected(parser, tok, lltok):
+    from vllm_mlx.api.tool_grammar import build_tool_grammar
+
+    grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
+    # `city` must be a string; an integer must be forbidden. Feed a prefix up to
+    # the bad byte so the rejection is unambiguous.
+    bad = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>"
+        'get_weather\n```json\n{"city": 4'
+    )
+    accepted, total, _ = _consume(grammar, lltok, tok, bad)
+    assert accepted < total, "off-schema integer argument was NOT rejected"
+
+
+@_requires_llguidance
+def test_bad_enum_value_is_rejected(parser, tok, lltok):
+    from vllm_mlx.api.tool_grammar import build_tool_grammar
+
+    grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
+    # `unit` enum is {celsius, fahrenheit}; "kelvin" must be forbidden.
+    bad = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>"
+        'get_weather\n```json\n{"city": "P", "unit": "kelvin'
+    )
+    accepted, total, _ = _consume(grammar, lltok, tok, bad)
+    assert accepted < total, "invalid enum value was NOT rejected by the grammar"
+
+
+@_requires_llguidance
+def test_hallucinated_tool_name_is_rejected(parser, tok, lltok):
+    from vllm_mlx.api.tool_grammar import build_tool_grammar
+
+    grammar = build_tool_grammar(TOOLS[:1], "required", parser, single_call=True)
+    # Only get_weather is offered; the header name get_stock must be masked.
+    bad = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_stock"
+    )
+    accepted, total, _ = _consume(grammar, lltok, tok, bad)
+    assert accepted < total, "hallucinated tool name was NOT rejected"
+
+
+@_requires_llguidance
+def test_named_choice_narrows_to_requested_tool(parser, tok, lltok):
+    from vllm_mlx.api.tool_grammar import build_tool_grammar
+
+    grammar = build_tool_grammar(TOOLS[1:], "get_time", parser, single_call=True)
+    assert grammar is not None
+    assert "get_time" in grammar
+    assert "get_weather" not in grammar
+    # A call to get_time is accepted + terminal...
+    accepted, total, accepting = _consume(
+        grammar, lltok, tok, _wire(name="get_time", args='{"tz": "UTC"}')
+    )
+    assert accepted == total and accepting, "named get_time call rejected"
+    # ...but a call to the OTHER tool is rejected under the named get_time choice.
+    bad = (
+        "<｜tool▁calls▁begin｜><｜tool▁call▁begin｜>function<｜tool▁sep｜>get_weather"
+    )
+    accepted, total, _ = _consume(grammar, lltok, tok, bad)
+    assert accepted < total, "named get_time choice wrongly allowed get_weather"
