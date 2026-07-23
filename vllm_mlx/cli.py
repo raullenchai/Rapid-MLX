@@ -7945,7 +7945,7 @@ Examples:
     serve_parser.add_argument(
         "--mllm",
         action="store_true",
-        help="Force load model as multimodal (vision) even if name doesn't match auto-detection patterns",
+        help="Force load model as multimodal (vision) even if name doesn't match auto-detection patterns. Also DISABLES the automatic text-only fallback: normally a vision-config checkpoint that ships no usable vision tower auto-degrades to text-only serving (#1187); with --mllm it hard-fails instead so a deliberate demand for the vision lane is never silently downgraded.",
     )
     serve_parser.add_argument(
         "--no-mllm",

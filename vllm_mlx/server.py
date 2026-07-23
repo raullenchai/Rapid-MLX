@@ -2114,7 +2114,7 @@ Examples:
     parser.add_argument(
         "--mllm",
         action="store_true",
-        help="Force loading as MLLM (multimodal language model)",
+        help="Force loading as MLLM (multimodal language model). Also disables the automatic text-only fallback: a vision-config checkpoint with no usable vision tower normally auto-degrades to text-only serving (#1187), but with --mllm it hard-fails instead.",
     )
     parser.add_argument(
         "--no-mllm",
