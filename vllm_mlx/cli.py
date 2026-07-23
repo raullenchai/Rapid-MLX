@@ -6186,11 +6186,16 @@ def chat_command(args):
                 print(f"\n  {RED}Failed to start MCP:{RESET} {exc}")
                 _cleanup()
                 sys.exit(1)
-            print(
+            ready_line = (
                 f"  {GREEN}✓ MCP ready:{RESET} "
                 f"{len(mcp_runtime.tools)} tool(s) from "
                 f"{mcp_runtime.server_count} server(s)."
             )
+            if mcp_runtime.server_log_path:
+                ready_line += (
+                    f"\n  {DIM}server logs → {mcp_runtime.server_log_path}{RESET}"
+                )
+            print(ready_line)
             for server_name, error in sorted(mcp_runtime.connection_errors.items()):
                 print(f"  {YELLOW}MCP server {server_name} unavailable:{RESET} {error}")
 

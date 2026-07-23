@@ -135,6 +135,27 @@ def test_streaming_preview_respects_terminal_cell_width():
     assert cell_len(preview) <= 7
 
 
+def test_streaming_preview_shows_live_token_and_elapsed():
+    output = _Tty()
+    with patch.dict(
+        os.environ,
+        {"TERM": "xterm-256color", "COLUMNS": "100"},
+        clear=False,
+    ):
+        os.environ.pop("NO_COLOR", None)
+        os.environ.pop("CI", None)
+        renderer = StreamingMarkdownRenderer(output)
+        renderer.write("Hello")
+        renderer.write(" there")
+
+    # The live (pre-finish) preview line leads with a token/elapsed badge so a
+    # long answer shows progress instead of a silent ticker.
+    preview = output.getvalue().rsplit("\x1b[2m", 1)[-1].split("\x1b[0m", 1)[0]
+    assert preview.startswith("2 tok · ")
+    assert "s  " in preview
+    assert "Hello there" in preview
+
+
 def test_terminal_safe_text_removes_control_sequences():
     text = "tool\x1b]52;c;payload\x07\r\nname"
 

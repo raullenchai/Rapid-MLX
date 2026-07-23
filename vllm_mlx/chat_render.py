@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import os
 import sys
+import time
 from typing import TextIO
 
 from markdown_it import MarkdownIt
@@ -122,6 +123,8 @@ class StreamingMarkdownRenderer:
         )
         self._chunks: list[str] = []
         self._preview = ""
+        self._tokens = 0
+        self._start: float | None = None
 
     def __enter__(self) -> StreamingMarkdownRenderer:
         return self
@@ -138,6 +141,12 @@ class StreamingMarkdownRenderer:
             return
 
         self._chunks.append(text)
+        # One SSE delta ≈ one token for the streaming backends chat talks to,
+        # so a delta counter gives a live progress read during long answers
+        # (the authoritative count still prints on the speed line at the end).
+        self._tokens += 1
+        if self._start is None:
+            self._start = time.monotonic()
         preview_piece: list[str] = []
         previous_was_space = not self._preview or self._preview.endswith(" ")
         for char in text:
@@ -149,11 +158,18 @@ class StreamingMarkdownRenderer:
                 preview_piece.append(char)
                 previous_was_space = False
         if preview_piece and self._preview_width:
+            badge = f"{self._tokens} tok · {time.monotonic() - self._start:.0f}s  "
+            preview_width = self._preview_width - len(badge)
+            if preview_width < 8:
+                # Terminal too narrow to fit the badge and a useful preview;
+                # keep the preview and drop the badge rather than truncate both.
+                badge = ""
+                preview_width = self._preview_width
             self._preview = _cell_suffix(
                 self._preview + "".join(preview_piece),
-                self._preview_width,
+                preview_width,
             )
-            self._stream.write(f"\r\x1b[2K\x1b[2m{self._preview}\x1b[0m")
+            self._stream.write(f"\r\x1b[2K\x1b[2m{badge}{self._preview}\x1b[0m")
             self._stream.flush()
 
     def finish(self) -> None:

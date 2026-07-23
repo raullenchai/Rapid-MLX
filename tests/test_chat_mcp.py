@@ -4,6 +4,8 @@
 from __future__ import annotations
 
 import asyncio
+import functools
+import io
 import json
 import logging
 import threading
@@ -14,6 +16,7 @@ import pytest
 from vllm_mlx.chat_mcp import (
     ChatMCPRuntime,
     ChatToolEvent,
+    _mcp_server_stderr_to,
     _quiet_optional_component_warnings,
     _server_parameters,
 )
@@ -664,3 +667,44 @@ def test_runtime_thread_is_dedicated_to_chat(tmp_path):
         assert _FakeSessionGroup.connect_thread_names == ["rapid-mlx-chat-mcp"]
     finally:
         runtime.close()
+
+
+def test_mcp_server_stderr_to_injects_errlog_and_restores():
+    import mcp
+
+    original = mcp.stdio_client
+    logfile = io.StringIO()
+    with _mcp_server_stderr_to(logfile):
+        patched = mcp.stdio_client
+        assert patched is not original
+        assert isinstance(patched, functools.partial)
+        assert patched.func is original
+        assert patched.keywords.get("errlog") is logfile
+    assert mcp.stdio_client is original
+
+
+def test_mcp_server_stderr_to_is_noop_without_logfile():
+    import mcp
+
+    original = mcp.stdio_client
+    with _mcp_server_stderr_to(None):
+        assert mcp.stdio_client is original
+    assert mcp.stdio_client is original
+
+
+def test_runtime_exposes_server_log_path(tmp_path):
+    import os
+
+    path = _write_config(
+        tmp_path,
+        {"alpha": {"command": "python3", "args": ["alpha", "lookup"]}},
+    )
+    runtime = ChatMCPRuntime(str(path))
+    try:
+        log_path = runtime.server_log_path
+        assert log_path is not None
+        assert os.path.exists(log_path)
+    finally:
+        runtime.close()
+    # The log survives close so a user can read what the servers printed.
+    assert os.path.exists(log_path)

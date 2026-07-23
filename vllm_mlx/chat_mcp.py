@@ -10,10 +10,12 @@ from __future__ import annotations
 
 import asyncio
 import concurrent.futures
+import functools
 import json
 import logging
 import re
 import sys
+import tempfile
 import threading
 import time
 from collections.abc import Callable
@@ -76,6 +78,47 @@ def _quiet_optional_component_warnings():
             logger.removeFilter(warning_filter)
 
 
+@contextmanager
+def _mcp_server_stderr_to(logfile):
+    """Route spawned MCP servers' stderr to *logfile* instead of the chat REPL.
+
+    The SDK's ``ClientSessionGroup`` builds the stdio transport internally and
+    exposes no way to pass ``errlog`` (it defaults to ``sys.stderr``), so a
+    server that logs to stderr — the official reference servers print a startup
+    banner, FastMCP-based ones log every request — would scribble over the clean
+    tool-activity display. We wrap the ``stdio_client`` the SDK resolves to
+    inject ``errlog`` for the duration of connection setup only. A child's
+    stderr fd is bound at exec, so it keeps writing to *logfile* for its whole
+    life, including per-request logging after setup.
+
+    The installed SDK calls ``mcp.stdio_client(...)`` by attribute, but to stay
+    robust if a future version binds ``stdio_client`` locally in the
+    ``session_group`` module instead, we patch every reachable reference. If the
+    SDK stops routing through any of them this degrades to the previous (noisy)
+    behaviour rather than breaking.
+    """
+
+    if logfile is None:
+        yield
+        return
+    import mcp
+    import mcp.client.session_group as _session_group
+
+    targets = [(mcp, "stdio_client")]
+    if hasattr(_session_group, "stdio_client"):
+        targets.append((_session_group, "stdio_client"))
+    saved = []
+    try:
+        for module, name in targets:
+            original = getattr(module, name)
+            saved.append((module, name, original))
+            setattr(module, name, functools.partial(original, errlog=logfile))
+        yield
+    finally:
+        for module, name, original in saved:
+            setattr(module, name, original)
+
+
 class ChatMCPRuntime:
     """Synchronous facade over SDK sessions running in an AnyIO portal."""
 
@@ -99,6 +142,20 @@ class ChatMCPRuntime:
         self._active_done: threading.Event | None = None
         self._stop_event: asyncio.Event | None = None
         self.tools: list[dict[str, Any]] = []
+
+        # Per-session log sink for MCP servers' stderr, so their banners and
+        # request logging land in a file instead of the interactive chat.
+        # Best-effort: if it can't be opened we simply keep the old behaviour.
+        self._server_log = None
+        self.server_log_path: str | None = None
+        try:
+            handle = tempfile.NamedTemporaryFile(
+                prefix="rapid-mlx-mcp-", suffix=".log", mode="a", delete=False
+            )
+            self._server_log = handle
+            self.server_log_path = handle.name
+        except OSError:
+            pass
 
         self._portal_context = start_blocking_portal(
             backend="asyncio",
@@ -207,6 +264,12 @@ class ChatMCPRuntime:
                     ) from exc
             finally:
                 self._portal_context.__exit__(None, None, None)
+                if self._server_log is not None:
+                    try:
+                        self._server_log.close()
+                    except OSError:
+                        pass
+                    self._server_log = None
                 self._closed = True
             if cancellation_error is not None:
                 raise cancellation_error
@@ -216,63 +279,65 @@ class ChatMCPRuntime:
 
         self._stop_event = asyncio.Event()
         async with AsyncExitStack() as stack:
-            for server in self._enabled_servers:
-                group = ClientSessionGroup(
-                    component_name_hook=lambda name, _info, label=server.name: (
-                        f"{label}__{name}"
+            with _mcp_server_stderr_to(self._server_log):
+                for server in self._enabled_servers:
+                    group = ClientSessionGroup(
+                        component_name_hook=lambda name, _info, label=server.name: (
+                            f"{label}__{name}"
+                        )
                     )
-                )
-                try:
-                    await group.__aenter__()
                     try:
-                        with _quiet_optional_component_warnings():
-                            await asyncio.wait_for(
-                                group.connect_to_server(_server_parameters(server)),
-                                timeout=server.timeout,
+                        await group.__aenter__()
+                        try:
+                            with _quiet_optional_component_warnings():
+                                await asyncio.wait_for(
+                                    group.connect_to_server(_server_parameters(server)),
+                                    timeout=server.timeout,
+                                )
+                        except BaseException:
+                            await _close_group(
+                                group,
+                                server.name,
+                                server.timeout,
+                                sys.exc_info(),
                             )
-                    except BaseException:
-                        await _close_group(
-                            group,
-                            server.name,
-                            server.timeout,
-                            sys.exc_info(),
+                            raise
+                    except (TimeoutError, asyncio.TimeoutError):
+                        self._connection_errors[server.name] = (
+                            f"connection timed out after {server.timeout:g} seconds"
                         )
-                        raise
-                except (TimeoutError, asyncio.TimeoutError):
-                    self._connection_errors[server.name] = (
-                        f"connection timed out after {server.timeout:g} seconds"
-                    )
-                    continue
-                except Exception as exc:
-                    self._connection_errors[server.name] = str(exc)
-                    continue
+                        continue
+                    except Exception as exc:
+                        self._connection_errors[server.name] = str(exc)
+                        continue
 
-                stack.push_async_callback(
-                    _close_group,
-                    group,
-                    server.name,
-                    server.timeout,
-                    (None, None, None),
-                )
-                self._groups[server.name] = group
-                for full_name, sdk_tool in group.tools.items():
-                    if not _OPENAI_FUNCTION_NAME_RE.fullmatch(full_name):
-                        raise RuntimeError(
-                            f"MCP tool name {full_name!r} is not a valid OpenAI "
-                            "function name (1-64 letters, digits, '_' or '-')"
-                        )
-                    if full_name in self._tools_by_name:
-                        previous = self._tools_by_name[full_name]
-                        raise RuntimeError(
-                            f"MCP tool name collision: {full_name!r} is exposed by "
-                            f"both {previous.server_name!r} and {server.name!r}"
-                        )
-                    self._tools_by_name[full_name] = MCPTool(
-                        server_name=server.name,
-                        name=sdk_tool.name,
-                        description=sdk_tool.description or "",
-                        input_schema=sdk_tool.inputSchema or {},
+                    stack.push_async_callback(
+                        _close_group,
+                        group,
+                        server.name,
+                        server.timeout,
+                        (None, None, None),
                     )
+                    self._groups[server.name] = group
+                    for full_name, sdk_tool in group.tools.items():
+                        if not _OPENAI_FUNCTION_NAME_RE.fullmatch(full_name):
+                            raise RuntimeError(
+                                f"MCP tool name {full_name!r} is not a valid OpenAI "
+                                "function name (1-64 letters, digits, '_' or '-')"
+                            )
+                        if full_name in self._tools_by_name:
+                            previous = self._tools_by_name[full_name]
+                            raise RuntimeError(
+                                f"MCP tool name collision: {full_name!r} is exposed "
+                                f"by both {previous.server_name!r} and "
+                                f"{server.name!r}"
+                            )
+                        self._tools_by_name[full_name] = MCPTool(
+                            server_name=server.name,
+                            name=sdk_tool.name,
+                            description=sdk_tool.description or "",
+                            input_schema=sdk_tool.inputSchema or {},
+                        )
 
             self.tools = mcp_tools_to_openai(list(self._tools_by_name.values()))
             task_status.started()
