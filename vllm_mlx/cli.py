@@ -5569,6 +5569,157 @@ def _stream_chat_response(
     return full
 
 
+def _complete_chat_with_mcp(
+    base_url: str,
+    payload: dict,
+    mcp_runtime,
+    timeout_s: int,
+    *,
+    max_rounds: int = 8,
+) -> tuple[str, dict]:
+    """Run the chat agent loop with MCP tools using non-streaming responses.
+
+    vLLM and SGLang use the same loop shape: expose MCP tools as ordinary
+    function tools, append the assistant tool call and matching tool output,
+    then ask the model again.  MCP transport and execution stay inside the
+    chat runtime; the inference server only sees standard Chat Completions
+    messages.
+    """
+    import json
+
+    import requests
+
+    messages = payload["messages"]
+    request_payload = {
+        **payload,
+        "stream": False,
+        "tools": mcp_runtime.tools,
+        "tool_choice": "auto",
+    }
+    request_payload.pop("stream_options", None)
+    total_usage: dict[str, int | float] = {}
+
+    for round_index in range(max_rounds + 1):
+        response = requests.post(
+            f"{base_url}/v1/chat/completions",
+            json=request_payload,
+            timeout=timeout_s,
+        )
+        if response.status_code != 200:
+            raise RuntimeError(f"HTTP {response.status_code}: {response.text[:500]}")
+        try:
+            body = response.json()
+            choice = body["choices"][0]
+            message = choice["message"]
+            if not isinstance(message, dict):
+                raise TypeError
+        except (KeyError, IndexError, TypeError, ValueError) as exc:
+            raise RuntimeError("Malformed chat completion response") from exc
+
+        usage = body.get("usage") or {}
+        if not isinstance(usage, dict):
+            raise RuntimeError("Malformed chat completion response")
+        for name, value in usage.items():
+            if isinstance(value, (int, float)) and not isinstance(value, bool):
+                total_usage[name] = total_usage.get(name, 0) + value
+
+        tool_calls = message.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            raise RuntimeError("Malformed chat completion response")
+        if not tool_calls:
+            content = message.get("content") or ""
+            if not isinstance(content, str):
+                content = json.dumps(content, ensure_ascii=False)
+            metrics = dict(total_usage)
+            metrics["finish_reason"] = choice.get("finish_reason")
+            reasoning = message.get("reasoning_content")
+            if reasoning:
+                metrics["reasoning_content"] = reasoning
+            return content, metrics
+        if round_index == max_rounds:
+            raise RuntimeError(f"MCP tool loop exceeded {max_rounds} rounds")
+
+        normalized_calls = []
+        for position, tool_call in enumerate(tool_calls):
+            if not isinstance(tool_call, dict):
+                raise RuntimeError("Malformed chat completion response")
+            function = tool_call.get("function") or {}
+            if not isinstance(function, dict):
+                raise RuntimeError("Malformed chat completion response")
+            arguments = function.get("arguments", "{}")
+            if not isinstance(arguments, str):
+                arguments = json.dumps(arguments, ensure_ascii=False)
+            normalized_calls.append(
+                {
+                    "id": str(tool_call.get("id") or f"call_{round_index}_{position}"),
+                    "type": "function",
+                    "function": {
+                        "name": str(function.get("name") or ""),
+                        "arguments": arguments,
+                    },
+                }
+            )
+
+        assistant_message = {
+            "role": "assistant",
+            "content": message.get("content"),
+            "tool_calls": normalized_calls,
+        }
+        if message.get("reasoning_content"):
+            assistant_message["reasoning_content"] = message["reasoning_content"]
+        messages.append(assistant_message)
+        for position, tool_call in enumerate(normalized_calls):
+            try:
+                messages.extend(mcp_runtime.execute_tool_calls([tool_call]))
+            except BaseException:
+                for pending_call in normalized_calls[position:]:
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": pending_call["id"],
+                            "content": json.dumps(
+                                {"error": "Tool execution interrupted"},
+                                ensure_ascii=False,
+                            ),
+                        }
+                    )
+                raise
+
+    raise RuntimeError(f"MCP tool loop exceeded {max_rounds} rounds")
+
+
+def _recover_failed_chat_turn(messages: list[dict], turn_start: int) -> None:
+    """Keep completed tool side effects in history; otherwise roll back."""
+
+    import json
+
+    tool_succeeded = False
+    for message in messages[turn_start + 1 :]:
+        if message.get("role") != "tool":
+            continue
+        try:
+            result = json.loads(message.get("content") or "")
+        except (TypeError, ValueError):
+            continue
+        if (
+            isinstance(result, dict)
+            and "error" not in result
+            and result.get("isError") is not True
+        ):
+            tool_succeeded = True
+            break
+
+    if tool_succeeded:
+        messages.append(
+            {
+                "role": "assistant",
+                "content": "Tool execution completed, but the follow-up response failed.",
+            }
+        )
+    else:
+        del messages[turn_start:]
+
+
 def chat_command(args):
     """Interactive REPL chat with a model.
 
@@ -5586,6 +5737,7 @@ def chat_command(args):
     base_url: str
     proc = None
     log_path: str | None = None
+    mcp_runtime = None
     # Tracks every spawned server (initial + every /model candidate) so
     # the SIGTERM/atexit cleanup tears down in-flight candidates too —
     # not just the bound ``proc``. A SIGTERM landing while a /model
@@ -5704,8 +5856,18 @@ def chat_command(args):
         except (ValueError, OSError):
             pass
         try:
+            mcp_close_error = None
+            if mcp_runtime is not None:
+                try:
+                    mcp_runtime.close()
+                except Exception as exc:
+                    mcp_close_error = exc
             for p in list(_active_procs):
                 _teardown_proc(p)
+            if mcp_close_error is not None:
+                raise RuntimeError(
+                    f"Failed to close MCP runtime: {mcp_close_error}"
+                ) from mcp_close_error
             _cleanup_state["done"] = True
         finally:
             # Best-effort restore so post-cleanup signals route normally.
@@ -6134,143 +6296,183 @@ def chat_command(args):
             f"{DIM}(history cleared){RESET}\n"
         )
 
-    while True:
-        try:
-            line = input(prompt).rstrip()
-        except (EOFError, KeyboardInterrupt):
-            print()
-            break
-        if not line:
-            continue
-        # Heredoc-pasted content must NEVER be dispatched as a slash
-        # command — a markdown doc whose first line starts with `/path`
-        # or whose content includes `/save` would otherwise be silently
-        # eaten by the slash dispatcher. Track the source so we know.
-        is_heredoc = False
-        if line == '"""':
-            line = _read_multiline()
+    try:
+        if getattr(args, "mcp_config", None):
+            from vllm_mlx.chat_mcp import ChatMCPRuntime
+
+            try:
+                mcp_runtime = ChatMCPRuntime(args.mcp_config)
+            except (ImportError, OSError, RuntimeError, ValueError) as exc:
+                print(f"\n  {RED}Failed to start MCP:{RESET} {exc}")
+                _cleanup()
+                sys.exit(1)
+            print(
+                f"  {GREEN}✓ MCP ready:{RESET} "
+                f"{len(mcp_runtime.tools)} tool(s) from "
+                f"{mcp_runtime.server_count} server(s)."
+            )
+            for server_name, error in sorted(mcp_runtime.connection_errors.items()):
+                print(f"  {YELLOW}MCP server {server_name} unavailable:{RESET} {error}")
+
+        while True:
+            try:
+                line = input(prompt).rstrip()
+            except (EOFError, KeyboardInterrupt):
+                print()
+                break
             if not line:
                 continue
-            is_heredoc = True
-        if not is_heredoc:
-            # Parse the leading word as the command and dispatch on
-            # *exact* match. ``startswith("/save")`` would otherwise treat
-            # ``/savefoo`` as ``/save`` (with arg ``foo``), silently
-            # writing a file from a typo. Same for ``/modelfoo``.
-            # ``str.split(maxsplit=1)`` (no separator arg) splits on any
-            # whitespace, so ``/save\tpath.md`` works the same as
-            # ``/save path.md``.
-            parts = line.split(maxsplit=1)
-            cmd = parts[0] if parts else ""
-            rest = parts[1].strip() if len(parts) > 1 else ""
-            # ``/bye`` is an Ollama-muscle-memory alias for ``/exit`` /
-            # ``/quit``. ``/?`` mirrors ``/help`` and was already
-            # supported; both alias sets are advertised in ``/help``.
-            if cmd in ("exit", "quit", "/exit", "/quit", "/bye"):
-                break
-            if cmd in ("/help", "/?"):
-                _print_help()
-                continue
-            if cmd in ("/reset", "/clear"):
-                messages = (
-                    [{"role": "system", "content": args.system}] if args.system else []
-                )
-                print(f"  {DIM}(history cleared){RESET}\n")
-                continue
-            if cmd == "/save":
-                if not rest:
-                    print(f"  {YELLOW}Usage: /save <path>{RESET}\n")
-                else:
-                    _save_conversation(rest)
-                continue
-            if cmd == "/model":
-                if not rest:
+            # Heredoc-pasted content must NEVER be dispatched as a slash
+            # command — a markdown doc whose first line starts with `/path`
+            # or whose content includes `/save` would otherwise be silently
+            # eaten by the slash dispatcher. Track the source so we know.
+            is_heredoc = False
+            if line == '"""':
+                line = _read_multiline()
+                if not line:
+                    continue
+                is_heredoc = True
+            if not is_heredoc:
+                # Parse the leading word as the command and dispatch on
+                # *exact* match. ``startswith("/save")`` would otherwise treat
+                # ``/savefoo`` as ``/save`` (with arg ``foo``), silently
+                # writing a file from a typo. Same for ``/modelfoo``.
+                # ``str.split(maxsplit=1)`` (no separator arg) splits on any
+                # whitespace, so ``/save\tpath.md`` works the same as
+                # ``/save path.md``.
+                parts = line.split(maxsplit=1)
+                cmd = parts[0] if parts else ""
+                rest = parts[1].strip() if len(parts) > 1 else ""
+                # ``/bye`` is an Ollama-muscle-memory alias for ``/exit`` /
+                # ``/quit``. ``/?`` mirrors ``/help`` and was already
+                # supported; both alias sets are advertised in ``/help``.
+                if cmd in ("exit", "quit", "/exit", "/quit", "/bye"):
+                    break
+                if cmd in ("/help", "/?"):
+                    _print_help()
+                    continue
+                if cmd in ("/reset", "/clear"):
+                    messages = (
+                        [{"role": "system", "content": args.system}]
+                        if args.system
+                        else []
+                    )
+                    print(f"  {DIM}(history cleared){RESET}\n")
+                    continue
+                if cmd == "/save":
+                    if not rest:
+                        print(f"  {YELLOW}Usage: /save <path>{RESET}\n")
+                    else:
+                        _save_conversation(rest)
+                    continue
+                if cmd == "/model":
+                    if not rest:
+                        print(
+                            f"  {YELLOW}Usage: /model <alias>{RESET}  "
+                            f"{DIM}(see `rapid-mlx models`){RESET}\n"
+                        )
+                    else:
+                        _switch_model(rest)
+                    continue
+                if cmd.startswith("/"):
                     print(
-                        f"  {YELLOW}Usage: /model <alias>{RESET}  "
-                        f"{DIM}(see `rapid-mlx models`){RESET}\n"
+                        f"  {YELLOW}Unknown command: {cmd}{RESET}  "
+                        f"{DIM}(type /help){RESET}\n"
+                    )
+                    continue
+
+            turn_start = len(messages)
+            messages.append({"role": "user", "content": line})
+            payload = {
+                "model": served_name,
+                "messages": messages,
+                "max_tokens": args.max_tokens,
+                "temperature": args.temperature,
+                "stream": True,
+                "stream_options": {"include_usage": True},
+                **extra,
+            }
+            # Claude-Code-style turn marker: a colored bullet introduces the
+            # assistant's response so the user can visually scan turn
+            # boundaries when scrolling back through long conversations.
+            sys.stdout.write(f"\n  {CYAN}●{RESET} ")
+            sys.stdout.flush()
+            metrics: dict = {}
+            start_t = time.monotonic()
+            try:
+                if mcp_runtime is None:
+                    assistant = _stream_chat_response(
+                        base_url,
+                        payload,
+                        timeout_s=args.response_timeout,
+                        metrics=metrics,
                     )
                 else:
-                    _switch_model(rest)
+                    assistant, metrics = _complete_chat_with_mcp(
+                        base_url,
+                        payload,
+                        mcp_runtime,
+                        timeout_s=args.response_timeout,
+                    )
+                    reasoning = metrics.get("reasoning_content")
+                    if reasoning:
+                        sys.stdout.write(f"{DIM}[thinking] {reasoning}{RESET}\n  ")
+                    sys.stdout.write(assistant)
+                    sys.stdout.flush()
+            except KeyboardInterrupt:
+                print(f"\n  {YELLOW}(response interrupted){RESET}\n")
+                _recover_failed_chat_turn(messages, turn_start)
                 continue
-            if cmd.startswith("/"):
+            except RuntimeError as e:
+                print(f"\n  {RED}{e}{RESET}\n")
+                _recover_failed_chat_turn(messages, turn_start)
+                continue
+            except requests.RequestException as e:
+                # Connection refused, timeout, dropped midstream — keep the REPL
+                # alive and roll back the failed user turn so the next request
+                # doesn't carry a dangling user role with no assistant reply.
+                print(f"\n  {RED}Request failed:{RESET} {e}\n")
+                _recover_failed_chat_turn(messages, turn_start)
+                continue
+            elapsed = time.monotonic() - start_t
+            # Speed line: prefer server-reported usage, fall back to a rough
+            # 4-chars-per-token estimate when the server doesn't ship usage
+            # in the stream.
+            tokens = metrics.get("completion_tokens")
+            if not tokens:
+                tokens = max(1, len(assistant) // 4)
+                tokens_label = f"~{tokens}"
+            else:
+                tokens_label = str(tokens)
+            if assistant and elapsed > 0:
+                tps = tokens / elapsed
                 print(
-                    f"  {YELLOW}Unknown command: {cmd}{RESET}  "
-                    f"{DIM}(type /help){RESET}\n"
+                    f"\n  {DIM}{tokens_label} tok · {elapsed:.1f}s · "
+                    f"{tps:.0f} tok/s{RESET}\n"
                 )
-                continue
-
-        messages.append({"role": "user", "content": line})
-        payload = {
-            "model": served_name,
-            "messages": messages,
-            "max_tokens": args.max_tokens,
-            "temperature": args.temperature,
-            "stream": True,
-            "stream_options": {"include_usage": True},
-            **extra,
-        }
-        # Claude-Code-style turn marker: a colored bullet introduces the
-        # assistant's response so the user can visually scan turn
-        # boundaries when scrolling back through long conversations.
-        sys.stdout.write(f"\n  {CYAN}●{RESET} ")
-        sys.stdout.flush()
-        metrics: dict = {}
-        start_t = time.monotonic()
-        try:
-            assistant = _stream_chat_response(
-                base_url,
-                payload,
-                timeout_s=args.response_timeout,
-                metrics=metrics,
-            )
-        except KeyboardInterrupt:
-            print(f"\n  {YELLOW}(response interrupted){RESET}\n")
-            messages.pop()
-            continue
-        except RuntimeError as e:
-            print(f"\n  {RED}{e}{RESET}\n")
-            messages.pop()
-            continue
-        except requests.RequestException as e:
-            # Connection refused, timeout, dropped midstream — keep the REPL
-            # alive and roll back the failed user turn so the next request
-            # doesn't carry a dangling user role with no assistant reply.
-            print(f"\n  {RED}Request failed:{RESET} {e}\n")
-            messages.pop()
-            continue
-        elapsed = time.monotonic() - start_t
-        # Speed line: prefer server-reported usage, fall back to a rough
-        # 4-chars-per-token estimate when the server doesn't ship usage
-        # in the stream.
-        tokens = metrics.get("completion_tokens")
-        if not tokens:
-            tokens = max(1, len(assistant) // 4)
-            tokens_label = f"~{tokens}"
-        else:
-            tokens_label = str(tokens)
-        if assistant and elapsed > 0:
-            tps = tokens / elapsed
-            print(
-                f"\n  {DIM}{tokens_label} tok · {elapsed:.1f}s · "
-                f"{tps:.0f} tok/s{RESET}\n"
-            )
-        else:
-            print()
-        # Length-cut + empty-content warning. When the server stops
-        # because ``finish_reason == "length"`` AND no visible content
-        # was streamed (only reasoning), the user otherwise sees an
-        # empty bullet and has no signal that the budget was the
-        # problem. This is the round-1 ``--think`` regression: 2048-
-        # token budget filled by reasoning on small models, zero answer.
-        if metrics.get("finish_reason") == "length" and not assistant:
-            print(
-                f"  {YELLOW}(reasoning consumed the full --max-tokens "
-                f"budget; bump --max-tokens for a final answer){RESET}\n"
-            )
-        if assistant:
-            messages.append({"role": "assistant", "content": assistant})
-        else:
-            messages.pop()
+            else:
+                print()
+            # Length-cut + empty-content warning. When the server stops
+            # because ``finish_reason == "length"`` AND no visible content
+            # was streamed (only reasoning), the user otherwise sees an
+            # empty bullet and has no signal that the budget was the
+            # problem. This is the round-1 ``--think`` regression: 2048-
+            # token budget filled by reasoning on small models, zero answer.
+            if metrics.get("finish_reason") == "length" and not assistant:
+                print(
+                    f"  {YELLOW}(reasoning consumed the full --max-tokens "
+                    f"budget; bump --max-tokens for a final answer){RESET}\n"
+                )
+            if assistant:
+                messages.append({"role": "assistant", "content": assistant})
+            else:
+                _recover_failed_chat_turn(messages, turn_start)
+    finally:
+        # Do not defer MCP shutdown to ``atexit``. The official SDK owns helper
+        # threads for stdio sessions, and Python waits for non-daemon threads
+        # before running atexit callbacks. Closing here avoids that shutdown
+        # ordering deadlock and also tears down a spawned model server promptly.
+        _cleanup()
 
 
 def info_command(args):
@@ -8217,6 +8419,12 @@ Examples:
         type=int,
         default=600,
         help="Seconds to wait for a single assistant response (default: 600)",
+    )
+    chat_parser.add_argument(
+        "--mcp-config",
+        type=str,
+        default=None,
+        help="Path to an MCP config file whose tools are available in this chat",
     )
 
     # Info command — show the per-model profile (parsers + capability gates)

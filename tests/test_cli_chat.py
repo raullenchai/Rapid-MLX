@@ -9,6 +9,7 @@ import os
 import sys
 import threading
 from contextlib import contextmanager
+from copy import deepcopy
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from unittest.mock import patch
 
@@ -126,6 +127,360 @@ def test_chat_with_alias_overrides_default():
         args.model == "smollm3-3b-4bit"
         or getattr(args, "_original_alias", None) == "smollm3-3b-4bit"
     )
+
+
+def test_chat_mcp_config_flag_is_scoped_to_chat():
+    captured: list = []
+    with (
+        patch.object(
+            sys,
+            "argv",
+            ["rapid-mlx", "chat", "--mcp-config", "/tmp/tools.json"],
+        ),
+        patch.object(cli, "chat_command", side_effect=captured.append),
+    ):
+        cli.main()
+    assert captured[0].mcp_config == "/tmp/tools.json"
+
+
+class _FakeMCPRuntime:
+    tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": "files__read",
+                "description": "read a file",
+                "parameters": {"type": "object"},
+            },
+        }
+    ]
+
+    def __init__(self):
+        self.calls = []
+
+    def execute_tool_calls(self, calls):
+        self.calls.append(calls)
+        return [
+            {
+                "role": "tool",
+                "tool_call_id": calls[0]["id"],
+                "content": '{"content":"hello"}',
+            }
+        ]
+
+
+def _json_response(body, status_code=200):
+    return type(
+        "Response",
+        (),
+        {
+            "status_code": status_code,
+            "text": json.dumps(body),
+            "json": lambda self: body,
+        },
+    )()
+
+
+def test_complete_chat_with_mcp_runs_standard_tool_loop(monkeypatch):
+    responses = iter(
+        [
+            _json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": None,
+                                "tool_calls": [
+                                    {
+                                        "id": "call-1",
+                                        "type": "function",
+                                        "function": {
+                                            "name": "files__read",
+                                            "arguments": {"path": "/tmp/a"},
+                                        },
+                                    }
+                                ],
+                            },
+                            "finish_reason": "tool_calls",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 7, "completion_tokens": 2},
+                }
+            ),
+            _json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "role": "assistant",
+                                "content": "The file says hello.",
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ],
+                    "usage": {"prompt_tokens": 8, "completion_tokens": 5},
+                }
+            ),
+        ]
+    )
+    payloads = []
+
+    def _post(_url, json, timeout):
+        assert timeout == 10
+        payloads.append(deepcopy(json))
+        return next(responses)
+
+    monkeypatch.setattr("requests.post", _post)
+    runtime = _FakeMCPRuntime()
+    messages = [{"role": "user", "content": "read it"}]
+
+    answer, metrics = cli._complete_chat_with_mcp(
+        "http://localhost:8000",
+        {
+            "model": "test",
+            "messages": messages,
+            "stream": True,
+            "stream_options": {"include_usage": True},
+        },
+        runtime,
+        timeout_s=10,
+    )
+
+    assert answer == "The file says hello."
+    assert metrics == {
+        "prompt_tokens": 15,
+        "completion_tokens": 7,
+        "finish_reason": "stop",
+    }
+    assert payloads[0]["stream"] is False
+    assert "stream_options" not in payloads[0]
+    assert payloads[0]["tools"] == runtime.tools
+    assert payloads[0]["tool_choice"] == "auto"
+    assert payloads[1]["messages"][-2]["tool_calls"][0]["id"] == "call-1"
+    assert payloads[1]["messages"][-1] == {
+        "role": "tool",
+        "tool_call_id": "call-1",
+        "content": '{"content":"hello"}',
+    }
+
+
+def test_complete_chat_with_mcp_preserves_reasoning_and_normalizes_calls(monkeypatch):
+    responses = iter(
+        [
+            _json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "reasoning_content": "need a tool",
+                                "tool_calls": [
+                                    {
+                                        "function": {
+                                            "name": "files__read",
+                                            "arguments": {},
+                                        }
+                                    }
+                                ],
+                            }
+                        }
+                    ]
+                }
+            ),
+            _json_response(
+                {
+                    "choices": [
+                        {
+                            "message": {
+                                "content": ["structured", "answer"],
+                                "reasoning_content": "done",
+                            },
+                            "finish_reason": "stop",
+                        }
+                    ]
+                }
+            ),
+        ]
+    )
+    monkeypatch.setattr(
+        "requests.post",
+        lambda *_args, **_kwargs: next(responses),
+    )
+    runtime = _FakeMCPRuntime()
+    messages = [{"role": "user", "content": "go"}]
+
+    answer, metrics = cli._complete_chat_with_mcp(
+        "http://localhost:8000",
+        {"model": "test", "messages": messages},
+        runtime,
+        timeout_s=10,
+    )
+
+    assert answer == '["structured", "answer"]'
+    assert metrics["reasoning_content"] == "done"
+    assert messages[1]["reasoning_content"] == "need a tool"
+    assert messages[1]["tool_calls"][0]["id"] == "call_0_0"
+    assert messages[1]["tool_calls"][0]["function"]["arguments"] == "{}"
+
+
+@pytest.mark.parametrize(
+    ("response", "error"),
+    [
+        (_json_response({"error": "boom"}, status_code=500), "HTTP 500"),
+        (_json_response({"choices": []}), "Malformed chat completion"),
+        (
+            _json_response({"choices": [{"message": []}]}),
+            "Malformed chat completion",
+        ),
+        (
+            _json_response({"choices": [{"message": {"tool_calls": ["bad"]}}]}),
+            "Malformed chat completion",
+        ),
+        (
+            _json_response(
+                {
+                    "choices": [
+                        {"message": {"tool_calls": [{"function": "not-an-object"}]}}
+                    ]
+                }
+            ),
+            "Malformed chat completion",
+        ),
+    ],
+)
+def test_complete_chat_with_mcp_surfaces_model_api_errors(monkeypatch, response, error):
+    monkeypatch.setattr("requests.post", lambda *_args, **_kwargs: response)
+    with pytest.raises(RuntimeError, match=error):
+        cli._complete_chat_with_mcp(
+            "http://localhost:8000",
+            {"model": "test", "messages": []},
+            _FakeMCPRuntime(),
+            timeout_s=10,
+        )
+
+
+def test_complete_chat_with_mcp_has_bounded_rounds(monkeypatch):
+    response = _json_response(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "loop",
+                                "function": {
+                                    "name": "files__read",
+                                    "arguments": "{}",
+                                },
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr("requests.post", lambda *_args, **_kwargs: response)
+    runtime = _FakeMCPRuntime()
+    with pytest.raises(RuntimeError, match="exceeded 1 rounds"):
+        cli._complete_chat_with_mcp(
+            "http://localhost:8000",
+            {"model": "test", "messages": []},
+            runtime,
+            timeout_s=10,
+            max_rounds=1,
+        )
+    assert len(runtime.calls) == 1
+
+
+def test_complete_chat_with_mcp_preserves_partial_multi_call_results(monkeypatch):
+    response = _json_response(
+        {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "id": "completed",
+                                "function": {
+                                    "name": "files__read",
+                                    "arguments": "{}",
+                                },
+                            },
+                            {
+                                "id": "interrupted",
+                                "function": {
+                                    "name": "files__read",
+                                    "arguments": "{}",
+                                },
+                            },
+                        ]
+                    }
+                }
+            ]
+        }
+    )
+    monkeypatch.setattr("requests.post", lambda *_args, **_kwargs: response)
+
+    class _Runtime(_FakeMCPRuntime):
+        def execute_tool_calls(self, calls):
+            if calls[0]["id"] == "interrupted":
+                raise KeyboardInterrupt
+            return super().execute_tool_calls(calls)
+
+    messages = [{"role": "user", "content": "run both"}]
+    with pytest.raises(KeyboardInterrupt):
+        cli._complete_chat_with_mcp(
+            "http://localhost:8000",
+            {"model": "test", "messages": messages},
+            _Runtime(),
+            timeout_s=10,
+        )
+
+    assert messages[-2]["tool_call_id"] == "completed"
+    assert messages[-1] == {
+        "role": "tool",
+        "tool_call_id": "interrupted",
+        "content": '{"error": "Tool execution interrupted"}',
+    }
+
+
+def test_failed_followup_preserves_completed_tool_side_effects():
+    messages = [
+        {"role": "user", "content": "send it"},
+        {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [{"id": "call-1", "type": "function", "function": {}}],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "call-1",
+            "content": '{"content":"sent","isError":false}',
+        },
+    ]
+
+    cli._recover_failed_chat_turn(messages, turn_start=0)
+
+    assert messages[2]["role"] == "tool"
+    assert messages[-1] == {
+        "role": "assistant",
+        "content": "Tool execution completed, but the follow-up response failed.",
+    }
+
+    no_side_effect = [{"role": "user", "content": "try"}]
+    cli._recover_failed_chat_turn(no_side_effect, turn_start=0)
+    assert no_side_effect == []
+
+    rejected = [
+        {"role": "user", "content": "run"},
+        {
+            "role": "tool",
+            "tool_call_id": "call-2",
+            "content": '{"error":"blocked"}',
+        },
+    ]
+    cli._recover_failed_chat_turn(rejected, turn_start=0)
+    assert rejected == []
 
 
 def test_stream_chat_response_concatenates_deltas():
@@ -416,6 +771,128 @@ def _ns_for_chat(port: int, **overrides) -> object:
     for k, v in overrides.items():
         setattr(ns, k, v)
     return ns
+
+
+def test_chat_command_owns_mcp_runtime_without_configuring_serve(monkeypatch, capsys):
+    created = []
+    cleanup_callbacks = []
+    loop_payloads = []
+
+    class _Runtime:
+        tools = _FakeMCPRuntime.tools
+        server_count = 2
+        connection_errors = {}
+
+        def __init__(self, path):
+            assert path == "/tmp/chat-mcp.json"
+            self.closed = False
+            created.append(self)
+
+        def close(self):
+            self.closed = True
+
+    def _complete(base_url, payload, runtime, timeout_s):
+        loop_payloads.append((base_url, deepcopy(payload), runtime, timeout_s))
+        return "done", {"completion_tokens": 1, "finish_reason": "stop"}
+
+    monkeypatch.setattr("vllm_mlx.chat_mcp.ChatMCPRuntime", _Runtime)
+    monkeypatch.setattr(cli, "_complete_chat_with_mcp", _complete)
+    monkeypatch.setattr("atexit.register", cleanup_callbacks.append)
+    monkeypatch.setattr("builtins.input", lambda _p="": next(iter_inputs))
+
+    iter_inputs = iter(["use a tool", "exit"])
+    with _fake_server([]) as (port, _payloads):
+        cli.chat_command(_ns_for_chat(port, mcp_config="/tmp/chat-mcp.json"))
+
+    assert len(created) == 1
+    assert len(loop_payloads) == 1
+    assert loop_payloads[0][0] == f"http://127.0.0.1:{port}"
+    assert loop_payloads[0][1]["messages"] == [
+        {"role": "user", "content": "use a tool"}
+    ]
+    assert "done" in capsys.readouterr().out
+
+    assert created[0].closed is True
+    cleanup_callbacks[0]()
+    assert created[0].closed is True
+
+
+def test_chat_command_closes_mcp_runtime_on_unexpected_error(monkeypatch):
+    created = []
+
+    class _Runtime:
+        tools = _FakeMCPRuntime.tools
+        server_count = 1
+        connection_errors = {}
+
+        def __init__(self, _path):
+            self.closed = False
+            created.append(self)
+
+        def close(self):
+            self.closed = True
+
+    def _explode(*_args, **_kwargs):
+        raise ValueError("unexpected")
+
+    monkeypatch.setattr("vllm_mlx.chat_mcp.ChatMCPRuntime", _Runtime)
+    monkeypatch.setattr(cli, "_complete_chat_with_mcp", _explode)
+    monkeypatch.setattr("builtins.input", lambda _p="": "use a tool")
+
+    with (
+        _fake_server([]) as (port, _payloads),
+        pytest.raises(ValueError, match="unexpected"),
+    ):
+        cli.chat_command(_ns_for_chat(port, mcp_config="/tmp/chat-mcp.json"))
+
+    assert created[0].closed is True
+
+
+def test_chat_command_surfaces_and_retries_mcp_close_failure(monkeypatch):
+    cleanup_callbacks = []
+    created = []
+
+    class _Runtime:
+        tools = _FakeMCPRuntime.tools
+        server_count = 1
+        connection_errors = {}
+
+        def __init__(self, _path):
+            self.close_calls = 0
+            created.append(self)
+
+        def close(self):
+            self.close_calls += 1
+            if self.close_calls == 1:
+                raise RuntimeError("still stopping")
+
+    monkeypatch.setattr("vllm_mlx.chat_mcp.ChatMCPRuntime", _Runtime)
+    monkeypatch.setattr("atexit.register", cleanup_callbacks.append)
+    monkeypatch.setattr("builtins.input", lambda _p="": "exit")
+
+    with (
+        _fake_server([]) as (port, _payloads),
+        pytest.raises(RuntimeError, match="Failed to close MCP runtime"),
+    ):
+        cli.chat_command(_ns_for_chat(port, mcp_config="/tmp/chat-mcp.json"))
+
+    cleanup_callbacks[0]()
+    assert created[0].close_calls == 2
+
+
+def test_chat_command_reports_mcp_startup_failure(monkeypatch, capsys):
+    class _BrokenRuntime:
+        def __init__(self, _path):
+            raise RuntimeError("cannot connect")
+
+    monkeypatch.setattr("vllm_mlx.chat_mcp.ChatMCPRuntime", _BrokenRuntime)
+    with (
+        _fake_server([]) as (port, _payloads),
+        pytest.raises(SystemExit) as exc,
+    ):
+        cli.chat_command(_ns_for_chat(port, mcp_config="/tmp/bad.json"))
+    assert exc.value.code == 1
+    assert "Failed to start MCP" in capsys.readouterr().out
 
 
 def test_stream_chat_response_captures_usage_into_metrics():
@@ -1969,6 +2446,7 @@ def test_spawn_chat_server_sets_chat_spawn_env(monkeypatch, tmp_path):
 
     assert captured["env"] is not None
     assert captured["env"].get("RAPID_MLX_CHAT_SPAWN") == "1"
+    assert "--mcp-config" not in captured["cmd"]
 
 
 def test_sigterm_handler_masks_second_sigterm(monkeypatch):

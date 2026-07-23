@@ -81,7 +81,7 @@ dependencies = [
     "psutil>=5.9.0",
     "fastapi>=0.100.0",
     "uvicorn>=0.23.0",
-    "mcp>=1.0.0",
+    "mcp>=1.9.3",  # ClientSessionGroup: official multi-server lifecycle for chat
     "jsonschema>=4.0.0",
     # argcomplete — shell tab completion for the `rapid-mlx` CLI. Tiny
     # pure-Python package (~50 KB) wired into argparse via the magic

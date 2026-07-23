@@ -221,6 +221,7 @@ rapid-mlx chat [model] [options]
 | `--base-url` | Connect to an existing server URL (overrides `--port`) | *(spawn)* |
 | `--ready-timeout` | Seconds to wait for the spawned server to become ready | 600 |
 | `--response-timeout` | Seconds to wait for a single response | 600 |
+| `--mcp-config` | Load MCP tools into this chat agent | *(none)* |
 
 > The REPL defaults to `--no-think` because reasoning models (Qwen3.5, etc.)
 > otherwise leak raw chain-of-thought and can loop until `max-tokens`. Pass
@@ -241,11 +242,19 @@ rapid-mlx chat --port 8000
 
 # Pin a system prompt
 rapid-mlx chat qwen3.5-4b-4bit --system "You are a terse, friendly Mac shell tutor."
+
+# Give the built-in chat agent tools from one or more MCP servers
+rapid-mlx chat qwen3.5-4b-4bit --mcp-config mcp.json
 ```
 
 In-REPL slash commands: `/help`, `/reset` (alias `/clear`), `/model <alias>`,
 `/save <path>` (write conversation to markdown), `/exit` (alias `/quit`).
 Type `"""` on its own line to start/end a multi-line block (pasting code).
+
+MCP belongs to the chat process: it discovers and executes the configured
+tools, while the spawned or remote Rapid-MLX server receives only standard
+OpenAI function tools and tool-result messages. `serve` and `share` do not
+need the chat's MCP configuration.
 
 ## Environment Variables
 

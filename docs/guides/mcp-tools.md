@@ -216,11 +216,21 @@ if message.get("tool_calls"):
 
 ## Interactive MCP Chat
 
-For testing MCP interactively:
+The built-in chat command can act as the MCP host. The config may contain one
+or more entries under `servers`:
 
 ```bash
-python examples/mcp_chat.py
+rapid-mlx chat qwen3.5-4b-4bit --mcp-config mcp.json
 ```
+
+This also works when chat connects to an existing model server:
+
+```bash
+rapid-mlx chat --base-url http://localhost:8000 --mcp-config mcp.json
+```
+
+The MCP servers run in the chat process. The model server only receives
+standard function-tool schemas, tool calls, and tool-result messages.
 
 ## Supported Tool Formats
 
