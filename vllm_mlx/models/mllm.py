@@ -18,6 +18,7 @@ import base64
 import logging
 import math
 import os
+import re
 import sys
 import tempfile
 import threading
@@ -31,6 +32,7 @@ import numpy as np
 import requests
 
 from vllm_mlx.mllm_cache import MLLMPrefixCacheManager
+from vllm_mlx.model_metadata import MULTIMODAL_TENSOR_PREFIXES
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,52 @@ class TextOnlyCheckpointError(RuntimeError):
     def __init__(self, message: str, *, missing_count: int | None = None):
         super().__init__(message)
         self.missing_count = missing_count
+
+
+def _parse_missing_param_names(msg: str) -> list[str]:
+    """Extract the missing tensor names from mlx's strict-load ``ValueError``.
+
+    ``mlx.nn.Module.load_weights(..., strict=True)`` raises
+    ``f"Missing {n} parameters: \\n{name1},\\n{name2},...{nameK}."`` — the
+    names are comma-joined (mlx uses ``",\\n".join(sorted(missing))``) and the
+    whole list is terminated by a single ``.``. Return the individual names
+    (empty list if the message doesn't match, so callers fail safe).
+    """
+    m = re.search(r"Missing\s+\d+\s+parameters?:(.*)", msg, re.DOTALL)
+    if not m:
+        return []
+    body = m.group(1).strip().rstrip(".")
+    return [tok.strip() for tok in body.split(",") if tok.strip()]
+
+
+def _parse_missing_count(msg: str) -> int | None:
+    """Return mlx's own ``Missing N`` count from the strict-load ``ValueError``.
+
+    This is mlx's authoritative tally; it always equals the number of names it
+    then lists. Callers cross-check it against ``_parse_missing_param_names`` —
+    a mismatch means the name list wasn't parsed in full, so the degrade
+    decision can't be trusted and must fail safe.
+    """
+    m = re.search(r"Missing\s+(\d+)\s+parameters?", msg)
+    return int(m.group(1)) if m else None
+
+
+def _all_missing_are_multimodal(missing_names: list[str]) -> bool:
+    """Whether EVERY missing tensor belongs to a vision/audio/projector module.
+
+    Uses the same canonical :data:`MULTIMODAL_TENSOR_PREFIXES` allowlist the
+    routing detector keys on, so the degrade decision stays in lockstep with
+    detection (one source of truth). A checkpoint whose ONLY missing weights are
+    multimodal has a fully-present language backbone → the text lane is viable
+    → degrade. If ANY missing weight is a language/text-backbone tensor the
+    checkpoint is genuinely incomplete; degrading would mask real corruption, so
+    the caller must re-raise. Empty ``missing_names`` (unparseable message) is
+    ``False`` — fail safe, don't degrade on an unrecognised error shape.
+    """
+    return bool(missing_names) and all(
+        any(prefix in name for prefix in MULTIMODAL_TENSOR_PREFIXES)
+        for name in missing_names
+    )
 
 
 # The bare-mlx-vlm line is PINNED to ``==0.6.3`` on purpose (0.10.16
@@ -1062,29 +1110,41 @@ class MLXMultimodalLM:
                 "Install with: pip install 'rapid-mlx[vision]'"
             )
         except ValueError as e:
-            # mlx_vlm raises `ValueError: Missing N parameters: vision_*`
-            # when the checkpoint is a text-only fork (or an incomplete
-            # quant) of a multimodal architecture — config.json declares
-            # vision_config so MLLM auto-detection routes it here, but
-            # the actual safetensors lack the vision_tower weights.
-            # See #393 (Tylast: Qwen3.6-35B-A3B 8-bit community quant
-            # ships a partial vision tower). Translate to an actionable
-            # message instead of re-raising the raw ValueError.
+            # mlx's strict `load_weights` raises `ValueError: Missing N
+            # parameters: <names>` when config.json declares a vision (or
+            # audio) modality — so MLLM auto-detection routed the checkpoint
+            # here — but the actual safetensors don't carry every tensor the
+            # assembled multimodal model expects. Two very different states hit
+            # this path and MUST be distinguished by WHICH tensors are missing:
+            #
+            #   * ONLY vision/audio/projector tensors missing → the language
+            #     backbone is intact, the text lane is viable → raise the typed
+            #     `TextOnlyCheckpointError` so the engine auto-degrades to
+            #     text-only (equivalent to `--no-mllm`). See #393 (Qwen3.6-35B
+            #     8-bit partial vision tower) and #1187 (gemma-4 OptiQ, whose
+            #     index.json lists 356 vision tensors the shards lack).
+            #   * ANY language/text-backbone tensor also missing → the
+            #     checkpoint is genuinely incomplete; the text lane can't serve
+            #     it either. Degrading would MASK real corruption behind a
+            #     confusing two-stage failure, so re-raise the raw ValueError.
+            #
+            # The partition uses the SAME canonical MULTIMODAL_TENSOR_PREFIXES
+            # allowlist the routing detector keys on — one source of truth, not
+            # an ad-hoc vision-name substring test.
             msg = str(e)
+            declared_count = _parse_missing_count(msg)
+            missing_names = _parse_missing_param_names(msg)
+            # Degrade ONLY when we recovered EVERY name mlx reported (parse is
+            # complete: len matches mlx's own count) AND every one is a
+            # multimodal tensor. A parse gap or any language/text-backbone
+            # weight means the text lane isn't provably viable → re-raise.
             if (
-                "Missing" in msg
-                and "parameters" in msg
-                and any(p in msg for p in ("vision_tower", "vision_model", "visual."))
+                declared_count is not None
+                and len(missing_names) == declared_count
+                and _all_missing_are_multimodal(missing_names)
             ):
-                missing_count_hint = ""
-                missing_count: int | None = None
-                # Pull "Missing N" if present, just for the friendly head.
-                import re
-
-                m = re.search(r"Missing\s+(\d+)\s+parameters?", msg)
-                if m:
-                    missing_count = int(m.group(1))
-                    missing_count_hint = f" ({missing_count} vision tensors missing)"
+                missing_count = declared_count
+                missing_count_hint = f" ({missing_count} vision tensors missing)"
                 logger.error(
                     "MLLM load failed%s — this checkpoint declares "
                     "vision_config in config.json but its safetensors don't "

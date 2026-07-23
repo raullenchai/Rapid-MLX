@@ -513,12 +513,11 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
     class _FakeMlxVlm:
         @staticmethod
         def load(_name):
-            raise ValueError(
-                "Missing 60 parameters: \n"
-                "vision_tower.blocks.27.attn.proj.bias,\n"
-                "vision_tower.blocks.27.attn.proj.weight,\n"
-                "vision_tower.blocks.27.attn.qkv.bias."
-            )
+            # Mirror mlx's exact strict-load format: `Missing N parameters:`
+            # header where N equals the number of `,\n`-joined names, list
+            # terminated by a single `.`. All 60 names are vision-tower tensors.
+            names = [f"vision_tower.blocks.{i}.attn.proj.weight" for i in range(60)]
+            raise ValueError("Missing 60 parameters: \n" + ",\n".join(names) + ".")
 
     class _FakeMlxVlmUtils:
         @staticmethod
@@ -558,6 +557,106 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
     finally:
         # Restore original mlx_vlm so subsequent tests aren't poisoned.
         sys.modules["mlx_vlm"] = real_mlx_vlm
+
+
+def test_mixed_vision_and_language_missing_does_not_degrade(monkeypatch):
+    """A checkpoint missing BOTH vision AND language-backbone tensors is
+    genuinely incomplete — the text lane can't serve it either — so
+    MLLMModel.load() must NOT classify it as text-only. It must re-raise the
+    RAW ValueError (never the typed TextOnlyCheckpointError), so the engine
+    surfaces the real corruption instead of masking it behind an auto-degrade
+    that fails again, more confusingly, in the text lane. Guards the codex
+    BLOCKING finding on PR #1189: the classifier keys on ALL missing weights
+    being multimodal, not just ANY vision name appearing."""
+    import importlib
+    import sys
+
+    try:
+        importlib.import_module("mlx_vlm")
+    except ImportError:
+        pytest.skip("mlx_vlm not installed (vision extra)")
+
+    from vllm_mlx.models import mllm as mllm_mod
+
+    real_mlx_vlm = sys.modules["mlx_vlm"]
+
+    class _FakeMlxVlm:
+        @staticmethod
+        def load(_name):
+            # Vision tensors AND a language-backbone tensor are both absent:
+            # this is corruption, not a text-only fork.
+            raise ValueError(
+                "Missing 3 parameters: \n"
+                "language_model.model.layers.5.mlp.gate_proj.weight,\n"
+                "vision_tower.blocks.27.attn.proj.weight,\n"
+                "vision_tower.blocks.27.attn.qkv.bias."
+            )
+
+    class _FakeMlxVlmUtils:
+        @staticmethod
+        def load_config(_name):
+            return {}
+
+    monkeypatch.setitem(sys.modules, "mlx_vlm", _FakeMlxVlm)
+    monkeypatch.setitem(sys.modules, "mlx_vlm.utils", _FakeMlxVlmUtils)
+
+    inst = mllm_mod.MLXMultimodalLM(model_name="fake/corrupt-vlm")
+
+    try:
+        with pytest.raises(ValueError) as excinfo:
+            inst.load()
+        # Must be the RAW ValueError, NOT the typed degrade signal.
+        assert not isinstance(excinfo.value, mllm_mod.TextOnlyCheckpointError), (
+            "A checkpoint missing language-backbone weights must NOT be "
+            "classified as text-only; the raw ValueError has to propagate so "
+            "the engine reports genuine corruption instead of auto-degrading."
+        )
+        assert "language_model.model.layers.5" in str(excinfo.value), (
+            "The original missing-parameter detail must survive so operators "
+            "can see WHICH weights are missing."
+        )
+    finally:
+        sys.modules["mlx_vlm"] = real_mlx_vlm
+
+
+def test_missing_param_name_parser_and_multimodal_partition():
+    """Unit-level cover for the two helpers the degrade decision rests on:
+    `_parse_missing_param_names` recovers the individual tensor names from
+    mlx's `",\\n".join(sorted(...))` + trailing-`.` format, and
+    `_all_missing_are_multimodal` is True ONLY when every name is a
+    vision/audio/projector tensor (empty / any-language → False, fail safe)."""
+    from vllm_mlx.models import mllm as mllm_mod
+
+    pure_vision = (
+        "Missing 2 parameters: \n"
+        "embed_vision.embedding_projection.weight,\n"
+        "vision_tower.encoder.layers.0.mlp.down_proj.weight."
+    )
+    names = mllm_mod._parse_missing_param_names(pure_vision)
+    assert names == [
+        "embed_vision.embedding_projection.weight",
+        "vision_tower.encoder.layers.0.mlp.down_proj.weight",
+    ]
+    assert mllm_mod._all_missing_are_multimodal(names) is True
+
+    mixed_msg = (
+        "Missing 2 parameters: \n"
+        "language_model.model.norm.weight,\n"
+        "vision_tower.encoder.layers.0.mlp.down_proj.weight."
+    )
+    mixed_names = mllm_mod._parse_missing_param_names(mixed_msg)
+    assert mllm_mod._all_missing_are_multimodal(mixed_names) is False
+
+    # mlx's declared count is recovered and, for a well-formed message, equals
+    # the number of listed names (the completeness invariant the degrade gate
+    # cross-checks so a partial parse fails safe).
+    assert mllm_mod._parse_missing_count(pure_vision) == len(names) == 2
+    assert mllm_mod._parse_missing_count(mixed_msg) == len(mixed_names) == 2
+
+    # Unparseable / unrelated error shape → empty / None → not-degradable.
+    assert mllm_mod._parse_missing_param_names("some other error") == []
+    assert mllm_mod._parse_missing_count("some other error") is None
+    assert mllm_mod._all_missing_are_multimodal([]) is False
 
 
 def _flag_in_add_argument_calls(source: str, flag: str) -> bool:

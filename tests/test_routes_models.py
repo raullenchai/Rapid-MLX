@@ -328,11 +328,24 @@ def test_build_model_info_raw_hf_path_honors_degraded_engine(monkeypatch):
     finally:
         restore()
 
+    # Pin the baseline EXPLICITLY to None (not just "whatever the function
+    # returns") so a shared None -> other-non-image regression can't slip past
+    # both the reference and the degraded check (codex NIT, PR #1189).
+    assert baseline_modality is None, (
+        f"raw-HF text baseline modality must be None; got {baseline_modality!r} "
+        "— the reference itself regressed, so the equality check below would be "
+        "meaningless"
+    )
+
     restore = _stub_single_serve(monkeypatch, model_id=model_id, engine_is_mllm=False)
     # Static detector still sees the declared vision modality (lying index).
     monkeypatch.setattr(models_route, "is_mllm_model", lambda _m: True)
     try:
         info = models_route._build_model_info(model_id)
+        assert info.modality is None, (
+            f"degraded raw-HF VLM must report modality None (the raw-HF text "
+            f"baseline), not {info.modality!r}"
+        )
         assert info.modality == baseline_modality, (
             f"degraded raw-HF VLM must report the same modality as a plain "
             f"raw-HF text model ({baseline_modality!r}); got {info.modality!r}"
