@@ -1148,12 +1148,18 @@ class MLXMultimodalLM:
                 # projector tensors too, so an audio-only checkpoint can reach
                 # here — don't hard-code "vision".
                 missing_count_hint = f" ({missing_count} multimodal tensors missing)"
-                logger.error(
-                    "MLLM load failed%s — this checkpoint declares a vision/"
-                    "audio modality in config.json but its safetensors don't "
-                    "carry a complete multimodal tower. Re-run with --no-mllm "
-                    "(or --text-only) to force text-only routing. "
-                    "See #393 for context.",
+                # INFO, not ERROR: this is a recoverable, policy-eligible
+                # condition — the engine catches the typed error below and
+                # (unless --mllm forces the vision lane) auto-degrades to the
+                # text lane, logging its own WARNING. Emitting ERROR here fires
+                # a false failure alert during an otherwise healthy startup
+                # (codex NIT). The engine owns the policy-level severity.
+                logger.info(
+                    "MLLM checkpoint has no usable multimodal tower%s — declares"
+                    " a vision/audio modality in config.json but its safetensors"
+                    " don't carry the multimodal weights. Surfacing to the "
+                    "engine for the text-only auto-degrade (pass --mllm to force"
+                    " the vision lane, --no-mllm to pin text). See #393.",
                     missing_count_hint,
                 )
                 raise TextOnlyCheckpointError(

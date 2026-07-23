@@ -543,6 +543,12 @@ class TestModelsRoutes:
         from vllm_mlx.config import get_config
 
         cfg = get_config()
+        # Default ``engine`` to None unless a test supplies one: these are
+        # alias/registry resolution tests that must not inherit a live engine
+        # leaked by an earlier module (a stray MLLM engine would make
+        # ``/v1/models`` report the served model as a VLM via
+        # ``_served_engine_is_mllm``). Save+restore it like any other key.
+        kwargs.setdefault("engine", None)
         orig = {}
         for k, v in kwargs.items():
             orig[k] = getattr(cfg, k)

@@ -237,25 +237,27 @@ def test_reported_modality_prefers_degraded_engine(monkeypatch):
         restore()
 
 
-def test_reported_modality_engine_authority_is_asymmetric(monkeypatch):
-    """ASYMMETRIC authority: a live engine reporting is_mllm=True does NOT
-    force ``image``/vision — it defers to the static detector. This keeps the
-    modality decoupled from incidental/leaked engine state (a real VLM already
-    advertises image via the detector). Only is_mllm=False is authoritative
-    (the degrade / --no-mllm downgrade, tested above)."""
+def test_reported_modality_engine_authority_is_symmetric(monkeypatch):
+    """SYMMETRIC authority: the live engine for the served model wins over the
+    static detector BOTH ways. is_mllm=False → text (degrade / --no-mllm), and
+    is_mllm=True → image even when the static detector misses it (an explicit
+    --mllm that loaded a real vision tower the config/index re-detect can't
+    see). Scoping (`_served_engine_is_mllm`) — not asymmetry — is what keeps a
+    different alias's leaked engine from contaminating an unrelated model."""
     from vllm_mlx.routes import models as models_route
 
+    # Engine loaded a vision tower; static detector disagrees (says text).
+    # The live engine must win and report image/vision.
     restore = _stub_single_serve(
         monkeypatch, model_id="fake/qwen3-vl-4bit", engine_is_mllm=True
     )
-    # Detector says text — engine is_mllm=True must NOT override it to image.
     monkeypatch.setattr(models_route, "is_mllm_model", lambda _m: False)
     try:
         assert (
             models_route._reported_modality("fake/qwen3-vl-4bit", "text", False)
-            == "text"
-        ), "engine is_mllm=True must not upgrade a text detector verdict"
-        assert models_route._is_vlm("fake/qwen3-vl-4bit", "text", False) is False
+            == "image"
+        ), "live engine is_mllm=True must win over a text detector verdict"
+        assert models_route._is_vlm("fake/qwen3-vl-4bit", "text", False) is True
     finally:
         restore()
     # And when the detector agrees the model IS a VLM, image is preserved.

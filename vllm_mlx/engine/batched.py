@@ -1055,30 +1055,32 @@ class BatchedEngine(BaseEngine):
         degrade_reason: str | None = None
         try:
             self._mllm_instance = self._model_load_executor.submit(_load_mllm).result()
-        except TextOnlyCheckpointError as e:
-            # The checkpoint's config.json declares a vision modality (so
-            # ``is_mllm_model`` routed it here) but mlx-vlm found no usable
-            # vision tower in the actual safetensors — a text-only fork, a
-            # broken multimodal quant, or an index.json that lists vision
-            # tensors the shards don't contain (gemma-4 OptiQ, #1187). The
-            # routing detector reads the index and cannot see this before
-            # load; mlx-vlm's strict weight load is the authoritative signal.
-            # The language backbone IS fully present, so auto-degrade to the
-            # text lane instead of aborting startup — exactly what passing
-            # ``--no-mllm`` would have done, done automatically. Any OTHER
-            # load failure (corrupt language weights, unsupported arch, OOM)
-            # is NOT a TextOnlyCheckpointError and propagates unchanged.
-            #
-            # Tear down the mllm-step worker now (whether we degrade or
-            # re-raise) so the loader thread never leaks.
+        except Exception as e:
+            # ANY load failure tears down the mllm-step worker FIRST so its
+            # thread never leaks — this runs whether we degrade or re-raise
+            # (codex BLOCKING: previously only TextOnlyCheckpointError shut it
+            # down, so an unrelated failure orphaned the executor).
             self._model_load_executor.shutdown(wait=True)
             self._model_load_executor = None
-            if self._force_mllm:
-                # The operator EXPLICITLY demanded the vision lane via --mllm.
-                # Degrading silently would betray that intent, so surface the
-                # error and let them choose --no-mllm (text) or a real VLM.
+            # A TextOnlyCheckpointError means the checkpoint's config.json
+            # declares a vision modality (so ``is_mllm_model`` routed it here)
+            # but mlx-vlm found no usable vision tower in the actual
+            # safetensors — a text-only fork, a broken multimodal quant, or an
+            # index.json that lists vision tensors the shards don't contain
+            # (gemma-4 OptiQ, #1187). The routing detector reads the index and
+            # cannot see this before load; mlx-vlm's strict weight load is the
+            # authoritative signal. The language backbone IS fully present, so
+            # auto-degrade to the text lane instead of aborting startup —
+            # exactly what ``--no-mllm`` would have done, done automatically.
+            #
+            # Everything else — corrupt language weights, unsupported arch,
+            # OOM — and ANY failure under an explicit ``--mllm`` (``force_mllm``,
+            # where degrading silently would betray a deliberate demand for the
+            # vision lane) is a hard failure and propagates unchanged.
+            if isinstance(e, TextOnlyCheckpointError) and not self._force_mllm:
+                degrade_reason = str(e)
+            else:
                 raise
-            degrade_reason = str(e)
 
         # Fallback runs OUTSIDE the ``except`` so the caught exception (and the
         # traceback frames it pins) is released FIRST. mlx-vlm's failed

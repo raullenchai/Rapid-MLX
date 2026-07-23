@@ -41,6 +41,18 @@ from vllm_mlx.engine.base import GenerationOutput
 from vllm_mlx.routes.chat import router as chat_router
 
 
+@pytest.fixture(autouse=True)
+def _reset_global_config_after_test():
+    """These tests install a live MLLM stub engine (``is_mllm=True``) on the
+    GLOBAL config via ``_make_client``. Without teardown that engine leaks into
+    every later test module — and any modality-reporting test that shares the
+    served model name would then read this stale VLM engine as authoritative
+    (see ``routes/models._served_engine_is_mllm``). Reset the global config
+    after each test so the stub never escapes this module."""
+    yield
+    reset_config()
+
+
 class _StubMLLMEngine:
     """Mock MLLM engine. Records the messages it received and either
     returns a canned ``GenerationOutput`` or raises a ValueError that

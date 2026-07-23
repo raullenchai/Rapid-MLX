@@ -3061,3 +3061,10 @@ async def test_start_mllm_does_not_degrade_on_unrelated_load_error(monkeypatch):
     )
     assert called["start_llm"] == 0, "must NOT degrade on an unrelated error"
     assert engine.is_mllm is True, "engine modality must be unchanged on a real error"
+    # The mllm-step worker must be torn down on EVERY failed load, not only
+    # the degrade path — otherwise an unrelated error orphans the executor
+    # thread (codex BLOCKING). ``_start_mllm`` shuts it down and clears the ref.
+    assert engine._model_load_executor is None, (
+        "the mllm-step ThreadPoolExecutor must be shut down and cleared even "
+        "when the load failure is not a degrade signal, or its worker thread leaks"
+    )

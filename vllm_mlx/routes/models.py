@@ -212,20 +212,16 @@ def _reported_modality(
         # Operator pinned the text lane for a vision-config checkpoint —
         # authoritative, do not consult is_mllm_model.
         return "text"
-    if _served_engine_is_mllm(model_id) is False:
-        # ASYMMETRIC engine authority (INTENTIONAL — codex flagged the
-        # asymmetry as a nit on PR #1189; kept by design): a live engine that
-        # is serving text — because it auto-degraded a vision-config checkpoint
-        # with no vision tower (#1187) or the operator passed --no-mllm — is
-        # authoritative that vision is UNAVAILABLE, which a config/index-based
-        # re-detect cannot see. The reverse (engine is_mllm=True) does NOT force
-        # ``image`` here: a genuine VLM loaded a vision tower, and the static
-        # detector below keys on that same weight evidence, so it already
-        # advertises ``image`` for it — honoring engine True adds nothing but
-        # re-couples the wire modality to incidental/leaked engine state (the
-        # exact bleed this asymmetry was introduced to avoid). Deferring the
-        # positive case keeps modality decoupled and never over-claims vision.
-        return "text"
+    served = _served_engine_is_mllm(model_id)
+    if served is not None:
+        # The LIVE engine is the post-load SSOT for the served model and wins
+        # over a config/index re-detect, BOTH ways: is_mllm=False captures the
+        # text-only auto-degrade (#1187) and --no-mllm (vision unavailable →
+        # text), and is_mllm=True captures an explicit --mllm that loaded a
+        # vision tower the static detector missed (vision available → image).
+        # ``_served_engine_is_mllm`` is scoped to the served model, so a
+        # registry entry for a different alias never contaminates this verdict.
+        return "image" if served else "text"
     try:
         if is_mllm_model(model_id):
             return "image"
@@ -294,12 +290,14 @@ def _is_vlm(
         # Operator pinned the text lane for a vision-config checkpoint —
         # authoritative, do not advertise the vision capability.
         return False
-    if _served_engine_is_mllm(model_id) is False:
-        # ASYMMETRIC engine authority (see _reported_modality): a live engine
-        # serving text (text-only degrade / --no-mllm) authoritatively has NO
-        # vision capability. is_mllm=True does not force the tag on — genuine
-        # VLMs get it from the static detector below.
-        return False
+    served = _served_engine_is_mllm(model_id)
+    if served is not None:
+        # Live engine is authoritative for the served model, BOTH ways (see
+        # _reported_modality): a text-only degrade / --no-mllm reports no
+        # vision (False); an explicit --mllm that loaded a vision tower the
+        # static detector missed reports vision (True). Scoped to the served
+        # model, so a different alias's engine can't contaminate this.
+        return served
     try:
         return bool(is_mllm_model(model_id))
     except Exception:  # noqa: BLE001
