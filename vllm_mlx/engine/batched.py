@@ -808,6 +808,12 @@ class BatchedEngine(BaseEngine):
         # enforces; engine accepts and asserts defensively at use time).
         self._force_openai_harmony_streaming = force_openai_harmony_streaming
         self._no_openai_harmony_streaming = no_openai_harmony_streaming
+        # Remember whether the operator EXPLICITLY forced the vision lane.
+        # The automatic text-only degrade (#393/#1187) fires only for
+        # AUTO-detected MLLM routing; an explicit ``--mllm`` is a deliberate
+        # demand for the vision lane, so a missing vision tower must hard-fail
+        # for that operator rather than silently degrade behind their back.
+        self._force_mllm = force_mllm
         if force_text:
             # User explicitly opted out of MLLM routing. Skip the probe
             # entirely so a False from auto-detection can't be overridden
@@ -1010,7 +1016,7 @@ class BatchedEngine(BaseEngine):
 
         from ..engine_core import _init_mlx_step_thread
         from ..mllm_scheduler import MLLMScheduler, MLLMSchedulerConfig
-        from ..models.mllm import MLXMultimodalLM
+        from ..models.mllm import MLXMultimodalLM, TextOnlyCheckpointError
         from ..scheduler import SchedulerConfig
 
         # MLLM-tuned default for ``prefill_step_size``. Vision tokens balloon
@@ -1043,7 +1049,61 @@ class BatchedEngine(BaseEngine):
             instance.load()
             return instance
 
-        self._mllm_instance = self._model_load_executor.submit(_load_mllm).result()
+        # Reason string for the text-only degrade, set only when we intend to
+        # fall back. Captured so the fallback can run OUTSIDE the ``except``
+        # block — see the memory-release note below.
+        degrade_reason: str | None = None
+        try:
+            self._mllm_instance = self._model_load_executor.submit(_load_mllm).result()
+        except TextOnlyCheckpointError as e:
+            # The checkpoint's config.json declares a vision modality (so
+            # ``is_mllm_model`` routed it here) but mlx-vlm found no usable
+            # vision tower in the actual safetensors — a text-only fork, a
+            # broken multimodal quant, or an index.json that lists vision
+            # tensors the shards don't contain (gemma-4 OptiQ, #1187). The
+            # routing detector reads the index and cannot see this before
+            # load; mlx-vlm's strict weight load is the authoritative signal.
+            # The language backbone IS fully present, so auto-degrade to the
+            # text lane instead of aborting startup — exactly what passing
+            # ``--no-mllm`` would have done, done automatically. Any OTHER
+            # load failure (corrupt language weights, unsupported arch, OOM)
+            # is NOT a TextOnlyCheckpointError and propagates unchanged.
+            #
+            # Tear down the mllm-step worker now (whether we degrade or
+            # re-raise) so the loader thread never leaks.
+            self._model_load_executor.shutdown(wait=True)
+            self._model_load_executor = None
+            if self._force_mllm:
+                # The operator EXPLICITLY demanded the vision lane via --mllm.
+                # Degrading silently would betray that intent, so surface the
+                # error and let them choose --no-mllm (text) or a real VLM.
+                raise
+            degrade_reason = str(e)
+
+        # Fallback runs OUTSIDE the ``except`` so the caught exception (and the
+        # traceback frames it pins) is released FIRST. mlx-vlm's failed
+        # ``load_model`` holds the whole weights dict + the partially built
+        # model in the frame that raised; ``e.__cause__``'s traceback keeps
+        # that alive for the duration of the handler. Loading the text model
+        # while it is still pinned would transiently DOUBLE resident memory and
+        # can OOM a RAM-tight box (the #1187 reporter is on a 48 GB M4 Max).
+        # ``gc.collect()`` forces the now-unreferenced partial vision load to
+        # be reclaimed before the text lane allocates. (Codex review: MAJOR.)
+        if degrade_reason is not None:
+            import gc
+
+            logger.warning(
+                "%s — auto-falling back to text-only serving for '%s'. "
+                "Image/video requests will be rejected. Pass --mllm to force "
+                "the vision lane (it will fail on this checkpoint), or "
+                "--no-mllm to silence this warning. See #393.",
+                degrade_reason,
+                self._model_name,
+            )
+            gc.collect()
+            self._is_mllm = False
+            await self._start_llm()
+            return
 
         self._model = self._mllm_instance.model
         self._processor = self._mllm_instance.processor

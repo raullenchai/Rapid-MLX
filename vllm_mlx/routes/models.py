@@ -113,6 +113,66 @@ def _resolve_context_window(model_id: str) -> int | None:
     return window
 
 
+def _engine_is_mllm_or_none(engine: object | None) -> bool | None:
+    """Return ``engine.is_mllm`` only when it is a real ``bool``.
+
+    Defensive by design (matching this module's "never 500 /v1/models"
+    contract): a ``None`` engine, a partially-built entry, or a test double
+    whose ``is_mllm`` is absent/non-boolean yields ``None`` so the caller
+    falls through to the static detector rather than raising.
+    """
+    if engine is None:
+        return None
+    is_mllm = getattr(engine, "is_mllm", None)
+    return is_mllm if isinstance(is_mllm, bool) else None
+
+
+def _served_engine_is_mllm(model_id: str) -> bool | None:
+    """Return the LIVE engine's actual modality for the served model.
+
+    The engine's ``is_mllm`` reflects what was ACTUALLY loaded and is the
+    authoritative capability signal on the wire. It captures two states a
+    fresh ``is_mllm_model`` re-detect cannot see, because that re-reads
+    ``config.json`` / the weight index — which still declare a vision
+    modality — rather than the loaded engine:
+
+    * ``--no-mllm`` / ``force_text`` (operator pinned the text lane);
+    * the automatic text-only degrade for a vision-config checkpoint whose
+      safetensors ship no usable vision tower (#393 / gemma-4 OptiQ, #1187).
+
+    Returns ``None`` when no live engine matches ``model_id`` (a registry
+    entry that is not the served model, or the standalone path before an
+    engine is attached) so the caller falls back to static detection.
+    Resolution mirrors :func:`_context_window_for`.
+
+    Never raises: ``_is_vlm`` consults this BEFORE its own ``is_mllm_model``
+    guard, so any registry/attribute error here would otherwise 500 the
+    listing. Any exception collapses to ``None`` (fall through to the static
+    detector), matching the module's "never 500 /v1/models" contract.
+    """
+    try:
+        cfg = get_config()
+        if cfg.model_registry is not None:
+            try:
+                entry = cfg.model_registry.get_entry(model_id)
+            except KeyError:
+                return None
+            # ``get_entry`` falls back to the default entry on miss — guard
+            # that the entry actually matches so we don't report the default
+            # engine's modality for an unrelated/unloaded alias.
+            if entry is not None and entry.matches(model_id):
+                return _engine_is_mllm_or_none(entry.engine)
+            return None
+        candidate = getattr(cfg, "engine", None)
+        if candidate is not None:
+            served = {cfg.model_name, cfg.model_alias} - {None}
+            if model_id in served:
+                return _engine_is_mllm_or_none(candidate)
+        return None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def _reported_modality(
     model_id: str, profile_modality: str, is_text_only: bool = False
 ) -> str:
@@ -151,6 +211,16 @@ def _reported_modality(
     if is_text_only:
         # Operator pinned the text lane for a vision-config checkpoint —
         # authoritative, do not consult is_mllm_model.
+        return "text"
+    if _served_engine_is_mllm(model_id) is False:
+        # ASYMMETRIC engine authority: a live engine that is serving text —
+        # because it auto-degraded a vision-config checkpoint with no vision
+        # tower (#1187) or the operator passed --no-mllm — is authoritative
+        # that vision is UNAVAILABLE, which a config/index-based re-detect
+        # cannot see. The reverse (engine is_mllm=True) does NOT force
+        # ``image`` here: genuine VLMs already advertise it via the static
+        # detector below, so deferring keeps the modality decoupled from
+        # incidental engine state and avoids over-claiming vision.
         return "text"
     try:
         if is_mllm_model(model_id):
@@ -219,6 +289,12 @@ def _is_vlm(
     if is_text_only:
         # Operator pinned the text lane for a vision-config checkpoint —
         # authoritative, do not advertise the vision capability.
+        return False
+    if _served_engine_is_mllm(model_id) is False:
+        # ASYMMETRIC engine authority (see _reported_modality): a live engine
+        # serving text (text-only degrade / --no-mllm) authoritatively has NO
+        # vision capability. is_mllm=True does not force the tag on — genuine
+        # VLMs get it from the static detector below.
         return False
     try:
         return bool(is_mllm_model(model_id))
@@ -749,7 +825,14 @@ def _build_model_info(model_id: str) -> ModelInfo:
             model_id, profile_modality=None, profile_tool_parser=eff_tool
         )
         try:
-            if is_mllm_model(model_id):
+            # Route through ``_reported_modality`` (not a bare
+            # ``is_mllm_model``) so this raw-HF-path branch honours the LIVE
+            # engine for the served model — a vision-config checkpoint that
+            # auto-degraded to text (or --no-mllm) must advertise text here,
+            # matching the ``capabilities`` tag above and the registered-alias
+            # path. Without this, ``modality`` and ``capabilities`` diverged
+            # for a degraded raw-HF VLM (#1187).
+            if _reported_modality(model_id, "text", is_text_only=False) == "image":
                 return ModelInfo(
                     id=model_id,
                     modality="image",

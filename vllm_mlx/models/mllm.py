@@ -35,6 +35,38 @@ from vllm_mlx.mllm_cache import MLLMPrefixCacheManager
 logger = logging.getLogger(__name__)
 
 
+class TextOnlyCheckpointError(RuntimeError):
+    """A vision-config checkpoint that ships no usable vision tower.
+
+    Raised by :meth:`MLXMultimodalLM.load` when ``config.json`` declares a
+    vision (or audio) modality — so auto-detection routed the checkpoint to
+    the MLLM lane — but the actual safetensors do NOT carry a complete vision
+    tower. Three real-world sources produce this state, all indistinguishable
+    at load time and all handled identically:
+
+    * a text-only *fork* of a multimodal architecture (config inherited from
+      the base, weights language-only);
+    * a broken multimodal *quant* that dropped the vision tower;
+    * an ``index.json`` whose ``weight_map`` LISTS vision tensors the shards
+      don't actually contain (e.g. ``gemma-4`` OptiQ — the routing detector
+      trusts the index, so it can't catch this before load).
+
+    The language backbone is fully present and servable, so the engine treats
+    this as the authoritative "serve text-only" signal and auto-degrades to
+    the text lane (equivalent to the operator passing ``--no-mllm``), rather
+    than aborting startup. A dedicated subclass (not a bare ``RuntimeError``)
+    lets the engine degrade on THIS condition alone and let every other load
+    failure propagate. Subclasses ``RuntimeError`` so existing callers that
+    catch ``RuntimeError`` (and the #393 friendly-message contract) still hold.
+
+    Tracked in #393.
+    """
+
+    def __init__(self, message: str, *, missing_count: int | None = None):
+        super().__init__(message)
+        self.missing_count = missing_count
+
+
 # The bare-mlx-vlm line is PINNED to ``==0.6.3`` on purpose (0.10.16
 # dogfood finding ⑤). An unpinned ``pip install 'mlx-vlm>=0.6.3'`` run
 # against a base install resolves to the current PyPI latest (0.6.6),
@@ -1045,12 +1077,14 @@ class MLXMultimodalLM:
                 and any(p in msg for p in ("vision_tower", "vision_model", "visual."))
             ):
                 missing_count_hint = ""
+                missing_count: int | None = None
                 # Pull "Missing N" if present, just for the friendly head.
                 import re
 
                 m = re.search(r"Missing\s+(\d+)\s+parameters?", msg)
                 if m:
-                    missing_count_hint = f" ({m.group(1)} vision tensors missing)"
+                    missing_count = int(m.group(1))
+                    missing_count_hint = f" ({missing_count} vision tensors missing)"
                 logger.error(
                     "MLLM load failed%s — this checkpoint declares "
                     "vision_config in config.json but its safetensors don't "
@@ -1059,11 +1093,12 @@ class MLXMultimodalLM:
                     "See #393 for context.",
                     missing_count_hint,
                 )
-                raise RuntimeError(
+                raise TextOnlyCheckpointError(
                     f"MLLM load failed{missing_count_hint}: this checkpoint "
                     "is text-only despite its multimodal config. "
                     "Re-run with --no-mllm (or --text-only) to force "
-                    "text-only routing. Tracked in #393."
+                    "text-only routing. Tracked in #393.",
+                    missing_count=missing_count,
                 ) from e
             logger.error(f"Failed to load MLLM: {e}")
             raise

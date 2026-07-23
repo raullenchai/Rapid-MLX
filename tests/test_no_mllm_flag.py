@@ -535,6 +535,18 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
         with pytest.raises(RuntimeError) as excinfo:
             inst.load()
 
+        # The raise is a TextOnlyCheckpointError — a RuntimeError subclass so
+        # this `pytest.raises(RuntimeError)` still holds, but a DEDICATED type
+        # so the engine can degrade on THIS condition alone (auto text-only
+        # fallback) and let every other load failure propagate.
+        assert isinstance(excinfo.value, mllm_mod.TextOnlyCheckpointError), (
+            "Missing-vision-tower load failure must raise the typed "
+            f"TextOnlyCheckpointError; got {type(excinfo.value).__name__}"
+        )
+        assert excinfo.value.missing_count == 60, (
+            "Typed error must carry the parsed missing-tensor count for the "
+            f"engine's degrade log; got {excinfo.value.missing_count!r}"
+        )
         msg = str(excinfo.value)
         assert "--no-mllm" in msg, (
             f"Friendly error must mention --no-mllm; got: {msg!r}"
@@ -2790,3 +2802,162 @@ def test_friendly_error_does_not_swallow_unrelated_valueerror(monkeypatch):
         # detection means we may not have imported it.
         if real_mlx_vlm is not None:
             sys.modules["mlx_vlm"] = real_mlx_vlm
+
+
+# ---------------------------------------------------------------------------
+# Automatic text-only degrade (#1187 / #393).
+#
+# A vision-config checkpoint whose safetensors carry no usable vision tower
+# must NOT abort startup. mlx-vlm's strict weight load is the authoritative
+# signal (the routing detector reads the index/config, which still declare
+# vision, so it cannot catch a broken quant or an index that lists vision
+# tensors the shards don't contain — e.g. gemma-4 OptiQ). On that specific
+# failure the engine auto-degrades to the text lane, exactly as --no-mllm
+# would, instead of raising. Every OTHER load failure still propagates.
+# ---------------------------------------------------------------------------
+
+
+async def test_start_mllm_degrades_to_text_on_missing_vision_tower(monkeypatch):
+    """``_start_mllm`` catches ``TextOnlyCheckpointError`` and hands off to the
+    text lane: ``is_mllm`` flips to False and the mllm loader is torn down."""
+    from vllm_mlx.engine import batched as batched_mod
+    from vllm_mlx.models import mllm as mllm_mod
+
+    class _FakeTextOnlyMLLM:
+        def __init__(self, model_name, trust_remote_code=True):
+            self.model_name = model_name
+
+        def load(self):
+            raise mllm_mod.TextOnlyCheckpointError(
+                "MLLM load failed (356 vision tensors missing): this "
+                "checkpoint is text-only despite its multimodal config. "
+                "Re-run with --no-mllm ... Tracked in #393.",
+                missing_count=356,
+            )
+
+    # The import inside ``_start_mllm`` resolves the symbol at call time, so
+    # patching the module attribute is sufficient.
+    monkeypatch.setattr(mllm_mod, "MLXMultimodalLM", _FakeTextOnlyMLLM)
+
+    # AUTO-detected MLLM routing (NOT --mllm): the checkpoint's config declared
+    # vision so ``is_mllm_model`` routed it here. Simulate that verdict without
+    # a real config on disk. ``_force_mllm`` stays False so the degrade fires.
+    engine = batched_mod.BatchedEngine("fake/gemma4-optiq-4bit")
+    engine._is_mllm = True
+    assert engine._force_mllm is False, "precondition: auto-detected, not forced"
+
+    import sys
+
+    called = {"start_llm": 0}
+    exc_state = {}
+
+    async def _fake_start_llm():
+        called["start_llm"] += 1
+        # Capture whether an exception is still being HANDLED when the text
+        # lane loads. It must NOT be — the fallback runs outside the ``except``
+        # so the failed MLLM load's traceback (which pins mlx-vlm's whole
+        # weights dict + partial model) is released BEFORE the text model
+        # allocates, or the two coexist and can OOM a RAM-tight box.
+        exc_state["info"] = sys.exc_info()
+
+    monkeypatch.setattr(engine, "_start_llm", _fake_start_llm)
+
+    await engine._start_mllm()
+
+    assert called["start_llm"] == 1, (
+        "missing vision tower must degrade to the text lane, not abort"
+    )
+    assert exc_state["info"] == (None, None, None), (
+        "text-lane load must run OUTSIDE the except block (no active exception "
+        "pinning the failed vision load's ~weights-sized memory)"
+    )
+    assert engine.is_mllm is False, (
+        "engine must report text-only after the degrade so every "
+        "engine.is_mllm consumer (chat routes, /v1/models) stays consistent"
+    )
+    assert engine._model_load_executor is None, (
+        "the mllm-step loader thread must be shut down before the text "
+        "lane spins up its own executor (no leaked thread)"
+    )
+
+
+async def test_explicit_force_mllm_does_not_degrade(monkeypatch):
+    """``--mllm`` is a deliberate demand for the vision lane. A missing vision
+    tower must HARD-FAIL for that operator (surfacing --no-mllm as the fix),
+    never silently degrade behind their back — only AUTO-detected routing
+    degrades. The loader thread is still torn down so nothing leaks."""
+    from vllm_mlx.engine import batched as batched_mod
+    from vllm_mlx.models import mllm as mllm_mod
+
+    class _FakeTextOnlyMLLM:
+        def __init__(self, model_name, trust_remote_code=True):
+            pass
+
+        def load(self):
+            raise mllm_mod.TextOnlyCheckpointError(
+                "MLLM load failed (356 vision tensors missing): ... "
+                "Re-run with --no-mllm ... Tracked in #393.",
+                missing_count=356,
+            )
+
+    monkeypatch.setattr(mllm_mod, "MLXMultimodalLM", _FakeTextOnlyMLLM)
+
+    engine = batched_mod.BatchedEngine("fake/gemma4-optiq-4bit", force_mllm=True)
+
+    called = {"start_llm": 0}
+
+    async def _fake_start_llm():
+        called["start_llm"] += 1
+
+    monkeypatch.setattr(engine, "_start_llm", _fake_start_llm)
+
+    with pytest.raises(mllm_mod.TextOnlyCheckpointError) as excinfo:
+        await engine._start_mllm()
+
+    assert "--no-mllm" in str(excinfo.value), (
+        "explicit --mllm hard-fail must point the operator at the escape hatch"
+    )
+    assert called["start_llm"] == 0, "explicit --mllm must NOT auto-degrade"
+    assert engine.is_mllm is True, "explicit --mllm keeps the vision-lane verdict"
+    assert engine._model_load_executor is None, "loader thread must still be torn down"
+
+
+async def test_start_mllm_does_not_degrade_on_unrelated_load_error(monkeypatch):
+    """A load failure that is NOT a missing-vision-tower degrade signal (e.g.
+    corrupt weights, unsupported arch, OOM) must propagate unchanged — the
+    degrade path is scoped to ``TextOnlyCheckpointError`` alone, never a bare
+    RuntimeError, so genuine errors are never masked as a silent text fallback.
+    """
+    from vllm_mlx.engine import batched as batched_mod
+    from vllm_mlx.models import mllm as mllm_mod
+
+    class _FakeBrokenMLLM:
+        def __init__(self, model_name, trust_remote_code=True):
+            pass
+
+        def load(self):
+            raise RuntimeError("CUDA OOM / corrupt safetensors header")
+
+    monkeypatch.setattr(mllm_mod, "MLXMultimodalLM", _FakeBrokenMLLM)
+
+    # AUTO-detected routing — the mode where a degrade COULD happen — so this
+    # proves the scoping (TextOnlyCheckpointError only), not just that a forced
+    # lane never degrades.
+    engine = batched_mod.BatchedEngine("fake/genuinely-broken")
+    engine._is_mllm = True
+
+    called = {"start_llm": 0}
+
+    async def _fake_start_llm():
+        called["start_llm"] += 1
+
+    monkeypatch.setattr(engine, "_start_llm", _fake_start_llm)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        await engine._start_mllm()
+
+    assert "corrupt safetensors" in str(excinfo.value), (
+        "the original error must surface, not a text-fallback message"
+    )
+    assert called["start_llm"] == 0, "must NOT degrade on an unrelated error"
+    assert engine.is_mllm is True, "engine modality must be unchanged on a real error"
