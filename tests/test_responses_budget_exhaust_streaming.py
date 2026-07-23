@@ -1273,9 +1273,9 @@ class TestReasoningToolOutputIndexAlignment:
             for ev_name, payload in events
             if ev_name == "response.function_call_arguments.delta"
         ]
-        assert arg_deltas == ['{"city":"Pittsburgh"}'], (
-            "function_call arguments must be emitted as a non-empty "
-            f"delta for Responses clients; got {arg_deltas!r}"
+        assert "".join(arg_deltas) == '{"city":"Pittsburgh"}', (
+            "function_call arguments must reconstruct to the expected "
+            f"Responses payload; got deltas={arg_deltas!r}"
         )
 
         # Every ``output_item.done`` event's ``output_index`` matches

@@ -13,7 +13,7 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
 
@@ -23,7 +23,7 @@ class _Tokenizer:
     def __init__(self):
         self.calls = []
 
-    def encode(self, text: str) -> list[int]:
+    def encode(self, text: str, *_args, **_kwargs) -> list[int]:
         self.calls.append(text)
         return list(range(len(text)))
 
@@ -54,6 +54,7 @@ class _Engine:
     def __init__(self):
         self.calls: list[SimpleNamespace] = []
         self.stream_calls: list[SimpleNamespace] = []
+        self.build_prompt_calls: list[SimpleNamespace] = []
         self.tokenizer = _Tokenizer()
 
     async def chat(self, messages, **kwargs):
@@ -77,6 +78,23 @@ class _Engine:
                 completion_tokens=i + 1,
                 finish_reason=None if i < len(chunks) - 1 else "stop",
             )
+
+    def build_prompt(self, messages, tools=None, enable_thinking=None):
+        self.build_prompt_calls.append(
+            SimpleNamespace(
+                messages=messages,
+                tools=tools,
+                enable_thinking=enable_thinking,
+            )
+        )
+        parts = []
+        for message in messages:
+            role = message.get("role") if isinstance(message, dict) else message.role
+            content = (
+                message.get("content") if isinstance(message, dict) else message.content
+            )
+            parts.append(f"{role}: {content}")
+        return "\n".join(parts)
 
 
 def _install_lightweight_engine_modules(monkeypatch):
@@ -423,8 +441,8 @@ class TestResponsesNonStream:
         client = responses_client.client
         engine = responses_client.engine
         cfg = get_config()
-        cfg.default_max_tokens = 32_768
-        cfg.default_max_tokens_is_explicit = False
+        monkeypatch.setattr(cfg, "default_max_tokens", 32_768)
+        monkeypatch.setattr(cfg, "default_max_tokens_is_explicit", False)
 
         captured = {}
 
@@ -461,6 +479,118 @@ class TestResponsesNonStream:
         assert captured["context_max_tokens"] is None
         assert captured["enforce_calls"] == [(100_581, 30_491)]
         assert engine.calls[-1].kwargs["max_tokens"] == 30_491
+
+    def test_implicit_max_output_tokens_clamp_uses_real_context_precheck(
+        self, responses_client, monkeypatch
+    ):
+        """Guard the real helper path: prompt render/token counting must
+        return a count that the route clamps before calling the engine."""
+        from vllm_mlx.config import get_config
+
+        client = responses_client.client
+        engine = responses_client.engine
+        cfg = get_config()
+        monkeypatch.setattr(cfg, "default_max_tokens", 32_768)
+        monkeypatch.setattr(cfg, "default_max_tokens_is_explicit", False)
+        engine._model = SimpleNamespace(
+            args=SimpleNamespace(max_position_embeddings=128)
+        )
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(input="x" * 96),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert engine.build_prompt_calls
+        assert engine.tokenizer.calls
+        prompt_tokens = len(engine.tokenizer.calls[-1])
+        expected_max_tokens = 128 - prompt_tokens
+        assert 0 < expected_max_tokens < 32_768
+        assert engine.calls[-1].kwargs["max_tokens"] == expected_max_tokens
+
+    def test_implicit_max_output_tokens_without_prompt_estimate_retries_strict_check(
+        self, responses_client, monkeypatch
+    ):
+        """If the prompt estimate is unavailable, implicit-budget handling
+        must fall back to the old strict completion-budget admission check."""
+        from vllm_mlx.config import get_config
+        from vllm_mlx.routes import responses as responses_route
+
+        client = responses_client.client
+        engine = responses_client.engine
+        cfg = get_config()
+        monkeypatch.setattr(cfg, "default_max_tokens", 32_768)
+        monkeypatch.setattr(cfg, "default_max_tokens_is_explicit", False)
+        captured_max_tokens = []
+
+        def _no_prompt_estimate(_engine, _messages, **kwargs):
+            captured_max_tokens.append(kwargs.get("max_tokens"))
+            return None
+
+        monkeypatch.setattr(
+            responses_route,
+            "enforce_context_length_for_messages",
+            _no_prompt_estimate,
+        )
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 200, response.text
+        assert captured_max_tokens == [None, 32_768]
+        assert engine.calls[-1].kwargs["max_tokens"] == 32_768
+
+    def test_explicit_server_default_max_output_tokens_stays_strict(
+        self, responses_client, monkeypatch
+    ):
+        """An operator-provided default is a hard cap, not a clampable
+        implicit fallback."""
+        from vllm_mlx.config import get_config
+        from vllm_mlx.routes import responses as responses_route
+
+        client = responses_client.client
+        cfg = get_config()
+        monkeypatch.setattr(cfg, "default_max_tokens", 32_768)
+        monkeypatch.setattr(cfg, "default_max_tokens_is_explicit", True)
+
+        captured = {}
+
+        def _strict_context_check(_engine, _messages, **kwargs):
+            captured["context_max_tokens"] = kwargs.get("max_tokens")
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "error": {
+                        "code": "context_length_exceeded",
+                        "message": "strict operator default exceeds context",
+                    }
+                },
+            )
+
+        monkeypatch.setattr(
+            responses_route,
+            "enforce_context_length_for_messages",
+            _strict_context_check,
+        )
+        monkeypatch.setattr(
+            responses_route,
+            "get_model_max_context",
+            lambda _engine: 131_072,
+        )
+
+        response = client.post(
+            "/v1/responses",
+            json=_payload(),
+            headers={"Authorization": "Bearer test-secret"},
+        )
+
+        assert response.status_code == 400, response.text
+        assert captured["context_max_tokens"] == 32_768
 
     def test_mllm_message_prepare_accepts_normalized_object_style_messages(self):
         """Responses MLLM path accepts Chat-normalized object-style messages."""

@@ -149,6 +149,52 @@ def test_gpt_oss_template_gets_low_effort_when_thinking_disabled():
     assert tok.captured_kwargs.get("reasoning_effort") == "low"
 
 
+def test_gpt_oss_harmony_template_alias_gets_low_effort_when_thinking_disabled():
+    """Served aliases should still get the GPT-OSS/Harmony low-effort
+    mapping when the template itself exposes the Harmony shape."""
+
+    class HarmonyAliasTokenizer(_CapturingTokenizer):
+        chat_template = (
+            "<|start|>{{ role }}<|channel|>{{ channel }}<|message|>"
+            "{% if reasoning_effort is not defined %}"
+            "{% set reasoning_effort = 'medium' %}{% endif %}"
+            "Reasoning: {{ reasoning_effort }}"
+        )
+
+    tok = HarmonyAliasTokenizer()
+    apply_chat_template(
+        tok,
+        messages=[{"role": "user", "content": "hi"}],
+        enable_thinking=False,
+        model_name="prod-alias",
+    )
+    assert tok.captured_kwargs.get("enable_thinking") is False
+    assert tok.captured_kwargs.get("reasoning_effort") == "low"
+
+
+def test_gpt_oss_dict_chat_template_gets_low_effort_when_thinking_disabled():
+    """HF tokenizers may expose ``chat_template`` as a named-template dict."""
+
+    class DictTemplateTokenizer(_CapturingTokenizer):
+        chat_template = {
+            "default": (
+                "{% if reasoning_effort is not defined %}"
+                "{% set reasoning_effort = 'medium' %}{% endif %}"
+                "Reasoning: {{ reasoning_effort }}"
+            )
+        }
+
+    tok = DictTemplateTokenizer()
+    apply_chat_template(
+        tok,
+        messages=[{"role": "user", "content": "hi"}],
+        enable_thinking=False,
+        model_name="66ton99/gpt-oss-120b",
+    )
+    assert tok.captured_kwargs.get("enable_thinking") is False
+    assert tok.captured_kwargs.get("reasoning_effort") == "low"
+
+
 def test_gpt_oss_low_effort_survives_enable_thinking_retry():
     """Some template applicators reject unknown ``enable_thinking`` kwargs.
     The first retry drops only that kwarg and must keep

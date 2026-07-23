@@ -711,7 +711,10 @@ async def create_response(request: Request):
             openai_request.max_tokens,
             _resp_resolved_thinking,
         )
-        _resp_implicit_max_tokens = openai_request.max_tokens is None
+        _resp_implicit_max_tokens = (
+            openai_request.max_tokens is None
+            and not get_config().default_max_tokens_is_explicit
+        )
         _resp_ctx_prompt_tokens = enforce_context_length_for_messages(
             engine,
             _ctx_messages,
@@ -720,24 +723,36 @@ async def create_response(request: Request):
             enable_thinking=_resp_resolved_thinking,
         )
         if _resp_implicit_max_tokens:
-            _resp_resolved_max_tokens = (
-                _resolve_context_safe_implicit_responses_max_tokens(
+            if _resp_ctx_prompt_tokens is None:
+                # If prompt accounting is unavailable, do not apply the
+                # context-room clamp: re-run the old strict admission check
+                # with the resolved default completion budget so this path
+                # cannot silently weaken the pre-existing DoS gate.
+                enforce_context_length_for_messages(
                     engine,
-                    _resp_ctx_prompt_tokens,
-                    _resp_resolved_max_tokens,
+                    _ctx_messages,
+                    tools=openai_request.tools,
+                    max_tokens=_resp_resolved_max_tokens,
+                    enable_thinking=_resp_resolved_thinking,
                 )
-            )
-            if _resp_ctx_prompt_tokens is not None:
+            else:
+                _resp_resolved_max_tokens = (
+                    _resolve_context_safe_implicit_responses_max_tokens(
+                        engine,
+                        _resp_ctx_prompt_tokens,
+                        _resp_resolved_max_tokens,
+                    )
+                )
                 enforce_context_length(
                     engine,
                     _resp_ctx_prompt_tokens,
                     max_tokens=_resp_resolved_max_tokens,
                 )
-            # Thread the clamped default through the downstream
-            # ``_resolve_max_tokens`` calls in ``_non_stream`` /
-            # ``_stream_responses`` so the scheduler sees the same
-            # context-safe budget the admission gate accepted.
-            openai_request.max_tokens = _resp_resolved_max_tokens
+                # Thread the clamped default through the downstream
+                # ``_resolve_max_tokens`` calls in ``_non_stream`` /
+                # ``_stream_responses`` so the scheduler sees the same
+                # context-safe budget the admission gate accepted.
+                openai_request.max_tokens = _resp_resolved_max_tokens
 
         if responses_request.stream:
             _admission_committed = True
@@ -1848,6 +1863,7 @@ async def _stream_responses(
         # accumulator + the post-loop emitter below close the cross-path
         # parity gap.
         accumulated_reasoning_text = ""
+        terminal_reasoning_sidecar_seen = False
 
         # R11-B codex r7 BLOCKING: track an explicit "reasoning closed"
         # signal — set only when the parser/router emits a TRUE content
@@ -2196,6 +2212,19 @@ async def _stream_responses(
             _frx = getattr(output, "finish_reason", None)
             if _frx is not None:
                 last_finish_reason = _frx
+            chunk_is_terminal = bool(getattr(output, "finished", False) or _frx)
+
+            terminal_reasoning_text = getattr(output, "reasoning_text", "")
+            if terminal_reasoning_text:
+                # Treat terminal ``reasoning_text`` as a hidden sidecar:
+                # it proves the model generated reasoning before stopping,
+                # but it is not a safe public summary. Parser/channel
+                # reasoning deltas accumulated below remain the only text
+                # we expose in ``reasoning.summary``.
+                terminal_reasoning_sidecar_seen = True
+            terminal_raw_text = getattr(output, "raw_text", "")
+            if chunk_is_terminal and terminal_raw_text:
+                accumulated_raw_parts.append(terminal_raw_text)
 
             engine_tool_calls = getattr(output, "tool_calls", None) or []
             if engine_tool_calls:
@@ -2203,20 +2232,6 @@ async def _stream_responses(
                 continue
 
             if not delta_text:
-                # Some router/engine paths surface the full reasoning
-                # trace only on a terminal sentinel (``reasoning_text``)
-                # with no per-token ``new_text``. Do not let the early
-                # empty-delta fast path discard that signal: the
-                # post-loop reasoning-only-stop guard needs it to
-                # distinguish "model produced analysis then stopped"
-                # from a legitimate immediate EOS / zero-output turn.
-                terminal_reasoning_text = getattr(output, "reasoning_text", "")
-                if (
-                    getattr(output, "finished", False)
-                    and terminal_reasoning_text
-                    and not accumulated_reasoning_text
-                ):
-                    accumulated_reasoning_text += terminal_reasoning_text
                 continue
 
             # Channel-routed engines (harmony / gemma4) — honor the
@@ -2754,6 +2769,176 @@ async def _stream_responses(
         if _reasoning_slot_reserved:
             completed_output.append({})  # placeholder filled below
 
+        def _stream_usage_payload() -> dict:
+            # #591 P2 (item 6): floor-clamp before the upper clamp. A buggy
+            # engine that surfaces a negative ``cached_tokens`` would
+            # otherwise pass through unchanged and emit
+            # ``input_tokens_details.cached_tokens=-N`` on the wire.
+            cached_tokens_clamped = max(0, min(cached_tokens, prompt_tokens))
+            # Credit accumulated reasoning bytes against usage the same
+            # way for both ``response.completed`` and ``response.failed``.
+            # Keep the invariant ``reasoning_tokens <= output_tokens``.
+            reasoning_token_credit = 0
+            if accumulated_reasoning_text and completion_tokens:
+                reasoning_token_credit = min(
+                    max(1, len(accumulated_reasoning_text) // 4),
+                    completion_tokens,
+                )
+            return {
+                "input_tokens": prompt_tokens,
+                "output_tokens": completion_tokens,
+                "total_tokens": prompt_tokens + completion_tokens,
+                "input_tokens_details": {
+                    "cached_tokens": cached_tokens_clamped
+                    if cached_tokens_clamped
+                    else 0,
+                },
+                "output_tokens_details": {"reasoning_tokens": reasoning_token_credit},
+            }
+
+        def _stream_response_payload(
+            status: str,
+            *,
+            error: dict | None = None,
+            incomplete_details: dict | None = None,
+        ) -> dict:
+            payload = {
+                "id": response_id,
+                "object": "response",
+                "created_at": created_at,
+                "status": status,
+                "model": served_model,
+                "output": list(completed_output),
+                "usage": _stream_usage_payload(),
+                "parallel_tool_calls": bool(responses_request.parallel_tool_calls),
+                "tool_choice": responses_request.tool_choice or "auto",
+                "tools": responses_request.tools or [],
+            }
+            if error is not None:
+                payload["error"] = error
+            if incomplete_details is not None:
+                payload["incomplete_details"] = incomplete_details
+            return payload
+
+        def _build_reasoning_done_payload() -> dict:
+            return {
+                "type": "reasoning",
+                "id": reasoning_item_id,
+                "status": reasoning_status,
+                "summary": (
+                    [
+                        {
+                            "type": "summary_text",
+                            "text": accumulated_reasoning_text,
+                        }
+                    ]
+                    if accumulated_reasoning_text
+                    else []
+                ),
+            }
+
+        def _emit_reasoning_summary_events() -> list[str]:
+            if (
+                not accumulated_reasoning_text
+                or reasoning_item_id is None
+                or reasoning_output_index is None
+            ):
+                return []
+            summary_part = {
+                "type": "summary_text",
+                "text": accumulated_reasoning_text,
+            }
+            part_done = {
+                "type": "response.reasoning_summary_part.done",
+                "item_id": reasoning_item_id,
+                "output_index": reasoning_output_index,
+                "summary_index": 0,
+                "part": summary_part,
+            }
+            if reasoning_status == "incomplete":
+                part_done["status"] = "incomplete"
+            return [
+                _emit(
+                    "response.reasoning_summary_part.added",
+                    {
+                        "type": "response.reasoning_summary_part.added",
+                        "item_id": reasoning_item_id,
+                        "output_index": reasoning_output_index,
+                        "summary_index": 0,
+                        "part": {"type": "summary_text", "text": ""},
+                    },
+                ),
+                _emit(
+                    "response.reasoning_summary_text.delta",
+                    {
+                        "type": "response.reasoning_summary_text.delta",
+                        "item_id": reasoning_item_id,
+                        "output_index": reasoning_output_index,
+                        "summary_index": 0,
+                        "delta": accumulated_reasoning_text,
+                    },
+                ),
+                _emit(
+                    "response.reasoning_summary_text.done",
+                    {
+                        "type": "response.reasoning_summary_text.done",
+                        "item_id": reasoning_item_id,
+                        "output_index": reasoning_output_index,
+                        "summary_index": 0,
+                        "text": accumulated_reasoning_text,
+                    },
+                ),
+                _emit(
+                    "response.reasoning_summary_part.done",
+                    part_done,
+                ),
+            ]
+
+        def _finalize_reasoning_item_events() -> tuple[list[str], dict | None, bool]:
+            nonlocal reasoning_item_id, reasoning_output_index, reasoning_item_added
+            events: list[str] = []
+            uses_reserved_slot = bool(reasoning_item_added)
+            if reasoning_item_added:
+                if reasoning_output_index is None:
+                    reasoning_output_index = 0
+                if reasoning_item_id is None:
+                    reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+            elif accumulated_reasoning_text:
+                reasoning_output_index = len(completed_output)
+                reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
+                reasoning_item_added = True
+                events.append(
+                    _emit(
+                        "response.output_item.added",
+                        {
+                            "type": "response.output_item.added",
+                            "output_index": reasoning_output_index,
+                            "item": {
+                                "type": "reasoning",
+                                "id": reasoning_item_id,
+                                "status": "in_progress",
+                                "summary": [],
+                            },
+                        },
+                    )
+                )
+            else:
+                return events, None, uses_reserved_slot
+
+            reasoning_item_payload_done = _build_reasoning_done_payload()
+            events.extend(_emit_reasoning_summary_events())
+            events.append(
+                _emit(
+                    "response.output_item.done",
+                    {
+                        "type": "response.output_item.done",
+                        "output_index": reasoning_output_index,
+                        "item": reasoning_item_payload_done,
+                    },
+                )
+            )
+            return events, reasoning_item_payload_done, uses_reserved_slot
+
         # Close the message item if we ever opened it.
         if message_open:
             message_content_block = {
@@ -2893,104 +3078,59 @@ async def _stream_responses(
         )
         reasoning_status = "incomplete" if mid_think_cutoff else "completed"
 
-        # If the model stops after producing only hidden reasoning,
-        # expose the captured reasoning item and then fail the response.
-        # A successful ``response.completed`` with no final message/tool
-        # leaves Responses clients with an empty turn that cannot be
-        # distinguished from a legitimate empty completion.
+        # If the model stops after generating tokens/hidden content but
+        # never opens a client-consumable message or tool call, expose any
+        # captured reasoning item and then fail the response. Preserve the
+        # legitimate immediate-EOS shape by requiring some generation
+        # signal beyond ``finish_reason="stop"``.
+        raw_generation_probe = accumulated_raw + "".join(accumulated_raw_parts)
+        raw_generation_signal = bool(strip_special_tokens(raw_generation_probe).strip())
+        no_final_answer_generated_signal = bool(
+            accumulated_reasoning_text
+            or terminal_reasoning_sidecar_seen
+            or raw_generation_signal
+            or accumulated_text
+        )
         no_final_answer_stop = (
             last_finish_reason == "stop"
-            and completion_tokens > 0
             and not consumable_output_seen
-            and not (accumulated_text or tool_calls)
+            and no_final_answer_generated_signal
         )
         if no_final_answer_stop:
-            if reasoning_item_added:
-                reasoning_item_payload_done = {
-                    "type": "reasoning",
-                    "id": reasoning_item_id,
-                    "status": reasoning_status,
-                    "summary": (
-                        [
-                            {
-                                "type": "summary_text",
-                                "text": accumulated_reasoning_text,
-                            }
-                        ]
-                        if accumulated_reasoning_text
-                        else []
-                    ),
-                }
-                yield _emit(
-                    "response.output_item.done",
-                    {
-                        "type": "response.output_item.done",
-                        "output_index": reasoning_output_index,
-                        "item": reasoning_item_payload_done,
-                    },
-                )
-            elif accumulated_reasoning_text:
-                reasoning_output_index = len(completed_output)
-                reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
-                reasoning_item_payload_added = {
-                    "type": "reasoning",
-                    "id": reasoning_item_id,
-                    "status": "in_progress",
-                    "summary": [],
-                }
-                yield _emit(
-                    "response.output_item.added",
-                    {
-                        "type": "response.output_item.added",
-                        "output_index": reasoning_output_index,
-                        "item": reasoning_item_payload_added,
-                    },
-                )
-                reasoning_item_payload_done = {
-                    "type": "reasoning",
-                    "id": reasoning_item_id,
-                    "status": reasoning_status,
-                    "summary": [
-                        {
-                            "type": "summary_text",
-                            "text": accumulated_reasoning_text,
-                        }
-                    ],
-                }
-                yield _emit(
-                    "response.output_item.done",
-                    {
-                        "type": "response.output_item.done",
-                        "output_index": reasoning_output_index,
-                        "item": reasoning_item_payload_done,
-                    },
-                )
+            reasoning_events, reasoning_item_payload_done, uses_reserved_slot = (
+                _finalize_reasoning_item_events()
+            )
+            for event in reasoning_events:
+                yield event
+            if reasoning_item_payload_done is not None:
+                if uses_reserved_slot:
+                    completed_output[reasoning_output_index] = (
+                        reasoning_item_payload_done
+                    )
+                else:
+                    completed_output.append(reasoning_item_payload_done)
             logger.warning(
-                "Responses (stream): model stopped after emitting %d token(s) "
+                "Responses (stream): model stopped after hidden output "
                 "but before any final message/tool_call; surfacing as "
-                "response.failed",
+                "response.failed (completion_tokens=%d)",
                 completion_tokens,
             )
             yield _emit(
                 "response.failed",
                 {
                     "type": "response.failed",
-                    "response": {
-                        "id": response_id,
-                        "object": "response",
-                        "created_at": created_at,
-                        "status": "failed",
-                        "model": served_model,
-                        "error": {
+                    "response": _stream_response_payload(
+                        "failed",
+                        error={
                             "code": "model_no_final_answer",
                             "message": (
-                                "The model stopped after emitting reasoning "
+                                "The model stopped after generating hidden output "
                                 "but did not produce a final answer or tool "
                                 "call. Retry the request; if it repeats, "
                                 "reduce the prompt or reasoning budget."
                             ),
                         },
-                    },
+                    ),
                 },
             )
             elapsed = time.perf_counter() - start_time
@@ -3000,78 +3140,16 @@ async def _stream_responses(
             )
             return
 
-        if reasoning_item_added:
-            # Case 1 (R12-M3): leading slot was flushed pre-message. Ship
-            # only the matching ``done`` event using the pre-allocated id +
-            # index, then overwrite the placeholder slot reserved at index 0
-            # of ``completed_output``.
-            reasoning_item_payload_done = {
-                "type": "reasoning",
-                "id": reasoning_item_id,
-                "status": reasoning_status,
-                "summary": (
-                    [
-                        {
-                            "type": "summary_text",
-                            "text": accumulated_reasoning_text,
-                        }
-                    ]
-                    if accumulated_reasoning_text
-                    else []
-                ),
-            }
-            yield _emit(
-                "response.output_item.done",
-                {
-                    "type": "response.output_item.done",
-                    "output_index": reasoning_output_index,
-                    "item": reasoning_item_payload_done,
-                },
-            )
-            completed_output[reasoning_output_index] = reasoning_item_payload_done
-        elif accumulated_reasoning_text:
-            # Case 2 (legacy R11-B path): the leading slot was never
-            # claimed (no message was emitted), but the model did
-            # produce reasoning bytes — emit added + done at the next
-            # available index. R11-B codex r1 HIGH #1: ``output_index``
-            # is the position in the terminal ``Response.output[]``
-            # array, not just an SSE ordinal, so use ``len(completed_output)``.
-            reasoning_output_index = len(completed_output)
-            reasoning_item_id = f"rs_{uuid.uuid4().hex[:24]}"
-            reasoning_item_payload_added = {
-                "type": "reasoning",
-                "id": reasoning_item_id,
-                "status": "in_progress",
-                "summary": [],
-            }
-            yield _emit(
-                "response.output_item.added",
-                {
-                    "type": "response.output_item.added",
-                    "output_index": reasoning_output_index,
-                    "item": reasoning_item_payload_added,
-                },
-            )
-            reasoning_item_payload_done = {
-                "type": "reasoning",
-                "id": reasoning_item_id,
-                "status": reasoning_status,
-                "summary": [
-                    {
-                        "type": "summary_text",
-                        "text": accumulated_reasoning_text,
-                    }
-                ],
-            }
-            yield _emit(
-                "response.output_item.done",
-                {
-                    "type": "response.output_item.done",
-                    "output_index": reasoning_output_index,
-                    "item": reasoning_item_payload_done,
-                },
-            )
-            completed_output.append(reasoning_item_payload_done)
+        reasoning_events, reasoning_item_payload_done, uses_reserved_slot = (
+            _finalize_reasoning_item_events()
+        )
+        for event in reasoning_events:
+            yield event
+        if reasoning_item_payload_done is not None:
+            if uses_reserved_slot:
+                completed_output[reasoning_output_index] = reasoning_item_payload_done
+            else:
+                completed_output.append(reasoning_item_payload_done)
 
         # R12-8 codex r2 #4: streaming Responses parity with non-stream.
         # Non-stream Responses runs `_apply_reasoning_cutoff_notice` via
@@ -3346,13 +3424,9 @@ async def _stream_responses(
                 "response.failed",
                 {
                     "type": "response.failed",
-                    "response": {
-                        "id": response_id,
-                        "object": "response",
-                        "created_at": created_at,
-                        "status": "failed",
-                        "model": served_model,
-                        "error": {
+                    "response": _stream_response_payload(
+                        "failed",
+                        error={
                             "code": "engine_no_output",
                             "message": (
                                 "The engine returned no usable output "
@@ -3364,7 +3438,7 @@ async def _stream_responses(
                                 "engine error."
                             ),
                         },
-                    },
+                    ),
                 },
             )
             elapsed = time.perf_counter() - start_time
@@ -3377,51 +3451,6 @@ async def _stream_responses(
         # response.completed — terminal event. Codex treats a missing
         # one as a hard failure (it logs "stream closed before
         # response.completed").
-        # #591 P2 (item 6): floor-clamp before the upper clamp. A buggy
-        # engine that surfaces a negative ``cached_tokens`` would
-        # otherwise pass through unchanged and emit
-        # ``input_tokens_details.cached_tokens=-N`` on the wire — OpenAI
-        # SDK consumers (Codex CLI, openai-python) reject the field.
-        # ``max(0, ...)`` returns 0 — semantically "no cache info".
-        cached_tokens_clamped = max(0, min(cached_tokens, prompt_tokens))
-        # R11-B (R11-M-F1): credit accumulated reasoning bytes against
-        # ``output_tokens_details.reasoning_tokens`` so SDK consumers can
-        # surface the same "reasoning_tokens=N" counter the non-stream
-        # path emits via ``_build_usage``. We don't have a per-token
-        # split, so approximate by character-quarter (matches the
-        # ``_account_for_reasoning`` 4-char heuristic used elsewhere on
-        # this surface). Min-clamp to 1 when reasoning text exists so
-        # consumers see a non-zero credit on extremely short reasoning.
-        # R11-B codex r7 NIT: also cap to ``completion_tokens`` so
-        # ``reasoning_tokens`` can never exceed total ``output_tokens``
-        # — a stubbed-short engine (or a model that emits one literal
-        # token of long reasoning text) could otherwise report
-        # ``reasoning_tokens > output_tokens`` and break SDK arithmetic.
-        # Codex r1 (R12-8): require completion_tokens > 0 to credit
-        # ANY reasoning. Previously the clamp only ran inside the
-        # ``if completion_tokens:`` branch, so a stubbed-short engine
-        # streaming reasoning text with completion_tokens==0 emitted
-        # ``output_tokens: 0`` + ``reasoning_tokens: 1`` — violating
-        # the invariant ``reasoning_tokens <= output_tokens`` that
-        # SDK consumers rely on for usage arithmetic.
-        reasoning_token_credit = 0
-        if accumulated_reasoning_text and completion_tokens:
-            reasoning_token_credit = min(
-                max(1, len(accumulated_reasoning_text) // 4),
-                completion_tokens,
-            )
-        usage_payload = {
-            "input_tokens": prompt_tokens,
-            "output_tokens": completion_tokens,
-            "total_tokens": prompt_tokens + completion_tokens,
-            # R10-C3: openai-python ``ResponseUsage`` marks these two
-            # ``*_details`` blocks as required, so always emit them. Empty
-            # objects are the documented absent-details shape.
-            "input_tokens_details": {
-                "cached_tokens": cached_tokens_clamped if cached_tokens_clamped else 0,
-            },
-            "output_tokens_details": {"reasoning_tokens": reasoning_token_credit},
-        }
         # R11-B (R11-M-F1): mirror the non-stream
         # ``_convert_status`` mapping — ``finish_reason="length"``
         # surfaces as ``status="incomplete"`` and pins a structured
@@ -3439,27 +3468,10 @@ async def _stream_responses(
             completed_status = "completed"
             incomplete_details = None
 
-        completed_response_payload = {
-            "id": response_id,
-            "object": "response",
-            "created_at": created_at,
-            "status": completed_status,
-            "model": served_model,
-            # R10-C3: include the full reconstructed ``output`` array
-            # so the openai-python SDK can materialize the final
-            # Response object. Pre-fix this field was missing and the
-            # SDK raised on ``Response.output`` validation.
-            "output": completed_output,
-            "usage": usage_payload,
-            # R10-C3: mirror the non-streaming response shape — the
-            # SDK's ``Response`` model marks these three fields
-            # required and rejects the payload without them.
-            "parallel_tool_calls": bool(responses_request.parallel_tool_calls),
-            "tool_choice": responses_request.tool_choice or "auto",
-            "tools": responses_request.tools or [],
-        }
-        if incomplete_details is not None:
-            completed_response_payload["incomplete_details"] = incomplete_details
+        completed_response_payload = _stream_response_payload(
+            completed_status,
+            incomplete_details=incomplete_details,
+        )
         yield _emit(
             "response.completed",
             {

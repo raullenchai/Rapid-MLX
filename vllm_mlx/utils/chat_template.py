@@ -885,9 +885,31 @@ def _looks_like_gpt_oss(model_name: str) -> bool:
     return bool(_GPT_OSS_MODEL_NAME_RE.search(model_name))
 
 
+def _looks_like_gpt_oss_harmony_template(template: str) -> bool:
+    """Return True for Harmony chat templates even under a served alias."""
+    return all(
+        marker in template for marker in ("<|start|>", "<|channel|>", "<|message|>")
+    )
+
+
+def _chat_template_strings(template, *, tools: list[dict] | None = None) -> list[str]:
+    if isinstance(template, str):
+        return [template]
+    if isinstance(template, dict):
+        preferred_keys = ("tool_use", "tools", "default") if tools else ("default",)
+        for key in preferred_keys:
+            value = template.get(key)
+            if isinstance(value, str):
+                return [value]
+        string_values = [value for value in template.values() if isinstance(value, str)]
+        return string_values if len(string_values) == 1 else []
+    return []
+
+
 def _template_uses_reasoning_effort_without_enable_thinking(
     template_applicator,
     model_name: str = "",
+    tools: list[dict] | None = None,
 ) -> bool:
     """Return True for templates such as GPT-OSS/Harmony that expose a
     ``reasoning_effort`` kwarg but do not consult ``enable_thinking``.
@@ -896,12 +918,21 @@ def _template_uses_reasoning_effort_without_enable_thinking(
     the closest template-native low-reasoning request is
     ``reasoning_effort="low"``.
     """
-    if not _looks_like_gpt_oss(model_name):
+    templates = _chat_template_strings(
+        getattr(template_applicator, "chat_template", None),
+        tools=tools,
+    )
+    if not templates:
         return False
-    template = getattr(template_applicator, "chat_template", None)
-    if not isinstance(template, str) or not template:
-        return False
-    return "reasoning_effort" in template and "enable_thinking" not in template
+    return any(
+        "reasoning_effort" in template
+        and "enable_thinking" not in template
+        and (
+            _looks_like_gpt_oss(model_name)
+            or _looks_like_gpt_oss_harmony_template(template)
+        )
+        for template in templates
+    )
 
 
 def apply_chat_template(
@@ -1023,7 +1054,7 @@ def apply_chat_template(
     if (
         enable_thinking is False
         and _template_uses_reasoning_effort_without_enable_thinking(
-            template_applicator, model_name=model_name
+            template_applicator, model_name=model_name, tools=tools
         )
     ):
         template_kwargs.setdefault("reasoning_effort", "low")

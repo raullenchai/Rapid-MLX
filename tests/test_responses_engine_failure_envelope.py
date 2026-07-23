@@ -184,7 +184,8 @@ class _ReasoningOnlyStopEngine:
 
 class _TerminalReasoningOnlyStopEngine:
     """Engine/router shape where reasoning is available only on the
-    terminal sentinel as ``reasoning_text`` and ``new_text`` is empty."""
+    terminal sentinel as ``reasoning_text`` while ``new_text`` is only a
+    stripped EOS/control token."""
 
     preserve_native_tool_format = False
 
@@ -203,12 +204,82 @@ class _TerminalReasoningOnlyStopEngine:
     async def stream_chat(self, messages, **kwargs):
         yield _GenerationOutput(
             text="",
-            new_text="",
+            raw_text="<|end|>",
+            new_text="<|end|>",
             prompt_tokens=7,
             completion_tokens=2,
             finish_reason="stop",
             finished=True,
             reasoning_text="Terminal reasoning only; no final channel.",
+        )
+
+
+class _ZeroTokenTerminalReasoningOnlyStopEngine:
+    """Reasoning text can be present even when the final usage snapshot
+    reports zero completion tokens."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        return _GenerationOutput(
+            text="",
+            prompt_tokens=7,
+            completion_tokens=0,
+            finish_reason="stop",
+            reasoning_text="Reasoning sidecar exists with zero output tokens.",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="",
+            new_text="",
+            prompt_tokens=7,
+            completion_tokens=0,
+            finish_reason="stop",
+            finished=True,
+            reasoning_text="Reasoning sidecar exists with zero output tokens.",
+        )
+
+
+class _PartialTerminalReasoningOnlyStopEngine:
+    """The terminal sentinel carries a fuller reasoning string than the
+    earlier per-token reasoning deltas."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        return _GenerationOutput(
+            text="",
+            prompt_tokens=7,
+            completion_tokens=2,
+            finish_reason="stop",
+            reasoning_text="Partial reasoning, now complete.",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="Partial reasoning, ",
+            new_text="Partial reasoning, ",
+            prompt_tokens=7,
+            completion_tokens=1,
+            finish_reason=None,
+            finished=False,
+            channel="reasoning",
+        )
+        yield _GenerationOutput(
+            text="",
+            new_text="",
+            prompt_tokens=0,
+            completion_tokens=2,
+            finish_reason="stop",
+            finished=True,
+            reasoning_text="Partial reasoning, now complete.",
         )
 
 
@@ -253,8 +324,8 @@ class _ClosedReasoningOnlyStopEngine:
 
 
 class _HiddenOnlyStopEngine:
-    """Pathological routed stream: the model produced tokens and stopped,
-    but no user-visible message, no tool_call, and no reasoning sidecar
+    """Pathological routed stream: the model produced hidden raw bytes and
+    stopped, but no user-visible message, tool_call, or public reasoning
     survived route-level filtering."""
 
     preserve_native_tool_format = False
@@ -273,9 +344,39 @@ class _HiddenOnlyStopEngine:
     async def stream_chat(self, messages, **kwargs):
         yield _GenerationOutput(
             text="",
+            raw_text="<|hidden-control|>",
             new_text="",
             prompt_tokens=7,
             completion_tokens=3,
+            finish_reason="stop",
+            finished=True,
+        )
+
+
+class _CountedEosOnlyStopEngine:
+    """Some engines count a sampled-and-suppressed EOS token in usage even
+    though no text, reasoning, raw payload, or tool call reached the route."""
+
+    preserve_native_tool_format = False
+
+    def __init__(self):
+        self.tokenizer = _Tokenizer()
+
+    async def chat(self, messages, **kwargs):
+        return _GenerationOutput(
+            text="",
+            prompt_tokens=7,
+            completion_tokens=1,
+            finish_reason="stop",
+        )
+
+    async def stream_chat(self, messages, **kwargs):
+        yield _GenerationOutput(
+            text="",
+            raw_text="<|end|>",
+            new_text="<|end|>",
+            prompt_tokens=7,
+            completion_tokens=1,
             finish_reason="stop",
             finished=True,
         )
@@ -411,6 +512,20 @@ def terminal_reasoning_only_stop_client(monkeypatch):
 
 
 @pytest.fixture
+def zero_token_terminal_reasoning_only_stop_client(monkeypatch):
+    holder = _build_client(monkeypatch, _ZeroTokenTerminalReasoningOnlyStopEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def partial_terminal_reasoning_only_stop_client(monkeypatch):
+    holder = _build_client(monkeypatch, _PartialTerminalReasoningOnlyStopEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
 def closed_reasoning_only_stop_client(monkeypatch):
     holder = _build_client(monkeypatch, _ClosedReasoningOnlyStopEngine)
     yield holder
@@ -420,6 +535,13 @@ def closed_reasoning_only_stop_client(monkeypatch):
 @pytest.fixture
 def hidden_only_stop_client(monkeypatch):
     holder = _build_client(monkeypatch, _HiddenOnlyStopEngine)
+    yield holder
+    holder.cleanup()
+
+
+@pytest.fixture
+def counted_eos_only_stop_client(monkeypatch):
+    holder = _build_client(monkeypatch, _CountedEosOnlyStopEngine)
     yield holder
     holder.cleanup()
 
@@ -444,6 +566,23 @@ def _parse_sse(body_text: str) -> list[tuple[str, dict]]:
         if event_name and data_text is not None:
             events.append((event_name, json.loads(data_text)))
     return events
+
+
+def _assert_required_response_fields(envelope: dict) -> None:
+    for response_field in (
+        "id",
+        "created_at",
+        "status",
+        "model",
+        "output",
+        "usage",
+        "parallel_tool_calls",
+        "tool_choice",
+        "tools",
+    ):
+        assert response_field in envelope, (
+            f"response.failed.response missing `{response_field}`"
+        )
 
 
 # =============================================================================
@@ -576,9 +715,13 @@ class TestResponsesStreamFailureEnvelope:
         failed = [d for (n, d) in events if n == "response.failed"]
         assert failed, "no response.failed event"
         envelope = failed[0]["response"]
+        _assert_required_response_fields(envelope)
         assert envelope["status"] == "failed", envelope
         assert envelope["error"]["code"] == "engine_no_output", envelope
         assert envelope["error"]["message"], envelope
+        assert envelope["output"] == []
+        assert envelope["usage"]["input_tokens"] == 42
+        assert envelope["usage"]["output_tokens"] == 0
 
     def test_healthy_stream_does_not_trip_failure_guard(self, healthy_client):
         """Same narrowness check on the streaming surface: a one-token
@@ -645,7 +788,15 @@ class TestResponsesStreamFailureEnvelope:
             f"reasoning-only stop must not also emit response.completed; events={names}"
         )
         failed = next(d for n, d in events if n == "response.failed")
-        assert failed["response"]["error"]["code"] == "model_no_final_answer"
+        envelope = failed["response"]
+        _assert_required_response_fields(envelope)
+        assert envelope["error"]["code"] == "model_no_final_answer"
+        assert envelope["usage"]["input_tokens"] == 7
+        assert envelope["usage"]["output_tokens"] == 2
+        assert envelope["output"][0]["type"] == "reasoning"
+        assert envelope["output"][0]["summary"][0]["text"] == (
+            "I should answer, but I never reach final."
+        )
 
     def test_reasoning_only_stop_does_not_promote_reasoning_to_text(
         self, reasoning_only_stop_client
@@ -669,6 +820,53 @@ class TestResponsesStreamFailureEnvelope:
             and d.get("item", {}).get("type") == "reasoning"
         ]
         assert reasoning_done, "reasoning item should still be closed for diagnostics"
+
+    def test_reasoning_only_failure_closes_summary_events_before_failed(
+        self, reasoning_only_stop_client
+    ):
+        """The failure terminal must not bypass the reasoning summary event
+        ladder after opening a reasoning item."""
+        with reasoning_only_stop_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        names = [n for n, _ in events]
+        expected = [
+            "response.output_item.added",
+            "response.reasoning_summary_part.added",
+            "response.reasoning_summary_text.delta",
+            "response.reasoning_summary_text.done",
+            "response.reasoning_summary_part.done",
+            "response.output_item.done",
+            "response.failed",
+        ]
+        for event_name in expected:
+            assert event_name in names, f"{event_name} missing; events={names}"
+        indexes = [names.index(event_name) for event_name in expected]
+        assert indexes == sorted(indexes), names
+        text_done = next(
+            d for n, d in events if n == "response.reasoning_summary_text.done"
+        )
+        part_done = next(
+            d for n, d in events if n == "response.reasoning_summary_part.done"
+        )
+        expected_text = "I should answer, but I never reach final."
+        assert text_done["text"] == expected_text
+        assert part_done["part"]["text"] == expected_text
+        reasoning_added = next(
+            d
+            for n, d in events
+            if n == "response.output_item.added"
+            and d.get("item", {}).get("type") == "reasoning"
+        )
+        assert text_done["item_id"] == reasoning_added["item"]["id"]
+        assert part_done["item_id"] == reasoning_added["item"]["id"]
+        assert text_done["output_index"] == reasoning_added["output_index"]
+        assert part_done["output_index"] == reasoning_added["output_index"]
 
     def test_terminal_reasoning_only_stop_stream_emits_response_failed(
         self, terminal_reasoning_only_stop_client
@@ -694,7 +892,60 @@ class TestResponsesStreamFailureEnvelope:
         )
         assert "response.completed" not in names, names
         failed = next(d for n, d in events if n == "response.failed")
-        assert failed["response"]["error"]["code"] == "model_no_final_answer"
+        envelope = failed["response"]
+        _assert_required_response_fields(envelope)
+        assert envelope["error"]["code"] == "model_no_final_answer"
+        assert envelope["output"] == []
+
+    def test_terminal_reasoning_sidecar_does_not_replace_public_summary(
+        self, partial_terminal_reasoning_only_stop_client
+    ):
+        """Terminal ``reasoning_text`` is a hidden sidecar, not a public
+        summary replacement."""
+        with partial_terminal_reasoning_only_stop_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        failed = next(d for n, d in events if n == "response.failed")
+        envelope = failed["response"]
+        _assert_required_response_fields(envelope)
+        assert envelope["error"]["code"] == "model_no_final_answer"
+        summary_deltas = [
+            d["delta"]
+            for n, d in events
+            if n == "response.reasoning_summary_text.delta"
+        ]
+        assert "".join(summary_deltas) == "Partial reasoning, "
+        assert envelope["output"][0]["summary"][0]["text"] == "Partial reasoning, "
+
+    def test_zero_token_terminal_reasoning_only_stop_stream_emits_response_failed(
+        self, zero_token_terminal_reasoning_only_stop_client
+    ):
+        """A reasoning-only terminal sentinel is not an immediate EOS just
+        because the usage snapshot reports zero completion tokens."""
+        with zero_token_terminal_reasoning_only_stop_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        names = [n for n, _ in events]
+        assert "response.failed" in names, (
+            f"zero-token reasoning-only stop must fail; events={names}"
+        )
+        assert "response.completed" not in names, names
+        failed = next(d for n, d in events if n == "response.failed")
+        envelope = failed["response"]
+        _assert_required_response_fields(envelope)
+        assert envelope["error"]["code"] == "model_no_final_answer"
+        assert envelope["usage"]["output_tokens"] == 0
+        assert envelope["output"] == []
 
     def test_closed_reasoning_only_stop_stream_emits_response_failed(
         self, closed_reasoning_only_stop_client
@@ -722,7 +973,10 @@ class TestResponsesStreamFailureEnvelope:
         assert "response.completed" not in names, names
         assert "response.output_text.delta" not in names, names
         failed = next(d for n, d in events if n == "response.failed")
-        assert failed["response"]["error"]["code"] == "model_no_final_answer"
+        envelope = failed["response"]
+        _assert_required_response_fields(envelope)
+        assert envelope["error"]["code"] == "model_no_final_answer"
+        assert envelope["output"][0]["type"] == "reasoning"
 
     def test_hidden_nonzero_stop_stream_emits_response_failed(
         self, hidden_only_stop_client
@@ -749,4 +1003,27 @@ class TestResponsesStreamFailureEnvelope:
         )
         assert "response.completed" not in names, names
         failed = next(d for n, d in events if n == "response.failed")
-        assert failed["response"]["error"]["code"] == "model_no_final_answer"
+        envelope = failed["response"]
+        _assert_required_response_fields(envelope)
+        assert envelope["error"]["code"] == "model_no_final_answer"
+        assert envelope["output"] == []
+
+    def test_counted_eos_only_stop_stream_completes(self, counted_eos_only_stop_client):
+        """A non-zero usage count alone is not proof of hidden output; the
+        sampled token may have been a suppressed EOS."""
+        with counted_eos_only_stop_client.client.stream(
+            "POST",
+            "/v1/responses",
+            json={**PAYLOAD, "stream": True},
+            headers=HEADERS,
+        ) as resp:
+            body = "".join(resp.iter_text())
+        events = _parse_sse(body)
+        names = [n for n, _ in events]
+        assert "response.completed" in names, names
+        assert "response.failed" not in names, names
+        completed = next(d for n, d in events if n == "response.completed")
+        envelope = completed["response"]
+        assert envelope["status"] == "completed"
+        assert envelope["output"] == []
+        assert envelope["usage"]["output_tokens"] == 1
