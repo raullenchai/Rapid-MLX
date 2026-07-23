@@ -41,6 +41,19 @@ from .vision_embedding_cache import VisionEmbeddingCache  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
+# Upper bound on the per-forward chunk size used when prefilling a long
+# text-only prompt on the MLLM path (issue #1187, Problem B). The actual
+# chunk is ``min(prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS)`` so an
+# operator who deliberately set a *smaller* ``--prefill-step-size`` (a
+# memory-constrained box) still gets chunks no larger than they asked for,
+# while the large values needed to clear the per-batch cap (the #682
+# reporter runs ``--prefill-step-size 22000``) no longer force the whole
+# prompt through a single forward. 2048 measured the lowest peak on a
+# gemma-4-26b 20k-token prefill (18.4 GB vs 20.0 GB at 4096, 35.2 GB
+# single-shot) with no throughput cost — it is also mlx-lm's own text-lane
+# default (``generate_step``/``PromptProcessingBatch`` prefill_step_size).
+_MLLM_PREFILL_CHUNK_TOKENS = 2048
+
 
 @dataclass
 class MLLMBatchRequest:
@@ -805,7 +818,10 @@ class MLLMBatchGenerator:
         Run the initial VLM forward pass to encode vision and get first logits.
 
         This runs the full VLM model (vision + language) on the prompt,
-        which encodes the images and fills the provided KV cache.
+        which encodes the images and fills the provided KV cache. For a
+        long text-only prompt with a cache, the prefill is done in bounded
+        chunks (prefix → cache, last token → logits) to cap activation and
+        logits memory; see the inline note for the rationale (#1187, B).
 
         Args:
             request: Preprocessed request with input_ids and pixel_values
@@ -814,7 +830,11 @@ class MLLMBatchGenerator:
                    during the forward pass.
 
         Returns:
-            Logits from the forward pass
+            Logits from the forward pass. On the chunked text-only path this
+            is the last position only (``[1, 1, vocab]``); the image /
+            no-cache single forward returns the full sequence
+            (``[1, seqlen, vocab]``). Callers slice ``[:, -1, :]`` either way,
+            so the contract is unchanged.
         """
         # Build model call kwargs.
         #
@@ -835,14 +855,62 @@ class MLLMBatchGenerator:
         if request.image_grid_thw is not None:
             kwargs["image_grid_thw"] = request.image_grid_thw
 
-        # Run full VLM forward pass with cache.
+        # Run the VLM forward pass with cache.
         # The VLM passes cache= through to self.language_model(),
         # so the language model writes KV state directly into our cache.
         input_ids = request.input_ids
         if input_ids.ndim == 1:
             input_ids = input_ids[None, :]
 
-        output = self.model(input_ids, cache=cache, **kwargs)
+        # Long text-only prompts (issue #1187, Problem B) are prefilled in
+        # bounded chunks — the same shape mlx-lm's own text lane uses
+        # (``PromptProcessingBatch.prompt``: forward each chunk, eval only the
+        # cache state, ``clear_cache``, advance). Two things blow up when the
+        # whole prompt goes through a single forward instead:
+        #
+        #   1. Activations for every prompt position are live at once. A
+        #      gemma-4-26b prefill of a ~20k-token prompt (a "test" message
+        #      expanded by a large Hermes tool schema) peaks at ~20 GB of
+        #      transient activation — enough to max out the reporter's 48 GB
+        #      M4 Max. Chunking at 2048 bounds this to ~3 GB (measured 35.2 GB
+        #      → 18.4 GB peak, and ~2x faster because nothing giant is
+        #      materialized).
+        #   2. The language model projects logits over *every* position
+        #      (``logits_from_hidden`` → ``[1, seqlen, vocab]``, vocab 262144).
+        #      Only the last row is sampled, so the chunked prefix forwards
+        #      eval just the cache state (mlx prunes the unused ``lm_head``
+        #      projection) and a final single-token forward produces the
+        #      ``[1, 1, vocab]`` logits we actually use.
+        #
+        # Output is numerically identical to the single forward (causal
+        # attention: the last token attends to the whole prefix through the
+        # cache). Scope is deliberately text-only: with images, pixel features
+        # must stay aligned with their placeholder tokens in a single
+        # vision-merge forward, and image prompts are bounded by the per-batch
+        # cap anyway. The split also needs a real KV cache to carry prefix
+        # state across forwards; unit-test call sites pass ``cache=None`` and
+        # keep the single forward, which is the only correct behavior there.
+        is_text_only = request.pixel_values is None and request.image_grid_thw is None
+        if cache is not None and input_ids.shape[1] > 1 and is_text_only:
+            chunk = min(self.prefill_step_size, _MLLM_PREFILL_CHUNK_TOKENS)
+            chunk = max(1, chunk)
+            prefix = input_ids[:, :-1]
+            prefix_len = prefix.shape[1]
+            pos = 0
+            while pos < prefix_len:
+                n = min(chunk, prefix_len - pos)
+                # No pixel_values (text-only); pass None explicitly because
+                # some mlx-vlm classes (Gemma3/Gemma4) declare it a required
+                # positional kwarg even for the text path (see note above).
+                self.model(prefix[:, pos : pos + n], cache=cache, pixel_values=None)
+                # Materialize only the KV writes, then drop transient buffers
+                # before the next chunk — the barrier that bounds peak memory.
+                mx.eval([c.state for c in cache])
+                mx.clear_cache()
+                pos += n
+            output = self.model(input_ids[:, -1:], cache=cache, pixel_values=None)
+        else:
+            output = self.model(input_ids, cache=cache, **kwargs)
         request.vision_encoded = True
 
         # Release preprocessed vision inputs now that they have been encoded
