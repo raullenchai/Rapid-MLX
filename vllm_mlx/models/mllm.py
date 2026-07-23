@@ -1144,11 +1144,14 @@ class MLXMultimodalLM:
                 and _all_missing_are_multimodal(missing_names)
             ):
                 missing_count = declared_count
-                missing_count_hint = f" ({missing_count} vision tensors missing)"
+                # Modality-neutral wording: the allowlist accepts audio and
+                # projector tensors too, so an audio-only checkpoint can reach
+                # here — don't hard-code "vision".
+                missing_count_hint = f" ({missing_count} multimodal tensors missing)"
                 logger.error(
-                    "MLLM load failed%s — this checkpoint declares "
-                    "vision_config in config.json but its safetensors don't "
-                    "carry a complete vision tower. Re-run with --no-mllm "
+                    "MLLM load failed%s — this checkpoint declares a vision/"
+                    "audio modality in config.json but its safetensors don't "
+                    "carry a complete multimodal tower. Re-run with --no-mllm "
                     "(or --text-only) to force text-only routing. "
                     "See #393 for context.",
                     missing_count_hint,

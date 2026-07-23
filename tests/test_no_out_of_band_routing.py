@@ -83,6 +83,17 @@ ROUTING_WRITE_ALLOWED_FUNCS: frozenset[str] = frozenset(
         # `model_post_init` is Pydantic v2's standard "after validation"
         # hook. Treated as constructor-equivalent.
         "model_post_init",
+        # Auto-degrade to the text lane (#1187). Unlike every other entry
+        # this is a RUNTIME correction, not a construction/config decision:
+        # a vision-config checkpoint whose index.json LISTS vision tensors
+        # the shards don't actually contain can only be caught when mlx-vlm's
+        # strict weight load fails DURING `start()` — the constructor and the
+        # config/index detectors cannot see it (they trust the index). So the
+        # preferred "wire a RoutingFlagPair through __init__" resolution does
+        # not apply; the write must happen where the load failure surfaces.
+        # Pinned to engine/batched.py below so only the real engine method
+        # (not a same-named helper elsewhere) may flip the flag.
+        "_start_mllm",
     }
 )
 
@@ -98,6 +109,7 @@ ROUTING_WRITE_ALLOWED_LOCATIONS: dict[str, frozenset[str]] = {
     "enrich_model_config": frozenset({"model_auto_config.py"}),
     "_coerce": frozenset({"model_aliases.py"}),
     "_load": frozenset({"model_aliases.py"}),
+    "_start_mllm": frozenset({"engine/batched.py"}),
 }
 
 
@@ -752,14 +764,18 @@ def test_routing_fields_written_only_in_allowed_scopes():
 
     Allowed functions: ``__init__``, ``load_model``,
     ``detect_model_config``, ``enrich_model_config``, ``_coerce``,
-    ``_load``, ``model_post_init``. See ``ROUTING_WRITE_ALLOWED_FUNCS``.
+    ``_load``, ``model_post_init``, ``_start_mllm``. See
+    ``ROUTING_WRITE_ALLOWED_FUNCS``.
 
     If you need to mutate a routing field from a new location, the
     answer is almost always "add a new ``RoutingFlagPair`` entry in
     ``test_no_mllm_flag.py`` and wire it through ``EngineCore.__init__``
     via a kwarg". Adding to the allowlist here requires a written
     justification (PR description) explaining why constructor mutation
-    isn't sufficient.
+    isn't sufficient. ``_start_mllm`` (location-pinned to
+    ``engine/batched.py``) is the one runtime exception: the text-only
+    auto-degrade (#1187) can only be decided when mlx-vlm's strict weight
+    load fails at ``start()``, which is strictly after construction.
     """
     offenders: list[str] = []
     pkg_root = _pkg_root()

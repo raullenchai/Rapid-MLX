@@ -213,14 +213,18 @@ def _reported_modality(
         # authoritative, do not consult is_mllm_model.
         return "text"
     if _served_engine_is_mllm(model_id) is False:
-        # ASYMMETRIC engine authority: a live engine that is serving text —
-        # because it auto-degraded a vision-config checkpoint with no vision
-        # tower (#1187) or the operator passed --no-mllm — is authoritative
-        # that vision is UNAVAILABLE, which a config/index-based re-detect
-        # cannot see. The reverse (engine is_mllm=True) does NOT force
-        # ``image`` here: genuine VLMs already advertise it via the static
-        # detector below, so deferring keeps the modality decoupled from
-        # incidental engine state and avoids over-claiming vision.
+        # ASYMMETRIC engine authority (INTENTIONAL — codex flagged the
+        # asymmetry as a nit on PR #1189; kept by design): a live engine that
+        # is serving text — because it auto-degraded a vision-config checkpoint
+        # with no vision tower (#1187) or the operator passed --no-mllm — is
+        # authoritative that vision is UNAVAILABLE, which a config/index-based
+        # re-detect cannot see. The reverse (engine is_mllm=True) does NOT force
+        # ``image`` here: a genuine VLM loaded a vision tower, and the static
+        # detector below keys on that same weight evidence, so it already
+        # advertises ``image`` for it — honoring engine True adds nothing but
+        # re-couples the wire modality to incidental/leaked engine state (the
+        # exact bleed this asymmetry was introduced to avoid). Deferring the
+        # positive case keeps modality decoupled and never over-claims vision.
         return "text"
     try:
         if is_mllm_model(model_id):

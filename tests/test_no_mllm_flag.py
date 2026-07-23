@@ -551,8 +551,9 @@ def test_friendly_error_on_missing_vision_tensors(monkeypatch):
             f"Friendly error must mention --no-mllm; got: {msg!r}"
         )
         assert "#393" in msg, "Friendly error must reference #393 for searchability"
-        assert "60 vision tensors missing" in msg, (
-            "Friendly error must surface the count from the underlying error"
+        assert "60 multimodal tensors missing" in msg, (
+            "Friendly error must surface the count from the underlying error "
+            "with modality-neutral wording (the allowlist accepts audio too)"
         )
     finally:
         # Restore original mlx_vlm so subsequent tests aren't poisoned.
