@@ -22,7 +22,9 @@ jobs:
     steps:
       - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5  # v4
         with:
-          fetch-depth: 2
+          # Release notes and contributor recognition need the complete range
+          # from the previous tag, not only the version-bump commit.
+          fetch-depth: 0
 
       - name: Parse commit subject
         id: parse
@@ -83,6 +85,34 @@ jobs:
             COMMITS=$(git log -50 --pretty='- %s (%h)')
           fi
 
+          # Credit every merged PR author other than the repository owner.
+          # Squash commits end in ``(#123)``; merge commits use the standard
+          # ``Merge pull request #123`` subject.
+          OWNER="${GITHUB_REPOSITORY%%/*}"
+          PR_NUMBERS=$(
+            {
+              git log "${PREV_TAG:+$PREV_TAG..}HEAD" --pretty='%s' |
+                sed -nE 's/.*\(#([0-9]+)\)$/\1/p'
+              git log "${PREV_TAG:+$PREV_TAG..}HEAD" --pretty='%s' |
+                sed -nE 's/^Merge pull request #([0-9]+).*/\1/p'
+            } | sort -nu
+          )
+          CONTRIBUTIONS=()
+          while IFS= read -r PR_NUMBER; do
+            [ -n "$PR_NUMBER" ] || continue
+            PR_JSON=$(gh pr view "$PR_NUMBER" \
+              --repo "$GITHUB_REPOSITORY" \
+              --json author,title,url 2>/dev/null) || continue
+            AUTHOR=$(jq -r '.author.login // empty' <<<"$PR_JSON")
+            if [ -z "$AUTHOR" ] || [ "$AUTHOR" = "$OWNER" ]; then
+              continue
+            fi
+            CONTRIBUTIONS+=("$(
+              jq -r '"- [@\(.author.login)](https://github.com/\(.author.login)) — [\(.title)](\(.url))"' \
+                <<<"$PR_JSON"
+            )")
+          done <<<"$PR_NUMBERS"
+
           {
             echo 'body<<__EOF__'
             echo "## What's new in v$VERSION"
@@ -93,6 +123,12 @@ jobs:
               echo "_(no changes recorded)_"
             fi
             echo
+            if [ "${#CONTRIBUTIONS[@]}" -gt 0 ]; then
+              echo "## Community contributors"
+              echo
+              printf '%s\n' "${CONTRIBUTIONS[@]}"
+              echo
+            fi
             echo "Install: \`brew upgrade rapid-mlx\` or \`pip install -U rapid-mlx==$VERSION\` (or just \`rapid-mlx upgrade\`)."
             echo '__EOF__'
           } >> "$GITHUB_OUTPUT"

@@ -11,7 +11,7 @@ The historical pain point: between v0.6.14 (2026-05-05) and v0.6.16, several PRs
 
 | Trigger | What happens automatically |
 |---|---|
-| Push commit `chore: bump version to X.Y.Z` to `main` | `auto-release.yml` creates tag `vX.Y.Z` + GitHub Release |
+| Push commit `chore: bump version to X.Y.Z` to `main` | `auto-release.yml` creates tag `vX.Y.Z` + GitHub Release, crediting every merged PR author other than the repository owner |
 | GitHub Release published | `publish.yml` builds → PyPI publish → dispatches Homebrew tap to bump formula |
 | PR changes the `pyproject.toml` `version` line outside a dedicated bump PR | `version-check.yml` **fails** — version may only change in a PR titled `chore: bump version to X.Y.Z` (the `version-bump` label authorizes the change but still requires that release-shaped title; the `skip-version-bump` label is the escape hatch for corrections) |
 
@@ -53,7 +53,7 @@ The full path from "I want to release" to "users on `brew upgrade` see the new v
 
    The commit subject **must** match `chore: bump version to X.Y.Z` exactly — `auto-release.yml` parses it.
 
-3. **`auto-release.yml` fires** (~30s) — verifies the commit, checks the tag doesn't already exist, builds a CHANGELOG from `git log <prev-tag>..HEAD`, creates the GitHub Release.
+3. **`auto-release.yml` fires** (~30s) — verifies the commit, checks the tag doesn't already exist, builds a CHANGELOG from `git log <prev-tag>..HEAD`, adds a linked **Community contributors** entry for every merged PR author other than the repository owner, and creates the GitHub Release.
 
 4. **`publish.yml` fires on `release: published`** (~3min) — builds sdist + wheel, uploads to PyPI (via the `pypi` deployment environment).
 
