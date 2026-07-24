@@ -2022,6 +2022,9 @@ class Scheduler:
         self._sampler_cache: OrderedDict[tuple, Any] = OrderedDict()
         self._sampler_cache_max = 32
 
+        # #1197: resolve the shared KV-quant group size + per-cache enable flags.
+        self._init_kv_quantization(model)
+
         # Prefix cache for KV state reuse
         self.prefix_cache: PrefixCacheManager | None = None
         self.memory_aware_cache: MemoryAwarePrefixCache | None = None
@@ -2048,6 +2051,12 @@ class Scheduler:
                 cache_config = MemoryCacheConfig(
                     max_memory_mb=self.config.cache_memory_mb,
                     max_memory_percent=self.config.cache_memory_percent,
+                    # #1197: the retained prefix cache keeps its original enable
+                    # flag and configured group size — ``_quantize_cache`` coerces
+                    # the group size PER LAYER against the real stored dims at
+                    # quantize time (and keeps a layer bf16 when none fits), so no
+                    # config-level head_dim probe can wrongly disable or mis-size
+                    # it (that probe misreads MLA models like DeepSeek-V3).
                     kv_quantize=self.config.kv_cache_quantization,
                     kv_bits=self.config.kv_cache_quantization_bits,
                     kv_group_size=self.config.kv_cache_quantization_group_size,
@@ -2448,6 +2457,63 @@ class Scheduler:
             self._sampler_cache.popitem(last=False)
         return sampler
 
+    def _init_kv_quantization(self, model) -> None:
+        """Resolve the LIVE cache's group size + install gate (#1197).
+
+        Only the LIVE continuous-batching cache (``QuantizedBatchKVCache``) needs
+        this up-front, config-level decision: its type is fixed before any token
+        and cannot fall back to bf16 mid-stream, so an incompatible first write
+        would crash the request. ``mx.quantize`` requires the quantized dim
+        divisible by a group size in {32,64,128}: a head_dim=96 model drops
+        64->32, and head_dim=80 (or an unprobeable model) can't be quantized, so
+        the live cache stays bf16 (``_kv_quant_live_disabled``).
+
+        The retained prefix cache is deliberately NOT gated here — it self-coerces
+        per layer against the real stored dims at quantize time
+        (``memory_cache._quantize_cache``), which also correctly handles MLA
+        models (DeepSeek-V3) whose cached dims differ from any config head dim, so
+        the fragile config-level probe never disables or mis-sizes it.
+
+        Extracted from ``__init__`` so the scheduler -> live-hook wiring is
+        unit-testable without loading a model.
+        """
+        self._kv_quant_group_size = self.config.kv_cache_quantization_group_size
+        self._kv_quant_live_disabled = False
+        if not (
+            self.config.kv_cache_quantization
+            and not getattr(self.config, "kv_cache_turboquant", None)
+        ):
+            return
+
+        from .quantized_batch_cache import (
+            probe_kv_head_dims,
+            resolve_kv_quantization,
+        )
+
+        k_hd, v_hd = probe_kv_head_dims(model)
+        requested = self._kv_quant_group_size
+        self._kv_quant_group_size, self._kv_quant_live_disabled = (
+            resolve_kv_quantization(k_hd, v_hd, requested)
+        )
+
+        if self._kv_quant_live_disabled:
+            logger.warning(
+                "[kv-cache] live KV quantization disabled: head_dim (K=%s, V=%s) "
+                "unknown or not divisible by any supported group_size "
+                "(32/64/128); serving a bf16 live cache (retained prefix cache "
+                "quantizes independently). Pass --kv-cache-dtype bf16 to silence.",
+                k_hd,
+                v_hd,
+            )
+        elif self._kv_quant_group_size != requested:
+            logger.info(
+                "[kv-cache] adjusted live group_size %d->%d for head_dim (K=%s, V=%s)",
+                requested,
+                self._kv_quant_group_size,
+                k_hd,
+                v_hd,
+            )
+
     def _create_batch_generator(
         self, sampling_params: SamplingParams
     ) -> BatchGenerator:
@@ -2487,6 +2553,37 @@ class Scheduler:
         except TypeError:
             # mlx-lm < 0.31.3 — no `stream` kwarg; fall back to legacy path.
             bg = BatchGenerator(**bg_kwargs)
+
+        # ``--kv-cache-dtype int8/int4`` must reach the LIVE continuous-batching
+        # KV cache, not just the retained prefix cache (#1197). Swap the
+        # generator's plain ``BatchKVCache`` for a quantized, dequant-on-read
+        # ``QuantizedBatchKVCache``. TurboQuant has its own path, so this only
+        # runs for the plain quantization toggle. The head_dim-compatible group
+        # size (and the disable-on-incompatible decision) were resolved once in
+        # __init__ so the live and retained caches never diverge.
+        # ``getattr`` guards: some unit paths build a Scheduler via
+        # ``__new__`` + a stub config (bypassing __init__), so these attributes
+        # may be absent — treat missing as "no live quantization".
+        self._live_kv_quant: tuple[int, int] | None = None
+        if (
+            getattr(self.config, "kv_cache_quantization", False)
+            and not getattr(self.config, "kv_cache_turboquant", None)
+            and not getattr(self, "_kv_quant_live_disabled", True)
+        ):
+            from .quantized_batch_cache import install_quantized_batch_cache
+
+            bits = getattr(self.config, "kv_cache_quantization_bits", 8)
+            eff_gs = getattr(self, "_kv_quant_group_size", 64)
+            install_quantized_batch_cache(bg, group_size=eff_gs, bits=bits)
+            # Remember the effective params so prefix-cache HITS get normalized
+            # to the same quantized type as MISSES (#1197).
+            self._live_kv_quant = (eff_gs, bits)
+            logger.info(
+                "[kv-cache] live continuous-batching KV cache quantized to "
+                "int%d (group_size=%d)",
+                bits,
+                eff_gs,
+            )
 
         # Server-side wiring for ``--speculative-config '{"method":"mtp"}'``.
         # This installs the vendored PR #990 ``mtp_generate_step`` hot
@@ -3011,7 +3108,34 @@ class Scheduler:
                         KVCache as _KVCache,
                     )
 
-                    if cache_cls is _BatchKVCache:
+                    from vllm_mlx.quantized_batch_cache import (
+                        QuantizedBatchKVCache as _QuantizedBatchKVCache,
+                    )
+
+                    if cache_cls is _QuantizedBatchKVCache:
+                        # state = (k_triple, v_triple, offset, left_padding).
+                        # Mid-prefill save is always batch_size=1, so dequantize
+                        # the quantized triples to a plain bf16 KVCache (#1197).
+                        cache = _KVCache()
+                        if state[0] is None:
+                            # Empty cache: QuantizedBatchKVCache.state returns
+                            # (None, None, ...) before its first write. Restore an
+                            # empty KVCache rather than dequantizing None.
+                            cache.offset = 0
+                        else:
+                            from vllm_mlx.quantized_batch_cache import _dequantize
+
+                            gs, bits = (
+                                (int(meta_state[0]), int(meta_state[1]))
+                                if meta_state
+                                else (64, 8)
+                            )
+                            keys = _dequantize(state[0], gs, bits)
+                            values = _dequantize(state[1], gs, bits)
+                            cache.keys = keys
+                            cache.values = values
+                            cache.offset = keys.shape[2]
+                    elif cache_cls is _BatchKVCache:
                         # BatchKVCache.state = (keys, values, offset, left_padding)
                         keys, values = state[0], state[1]
                         cache = _KVCache()
@@ -4523,6 +4647,21 @@ class Scheduler:
                 request.cached_tokens = 0
                 request.remaining_tokens = request.prompt_token_ids
                 tokens_to_process = request.prompt_token_ids
+
+            # Prefix-cache HIT with live quantization on: normalize the restored
+            # KVCache layers into the same _QuantizableKVCache the MISS path uses,
+            # so mlx-lm merges them into a QuantizedBatchKVCache rather than a bf16
+            # BatchKVCache that then crashes when extended against a quantized
+            # batch (#1197).
+            _lq = getattr(self, "_live_kv_quant", None)
+            if _lq is not None and cache_to_use:
+                from .quantized_batch_cache import (
+                    normalize_caches_for_quantization,
+                )
+
+                cache_to_use = normalize_caches_for_quantization(
+                    cache_to_use, _lq[0], _lq[1]
+                )
 
             # Insert into BatchGenerator with optional cache.
             # Wrap in try/except: if cache shapes are incompatible

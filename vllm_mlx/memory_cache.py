@@ -1259,8 +1259,22 @@ def _trim_to_offset(cache: list[Any]) -> list[Any]:
 
 
 def _quantize_cache(cache: list[Any], bits: int = 8, group_size: int = 64) -> list[Any]:
-    """Quantize KVCache layers to reduce memory. Non-KVCache layers are kept as-is."""
+    """Quantize KVCache layers to reduce memory. Non-KVCache layers are kept as-is.
+
+    ``mx.quantize`` groups along the last (head) dimension and requires it
+    divisible by a supported group size (32/64/128). The right dimension is the
+    one ACTUALLY stored in each layer's ``keys``/``values`` — not a generic
+    attention/query head dim inferred from config. That distinction matters for
+    MLA models (e.g. DeepSeek-V3), whose cache holds ``kv_latent`` (512) and
+    ``k_pe`` (64) rather than ``v_head_dim`` (128): a config-derived group size
+    would wrongly reject them, while the real dims quantize cleanly at 64. So
+    coerce ``group_size`` per layer against the actual key/value dims, and keep a
+    layer bf16 when no supported size divides both (e.g. head_dim=80) rather than
+    letting ``to_quantized`` raise (#1197).
+    """
     from mlx_lm.models.cache import KVCache
+
+    from .quantized_batch_cache import supported_group_size
 
     quantized = []
     for layer in cache:
@@ -1268,7 +1282,15 @@ def _quantize_cache(cache: list[Any], bits: int = 8, group_size: int = 64) -> li
             quantized.append(layer)
             continue
         if isinstance(layer, KVCache) and layer.keys is not None:
-            quantized.append(layer.to_quantized(group_size=group_size, bits=bits))
+            k_dim = layer.keys.shape[-1]
+            v_dim = layer.values.shape[-1]
+            gs = supported_group_size(k_dim, group_size)
+            if gs is not None and v_dim != k_dim:
+                gs = supported_group_size(v_dim, gs)
+            if gs is None:
+                quantized.append(layer)  # no supported size -> keep bf16
+            else:
+                quantized.append(layer.to_quantized(group_size=gs, bits=bits))
         else:
             quantized.append(layer)
     return quantized
