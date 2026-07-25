@@ -202,16 +202,17 @@ class DiffCoverageStep(Step):
 
         # 4. diff-cover: patch coverage of the changed lines vs the PR's
         #    base. The compare ref is the PR's ACTUAL base — ``ctx.base_sha``
-        #    (its ``baseRefOid``) — so a PR targeting a release/maintenance
-        #    branch is scored against ITS base, never a hardcoded ``main``
-        #    (codex #1220). We fall back to ``ctx.base_branch`` (the PR's
-        #    target branch, default ``main``) exactly as the sibling
-        #    base-aware steps do (``targeted_tests``, ``stress_e2e_bench``),
-        #    so an unknown base commit still resolves to the right branch
-        #    rather than a hardcoded remote ref. Invoke via ``-m`` so it runs
-        #    in the SAME interpreter the coverage was produced with (matches
-        #    targeted_tests' policy).
-        compare_ref = ctx.base_sha or ctx.base_branch
+        #    (its ``baseRefOid``, a concrete commit) — so a PR targeting a
+        #    release/maintenance branch is scored against ITS base, never a
+        #    hardcoded ``main`` (codex #1220 r5). A SHA also resolves in a
+        #    detached CI checkout, where a *bare* local branch name may not
+        #    exist. So the no-metadata fallback qualifies the target branch
+        #    with the remote — ``origin/<base_branch>`` — which exists after
+        #    fetch even detached, rather than a bare ``main`` that would fail
+        #    to resolve and skip every fallback run (codex #1220 r6). Invoke
+        #    via ``-m`` so it runs in the SAME interpreter the coverage was
+        #    produced with (matches targeted_tests' policy).
+        compare_ref = ctx.base_sha or f"origin/{ctx.base_branch}"
         dc_cmd = [
             sys.executable,
             "-m",
@@ -280,8 +281,11 @@ class DiffCoverageStep(Step):
             if suite_had_failures
             else ""
         )
+        # One decimal (not {:.0f}) so 99.5% doesn't read as a misleading
+        # "100%" nor 0.5% as "0%" — matches the finding's precision (codex
+        # #1220 r6 nit).
         summary = (
-            f"patch coverage {pct:.0f}% ({covered}/{total} changed lines) · "
+            f"patch coverage {pct:.1f}% ({covered}/{total} changed lines) · "
             "advisory — not gating"
         )
         finding = (

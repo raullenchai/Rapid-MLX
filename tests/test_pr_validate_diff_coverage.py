@@ -203,6 +203,46 @@ class TestAdvisoryContract:
         assert "80" in res.summary
         assert res.findings and "ADVISORY" in res.findings[0]
 
+    @pytest.mark.parametrize(
+        "base_sha, base_branch, expected_ref",
+        [
+            ("abc123def", "main", "abc123def"),  # known base → the SHA itself
+            ("", "main", "origin/main"),  # no metadata → remote-qualified branch
+            ("", "release-0.11", "origin/release-0.11"),  # release-branch PR
+        ],
+    )
+    def test_diff_cover_command_is_well_formed(
+        self, ctx_factory, monkeypatch, base_sha, base_branch, expected_ref
+    ):
+        # nit (codex #1220 r6): the happy-path mock accepted ANY diff-cover
+        # invocation, so a broken module name / args / compare-ref stayed
+        # green. Pin the fully-constructed command — including base compare-ref
+        # resolution: the SHA when known, else ``origin/<branch>`` so it
+        # resolves in a detached CI checkout (a bare local branch may not).
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        ctx.base_sha = base_sha
+        ctx.base_branch = base_branch
+        captured: dict[str, list[str]] = {}
+
+        def fake_run(cmd, *a, **k):
+            if "pytest" in cmd:
+                Path(_xml_target(cmd)).write_text("<coverage/>")
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            captured["dc_cmd"] = cmd
+            return subprocess.CompletedProcess(cmd, 0, stdout=_DC_WITH_LINES, stderr="")
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
+        )
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "pass"
+        dc = captured["dc_cmd"]
+        assert dc[:3] == [sys.executable, "-m", "diff_cover.diff_cover_tool"]
+        assert dc[3].endswith("coverage.xml")
+        assert dc[4] == "--compare-branch"
+        assert dc[5] == expected_ref
+
     def test_measures_with_caveat_when_some_tests_failed(
         self, ctx_factory, monkeypatch
     ):
