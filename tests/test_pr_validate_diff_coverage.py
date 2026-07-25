@@ -752,7 +752,9 @@ class TestRunGroupBounded:
                 timeout=1,
             )
 
-    def test_timeout_kills_the_whole_group_including_descendants(self, tmp_path):
+    def test_timeout_kills_the_whole_group_including_descendants(
+        self, tmp_path, monkeypatch
+    ):
         # The contract that actually matters: on timeout the ENTIRE process
         # group dies, not just the leader. A leader-only kill would orphan
         # any grandchild a timed-out pytest spawned (xdist workers, a serve
@@ -776,7 +778,25 @@ class TestRunGroupBounded:
         # the shell's group), then blocks so the leader is alive when the
         # timeout fires. The grandchild inherits the subprocess pipes, so a
         # leader-only kill would also reproduce the reap-wedge from codex #1220.
+        import signal as _signal
         import time as _time
+
+        from scripts.pr_validate.steps import diff_coverage as _dc
+
+        # Record the leader so the finally can sweep its group. Belt-and-braces:
+        # on a PASS the code-under-test already killed the group, but if this
+        # test ever FAILS (leader-only-kill regression) the grandchild is an
+        # infinite `while true` loop — leaving it running would leak forever and
+        # contaminate later tests (codex #1220 final-run B2).
+        procs: list[subprocess.Popen] = []
+        real_popen = subprocess.Popen
+
+        def rec_popen(*a, **k):
+            p = real_popen(*a, **k)
+            procs.append(p)
+            return p
+
+        monkeypatch.setattr(_dc.subprocess, "Popen", rec_popen)
 
         heartbeat = tmp_path / "heartbeat"
         # Pass the path as a POSITIONAL arg ("$1"), never interpolated into
@@ -790,27 +810,37 @@ class TestRunGroupBounded:
             str(heartbeat),  # $1
         ]
 
-        with pytest.raises(subprocess.TimeoutExpired):
-            _run_group_bounded(cmd, cwd=str(tmp_path), timeout=1)
+        try:
+            with pytest.raises(subprocess.TimeoutExpired):
+                _run_group_bounded(cmd, cwd=str(tmp_path), timeout=1)
 
-        # Grandchild must have started (heartbeat exists) before we can judge
-        # whether it STOPPED. It ticks every 50 ms and the leader ran for the
-        # full 1 s timeout, so the file exists well before we get here.
-        deadline = _time.time() + 5.0
-        while not heartbeat.exists() and _time.time() < deadline:
-            _time.sleep(0.02)
-        assert heartbeat.exists(), "grandchild never started — test is inconclusive"
+            # Grandchild must have started (heartbeat exists) before we can judge
+            # whether it STOPPED. It ticks every 50 ms and the leader ran for the
+            # full 1 s timeout, so the file exists well before we get here.
+            deadline = _time.time() + 5.0
+            while not heartbeat.exists() and _time.time() < deadline:
+                _time.sleep(0.02)
+            assert heartbeat.exists(), "grandchild never started — inconclusive"
 
-        # Sample size, wait several heartbeat intervals, sample again. A dead
-        # grandchild leaves the size fixed; a survivor grows it by ~20 bytes/s.
-        size1 = heartbeat.stat().st_size
-        _time.sleep(1.0)
-        size2 = heartbeat.stat().st_size
-        assert size1 == size2, (
-            f"heartbeat kept growing after the timeout ({size1} → {size2} "
-            "bytes) — the grandchild survived, so group-kill regressed to a "
-            "leader-only kill"
-        )
+            # Sample size, wait several heartbeat intervals, sample again. A dead
+            # grandchild leaves the size fixed; a survivor grows it ~20 bytes/s.
+            size1 = heartbeat.stat().st_size
+            _time.sleep(1.0)
+            size2 = heartbeat.stat().st_size
+            assert size1 == size2, (
+                f"heartbeat kept growing after the timeout ({size1} → {size2} "
+                "bytes) — the grandchild survived, so group-kill regressed to a "
+                "leader-only kill"
+            )
+        finally:
+            # Sweep the group unconditionally: on a pass it is already dead
+            # (killpg → ESRCH, harmless); on a failure this reaps the leaked
+            # infinite grandchild instead of letting it run forever.
+            for p in procs:
+                try:
+                    os.killpg(p.pid, _signal.SIGKILL)
+                except OSError:
+                    pass
 
     def test_env_is_threaded_to_the_child(self):
         # The env= param must reach the child — the COVERAGE_FILE redirect and
