@@ -837,6 +837,7 @@ class TestRunGroupBounded:
         # pipe-holder lingers (a benign leak at parity with the gating
         # full_unit), never blocking. This test proves the call returns promptly
         # with rc 0 rather than waiting out the descendant's lifetime.
+        import signal as _signal
         import time as _time
 
         from scripts.pr_validate.steps import diff_coverage as _dc
@@ -844,22 +845,45 @@ class TestRunGroupBounded:
         # Small bound so the doomed reader joins return quickly.
         monkeypatch.setattr(_dc, "_REAP_TIMEOUT_S", 0.3)
 
+        # Record the real child (the leader) so the finally can sweep its group.
+        procs: list[subprocess.Popen] = []
+        real_popen = subprocess.Popen
+
+        def rec_popen(*a, **k):
+            p = real_popen(*a, **k)
+            procs.append(p)
+            return p
+
+        monkeypatch.setattr(_dc.subprocess, "Popen", rec_popen)
+
         # Leader backgrounds a grandchild that holds the inherited stdout/stderr
-        # pipes for ~2 s, then the leader EXITS 0. The grandchild self-terminates
-        # so the test leaks nothing; the point is only that we don't WAIT for it.
+        # pipes for ~2 s, then the leader EXITS 0. The helper deliberately returns
+        # while the grandchild is STILL alive (that's the property under test), so
+        # the ``finally`` must reap it — leaving it running would contaminate
+        # later tests (codex #1220 r20 test-hygiene).
         cmd = [
             "sh",
             "-c",
             "(for _ in $(seq 1 40); do sleep 0.05; done) & exit 0",
         ]
-        t0 = _time.time()
-        proc = _dc._run_group_bounded(cmd, cwd=str(tmp_path), timeout=30)
-        elapsed = _time.time() - t0
-        assert proc.returncode == 0  # clean exit, did NOT hang
-        # Returned on the bounded-drain path (~2 × 0.3 s), NOT after the
-        # grandchild's ~2 s lifetime — proves we didn't block on the lingering
-        # pipe-holder (and didn't try a dangerous post-reap group sweep).
-        assert elapsed < 1.5, f"blocked {elapsed:.2f}s on a lingering pipe-holder"
+        try:
+            t0 = _time.time()
+            proc = _dc._run_group_bounded(cmd, cwd=str(tmp_path), timeout=30)
+            elapsed = _time.time() - t0
+            assert proc.returncode == 0  # clean exit, did NOT hang
+            # Returned on the bounded-drain path (~2 × 0.3 s), NOT after the
+            # grandchild's ~2 s lifetime — proves we didn't block on the
+            # lingering pipe-holder (and didn't try a dangerous post-reap sweep).
+            assert elapsed < 1.5, f"blocked {elapsed:.2f}s on a lingering pipe-holder"
+        finally:
+            # The grandchild is still alive here, so its group's PGID is still
+            # reserved and killpg targets exactly it (leader pid == pgid under
+            # start_new_session). Best-effort SIGKILL sweeps the grandchild.
+            for p in procs:
+                try:
+                    os.killpg(p.pid, _signal.SIGKILL)
+                except OSError:
+                    pass
 
     def test_reader_start_failure_kills_child_and_reraises(self, tmp_path, monkeypatch):
         # codex #1220 r19 (B2): if starting a reader thread fails AFTER Popen
