@@ -32,6 +32,7 @@ from scripts.pr_validate.steps.diff_coverage import (
     _parse_diff_cover,
     _path_exists,
     _run_group_bounded,
+    _safe_write,
 )
 
 # --------------------------------------------------------------------------
@@ -144,6 +145,45 @@ class TestPathExists:
 
         monkeypatch.setattr(Path, "exists", exists_boom)
         assert _path_exists(tmp_path / "x") is False
+
+
+class TestSafeWrite:
+    def test_reports_success_and_writes_content(self, tmp_path):
+        p = tmp_path / "log"
+        assert _safe_write(p, "hello ☃") is True
+        assert p.read_text(encoding="utf-8") == "hello ☃"
+
+    def test_reports_failure_and_clears_stale_file(self, tmp_path, monkeypatch):
+        # codex #1220 r19 (B3): when the write fails, _safe_write must report
+        # False AND best-effort remove any stale prior-run file so it can't be
+        # mistaken for this run's diagnostic.
+        p = tmp_path / "log"
+        p.write_text("STALE PRIOR RUN")
+
+        def boom(self, *a, **k):
+            raise OSError("disk full")
+
+        monkeypatch.setattr(Path, "write_text", boom)
+        assert _safe_write(p, "fresh") is False
+        assert not p.exists()  # stale file cleared
+
+    def test_failure_never_raises_even_if_stale_unlink_fails(
+        self, tmp_path, monkeypatch
+    ):
+        # Belt-and-braces: a double fault (write fails AND the stale-file unlink
+        # fails) must still return False, never raise.
+        p = tmp_path / "log"
+        p.write_text("STALE")
+
+        def write_boom(self, *a, **k):
+            raise OSError("disk full")
+
+        def unlink_boom(self, *a, **k):
+            raise OSError("read-only fs")
+
+        monkeypatch.setattr(Path, "write_text", write_boom)
+        monkeypatch.setattr(Path, "unlink", unlink_boom)
+        assert _safe_write(p, "fresh") is False
 
 
 # --------------------------------------------------------------------------
@@ -444,6 +484,27 @@ class TestAdvisoryContract:
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
+
+    def test_log_not_advertised_when_write_fails(self, ctx_factory, monkeypatch):
+        # codex #1220 r19 (B3): the diagnostic log is attached only when THIS
+        # run's _safe_write succeeded. A failed write (which may leave a stale
+        # prior-run file behind) must NOT advertise that file as this run's
+        # artifact.
+        import scripts.pr_validate.steps.diff_coverage as _dc
+
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        monkeypatch.setattr(_dc, "_safe_write", lambda *a, **k: False)
+
+        def fake_run(cmd, *a, **k):
+            # Clean exit, no xml -> the no-xml skip path writes a dump (forced to
+            # fail here) then must NOT attach the log.
+            return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+        monkeypatch.setattr(_dc, "_run_group_bounded", fake_run)
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
+        assert res.artifacts == []  # write failed -> nothing advertised
 
     def test_skip_on_pytest_timeout(self, ctx_factory, monkeypatch):
         _both_tools_present(monkeypatch)
@@ -765,55 +826,79 @@ class TestRunGroupBounded:
         assert proc.returncode == 0, proc.stderr
         assert "threaded-ok" in proc.stdout
 
-    def test_clean_exit_sweeps_a_lingering_pipe_holding_descendant(
+    def test_clean_exit_does_not_block_on_a_lingering_pipe_holder(
         self, tmp_path, monkeypatch
     ):
-        # codex #1220 r18 (B1): the leader can exit CLEANLY (rc 0) while a
-        # background descendant it spawned stays alive in the same group,
-        # holding the inherited stdout pipe open. ``proc.wait()`` reaps only the
-        # leader, so a naive clean path would both block the reader forever AND
-        # leak the descendant into later steps. The teardown must sweep it: a
-        # still-blocked reader proves a group member is alive, so the PGID is
-        # still reserved and ``killpg`` is race-free even after the leader was
-        # reaped. This test fails if the sweep regresses (heartbeat keeps
-        # growing) or if the call hangs (never returns).
+        # codex #1220 r19 (B1): on a CLEAN exit we must NOT sweep the group —
+        # once ``proc.wait`` reaps the leader the PGID can be recycled (a
+        # descendant may ``setsid()`` away while still holding the pipe), so a
+        # ``killpg`` could land on an UNRELATED group. The safe, race-free
+        # behavior is to drain the readers under a bound and RETURN even if a
+        # pipe-holder lingers (a benign leak at parity with the gating
+        # full_unit), never blocking. This test proves the call returns promptly
+        # with rc 0 rather than waiting out the descendant's lifetime.
         import time as _time
 
         from scripts.pr_validate.steps import diff_coverage as _dc
 
-        # Keep the test fast: the first (doomed) reader join waits
-        # _REAP_TIMEOUT_S before the sweep fires.
-        monkeypatch.setattr(_dc, "_REAP_TIMEOUT_S", 0.5)
+        # Small bound so the doomed reader joins return quickly.
+        monkeypatch.setattr(_dc, "_REAP_TIMEOUT_S", 0.3)
 
-        heartbeat = tmp_path / "hb"
-        # Leader backgrounds a grandchild that holds the inherited stdout pipe
-        # (the subshell keeps fd 1 open) and ticks a heartbeat every 50 ms, then
-        # EXITS 0. The grandchild stays in the leader's process group. Path is a
-        # positional ($1), never interpolated — an apostrophe in tmp_path would
-        # otherwise break the single-quoted script (codex #1220 r9).
+        # Leader backgrounds a grandchild that holds the inherited stdout/stderr
+        # pipes for ~2 s, then the leader EXITS 0. The grandchild self-terminates
+        # so the test leaks nothing; the point is only that we don't WAIT for it.
         cmd = [
             "sh",
             "-c",
-            '(while true; do printf . >> "$1"; sleep 0.05; done) & exit 0',
-            "sh",  # $0
-            str(heartbeat),  # $1
+            "(for _ in $(seq 1 40); do sleep 0.05; done) & exit 0",
         ]
+        t0 = _time.time()
         proc = _dc._run_group_bounded(cmd, cwd=str(tmp_path), timeout=30)
-        assert proc.returncode == 0  # clean exit — did NOT hang or time out
+        elapsed = _time.time() - t0
+        assert proc.returncode == 0  # clean exit, did NOT hang
+        # Returned on the bounded-drain path (~2 × 0.3 s), NOT after the
+        # grandchild's ~2 s lifetime — proves we didn't block on the lingering
+        # pipe-holder (and didn't try a dangerous post-reap group sweep).
+        assert elapsed < 1.5, f"blocked {elapsed:.2f}s on a lingering pipe-holder"
 
-        # Grandchild must have started (so "stopped" is meaningful), then been
-        # swept by the clean-exit teardown: the heartbeat stops growing.
-        deadline = _time.time() + 5.0
-        while not heartbeat.exists() and _time.time() < deadline:
-            _time.sleep(0.02)
-        assert heartbeat.exists(), "grandchild never started — test inconclusive"
-        size1 = heartbeat.stat().st_size
-        _time.sleep(1.0)
-        size2 = heartbeat.stat().st_size
-        assert size1 == size2, (
-            f"heartbeat kept growing after a clean exit ({size1} → {size2} "
-            "bytes) — the teardown leaked a lingering pipe-holding descendant "
-            "instead of sweeping the group"
+    def test_reader_start_failure_kills_child_and_reraises(self, tmp_path, monkeypatch):
+        # codex #1220 r19 (B2): if starting a reader thread fails AFTER Popen
+        # succeeded (e.g. RuntimeError: can't start new thread), the child is
+        # already running with open pipes. The setup guard must kill + reap the
+        # group and re-raise, never leak the child.
+        from scripts.pr_validate.steps import diff_coverage as _dc
+
+        # Record the real child so we can assert it was reaped.
+        procs: list[subprocess.Popen] = []
+        real_popen = subprocess.Popen
+
+        def rec_popen(*a, **k):
+            p = real_popen(*a, **k)
+            procs.append(p)
+            return p
+
+        monkeypatch.setattr(_dc.subprocess, "Popen", rec_popen)
+
+        # Fail the FIRST reader start; the child (a long sleeper) would survive
+        # unless the guard tears it down.
+        calls = {"n": 0}
+
+        def flaky_start(self):
+            calls["n"] += 1
+            raise RuntimeError("can't start new thread")
+
+        monkeypatch.setattr(_dc._TailReader, "start", flaky_start)
+
+        with pytest.raises(RuntimeError):
+            _dc._run_group_bounded(
+                [sys.executable, "-c", "import time; time.sleep(30)"],
+                cwd=str(tmp_path),
+                timeout=30,
+            )
+        assert procs, "Popen was never called"
+        # The guard must have killed AND reaped the child (poll() != None).
+        assert procs[0].poll() is not None, (
+            "child left running after a reader-start failure — setup guard leaked it"
         )
 
     def test_capture_is_bounded_to_a_tail_on_a_runaway_child(self):

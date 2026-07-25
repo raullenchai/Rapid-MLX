@@ -142,11 +142,14 @@ class DiffCoverageStep(Step):
             return self._measure(ctx, log_path)
         except Exception as e:  # noqa: BLE001 — advisory must not block merge
             # ``_safe_write`` never raises; guard the path being unset too.
-            if log_path is not None:
-                _safe_write(log_path, traceback.format_exc())
+            # Attach the log ONLY if this handler actually wrote it — never a
+            # stale prior-run file (codex #1220 r19).
+            wrote = log_path is not None and _safe_write(
+                log_path, traceback.format_exc()
+            )
             return self._skip(
                 f"advisory coverage skipped (internal error: {type(e).__name__}: {e})",
-                log_path,
+                log_path if wrote else None,
             )
 
     # ------------------------------------------------------------------
@@ -221,11 +224,13 @@ class DiffCoverageStep(Step):
                 pytest_cmd, str(ctx.repo_root), _PYTEST_TIMEOUT_S, env=cov_env
             )
         except subprocess.TimeoutExpired as exc:
-            _safe_write(log_path, _timeout_dump("instrumented pytest", pytest_cmd, exc))
+            wrote = _safe_write(
+                log_path, _timeout_dump("instrumented pytest", pytest_cmd, exc)
+            )
             return self._skip(
                 f"advisory coverage skipped (instrumented suite exceeded "
                 f"{_PYTEST_TIMEOUT_S}s — process group killed)",
-                log_path,
+                log_path if wrote else None,
             )
 
         # 3. Coverage trust model (see ``_PYTEST_COVERAGE_VALID_EXITS``). We
@@ -237,19 +242,20 @@ class DiffCoverageStep(Step):
         #    leaves them uncovered, which is honest advisory signal, not
         #    contamination; the caveat below flags that the % may under-count.
         if pytest_proc.returncode not in _PYTEST_COVERAGE_VALID_EXITS:
-            _safe_write(log_path, _pytest_dump(pytest_cmd, pytest_proc))
+            wrote = _safe_write(log_path, _pytest_dump(pytest_cmd, pytest_proc))
             return self._skip(
                 f"advisory coverage skipped (instrumented suite exit "
                 f"{pytest_proc.returncode} — interrupted/error, not merely "
                 f"test failures; see full_unit)",
-                log_path,
+                log_path if wrote else None,
             )
         suite_had_failures = pytest_proc.returncode == 1
 
         if not xml_path.exists():
-            _safe_write(log_path, _pytest_dump(pytest_cmd, pytest_proc))
+            wrote = _safe_write(log_path, _pytest_dump(pytest_cmd, pytest_proc))
             return self._skip(
-                "advisory coverage skipped (no coverage.xml produced)", log_path
+                "advisory coverage skipped (no coverage.xml produced)",
+                log_path if wrote else None,
             )
 
         # 4. diff-cover: patch coverage of the changed lines vs the PR's
@@ -278,17 +284,19 @@ class DiffCoverageStep(Step):
                 dc_cmd, str(ctx.repo_root), _DIFF_COVER_TIMEOUT_S
             )
         except subprocess.TimeoutExpired as exc:
-            _safe_write(log_path, _timeout_dump("diff-cover", dc_cmd, exc))
+            wrote = _safe_write(log_path, _timeout_dump("diff-cover", dc_cmd, exc))
             return self._skip(
                 f"advisory coverage skipped (diff-cover exceeded "
                 f"{_DIFF_COVER_TIMEOUT_S}s — process group killed)",
-                log_path,
+                log_path if wrote else None,
             )
 
         # Record pytest's own output too (tail-truncated) — on an accepted
         # exit-1 measurement the reader needs to see WHICH tests failed and
-        # why, not just the bare exit code (codex #1220 r5 nit).
-        _safe_write(
+        # why, not just the bare exit code (codex #1220 r5 nit). ``wrote_log``
+        # governs whether every downstream skip / the final pass advertises
+        # this file, so a stale prior-run log is never attached (codex r19).
+        wrote_log = _safe_write(
             log_path,
             "# diff_coverage advisory run\n\n"
             f"## pytest cmd\n`{' '.join(pytest_cmd)}`\n\n"
@@ -304,6 +312,7 @@ class DiffCoverageStep(Step):
             + "\n## diff-cover stderr\n"
             + (dc_proc.stderr or ""),
         )
+        log_artifact = log_path if wrote_log else None
 
         # A nonzero diff-cover exit means it errored (bad XML, git
         # failure, interrupted) — even if it happened to print a footer
@@ -315,7 +324,7 @@ class DiffCoverageStep(Step):
             return self._skip(
                 f"advisory coverage skipped (diff-cover exit "
                 f"{dc_proc.returncode} — not scored)",
-                log_path,
+                log_artifact,
             )
 
         parsed = _parse_diff_cover(dc_proc.stdout)
@@ -325,7 +334,7 @@ class DiffCoverageStep(Step):
             # coverage source map). Nothing to report — clean skip.
             return self._skip(
                 "advisory coverage skipped (no measurable production lines in diff)",
-                log_path,
+                log_artifact,
             )
         if parsed is _PARSE_FAILED:
             # diff-cover exited 0 but we recognized NEITHER its explicit
@@ -338,7 +347,7 @@ class DiffCoverageStep(Step):
                 "advisory coverage skipped (diff-cover output format "
                 "unrecognized — parser may need updating for this diff-cover "
                 "version)",
-                log_path,
+                log_artifact,
             )
 
         pct, covered, total = parsed
@@ -378,19 +387,28 @@ class DiffCoverageStep(Step):
             status="pass",  # ALWAYS pass — advisory
             summary=summary,
             findings=[finding],
-            # Advertise only artifacts that actually made it to disk —
-            # ``_safe_write`` may have swallowed a log write failure, and the
-            # existence probe itself must not raise (codex #1220 r8), mirroring
-            # the skip path's guard.
-            artifacts=[str(p) for p in (log_path, xml_path) if _path_exists(p)],
+            # Advertise the log ONLY if THIS run wrote it (``wrote_log``), never
+            # a stale prior-run file that survived a failed unlink (codex #1220
+            # r19). ``xml_path`` still uses the never-raising existence probe —
+            # it was freshly (re)generated by this run's pytest above.
+            artifacts=[
+                str(p)
+                for p, keep in (
+                    (log_path, wrote_log),
+                    (xml_path, _path_exists(xml_path)),
+                )
+                if keep
+            ],
         )
 
     # ------------------------------------------------------------------
 
     def _skip(self, summary: str, log_path: Path | None = None) -> StepResult:
-        """Uniform advisory skip. Attaches the log artifact only when it
-        actually made it to disk (``_safe_write`` may have swallowed a
-        write error)."""
+        """Uniform advisory skip. Callers pass ``log_path`` ONLY when this run's
+        ``_safe_write`` returned success (so it holds this-run content, never a
+        stale prior-run file — codex #1220 r19); ``None`` otherwise. The
+        ``_path_exists`` guard is then belt-and-braces against the file vanishing
+        between the write and here, and must itself never raise."""
         return StepResult(
             name=self.name,
             status="skip",
@@ -474,35 +492,40 @@ def _run_group_bounded(
         SIGKILLs only the direct child, so a timed-out pytest could orphan xdist
         workers / a serve subprocess into later steps. The child leads a new
         session (``start_new_session=True`` → its own process group) and on
-        expiry we SIGKILL the WHOLE group (``_kill_group``). The
-        ``TimeoutExpired`` is re-raised (with the captured tail attached) for the
-        caller's skip-on-timeout handling.
+        expiry we SIGKILL the WHOLE group (``_kill_group``) BEFORE reaping the
+        leader — race-free, because the unreaped leader keeps its PGID reserved
+        (POSIX) so ``killpg`` can't hit a recycled group. The ``TimeoutExpired``
+        is re-raised (with the captured tail attached) for skip-on-timeout.
       * **bounded capture.** Two ``_TailReader`` threads keep only the last
         ~``_CAPTURE_TAIL_BYTES`` per stream instead of ``communicate()``
         buffering the entire (up-to-30-min) suite output in memory, which a
         runaway test could grow until it OOM-kills the validator before its
         advisory handler runs (codex #1220 r17).
-      * **bounded, leak-free teardown (codex #1220 r18).** After the leader
-        exits — cleanly or on timeout — we ``join`` the readers under
-        ``_REAP_TIMEOUT_S``. If a reader is still alive afterwards, that PROVES a
-        descendant is still holding the pipe write-end open, i.e. a group member
-        is alive; POSIX keeps the PGID reserved while any member lives, so
-        ``killpg(pgid)`` then targets exactly this group even though the leader
-        was already reaped — race-free, no PID-reuse hazard. That kill both
-        reaps the leaked descendant (fixing the clean-path leak the prior
-        ``proc.wait``-only design left) and unblocks the reader so its buffer is
-        safe to read. We never block indefinitely: a second bounded join and a
-        lock-guarded ``text()`` snapshot follow.
+      * **bounded, never-wedge drain.** After the leader exits we ``join`` the
+        readers under ``_REAP_TIMEOUT_S`` and return the (lock-guarded) tail
+        even if a reader is still blocked — a setsid-escaped descendant holding
+        the pipe can't wedge the pipeline. The stuck reader is a harmless daemon
+        thread reaped at interpreter exit.
 
-    Deliberately NOT done, after a long convergence (codex #1220 r8–r18): no
-    ``RLIMIT_FSIZE`` file-size cap (inherited by the whole pytest tree, it would
-    truncate/corrupt legitimate large writes — e.g. a >256 MiB model shard —
-    codex r16), no temp-file/quota/exec-wrapper machinery. The one residual gap
-    is fundamental and shared with the gating siblings: a descendant that BOTH
-    ``setsid()``-escapes the group AND closes the inherited pipes leaves no
-    race-free signal to find it on macOS (no cgroups / job objects, no
-    non-reaping group wait), so — like ``full_unit``'s bare ``subprocess.run`` —
-    it can outlive the run.
+    Deliberately NOT done, after a long convergence (codex #1220 r8–r19):
+
+      * No ``RLIMIT_FSIZE`` file-size cap (inherited by the whole pytest tree,
+        it would truncate/corrupt legitimate large writes — e.g. a >256 MiB
+        model shard — codex r16), no temp-file/quota/exec-wrapper machinery.
+      * **No group sweep on the CLEAN-exit path** (codex #1220 r19). Once
+        ``proc.wait`` has reaped the leader, ``killpg(pgid)`` is NOT safe: a
+        descendant can ``setsid()`` into its OWN group while still holding the
+        pipe, so the original PGID can be empty-and-recycled even though a reader
+        is still blocked — the kill would then land on an UNRELATED group
+        (potentially an operator service). This is a genuine dilemma with no
+        race-free resolution on macOS (no cgroups / job objects, no non-reaping
+        group wait): sweeping risks a wrong-group SIGKILL, not-sweeping may leak
+        an escaped descendant. We take the strictly-safer horn — never
+        wrong-kill — and accept the leak, which is anyway at PARITY with the
+        gating ``full_unit`` (its bare ``subprocess.run`` leaks escaped
+        descendants too, and additionally has no timeout so it would simply hang
+        here). ``killpg`` therefore fires ONLY from ``_kill_group`` on the
+        timeout / exception paths, where the leader is still unreaped.
     """
     # ``start_new_session=True`` runs the child through ``setsid()``: it leads a
     # brand-new process group whose PGID EQUALS its PID. Capture that id NOW,
@@ -518,52 +541,56 @@ def _run_group_bounded(
         start_new_session=True,
     )
     pgid = proc.pid  # == PGID under start_new_session (setsid)
-    r_out = _TailReader(proc.stdout)
-    r_err = _TailReader(proc.stderr)
-    r_out.start()
-    r_err.start()
-
-    def _settle_readers() -> None:
-        # Bounded drain, then a race-free group sweep IFF a reader is still
-        # blocked. A live reader ⇒ a descendant still holds the pipe write-end
-        # ⇒ a group member is alive ⇒ the PGID is still reserved (POSIX), so the
-        # ``killpg`` cannot hit a recycled group even though the leader may be
-        # reaped. The kill reaps the leaked descendant AND unblocks the reader;
-        # the final bounded join then returns promptly. If the reader is STILL
-        # alive (uninterruptible read — near-impossible post-SIGKILL) we give up
-        # and return the partial tail rather than block the pipeline; ``text()``
-        # is lock-guarded so reading it is safe regardless.
-        r_out.join(_REAP_TIMEOUT_S)
-        r_err.join(_REAP_TIMEOUT_S)
-        if r_out.alive() or r_err.alive():
+    # Everything after ``Popen`` runs under a guard: if starting the reader
+    # threads fails (e.g. ``RuntimeError: can't start new thread`` under thread
+    # exhaustion), the child is already running with open pipes — tear the group
+    # down and close the pipes rather than leak it, then re-raise so ``run``
+    # downgrades to an advisory skip (codex #1220 r19).
+    try:
+        r_out = _TailReader(proc.stdout)
+        r_err = _TailReader(proc.stderr)
+        r_out.start()
+        r_err.start()
+    except BaseException:
+        _kill_group(proc, pgid)
+        for pipe in (proc.stdout, proc.stderr):
             try:
-                os.killpg(pgid, signal.SIGKILL)
+                pipe.close()
             except OSError:
                 pass
-            r_out.join(_REAP_TIMEOUT_S)
-            r_err.join(_REAP_TIMEOUT_S)
+        raise
+
+    def _join_readers() -> None:
+        # Bounded on purpose. On clean exit the pipes hit EOF the moment the last
+        # writer dies, so both joins return at once; the bound only bites when a
+        # setsid-escaped descendant still holds a write end — we then return the
+        # partial tail rather than block the pipeline (codex #1220 r19). We do
+        # NOT ``killpg`` here: post-reap the PGID may be recycled (see docstring).
+        r_out.join(_REAP_TIMEOUT_S)
+        r_err.join(_REAP_TIMEOUT_S)
 
     try:
         proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         # Time budget blown: SIGKILL the whole group BEFORE reaping the leader
         # (race-free — ``pgid`` can't be recycled while the unreaped leader is a
-        # member), settle the readers, and re-raise with the captured tail so
+        # member), drain under a bound, and re-raise with the captured tail so
         # the caller can log WHAT hung.
         _kill_group(proc, pgid)
-        _settle_readers()
+        _join_readers()
         raise subprocess.TimeoutExpired(
             cmd, timeout, output=r_out.text(), stderr=r_err.text()
         ) from None
     except BaseException:
         # Any other escape (e.g. KeyboardInterrupt): tear the group down so
-        # nothing is orphaned, settle, then re-raise unchanged.
+        # nothing is orphaned, drain under a bound, then re-raise unchanged.
         _kill_group(proc, pgid)
-        _settle_readers()
+        _join_readers()
         raise
-    # Clean exit: leader already reaped by ``proc.wait``. ``_settle_readers``
-    # still sweeps any lingering pipe-holding descendant race-free (see above).
-    _settle_readers()
+    # Clean exit: leader already reaped by ``proc.wait``. Drain the readers under
+    # a bound and return — no group sweep here (post-reap PGID-recycle hazard;
+    # see docstring). A lingering pipe-holder leaks at gate parity, never wedges.
+    _join_readers()
     return subprocess.CompletedProcess(cmd, proc.returncode, r_out.text(), r_err.text())
 
 
@@ -603,11 +630,19 @@ def _path_exists(path: Path | None) -> bool:
         return False
 
 
-def _safe_write(path: Path, text: str) -> None:
-    """Best-effort diagnostic write. NEVER raises. An advisory step must
+def _safe_write(path: Path, text: str) -> bool:
+    """Best-effort diagnostic write. NEVER raises. Returns ``True`` iff THIS
+    call successfully replaced ``path`` with ``text``. An advisory step must
     still return skip/pass even if it can't write its own log (disk full,
     permissions) — otherwise a failing write inside an exception handler
     would escape as a blocking ``error`` (codex review on #1220).
+
+    The boolean is what lets callers advertise the log ONLY when this run
+    actually wrote it: a mere ``path.exists()`` can be true because a prior
+    run's file survived (the run-start unlink is itself best-effort and can
+    fail), which would attach STALE diagnostics as if they were this run's
+    (codex #1220 r19). On failure we also best-effort unlink any such stale
+    file so it can't linger, but the return value is the authoritative signal.
 
     Writes explicitly as UTF-8 with ``errors="replace"``: the default
     locale encoding can be ASCII on some CI, and our diagnostics contain
@@ -617,8 +652,15 @@ def _safe_write(path: Path, text: str) -> None:
     r10). We also catch ``UnicodeError`` belt-and-braces."""
     try:
         path.write_text(text, encoding="utf-8", errors="replace")
+        return True
     except (OSError, UnicodeError):
-        pass
+        # Couldn't write fresh content — make sure no stale prior-run file is
+        # left behind to be mistaken for this run's (best-effort).
+        try:
+            path.unlink(missing_ok=True)
+        except OSError:
+            pass
+        return False
 
 
 def _tail(text: str | None, limit: int = _LOG_TAIL_CHARS) -> str:
