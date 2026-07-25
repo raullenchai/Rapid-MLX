@@ -290,6 +290,45 @@ class TestAdvisoryContract:
         assert res.status == "skip"
         assert "diff-cover" in res.summary and "exceeded" in res.summary
 
+    def test_skip_on_diff_cover_nonzero_exit_even_with_footer(
+        self, ctx_factory, monkeypatch
+    ):
+        # codex #1220 r2: a failed/interrupted diff-cover that still
+        # printed a parseable footer must NOT be published as success.
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+
+        def fake_run(cmd, *a, **k):
+            if "pytest" in cmd:
+                Path(_xml_target(cmd)).write_text("<coverage/>")
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            # diff-cover errored (exit 1) but emitted a valid-looking footer.
+            return subprocess.CompletedProcess(
+                cmd, 1, stdout=_DC_WITH_LINES, stderr="err"
+            )
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+        )
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
+        assert "diff-cover exit 1" in res.summary
+
+    def test_skip_when_artifact_path_raises(self, ctx_factory, monkeypatch):
+        # codex #1220 r2: artifact_path() does a mkdir that can raise on
+        # disk-full / permission errors. That must be caught and skipped,
+        # not escape through execute() as a blocking error.
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+
+        def raising_artifact_path(name):
+            raise OSError("Read-only file system")
+
+        monkeypatch.setattr(ctx, "artifact_path", raising_artifact_path)
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
+        assert res.status not in ("fail", "error")
+        assert res.artifacts == []  # no log path could be resolved
+
     def test_skip_when_diff_cover_finds_no_lines(self, ctx_factory, monkeypatch):
         _both_tools_present(monkeypatch)
         ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])

@@ -90,14 +90,20 @@ class DiffCoverageStep(Step):
         )
 
     def run(self, ctx: Context) -> StepResult:
-        log_path: Path = ctx.artifact_path("diff-coverage.log")
-        # Advisory contract: swallow ALL failures. Never fail/error. The
-        # log write is best-effort (``_safe_write``) so a failure to log
-        # can't escape this handler and become a blocking ``error``.
+        # Advisory contract: swallow ALL failures. Never fail/error.
+        # Resolve the artifact path INSIDE the protected block —
+        # ``artifact_path()`` does a ``mkdir`` that can itself raise on
+        # disk-full / permission errors, and even that must not escape
+        # through ``execute()`` as a blocking ``error`` (codex #1220).
+        # The fallback tolerates ``log_path`` never getting assigned.
+        log_path: Path | None = None
         try:
+            log_path = ctx.artifact_path("diff-coverage.log")
             return self._measure(ctx, log_path)
         except Exception as e:  # noqa: BLE001 — advisory must not block merge
-            _safe_write(log_path, traceback.format_exc())
+            # ``_safe_write`` never raises; guard the path being unset too.
+            if log_path is not None:
+                _safe_write(log_path, traceback.format_exc())
             return self._skip(
                 f"advisory coverage skipped (internal error: {type(e).__name__}: {e})",
                 log_path,
@@ -216,6 +222,19 @@ class DiffCoverageStep(Step):
             + "\n## diff-cover stderr\n"
             + (dc_proc.stderr or ""),
         )
+
+        # A nonzero diff-cover exit means it errored (bad XML, git
+        # failure, interrupted) — even if it happened to print a footer
+        # first, that number is not trustworthy. Skip BEFORE parsing so a
+        # failed run can't publish a misleading success (codex #1220).
+        # Verified exit codes: scored-lines=0, no-lines=0, bad-xml=1,
+        # bad-branch=1 — so this never false-skips the happy path.
+        if dc_proc.returncode != 0:
+            return self._skip(
+                f"advisory coverage skipped (diff-cover exit "
+                f"{dc_proc.returncode} — not scored)",
+                log_path,
+            )
 
         parsed = _parse_diff_cover(dc_proc.stdout)
         if parsed is None:
