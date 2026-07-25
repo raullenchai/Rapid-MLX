@@ -17,9 +17,10 @@ Mechanism:
      is a SEPARATE, self-contained run — we deliberately do NOT
      piggyback on ``full_unit``. ``full_unit`` is a merge-*gating*
      step; an advisory measurement feature must not be able to break
-     the gate. The asymmetry is the whole argument: a false block on
-     the gate costs a maintainer a blocked-PR investigation, while
-     sharing the run would save only ~40 s. Isolation wins.
+     the gate. The asymmetry is the whole argument: sharing would save
+     the cost of one extra instrumented suite run (~3 min), but at the
+     risk of a false block on the gate — which costs a maintainer a
+     blocked-PR investigation. Isolation wins.
   2. Feed the coverage XML to ``diff-cover`` scoped to the diff vs the
      base branch → patch-coverage %.
 
@@ -42,7 +43,6 @@ import re
 import signal
 import subprocess
 import sys
-import tempfile
 import traceback
 from pathlib import Path
 
@@ -55,9 +55,9 @@ _COV_PACKAGE = "vllm_mlx"
 
 # Bounded so a hung test or a wedged diff-cover can't block the pipeline
 # — the whole point of an advisory step is that it never blocks. On
-# expiry ``subprocess.run`` SIGKILLs the child; we catch and skip. The
-# suite timeout is deliberately generous (the instrumented full suite is
-# ~3 min today) — a false timeout would just silently drop a
+# expiry ``_run_group_bounded`` SIGKILLs the whole process group; we catch
+# and skip. The suite timeout is deliberately generous (the instrumented
+# full suite is ~3 min today) — a false timeout would just silently drop a
 # measurement, so err long.
 _PYTEST_TIMEOUT_S = 1800
 _DIFF_COVER_TIMEOUT_S = 180
@@ -83,38 +83,6 @@ _REAP_TIMEOUT_S = 10
 # Keep the diagnostic log readable — we tail (not head) subprocess output so
 # the most recent lines (pytest's failure summary) always survive truncation.
 _LOG_TAIL_CHARS = 4000
-
-# Cap on how much subprocess output we read back into memory from the temp
-# files (the tail). 1 MiB dwarfs diff-cover's footer and pytest's ``-q``
-# summary (both a few KB), so nothing real is ever lost, yet a runaway test
-# that streams gigabytes to disk still can't bloat the validator (codex
-# #1220 r8).
-_STDOUT_CAP_BYTES = 1_048_576
-
-# Per-file disk cap: the largest size any SINGLE file the child writes may
-# reach, enforced by the KERNEL via ``RLIMIT_FSIZE`` (set by an exec-based
-# wrapper, ``_rlimit_wrap``). Its specific job is to bound the two capture
-# streams — we redirect the child's stdout/stderr to temp FILES (not RAM), and
-# a runaway / hung test that streams without bound would otherwise fill the
-# auto-deploy host's disk through them (codex #1220 r10). A kernel per-file cap
-# closes the gap a userspace size-poll leaves: a child that dumps gigabytes and
-# exits BETWEEN polls, or in the first sub-poll window, can't overshoot because
-# the write past the cap is refused (EFBIG) / SIGXFSZ-killed at the syscall,
-# regardless of timing (codex #1220 r11).
-#
-# SCOPE (deliberately not overclaimed — codex #1220 r13): this bounds each file
-# INDIVIDUALLY, which fully contains the streaming vector above. It is NOT an
-# aggregate-bytes quota — a suite could in principle create many sub-cap files,
-# and a descendant that ``setsid()``s out of the group escapes the group-kill
-# below. Both are out of scope for an ADVISORY step that runs the repo's OWN
-# test suite (not untrusted code): portable aggregate/tree containment needs
-# cgroups / job-objects unavailable on macOS, and the merge-GATING sibling
-# steps (``full_unit``/``targeted_tests``) run the same suite with NO cap,
-# timeout, or group-kill at all — this step is already strictly more contained.
-#
-# 256 MiB is orders of magnitude above any real ``-q`` suite / diff-cover run
-# or coverage artifact, so it only ever trips on genuinely pathological output.
-_OUTPUT_QUOTA_BYTES = 256 * 1024 * 1024
 
 
 class DiffCoverageStep(Step):
@@ -401,169 +369,73 @@ class DiffCoverageStep(Step):
 def _run_group_bounded(
     cmd: list[str], cwd: str, timeout: int, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
-    """Run ``cmd`` in its OWN process group with a hard timeout.
+    """Run ``cmd`` with a hard timeout, killing its whole process group on
+    expiry.
 
-    ``subprocess.run(timeout=...)`` SIGKILLs only the direct child on
-    expiry — a timed-out pytest could leave spawned servers/workers alive
-    to contaminate later validation steps (codex #1220). We start the
-    child in a new session (``start_new_session=True`` → new process
-    group) and, on timeout, SIGKILL the WHOLE group so no descendant
-    survives. Re-raises ``subprocess.TimeoutExpired`` so callers keep
-    their existing skip-on-timeout handling.
+    This mirrors the merge-GATING ``full_unit`` step, which runs the SAME
+    pytest suite via a plain ``subprocess.run(capture_output=True, text=True)``
+    — output captured in memory, decoded as text. We add exactly ONE property
+    on top, the one an ADVISORY step actually needs: a hard ``timeout`` so a
+    hung measurement can never wedge the (auto-deploy) pipeline. ``subprocess``'
+    own timeout would SIGKILL only the direct child, so we run the child in a
+    new session (``start_new_session=True`` → new process group) and, on
+    expiry, SIGKILL the WHOLE group (``_kill_group``) so a timed-out pytest
+    can't orphan xdist workers / a serve subprocess into later steps. The
+    ``TimeoutExpired`` is re-raised (with captured output attached) for the
+    caller's skip-on-timeout handling.
 
-    Output is redirected to temp FILES, not PIPEs (codex #1220 r8). This
-    bounds validator memory — a noisy / runaway test streams to disk, and
-    we read back only a capped tail — and, because there are no pipes for a
-    surviving descendant to hold open, it removes the reap-wedge class
-    entirely. The tail keeps the bytes every caller needs — diff-cover's
-    footer and pytest's ``-q`` failure summary both sit at the END of their
-    streams. The two capture files are bounded by the KERNEL, not a userspace
-    poll: the child is spawned under a per-file ``RLIMIT_FSIZE`` of
-    ``_OUTPUT_QUOTA_BYTES``, so a write past the cap is refused at the syscall
-    the instant it happens — no matter how fast the child writes or whether it
-    exits between two userspace polls. A child killed by ``SIGXFSZ`` (or
-    exiting nonzero on ``EFBIG``) then fails the exit-code gate and the run is
-    skipped (codex #1220 r11). The cap is PER-FILE and does not attempt
-    aggregate-bytes or full-descendant-tree containment — see the scope note on
-    ``_OUTPUT_QUOTA_BYTES`` for why that is out of scope for this advisory step
-    (codex #1220 r13). The limit is applied by a tiny exec-based WRAPPER (see
-    ``_rlimit_wrap``) rather than a ``preexec_fn`` callback: ``preexec_fn``
-    runs between fork and exec in a copy of the (possibly multi-threaded)
-    parent's address space, where grabbing an internal lock another thread
-    held at fork can deadlock the child forever — before ``Popen`` even
-    returns, so the timeout above could never fire and the pipeline would
-    wedge. The wrapper instead sets the limit from a FRESH, single-threaded
-    process (post-exec) and then ``exec``s the real command, sidestepping
-    that class entirely (codex #1220 r12).
-
-    On timeout the raised ``TimeoutExpired`` carries the captured (capped)
-    stdout/stderr so the caller can log WHAT hung before the temp files are
-    deleted (codex #1220 r10).
-
-    The isolated group is torn down on EVERY exit path. On timeout/exception
-    ``_kill_group`` SIGKILLs the group BEFORE reaping the leader, so ``pgid``
-    cannot be recycled — unconditionally race-free. On a CLEAN exit
-    ``_sweep_group`` SIGKILLs any process the suite leaked into the group; that
-    is race-free while any member is alive (POSIX keeps the PGID reserved for
-    the group's whole lifetime, so the reaped leader's PID can't be recycled)
-    and a harmless ESRCH when the group is already empty — see the inline note
-    for the negligible reap-vs-recycle residual (codex #1220 r14/r15).
+    Deliberately NOT done, after a long convergence (codex #1220 r8–r16):
+    no ``RLIMIT_FSIZE`` file-size cap (it is inherited by the whole pytest
+    tree and would truncate/corrupt legitimate large writes — e.g. a >256 MiB
+    model shard — codex r16), no temp-file/quota/exec-wrapper machinery, and no
+    clean-exit group sweep (a race-free sweep needs a non-reaping wait absent
+    on macOS; a reap-then-``killpg`` sweep races PID reuse — codex r14/r16).
+    The result is at parity with the merge gate, plus the timeout+group-kill.
+    A setsid-escaping descendant can still survive the group-kill — a
+    fundamental POSIX limitation that the gating siblings don't guard against
+    either (codex r11/r13/r16); portable containment would need cgroups /
+    job-objects unavailable here.
     """
-    # ``start_new_session=True`` runs the child through ``setsid()``: it
-    # leads a brand-new process group whose PGID EQUALS its PID. Capture that
-    # id NOW, not via ``os.getpgid(proc.pid)`` on timeout — by then the leader
-    # may already have exited and ``getpgid`` would raise, leaving the group
-    # un-killed (codex #1220).
-    with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
-        proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
-            [*_rlimit_wrap(), *cmd],
-            stdout=out_f,
-            stderr=err_f,
-            cwd=cwd,
-            env=env,
-            start_new_session=True,
-        )
-        pgid = proc.pid  # == PGID under start_new_session (setsid)
-        try:
-            proc.wait(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            # Time budget blown: tear the WHOLE group down and re-raise with the
-            # captured tail so the caller can log WHAT hung. ``_kill_group``
-            # SIGKILLs the group BEFORE reaping the leader, so ``pgid`` cannot
-            # have been recycled onto an unrelated group — the kill is race-free
-            # (codex #1220 r14). Disk is handled separately by the kernel RLIMIT.
-            _kill_group(proc, pgid)
-            raise subprocess.TimeoutExpired(
-                cmd,
-                timeout,
-                output=_read_capped(out_f),
-                stderr=_read_capped(err_f),
-            ) from None
-        except BaseException:
-            # Any other escape (e.g. KeyboardInterrupt): tear the group down
-            # (again kill-before-reap, race-free) then re-raise unchanged.
-            _kill_group(proc, pgid)
-            raise
-        # Clean leader exit — but SWEEP the group anyway: a suite that
-        # backgrounds a server/worker can leak it into the isolated group, where
-        # it would survive to hold a capture-file fd or contaminate later steps
-        # (codex #1220 r15). ``_sweep_group`` SIGKILLs the group by ``pgid``.
-        #
-        # This is race-free in the case that MATTERS. POSIX reserves a PGID for
-        # the whole lifetime of its group — until the LAST member leaves — so
-        # while any leaked descendant is still alive the number ``pgid`` cannot
-        # be recycled onto an unrelated process/group, even though the leader is
-        # now reaped (the leader's PID is exactly that reserved PGID). If the
-        # group is instead already empty there is nothing to kill and the call is
-        # a harmless ESRCH; the only residual is the leader's PID being recycled
-        # into a NEW group leader within the microseconds between reap and
-        # ``killpg`` AND the group being empty then — negligible, and strictly
-        # better than leaking a live server into the auto-deploy pipeline (this
-        # is the r14/r15 trade: a non-reaping wait that would remove even that
-        # window needs ``waitid``+``WNOWAIT``, unavailable on macOS).
-        _sweep_group(pgid)
-        return subprocess.CompletedProcess(
-            cmd, proc.returncode, _read_capped(out_f), _read_capped(err_f)
-        )
-
-
-# Wrapper source: a fresh Python process that sets ``RLIMIT_FSIZE`` on ITSELF
-# then ``exec``s the real command (argv after the byte count). rlimits survive
-# ``execve`` and are inherited across ``fork``, so the real command and every
-# descendant it spawns run under the cap. Setting the limit here — post-exec,
-# in a brand-new single-threaded process — avoids the ``preexec_fn`` fork/exec
-# deadlock window entirely (codex #1220 r12). ``os.execvp`` uses an absolute
-# ``argv[0]`` (our commands start with ``sys.executable``) directly.
-_RLIMIT_WRAP_SRC = (
-    "import os,resource,sys;"
-    "n=int(sys.argv[1]);"
-    "resource.setrlimit(resource.RLIMIT_FSIZE,(n,n));"
-    "os.execvp(sys.argv[2],sys.argv[2:])"
-)
-
-
-def _rlimit_wrap() -> list[str]:
-    """Argv prefix that caps the wrapped command's max file size at
-    ``_OUTPUT_QUOTA_BYTES`` (the KERNEL disk backstop; see ``_run_group_bounded``).
-    Built per-call so a test monkeypatching ``_OUTPUT_QUOTA_BYTES`` takes
-    effect. Unix-only, like the rest of this helper (``setsid``/``killpg``).
-
-    ``-I -S`` run the wrapper in ISOLATED startup: ``-I`` drops the CWD (the
-    repo root) and user-site from ``sys.path`` and ignores ``PYTHON*`` env, and
-    ``-S`` skips ``site``/``sitecustomize`` — so no repository-local
-    ``resource.py`` or startup hook can shadow the stdlib ``resource`` module
-    and neuter ``setrlimit`` before the cap is set (codex #1220 r14). The flags
-    apply ONLY to this tiny wrapper; the real command it ``exec``s runs with a
-    normal interpreter and environment (it is meant to import repo code)."""
-    return [
-        sys.executable,
-        "-I",
-        "-S",
-        "-c",
-        _RLIMIT_WRAP_SRC,
-        str(_OUTPUT_QUOTA_BYTES),
-    ]
-
-
-def _sweep_group(pgid: int) -> None:
-    """Best-effort SIGKILL of any process the (cleanly-exited) leader leaked
-    into the isolated group. Callers invoke this only AFTER the leader has
-    exited; it is race-free while any member is still alive (POSIX keeps the
-    PGID reserved until the group's lifetime ends, so the leader's reaped PID
-    cannot be recycled onto an unrelated group), and a harmless ESRCH when the
-    group is already empty — see ``_run_group_bounded`` (codex #1220 r15)."""
+    # ``start_new_session=True`` runs the child through ``setsid()``: it leads a
+    # brand-new process group whose PGID EQUALS its PID. Capture that id NOW,
+    # not via ``os.getpgid(proc.pid)`` on timeout — by then the leader may have
+    # exited and ``getpgid`` would raise, leaving the group un-killed.
+    proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+        cmd,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+        errors="replace",  # child output isn't guaranteed valid UTF-8
+        cwd=cwd,
+        env=env,
+        start_new_session=True,
+    )
+    pgid = proc.pid  # == PGID under start_new_session (setsid)
     try:
-        os.killpg(pgid, signal.SIGKILL)
-    except OSError:
-        pass
+        out, err = proc.communicate(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        # Time budget blown: SIGKILL the whole group BEFORE reaping the leader
+        # (race-free — ``pgid`` can't be recycled while a member is alive), then
+        # drain the now-closed pipes and re-raise with the captured output so
+        # the caller can log WHAT hung.
+        _kill_group(proc, pgid)
+        out, err = proc.communicate()
+        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err) from None
+    except BaseException:
+        # Any other escape (e.g. KeyboardInterrupt): tear the group down so
+        # nothing is orphaned, then re-raise unchanged.
+        _kill_group(proc, pgid)
+        raise
+    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
 
 
 def _kill_group(proc: subprocess.Popen, pgid: int) -> None:
     """SIGKILL the whole process group, then reap the leader under a bounded
-    wait. With output on temp files (no inherited pipes) there is nothing for
-    a descendant to hold open, so a plain ``wait`` reaps the SIGKILLed leader
-    at once; the bound only guards the near-impossible wedged-leader case so
-    we never hang the auto-deploy pipeline."""
+    wait. SIGKILL is uncatchable so the leader dies at once; the bound only
+    guards the near-impossible wedged-leader case so we never hang the
+    auto-deploy pipeline. Called only on the timeout/exception paths, where the
+    leader is unreaped when ``killpg`` fires — so ``pgid`` can't have been
+    recycled onto an unrelated group (race-free)."""
     try:
         os.killpg(pgid, signal.SIGKILL)
     except OSError:
@@ -576,21 +448,6 @@ def _kill_group(proc: subprocess.Popen, pgid: int) -> None:
         proc.wait(timeout=_REAP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         pass  # truly wedged leader (near-impossible post-SIGKILL) — give up
-
-
-def _read_capped(f, limit: int = _STDOUT_CAP_BYTES) -> str:
-    """Read back the LAST ``limit`` bytes of a temp file as text. Bounds
-    read-back memory regardless of how much the child wrote, while keeping
-    the stream tail that callers actually parse/log (diff-cover footer,
-    pytest failure summary). Decodes leniently — the file is raw bytes."""
-    f.flush()
-    f.seek(0, os.SEEK_END)
-    size = f.tell()
-    f.seek(max(0, size - limit))
-    data = f.read().decode("utf-8", "replace")
-    if size > limit:
-        return f"…[{size - limit} bytes elided]…\n" + data
-    return data
 
 
 def _path_exists(path: Path | None) -> bool:
@@ -644,10 +501,9 @@ def _pytest_dump(cmd: list[str], proc: subprocess.CompletedProcess[str]) -> str:
 
 
 def _timeout_dump(label: str, cmd: list[str], exc: subprocess.TimeoutExpired) -> str:
-    """Diagnostics for a timed-out child. Preserves the captured tail carried on
-    the exception so the log records WHAT hung before the temp files are deleted
-    (codex #1220 r10). (A disk-cap breach is not routed here — it surfaces as a
-    SIGXFSZ/nonzero exit through the exit-code path, not ``TimeoutExpired``.)"""
+    """Diagnostics for a timed-out child. Preserves the captured (tail-
+    truncated) stdout/stderr carried on the ``TimeoutExpired`` so the log
+    records WHAT hung."""
     return (
         f"# {label} TIMED OUT\n\n"
         f"## cmd\n`{' '.join(cmd)}`\n\n"

@@ -31,7 +31,6 @@ from scripts.pr_validate.steps.diff_coverage import (
     DiffCoverageStep,
     _parse_diff_cover,
     _path_exists,
-    _read_capped,
     _run_group_bounded,
 )
 
@@ -127,36 +126,6 @@ class TestParseDiffCover:
             0,
             10,
         )
-
-
-class TestReadCapped:
-    def test_small_output_read_in_full(self):
-        import tempfile
-
-        with tempfile.TemporaryFile() as f:
-            f.write(b"small output")
-            assert _read_capped(f, limit=1000) == "small output"
-
-    def test_large_output_is_tail_capped(self):
-        # F1 (codex #1220 r8): read-back must be bounded no matter how much
-        # the child wrote — and the TAIL (where diff-cover's footer / pytest's
-        # summary live) is what we keep.
-        import tempfile
-
-        with tempfile.TemporaryFile() as f:
-            f.write(b"A" * 5000 + b"THE_TRAILING_FOOTER")
-            out = _read_capped(f, limit=64)
-            assert out.endswith("THE_TRAILING_FOOTER")  # tail preserved
-            assert "bytes elided" in out  # truncation announced
-            assert len(out) < 200  # bounded, nowhere near the 5k written
-
-    def test_lenient_decode_on_invalid_utf8(self):
-        import tempfile
-
-        with tempfile.TemporaryFile() as f:
-            f.write(b"\xff\xfe bad bytes")  # not valid UTF-8
-            out = _read_capped(f, limit=1000)  # must not raise
-            assert "bad bytes" in out
 
 
 class TestPathExists:
@@ -750,51 +719,10 @@ class TestRunGroupBounded:
             "leader-only kill"
         )
 
-    def test_clean_exit_sweeps_a_leaked_group_descendant(self, tmp_path):
-        # codex #1220 r15: even on a CLEAN leader exit (rc 0, no timeout), a
-        # process the suite backgrounded into the isolated group must be swept
-        # — else it survives to hold a capture-file fd or contaminate later
-        # steps. The timeout test only covers the timeout path, so THIS test is
-        # what fails if the clean-exit _sweep_group is removed (regression
-        # guard).
-        import time as _time
-
-        heartbeat = tmp_path / "heartbeat"
-        # Leader backgrounds a heartbeat writer in its OWN group, WAITS until the
-        # writer has produced output (so the assertion below isn't racy — the
-        # writer definitely exists and is in the group), then exits 0 WITHOUT
-        # killing it: a non-interactive sh sends no SIGHUP to bg jobs, so the
-        # writer would be reparented to init and keep ticking if our clean-exit
-        # sweep didn't SIGKILL the group.
-        cmd = [
-            "sh",
-            "-c",
-            '(while true; do printf . >> "$1"; sleep 0.05; done) & '
-            'while [ ! -s "$1" ]; do sleep 0.01; done; exit 0',
-            "sh",  # $0
-            str(heartbeat),  # $1
-        ]
-
-        proc = _run_group_bounded(cmd, cwd=str(tmp_path), timeout=30)
-        assert proc.returncode == 0  # clean leader exit, no timeout
-        assert heartbeat.exists(), "writer never started — test is inconclusive"
-
-        # After the clean-exit sweep the writer is dead: the size stops growing.
-        size1 = heartbeat.stat().st_size
-        _time.sleep(1.0)
-        size2 = heartbeat.stat().st_size
-        assert size1 == size2, (
-            f"heartbeat kept growing after a clean exit ({size1} → {size2} "
-            "bytes) — a leaked group descendant survived, so the clean-exit "
-            "sweep regressed"
-        )
-
-    def test_env_is_threaded_through_the_exec_wrapper_to_the_child(self):
-        # B1/B2 (codex #1220 r12): the env= param must reach the wrapped
-        # command — COVERAGE_FILE redirection depends on it — AND survive the
-        # exec-based rlimit wrapper, which execvp's the real command under the
-        # wrapper's OWN environ (so a lost env would silently break the
-        # redirect). Probe a custom var round-trips through the wrapper.
+    def test_env_is_threaded_to_the_child(self):
+        # The env= param must reach the child — the COVERAGE_FILE redirect and
+        # the PYTEST_ADDOPTS strip both depend on it (codex #1220 r12/r14).
+        # Probe a custom var round-trips through to the child.
         code = "import os,sys; sys.stdout.write(os.environ.get('RMX_DC_PROBE', ''))"
         proc = _run_group_bounded(
             [sys.executable, "-c", code],
@@ -804,74 +732,3 @@ class TestRunGroupBounded:
         )
         assert proc.returncode == 0, proc.stderr
         assert "threaded-ok" in proc.stdout
-
-    def test_output_size_is_capped_by_kernel_rlimit(self, tmp_path, monkeypatch):
-        # codex #1220 r11: any single file the child writes is bounded by a
-        # KERNEL RLIMIT_FSIZE (set by the exec-based wrapper), NOT a userspace
-        # size-poll — so a write past the cap is refused at write(2) (SIGXFSZ,
-        # or EFBIG if caught) regardless of timing. Shrink the quota so the
-        # test is fast.
-        #
-        # The child writes to a REAL FILE the test owns and then we stat() it,
-        # rather than inspecting _read_capped(stdout): the read-back is itself
-        # capped at _STDOUT_CAP_BYTES, which would mask a kernel cap that leaked
-        # far more than the configured quota to disk (codex #1220 r13). The
-        # on-disk size is the honest, un-truncated evidence.
-        import signal as _signal
-
-        import scripts.pr_validate.steps.diff_coverage as dc
-
-        quota = 64 * 1024  # 64 KiB
-        monkeypatch.setattr(dc, "_OUTPUT_QUOTA_BYTES", quota)
-        victim = tmp_path / "victim.bin"
-        # Attempt 8 MiB (>> quota) in 1 MiB raw os.write chunks. The kernel
-        # short-writes the first chunk up to the cap and returns; the NEXT
-        # os.write, with the file already at the limit, attempts to extend past
-        # it and delivers SIGXFSZ (default-fatal), killing the child. So the
-        # child exits on its own (no timeout) → CompletedProcess.
-        code = (
-            f"import os\n"
-            f"fd = os.open({str(victim)!r}, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)\n"
-            "buf = b'X' * (1024 * 1024)\n"
-            "for _ in range(8):\n"
-            "    os.write(fd, buf)\n"
-        )
-        proc = _run_group_bounded([sys.executable, "-c", code], cwd=".", timeout=30)
-
-        # rc != 0 proves the cap ENGAGED: a clean rc of 0 is only reachable if
-        # all 8 writes succeeded (cap never fired). SIGXFSZ → negative rc; a
-        # platform delivering EFBIG instead → nonzero exit from the OSError.
-        assert proc.returncode != 0, (
-            "child writing past the RLIMIT_FSIZE quota should have died "
-            f"(SIGXFSZ) or errored (EFBIG); got rc={proc.returncode}"
-        )
-        assert proc.returncode == -_signal.SIGXFSZ or proc.returncode > 0
-        # The ACTUAL on-disk file never approached the 8 MiB attempted — the
-        # kernel held it at ~the quota (small slack for filesystem block
-        # rounding). This is the un-truncated proof the cap really bounds disk,
-        # NOT the _read_capped(stdout) tail which is itself size-limited (codex
-        # #1220 r13).
-        assert victim.exists()
-        assert victim.stat().st_size <= quota + 4096, victim.stat().st_size
-
-    def test_rlimit_wrapper_uses_isolated_startup(self):
-        # B1 (codex #1220 r14): the rlimit wrapper must run with ISOLATED
-        # startup so no repo-local `resource.py` / `sitecustomize.py` on the CWD
-        # can shadow or monkeypatch `resource.setrlimit` before the wrapper sets
-        # the disk cap. `-I` drops the CWD + user-site from sys.path and ignores
-        # PYTHON* env; `-S` skips site.py (hence sitecustomize).
-        #
-        # This asserts the flags are WIRED (and precede `-c`, so they are parsed
-        # as interpreter options, not program args) rather than attempting a
-        # behavioural shadow test: `resource` is a built-in module on our
-        # interpreters (BuiltinImporter wins over any sys.path `.py` regardless
-        # of `-I`), so a resource.py-shadow test would pass trivially and prove
-        # nothing. The end-to-end cap behaviour is covered by
-        # test_output_size_is_capped_by_kernel_rlimit.
-        from scripts.pr_validate.steps.diff_coverage import _rlimit_wrap
-
-        wrap = _rlimit_wrap()
-        assert wrap[0] == sys.executable
-        assert "-I" in wrap and "-S" in wrap
-        assert wrap.index("-I") < wrap.index("-c")
-        assert wrap.index("-S") < wrap.index("-c")
