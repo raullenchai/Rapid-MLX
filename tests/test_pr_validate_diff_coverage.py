@@ -750,6 +750,45 @@ class TestRunGroupBounded:
             "leader-only kill"
         )
 
+    def test_clean_exit_sweeps_a_leaked_group_descendant(self, tmp_path):
+        # codex #1220 r15: even on a CLEAN leader exit (rc 0, no timeout), a
+        # process the suite backgrounded into the isolated group must be swept
+        # — else it survives to hold a capture-file fd or contaminate later
+        # steps. The timeout test only covers the timeout path, so THIS test is
+        # what fails if the clean-exit _sweep_group is removed (regression
+        # guard).
+        import time as _time
+
+        heartbeat = tmp_path / "heartbeat"
+        # Leader backgrounds a heartbeat writer in its OWN group, WAITS until the
+        # writer has produced output (so the assertion below isn't racy — the
+        # writer definitely exists and is in the group), then exits 0 WITHOUT
+        # killing it: a non-interactive sh sends no SIGHUP to bg jobs, so the
+        # writer would be reparented to init and keep ticking if our clean-exit
+        # sweep didn't SIGKILL the group.
+        cmd = [
+            "sh",
+            "-c",
+            '(while true; do printf . >> "$1"; sleep 0.05; done) & '
+            'while [ ! -s "$1" ]; do sleep 0.01; done; exit 0',
+            "sh",  # $0
+            str(heartbeat),  # $1
+        ]
+
+        proc = _run_group_bounded(cmd, cwd=str(tmp_path), timeout=30)
+        assert proc.returncode == 0  # clean leader exit, no timeout
+        assert heartbeat.exists(), "writer never started — test is inconclusive"
+
+        # After the clean-exit sweep the writer is dead: the size stops growing.
+        size1 = heartbeat.stat().st_size
+        _time.sleep(1.0)
+        size2 = heartbeat.stat().st_size
+        assert size1 == size2, (
+            f"heartbeat kept growing after a clean exit ({size1} → {size2} "
+            "bytes) — a leaked group descendant survived, so the clean-exit "
+            "sweep regressed"
+        )
+
     def test_env_is_threaded_through_the_exec_wrapper_to_the_child(self):
         # B1/B2 (codex #1220 r12): the env= param must reach the wrapped
         # command — COVERAGE_FILE redirection depends on it — AND survive the

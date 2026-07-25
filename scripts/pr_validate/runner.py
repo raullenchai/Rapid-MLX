@@ -70,10 +70,11 @@ STEPS: list[Step] = [
     FullUnitStep(),  # 4 — full pytest, gated on blast radius
     StressE2EBenchStep(),  # 5 — stress + e2e + bench (multi-model × agents)
     # 6 — ADVISORY patch-coverage measurement (never gates). Last on
-    # purpose: it re-runs the unit suite under coverage instrumentation
-    # (~40 s), so in fail-fast mode we skip that cost the moment any
-    # real gate above has already blocked the PR. It also physically
-    # cannot change the verdict — every path returns pass/skip — but
+    # purpose: it re-runs the FULL unit suite under coverage instrumentation
+    # (~3 min, same order as full_unit's ~2:45 — see diff_coverage.py), so in
+    # fail-fast mode we skip that cost the moment any real gate above has
+    # already blocked the PR. It also physically cannot change the verdict —
+    # every path returns pass/skip — but
     # position still saves compute. See steps/diff_coverage.py for the
     # "measure-first, no threshold" rationale (dev-flow gate proposal).
     DiffCoverageStep(),

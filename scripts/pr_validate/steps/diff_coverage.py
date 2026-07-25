@@ -148,6 +148,16 @@ class DiffCoverageStep(Step):
         log_path: Path | None = None
         try:
             log_path = ctx.artifact_path("diff-coverage.log")
+            # Fresh-file guarantee: unlink any pre-existing log so ``_skip``
+            # can never attach a stale ``diff-coverage.log`` (e.g. from a reused
+            # artifact dir) that THIS run did not write — an early skip
+            # (tooling missing) writes no log, so its artifact list must stay
+            # empty (codex #1220 r15). Best-effort: a failed unlink must not
+            # itself escape as a blocking error.
+            try:
+                log_path.unlink(missing_ok=True)
+            except OSError:
+                pass
             return self._measure(ctx, log_path)
         except Exception as e:  # noqa: BLE001 — advisory must not block merge
             # ``_safe_write`` never raises; guard the path being unset too.
@@ -430,13 +440,14 @@ def _run_group_bounded(
     stdout/stderr so the caller can log WHAT hung before the temp files are
     deleted (codex #1220 r10).
 
-    Group teardown happens ONLY on the timeout/exception paths, where
-    ``_kill_group`` SIGKILLs the group BEFORE reaping the leader so ``pgid``
-    cannot be recycled — the kill is race-free. On a CLEAN exit we do not sweep
-    the group: a race-free sweep needs a non-reaping wait (``waitid``+
-    ``WNOWAIT``) unavailable on macOS, and a reap-then-``killpg`` sweep would
-    reintroduce a PID-reuse race (codex #1220 r14). That leaves clean-exit
-    parity with the merge-GATING sibling steps, which group-kill nothing.
+    The isolated group is torn down on EVERY exit path. On timeout/exception
+    ``_kill_group`` SIGKILLs the group BEFORE reaping the leader, so ``pgid``
+    cannot be recycled — unconditionally race-free. On a CLEAN exit
+    ``_sweep_group`` SIGKILLs any process the suite leaked into the group; that
+    is race-free while any member is alive (POSIX keeps the PGID reserved for
+    the group's whole lifetime, so the reaped leader's PID can't be recycled)
+    and a harmless ESRCH when the group is already empty — see the inline note
+    for the negligible reap-vs-recycle residual (codex #1220 r14/r15).
     """
     # ``start_new_session=True`` runs the child through ``setsid()``: it
     # leads a brand-new process group whose PGID EQUALS its PID. Capture that
@@ -473,16 +484,24 @@ def _run_group_bounded(
             # (again kill-before-reap, race-free) then re-raise unchanged.
             _kill_group(proc, pgid)
             raise
-        # Clean leader exit. We deliberately do NOT sweep the group here. A
-        # race-free sweep would have to SIGKILL the group BEFORE reaping the
-        # leader (so ``pgid`` can't be recycled), which needs a non-reaping wait
-        # (``waitid``+``WNOWAIT``) that is unavailable on macOS — the operator's
-        # platform. A reap-then-``killpg`` sweep would reintroduce exactly the
-        # PID-reuse race codex flagged (#1220 r14). So on the clean path we
-        # accept parity with the merge-GATING sibling steps (``full_unit`` /
-        # ``targeted_tests`` group-kill nothing at all); the timeout/exception
-        # paths above still contain a runaway group race-free, which is the
-        # scenario that actually matters.
+        # Clean leader exit — but SWEEP the group anyway: a suite that
+        # backgrounds a server/worker can leak it into the isolated group, where
+        # it would survive to hold a capture-file fd or contaminate later steps
+        # (codex #1220 r15). ``_sweep_group`` SIGKILLs the group by ``pgid``.
+        #
+        # This is race-free in the case that MATTERS. POSIX reserves a PGID for
+        # the whole lifetime of its group — until the LAST member leaves — so
+        # while any leaked descendant is still alive the number ``pgid`` cannot
+        # be recycled onto an unrelated process/group, even though the leader is
+        # now reaped (the leader's PID is exactly that reserved PGID). If the
+        # group is instead already empty there is nothing to kill and the call is
+        # a harmless ESRCH; the only residual is the leader's PID being recycled
+        # into a NEW group leader within the microseconds between reap and
+        # ``killpg`` AND the group being empty then — negligible, and strictly
+        # better than leaking a live server into the auto-deploy pipeline (this
+        # is the r14/r15 trade: a non-reaping wait that would remove even that
+        # window needs ``waitid``+``WNOWAIT``, unavailable on macOS).
+        _sweep_group(pgid)
         return subprocess.CompletedProcess(
             cmd, proc.returncode, _read_capped(out_f), _read_capped(err_f)
         )
@@ -524,6 +543,19 @@ def _rlimit_wrap() -> list[str]:
         _RLIMIT_WRAP_SRC,
         str(_OUTPUT_QUOTA_BYTES),
     ]
+
+
+def _sweep_group(pgid: int) -> None:
+    """Best-effort SIGKILL of any process the (cleanly-exited) leader leaked
+    into the isolated group. Callers invoke this only AFTER the leader has
+    exited; it is race-free while any member is still alive (POSIX keeps the
+    PGID reserved until the group's lifetime ends, so the leader's reaped PID
+    cannot be recycled onto an unrelated group), and a harmless ESRCH when the
+    group is already empty — see ``_run_group_bounded`` (codex #1220 r15)."""
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except OSError:
+        pass
 
 
 def _kill_group(proc: subprocess.Popen, pgid: int) -> None:

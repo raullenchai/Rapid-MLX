@@ -269,8 +269,12 @@ test = [
     # coverage.xml to the PR's changed lines → patch-coverage %. Declared in
     # the extras so pr_validate can rebuild a venv that runs the advisory
     # measurement. See scripts/pr_validate/steps/diff_coverage.py.
+    # diff-cover is major-pinned: _parse_diff_cover() reads its human-readable
+    # footer, so a new major could silently stop baseline collection — bump the
+    # ceiling deliberately, re-validating the parser, when moving to 9.x (codex
+    # #1220 r15).
     "pytest-cov>=4.0.0",
-    "diff-cover>=8.0.0",
+    "diff-cover>=8.0.0,<9.0.0",
 ]
 dev = [
     # Test runtime (must mirror the `test` extras above; a unit test in
@@ -291,8 +295,9 @@ dev = [
     "hypothesis>=6.100.0",
     # Mirror of the [test] entries (dev ⊇ test). Powers the advisory
     # diff_coverage step — see scripts/pr_validate/steps/diff_coverage.py.
+    # diff-cover major-pinned (parser couples to its footer) — see [test] note.
     "pytest-cov>=4.0.0",
-    "diff-cover>=8.0.0",
+    "diff-cover>=8.0.0,<9.0.0",
     # Linters / typer — NOT in the `test` extras because pr_validate
     # only needs to *run* the tests; lint is its own pipeline step
     # (ruff) and runs from the host environment.
