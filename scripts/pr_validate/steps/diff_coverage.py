@@ -308,11 +308,11 @@ class DiffCoverageStep(Step):
         """Uniform advisory skip. Attaches the log artifact only when it
         actually made it to disk (``_safe_write`` may have swallowed a
         write error)."""
-        artifacts = (
-            [str(log_path)] if log_path is not None and log_path.exists() else []
-        )
         return StepResult(
-            name=self.name, status="skip", summary=summary, artifacts=artifacts
+            name=self.name,
+            status="skip",
+            summary=summary,
+            artifacts=[str(log_path)] if _path_exists(log_path) else [],
         )
 
 
@@ -396,6 +396,21 @@ def _kill_group_and_reap(proc: subprocess.Popen[str], pgid: int) -> None:
         proc.wait(timeout=_REAP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         pass  # truly wedged leader (near-impossible post-SIGKILL) — give up
+
+
+def _path_exists(path: Path | None) -> bool:
+    """``Path.exists()`` that NEVER raises. ``pathlib.Path.exists`` re-raises
+    OSErrors other than ENOENT/ENOTDIR (e.g. EACCES permission-denied, EIO on
+    a failing mount), so a bare ``log_path.exists()`` inside ``_skip`` could
+    escape ``run``'s handler and become the blocking ``error`` this advisory
+    step promises never to produce (codex #1220 r7). Treat any error as
+    'not present' — the worst case is a missing artifact link, never a block."""
+    if path is None:
+        return False
+    try:
+        return path.exists()
+    except OSError:
+        return False
 
 
 def _safe_write(path: Path, text: str) -> None:

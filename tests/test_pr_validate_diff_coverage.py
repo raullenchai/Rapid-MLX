@@ -28,6 +28,7 @@ from scripts.pr_validate.context import Context
 from scripts.pr_validate.steps.diff_coverage import (
     DiffCoverageStep,
     _parse_diff_cover,
+    _path_exists,
     _run_group_bounded,
 )
 
@@ -97,6 +98,24 @@ class TestParseDiffCover:
         # Guard against a divide-by-zero if diff-cover ever emits a
         # degenerate "Total: 0 lines".
         assert _parse_diff_cover("Total:   0 lines\nMissing: 0 lines\n") is None
+
+
+class TestPathExists:
+    def test_none_is_false(self):
+        assert _path_exists(None) is False
+
+    def test_real_paths(self, tmp_path):
+        assert _path_exists(tmp_path) is True
+        assert _path_exists(tmp_path / "nope") is False
+
+    def test_never_raises_on_oserror(self, tmp_path, monkeypatch):
+        # pathlib re-raises EACCES/EIO from .exists(); the guard must swallow
+        # it and report 'not present' so the advisory contract can't break.
+        def exists_boom(self, *a, **k):
+            raise OSError("Permission denied")
+
+        monkeypatch.setattr(Path, "exists", exists_boom)
+        assert _path_exists(tmp_path / "x") is False
 
 
 # --------------------------------------------------------------------------
@@ -473,6 +492,29 @@ class TestAdvisoryContract:
         monkeypatch.setattr(Path, "write_text", unwritable)
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
+
+    def test_advisory_survives_exists_oserror(self, ctx_factory, monkeypatch):
+        # codex #1220 r7: pathlib's Path.exists() re-raises OSErrors other
+        # than ENOENT (e.g. EACCES / EIO). A bare .exists() in _skip could
+        # then escape run()'s handler and become a blocking error — the one
+        # thing this advisory step must never do. With Path.exists() raising
+        # from anywhere in the flow, run() must STILL resolve to skip.
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+
+        def boom(cmd, *a, **k):
+            raise RuntimeError("subprocess explosion")
+
+        def exists_boom(self, *a, **k):
+            raise OSError("Permission denied")
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", boom
+        )
+        monkeypatch.setattr(Path, "exists", exists_boom)
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
+        assert res.status not in ("fail", "error")
 
     def test_execute_wrapper_skips_when_gated_out(self, ctx_factory, monkeypatch):
         # Through the base execute() wrapper, a docs-only PR gates out.
