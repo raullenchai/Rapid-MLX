@@ -42,6 +42,7 @@ import re
 import signal
 import subprocess
 import sys
+import tempfile
 import traceback
 from pathlib import Path
 
@@ -82,6 +83,13 @@ _REAP_TIMEOUT_S = 10
 # Keep the diagnostic log readable — we tail (not head) subprocess output so
 # the most recent lines (pytest's failure summary) always survive truncation.
 _LOG_TAIL_CHARS = 4000
+
+# Cap on how much subprocess output we read back into memory from the temp
+# files (the tail). 1 MiB dwarfs diff-cover's footer and pytest's ``-q``
+# summary (both a few KB), so nothing real is ever lost, yet a runaway test
+# that streams gigabytes to disk still can't bloat the validator (codex
+# #1220 r8).
+_STDOUT_CAP_BYTES = 1_048_576
 
 
 class DiffCoverageStep(Step):
@@ -273,6 +281,19 @@ class DiffCoverageStep(Step):
                 "advisory coverage skipped (no measurable production lines in diff)",
                 log_path,
             )
+        if parsed is _PARSE_FAILED:
+            # diff-cover exited 0 but we recognized NEITHER its explicit
+            # no-lines message NOR a Total/Missing footer — most likely a
+            # diff-cover version whose output format drifted (the ``>=8.0.0``
+            # floor permits future majors). Surface this as a DISTINCT
+            # tooling-format skip rather than silently reporting "no lines",
+            # which would let the baseline quietly die (codex #1220 r8).
+            return self._skip(
+                "advisory coverage skipped (diff-cover output format "
+                "unrecognized — parser may need updating for this diff-cover "
+                "version)",
+                log_path,
+            )
 
         pct, covered, total = parsed
         caveat = (
@@ -299,7 +320,11 @@ class DiffCoverageStep(Step):
             status="pass",  # ALWAYS pass — advisory
             summary=summary,
             findings=[finding],
-            artifacts=[str(log_path), str(xml_path)],
+            # Advertise only artifacts that actually made it to disk —
+            # ``_safe_write`` may have swallowed a log write failure, and the
+            # existence probe itself must not raise (codex #1220 r8), mirroring
+            # the skip path's guard.
+            artifacts=[str(p) for p in (log_path, xml_path) if _path_exists(p)],
         )
 
     # ------------------------------------------------------------------
@@ -329,44 +354,46 @@ def _run_group_bounded(
     survives. Re-raises ``subprocess.TimeoutExpired`` so callers keep
     their existing skip-on-timeout handling.
 
-    We deliberately do NOT use ``with subprocess.Popen(...)``: its
-    ``__exit__`` reaps via an UNBOUNDED ``wait()``, which would re-open the
-    very wedge we close below. Cleanup is handled explicitly instead.
+    Output is redirected to temp FILES, not PIPEs (codex #1220 r8). This
+    bounds validator memory — a noisy / runaway test streams to disk, and
+    we read back only a capped tail — and, because there are no pipes for a
+    surviving descendant to hold open, it removes the reap-wedge class
+    entirely: the timeout path is a plain group-SIGKILL + bounded ``wait``.
+    The tail keeps the bytes every caller needs — diff-cover's footer and
+    pytest's ``-q`` failure summary both sit at the END of their streams.
     """
     # ``start_new_session=True`` runs the child through ``setsid()``: it
-    # leads a brand-new process group whose PGID EQUALS its PID. Capture
-    # that id NOW. We must never derive it via ``os.getpgid(proc.pid)`` on
-    # timeout instead: by then the group leader may have already exited
-    # while a surviving descendant keeps the captured pipes open (so
-    # ``communicate`` still blocks) — ``getpgid`` would raise
-    # ``ProcessLookupError``, the group would go un-killed, only the dead
-    # leader would be targeted, and the reap could wedge the whole pipeline
-    # (codex #1220).
-    proc: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603 — fixed argv
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        text=True,
-        cwd=cwd,
-        start_new_session=True,
-    )
-    pgid = proc.pid  # == PGID under start_new_session (setsid)
-    try:
-        out, err = proc.communicate(timeout=timeout)
-        return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
-    except BaseException:
-        # Timeout OR any other escape (e.g. KeyboardInterrupt): tear the
-        # whole group down so nothing is orphaned, then re-raise unchanged.
-        _kill_group_and_reap(proc, pgid)
-        raise
+    # leads a brand-new process group whose PGID EQUALS its PID. Capture that
+    # id NOW, not via ``os.getpgid(proc.pid)`` on timeout — by then the leader
+    # may already have exited and ``getpgid`` would raise, leaving the group
+    # un-killed (codex #1220).
+    with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
+        proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+            cmd,
+            stdout=out_f,
+            stderr=err_f,
+            cwd=cwd,
+            start_new_session=True,
+        )
+        pgid = proc.pid  # == PGID under start_new_session (setsid)
+        try:
+            proc.wait(timeout=timeout)
+        except BaseException:
+            # Timeout OR any other escape (e.g. KeyboardInterrupt): tear the
+            # whole group down so nothing is orphaned, then re-raise unchanged.
+            _kill_group(proc, pgid)
+            raise
+        return subprocess.CompletedProcess(
+            cmd, proc.returncode, _read_capped(out_f), _read_capped(err_f)
+        )
 
 
-def _kill_group_and_reap(proc: subprocess.Popen[str], pgid: int) -> None:
+def _kill_group(proc: subprocess.Popen, pgid: int) -> None:
     """SIGKILL the whole process group, then reap the leader under a bounded
-    wait. Never blocks: the SIGKILL is already delivered, so if even the
-    bounded reap can't finish (a descendant wedged in an uninterruptible
-    syscall still holding the pipes), we abandon the pipes rather than hang
-    the auto-deploy pipeline."""
+    wait. With output on temp files (no inherited pipes) there is nothing for
+    a descendant to hold open, so a plain ``wait`` reaps the SIGKILLed leader
+    at once; the bound only guards the near-impossible wedged-leader case so
+    we never hang the auto-deploy pipeline."""
     try:
         os.killpg(pgid, signal.SIGKILL)
     except OSError:
@@ -376,26 +403,24 @@ def _kill_group_and_reap(proc: subprocess.Popen[str], pgid: int) -> None:
         except OSError:
             pass
     try:
-        proc.communicate(timeout=_REAP_TIMEOUT_S)
-        return
-    except subprocess.TimeoutExpired:
-        pass
-    # A descendant is wedged holding the inherited pipes, so ``communicate``
-    # (which reads to EOF before waiting) can't return. Abandon the pipes so
-    # we stop blocking on them — but the SIGKILLed direct child is now a
-    # zombie that ``communicate`` never got to reap, so still ``wait()`` for
-    # it under a bound. Without this the leader leaks as a zombie until the
-    # validator process exits (codex #1220 r5).
-    for stream in (proc.stdout, proc.stderr):
-        if stream is not None:
-            try:
-                stream.close()
-            except OSError:
-                pass
-    try:
         proc.wait(timeout=_REAP_TIMEOUT_S)
     except subprocess.TimeoutExpired:
         pass  # truly wedged leader (near-impossible post-SIGKILL) — give up
+
+
+def _read_capped(f, limit: int = _STDOUT_CAP_BYTES) -> str:
+    """Read back the LAST ``limit`` bytes of a temp file as text. Bounds
+    read-back memory regardless of how much the child wrote, while keeping
+    the stream tail that callers actually parse/log (diff-cover footer,
+    pytest failure summary). Decodes leniently — the file is raw bytes."""
+    f.flush()
+    f.seek(0, os.SEEK_END)
+    size = f.tell()
+    f.seek(max(0, size - limit))
+    data = f.read().decode("utf-8", "replace")
+    if size > limit:
+        return f"…[{size - limit} bytes elided]…\n" + data
+    return data
 
 
 def _path_exists(path: Path | None) -> bool:
@@ -453,10 +478,20 @@ _TOTAL_RE = re.compile(r"^Total:\s+(\d+)\s+lines?", re.MULTILINE)
 _MISSING_RE = re.compile(r"^Missing:\s+(\d+)\s+lines?", re.MULTILINE)
 _NO_LINES_RE = re.compile(r"No lines with coverage information", re.IGNORECASE)
 
+# Distinct from ``None``: diff-cover exited 0 but we recognized NEITHER its
+# explicit no-lines message NOR a Total/Missing footer. ``None`` means the
+# legitimate "nothing to score" case; this sentinel means the output format
+# was unrecognizable — most likely a diff-cover version whose text drifted
+# (the ``>=8.0.0`` floor permits future majors). The caller reports the two
+# differently so a format break can't masquerade as "no lines" and silently
+# kill baseline collection (codex #1220 r8).
+_PARSE_FAILED = object()
 
-def _parse_diff_cover(stdout: str) -> tuple[float, int, int] | None:
-    """Return ``(percent, covered_lines, total_lines)`` or ``None`` when
-    diff-cover reports nothing to score.
+
+def _parse_diff_cover(stdout: str) -> tuple[float, int, int] | None | object:
+    """Return ``(percent, covered_lines, total_lines)``; ``None`` when
+    diff-cover legitimately reports nothing to score; or ``_PARSE_FAILED``
+    when its output is unrecognizable (format drift — see the sentinel).
 
     Percent is computed from the exact ``Total`` / ``Missing`` counts,
     NOT from diff-cover's own ``Coverage:`` line. diff-cover *floors*
@@ -469,15 +504,15 @@ def _parse_diff_cover(stdout: str) -> tuple[float, int, int] | None:
     """
     text = stdout or ""
     if _NO_LINES_RE.search(text):
-        return None
+        return None  # legitimate: no scorable lines in the diff
     tm = _TOTAL_RE.search(text)
     mm = _MISSING_RE.search(text)
     if not tm or not mm:
-        return None
+        return _PARSE_FAILED  # unrecognized footer — format drift
     total = int(tm.group(1))
     missing = int(mm.group(1))
     if total <= 0:
-        return None
+        return None  # explicit "Total: 0 lines" — nothing to score
     covered = total - missing
     pct = 100.0 * covered / total
     return pct, covered, total

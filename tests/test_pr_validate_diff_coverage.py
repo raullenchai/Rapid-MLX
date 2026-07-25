@@ -26,9 +26,11 @@ import pytest
 
 from scripts.pr_validate.context import Context
 from scripts.pr_validate.steps.diff_coverage import (
+    _PARSE_FAILED,
     DiffCoverageStep,
     _parse_diff_cover,
     _path_exists,
+    _read_capped,
     _run_group_bounded,
 )
 
@@ -88,16 +90,54 @@ class TestParseDiffCover:
         assert parsed == (100.0, 7, 7)
 
     def test_no_lines_returns_none(self):
+        # The explicit no-lines message is the LEGITIMATE nothing-to-score
+        # case → None (distinct from an unrecognized footer, below).
         assert _parse_diff_cover(_DC_NO_LINES) is None
 
-    def test_malformed_returns_none(self):
-        assert _parse_diff_cover("garbage without a footer") is None
-        assert _parse_diff_cover("") is None
+    def test_unrecognized_output_is_parse_failed(self):
+        # Neither the no-lines message nor a Total/Missing footer → format
+        # drift, surfaced distinctly (NOT None) so it can't masquerade as
+        # "no lines" and silently kill baseline collection.
+        assert _parse_diff_cover("garbage without a footer") is _PARSE_FAILED
+        assert _parse_diff_cover("") is _PARSE_FAILED
+        # A partial footer (Total but no Missing) is also unrecognized.
+        assert _parse_diff_cover("Total:   10 lines\n") is _PARSE_FAILED
 
     def test_zero_total_returns_none(self):
-        # Guard against a divide-by-zero if diff-cover ever emits a
-        # degenerate "Total: 0 lines".
+        # A well-formed but degenerate "Total: 0 lines" footer is a genuine
+        # nothing-to-score (and guards divide-by-zero) → None, not a parse
+        # failure.
         assert _parse_diff_cover("Total:   0 lines\nMissing: 0 lines\n") is None
+
+
+class TestReadCapped:
+    def test_small_output_read_in_full(self):
+        import tempfile
+
+        with tempfile.TemporaryFile() as f:
+            f.write(b"small output")
+            assert _read_capped(f, limit=1000) == "small output"
+
+    def test_large_output_is_tail_capped(self):
+        # F1 (codex #1220 r8): read-back must be bounded no matter how much
+        # the child wrote — and the TAIL (where diff-cover's footer / pytest's
+        # summary live) is what we keep.
+        import tempfile
+
+        with tempfile.TemporaryFile() as f:
+            f.write(b"A" * 5000 + b"THE_TRAILING_FOOTER")
+            out = _read_capped(f, limit=64)
+            assert out.endswith("THE_TRAILING_FOOTER")  # tail preserved
+            assert "bytes elided" in out  # truncation announced
+            assert len(out) < 200  # bounded, nowhere near the 5k written
+
+    def test_lenient_decode_on_invalid_utf8(self):
+        import tempfile
+
+        with tempfile.TemporaryFile() as f:
+            f.write(b"\xff\xfe bad bytes")  # not valid UTF-8
+            out = _read_capped(f, limit=1000)  # must not raise
+            assert "bad bytes" in out
 
 
 class TestPathExists:
@@ -439,6 +479,34 @@ class TestAdvisoryContract:
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
+
+    def test_skip_distinctly_on_unrecognized_diff_cover_output(
+        self, ctx_factory, monkeypatch
+    ):
+        # codex #1220 r8: diff-cover exits 0 but its output is neither the
+        # no-lines message nor a parseable footer (a future version whose
+        # format drifted). Must skip with a DISTINCT tooling-format message,
+        # not the "no measurable production lines" message, so a parser break
+        # can't silently masquerade as an empty diff.
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+
+        def fake_run(cmd, *a, **k):
+            if "pytest" in cmd:
+                Path(_xml_target(cmd)).write_text("<coverage/>")
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            # Exit 0 but a totally unrecognized report shape.
+            return subprocess.CompletedProcess(
+                cmd, 0, stdout="Diff Coverage\n(new format we don't parse)\n", stderr=""
+            )
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
+        )
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
+        assert "format unrecognized" in res.summary
+        assert "no measurable production lines" not in res.summary
 
     def test_skip_when_tooling_missing(self, ctx_factory, monkeypatch):
         # find_spec returns None for pytest_cov → clean skip, no subprocess.
