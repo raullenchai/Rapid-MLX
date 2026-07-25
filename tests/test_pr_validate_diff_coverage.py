@@ -18,6 +18,7 @@ Two contracts matter most here and are the reason this file exists:
 
 from __future__ import annotations
 
+import signal
 import subprocess
 import sys
 from pathlib import Path
@@ -203,11 +204,15 @@ class TestAdvisoryContract:
         assert "80" in res.summary
         assert res.findings and "ADVISORY" in res.findings[0]
 
-    def test_skip_when_suite_not_clean(self, ctx_factory, monkeypatch):
-        # A nonzero pytest exit (failures / interruption) must NOT be
-        # measured — even though coverage.xml was written — because a
-        # partial/failing run would contaminate the baseline. full_unit
-        # owns surfacing the red suite.
+    def test_measures_with_caveat_when_some_tests_failed(
+        self, ctx_factory, monkeypatch
+    ):
+        # codex #1220 r4: exit 1 means the suite RAN but some tests failed —
+        # coverage.xml is still a complete record of executed lines, and an
+        # advisory baseline collector must survive an unrelated flaky test
+        # rather than discard the whole measurement. So exit 1 is MEASURED
+        # (pass), with a caveat noting the % may under-count. full_unit still
+        # owns gating on the red suite.
         _both_tools_present(monkeypatch)
         ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
         dc_called = {"n": 0}
@@ -223,8 +228,38 @@ class TestAdvisoryContract:
             "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
         )
         res = DiffCoverageStep().run(ctx)
+        assert res.status == "pass"
+        assert dc_called["n"] == 1  # DID proceed to diff-cover
+        assert "80" in res.summary
+        # The finding must flag that some tests failed (honest advisory signal).
+        assert res.findings and "some unit tests failed" in res.findings[0]
+
+    @pytest.mark.parametrize("exit_code", [2, 3, 4, 5])
+    def test_skip_when_suite_interrupted_or_errored(
+        self, ctx_factory, monkeypatch, exit_code
+    ):
+        # Exit 2-5 = interrupted / internal error / usage error / no tests
+        # collected — no dependable coverage even if a stale-looking xml is
+        # present. Must skip BEFORE diff-cover, unlike the exit-1 case.
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        dc_called = {"n": 0}
+
+        def fake_run(cmd, *a, **k):
+            if "pytest" in cmd:
+                Path(_xml_target(cmd)).write_text("<coverage/>")
+                return subprocess.CompletedProcess(
+                    cmd, exit_code, stdout="boom", stderr=""
+                )
+            dc_called["n"] += 1
+            return subprocess.CompletedProcess(cmd, 0, stdout=_DC_WITH_LINES, stderr="")
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
+        )
+        res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
-        assert "not clean" in res.summary
+        assert f"exit {exit_code}" in res.summary
         assert dc_called["n"] == 0  # never reached diff-cover
 
     def test_stale_xml_is_removed_before_run(self, ctx_factory, monkeypatch):
@@ -448,17 +483,56 @@ class TestRunGroupBounded:
         )
         assert proc.returncode == 3
 
-    def test_raises_timeout_and_kills_group(self):
-        # A child that spawns a grandchild and sleeps: on timeout the
-        # WHOLE group must die. We assert TimeoutExpired is raised; the
-        # group-kill is what keeps a real timed-out pytest from orphaning
-        # workers (can't easily assert descendant death portably, but the
-        # killpg path is exercised).
-        import subprocess as _sp
-
-        with pytest.raises(_sp.TimeoutExpired):
+    def test_raises_timeout_on_a_lone_sleeper(self):
+        with pytest.raises(subprocess.TimeoutExpired):
             _run_group_bounded(
                 [sys.executable, "-c", "import time; time.sleep(30)"],
                 cwd=".",
                 timeout=1,
+            )
+
+    def test_timeout_kills_the_whole_group_including_descendants(self, tmp_path):
+        # The contract that actually matters: on timeout the ENTIRE process
+        # group dies, not just the leader. A leader-only kill would orphan
+        # any grandchild a timed-out pytest spawned (xdist workers, a serve
+        # subprocess) and let it contaminate later validation steps — and,
+        # worse, a grandchild holding the inherited stdout/stderr pipes open
+        # would wedge the reap. This test distinguishes the two: it fails if
+        # group-kill ever regresses to a leader-only kill.
+        #
+        # Leader = ``sh``; it backgrounds a long-lived grandchild in the SAME
+        # process group (non-interactive sh has no job control, so ``&`` jobs
+        # stay in the shell's group), records the grandchild PID, then blocks
+        # so the leader is alive when the timeout fires. The grandchild
+        # inherits the subprocess pipes, so a leader-only kill would also
+        # reproduce the reap-wedge from codex #1220.
+        import os as _os
+        import time as _time
+
+        pidfile = tmp_path / "grandchild.pid"
+        cmd = ["sh", "-c", f"sleep 120 & echo $! > '{pidfile}'; sleep 120"]
+
+        with pytest.raises(subprocess.TimeoutExpired):
+            _run_group_bounded(cmd, cwd=str(tmp_path), timeout=1)
+
+        gc_pid = int(pidfile.read_text().strip())
+        # Poll briefly for SIGKILL delivery, then assert the grandchild is gone.
+        deadline = _time.time() + 5.0
+        alive = True
+        while _time.time() < deadline:
+            try:
+                _os.kill(gc_pid, 0)  # signal 0 = liveness probe
+            except ProcessLookupError:
+                alive = False
+                break
+            _time.sleep(0.05)
+        if alive:
+            # Don't strand the leaked process if the assertion is about to fail.
+            try:
+                _os.kill(gc_pid, signal.SIGKILL)
+            except OSError:
+                pass
+            pytest.fail(
+                f"grandchild {gc_pid} survived the timeout — group kill "
+                "regressed to a leader-only kill"
             )

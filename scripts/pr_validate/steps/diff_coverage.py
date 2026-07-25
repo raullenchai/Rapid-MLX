@@ -71,6 +71,24 @@ _COMPARE_BRANCH_FALLBACK = "origin/main"
 _PYTEST_TIMEOUT_S = 1800
 _DIFF_COVER_TIMEOUT_S = 180
 
+# pytest exit codes that still yield a trustworthy coverage.xml. 0 = all
+# passed; 1 = tests ran but some FAILED — coverage is a complete record of
+# the lines that executed either way (pytest-cov writes on session finish
+# regardless of outcomes). 2 = interrupted, 3 = internal error, 4 = usage
+# error, 5 = no tests collected — those leave no dependable coverage, so we
+# skip on them. Accepting exit 1 is deliberate: an ADVISORY baseline
+# collector must survive an unrelated flaky test (this repo has known
+# GPU-contention flakes, e.g. ``test_batching_improves_throughput``) rather
+# than discard the whole measurement and skip on most real PRs (codex
+# #1220). ``full_unit`` still owns gating on a red suite.
+_PYTEST_COVERAGE_VALID_EXITS = (0, 1)
+
+# Bounded reap after a group SIGKILL. SIGKILL is uncatchable so the leader
+# dies at once; this bound only guards the pathological case where a
+# descendant that inherited the pipes is wedged in an uninterruptible
+# syscall — we must never block the (auto-deploy) pipeline waiting on it.
+_REAP_TIMEOUT_S = 10
+
 
 class DiffCoverageStep(Step):
     name = "diff_coverage"
@@ -164,20 +182,23 @@ class DiffCoverageStep(Step):
                 f"{_PYTEST_TIMEOUT_S}s — process group killed)"
             )
 
-        # 3. Only trust coverage from a CLEAN, COMPLETE run. A nonzero
-        #    exit means failures / interruption / collection error — a
-        #    partial or failing run would contaminate the very baseline
-        #    this feature exists to collect. ``full_unit`` owns surfacing
-        #    a red suite; here we simply skip. (Green-suite PRs — the only
-        #    ones that merge and form the baseline — exit 0, so nothing of
-        #    value is lost.)
-        if pytest_proc.returncode != 0:
+        # 3. Coverage trust model (see ``_PYTEST_COVERAGE_VALID_EXITS``). We
+        #    accept exit 0 (all passed) and exit 1 (some tests failed but the
+        #    run completed and coverage.xml is a valid record of executed
+        #    lines) and skip only on 2-5 (interrupted / internal error /
+        #    usage error / no tests) — those leave no dependable coverage. A
+        #    failing test that WAS meant to exercise the changed lines simply
+        #    leaves them uncovered, which is honest advisory signal, not
+        #    contamination; the caveat below flags that the % may under-count.
+        if pytest_proc.returncode not in _PYTEST_COVERAGE_VALID_EXITS:
             _safe_write(log_path, _pytest_dump(pytest_cmd, pytest_proc))
             return self._skip(
                 f"advisory coverage skipped (instrumented suite exit "
-                f"{pytest_proc.returncode} — not clean; see full_unit)",
+                f"{pytest_proc.returncode} — interrupted/error, not merely "
+                f"test failures; see full_unit)",
                 log_path,
             )
+        suite_had_failures = pytest_proc.returncode == 1
 
         if not xml_path.exists():
             _safe_write(log_path, _pytest_dump(pytest_cmd, pytest_proc))
@@ -248,6 +269,12 @@ class DiffCoverageStep(Step):
             )
 
         pct, covered, total = parsed
+        caveat = (
+            " NOTE: some unit tests failed this run (see full_unit) — the % "
+            "may under-count lines a failing test would otherwise have covered."
+            if suite_had_failures
+            else ""
+        )
         summary = (
             f"patch coverage {pct:.0f}% ({covered}/{total} changed lines) · "
             "advisory — not gating"
@@ -256,7 +283,7 @@ class DiffCoverageStep(Step):
             f"[ADVISORY] patch (diff) coverage: {pct:.1f}% — "
             f"{covered}/{total} newly changed {_COV_PACKAGE} lines exercised "
             "by the unit suite. Measure-only; no threshold enforced yet "
-            "(collecting baseline across ~20 PRs before deciding a gate)."
+            f"(collecting baseline across ~20 PRs before deciding a gate).{caveat}"
         )
         return StepResult(
             name=self.name,
@@ -289,29 +316,65 @@ def _run_group_bounded(
     expiry — a timed-out pytest could leave spawned servers/workers alive
     to contaminate later validation steps (codex #1220). We start the
     child in a new session (``start_new_session=True`` → new process
-    group) and, on timeout, kill the WHOLE group so no descendant
+    group) and, on timeout, SIGKILL the WHOLE group so no descendant
     survives. Re-raises ``subprocess.TimeoutExpired`` so callers keep
     their existing skip-on-timeout handling.
+
+    We deliberately do NOT use ``with subprocess.Popen(...)``: its
+    ``__exit__`` reaps via an UNBOUNDED ``wait()``, which would re-open the
+    very wedge we close below. Cleanup is handled explicitly instead.
     """
-    with subprocess.Popen(  # noqa: S603 — fixed argv, no shell
+    # ``start_new_session=True`` runs the child through ``setsid()``: it
+    # leads a brand-new process group whose PGID EQUALS its PID. Capture
+    # that id NOW. We must never derive it via ``os.getpgid(proc.pid)`` on
+    # timeout instead: by then the group leader may have already exited
+    # while a surviving descendant keeps the captured pipes open (so
+    # ``communicate`` still blocks) — ``getpgid`` would raise
+    # ``ProcessLookupError``, the group would go un-killed, only the dead
+    # leader would be targeted, and the reap could wedge the whole pipeline
+    # (codex #1220).
+    proc: subprocess.Popen[str] = subprocess.Popen(  # noqa: S603 — fixed argv
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
         cwd=cwd,
         start_new_session=True,
-    ) as proc:
-        try:
-            out, err = proc.communicate(timeout=timeout)
-        except subprocess.TimeoutExpired:
-            # Kill the entire process group, not just the leader.
-            try:
-                os.killpg(os.getpgid(proc.pid), signal.SIGKILL)
-            except (ProcessLookupError, PermissionError):
-                proc.kill()  # group gone / not permitted — fall back to leader
-            proc.communicate()  # reap so we don't leak a zombie
-            raise
+    )
+    pgid = proc.pid  # == PGID under start_new_session (setsid)
+    try:
+        out, err = proc.communicate(timeout=timeout)
         return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    except BaseException:
+        # Timeout OR any other escape (e.g. KeyboardInterrupt): tear the
+        # whole group down so nothing is orphaned, then re-raise unchanged.
+        _kill_group_and_reap(proc, pgid)
+        raise
+
+
+def _kill_group_and_reap(proc: subprocess.Popen[str], pgid: int) -> None:
+    """SIGKILL the whole process group, then reap the leader under a bounded
+    wait. Never blocks: the SIGKILL is already delivered, so if even the
+    bounded reap can't finish (a descendant wedged in an uninterruptible
+    syscall still holding the pipes), we abandon the pipes rather than hang
+    the auto-deploy pipeline."""
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except OSError:
+        # Group already gone / not permitted — fall back to the leader.
+        try:
+            proc.kill()
+        except OSError:
+            pass
+    try:
+        proc.communicate(timeout=_REAP_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        for stream in (proc.stdout, proc.stderr):
+            if stream is not None:
+                try:
+                    stream.close()
+                except OSError:
+                    pass
 
 
 def _safe_write(path: Path, text: str) -> None:
