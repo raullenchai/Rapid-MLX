@@ -581,17 +581,22 @@ def _text_attention_args(model: Any) -> Any:
 
     Multimodal wrappers (VLMs such as ``Qwen3.5-4B-MLX-4bit``) keep the language
     model's ``head_dim``/``hidden_size`` on a nested ``language_model`` submodule
-    (its own ``.args``) or an ``args.text_config`` sub-config — the top-level
-    ``model.args`` has no attention dims. Probing only the top level returns
-    ``None`` and disables live KV quantization even though the text tower
-    quantizes fine (e.g. head_dim=256). Prefer the top-level args when they
-    already carry a head dim (unchanged for text-only models); otherwise descend
-    so VLMs are covered too. Returns the top-level args as a last resort so
-    callers can still read ``v_head_dim`` from it exactly as before.
+    (its own ``.args``) or an ``args.text_config`` sub-config, while the
+    top-level ``model.args`` may carry no attention dims at all — or, worse,
+    vision/composite dims. The KV cache stores *language* attention, so the
+    language-specific config is authoritative: resolve it FIRST, and fall back
+    to the top-level args only when no language config exists. Preferring the
+    top level would let a wrapper's ``hidden_size // num_attention_heads`` (a
+    vision or composite value) short-circuit to the wrong head dim and mis-size
+    the live cache — an incompatible first write that cannot fall back mid-stream
+    would then crash the request instead of failing safe.
+
+    Text-only models have neither ``language_model`` nor ``text_config``, so they
+    fall through to the top-level args unchanged. The top-level args are returned
+    as the last resort so callers can still read ``v_head_dim`` from them exactly
+    as before (and so an unprobeable model yields ``None`` -> bf16 fail-safe).
     """
     args = getattr(model, "args", None)
-    if _head_dim_from_args(args) is not None:
-        return args
     lm = getattr(model, "language_model", None)
     lm_args = getattr(lm, "args", None) if lm is not None else None
     if _head_dim_from_args(lm_args) is not None:

@@ -507,6 +507,20 @@ def test_probe_head_dim():
 
     assert probe_head_dim(_VLM2()) == 256
 
+    # Mixed: top-level args expose MISLEADING vision/composite dims
+    # (hidden_size // num_attention_heads = 64) while the authoritative language
+    # head_dim is 256. The nested language config must win — preferring the
+    # top-level fallback here would mis-size the live cache (#1208).
+    class _VisionishTop:
+        hidden_size = 1024
+        num_attention_heads = 16  # -> 64, the WRONG (non-language) head dim
+
+    class _VLM3:
+        args = _VisionishTop()
+        language_model = _LM()  # language head_dim = 256
+
+    assert probe_head_dim(_VLM3()) == 256
+
 
 def test_update_adjusts_group_size_for_head_dim_96():
     # head_dim=96 is not divisible by 64 but is by 32 — must auto-adjust, not crash
@@ -669,6 +683,18 @@ def test_probe_kv_head_dims():
         language_model = _LMV()
 
     assert probe_kv_head_dims(_VLMV()) == (256, 128)
+
+    # Mixed: misleading top-level dims must NOT win over the nested language
+    # config, and v_head_dim is read from the SAME (nested) args (#1208).
+    class _VisionishTopV:
+        head_dim = 64  # wrong (non-language) dim; must be ignored
+        v_head_dim = 64
+
+    class _VLMV2:
+        args = _VisionishTopV()
+        language_model = _LMV()  # language head_dim=256, v_head_dim=128
+
+    assert probe_kv_head_dims(_VLMV2()) == (256, 128)
 
     # Unknown -> (None, None).
     assert probe_kv_head_dims(object()) == (None, None)
