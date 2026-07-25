@@ -2574,16 +2574,28 @@ class Scheduler:
 
             bits = getattr(self.config, "kv_cache_quantization_bits", 8)
             eff_gs = getattr(self, "_kv_quant_group_size", 64)
-            install_quantized_batch_cache(bg, group_size=eff_gs, bits=bits)
-            # Remember the effective params so prefix-cache HITS get normalized
-            # to the same quantized type as MISSES (#1197).
-            self._live_kv_quant = (eff_gs, bits)
-            logger.info(
-                "[kv-cache] live continuous-batching KV cache quantized to "
-                "int%d (group_size=%d)",
-                bits,
-                eff_gs,
-            )
+            if install_quantized_batch_cache(bg, group_size=eff_gs, bits=bits):
+                # Remember the effective params so prefix-cache HITS get
+                # normalized to the same quantized type as MISSES (#1197).
+                self._live_kv_quant = (eff_gs, bits)
+                logger.info(
+                    "[kv-cache] live continuous-batching KV cache quantized to "
+                    "int%d (group_size=%d)",
+                    bits,
+                    eff_gs,
+                )
+            else:
+                # Running mlx-lm lacks the ``BatchGenerator._make_new_cache``
+                # hook (need mlx-lm>=0.31.3). Keep the bf16 live cache — the
+                # retained prefix cache still quantizes — rather than letting a
+                # per-step AttributeError wedge the server into a silent hang.
+                self._live_kv_quant = None
+                logger.warning(
+                    "[kv-cache] live KV quantization skipped: this mlx-lm build "
+                    "lacks BatchGenerator._make_new_cache (need mlx-lm>=0.31.3). "
+                    "Live continuous-batching cache stays bf16; upgrade mlx-lm "
+                    "to quantize it."
+                )
 
         # Server-side wiring for ``--speculative-config '{"method":"mtp"}'``.
         # This installs the vendored PR #990 ``mtp_generate_step`` hot

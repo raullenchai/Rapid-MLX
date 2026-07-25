@@ -520,7 +520,7 @@ class _QuantizableKVCache(KVCache):
 
 def install_quantized_batch_cache(
     batch_gen: Any, group_size: int = 64, bits: int = 8
-) -> Any:
+) -> bool:
     """Wire ``batch_gen``'s continuous batching to a quantized live KV cache.
 
     ``mlx_lm.generate.BatchGenerator`` builds a fresh single-sequence cache per
@@ -544,8 +544,23 @@ def install_quantized_batch_cache(
       ``cache[0].keys = mx.depends(cache[0].keys, (cache[1].keys, ...))`` — which
       assumes a raw ``mx.array``, not a quantized ``[packed, scales, biases]``
       triple. Quantizing them is a follow-up requiring per-model handling.
+    Returns ``True`` when the quantized hook was installed, ``False`` when the
+    running ``mlx_lm`` is too old to support it (see below) — the caller must
+    keep the plain bf16 live cache in that case.
     """
-    orig_make_new_cache = batch_gen._make_new_cache
+    orig_make_new_cache = getattr(batch_gen, "_make_new_cache", None)
+    if orig_make_new_cache is None:
+        # The running mlx-lm's ``BatchGenerator`` predates the
+        # ``_make_new_cache`` hook this dequant-on-read install piggybacks on
+        # (added upstream around mlx-lm 0.31.3; pyproject floors
+        # ``mlx-lm>=0.31.3``). Guarding the access matters because without it
+        # the bare ``batch_gen._make_new_cache`` raised ``AttributeError`` on
+        # EVERY scheduler step, which the generation-error-recovery path then
+        # swallowed — turning a stale-dependency install into a silent,
+        # permanent serve hang (zero output, no surfaced error). Signal
+        # "not installed" so the caller keeps the bf16 live cache + warns
+        # instead of the server wedging.
+        return False
 
     def _quantized_make_new_cache():
         return [
@@ -554,7 +569,7 @@ def install_quantized_batch_cache(
         ]
 
     batch_gen._make_new_cache = _quantized_make_new_cache
-    return batch_gen
+    return True
 
 
 def _head_dim_from_args(args: Any) -> int | None:
