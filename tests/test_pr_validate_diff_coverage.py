@@ -18,6 +18,7 @@ Two contracts matter most here and are the reason this file exists:
 
 from __future__ import annotations
 
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -319,6 +320,37 @@ class TestAdvisoryContract:
         assert dc[3].endswith("coverage.xml")
         assert dc[4] == "--compare-branch"
         assert dc[5] == expected_ref
+
+    def test_coverage_data_file_is_redirected_off_repo_root(
+        self, ctx_factory, monkeypatch
+    ):
+        # B1 (codex #1220 r12): coverage.py writes its data file to
+        # $COVERAGE_FILE, or ``.coverage`` in the CWD when unset. The CWD here
+        # is the repo root, so an unset COVERAGE_FILE would clobber a
+        # developer's own ``.coverage`` DB. Assert the instrumented pytest
+        # child is handed a COVERAGE_FILE under the run's artifact dir instead.
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        captured: dict[str, dict | None] = {}
+
+        def fake_run(cmd, cwd, timeout, env=None):
+            if "pytest" in cmd:
+                captured["env"] = env
+                Path(_xml_target(cmd)).write_text("<coverage/>")
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout=_DC_WITH_LINES, stderr="")
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
+        )
+        assert DiffCoverageStep().run(ctx).status == "pass"
+
+        env = captured["env"]
+        assert env is not None and "COVERAGE_FILE" in env
+        cov_file = Path(env["COVERAGE_FILE"])
+        # Dedicated artifact path, NOT the repo-root ``.coverage`` → no clobber.
+        assert cov_file == ctx.artifact_path("coverage.data")
+        assert cov_file.parent != ctx.repo_root
 
     def test_measures_with_caveat_when_some_tests_failed(
         self, ctx_factory, monkeypatch
@@ -717,6 +749,22 @@ class TestRunGroupBounded:
             "bytes) — the grandchild survived, so group-kill regressed to a "
             "leader-only kill"
         )
+
+    def test_env_is_threaded_through_the_exec_wrapper_to_the_child(self):
+        # B1/B2 (codex #1220 r12): the env= param must reach the wrapped
+        # command — COVERAGE_FILE redirection depends on it — AND survive the
+        # exec-based rlimit wrapper, which execvp's the real command under the
+        # wrapper's OWN environ (so a lost env would silently break the
+        # redirect). Probe a custom var round-trips through the wrapper.
+        code = "import os,sys; sys.stdout.write(os.environ.get('RMX_DC_PROBE', ''))"
+        proc = _run_group_bounded(
+            [sys.executable, "-c", code],
+            cwd=".",
+            timeout=30,
+            env={**os.environ, "RMX_DC_PROBE": "threaded-ok"},
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "threaded-ok" in proc.stdout
 
     def test_output_size_is_capped_by_kernel_rlimit(self, monkeypatch):
         # F1 (codex #1220 r11): disk is bounded by a KERNEL RLIMIT_FSIZE set on

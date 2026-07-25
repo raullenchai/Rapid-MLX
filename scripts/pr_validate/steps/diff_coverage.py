@@ -92,8 +92,8 @@ _LOG_TAIL_CHARS = 4000
 _STDOUT_CAP_BYTES = 1_048_576
 
 # Disk quota: the largest file the child — or anything in its session — may
-# create, enforced by the KERNEL via ``RLIMIT_FSIZE`` (set in a preexec_fn on
-# the child). The output goes to disk (not RAM), but disk is still finite on
+# create, enforced by the KERNEL via ``RLIMIT_FSIZE`` (set by an exec-based
+# wrapper, ``_rlimit_wrap``). The output goes to disk (not RAM), but disk is finite on
 # an auto-deploy host, so a runaway / hung test that streams without bound
 # must not exhaust it (codex #1220 r10). A kernel limit closes the gap a
 # userspace size-poll leaves — a child that dumps gigabytes and exits BETWEEN
@@ -169,6 +169,17 @@ class DiffCoverageStep(Step):
         # instead of publishing yesterday's numbers.
         xml_path.unlink(missing_ok=True)
 
+        # coverage.py writes its data file to ``$COVERAGE_FILE`` or, unset,
+        # ``.coverage`` in the CWD — which here is the repo root. Point it at a
+        # dedicated artifact path so an advisory run can NEVER erase/overwrite a
+        # developer's own ``.coverage`` database sitting at the repo root (codex
+        # #1220 r12). The XML report is still emitted to ``xml_path``; only the
+        # intermediate data file moves.
+        cov_env = {
+            **os.environ,
+            "COVERAGE_FILE": str(ctx.artifact_path("coverage.data")),
+        }
+
         # 2. Instrumented suite — mirrors ``full_unit``'s selection so the
         #    coverage picture matches what we actually gate on.
         pytest_cmd = [
@@ -190,7 +201,7 @@ class DiffCoverageStep(Step):
         ctx.run_log("diff_coverage: running instrumented suite (advisory)…")
         try:
             pytest_proc = _run_group_bounded(
-                pytest_cmd, str(ctx.repo_root), _PYTEST_TIMEOUT_S
+                pytest_cmd, str(ctx.repo_root), _PYTEST_TIMEOUT_S, env=cov_env
             )
         except subprocess.TimeoutExpired as exc:
             _safe_write(log_path, _timeout_dump("instrumented pytest", pytest_cmd, exc))
@@ -360,7 +371,7 @@ class DiffCoverageStep(Step):
 
 
 def _run_group_bounded(
-    cmd: list[str], cwd: str, timeout: int
+    cmd: list[str], cwd: str, timeout: int, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Run ``cmd`` in its OWN process group with a hard timeout.
 
@@ -379,13 +390,21 @@ def _run_group_bounded(
     entirely. The tail keeps the bytes every caller needs — diff-cover's
     footer and pytest's ``-q`` failure summary both sit at the END of their
     streams. Disk is bounded too, but by the KERNEL not a userspace poll: the
-    child is spawned under an ``RLIMIT_FSIZE`` of ``_OUTPUT_QUOTA_BYTES`` (see
-    ``_limit_child_fsize``), so a write past the cap is refused at the
-    syscall the instant it happens — no matter how fast the child writes or
-    whether it exits between two userspace polls, and even if a descendant
-    ``setsid()``s out of the group (the limit is inherited). A child killed
-    by ``SIGXFSZ`` (or exiting nonzero on ``EFBIG``) then fails the
-    exit-code gate and the run is skipped (codex #1220 r11).
+    child is spawned under an ``RLIMIT_FSIZE`` of ``_OUTPUT_QUOTA_BYTES``, so a
+    write past the cap is refused at the syscall the instant it happens — no
+    matter how fast the child writes or whether it exits between two userspace
+    polls, and even if a descendant ``setsid()``s out of the group (the limit
+    is inherited). A child killed by ``SIGXFSZ`` (or exiting nonzero on
+    ``EFBIG``) then fails the exit-code gate and the run is skipped (codex
+    #1220 r11). The limit is applied by a tiny exec-based WRAPPER (see
+    ``_rlimit_wrap``) rather than a ``preexec_fn`` callback: ``preexec_fn``
+    runs between fork and exec in a copy of the (possibly multi-threaded)
+    parent's address space, where grabbing an internal lock another thread
+    held at fork can deadlock the child forever — before ``Popen`` even
+    returns, so the timeout above could never fire and the pipeline would
+    wedge. The wrapper instead sets the limit from a FRESH, single-threaded
+    process (post-exec) and then ``exec``s the real command, sidestepping
+    that class entirely (codex #1220 r12).
 
     On timeout the raised ``TimeoutExpired`` carries the captured (capped)
     stdout/stderr so the caller can log WHAT hung before the temp files are
@@ -403,12 +422,12 @@ def _run_group_bounded(
     # un-killed (codex #1220).
     with tempfile.TemporaryFile() as out_f, tempfile.TemporaryFile() as err_f:
         proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
-            cmd,
+            [*_rlimit_wrap(), *cmd],
             stdout=out_f,
             stderr=err_f,
             cwd=cwd,
+            env=env,
             start_new_session=True,
-            preexec_fn=_limit_child_fsize,  # noqa: PLC2801 — kernel disk cap
         )
         pgid = proc.pid  # == PGID under start_new_session (setsid)
         try:
@@ -438,23 +457,27 @@ def _run_group_bounded(
         )
 
 
-def _limit_child_fsize() -> None:  # pragma: no cover — runs post-fork in child
-    """preexec_fn: cap the max file size the child (and everything in its new
-    session) may create, at the KERNEL, via ``RLIMIT_FSIZE``. A write past the
-    cap is refused at the write(2) syscall — ``SIGXFSZ`` (default-fatal) or
-    ``EFBIG`` — so the child cannot exhaust the auto-deploy host's disk no
-    matter how fast it writes, whether it exits between userspace polls, or
-    whether a descendant ``setsid()``s out of the process group (the limit is
-    inherited across fork). This is the kernel backstop that lets the waiter
-    stay a plain bounded ``wait`` instead of a size-polling loop (codex #1220
-    r11). Runs in the forked child before ``exec``; keep it minimal and
-    async-signal-safe. ``resource`` is imported here (Unix-only, child side)
-    so the module stays importable even where ``resource`` is absent."""
-    import resource
+# Wrapper source: a fresh Python process that sets ``RLIMIT_FSIZE`` on ITSELF
+# then ``exec``s the real command (argv after the byte count). rlimits survive
+# ``execve`` and are inherited across ``fork``, so the real command and every
+# descendant it spawns run under the cap. Setting the limit here — post-exec,
+# in a brand-new single-threaded process — avoids the ``preexec_fn`` fork/exec
+# deadlock window entirely (codex #1220 r12). ``os.execvp`` uses an absolute
+# ``argv[0]`` (our commands start with ``sys.executable``) directly.
+_RLIMIT_WRAP_SRC = (
+    "import os,resource,sys;"
+    "n=int(sys.argv[1]);"
+    "resource.setrlimit(resource.RLIMIT_FSIZE,(n,n));"
+    "os.execvp(sys.argv[2],sys.argv[2:])"
+)
 
-    resource.setrlimit(
-        resource.RLIMIT_FSIZE, (_OUTPUT_QUOTA_BYTES, _OUTPUT_QUOTA_BYTES)
-    )
+
+def _rlimit_wrap() -> list[str]:
+    """Argv prefix that caps the wrapped command's max file size at
+    ``_OUTPUT_QUOTA_BYTES`` (the KERNEL disk backstop; see ``_run_group_bounded``).
+    Built per-call so a test monkeypatching ``_OUTPUT_QUOTA_BYTES`` takes
+    effect. Unix-only, like the rest of this helper (``setsid``/``killpg``)."""
+    return [sys.executable, "-c", _RLIMIT_WRAP_SRC, str(_OUTPUT_QUOTA_BYTES)]
 
 
 def _sweep_group(pgid: int) -> None:
