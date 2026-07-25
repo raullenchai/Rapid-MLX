@@ -3516,6 +3516,16 @@ def serve_command(args):
             ),
         )
     except Exception as e:
+        # Opt-in telemetry (Phase 2.2 error wiring): record that a model
+        # failed to load on the ``serve`` path. The payload carries only a
+        # bucketed category + a traceback fingerprint (basename:func:lineno
+        # + exception class) — never the model name, message text, or path.
+        # ``emit.error`` is ``is_enabled()``-gated and ``@_safe``, so it is a
+        # no-op when telemetry is off and can never mask the user-facing
+        # error handled just below.
+        from vllm_mlx.telemetry import emit as _telemetry_emit
+
+        _telemetry_emit.error(category="model_load_failure", exc=e, phase="startup")
         # Show clean error instead of raw traceback. Catch the typed
         # HF exception class for the 404 case; fall back to substring
         # match for legacy callers (older huggingface_hub) and for
@@ -4204,6 +4214,13 @@ def bench_command(args):
         try:
             model, tokenizer = load(args.model)
         except Exception as e:
+            # Opt-in telemetry (Phase 2.2 error wiring): mirror the
+            # ``serve`` path — record a bucketed model-load failure
+            # (category + traceback fingerprint only, no model name /
+            # message / path). ``is_enabled()``-gated + ``@_safe``.
+            from vllm_mlx.telemetry import emit as _telemetry_emit
+
+            _telemetry_emit.error(category="model_load_failure", exc=e, phase="startup")
             # Mirror serve_command: clean message instead of a 30-line
             # traceback when the user typed a missing repo / bad alias.
             from huggingface_hub.utils import RepositoryNotFoundError
