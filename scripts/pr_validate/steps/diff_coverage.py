@@ -37,12 +37,14 @@ error while logging must not escape as a blocking ``error`` either).
 
 from __future__ import annotations
 
+import collections
 import importlib.util
 import os
 import re
 import signal
 import subprocess
 import sys
+import threading
 import traceback
 from pathlib import Path
 
@@ -79,6 +81,17 @@ _PYTEST_COVERAGE_VALID_EXITS = (0, 1)
 # descendant that inherited the pipes is wedged in an uninterruptible
 # syscall — we must never block the (auto-deploy) pipeline waiting on it.
 _REAP_TIMEOUT_S = 10
+
+# Bounded in-memory capture per stream. A plain ``communicate()`` buffers the
+# ENTIRE suite output for up to ``_PYTEST_TIMEOUT_S``, so a test that streams
+# gigabytes to stdout could OOM-kill the validator before its advisory handler
+# runs (codex #1220 r17). Instead each stream is drained by a reader thread that
+# keeps only the last ~``_CAPTURE_TAIL_BYTES`` — memory stays bounded no matter
+# the volume, while the END (diff-cover's footer, pytest's ``-q`` summary) is
+# always retained. 1 MiB is far more than any well-behaved run emits, yet a
+# hard ceiling against a runaway.
+_CAPTURE_TAIL_BYTES = 1_048_576
+_CAPTURE_BLOCK_BYTES = 65536  # pipe read granularity
 
 # Keep the diagnostic log readable — we tail (not head) subprocess output so
 # the most recent lines (pytest's failure summary) always survive truncation.
@@ -178,10 +191,18 @@ class DiffCoverageStep(Step):
 
         # 2. Instrumented suite — mirrors ``full_unit``'s selection so the
         #    coverage picture matches what we actually gate on.
+        #    ``-o addopts=`` clears any repo-level ``addopts`` from
+        #    pyproject.toml / pytest.ini: stripping the ENV var alone is not
+        #    enough — a configured ``-x`` / ``--maxfail`` would stop the suite
+        #    early and hand us partial exit-1 coverage that we would then
+        #    publish as the PR's number. With this override the argv here is the
+        #    complete, self-contained spec of the run (codex #1220 r17).
         pytest_cmd = [
             sys.executable,
             "-m",
             "pytest",
+            "-o",
+            "addopts=",
             "tests/",
             "--ignore=tests/integrations",
             "--ignore=tests/test_event_loop.py",
@@ -366,67 +387,138 @@ class DiffCoverageStep(Step):
         )
 
 
+def _drain_tail(pipe, chunks: collections.deque) -> None:
+    """Reader thread: stream ``pipe`` in fixed blocks, retaining only the last
+    ~``_CAPTURE_TAIL_BYTES`` in ``chunks``. The MIDDLE of a runaway stream is
+    dropped so validator memory stays bounded regardless of total volume (codex
+    #1220 r17), while the END — where diff-cover's footer / pytest's ``-q``
+    summary live — is always kept.
+
+    Draining concurrently (rather than after the process exits) is also what
+    keeps a chatty child from deadlocking on a full 64 KiB kernel pipe buffer.
+    Runs to EOF, which the child's exit — or the group SIGKILL closing every
+    write end — delivers; a stuck reader (a setsid-escapee still holding the
+    write end) is a harmless daemon thread the caller stops ``join``-ing after a
+    bound, never a hang."""
+    try:
+        for block in iter(lambda: pipe.read(_CAPTURE_BLOCK_BYTES), b""):
+            chunks.append(block)
+            # Drop whole oldest blocks while the retained tail (excluding the
+            # newest block) still exceeds the cap. Keep >=1 block so a stream we
+            # actually read is never emptied.
+            retained = sum(len(c) for c in chunks)
+            while len(chunks) > 1 and retained - len(chunks[0]) >= _CAPTURE_TAIL_BYTES:
+                retained -= len(chunks.popleft())
+    except (OSError, ValueError):
+        # Pipe closed under us / read on a closed fd — nothing left to drain.
+        pass
+    finally:
+        try:
+            pipe.close()
+        except OSError:
+            pass
+
+
+def _joined(chunks: collections.deque) -> str:
+    """Decode the retained byte tail. ``errors='replace'`` because child output
+    isn't guaranteed valid UTF-8 and a block boundary may split a multibyte
+    sequence — a torn edge byte becomes U+FFFD, never an exception."""
+    return b"".join(chunks).decode("utf-8", "replace")
+
+
 def _run_group_bounded(
     cmd: list[str], cwd: str, timeout: int, env: dict[str, str] | None = None
 ) -> subprocess.CompletedProcess[str]:
     """Run ``cmd`` with a hard timeout, killing its whole process group on
-    expiry.
+    expiry, capturing a BOUNDED tail of each stream.
 
-    This mirrors the merge-GATING ``full_unit`` step, which runs the SAME
-    pytest suite via a plain ``subprocess.run(capture_output=True, text=True)``
-    — output captured in memory, decoded as text. We add exactly ONE property
-    on top, the one an ADVISORY step actually needs: a hard ``timeout`` so a
-    hung measurement can never wedge the (auto-deploy) pipeline. ``subprocess``'
-    own timeout would SIGKILL only the direct child, so we run the child in a
-    new session (``start_new_session=True`` → new process group) and, on
-    expiry, SIGKILL the WHOLE group (``_kill_group``) so a timed-out pytest
-    can't orphan xdist workers / a serve subprocess into later steps. The
-    ``TimeoutExpired`` is re-raised (with captured output attached) for the
-    caller's skip-on-timeout handling.
+    Like the merge-GATING ``full_unit`` step this runs the SAME pytest suite and
+    returns a ``CompletedProcess`` with text stdout/stderr. It adds the two
+    properties an ADVISORY step in an auto-deploy pipeline needs and the gate
+    does not:
 
-    Deliberately NOT done, after a long convergence (codex #1220 r8–r16):
-    no ``RLIMIT_FSIZE`` file-size cap (it is inherited by the whole pytest
-    tree and would truncate/corrupt legitimate large writes — e.g. a >256 MiB
-    model shard — codex r16), no temp-file/quota/exec-wrapper machinery, and no
-    clean-exit group sweep (a race-free sweep needs a non-reaping wait absent
-    on macOS; a reap-then-``killpg`` sweep races PID reuse — codex r14/r16).
-    The result is at parity with the merge gate, plus the timeout+group-kill.
-    A setsid-escaping descendant can still survive the group-kill — a
-    fundamental POSIX limitation that the gating siblings don't guard against
-    either (codex r11/r13/r16); portable containment would need cgroups /
-    job-objects unavailable here.
+      * **hard timeout + whole-group kill.** ``subprocess``'s own timeout
+        SIGKILLs only the direct child, so a timed-out pytest could orphan xdist
+        workers / a serve subprocess into later steps. The child leads a new
+        session (``start_new_session=True`` → its own process group) and on
+        expiry we SIGKILL the WHOLE group (``_kill_group``). The
+        ``TimeoutExpired`` is re-raised (with the captured tail attached) for the
+        caller's skip-on-timeout handling.
+      * **bounded capture + bounded drain.** Two reader threads keep only the
+        last ~``_CAPTURE_TAIL_BYTES`` per stream instead of ``communicate()``
+        buffering the entire (up-to-30-min) suite output in memory, which a
+        runaway test could grow until it OOM-kills the validator before its
+        advisory handler runs (codex #1220 r17). The threads also make the
+        post-kill drain BOUNDED: we ``join`` them under ``_REAP_TIMEOUT_S`` and
+        proceed with whatever tail we have, so a setsid-escaped descendant still
+        holding a pipe write-end cannot wedge the never-block contract — the
+        unbounded second ``communicate()`` of the prior design could (codex
+        #1220 r17). A stuck reader is a daemon thread reaped at interpreter exit.
+
+    Deliberately NOT done, after a long convergence (codex #1220 r8–r17): no
+    ``RLIMIT_FSIZE`` file-size cap (inherited by the whole pytest tree, it would
+    truncate/corrupt legitimate large writes — e.g. a >256 MiB model shard —
+    codex r16), no temp-file/quota/exec-wrapper machinery. A setsid-escaping
+    descendant can still SURVIVE the group-kill — a fundamental POSIX limitation
+    the gating siblings don't guard against either (codex r11/r13/r16); portable
+    containment would need cgroups / job-objects unavailable here.
     """
     # ``start_new_session=True`` runs the child through ``setsid()``: it leads a
     # brand-new process group whose PGID EQUALS its PID. Capture that id NOW,
     # not via ``os.getpgid(proc.pid)`` on timeout — by then the leader may have
-    # exited and ``getpgid`` would raise, leaving the group un-killed.
+    # exited and ``getpgid`` would raise, leaving the group un-killed. Binary
+    # pipes (no ``text=``): the reader threads decode the retained tail.
     proc = subprocess.Popen(  # noqa: S603 — fixed argv, no shell
         cmd,
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
-        text=True,
-        errors="replace",  # child output isn't guaranteed valid UTF-8
         cwd=cwd,
         env=env,
         start_new_session=True,
     )
     pgid = proc.pid  # == PGID under start_new_session (setsid)
+    out_chunks: collections.deque = collections.deque()
+    err_chunks: collections.deque = collections.deque()
+    t_out = threading.Thread(
+        target=_drain_tail, args=(proc.stdout, out_chunks), daemon=True
+    )
+    t_err = threading.Thread(
+        target=_drain_tail, args=(proc.stderr, err_chunks), daemon=True
+    )
+    t_out.start()
+    t_err.start()
+
+    def _join_readers() -> None:
+        # Bounded on purpose. On clean exit the pipes hit EOF the moment the
+        # child dies, so both joins return at once; after a group SIGKILL EOF
+        # arrives when the last writer dies. The bound only bites when a
+        # setsid-escapee still holds a write end — we then proceed with the
+        # partial tail rather than block the pipeline (codex #1220 r17).
+        t_out.join(_REAP_TIMEOUT_S)
+        t_err.join(_REAP_TIMEOUT_S)
+
     try:
-        out, err = proc.communicate(timeout=timeout)
+        proc.wait(timeout=timeout)
     except subprocess.TimeoutExpired:
         # Time budget blown: SIGKILL the whole group BEFORE reaping the leader
-        # (race-free — ``pgid`` can't be recycled while a member is alive), then
-        # drain the now-closed pipes and re-raise with the captured output so
-        # the caller can log WHAT hung.
+        # (race-free — ``pgid`` can't be recycled while a member is alive), let
+        # the readers drain the now-EOF pipes under a bound, and re-raise with
+        # the captured tail so the caller can log WHAT hung.
         _kill_group(proc, pgid)
-        out, err = proc.communicate()
-        raise subprocess.TimeoutExpired(cmd, timeout, output=out, stderr=err) from None
+        _join_readers()
+        raise subprocess.TimeoutExpired(
+            cmd, timeout, output=_joined(out_chunks), stderr=_joined(err_chunks)
+        ) from None
     except BaseException:
         # Any other escape (e.g. KeyboardInterrupt): tear the group down so
-        # nothing is orphaned, then re-raise unchanged.
+        # nothing is orphaned, drain under a bound, then re-raise unchanged.
         _kill_group(proc, pgid)
+        _join_readers()
         raise
-    return subprocess.CompletedProcess(cmd, proc.returncode, out, err)
+    _join_readers()
+    return subprocess.CompletedProcess(
+        cmd, proc.returncode, _joined(out_chunks), _joined(err_chunks)
+    )
 
 
 def _kill_group(proc: subprocess.Popen, pgid: int) -> None:

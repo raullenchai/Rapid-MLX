@@ -290,6 +290,38 @@ class TestAdvisoryContract:
         assert dc[4] == "--compare-branch"
         assert dc[5] == expected_ref
 
+    def test_pytest_cmd_neutralizes_repo_addopts(self, ctx_factory, monkeypatch):
+        # codex #1220 r17 (N1): stripping the PYTEST_ADDOPTS env var is not
+        # enough — a repo-level ``addopts`` in pyproject.toml / pytest.ini (e.g.
+        # ``-x`` / ``--maxfail``) would still stop the suite early and hand us
+        # partial exit-1 coverage that we'd publish as the PR's number.
+        # ``-o addopts=`` overrides configured addopts so the argv is the
+        # complete, self-contained spec of the run; the env strip covers the
+        # other layer.
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        captured: dict[str, object] = {}
+
+        def fake_run(cmd, cwd, timeout, env=None):
+            if "pytest" in cmd:
+                captured["pytest_cmd"] = cmd
+                captured["env"] = env
+                Path(_xml_target(cmd)).write_text("<coverage/>")
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout=_DC_WITH_LINES, stderr="")
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage._run_group_bounded", fake_run
+        )
+        assert DiffCoverageStep().run(ctx).status == "pass"
+        cmd = captured["pytest_cmd"]
+        # ``-o addopts=`` present as consecutive argv items → clears any
+        # configured addopts from pyproject.toml / pytest.ini.
+        assert "-o" in cmd
+        assert cmd[cmd.index("-o") + 1] == "addopts="
+        # And the env var is stripped too — both override layers neutralized.
+        assert "PYTEST_ADDOPTS" not in captured["env"]
+
     def test_coverage_data_file_is_redirected_off_repo_root(
         self, ctx_factory, monkeypatch
     ):
@@ -732,3 +764,31 @@ class TestRunGroupBounded:
         )
         assert proc.returncode == 0, proc.stderr
         assert "threaded-ok" in proc.stdout
+
+    def test_capture_is_bounded_to_a_tail_on_a_runaway_child(self):
+        # codex #1220 r17 (B2): a plain communicate() buffers the ENTIRE child
+        # output in memory, so a runaway test streaming gigabytes could OOM the
+        # validator before its advisory handler runs. Capture must instead keep
+        # only a bounded TAIL. Emit a START marker, ~4 MiB of filler, then an
+        # END marker: the END (where pytest's -q summary / diff-cover's footer
+        # live) must survive, the START must be evicted, and total retained must
+        # stay within one block of the cap.
+        from scripts.pr_validate.steps.diff_coverage import (
+            _CAPTURE_BLOCK_BYTES,
+            _CAPTURE_TAIL_BYTES,
+        )
+
+        code = (
+            "import sys\n"
+            "sys.stdout.write('START-MARKER\\n')\n"
+            "sys.stdout.write('x' * (4 * 1024 * 1024))\n"
+            "sys.stdout.write('\\nEND-MARKER\\n')\n"
+            "sys.stdout.flush()\n"
+        )
+        proc = _run_group_bounded([sys.executable, "-c", code], cwd=".", timeout=60)
+        assert proc.returncode == 0, proc.stderr
+        # Tail retained — the END marker is always kept.
+        assert "END-MARKER" in proc.stdout
+        # Head/middle dropped — memory stayed bounded, START marker evicted.
+        assert "START-MARKER" not in proc.stdout
+        assert len(proc.stdout) <= _CAPTURE_TAIL_BYTES + _CAPTURE_BLOCK_BYTES
