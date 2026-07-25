@@ -730,6 +730,27 @@ class TestRegistration:
 # --------------------------------------------------------------------------
 
 
+def _heartbeat_advancing(path: Path, dwell: float = 0.2) -> bool:
+    """True iff ``path`` grows over ``dwell`` seconds — proof that a heartbeat
+    writer is STILL alive right now. Tests use this to gate a fallback
+    ``killpg`` on a PROVEN-live group member: signalling a PGID whose group has
+    already been reaped is unsafe (the id may have been reused, so the kill
+    could hit an unrelated CI process — codex #1220 confirm2). A monotonic file
+    size is immune to zombie / PID-reuse the way an ``os.kill(pid, 0)`` probe is
+    not. The grandchildren these tests clean up run infinite loops, so an
+    advancing heartbeat cannot flip to dead before the ``killpg`` lands."""
+    import time as _t
+
+    try:
+        if not path.exists():
+            return False
+        s1 = path.stat().st_size
+        _t.sleep(dwell)
+        return path.exists() and path.stat().st_size > s1
+    except OSError:
+        return False
+
+
 class TestRunGroupBounded:
     def test_returns_completed_process_on_success(self):
         proc = _run_group_bounded(
@@ -833,14 +854,18 @@ class TestRunGroupBounded:
                 "leader-only kill"
             )
         finally:
-            # Sweep the group unconditionally: on a pass it is already dead
-            # (killpg → ESRCH, harmless); on a failure this reaps the leaked
-            # infinite grandchild instead of letting it run forever.
-            for p in procs:
-                try:
-                    os.killpg(p.pid, _signal.SIGKILL)
-                except OSError:
-                    pass
+            # Sweep the group ONLY if the heartbeat still advances — i.e. the
+            # grandchild survived (a leader-only-kill regression), so a member is
+            # provably alive and the PGID is still reserved. On a PASS the
+            # code-under-test already reaped the whole group, so the PGID may
+            # have been reused; an unconditional killpg there could SIGKILL an
+            # unrelated process (codex #1220 confirm2).
+            if _heartbeat_advancing(heartbeat):
+                for p in procs:
+                    try:
+                        os.killpg(p.pid, _signal.SIGKILL)
+                    except OSError:
+                        pass
 
     def test_env_is_threaded_to_the_child(self):
         # The env= param must reach the child — the COVERAGE_FILE redirect and
@@ -887,33 +912,41 @@ class TestRunGroupBounded:
         monkeypatch.setattr(_dc.subprocess, "Popen", rec_popen)
 
         # Leader backgrounds a grandchild that holds the inherited stdout/stderr
-        # pipes for ~2 s, then the leader EXITS 0. The helper deliberately returns
-        # while the grandchild is STILL alive (that's the property under test), so
-        # the ``finally`` must reap it — leaving it running would contaminate
-        # later tests (codex #1220 r20 test-hygiene).
+        # pipes AND ticks a heartbeat, then the leader EXITS 0. The helper
+        # deliberately returns while the grandchild is STILL alive (that's the
+        # property under test), so the ``finally`` must reap it — leaving it
+        # running would contaminate later tests (codex #1220 r20). The heartbeat
+        # lets the finally confirm the grandchild is provably alive before the
+        # killpg, so a reaped-and-recycled PGID is never signalled (confirm2).
+        # Path is a positional ($1), never interpolated (codex #1220 r9).
+        heartbeat = tmp_path / "heartbeat"
         cmd = [
             "sh",
             "-c",
-            "(for _ in $(seq 1 40); do sleep 0.05; done) & exit 0",
+            '(while true; do printf . >> "$1"; sleep 0.05; done) & exit 0',
+            "sh",  # $0
+            str(heartbeat),  # $1
         ]
         try:
             t0 = _time.time()
             proc = _dc._run_group_bounded(cmd, cwd=str(tmp_path), timeout=30)
             elapsed = _time.time() - t0
             assert proc.returncode == 0  # clean exit, did NOT hang
-            # Returned on the bounded-drain path (~2 × 0.3 s), NOT after the
-            # grandchild's ~2 s lifetime — proves we didn't block on the
-            # lingering pipe-holder (and didn't try a dangerous post-reap sweep).
+            # Returned on the bounded-drain path (~2 × 0.3 s), NOT after waiting
+            # out the descendant — proves we didn't block on the lingering
+            # pipe-holder (and didn't try a dangerous post-reap sweep).
             assert elapsed < 1.5, f"blocked {elapsed:.2f}s on a lingering pipe-holder"
         finally:
-            # The grandchild is still alive here, so its group's PGID is still
-            # reserved and killpg targets exactly it (leader pid == pgid under
-            # start_new_session). Best-effort SIGKILL sweeps the grandchild.
-            for p in procs:
-                try:
-                    os.killpg(p.pid, _signal.SIGKILL)
-                except OSError:
-                    pass
+            # Sweep ONLY while the grandchild is provably alive (heartbeat still
+            # advancing) so the PGID is still reserved — never signal a possibly
+            # recycled id (codex #1220 confirm2). Here the grandchild is an
+            # infinite loop the helper left running, so it IS advancing.
+            if _heartbeat_advancing(heartbeat):
+                for p in procs:
+                    try:
+                        os.killpg(p.pid, _signal.SIGKILL)
+                    except OSError:
+                        pass
 
     def test_reader_start_failure_kills_child_and_reraises(self, tmp_path, monkeypatch):
         # codex #1220 r19 (B2): if starting a reader thread fails AFTER Popen
