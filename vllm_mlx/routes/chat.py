@@ -5865,6 +5865,32 @@ async def _create_chat_completion_impl(
     response_headers = enable_thinking_warning_header(
         request, getattr(cfg, "reasoning_parser_name", None)
     )
+
+    # Opt-in telemetry (Phase 2.2): record a bucketed ``request`` event for
+    # this completed non-streaming chat completion. ``caller_agent`` comes
+    # from the inbound User-Agent (bucketed to an allowlist in ``redact`` —
+    # never stored raw); every perf number is bucketed. ``emit.request`` is
+    # sampled + ``is_enabled()``-gated + ``@_safe``, so this is a cheap
+    # no-op when telemetry is off / not sampled and can never affect the
+    # response. TTFT == total latency here (a non-streaming response is
+    # delivered in one shot); the streaming path reports true TTFT.
+    from vllm_mlx.telemetry import emit as _telemetry_emit
+
+    _telemetry_emit.request(
+        endpoint="/v1/chat/completions",
+        model_alias=request.model,
+        stream=False,
+        tool_call_used=bool(tool_calls),
+        prompt_tokens=output.prompt_tokens,
+        completion_tokens=output.completion_tokens,
+        ttft_ms=elapsed * 1000.0,
+        tps=tokens_per_sec,
+        status=200,
+        caller_agent=(
+            raw_request.headers.get("user-agent") if raw_request is not None else None
+        ),
+    )
+
     return Response(
         content=chat_response.model_dump_json(exclude_none=True),
         media_type="application/json",
