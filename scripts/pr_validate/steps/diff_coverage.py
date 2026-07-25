@@ -28,7 +28,10 @@ Because it's advisory, EVERY failure path here returns ``pass`` or
 must not be the reason a good PR can't merge. The base ``execute``
 wrapper would turn an *uncaught* exception into ``error`` (which the
 scorecard treats as blocking), so ``run`` catches everything and
-downgrades to ``skip``.
+downgrades to ``skip``. The subprocess calls carry bounded timeouts so
+a hung test or diff-cover can't wedge the (auto-deploy) pipeline, and
+the diagnostic-log writes are best-effort (a disk-full / permission
+error while logging must not escape as a blocking ``error`` either).
 """
 
 from __future__ import annotations
@@ -55,6 +58,15 @@ _COV_PACKAGE = "vllm_mlx"
 # SHA may not resolve if the local clone is shallow.
 _COMPARE_BRANCH = "origin/main"
 
+# Bounded so a hung test or a wedged diff-cover can't block the pipeline
+# — the whole point of an advisory step is that it never blocks. On
+# expiry ``subprocess.run`` SIGKILLs the child; we catch and skip. The
+# suite timeout is deliberately generous (the instrumented full suite is
+# ~3 min today) — a false timeout would just silently drop a
+# measurement, so err long.
+_PYTEST_TIMEOUT_S = 1800
+_DIFF_COVER_TIMEOUT_S = 180
+
 
 class DiffCoverageStep(Step):
     name = "diff_coverage"
@@ -79,19 +91,16 @@ class DiffCoverageStep(Step):
 
     def run(self, ctx: Context) -> StepResult:
         log_path: Path = ctx.artifact_path("diff-coverage.log")
-        # Advisory contract: swallow ALL failures. Never fail/error.
+        # Advisory contract: swallow ALL failures. Never fail/error. The
+        # log write is best-effort (``_safe_write``) so a failure to log
+        # can't escape this handler and become a blocking ``error``.
         try:
             return self._measure(ctx, log_path)
         except Exception as e:  # noqa: BLE001 — advisory must not block merge
-            log_path.write_text(traceback.format_exc())
-            return StepResult(
-                name=self.name,
-                status="skip",
-                summary=(
-                    f"advisory coverage skipped (internal error: "
-                    f"{type(e).__name__}: {e})"
-                ),
-                artifacts=[str(log_path)],
+            _safe_write(log_path, traceback.format_exc())
+            return self._skip(
+                f"advisory coverage skipped (internal error: {type(e).__name__}: {e})",
+                log_path,
             )
 
     # ------------------------------------------------------------------
@@ -101,26 +110,23 @@ class DiffCoverageStep(Step):
         #    extras, but the operator may run validate from a leaner env.
         #    Missing tooling is a clean skip, not a failure.
         if importlib.util.find_spec("pytest_cov") is None:
-            return StepResult(
-                name=self.name,
-                status="skip",
-                summary="pytest-cov not installed — advisory coverage unavailable",
+            return self._skip(
+                "pytest-cov not installed — advisory coverage unavailable"
             )
         if importlib.util.find_spec("diff_cover") is None:
-            return StepResult(
-                name=self.name,
-                status="skip",
-                summary="diff-cover not installed — advisory coverage unavailable",
+            return self._skip(
+                "diff-cover not installed — advisory coverage unavailable"
             )
 
         xml_path = ctx.artifact_path("coverage.xml")
+        # Fresh-file guarantee: never let a stale coverage.xml from an
+        # earlier run masquerade as this run's result. If pytest fails to
+        # regenerate it below, the ``not xml_path.exists()`` path fires
+        # instead of publishing yesterday's numbers.
+        xml_path.unlink(missing_ok=True)
 
         # 2. Instrumented suite — mirrors ``full_unit``'s selection so the
-        #    coverage picture matches what we actually gate on. We do NOT
-        #    inspect the return code: ``full_unit`` owns "suite is green";
-        #    here we only want the coverage.xml. pytest-cov writes the
-        #    report at session end even if some tests fail, so a red suite
-        #    still yields a usable (if partial) measurement.
+        #    coverage picture matches what we actually gate on.
         pytest_cmd = [
             sys.executable,
             "-m",
@@ -138,29 +144,42 @@ class DiffCoverageStep(Step):
             "no:cacheprovider",
         ]
         ctx.run_log("diff_coverage: running instrumented suite (advisory)…")
-        pytest_proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
-            pytest_cmd, capture_output=True, text=True, cwd=str(ctx.repo_root)
-        )
+        try:
+            pytest_proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+                pytest_cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(ctx.repo_root),
+                timeout=_PYTEST_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return self._skip(
+                f"advisory coverage skipped (instrumented suite exceeded "
+                f"{_PYTEST_TIMEOUT_S}s — killed)"
+            )
+
+        # 3. Only trust coverage from a CLEAN, COMPLETE run. A nonzero
+        #    exit means failures / interruption / collection error — a
+        #    partial or failing run would contaminate the very baseline
+        #    this feature exists to collect. ``full_unit`` owns surfacing
+        #    a red suite; here we simply skip. (Green-suite PRs — the only
+        #    ones that merge and form the baseline — exit 0, so nothing of
+        #    value is lost.)
+        if pytest_proc.returncode != 0:
+            _safe_write(log_path, _pytest_dump(pytest_cmd, pytest_proc))
+            return self._skip(
+                f"advisory coverage skipped (instrumented suite exit "
+                f"{pytest_proc.returncode} — not clean; see full_unit)",
+                log_path,
+            )
 
         if not xml_path.exists():
-            log_path.write_text(
-                "# pytest (coverage run) produced no coverage.xml\n\n"
-                "## stdout\n"
-                + (pytest_proc.stdout or "")
-                + "\n## stderr\n"
-                + (pytest_proc.stderr or "")
-            )
-            return StepResult(
-                name=self.name,
-                status="skip",
-                summary=(
-                    "advisory coverage skipped (no coverage.xml — suite "
-                    "likely errored at collection)"
-                ),
-                artifacts=[str(log_path)],
+            _safe_write(log_path, _pytest_dump(pytest_cmd, pytest_proc))
+            return self._skip(
+                "advisory coverage skipped (no coverage.xml produced)", log_path
             )
 
-        # 3. diff-cover: patch coverage of the changed lines vs main.
+        # 4. diff-cover: patch coverage of the changed lines vs main.
         #    Invoke via ``-m`` so it runs in the SAME interpreter the
         #    coverage was produced with (matches targeted_tests' policy).
         dc_cmd = [
@@ -171,11 +190,22 @@ class DiffCoverageStep(Step):
             "--compare-branch",
             _COMPARE_BRANCH,
         ]
-        dc_proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
-            dc_cmd, capture_output=True, text=True, cwd=str(ctx.repo_root)
-        )
+        try:
+            dc_proc = subprocess.run(  # noqa: S603 — fixed argv, no shell
+                dc_cmd,
+                capture_output=True,
+                text=True,
+                cwd=str(ctx.repo_root),
+                timeout=_DIFF_COVER_TIMEOUT_S,
+            )
+        except subprocess.TimeoutExpired:
+            return self._skip(
+                f"advisory coverage skipped (diff-cover exceeded "
+                f"{_DIFF_COVER_TIMEOUT_S}s — killed)"
+            )
 
-        log_path.write_text(
+        _safe_write(
+            log_path,
             "# diff_coverage advisory run\n\n"
             f"## pytest cmd\n`{' '.join(pytest_cmd)}`\n\n"
             f"## pytest exit: {pytest_proc.returncode}\n\n"
@@ -184,7 +214,7 @@ class DiffCoverageStep(Step):
             "## diff-cover stdout\n"
             + (dc_proc.stdout or "")
             + "\n## diff-cover stderr\n"
-            + (dc_proc.stderr or "")
+            + (dc_proc.stderr or ""),
         )
 
         parsed = _parse_diff_cover(dc_proc.stdout)
@@ -192,13 +222,9 @@ class DiffCoverageStep(Step):
             # diff-cover ran but found no changed lines it could score
             # (e.g. every changed line is a comment / blank / not in the
             # coverage source map). Nothing to report — clean skip.
-            return StepResult(
-                name=self.name,
-                status="skip",
-                summary=(
-                    "advisory coverage skipped (no measurable production lines in diff)"
-                ),
-                artifacts=[str(log_path)],
+            return self._skip(
+                "advisory coverage skipped (no measurable production lines in diff)",
+                log_path,
             )
 
         pct, covered, total = parsed
@@ -219,6 +245,38 @@ class DiffCoverageStep(Step):
             findings=[finding],
             artifacts=[str(log_path), str(xml_path)],
         )
+
+    # ------------------------------------------------------------------
+
+    def _skip(self, summary: str, log_path: Path | None = None) -> StepResult:
+        """Uniform advisory skip. Attaches the log artifact only when it
+        actually made it to disk (``_safe_write`` may have swallowed a
+        write error)."""
+        artifacts = (
+            [str(log_path)] if log_path is not None and log_path.exists() else []
+        )
+        return StepResult(
+            name=self.name, status="skip", summary=summary, artifacts=artifacts
+        )
+
+
+def _safe_write(path: Path, text: str) -> None:
+    """Best-effort diagnostic write. NEVER raises. An advisory step must
+    still return skip/pass even if it can't write its own log (disk full,
+    permissions) — otherwise a failing write inside an exception handler
+    would escape as a blocking ``error`` (codex review on #1220)."""
+    try:
+        path.write_text(text)
+    except OSError:
+        pass
+
+
+def _pytest_dump(cmd: list[str], proc: subprocess.CompletedProcess[str]) -> str:
+    return (
+        f"# instrumented pytest (exit {proc.returncode})\n\n"
+        f"## cmd\n`{' '.join(cmd)}`\n\n"
+        "## stdout\n" + (proc.stdout or "") + "\n## stderr\n" + (proc.stderr or "")
+    )
 
 
 # ----------------------------------------------------------------------

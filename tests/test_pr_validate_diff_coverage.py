@@ -185,12 +185,11 @@ class TestAdvisoryContract:
 
         def fake_run(cmd, *a, **k):
             if "pytest" in cmd:
-                # Simulate a RED suite (returncode 1) that still writes
-                # coverage.xml — proves we don't gate on pytest's exit.
+                # A CLEAN suite (exit 0) that writes coverage.xml.
                 target = _xml_target(cmd)
                 assert target is not None
                 Path(target).write_text("<coverage/>")
-                return subprocess.CompletedProcess(cmd, 1, stdout="1 failed", stderr="")
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
             # diff-cover invocation.
             return subprocess.CompletedProcess(cmd, 0, stdout=_DC_WITH_LINES, stderr="")
 
@@ -202,19 +201,94 @@ class TestAdvisoryContract:
         assert "80" in res.summary
         assert res.findings and "ADVISORY" in res.findings[0]
 
-    def test_skip_when_no_coverage_xml(self, ctx_factory, monkeypatch):
+    def test_skip_when_suite_not_clean(self, ctx_factory, monkeypatch):
+        # A nonzero pytest exit (failures / interruption) must NOT be
+        # measured — even though coverage.xml was written — because a
+        # partial/failing run would contaminate the baseline. full_unit
+        # owns surfacing the red suite.
         _both_tools_present(monkeypatch)
         ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        dc_called = {"n": 0}
 
         def fake_run(cmd, *a, **k):
-            # pytest errored at collection: no xml written.
-            return subprocess.CompletedProcess(cmd, 2, stdout="errors", stderr="")
+            if "pytest" in cmd:
+                Path(_xml_target(cmd)).write_text("<coverage/>")  # xml IS written
+                return subprocess.CompletedProcess(cmd, 1, stdout="1 failed", stderr="")
+            dc_called["n"] += 1
+            return subprocess.CompletedProcess(cmd, 0, stdout=_DC_WITH_LINES, stderr="")
 
         monkeypatch.setattr(
             "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
         )
         res = DiffCoverageStep().run(ctx)
         assert res.status == "skip"
+        assert "not clean" in res.summary
+        assert dc_called["n"] == 0  # never reached diff-cover
+
+    def test_stale_xml_is_removed_before_run(self, ctx_factory, monkeypatch):
+        # A leftover coverage.xml from a previous run must not be able to
+        # masquerade as this run's result when pytest fails to write one.
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+        stale = ctx.artifact_path("coverage.xml")
+        stale.write_text("<coverage>STALE</coverage>")
+
+        def fake_run(cmd, *a, **k):
+            # Clean exit but DO NOT write a fresh xml. Without the
+            # pre-run unlink, the stale file would survive and get scored.
+            return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+        )
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
+        assert "no coverage.xml" in res.summary
+
+    def test_skip_when_no_coverage_xml(self, ctx_factory, monkeypatch):
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+
+        def fake_run(cmd, *a, **k):
+            # Clean exit but no xml written (e.g. cov plugin misconfigured).
+            return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+        )
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
+
+    def test_skip_on_pytest_timeout(self, ctx_factory, monkeypatch):
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+
+        def fake_run(cmd, *a, **k):
+            raise subprocess.TimeoutExpired(cmd, k.get("timeout", 1))
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+        )
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
+        assert "exceeded" in res.summary
+
+    def test_skip_on_diff_cover_timeout(self, ctx_factory, monkeypatch):
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+
+        def fake_run(cmd, *a, **k):
+            if "pytest" in cmd:
+                Path(_xml_target(cmd)).write_text("<coverage/>")
+                return subprocess.CompletedProcess(cmd, 0, stdout="ok", stderr="")
+            raise subprocess.TimeoutExpired(cmd, k.get("timeout", 1))
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage.subprocess.run", fake_run
+        )
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
+        assert "diff-cover" in res.summary and "exceeded" in res.summary
 
     def test_skip_when_diff_cover_finds_no_lines(self, ctx_factory, monkeypatch):
         _both_tools_present(monkeypatch)
@@ -263,6 +337,27 @@ class TestAdvisoryContract:
         # error (which the scorecard treats as blocking).
         assert res.status == "skip"
         assert res.status not in ("fail", "error")
+
+    def test_crash_with_unwritable_log_still_skips(self, ctx_factory, monkeypatch):
+        # codex #1220 fix #2: if the diagnostic-log write ALSO fails
+        # (disk full / permissions) inside the exception handler, the
+        # step must STILL return skip, not let the write error escape as
+        # a blocking error.
+        _both_tools_present(monkeypatch)
+        ctx = ctx_factory(["vllm_mlx/quantized_batch_cache.py"])
+
+        def boom(cmd, *a, **k):
+            raise RuntimeError("subprocess explosion")
+
+        def unwritable(self, *a, **k):
+            raise OSError("No space left on device")
+
+        monkeypatch.setattr(
+            "scripts.pr_validate.steps.diff_coverage.subprocess.run", boom
+        )
+        monkeypatch.setattr(Path, "write_text", unwritable)
+        res = DiffCoverageStep().run(ctx)
+        assert res.status == "skip"
 
     def test_execute_wrapper_skips_when_gated_out(self, ctx_factory, monkeypatch):
         # Through the base execute() wrapper, a docs-only PR gates out.
