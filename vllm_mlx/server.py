@@ -681,22 +681,39 @@ async def lifespan(app: FastAPI):
     _shutdown_cfg.ready = False
     _shutdown_cfg.draining = True
 
-    # Shutdown: Save cache to disk BEFORE stopping engine.
+    # Shutdown teardown: save cache, close MCP, stop engine.
     #
-    # Delegates to ``_shutdown_save_prefix_cache`` which wraps the
-    # synchronous save in ``asyncio.to_thread`` — see that function's
-    # docstring for the rationale. Extracted so the regression test
-    # pins the wrapper at the production callsite rather than wrapping
-    # ``to_thread`` test-side (codex PR #667 round 1 BLOCKING-3).
-    await _shutdown_save_prefix_cache()
+    # ``_shutdown_save_prefix_cache`` wraps the synchronous save in
+    # ``asyncio.to_thread`` — see that function's docstring for the
+    # rationale. Extracted so the regression test pins the wrapper at
+    # the production callsite rather than wrapping ``to_thread``
+    # test-side (codex PR #667 round 1 BLOCKING-3).
+    #
+    # Opt-in telemetry (Phase 2.2 error wiring): a crash while tearing
+    # down is exactly the "process disappeared during shutdown" shape the
+    # signal-observability hooks above were installed for. Record a
+    # bucketed ``shutdown_traceback`` error (allowlisted category/phase +
+    # traceback fingerprint only — no message text or path), then re-raise
+    # so the shutdown path behaves identically. ``emit.error`` is
+    # ``is_enabled()``-gated and ``@_safe`` → a no-op when telemetry is off
+    # and never masks the failure.
+    try:
+        await _shutdown_save_prefix_cache()
 
-    # Shutdown: Close MCP connections and stop engine
-    if _mcp_manager is not None:
-        await _mcp_manager.stop()
-        logger.info("MCP manager stopped")
-    if _engine is not None:
-        await _engine.stop()
-        logger.info("Engine stopped")
+        # Shutdown: Close MCP connections and stop engine
+        if _mcp_manager is not None:
+            await _mcp_manager.stop()
+            logger.info("MCP manager stopped")
+        if _engine is not None:
+            await _engine.stop()
+            logger.info("Engine stopped")
+    except Exception as _shutdown_exc:
+        from vllm_mlx.telemetry import emit as _telemetry_emit
+
+        _telemetry_emit.error(
+            category="shutdown_traceback", exc=_shutdown_exc, phase="shutdown"
+        )
+        raise
 
     # Round 19 codex review (PR #532): Drive the telemetry session_end
     # path here too. ``atexit`` does NOT fire on SIGTERM (systemd /

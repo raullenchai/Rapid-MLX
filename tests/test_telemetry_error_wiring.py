@@ -235,3 +235,57 @@ async def test_serve_engine_start_failure_emits_model_load_error(monkeypatch):
     # The raw exception is handed to emit.error for fingerprinting only;
     # its message never reaches the payload (redact.fingerprint_traceback).
     assert isinstance(calls[0].get("exc"), RuntimeError)
+
+
+async def test_serve_shutdown_failure_emits_shutdown_traceback(monkeypatch):
+    """A crash during lifespan teardown (cache save / MCP close / engine
+    stop) must emit ``shutdown_traceback`` / ``shutdown`` and re-raise so
+    the shutdown path is unchanged."""
+    import vllm_mlx._signal_observability as _sigobs
+    import vllm_mlx.server as vllm_server
+    from vllm_mlx.config import get_config
+    from vllm_mlx.telemetry import emit as _emit
+
+    monkeypatch.setattr(_sigobs, "install_signal_observability", lambda: False)
+
+    calls = []
+    monkeypatch.setattr(_emit, "error", lambda **kw: calls.append(kw))
+
+    class _EngineBoomOnStop:
+        # ``_loaded=True`` skips ``start()`` so startup reaches ``yield``;
+        # no ``save_cache_to_disk`` attr so the cache-save step is a no-op;
+        # warmup calls are swallowed (non-fatal) by the lifespan.
+        _loaded = True
+
+        async def stop(self):
+            raise RuntimeError("engine stop boom")
+
+    cfg = get_config()
+    saved = (
+        vllm_server._engine,
+        cfg.bind_host,
+        cfg.bind_port,
+        cfg.ready,
+        getattr(cfg, "draining", False),
+    )
+    vllm_server._engine = _EngineBoomOnStop()
+    cfg.bind_host = None  # suppress the Ready banner
+    cfg.bind_port = None
+    try:
+        agen = vllm_server.lifespan(vllm_server.app)
+        await agen.__anext__()  # startup → yield
+        with pytest.raises(RuntimeError, match="engine stop boom"):
+            await agen.__anext__()  # shutdown → stop() raises → re-raised
+    finally:
+        (
+            vllm_server._engine,
+            cfg.bind_host,
+            cfg.bind_port,
+            cfg.ready,
+            cfg.draining,
+        ) = saved
+
+    assert any(
+        c.get("category") == "shutdown_traceback" and c.get("phase") == "shutdown"
+        for c in calls
+    ), calls
