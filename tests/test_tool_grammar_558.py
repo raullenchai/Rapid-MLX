@@ -399,7 +399,13 @@ def _offline_skip_exc_types():
         types.append(_ReqConnErr)
     except Exception:  # pragma: no cover - requests not present
         pass
-    return tuple(types) or (OSError,)
+    # No broad ``(OSError,)`` fallback: ``_is_offline_cache_miss`` walks the
+    # whole exception chain, so an OSError fallback here would make *any*
+    # OSError anywhere in the chain (e.g. a corrupt tokenizer artifact) look
+    # like a sanctioned offline skip. If none of the specific HF offline
+    # signals are importable we return an empty tuple — the chain check then
+    # matches nothing and the real failure propagates (codex round-5 #2).
+    return tuple(types)
 
 
 def _is_offline_cache_miss(exc: BaseException) -> bool:
@@ -425,6 +431,36 @@ def _is_offline_cache_miss(exc: BaseException) -> bool:
             return True
         cur = cur.__cause__ or cur.__context__
     return False
+
+
+def test_is_offline_cache_miss_rejects_bare_oserror():
+    """A plain ``OSError`` with no HF offline/cache-miss link in its chain is a
+    REAL failure (corrupt artifact / disk error), not a sanctioned skip.
+
+    Regression guard: an earlier ``_offline_skip_exc_types()`` fell back to
+    ``(OSError,)`` when the specific huggingface_hub error names could not be
+    imported. Combined with the chain walk that made *every* ``OSError`` — at
+    any depth — look like an offline miss, silently skipping genuine failures.
+    """
+    assert _is_offline_cache_miss(OSError("corrupt tokenizer.json")) is False
+    # …and still False when a bare OSError merely *wraps* another bare OSError.
+    inner = OSError("bad bytes")
+    outer = OSError("load failed")
+    outer.__cause__ = inner
+    assert _is_offline_cache_miss(outer) is False
+
+
+def test_is_offline_cache_miss_detects_wrapped_hf_offline_signal():
+    """A real HF offline/cache-miss anywhere in the chain IS a sanctioned skip.
+
+    ``transformers`` re-wraps ``LocalEntryNotFoundError`` in a generic
+    ``OSError`` ("We couldn't connect to huggingface.co …"); the chain walk
+    must still recognise the wrapped signal so uncached+offline runs skip.
+    """
+    hub_errors = pytest.importorskip("huggingface_hub.errors")
+    wrapped = OSError("We couldn't connect to 'https://huggingface.co'")
+    wrapped.__cause__ = hub_errors.LocalEntryNotFoundError("not cached")
+    assert _is_offline_cache_miss(wrapped) is True
 
 
 @pytest.fixture(scope="module")
