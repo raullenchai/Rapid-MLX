@@ -717,3 +717,25 @@ class TestRunGroupBounded:
             "bytes) — the grandchild survived, so group-kill regressed to a "
             "leader-only kill"
         )
+
+    def test_output_quota_breach_kills_like_a_timeout(self, monkeypatch):
+        # F1 (codex #1220 r10): a child that streams past the disk quota is
+        # killed exactly like a timeout — long before the time budget — and
+        # the raised TimeoutExpired carries the captured tail for diagnostics
+        # (r10 F3). Shrink the quota + poll so the test is fast.
+        import scripts.pr_validate.steps.diff_coverage as dc
+
+        monkeypatch.setattr(dc, "_OUTPUT_QUOTA_BYTES", 1024)  # 1 KiB
+        monkeypatch.setattr(dc, "_POLL_INTERVAL_S", 1)
+        # Write 200 KiB (>> quota), flush to the temp file, then block so the
+        # child is still alive at the first poll.
+        code = (
+            "import sys, time; "
+            "sys.stdout.write('X' * 200000); sys.stdout.flush(); "
+            "time.sleep(60)"
+        )
+        with pytest.raises(subprocess.TimeoutExpired) as ei:
+            # timeout=30 >> the ~1s it takes to trip the quota, so a raise here
+            # proves the QUOTA fired, not the clock.
+            _run_group_bounded([sys.executable, "-c", code], cwd=".", timeout=30)
+        assert ei.value.stdout and "X" in ei.value.stdout  # tail attached

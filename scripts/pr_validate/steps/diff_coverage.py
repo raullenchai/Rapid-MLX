@@ -91,6 +91,17 @@ _LOG_TAIL_CHARS = 4000
 # #1220 r8).
 _STDOUT_CAP_BYTES = 1_048_576
 
+# Disk quota: hard cap on how many bytes a single child may write to its temp
+# files before we kill its group and treat the run as timed out. The output
+# goes to disk (not RAM), but disk is still finite on an auto-deploy host, so
+# a runaway / hung test that streams without bound must not exhaust it (codex
+# #1220 r10). 256 MiB is orders of magnitude above any real ``-q`` suite or
+# diff-cover run, so it only ever trips on genuinely pathological output.
+_OUTPUT_QUOTA_BYTES = 256 * 1024 * 1024
+
+# How often, while waiting, we re-check the child against the output quota.
+_POLL_INTERVAL_S = 5
+
 
 class DiffCoverageStep(Step):
     name = "diff_coverage"
@@ -178,10 +189,12 @@ class DiffCoverageStep(Step):
             pytest_proc = _run_group_bounded(
                 pytest_cmd, str(ctx.repo_root), _PYTEST_TIMEOUT_S
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            _safe_write(log_path, _timeout_dump("instrumented pytest", pytest_cmd, exc))
             return self._skip(
                 f"advisory coverage skipped (instrumented suite exceeded "
-                f"{_PYTEST_TIMEOUT_S}s — process group killed)"
+                f"{_PYTEST_TIMEOUT_S}s or its output quota — process group killed)",
+                log_path,
             )
 
         # 3. Coverage trust model (see ``_PYTEST_COVERAGE_VALID_EXITS``). We
@@ -233,10 +246,12 @@ class DiffCoverageStep(Step):
             dc_proc = _run_group_bounded(
                 dc_cmd, str(ctx.repo_root), _DIFF_COVER_TIMEOUT_S
             )
-        except subprocess.TimeoutExpired:
+        except subprocess.TimeoutExpired as exc:
+            _safe_write(log_path, _timeout_dump("diff-cover", dc_cmd, exc))
             return self._skip(
                 f"advisory coverage skipped (diff-cover exceeded "
-                f"{_DIFF_COVER_TIMEOUT_S}s — process group killed)"
+                f"{_DIFF_COVER_TIMEOUT_S}s or its output quota — process group killed)",
+                log_path,
             )
 
         # Record pytest's own output too (tail-truncated) — on an accepted
@@ -358,9 +373,15 @@ def _run_group_bounded(
     bounds validator memory — a noisy / runaway test streams to disk, and
     we read back only a capped tail — and, because there are no pipes for a
     surviving descendant to hold open, it removes the reap-wedge class
-    entirely: the timeout path is a plain group-SIGKILL + bounded ``wait``.
-    The tail keeps the bytes every caller needs — diff-cover's footer and
-    pytest's ``-q`` failure summary both sit at the END of their streams.
+    entirely. The tail keeps the bytes every caller needs — diff-cover's
+    footer and pytest's ``-q`` failure summary both sit at the END of their
+    streams. Disk is bounded too: we poll the temp-file size and, if a child
+    blows past ``_OUTPUT_QUOTA_BYTES``, kill it exactly like a timeout so a
+    runaway producer can't exhaust the auto-deploy host (codex #1220 r10).
+
+    On timeout / quota breach the raised ``TimeoutExpired`` carries the
+    captured (capped) stdout/stderr so the caller can log WHAT hung before
+    the temp files are deleted (codex #1220 r10).
 
     The isolated group is swept on EVERY exit path, not just timeout: a
     pytest that exits cleanly can still leak a background server/worker into
@@ -382,10 +403,11 @@ def _run_group_bounded(
         )
         pgid = proc.pid  # == PGID under start_new_session (setsid)
         try:
-            proc.wait(timeout=timeout)
+            _wait_within_quota(proc, cmd, timeout, out_f, err_f)
         except BaseException:
-            # Timeout OR any other escape (e.g. KeyboardInterrupt): tear the
-            # whole group down so nothing is orphaned, then re-raise unchanged.
+            # Timeout / quota breach OR any other escape (e.g.
+            # KeyboardInterrupt): tear the whole group down so nothing is
+            # orphaned, then re-raise unchanged.
             _kill_group(proc, pgid)
             raise
         # Clean leader exit — but SWEEP the group anyway: a cleanly-exited
@@ -395,6 +417,37 @@ def _run_group_bounded(
         return subprocess.CompletedProcess(
             cmd, proc.returncode, _read_capped(out_f), _read_capped(err_f)
         )
+
+
+def _wait_within_quota(proc, cmd: list[str], timeout: int, out_f, err_f) -> None:
+    """Wait for ``proc`` up to ``timeout`` seconds, re-checking every
+    ``_POLL_INTERVAL_S`` that its temp-file output has not exceeded
+    ``_OUTPUT_QUOTA_BYTES``. Raises ``subprocess.TimeoutExpired`` (with the
+    captured tail attached for diagnostics) on either the time or the byte
+    budget; returns normally when the child exits within both."""
+    remaining = timeout
+    while True:
+        step = min(_POLL_INTERVAL_S, remaining) if remaining > 0 else 0
+        try:
+            proc.wait(timeout=step)
+            return  # exited within both budgets
+        except subprocess.TimeoutExpired:
+            remaining -= step
+            over_quota = _file_size(out_f) + _file_size(err_f) > _OUTPUT_QUOTA_BYTES
+            if over_quota or remaining <= 0:
+                raise subprocess.TimeoutExpired(
+                    cmd,
+                    timeout,
+                    output=_read_capped(out_f),
+                    stderr=_read_capped(err_f),
+                ) from None
+
+
+def _file_size(f) -> int:
+    """Current size of an open file object (the child writes via the inherited
+    fd, so the parent object's own position never moves — seek to end)."""
+    f.seek(0, os.SEEK_END)
+    return f.tell()
 
 
 def _sweep_group(pgid: int) -> None:
@@ -463,10 +516,17 @@ def _safe_write(path: Path, text: str) -> None:
     """Best-effort diagnostic write. NEVER raises. An advisory step must
     still return skip/pass even if it can't write its own log (disk full,
     permissions) — otherwise a failing write inside an exception handler
-    would escape as a blocking ``error`` (codex review on #1220)."""
+    would escape as a blocking ``error`` (codex review on #1220).
+
+    Writes explicitly as UTF-8 with ``errors="replace"``: the default
+    locale encoding can be ASCII on some CI, and our diagnostics contain
+    non-ASCII (tracebacks, the ``…`` elision marker), which would raise
+    ``UnicodeEncodeError`` — a ``ValueError``, NOT an ``OSError`` — and slip
+    past a bare ``except OSError`` to become a blocking error (codex #1220
+    r10). We also catch ``UnicodeError`` belt-and-braces."""
     try:
-        path.write_text(text)
-    except OSError:
+        path.write_text(text, encoding="utf-8", errors="replace")
+    except (OSError, UnicodeError):
         pass
 
 
@@ -484,6 +544,20 @@ def _pytest_dump(cmd: list[str], proc: subprocess.CompletedProcess[str]) -> str:
         f"# instrumented pytest (exit {proc.returncode})\n\n"
         f"## cmd\n`{' '.join(cmd)}`\n\n"
         "## stdout\n" + _tail(proc.stdout) + "\n## stderr\n" + _tail(proc.stderr)
+    )
+
+
+def _timeout_dump(label: str, cmd: list[str], exc: subprocess.TimeoutExpired) -> str:
+    """Diagnostics for a timed-out / output-quota-exceeded child. Preserves
+    the captured tail carried on the exception so the log records WHAT hung
+    before the temp files are deleted (codex #1220 r10)."""
+    return (
+        f"# {label} TIMED OUT or exceeded its output quota\n\n"
+        f"## cmd\n`{' '.join(cmd)}`\n\n"
+        "## stdout (tail)\n"
+        + _tail(exc.stdout if isinstance(exc.stdout, str) else "")
+        + "\n## stderr (tail)\n"
+        + _tail(exc.stderr if isinstance(exc.stderr, str) else "")
     )
 
 
