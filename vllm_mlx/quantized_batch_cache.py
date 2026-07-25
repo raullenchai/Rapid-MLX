@@ -557,13 +557,13 @@ def install_quantized_batch_cache(
     return batch_gen
 
 
-def probe_head_dim(model: Any) -> int | None:
-    """Best-effort head dimension of a loaded mlx-lm model; ``None`` if unknown.
+def _head_dim_from_args(args: Any) -> int | None:
+    """Head dim carried directly by a single args/config object, or ``None``.
 
-    Used at install time to pick a compatible group size (or disable live
-    quantization when no supported group size divides the head dim).
+    Reads an explicit ``head_dim`` first, then falls back to
+    ``hidden_size // num_attention_heads``. Does not descend into sub-configs;
+    see :func:`_text_attention_args` for the multimodal-aware resolution.
     """
-    args = getattr(model, "args", None)
     if args is None:
         return None
     hd = getattr(args, "head_dim", None)
@@ -576,16 +576,54 @@ def probe_head_dim(model: Any) -> int | None:
     return None
 
 
+def _text_attention_args(model: Any) -> Any:
+    """The args object carrying the *language* model's attention dims.
+
+    Multimodal wrappers (VLMs such as ``Qwen3.5-4B-MLX-4bit``) keep the language
+    model's ``head_dim``/``hidden_size`` on a nested ``language_model`` submodule
+    (its own ``.args``) or an ``args.text_config`` sub-config — the top-level
+    ``model.args`` has no attention dims. Probing only the top level returns
+    ``None`` and disables live KV quantization even though the text tower
+    quantizes fine (e.g. head_dim=256). Prefer the top-level args when they
+    already carry a head dim (unchanged for text-only models); otherwise descend
+    so VLMs are covered too. Returns the top-level args as a last resort so
+    callers can still read ``v_head_dim`` from it exactly as before.
+    """
+    args = getattr(model, "args", None)
+    if _head_dim_from_args(args) is not None:
+        return args
+    lm = getattr(model, "language_model", None)
+    lm_args = getattr(lm, "args", None) if lm is not None else None
+    if _head_dim_from_args(lm_args) is not None:
+        return lm_args
+    text_cfg = getattr(args, "text_config", None) if args is not None else None
+    if _head_dim_from_args(text_cfg) is not None:
+        return text_cfg
+    return args
+
+
+def probe_head_dim(model: Any) -> int | None:
+    """Best-effort head dimension of a loaded mlx-lm model; ``None`` if unknown.
+
+    Used at install time to pick a compatible group size (or disable live
+    quantization when no supported group size divides the head dim). Descends
+    into a multimodal wrapper's language submodule so VLMs are not spuriously
+    reported as unprobeable (see :func:`_text_attention_args`).
+    """
+    return _head_dim_from_args(_text_attention_args(model))
+
+
 def probe_kv_head_dims(model: Any) -> tuple[int | None, int | None]:
     """Best-effort ``(key, value)`` head dims of a loaded mlx-lm model.
 
     ``mx.quantize`` groups along the last (head) dimension, and a model may use a
     distinct value head dim (``v_head_dim``) from its key head dim. Both must be
     divisible by the chosen group size, so probe both. A dim that cannot be
-    determined comes back as ``None``.
+    determined comes back as ``None``. ``v_head_dim`` is read from the same
+    (possibly nested) args object that supplied the key head dim.
     """
-    k = probe_head_dim(model)
-    args = getattr(model, "args", None)
+    args = _text_attention_args(model)
+    k = _head_dim_from_args(args)
     v = getattr(args, "v_head_dim", None) if args is not None else None
     if not (isinstance(v, int) and v > 0):
         v = k  # standard models: value head dim == key head dim

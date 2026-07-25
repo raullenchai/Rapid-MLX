@@ -483,6 +483,30 @@ def test_probe_head_dim():
     assert probe_head_dim(_M2()) == 64
     assert probe_head_dim(object()) is None
 
+    # Multimodal wrapper (VLM): the language model's head_dim lives on a nested
+    # `language_model.args`, not the top-level `model.args`. Must descend so the
+    # live KV cache is not spuriously disabled (#1199 follow-up).
+    class _TextArgs:
+        head_dim = 256
+
+    class _LM:
+        args = _TextArgs()
+
+    class _VLM:
+        args = object()  # top-level args carry NO attention dims
+        language_model = _LM()
+
+    assert probe_head_dim(_VLM()) == 256
+
+    # Alternative nesting: dims exposed via `args.text_config` sub-config.
+    class _TopArgsWithTextConfig:
+        text_config = _TextArgs()
+
+    class _VLM2:
+        args = _TopArgsWithTextConfig()
+
+    assert probe_head_dim(_VLM2()) == 256
+
 
 def test_update_adjusts_group_size_for_head_dim_96():
     # head_dim=96 is not divisible by 64 but is by 32 — must auto-adjust, not crash
@@ -630,6 +654,21 @@ def test_probe_kv_head_dims():
         args = _Args2()
 
     assert probe_kv_head_dims(_M2()) == (64, 64)
+
+    # Multimodal wrapper: both key AND value head dims resolve from the nested
+    # `language_model.args`, not the top-level args (#1199 follow-up).
+    class _TextArgsV:
+        head_dim = 256
+        v_head_dim = 128
+
+    class _LMV:
+        args = _TextArgsV()
+
+    class _VLMV:
+        args = object()
+        language_model = _LMV()
+
+    assert probe_kv_head_dims(_VLMV()) == (256, 128)
 
     # Unknown -> (None, None).
     assert probe_kv_head_dims(object()) == (None, None)
