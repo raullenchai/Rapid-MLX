@@ -81,6 +81,9 @@ _MLA_PATTERNS: tuple[str, ...] = (
     "deepseek_v4",
     "kimi-k2",
     "kimi_k2",
+    "sarvam-105b",
+    "sarvam_105b",
+    "sarvam_mla",
 )
 
 # HF ``model_type`` values that imply MLA. Conservative — we'd rather
@@ -90,6 +93,7 @@ _MLA_MODEL_TYPES: frozenset[str] = frozenset(
     {
         "deepseek_v3",
         "deepseek_v4",
+        "sarvam_mla",
     }
 )
 
