@@ -20,6 +20,7 @@ from .context import Context
 from .scorecard import render_scorecard, verdict
 from .steps.cl_description_quality import CLDescriptionQualityStep
 from .steps.codex_review import CodexReviewStep
+from .steps.diff_coverage import DiffCoverageStep
 from .steps.fetch import FetchStep
 from .steps.full_unit import FullUnitStep
 from .steps.lint import LintStep
@@ -68,6 +69,14 @@ STEPS: list[Step] = [
     TargetedTestsStep(),  # 3 — diff-aware test selection + neg control
     FullUnitStep(),  # 4 — full pytest, gated on blast radius
     StressE2EBenchStep(),  # 5 — stress + e2e + bench (multi-model × agents)
+    # 6 — ADVISORY patch-coverage measurement (never gates). Last on
+    # purpose: it re-runs the unit suite under coverage instrumentation
+    # (~40 s), so in fail-fast mode we skip that cost the moment any
+    # real gate above has already blocked the PR. It also physically
+    # cannot change the verdict — every path returns pass/skip — but
+    # position still saves compute. See steps/diff_coverage.py for the
+    # "measure-first, no threshold" rationale (dev-flow gate proposal).
+    DiffCoverageStep(),
 ]
 
 # Steps that, if they fail, stop the pipeline immediately regardless of
