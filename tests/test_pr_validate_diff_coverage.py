@@ -814,3 +814,25 @@ class TestRunGroupBounded:
         # #1220 r13).
         assert victim.exists()
         assert victim.stat().st_size <= quota + 4096, victim.stat().st_size
+
+    def test_rlimit_wrapper_uses_isolated_startup(self):
+        # B1 (codex #1220 r14): the rlimit wrapper must run with ISOLATED
+        # startup so no repo-local `resource.py` / `sitecustomize.py` on the CWD
+        # can shadow or monkeypatch `resource.setrlimit` before the wrapper sets
+        # the disk cap. `-I` drops the CWD + user-site from sys.path and ignores
+        # PYTHON* env; `-S` skips site.py (hence sitecustomize).
+        #
+        # This asserts the flags are WIRED (and precede `-c`, so they are parsed
+        # as interpreter options, not program args) rather than attempting a
+        # behavioural shadow test: `resource` is a built-in module on our
+        # interpreters (BuiltinImporter wins over any sys.path `.py` regardless
+        # of `-I`), so a resource.py-shadow test would pass trivially and prove
+        # nothing. The end-to-end cap behaviour is covered by
+        # test_output_size_is_capped_by_kernel_rlimit.
+        from scripts.pr_validate.steps.diff_coverage import _rlimit_wrap
+
+        wrap = _rlimit_wrap()
+        assert wrap[0] == sys.executable
+        assert "-I" in wrap and "-S" in wrap
+        assert wrap.index("-I") < wrap.index("-c")
+        assert wrap.index("-S") < wrap.index("-c")

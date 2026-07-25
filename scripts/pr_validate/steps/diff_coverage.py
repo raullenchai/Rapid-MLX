@@ -182,14 +182,21 @@ class DiffCoverageStep(Step):
 
         # coverage.py writes its data file to ``$COVERAGE_FILE`` or, unset,
         # ``.coverage`` in the CWD — which here is the repo root. Point it at a
-        # dedicated artifact path so an advisory run can NEVER erase/overwrite a
-        # developer's own ``.coverage`` database sitting at the repo root (codex
-        # #1220 r12). The XML report is still emitted to ``xml_path``; only the
-        # intermediate data file moves.
-        cov_env = {
-            **os.environ,
-            "COVERAGE_FILE": str(ctx.artifact_path("coverage.data")),
-        }
+        # dedicated (per-run) artifact path so an advisory run can NEVER
+        # erase/overwrite a developer's own ``.coverage`` database at the repo
+        # root (codex #1220 r12). The XML report is still emitted to
+        # ``xml_path``; only the intermediate data file moves. Unlink it first
+        # so a leftover from an aborted prior run can't be appended to.
+        cov_data = ctx.artifact_path("coverage.data")
+        cov_data.unlink(missing_ok=True)
+        cov_env = {**os.environ, "COVERAGE_FILE": str(cov_data)}
+        # Drop ``PYTEST_ADDOPTS`` from the child env: a host that exports it
+        # (``--collect-only``, ``-x``, ``--cov-append``, ``-p no:cov`` …) would
+        # otherwise silently turn the run into empty / partial / stale coverage
+        # that we would then publish as the PR's measurement. The explicit argv
+        # below is the whole spec of the run; nothing may override it (codex
+        # #1220 r14).
+        cov_env.pop("PYTEST_ADDOPTS", None)
 
         # 2. Instrumented suite — mirrors ``full_unit``'s selection so the
         #    coverage picture matches what we actually gate on.
@@ -218,7 +225,7 @@ class DiffCoverageStep(Step):
             _safe_write(log_path, _timeout_dump("instrumented pytest", pytest_cmd, exc))
             return self._skip(
                 f"advisory coverage skipped (instrumented suite exceeded "
-                f"{_PYTEST_TIMEOUT_S}s or its output quota — process group killed)",
+                f"{_PYTEST_TIMEOUT_S}s — process group killed)",
                 log_path,
             )
 
@@ -275,7 +282,7 @@ class DiffCoverageStep(Step):
             _safe_write(log_path, _timeout_dump("diff-cover", dc_cmd, exc))
             return self._skip(
                 f"advisory coverage skipped (diff-cover exceeded "
-                f"{_DIFF_COVER_TIMEOUT_S}s or its output quota — process group killed)",
+                f"{_DIFF_COVER_TIMEOUT_S}s — process group killed)",
                 log_path,
             )
 
@@ -423,10 +430,13 @@ def _run_group_bounded(
     stdout/stderr so the caller can log WHAT hung before the temp files are
     deleted (codex #1220 r10).
 
-    The isolated group is swept on EVERY exit path, not just timeout: a
-    pytest that exits cleanly can still leak a background server/worker into
-    the group, which would otherwise survive to contaminate later steps
-    (codex #1220 r9).
+    Group teardown happens ONLY on the timeout/exception paths, where
+    ``_kill_group`` SIGKILLs the group BEFORE reaping the leader so ``pgid``
+    cannot be recycled — the kill is race-free. On a CLEAN exit we do not sweep
+    the group: a race-free sweep needs a non-reaping wait (``waitid``+
+    ``WNOWAIT``) unavailable on macOS, and a reap-then-``killpg`` sweep would
+    reintroduce a PID-reuse race (codex #1220 r14). That leaves clean-exit
+    parity with the merge-GATING sibling steps, which group-kill nothing.
     """
     # ``start_new_session=True`` runs the child through ``setsid()``: it
     # leads a brand-new process group whose PGID EQUALS its PID. Capture that
@@ -446,9 +456,11 @@ def _run_group_bounded(
         try:
             proc.wait(timeout=timeout)
         except subprocess.TimeoutExpired:
-            # Time budget blown: tear the whole group down and re-raise with
-            # the captured tail so the caller can log WHAT hung. Disk is
-            # handled separately by the kernel RLIMIT (no userspace poll).
+            # Time budget blown: tear the WHOLE group down and re-raise with the
+            # captured tail so the caller can log WHAT hung. ``_kill_group``
+            # SIGKILLs the group BEFORE reaping the leader, so ``pgid`` cannot
+            # have been recycled onto an unrelated group — the kill is race-free
+            # (codex #1220 r14). Disk is handled separately by the kernel RLIMIT.
             _kill_group(proc, pgid)
             raise subprocess.TimeoutExpired(
                 cmd,
@@ -458,13 +470,19 @@ def _run_group_bounded(
             ) from None
         except BaseException:
             # Any other escape (e.g. KeyboardInterrupt): tear the group down
-            # so nothing is orphaned, then re-raise unchanged.
+            # (again kill-before-reap, race-free) then re-raise unchanged.
             _kill_group(proc, pgid)
             raise
-        # Clean leader exit — but SWEEP the group anyway: a cleanly-exited
-        # pytest may have leaked a background server/worker still running in
-        # the isolated group. Best-effort; an already-empty group is ESRCH.
-        _sweep_group(pgid)
+        # Clean leader exit. We deliberately do NOT sweep the group here. A
+        # race-free sweep would have to SIGKILL the group BEFORE reaping the
+        # leader (so ``pgid`` can't be recycled), which needs a non-reaping wait
+        # (``waitid``+``WNOWAIT``) that is unavailable on macOS — the operator's
+        # platform. A reap-then-``killpg`` sweep would reintroduce exactly the
+        # PID-reuse race codex flagged (#1220 r14). So on the clean path we
+        # accept parity with the merge-GATING sibling steps (``full_unit`` /
+        # ``targeted_tests`` group-kill nothing at all); the timeout/exception
+        # paths above still contain a runaway group race-free, which is the
+        # scenario that actually matters.
         return subprocess.CompletedProcess(
             cmd, proc.returncode, _read_capped(out_f), _read_capped(err_f)
         )
@@ -489,20 +507,23 @@ def _rlimit_wrap() -> list[str]:
     """Argv prefix that caps the wrapped command's max file size at
     ``_OUTPUT_QUOTA_BYTES`` (the KERNEL disk backstop; see ``_run_group_bounded``).
     Built per-call so a test monkeypatching ``_OUTPUT_QUOTA_BYTES`` takes
-    effect. Unix-only, like the rest of this helper (``setsid``/``killpg``)."""
-    return [sys.executable, "-c", _RLIMIT_WRAP_SRC, str(_OUTPUT_QUOTA_BYTES)]
+    effect. Unix-only, like the rest of this helper (``setsid``/``killpg``).
 
-
-def _sweep_group(pgid: int) -> None:
-    """Best-effort SIGKILL of any process still lingering in the isolated
-    process group after its leader has exited. An empty group raises ESRCH,
-    which we ignore. (PID-reuse of ``pgid`` in the microseconds since the
-    leader was reaped is theoretically possible but negligible, and no worse
-    than any ``killpg``-after-``wait``.)"""
-    try:
-        os.killpg(pgid, signal.SIGKILL)
-    except OSError:
-        pass
+    ``-I -S`` run the wrapper in ISOLATED startup: ``-I`` drops the CWD (the
+    repo root) and user-site from ``sys.path`` and ignores ``PYTHON*`` env, and
+    ``-S`` skips ``site``/``sitecustomize`` — so no repository-local
+    ``resource.py`` or startup hook can shadow the stdlib ``resource`` module
+    and neuter ``setrlimit`` before the cap is set (codex #1220 r14). The flags
+    apply ONLY to this tiny wrapper; the real command it ``exec``s runs with a
+    normal interpreter and environment (it is meant to import repo code)."""
+    return [
+        sys.executable,
+        "-I",
+        "-S",
+        "-c",
+        _RLIMIT_WRAP_SRC,
+        str(_OUTPUT_QUOTA_BYTES),
+    ]
 
 
 def _kill_group(proc: subprocess.Popen, pgid: int) -> None:
@@ -591,11 +612,12 @@ def _pytest_dump(cmd: list[str], proc: subprocess.CompletedProcess[str]) -> str:
 
 
 def _timeout_dump(label: str, cmd: list[str], exc: subprocess.TimeoutExpired) -> str:
-    """Diagnostics for a timed-out / output-quota-exceeded child. Preserves
-    the captured tail carried on the exception so the log records WHAT hung
-    before the temp files are deleted (codex #1220 r10)."""
+    """Diagnostics for a timed-out child. Preserves the captured tail carried on
+    the exception so the log records WHAT hung before the temp files are deleted
+    (codex #1220 r10). (A disk-cap breach is not routed here — it surfaces as a
+    SIGXFSZ/nonzero exit through the exit-code path, not ``TimeoutExpired``.)"""
     return (
-        f"# {label} TIMED OUT or exceeded its output quota\n\n"
+        f"# {label} TIMED OUT\n\n"
         f"## cmd\n`{' '.join(cmd)}`\n\n"
         "## stdout (tail)\n"
         + _tail(exc.stdout if isinstance(exc.stdout, str) else "")
