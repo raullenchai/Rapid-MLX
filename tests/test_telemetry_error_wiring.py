@@ -28,6 +28,14 @@ import threading
 
 import pytest
 
+# Every test here exercises a code path behind the mlx runtime: the CLI
+# subprocess (bench), the FastAPI server lifespan, and the tool parser all
+# transitively import ``mlx``. Skip the whole module cleanly where mlx is
+# not installed — e.g. the Linux ``pr_validate`` / targeted-tests runner —
+# so they skip rather than hard-fail with ModuleNotFoundError there. On the
+# apple-silicon job (where mlx is present) they run normally.
+pytest.importorskip("mlx")
+
 
 @pytest.fixture
 def fake_home(tmp_path, monkeypatch):
@@ -289,3 +297,48 @@ async def test_serve_shutdown_failure_emits_shutdown_traceback(monkeypatch):
         c.get("category") == "shutdown_traceback" and c.get("phase") == "shutdown"
         for c in calls
     ), calls
+
+
+def test_tool_parser_crash_emits_tool_parse_error(monkeypatch):
+    """When the configured tool parser raises while extracting calls, the
+    request path falls back to the generic text parser AND emits a
+    ``tool_parse`` / ``chat`` error. The fallback must still return normally
+    (the crash is never surfaced to the user)."""
+    from vllm_mlx.config import get_config
+    from vllm_mlx.service import helpers
+    from vllm_mlx.telemetry import emit as _emit
+    from vllm_mlx.tool_parsers.abstract_tool_parser import ToolParserManager
+
+    calls = []
+    monkeypatch.setattr(_emit, "error", lambda **kw: calls.append(kw))
+
+    class _BoomParser:
+        def __init__(self, tokenizer=None):
+            pass
+
+        def reset(self):
+            pass
+
+        def extract_tool_calls(self, *a, **k):
+            raise ValueError("malformed tool-call markup")
+
+    monkeypatch.setattr(
+        ToolParserManager, "get_tool_parser", staticmethod(lambda name: _BoomParser)
+    )
+
+    cfg = get_config()
+    saved = (cfg.enable_auto_tool_choice, cfg.tool_call_parser)
+    cfg.enable_auto_tool_choice = True
+    cfg.tool_call_parser = "hermes"
+    try:
+        content, tool_calls = helpers._parse_tool_calls_with_parser(
+            "here is some plain assistant text with no tool call", request=None
+        )
+    finally:
+        cfg.enable_auto_tool_choice, cfg.tool_call_parser = saved
+
+    assert any(
+        c.get("category") == "tool_parse" and c.get("phase") == "chat" for c in calls
+    ), calls
+    # Fallback returned normally — the parser crash was swallowed, not raised.
+    assert isinstance(content, str)
