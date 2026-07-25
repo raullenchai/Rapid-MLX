@@ -537,6 +537,18 @@ def test_probe_head_dim():
 
     assert probe_head_dim(_VLM4()) is None
 
+    # VLM signalled by `language_model` presence even when the submodule exposes
+    # no `.args` at all: the presence of the submodule is the multimodal signal,
+    # so we must still refuse the top-level vision dims and fail safe (#1208).
+    class _NoArgsLM:
+        pass  # language_model submodule with no `.args`
+
+    class _VLM5:
+        args = _VisionishTop()
+        language_model = _NoArgsLM()
+
+    assert probe_head_dim(_VLM5()) is None
+
 
 def test_update_adjusts_group_size_for_head_dim_96():
     # head_dim=96 is not divisible by 64 but is by 32 — must auto-adjust, not crash

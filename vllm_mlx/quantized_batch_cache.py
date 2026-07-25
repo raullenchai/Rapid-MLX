@@ -591,12 +591,13 @@ def _text_attention_args(model: Any) -> Any:
     the live cache — an incompatible first write that cannot fall back mid-stream
     would then crash the request instead of failing safe.
 
-    If a language config EXISTS but is not probeable, we still do NOT fall back
-    to the top-level args (they may be vision/composite) — we return the
-    language-scoped object so the probe yields ``None`` and the live cache fails
-    safe to bf16. Only genuinely text-only models (neither ``language_model`` nor
-    ``text_config``) fall through to the top-level args, unchanged, so callers
-    can read ``v_head_dim`` from them exactly as before.
+    The multimodal signal is the *presence* of a ``language_model`` submodule or
+    an ``args.text_config`` — NOT whether their dims happen to be probeable. Once
+    that signal is present we never fall back to the top-level args (which may be
+    vision/composite and would mis-size the live cache); an unprobeable language
+    config yields ``None`` so the live cache fails safe to bf16. Only genuinely
+    text-only models (neither signal present) use the top-level args, unchanged,
+    so callers can read ``v_head_dim`` from them exactly as before.
     """
     args = getattr(model, "args", None)
     lm = getattr(model, "language_model", None)
@@ -609,13 +610,11 @@ def _text_attention_args(model: Any) -> Any:
     if _head_dim_from_args(text_cfg) is not None:
         return text_cfg
 
-    # A language config exists but couldn't be probed: stay language-scoped so
-    # the probe returns None (bf16 fail-safe); never fall back to top-level dims,
-    # which on a VLM may be vision/composite and would mis-size the live cache.
-    if lm_args is not None:
-        return lm_args
-    if text_cfg is not None:
-        return text_cfg
+    # Multimodal wrapper detected but no language config was probeable: stay
+    # language-scoped (or None) so the probe fails safe to bf16. Never fall back
+    # to the top-level args here — on a VLM they may be vision/composite dims.
+    if lm is not None or text_cfg is not None:
+        return lm_args if lm_args is not None else text_cfg
 
     # Genuinely text-only model: the top-level args ARE the language config.
     return args
