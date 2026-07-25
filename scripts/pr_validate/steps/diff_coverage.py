@@ -361,6 +361,11 @@ def _run_group_bounded(
     entirely: the timeout path is a plain group-SIGKILL + bounded ``wait``.
     The tail keeps the bytes every caller needs — diff-cover's footer and
     pytest's ``-q`` failure summary both sit at the END of their streams.
+
+    The isolated group is swept on EVERY exit path, not just timeout: a
+    pytest that exits cleanly can still leak a background server/worker into
+    the group, which would otherwise survive to contaminate later steps
+    (codex #1220 r9).
     """
     # ``start_new_session=True`` runs the child through ``setsid()``: it
     # leads a brand-new process group whose PGID EQUALS its PID. Capture that
@@ -383,9 +388,25 @@ def _run_group_bounded(
             # whole group down so nothing is orphaned, then re-raise unchanged.
             _kill_group(proc, pgid)
             raise
+        # Clean leader exit — but SWEEP the group anyway: a cleanly-exited
+        # pytest may have leaked a background server/worker still running in
+        # the isolated group. Best-effort; an already-empty group is ESRCH.
+        _sweep_group(pgid)
         return subprocess.CompletedProcess(
             cmd, proc.returncode, _read_capped(out_f), _read_capped(err_f)
         )
+
+
+def _sweep_group(pgid: int) -> None:
+    """Best-effort SIGKILL of any process still lingering in the isolated
+    process group after its leader has exited. An empty group raises ESRCH,
+    which we ignore. (PID-reuse of ``pgid`` in the microseconds since the
+    leader was reaped is theoretically possible but negligible, and no worse
+    than any ``killpg``-after-``wait``.)"""
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except OSError:
+        pass
 
 
 def _kill_group(proc: subprocess.Popen, pgid: int) -> None:
@@ -513,6 +534,12 @@ def _parse_diff_cover(stdout: str) -> tuple[float, int, int] | None | object:
     missing = int(mm.group(1))
     if total <= 0:
         return None  # explicit "Total: 0 lines" — nothing to score
+    if not 0 <= missing <= total:
+        # Missing out of [0, Total] is impossible for real diff-cover output;
+        # a footer this malformed means format drift, not a coverage number.
+        # Guarding it stops a bogus negative / >100 % from being published
+        # (codex #1220 r9).
+        return _PARSE_FAILED
     covered = total - missing
     pct = 100.0 * covered / total
     return pct, covered, total

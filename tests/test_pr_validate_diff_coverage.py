@@ -109,6 +109,24 @@ class TestParseDiffCover:
         # failure.
         assert _parse_diff_cover("Total:   0 lines\nMissing: 0 lines\n") is None
 
+    def test_missing_out_of_bounds_is_parse_failed(self):
+        # Missing > Total (→ negative coverage) or Missing < 0 (→ >100%) is
+        # impossible for real diff-cover output — treat as format drift, never
+        # publish a bogus percentage (codex #1220 r9).
+        assert (
+            _parse_diff_cover("Total:   10 lines\nMissing: 11 lines\n") is _PARSE_FAILED
+        )
+        assert _parse_diff_cover("Total:   10 lines\nMissing: 0 lines\n") == (
+            100.0,
+            10,
+            10,
+        )
+        assert _parse_diff_cover("Total:   10 lines\nMissing: 10 lines\n") == (
+            0.0,
+            0,
+            10,
+        )
+
 
 class TestReadCapped:
     def test_small_output_read_in_full(self):
@@ -667,10 +685,15 @@ class TestRunGroupBounded:
         import time as _time
 
         heartbeat = tmp_path / "heartbeat"
+        # Pass the path as a POSITIONAL arg ("$1"), never interpolated into
+        # the script — a tmp dir containing an apostrophe would otherwise
+        # break the single-quoted string (codex #1220 r9).
         cmd = [
             "sh",
             "-c",
-            f"(while true; do printf . >> '{heartbeat}'; sleep 0.05; done) & sleep 120",
+            '(while true; do printf . >> "$1"; sleep 0.05; done) & sleep 120',
+            "sh",  # $0
+            str(heartbeat),  # $1
         ]
 
         with pytest.raises(subprocess.TimeoutExpired):
