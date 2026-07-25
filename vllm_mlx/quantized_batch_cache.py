@@ -591,19 +591,33 @@ def _text_attention_args(model: Any) -> Any:
     the live cache — an incompatible first write that cannot fall back mid-stream
     would then crash the request instead of failing safe.
 
-    Text-only models have neither ``language_model`` nor ``text_config``, so they
-    fall through to the top-level args unchanged. The top-level args are returned
-    as the last resort so callers can still read ``v_head_dim`` from them exactly
-    as before (and so an unprobeable model yields ``None`` -> bf16 fail-safe).
+    If a language config EXISTS but is not probeable, we still do NOT fall back
+    to the top-level args (they may be vision/composite) — we return the
+    language-scoped object so the probe yields ``None`` and the live cache fails
+    safe to bf16. Only genuinely text-only models (neither ``language_model`` nor
+    ``text_config``) fall through to the top-level args, unchanged, so callers
+    can read ``v_head_dim`` from them exactly as before.
     """
     args = getattr(model, "args", None)
     lm = getattr(model, "language_model", None)
     lm_args = getattr(lm, "args", None) if lm is not None else None
+    text_cfg = getattr(args, "text_config", None) if args is not None else None
+
+    # Prefer a probeable language-specific config (multimodal wrappers).
     if _head_dim_from_args(lm_args) is not None:
         return lm_args
-    text_cfg = getattr(args, "text_config", None) if args is not None else None
     if _head_dim_from_args(text_cfg) is not None:
         return text_cfg
+
+    # A language config exists but couldn't be probed: stay language-scoped so
+    # the probe returns None (bf16 fail-safe); never fall back to top-level dims,
+    # which on a VLM may be vision/composite and would mis-size the live cache.
+    if lm_args is not None:
+        return lm_args
+    if text_cfg is not None:
+        return text_cfg
+
+    # Genuinely text-only model: the top-level args ARE the language config.
     return args
 
 

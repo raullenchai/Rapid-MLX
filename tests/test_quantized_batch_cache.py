@@ -521,6 +521,22 @@ def test_probe_head_dim():
 
     assert probe_head_dim(_VLM3()) == 256
 
+    # VLM whose nested language config is UNPROBEABLE must fail safe to None,
+    # NOT fall back to the misleading top-level vision/composite dims (#1208
+    # codex): a wrong head dim would mis-size the live cache instead of a clean
+    # bf16 fallback.
+    class _UnprobeableArgs:
+        pass  # no head_dim, no hidden_size/num_attention_heads
+
+    class _UnprobeableLM:
+        args = _UnprobeableArgs()
+
+    class _VLM4:
+        args = _VisionishTop()  # -> 64 if wrongly trusted
+        language_model = _UnprobeableLM()
+
+    assert probe_head_dim(_VLM4()) is None
+
 
 def test_update_adjusts_group_size_for_head_dim_96():
     # head_dim=96 is not divisible by 64 but is by 32 — must auto-adjust, not crash
