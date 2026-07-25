@@ -113,17 +113,50 @@ def main():
     # mlx-lm's sanitize shifts norm weights by +1.0 when mtp weights are present.
     # Since we're extracting post-sanitize, the main model norms are already shifted.
     # We need to apply the same shift to MTP norm weights for consistency.
-    norm_suffixes = (
-        ".input_layernorm.weight",
-        ".post_attention_layernorm.weight",
-        ".q_norm.weight",
-        ".k_norm.weight",
-    )
-    # Also shift mtp.norm.weight (final norm in MTP predictor)
+    # EVERY RMSNorm weight uses HF's ``(1 + w)`` convention; MLX's nn.RMSNorm
+    # applies ``x * w`` directly, so each norm weight needs +1.0. This MUST
+    # include the MTP-specific ``pre_fc_norm_embedding`` / ``pre_fc_norm_hidden``
+    # (the "norm" is mid-name, so an ``endswith('norm.weight')`` list silently
+    # missed them — leaving the MTP head's fc-input normalization inverted and
+    # producing ~0% draft acceptance). Match any 1-D norm weight instead.
     for k in list(all_mtp_weights.keys()):
-        if any(k.endswith(sfx) for sfx in norm_suffixes) or k == "mtp.norm.weight":
+        if "norm" in k and k.endswith(".weight") and all_mtp_weights[k].ndim == 1:
             all_mtp_weights[k] = all_mtp_weights[k] + 1.0
             logger.info(f"  Shifted norm: {k}")
+
+    # Convert fused MoE experts (``experts.gate_up_proj`` / ``experts.down_proj``,
+    # 3-D stacked, no ``.weight`` suffix) into the ``switch_mlp.{gate,up,down}_proj``
+    # split layout the MLX qwen3_5_moe model + MTP injector expect. Mirrors
+    # ``mlx_lm.models.qwen3_5_moe.Model.sanitize`` so quantization below sees the
+    # canonical names. Dense-MTP models have no such keys and are unaffected.
+    for gate_up_key in [
+        k for k in list(all_mtp_weights) if k.endswith(".experts.gate_up_proj")
+    ]:
+        prefix = gate_up_key[: -len(".experts.gate_up_proj")]  # e.g. mtp.layers.0.mlp
+        gate_up = all_mtp_weights.pop(gate_up_key)
+        if gate_up.shape[-2] % 2 != 0:
+            raise ValueError(
+                f"{gate_up_key}: fused gate_up_proj has odd intermediate dim "
+                f"{gate_up.shape[-2]}; cannot split into equal gate/up halves. "
+                "The checkpoint's expert layout is not the expected "
+                "[num_experts, 2*intermediate, hidden]."
+            )
+        mid = gate_up.shape[-2] // 2
+        all_mtp_weights[f"{prefix}.switch_mlp.gate_proj.weight"] = gate_up[..., :mid, :]
+        all_mtp_weights[f"{prefix}.switch_mlp.up_proj.weight"] = gate_up[..., mid:, :]
+        down_key = f"{prefix}.experts.down_proj"
+        if down_key not in all_mtp_weights:
+            raise ValueError(
+                f"{gate_up_key} present but paired {down_key} is missing; the "
+                "extracted sidecar would be incomplete. Check that the MTP shard "
+                "carries the full expert set."
+            )
+        all_mtp_weights[f"{prefix}.switch_mlp.down_proj.weight"] = all_mtp_weights.pop(
+            down_key
+        )
+        logger.info(
+            f"  Converted MoE experts: {prefix}.experts.* -> {prefix}.switch_mlp.*"
+        )
 
     # Quantize MTP weights
     quantized = {}
@@ -131,28 +164,20 @@ def main():
         if not k.endswith(".weight"):
             continue
 
-        # Skip norms and small tensors (keep in FP)
+        # Only 1-D norm/bias vectors stay in FP. Every 2-D Linear weight —
+        # including the router ``mlp.gate`` and the ``shared_expert_gate``
+        # (out_features=1) — MUST be quantized, because the MTP injector
+        # (``qwen3_5_inject``) quantizes the whole MTP module uniformly and
+        # then loads this sidecar into it: an FP tensor where the module
+        # expects a quantized (weight/scales/biases) triple is rejected as a
+        # "missing required MTP tensor". Mirror the target model's scheme.
         is_norm = "norm" in k or "layernorm" in k
-        is_tiny = v.ndim == 1 or (v.ndim == 2 and min(v.shape) <= 8)
-
-        if is_norm or is_tiny:
+        if is_norm or v.ndim == 1:
             quantized[k] = v
             logger.info(f"  FP: {k} {v.shape}")
             continue
 
-        # Determine quantization params
-        # MoE gate uses 8-bit, shared_expert_gate kept FP
-        if "shared_expert_gate" in k:
-            quantized[k] = v
-            logger.info(f"  FP (shared_expert_gate): {k} {v.shape}")
-            continue
-
-        if "gate" in k and "gate_proj" not in k:
-            # Router gate: 8-bit
-            q_bits, q_gs = 8, 64
-        else:
-            q_bits, q_gs = bits, group_size
-
+        q_bits, q_gs = bits, group_size
         q_w, q_s, q_b = _quantize_weight(v, q_gs, q_bits)
         quantized[k] = q_w
         quantized[k.replace(".weight", ".scales")] = q_s
